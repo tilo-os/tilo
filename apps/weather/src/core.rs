@@ -1079,18 +1079,18 @@ impl Core {
         }
     }
 
-    pub fn draw_overview_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    pub fn draw_overview_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, t, tr, theme, mut env) = ctx.parts();
         if self.search.is_editing() {
-            self.draw_add_popover(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
+            self.draw_add_popover(&mut ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
         }
         if self.menu.is_open() {
-            self.menu.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
+            self.menu.draw_overlay(&mut ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
         }
     }
 
-    fn draw_add_popover(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_add_popover(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, t, tr, theme, mut env) = ctx.parts();
         use ui::widget::floating_surface;
@@ -1131,7 +1131,7 @@ impl Core {
         self.search_field_rect = field;
         self.search.apply_layout_external(field);
         self.search.draw_child(scene, t, tr, &on_panel,&env);
-        self.search.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
+        self.search.draw_overlay(&mut ui::DrawCtx::new(scene, t, tr, theme, env.clone()));
     }
 
     pub fn overview_modal_capture(&self) -> Option<Rect> {

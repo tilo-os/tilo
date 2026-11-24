@@ -1796,7 +1796,7 @@ impl Widget for RemoteApp {
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.state().pump_session();
@@ -1805,13 +1805,13 @@ impl Widget for RemoteApp {
             .draw_child(scene, transform, text_renderer, theme,&env);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.body_mut()
-            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         if let Some(dialog) = self.dialog.as_mut() {
-            dialog.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            dialog.draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 

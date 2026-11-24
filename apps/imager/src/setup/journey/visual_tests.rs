@@ -96,7 +96,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut ui::TextRenderer::new(),
-                theme,&PresenceCtx::default().draw_env().draw_env(),
+                theme,&PresenceCtx::default().draw_env(),
             );
             let runs = &scene.encoding().resources.glyph_runs;
             assert!(!runs.is_empty(), "the heading must paint real glyphs");

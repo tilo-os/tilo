@@ -1415,7 +1415,7 @@ impl ui::widget::Decorator for ApiTesterApp {
         self.nav.handle_event(event, ctx);
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if std::mem::take(&mut self.menu_pending) && !self.history.is_empty() {
@@ -1439,7 +1439,7 @@ impl ui::widget::Decorator for ApiTesterApp {
             .draw_child(scene, transform, text_renderer, theme,&env);
         if let Some(open) = self.menu.as_mut() {
             open.menu.layout_within(text_renderer, theme);
-            Widget::draw_overlay(&mut open.menu, &mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            Widget::draw_overlay(&mut open.menu, &mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
     }
 

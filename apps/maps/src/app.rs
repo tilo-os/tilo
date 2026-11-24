@@ -342,7 +342,7 @@ impl FloatingSurfaceProvider for MapsApp {
         self.pending_floating.take()
     }
 
-    fn draw_floating_surfaces(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_floating_surfaces(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.model.route.is_some()
@@ -538,13 +538,13 @@ impl Widget for MapsApp {
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.draw_app(scene, transform, text_renderer, theme);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.offline_panel.is_open() {
@@ -569,10 +569,10 @@ impl Widget for MapsApp {
         }
         if self.overflow.is_open() {
             self.overflow
-                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+                .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
         }
         self.info_sheet
-            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     #[allow(

@@ -465,7 +465,7 @@ impl Widget for DiffView {
         self.place(ui::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.collect_highlights();
@@ -1170,7 +1170,7 @@ pub(crate) mod performance_tests {
             &mut scene,
             Affine::IDENTITY,
             &mut text,
-            &theme,&PresenceCtx::empty().draw_env().draw_env(),
+            &theme,&PresenceCtx::empty().draw_env(),
         );
         let first = started.elapsed();
         let first_shapes = text.take_shape_stats();
@@ -1181,7 +1181,7 @@ pub(crate) mod performance_tests {
             &mut scene,
             Affine::IDENTITY,
             &mut text,
-            &theme,&PresenceCtx::empty().draw_env().draw_env(),
+            &theme,&PresenceCtx::empty().draw_env(),
         );
         let scroll = started.elapsed();
         let scroll_shapes = text.take_shape_stats();

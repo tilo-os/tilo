@@ -1090,11 +1090,11 @@ impl ui::widget::Decorator for DisksApp {
         }
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.shell
-            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn needs_animation_frame(&self) -> bool {

@@ -797,7 +797,7 @@ impl TerminalWidget {
         clippy::too_many_lines,
         reason = "one panel: header, a row per environment, and the name field"
     )]
-    fn draw_environments_panel(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_environments_panel(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         if !self.environments_panel.open {

@@ -951,7 +951,7 @@ impl ui::widget::Decorator for SnippetsWindow {
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.core
@@ -962,19 +962,19 @@ impl ui::widget::Decorator for SnippetsWindow {
         ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme,&env);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        Widget::draw_overlay(&mut self.shell, &mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        Widget::draw_overlay(&mut self.shell, &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         let mut core = self.core.borrow_mut();
         let window = core.window;
         if let Some(modal) = core.expand.as_mut() {
             modal.draw(scene, transform, text, theme, window);
-            modal.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            modal.draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         } else if core.body_available() {
             core.body
                 .control_mut()
-                .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+                .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
         }
     }
 

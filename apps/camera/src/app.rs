@@ -2762,7 +2762,7 @@ impl Widget for CameraApp {
         true
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, t, tr, theme, mut env) = ctx.parts();
         self.regions.clear();
@@ -2774,7 +2774,7 @@ impl Widget for CameraApp {
             Screen::Camera | Screen::Settings => self.draw_camera(scene, t, tr, theme, full),
             Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
             Screen::Document => {
-                self.draw_document_scanner(&mut tilo_ui::DrawCtx::new(scene, t, tr, theme, env.clone()), full);
+                self.draw_document_scanner(&mut ui::DrawCtx::new(scene, t, tr, theme, env.clone()), full);
             }
         }
         if self.screen == Screen::Settings {

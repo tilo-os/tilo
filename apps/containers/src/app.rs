@@ -1891,18 +1891,18 @@ impl Widget for ContainersApp {
         mine || children
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.window
             .draw_child(scene, transform, tr, theme,&env);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+            child.draw_overlay(&mut ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
         }
     }
 

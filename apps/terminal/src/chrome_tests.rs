@@ -33,7 +33,7 @@ tilo_test_env::scenario! {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
-                &theme,&PresenceCtx::empty().draw_env().draw_env(),
+                &theme,&PresenceCtx::empty().draw_env(),
             );
             let banner = widget.banner_test_rect();
             assert!(banner.width() > 0.0, "an ended session shows its banner");
@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
-            &Theme::dark(),&PresenceCtx::empty().draw_env().draw_env(),
+            &Theme::dark(),&PresenceCtx::empty().draw_env(),
         );
         let tree = Widget::accessibility(&widget).expect("terminal semantics");
         let restart = tree
@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
-                theme,&PresenceCtx::empty().draw_env().draw_env(),
+                theme,&PresenceCtx::empty().draw_env(),
             );
         };
         let theme = Theme::dark();

@@ -73,11 +73,11 @@ struct RowCtx<'a> {
 }
 
 impl Editor {
-    pub(super) fn paint(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    pub(super) fn paint(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         if !self.has_file {
-            self.paint_empty_state(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+            self.paint_empty_state(&mut ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
             return;
         }
         self.paint_grid(scene, transform, tr, theme);
@@ -93,7 +93,7 @@ impl Editor {
             );
         }
         self.paint_status(scene, transform, tr, theme);
-        self.paint_inspector_region(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.paint_inspector_region(&mut ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
 
     fn paint_grid(
@@ -386,17 +386,17 @@ impl Editor {
 
     /// The inspector: its region, heading, endianness strip and the interpretations of
     /// the bytes at the cursor.
-    fn paint_inspector_region(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn paint_inspector_region(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let g = self.geo.clone();
         if g.inspector_visible {
             let local = self.drawer.paint_panel(scene, transform, theme);
-            self.paint_inspector(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()), &g);
+            self.paint_inspector(&mut ui::DrawCtx::new(scene, transform, tr, theme, env.clone()), &g);
         }
     }
 
-    fn paint_inspector(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, g: &Geo) {
+    fn paint_inspector(&mut self, ctx: &mut ui::DrawCtx<'_>, g: &Geo) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let colors = &theme.tokens.colors;
@@ -457,7 +457,7 @@ impl Editor {
         scene.pop_layer();
     }
 
-    fn paint_empty_state(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn paint_empty_state(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.empty.apply_layout_external(self.rect);

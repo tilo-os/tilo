@@ -299,7 +299,7 @@ impl Chrome {
         children
     }
 
-    pub fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    pub fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         for child in self.children_mut() {

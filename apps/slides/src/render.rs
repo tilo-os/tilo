@@ -518,7 +518,7 @@ fn draw_text_element(
         let content_h = view.layout(text_box_rect(e), theme, tr);
         view.set_transform(text_box_transform(dest, s, e, content_h));
         match presence {
-            Some(presence) => view.draw_with_presence(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, presence.draw_env())),
+            Some(presence) => view.draw_with_presence(&mut ui::DrawCtx::new(scene, transform, tr, theme, presence.draw_env())),
             None => view.draw(scene, transform, tr, theme),
         }
         laid.height = content_h;

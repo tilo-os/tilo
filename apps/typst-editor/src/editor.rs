@@ -272,7 +272,7 @@ impl SourceEditor {
     /// The shared widget paints the gutter, line numbers, current-line band,
     /// selection, text and caret; this adds the diagnostics: a severity mark in the
     /// gutter and a squiggle under each span, in the theme's status colours.
-    pub fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, diags: &[Diagnostic]) {
+    pub fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>, diags: &[Diagnostic]) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let focused = self.focused;
@@ -305,7 +305,7 @@ impl SourceEditor {
         let pointer = self.hover.filter(|p| self.rect.contains(*p));
         self.control_mut().set_pointer(pointer);
         self.control_mut()
-            .draw_embedded(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+            .draw_embedded(&mut ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
 
     /// The editor's damage since the frame on screen, as part of `owner`, the
@@ -475,7 +475,7 @@ mod tests {
             let mut ed = SourceEditor::new();
             ed.set_text("a\nbcdefg\n");
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-            ed.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::empty().draw_env()), &[warn, err]);
+            ed.draw(&mut ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::empty().draw_env()), &[warn, err]);
             let severities: Vec<Severity> = ed
                 .control()
                 .diagnostics()
@@ -507,7 +507,7 @@ mod tests {
         .iter()
         .enumerate()
         {
-            editor.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut tr, theme, PresenceCtx::empty().draw_env()), &[]);
+            editor.draw(&mut ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut tr, theme, PresenceCtx::empty().draw_env()), &[]);
             let input = editor.control().inner();
             let line = input.body_line_height();
             let gutter = editor.control().gutter_width();

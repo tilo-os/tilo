@@ -329,11 +329,11 @@ impl FloatingSurfaceProvider for MapWindow {
         self.app().take_floating_surface_request()
     }
 
-    fn draw_floating_surfaces(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_floating_surfaces(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.app()
-            .draw_floating_surfaces(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            .draw_floating_surfaces(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn floating_surface_presentations(
@@ -401,7 +401,7 @@ impl Widget for MapWindow {
         self.app().apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let fallback_presence = Default::default();
@@ -418,11 +418,11 @@ impl Widget for MapWindow {
         );
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.app()
-            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

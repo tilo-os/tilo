@@ -402,7 +402,7 @@ impl Widget for AddForm {
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.tree
@@ -509,7 +509,7 @@ fn import_section(sheet: &Shared, values: &Values, uri_expanded: bool) -> Vec<El
                 .icon(Icon::Image)
                 .secondary(t("totp-add-scan-description"))
                 .disclosure()
-                .on_click(queued(sheet, Msg::PickImage)),
+                .on_activate(queued(sheet, Msg::PickImage)),
         ),
         Box::new(
             ListRow::new("totp-paste-link", t("totp-add-link-title"))

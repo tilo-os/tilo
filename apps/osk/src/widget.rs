@@ -2670,7 +2670,7 @@ impl Widget for OskWidget {
         self.layout_bands();
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if !self.visible {
@@ -2729,7 +2729,7 @@ impl Widget for OskWidget {
 
         // Last, so the skin-tone row floats over the keys.
         self.emoji_panel
-            .draw(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            .draw(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

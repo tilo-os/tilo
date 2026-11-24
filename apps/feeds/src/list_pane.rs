@@ -191,7 +191,7 @@ impl Core {
         })
     }
 
-    pub(crate) fn paint_list(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, area: Rect) {
+    pub(crate) fn paint_list(&mut self, ctx: &mut ui::DrawCtx<'_>, area: Rect) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, t, text, theme, mut env) = ctx.parts();
         self.list.rows.clear();
@@ -204,7 +204,7 @@ impl Core {
         let inset = f64::from(theme.tokens.spacing.s2);
         let settled = !self.refresh.visible();
         let top = if self.refresh.visible() {
-            self.paint_refresh(&mut tilo_ui::DrawCtx::new(scene, t, text, theme, env.clone()), area)
+            self.paint_refresh(&mut ui::DrawCtx::new(scene, t, text, theme, env.clone()), area)
         } else {
             area.y0
         };
@@ -445,7 +445,7 @@ impl Core {
 
     /// The refresh progress under the header: one sentence over the bar.
     /// Returns where the rows start.
-    fn paint_refresh(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, area: Rect) -> f64 {
+    fn paint_refresh(&mut self, ctx: &mut ui::DrawCtx<'_>, area: Rect) -> f64 {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, t, text, theme, mut env) = ctx.parts();
         let spacing = &theme.tokens.spacing;
@@ -681,12 +681,12 @@ impl Widget for ListPane {
             .collect()
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let viewport = {
             let mut core = self.core.borrow_mut();
-            core.paint_list(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()), self.rect);
+            core.paint_list(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()), self.rect);
             core.list.viewport
         };
         if let Some((_, empty)) = self.empty.as_mut() {

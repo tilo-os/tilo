@@ -109,11 +109,11 @@ impl ExportDialog {
         self.dialog.apply_layout(&tree, node, viewport.origin());
     }
 
-    pub(crate) fn draw_detached(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    pub(crate) fn draw_detached(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.dialog
-            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
     }
 
     pub(crate) fn handle_detached(
@@ -250,7 +250,7 @@ mod tests {
                 dialog.layout_in(viewport, &theme, &mut text);
                 let presence = PresenceCtx::default();
                 let previous = presence.push_viewport(viewport);
-                dialog.draw_detached(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+                dialog.draw_detached(&mut ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
                 presence.pop_viewport(previous);
                 dialog.layout_in(viewport, &theme, &mut text);
                 assert_eq!(

@@ -301,5 +301,5 @@ fn draw_frame(app: &mut GitClientState) {
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    app.draw(&mut tilo_ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
+    app.draw(&mut ui::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
 }

@@ -254,7 +254,7 @@ impl CameraApp {
         }
     }
 
-    pub(super) fn draw_document_scanner(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>, full: Rect) {
+    pub(super) fn draw_document_scanner(&mut self, ctx: &mut ui::DrawCtx<'_>, full: Rect) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, t, tr, theme, mut env) = ctx.parts();
         let layout = Self::document_layout(full, theme);

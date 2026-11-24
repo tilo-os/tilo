@@ -1072,7 +1072,7 @@ fn text_scale_compacts_before_the_panes_collide() {
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut tr,
-        &theme,&PresenceCtx::empty().draw_env().draw_env(),
+        &theme,&PresenceCtx::empty().draw_env(),
     );
 
     assert!(app.compact, "1280px is compact at 200% text scale");

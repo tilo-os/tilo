@@ -663,19 +663,19 @@ impl Widget for GitClientApp {
         self.state().set_platform_conventions(conventions);
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         let fallback_presence = Default::default();
         let presence = env.presence.unwrap_or(&fallback_presence);
-        self.state().draw(&mut tilo_ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.state().draw(&mut ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.state()
-            .draw_overlay(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -818,7 +818,7 @@ impl GitClientState {
         self.conventions = conventions;
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         // A key (1, 2, 3, d) changes what the bar shows without a sync.
@@ -827,7 +827,7 @@ impl GitClientState {
         self.paint_window(&mut ctx, presence);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let Some(confirm) = &self.confirm else {

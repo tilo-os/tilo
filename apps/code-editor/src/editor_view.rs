@@ -2517,7 +2517,7 @@ impl Widget for EditorView {
 
     ui::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let theme = &theme.clone().with_text_scale(self.text_zoom);
@@ -3056,7 +3056,7 @@ mod tests {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut renderer,
-                &theme,&PresenceCtx::empty().draw_env().draw_env(),
+                &theme,&PresenceCtx::empty().draw_env(),
             );
             assert!(
                 scene.encoding().resources.glyphs.len() < 100,
@@ -3076,7 +3076,7 @@ mod tests {
             &mut scene,
             Affine::IDENTITY,
             &mut renderer,
-            &theme,&PresenceCtx::empty().draw_env().draw_env(),
+            &theme,&PresenceCtx::empty().draw_env(),
         );
         assert!(scene.encoding().resources.glyphs.len() < 100);
         assert_eq!(

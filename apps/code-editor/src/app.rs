@@ -2159,10 +2159,10 @@ impl Widget for CodeApp {
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.draw_content(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.draw_content(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
 
         // The embedded terminal renders its live grid over the panel's content
         // region whenever the Terminal dock tab is showing.
@@ -2170,12 +2170,12 @@ impl Widget for CodeApp {
             let content = self.panel.content_rect();
             if let Some(t) = self.terminal.as_mut() {
                 t.layout(content, theme, text_renderer);
-                t.draw(&mut tilo_ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+                t.draw(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
             }
         }
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let window = env.viewport.unwrap_or(self.rect);

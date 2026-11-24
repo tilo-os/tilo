@@ -416,7 +416,7 @@ impl Widget for BodyWell {
 
     ui::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
@@ -432,7 +432,7 @@ impl Widget for BodyWell {
         );
         let mut core = self.core.borrow_mut();
         core.body.control_mut().set_rect(self.rect);
-        core.body.control_mut().draw_embedded(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        core.body.control_mut().draw_embedded(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
     }
 
     fn needs_redraw(&self) -> bool {
