@@ -202,15 +202,31 @@ fn commands(meta: &PackageMeta) -> Vec<FleetCommand> {
         .collect()
 }
 
-/// The actions `meta` offers while it is closed: each primary action, and each action on the
+/// The actions `meta` offers while it is closed: each primary action, and each command on the
 /// package rather than a record. An action asking several values is offered with them all: a
 /// small form fills the parameter's own type, and the words beside each field are its doc.
+///
+/// An action acts on the package when its target is the app's root: it needs no record at hand,
+/// so it is a command a person starts with the app closed ("Save a place"). One the app runs by
+/// itself is not: a trigger's handler, or a step that carries no words for a person and that
+/// only the app's own code calls.
 fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
     let mut offers = Vec::new();
+    // The actions the app runs on its own clock: nobody starts them.
+    let automatic: Vec<&str> = meta.triggers.iter().map(|t| t.action.as_str()).collect();
+    let root = meta.resource_type();
     for action in meta.offered_actions() {
         let target = meta.target_of(&action.params);
         let primary = action.role.as_deref() == Some("primary");
-        if !primary && target.is_some() {
+        let on_the_package = target.is_some_and(|ty| meta.kind_of(&ty.name) == root);
+        // What the app presents as something a person does: an icon, a shortcut, words it wrote
+        // about the action, or a name other than the one its identifier would read as. An action
+        // with none of them is a step only the app's own code runs, and no name to offer it by.
+        let a_command = action.icon.is_some()
+            || action.key.is_some()
+            || !action.doc.trim().is_empty()
+            || action.label != tilolang::resolve::sentence_case(&action.name);
+        if !primary && !(on_the_package && a_command && !automatic.contains(&action.id.as_str())) {
             continue;
         }
         let asked: Vec<&ParamMeta> = meta
@@ -459,6 +475,58 @@ mod tests {
                 ("secret", "text", "Shared secret"),
             ],
             "both values are offered, with the words beside their fields"
+        );
+    }
+
+    #[test]
+    fn a_command_on_the_app_itself_is_offered_while_it_is_closed() {
+        let dir = package(
+            "app t.weather \"Weather\" (icon: .cloud_sun, category: .utility)\n\n\
+             type Place (title: name) {\n    name: Text\n    latitude: Float\n    longitude: Float\n}\n\n\
+             type Locations {\n    places: Collection<Place>\n}\n\n\
+             root weather: Locations\n\n\
+             default view weather_window for Locations\n\n\
+             view weather_window(w: Locations) {\n    text(\"Weather\")\n}\n\n\
+             /// Saves a place a person follows.\n\
+             action save_place(\n    w: Locations,\n    name: Text,\n    \
+             latitude: Float,\n    longitude: Float,\n) -> Place (icon: .plus, label: \"Save a place\") {\n    \
+             w.places.insert(Place(name: name, latitude: latitude, longitude: longitude))\n}\n\n\
+             action read_next(w: Locations) {\n    poll(w)\n}\n\n\
+             action poll(w: Locations) {\n    read_next(w)\n}\n\n\
+             trigger watch(w: Locations) every 1s: poll(w)\n",
+        );
+        let entry = fleet(dir.path(), &[])
+            .expect("the package reads")
+            .expect("it declares an app");
+        let offered: Vec<(String, String)> = entry
+            .offers
+            .iter()
+            .map(|offer| (offer.action.clone(), offer.label.clone()))
+            .collect();
+        assert!(
+            offered.contains(&("save_place".to_owned(), "Save a place".to_owned())),
+            "a command on the app needs no record at hand: {offered:?}"
+        );
+        assert_eq!(
+            entry
+                .offers
+                .iter()
+                .find(|offer| offer.action == "save_place")
+                .expect("it offers saving a place")
+                .asks
+                .iter()
+                .map(|asked| asked.name.as_str())
+                .collect::<Vec<_>>(),
+            ["name", "latitude", "longitude"],
+            "the form asks what the action needs, and not its target"
+        );
+        assert!(
+            !offered.iter().any(|(action, _)| action == "read_next"),
+            "a step only the app's own code runs is no command: {offered:?}"
+        );
+        assert!(
+            !offered.iter().any(|(action, _)| action == "poll"),
+            "a trigger's handler runs on its clock, never from a menu: {offered:?}"
         );
     }
 
