@@ -1377,6 +1377,11 @@ lto = false
 codegen-units = 16
 incremental = true
 debug = "line-tables-only"
+# The tilolang runtime a session's tests install is bundled as a package is, under the runtime
+# bundle's size limit for one program, which this profile's build (no link-time optimisation, its
+# symbols kept) passes.
+[profile.fast.package.tilolang-process]
+strip = "symbols"
 
 [profile.wasm-release]
 inherits = "release"
