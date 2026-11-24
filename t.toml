@@ -7680,6 +7680,9 @@ run = "bash os/containers/tilo-lounge/test-page-call.sh /target/publish/web-entr
 needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-tools", "web-entry-bundle"]
 env = { TILO_SERVER_BIN = "/target/publish/lounge-check/binaries/tilo-runtime", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/check-tools/tilo-crypto", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0" }
 requires = ["arch=x86_64"]
+# The Lounge joins its person over their endpoint, as a deployment does (the
+# stack's own checks, which bring one up, run nested too).
+isolation = "nested"
 outputs = ["/target/page-call/**"]
 timeout_secs = 1800
 default = false
