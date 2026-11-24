@@ -64,7 +64,6 @@ fn names() -> &'static [(&'static str, &'static str)] {
 /// Called outside a reactor: a record's writes wait on the one it was registered on.
 pub fn register(workspaces: &Workspaces) {
     let runtime = tokio::runtime::Handle::current();
-    crate::tl_records::declare_built_in(workspaces.surfaces());
     let providers = workspaces.providers();
     for (provider, app) in names() {
         providers.provide(
@@ -194,6 +193,16 @@ impl BuiltInRecords {
         }
         let packages = super::built_in(self.app)?.ok_or_else(|| super::runs_elsewhere(self.app))?;
         let app = self.app;
+        // A record no device wrote yet has no channel to seal its first write for: this device
+        // founds it, as a window opening the record would. One it may not found is founded
+        // elsewhere, and the write says so if it still has none.
+        if let Some(Err(error)) = self
+            .workspaces
+            .own_route_keys(&self.route(workspace), true)
+            .await
+        {
+            tracing::debug!(%error, app, "the record's channel is not founded here");
+        }
         let viewer = super::member(tilo_actions::MemberId::person(person.to_owned()));
         self.workspaces
             .with_tl_record(workspace, &packages, viewer, move |opened| {
@@ -284,6 +293,88 @@ impl ActionProvider for BuiltInRecords {
     }
 }
 
+/// Calling a built-in app's actions the way a person's `tilo do` or an agent's turn does, for
+/// the tests of what reads the record afterwards.
+#[cfg(test)]
+pub(crate) mod calls {
+    #![allow(clippy::expect_used, reason = "a fixture failing is its test failing")]
+
+    use super::{
+        Admitted, Arc, BuiltInRecords, Caller, InvokeArgument, InvokeRequest, RESOURCE_PROVIDER,
+        Workspaces, person_of,
+    };
+
+    /// Run the first `action` `app`'s record offers `caller`, with `arguments`, through the
+    /// provider the dispatch hands the app's calls to: what it answered, or why not.
+    ///
+    /// # Panics
+    /// The record offers `caller` no such action, or the app's records are not served here.
+    pub(crate) async fn call(
+        workspaces: &Workspaces,
+        caller: &Caller,
+        app: &'static str,
+        action: &str,
+        arguments: serde_json::Value,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let records = BuiltInRecords {
+            workspaces: workspaces.clone(),
+            app,
+            runtime: tokio::runtime::Handle::current(),
+            rooted: Arc::default(),
+        };
+        let workspace = caller.workspace().expect("a caller in a workspace");
+        let person = person_of(caller).expect("a caller acting as a person");
+        records.rooted(workspace, &person).await?;
+        let offered: Vec<_> = records
+            .rows(caller)
+            .into_iter()
+            .filter_map(|row| row.action)
+            .collect();
+        let address = offered
+            .iter()
+            .find(|offered| offered.address.action == action)
+            .map(|offered| offered.address.clone())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{app} offers {action}: {:?}",
+                    offered.iter().map(|o| &o.address).collect::<Vec<_>>()
+                )
+            });
+        let serde_json::Value::Object(arguments) = arguments else {
+            panic!("arguments are an object");
+        };
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: format!("{RESOURCE_PROVIDER}:{app}:"),
+                address,
+            },
+            argument: InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let served = workspaces
+            .providers()
+            .get(&format!("{RESOURCE_PROVIDER}:{app}:"))
+            .expect("the app's records are served on this device");
+        let receipt = served
+            .answers
+            .run(caller, request, Admitted::default())
+            .await
+            .ok_or("the call was dropped")?
+            .map_err(|error| error.to_string())?;
+        match receipt.status {
+            tilo_actions::remote::ReceiptStatus::Completed { output } => Ok(output),
+            other => Err(format!("{other:?}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -301,13 +392,30 @@ mod tests {
     const CHAT: &str = "so.tilo.chat";
 
     fn records(workspaces: &Workspaces) -> BuiltInRecords {
-        crate::tl_records::declare_built_in(workspaces.surfaces());
         BuiltInRecords {
             workspaces: workspaces.clone(),
             app: CHAT,
             runtime: tokio::runtime::Handle::current(),
             rooted: Arc::default(),
         }
+    }
+
+    /// The owner's agent `scout`, a member of `workspace` a conversation can be had with.
+    async fn add_scout(
+        workspaces: &Workspaces,
+        workspace: &str,
+        owner: &tilo_user_identity::DeviceCert,
+    ) {
+        let person = hex::encode(owner.user_public_key);
+        workspaces
+            .add_agent(
+                workspace,
+                tilo_actions::MemberId::person(person.clone()),
+                "scout",
+                &person,
+            )
+            .await
+            .expect("the owner adds their agent");
     }
 
     /// The `write_to` tl Chat offers `caller`, asked to tell `who` the words `body`.
@@ -415,6 +523,7 @@ mod tests {
         let workspaces = server.workspaces().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
+        add_scout(&workspaces, &workspace, &owner).await;
 
         let chat = workspaces
             .providers()
@@ -457,16 +566,8 @@ mod tests {
         let workspaces = server.workspaces().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
+        add_scout(&workspaces, &workspace, &owner).await;
         let person = hex::encode(owner.user_public_key);
-        workspaces
-            .add_agent(
-                &workspace,
-                tilo_actions::MemberId::person(person.clone()),
-                "scout",
-                &person,
-            )
-            .await
-            .expect("the owner adds their agent");
         let records = records(&workspaces);
         let ada = Caller::authenticated(owner.user_public_key, owner.device_public_key)
             .in_workspace(workspace.clone());
@@ -535,6 +636,7 @@ mod tests {
         let workspaces = server.workspaces().clone();
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
+        add_scout(&workspaces, &workspace, &owner).await;
         let records = records(&workspaces);
 
         let cy_root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);

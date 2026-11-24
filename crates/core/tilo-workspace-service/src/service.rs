@@ -375,6 +375,10 @@ impl ServiceSessions {
                     settings_store::workspace::SURFACE_APP,
                     settings_store::workspace::surface_json(),
                 );
+                // A built-in tilolang app's record is written with no package installed, so its
+                // types and verbs are named here as an installed app's surface names them.
+                #[cfg(feature = "agents")]
+                crate::tl_records::declare_built_in(&cfg.surfaces);
                 Arc::clone(&cfg.surfaces)
             },
             apps,

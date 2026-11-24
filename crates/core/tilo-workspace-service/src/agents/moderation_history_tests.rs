@@ -23,15 +23,13 @@ use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
-use tilo_resource_store::wire::Command;
-use tilo_resource_store::{Cell, Resource, Stamp, Value as StoreValue};
 use tilo_server_protocol::WorkspaceId;
 
 use super::agent_keys::AgentKeys;
 use super::{Model, ServerAgents};
 
 const CHAT: &str = "so.tilo.chat";
-const MESSAGE: &str = "tl.so.tilo.lang.chat.Message";
+const MESSAGE: &str = "tl.so.tilo.chat.Message";
 const SCOUT: &str = "scout";
 
 /// A model that reads a person's changes through the turn's history action, then takes exactly
@@ -224,62 +222,56 @@ async fn grant_scout(workspaces: &crate::workspaces::Workspaces, workspace: &str
         .unwrap();
 }
 
-/// The person posts `words` in the channel, as one invocation of theirs.
+/// The channel `general`, made by the workspace's agent: the person's own changes are only the
+/// messages they post in it.
+async fn general(workspaces: &crate::workspaces::Workspaces, workspace: &str, owner: &[u8; 32]) {
+    let scout = tilo_actions::remote::Caller::delegated_agent(SCOUT, *owner, [7; 32])
+        .in_workspace(workspace)
+        .held_to(Vec::new());
+    crate::tl_records::provided::calls::call(
+        workspaces,
+        &scout,
+        CHAT,
+        "new_channel",
+        json!({"name": "general"}),
+    )
+    .await
+    .expect("the agent makes the channel");
+}
+
+/// The person posts `words` in the channel, through tl Chat's `send`.
 async fn post(
     workspaces: &crate::workspaces::Workspaces,
     workspace: &str,
     cert: &tilo_user_identity::DeviceCert,
-    id: &str,
     words: &str,
-) -> String {
-    let invocation = InvocationId::new();
-    let by = tilo_actions::Acting::person(hex::encode(cert.user_public_key)).by;
-    let stamp = Stamp {
-        verb: "send".into(),
-        invoker: Stamp::by(&by),
-        invocation: invocation.0.to_string(),
-        at: jiff::Timestamp::now().to_string(),
-        ..Stamp::default()
-    };
-    let commands = vec![Command::Put {
-        kind: MESSAGE.into(),
-        id: id.into(),
-        resource: Resource {
-            readers: "*".into(),
-            parent: Some("general".into()),
-            order: None,
-            fields: std::collections::BTreeMap::from([(
-                "text".to_owned(),
-                Cell::One(StoreValue::Text(words.to_owned())),
-            )]),
-        },
-        stamp: stamp.clone(),
-    }];
+) {
     let caller =
         tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
             .in_workspace(workspace);
-    let context =
-        crate::apps::services::ResourceRequestContext::authenticated(CHAT, workspace, caller)
-            .serving(vec![(invocation, by)]);
-    workspaces
-        .resource_command(&context, Command::Batch(commands))
-        .await
-        .unwrap();
-    id.to_owned()
+    crate::tl_records::provided::calls::call(
+        workspaces,
+        &caller,
+        CHAT,
+        "send",
+        json!({"body": words}),
+    )
+    .await
+    .expect("the person posts");
 }
 
-/// The change a message's post is, as the record's history names it.
-fn change_of(versions: &[Value], message: &str) -> String {
+/// The changes `person` made, as the record's history names them.
+fn changes_of(versions: &[Value], person: &str) -> Vec<String> {
+    let who = serde_json::to_value(crate::tl_records::member(tilo_actions::MemberId::person(
+        person.to_owned(),
+    )))
+    .unwrap();
     versions
         .iter()
-        .find(|version| {
-            version["resource"]
-                .as_str()
-                .is_some_and(|resource| resource.ends_with(&format!(":{message}")))
-        })
-        .and_then(|version| version["change"].as_str())
+        .filter(|version| version["who"] == who)
+        .filter_map(|version| version["change"].as_str())
         .map(str::to_owned)
-        .unwrap_or_else(|| panic!("{message} is in the record's history: {versions:#?}"))
+        .collect()
 }
 
 /// A chat message's change, as a trigger hands it on.
@@ -327,19 +319,22 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
         signer: Arc::new(key.clone()),
     }));
     let workspace = workspaces.create("Moderation").await.unwrap().workspace;
+    crate::tl_records::provided::register(&workspaces);
     let owner = hex::encode(cert.user_public_key);
     create_watching_agent(&workspaces, &workspace, &cert).await;
     grant_scout(&workspaces, &workspace, &owner).await;
 
-    post(&workspaces, &workspace, &cert, "m-1", "a spam offer").await;
-    post(&workspaces, &workspace, &cert, "m-2", "and another").await;
+    general(&workspaces, &workspace, &cert.user_public_key).await;
+    post(&workspaces, &workspace, &cert, "a spam offer").await;
+    post(&workspaces, &workspace, &cert, "and another").await;
     let before = workspaces
         .record_changes(&workspace, &route(&workspace))
         .unwrap();
-    let taken: Vec<String> = ["m-1", "m-2"]
-        .into_iter()
-        .map(|message| change_of(&before, message))
-        .collect();
+    let taken = changes_of(&before, &owner);
+    assert!(
+        taken.len() >= 2,
+        "the person's posts are in the record's history: {before:#?}"
+    );
 
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model: Model = {
@@ -382,11 +377,11 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     );
     assert_eq!(
         shown.matches("\"who\"").count(),
-        2,
-        "only the person's two changes: {shown}"
+        taken.len(),
+        "only the person's changes: {shown}"
     );
 
-    // The undo took exactly those two back, as one run, and the messages are gone.
+    // The undo took exactly those back, as one run.
     let after = workspaces
         .record_changes(&workspace, &route(&workspace))
         .unwrap();
@@ -396,7 +391,11 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
             version["action"].as_str() == Some(crate::tl_records::runtime::store::STEP_ACTION)
         })
         .collect();
-    assert_eq!(undone.len(), 2, "each change is taken back: {undone:#?}");
+    assert_eq!(
+        undone.len(),
+        taken.len(),
+        "each change is taken back: {undone:#?}"
+    );
     let run = undone[0]["task"]["id"].as_str().unwrap_or_default();
     assert!(
         run.starts_with("moderation:"),
@@ -424,10 +423,12 @@ async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
         signer: Arc::new(key.clone()),
     }));
     let workspace = workspaces.create("Moderation").await.unwrap().workspace;
+    crate::tl_records::provided::register(&workspaces);
     let owner = hex::encode(cert.user_public_key);
     create_watching_agent(&workspaces, &workspace, &cert).await;
     grant_scout(&workspaces, &workspace, &owner).await;
-    post(&workspaces, &workspace, &cert, "m-1", "a spam offer").await;
+    general(&workspaces, &workspace, &cert.user_public_key).await;
+    post(&workspaces, &workspace, &cert, "a spam offer").await;
 
     let asked = Arc::new(Mutex::new(Vec::new()));
     let model: Model = {
