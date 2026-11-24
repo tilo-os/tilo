@@ -98,6 +98,14 @@ fn scope_kind(scopes: &ScopeStack) -> Option<TokenKind> {
             Some(TokenKind::Keyword)
         } else if is("entity.name.tag") || is("punctuation.definition.tag") {
             Some(TokenKind::Tag)
+        } else if is("markup.heading") {
+            Some(TokenKind::Heading)
+        } else if is("markup.bold") {
+            Some(TokenKind::Strong)
+        } else if is("markup.italic") {
+            Some(TokenKind::Emphasis)
+        } else if is("markup.raw") {
+            Some(TokenKind::Raw)
         } else if is("entity.name.macro")
             || is("support.macro")
             || is("meta.attribute")

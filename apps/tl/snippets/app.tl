@@ -585,13 +585,33 @@ view snippet_page(snippet: Snippet) {
                 gutter: true,
                 min_lines: 8,
                 max_lines: 24,
-                language: if snippet.language == .rust {
+                // Each language a snippet is written in is coloured as itself: the editor knows
+                // every one of them, so no body reads as plain text.
+                language: if snippet.language == .shell {
+                    .shell
+                } else if snippet.language == .rust {
                     .rust
                 } else if snippet.language == .sql {
                     .sql
+                } else if snippet.language == .git {
+                    .git
+                } else if snippet.language == .python {
+                    .python
+                } else if snippet.language == .javascript {
+                    .javascript
                 } else if snippet.language == .json {
                     .json
-                } else if snippet.language == .text { .plain_text } else { .plain_text },
+                } else if snippet.language == .yaml {
+                    .yaml
+                } else if snippet.language == .markdown {
+                    .markdown
+                } else if snippet.language == .html {
+                    .html
+                } else if snippet.language == .css {
+                    .css
+                } else if snippet.language == .toml {
+                    .toml
+                } else if snippet.language == .dockerfile { .dockerfile } else { .plain_text },
             )
         }
     }

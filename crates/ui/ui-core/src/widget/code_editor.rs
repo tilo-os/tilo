@@ -74,6 +74,17 @@ pub enum Language {
     Typst,
     Sql,
     Json,
+    Shell,
+    /// Git commands, which are shell commands of their own.
+    Git,
+    Python,
+    JavaScript,
+    Yaml,
+    Markdown,
+    Html,
+    Css,
+    Toml,
+    Dockerfile,
     /// tilolang, the app language, coloured by its own lexer.
     Tilolang,
 }
@@ -84,6 +95,16 @@ crate::component::choice!(Language, "Language", {
     Typst => "typst",
     Sql => "sql",
     Json => "json",
+    Shell => "shell",
+    Git => "git",
+    Python => "python",
+    JavaScript => "javascript",
+    Yaml => "yaml",
+    Markdown => "markdown",
+    Html => "html",
+    Css => "css",
+    Toml => "toml",
+    Dockerfile => "dockerfile",
     Tilolang => "tilolang",
 });
 
@@ -97,6 +118,19 @@ impl Language {
             Language::Typst => Some(Box::new(TypstHighlighter)),
             Language::Sql => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sql"))),
             Language::Json => Some(Box::new(SyntaxHighlighter::for_token_or_plain("json"))),
+            Language::Shell => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sh"))),
+            // Git commands are shell commands; the set has no grammar of their own.
+            Language::Git => Some(Box::new(SyntaxHighlighter::for_token_or_plain("sh"))),
+            Language::Python => Some(Box::new(SyntaxHighlighter::for_token_or_plain("py"))),
+            Language::JavaScript => Some(Box::new(SyntaxHighlighter::for_token_or_plain("js"))),
+            Language::Yaml => Some(Box::new(SyntaxHighlighter::for_token_or_plain("yaml"))),
+            Language::Markdown => Some(Box::new(SyntaxHighlighter::for_token_or_plain("md"))),
+            Language::Html => Some(Box::new(SyntaxHighlighter::for_token_or_plain("html"))),
+            Language::Css => Some(Box::new(SyntaxHighlighter::for_token_or_plain("css"))),
+            Language::Toml => Some(Box::new(SyntaxHighlighter::for_token_or_plain("toml"))),
+            Language::Dockerfile => Some(Box::new(SyntaxHighlighter::for_token_or_plain(
+                "dockerfile",
+            ))),
             Language::Tilolang => Some(Box::new(TilolangHighlighter)),
         }
     }
@@ -1106,11 +1140,43 @@ mod tests {
             }
 
             fn language_maps_to_a_highlighter() {
-                assert!(Language::Rust.highlighter().is_some());
-                assert!(Language::Sql.highlighter().is_some());
-                assert!(Language::Typst.highlighter().is_some());
-                assert!(Language::Tilolang.highlighter().is_some());
+                // Every language an app can name colours a line of its own syntax: the samples
+                // are what people keep in each, and a token the syntax set does not know
+                // colours nothing at all.
+                let samples = [
+                    (Language::Rust, "let x = 1;"),
+                    (Language::Typst, "= Title"),
+                    (Language::Sql, "SELECT id FROM t;"),
+                    (Language::Json, r#"{"a": 1}"#),
+                    (Language::Shell, "echo \"hi\""),
+                    (Language::Git, "git commit -m \"hi\""),
+                    (Language::Python, "def f(): pass"),
+                    (Language::JavaScript, "const x = 1;"),
+                    (Language::Yaml, "a: 1"),
+                    (Language::Markdown, "# Title"),
+                    (Language::Html, "<p>hi</p>"),
+                    (Language::Css, "a { color: red; }"),
+                    (Language::Toml, "a = 1"),
+                    (Language::Dockerfile, "FROM rust:1"),
+                    (Language::Tilolang, "app x \"X\""),
+                ];
+                for (language, sample) in samples {
+                    let highlighter = language
+                        .highlighter()
+                        .unwrap_or_else(|| panic!("{language:?} colours nothing"));
+                    assert!(
+                        !highlighter.spans(sample, 0).spans.is_empty(),
+                        "{language:?} colours nothing in {sample:?}"
+                    );
+                }
                 assert!(Language::PlainText.highlighter().is_none());
+                // Each grammar-backed language resolves a grammar of its own, not the plain
+                // fallback that colours nothing.
+                for token in ["rs", "sql", "json", "sh", "py", "js", "yaml", "md", "html", "css", "toml", "dockerfile"] {
+                    let highlighter = SyntaxHighlighter::for_token(token)
+                        .unwrap_or_else(|| panic!("no grammar for `{token}`"));
+                    assert_ne!(highlighter.name(), "Plain Text", "`{token}` is plain text");
+                }
             }
 
             fn highlighter_colours_segments_from_the_theme() {

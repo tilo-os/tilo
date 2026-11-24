@@ -1564,6 +1564,16 @@
                   "typst",
                   "sql",
                   "json",
+                  "shell",
+                  "git",
+                  "python",
+                  "javascript",
+                  "yaml",
+                  "markdown",
+                  "html",
+                  "css",
+                  "toml",
+                  "dockerfile",
                   "tilolang"
                 ]
               }
