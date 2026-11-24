@@ -317,7 +317,7 @@ async fn a_workspaces_files_reach_its_server_within_twice_a_plain_copy() {
                 namespace
                     .create_dir(tilo_fs::namespace::ROOT_INO, "written-while-files-move", 1)
                     .map(|_| ())
-                    .ok_or("the folder could not be made")
+                    .ok_or_else(|| "the folder could not be made".to_owned())
             })
             .await
             .expect("the workspace takes the laptop's write");
