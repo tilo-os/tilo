@@ -110,7 +110,16 @@ async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
                     .await
                     .expect("certified join preserves the complete canonical Agent ID");
                 channel.say(frame.clone()).await.unwrap();
-                let event = event_rx.try_recv().unwrap();
+                // The connection before this one left what it said when it closed.
+                let event = loop {
+                    match event_rx.recv().await.unwrap() {
+                        CollabEvent::RemotePresenceUpdate {
+                            payload: PresencePayload::Left,
+                            ..
+                        } => {}
+                        event => break event,
+                    }
+                };
                 assert!(matches!(event,
                     CollabEvent::RemotePresenceUpdate { member, key: delivered, payload: PresencePayload::Arrived }
                         if member == collab_types::MemberId::agent(expected) && delivered == key));
