@@ -15776,6 +15776,112 @@
           "params": []
         },
         {
+          "id": "agent",
+          "label": "Ask this of an agent",
+          "description": "Ask this of an agent through the card it keeps in Console: stop it, undo its run, pick up where it was, take back what let it in, or open its card",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "person",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "client",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "ask",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "colour",
+          "label": "Your colour",
+          "description": "Wear this presence colour: the one the reading's `colours` lists at this place",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "slot",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "host-action",
+          "label": "Do this about you",
+          "description": "Do one of the host's own actions about this person, by id, as their own card offers them",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "id",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "control-hints",
+          "label": "Show control hints",
+          "description": "Show the desktop's control hints, or not: the person's own record, which every device of theirs reads",
+          "kind": "undoable",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "draft",
+          "label": "Keep what you typed",
+          "description": "Keep what the person typed in their own card once they pause, at the same place Enter and closing the card keep it: each change the field sends is kept once typing stops, so nothing typed is lost for want of a Save",
+          "kind": "read",
+          "params": [
+            {
+              "name": "field",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "text",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
           "id": "open-settings",
           "label": "Open your settings",
           "description": "Open a page of this person's own settings: their accounts, their devices and what they share",
@@ -15865,6 +15971,46 @@
           "stored": "value",
           "type": "bool",
           "readonly": true
+        },
+        {
+          "path": "colours",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "PresenceColour"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "actions",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "PersonAction"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "photo_change",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "photo_remove",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "control_hints",
+          "stored": "value",
+          "type": {
+            "option": "bool"
+          },
+          "readonly": true
         }
       ],
       "types": [
@@ -15905,6 +16051,10 @@
               "type": "text"
             },
             {
+              "name": "automatic",
+              "type": "bool"
+            },
+            {
               "name": "activity",
               "type": "text"
             },
@@ -15931,6 +16081,124 @@
             {
               "name": "follower",
               "type": "bool"
+            },
+            {
+              "name": "can_message",
+              "type": "bool"
+            },
+            {
+              "name": "given",
+              "type": "text"
+            },
+            {
+              "name": "colour_id",
+              "type": "text"
+            },
+            {
+              "name": "colour_slot",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "devices",
+              "type": {
+                "list": {
+                  "named": "PersonDevice"
+                }
+              }
+            },
+            {
+              "name": "linked",
+              "type": {
+                "list": {
+                  "named": "PersonLinked"
+                }
+              }
+            },
+            {
+              "name": "agent_client",
+              "type": "text"
+            },
+            {
+              "name": "user_key",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "PersonAction",
+          "doc": "One of the host's actions about the person, as their own card offers it.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "title",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            },
+            {
+              "name": "group",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "PersonDevice",
+          "doc": "One of the devices a person is here on: the key a press names it by (never shown as its name), what the device calls itself, whether it is the one at this desk, and how available its person is there.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "this",
+              "type": "bool"
+            },
+            {
+              "name": "availability",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "PersonLinked",
+          "doc": "One of someone's accounts elsewhere, as the workspace's services name it: the service they are linked to it on, and the handle their profile there goes by.",
+          "fields": [
+            {
+              "name": "service",
+              "type": "text"
+            },
+            {
+              "name": "handle",
+              "type": "text"
+            },
+            {
+              "name": "icon",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "PresenceColour",
+          "doc": "One presence colour a person may wear: the id a choice names it by (`red` … `pink`), and the colour the card's swatch paints, `rrggbb`.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "colour",
+              "type": "text"
             }
           ]
         }

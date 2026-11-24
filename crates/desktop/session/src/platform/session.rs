@@ -1942,6 +1942,18 @@ impl Session {
                 shared.surfaces.clone(),
                 Rc::clone(&shared.invitable),
                 shared.person.clone(),
+                {
+                    // A conversation with someone is Chat's, on a key both people know: a card
+                    // offers one only where Chat is installed here.
+                    let lists = shared.lists.clone();
+                    Rc::new(move || {
+                        let chat =
+                            tilo_session_core::desktop::launchpad::LaunchpadAppAction::message_person(
+                                "",
+                            );
+                        lists.latest().has_app(&chat.app_id)
+                    })
+                },
             )));
         // The person's account with the host this session runs on, as Settings' billing
         // page reads it (`host-account`): the plan, the card on file, what the account's

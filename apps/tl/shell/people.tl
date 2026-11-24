@@ -432,6 +432,11 @@ fn availability_word(p: device.Person) -> Text {
 /// the call they are in, with the actions their card offers. The person at this device gets their
 /// own card instead ([`own_card`]), where their name, what they are doing and how available they
 /// are are theirs to change.
+///
+/// What can be done with them is what the session says can: following their view, waving, going
+/// where they work, and a conversation, which Chat keeps on the key both people know, so the
+/// button stands only where Chat is here and that key is known. Their card lists the devices they
+/// are here on, each with how available they are there, and the accounts they keep elsewhere.
 view person_card(board: device.People) {
     let someone = person_shown(board)
     if someone.key == "" or someone.me {
@@ -449,8 +454,10 @@ view person_card(board: device.People) {
                         on press: device.follow(device.people, person: someone.key)
                     }
                 }
-                ui.Button("Message", icon: .message_circle, size: .small) {
-                    on press: device.message(device.people, person: someone.key)
+                if someone.can_message {
+                    ui.Button("Message", icon: .message_circle, size: .small, role: .primary) {
+                        on press: device.message(device.people, person: someone.key)
+                    }
                 }
                 ui.Button("Wave", icon: .hand, size: .small) {
                     on press: device.wave(device.people, person: someone.key)
@@ -460,11 +467,128 @@ view person_card(board: device.People) {
                         on press: device.go_to(device.people, person: someone.key)
                     }
                 }
+                if someone.agent {
+                    // What an agent is at is its own work, which its card in Console shows.
+                    ui.Button("See its work", icon: .panel_right, size: .small, role: .primary) {
+                        on press: device.agent(
+                            device.people,
+                            person: someone.key,
+                            client: someone.agent_client,
+                            ask: "card",
+                        )
+                    }
+                }
+            }
+            // What an agent is at, as its live line: it reads as now, and a press on it goes to
+            // where it works, so the person sees what it does.
+            if someone.agent and someone.doing != "" {
+                ui.ListRow(someone.doing, secondary: "Now") {
+                    on activate: device.go_to(device.people, person: someone.key)
+                }
             }
             if someone.call != "" {
                 ui.Text(std.say("In a call: {someone.call}"), role: .caption)
             }
+            // Where they are here: each of their devices, in the order it answers, with how
+            // available they are there. A device that named itself nothing reads as the one it
+            // is, and every row's key is copied whole where a person wants it.
+            if not someone.devices.is_empty() {
+                ui.Text("Devices", role: .caption, secondary: true)
+                for d in someone.devices {
+                    let named = if d.label != "" {
+                        d.label
+                    } else if d.this { std.say("This computer") } else { std.say("Another device") }
+                    let copy = if d.label != "" {
+                        std.say("Copy the key of {d.label}")
+                    } else { std.say("Copy this device's key") }
+                    ui.ListRow(
+                        named,
+                        meta: availability_named(d.availability),
+                        icon: .monitor_smartphone,
+                    ) {
+                        trailing: {
+                            row(gap: .tight, align: .center) {
+                                if d.this {
+                                    ui.Text("this device", role: .caption, secondary: true)
+                                }
+                                ui.Button(
+                                    copy,
+                                    icon: .copy,
+                                    icon_only: true,
+                                    size: .small,
+                                    role: .plain,
+                                ) {
+                                    on press: device.copy(device.clipboard, text: d.id)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // The key they are here by, short, and copied whole: what a record about them is
+            // addressed by, never shown in full where a card can be read by anyone looking.
+            if someone.user_key != "" {
+                row(fill, distribute: .between, align: .center) {
+                    stack(gap: .tight) {
+                        ui.Text("Person ID", role: .caption, secondary: true)
+                        ui.Text(short_key(someone.user_key), role: .code)
+                    }
+                    ui.Button("Copy ID", icon: .copy, icon_only: true, size: .small, role: .plain) {
+                        on press: device.copy(device.clipboard, text: someone.user_key)
+                    }
+                }
+            }
+            // The accounts they keep at the services this workspace is connected to.
+            if not someone.linked.is_empty() {
+                ui.Text("Linked accounts", role: .caption, secondary: true)
+                for l in someone.linked {
+                    ui.ListRow(std.say("Linked to @{l.handle} on {l.service}"), icon: l.icon)
+                }
+            }
+            if someone.agent {
+                agent_commands(someone)
+            }
             back_to_everyone()
+        }
+    }
+}
+
+/// What can be done with an agent from its face: Stop, Undo run, Take over and Revoke, each
+/// carried out by its card in Console, which comes forward to show what came of it. Labelled,
+/// never bare icons: Stop and Revoke must not be guessed at.
+view agent_commands(a: device.Person) {
+    row(gap: .tight, align: .center, wrap: true) {
+        ui.Button("Stop", icon: .square, size: .small, role: .plain) {
+            on press: device.agent(
+                device.people,
+                person: a.key,
+                client: a.agent_client,
+                ask: "stop",
+            )
+        }
+        ui.Button("Undo run", icon: .undo_2, size: .small, role: .plain) {
+            on press: device.agent(
+                device.people,
+                person: a.key,
+                client: a.agent_client,
+                ask: "undo-run",
+            )
+        }
+        ui.Button("Take over", icon: .hand, size: .small, role: .plain) {
+            on press: device.agent(
+                device.people,
+                person: a.key,
+                client: a.agent_client,
+                ask: "take-over",
+            )
+        }
+        ui.Button("Revoke access", icon: .ban, size: .small, role: .destructive) {
+            on press: device.agent(
+                device.people,
+                person: a.key,
+                client: a.agent_client,
+                ask: "revoke",
+            )
         }
     }
 }
@@ -482,10 +606,18 @@ fn person_shown(board: device.People) -> device.Person {
 }
 
 /// A card's head: their face in their colour, their name, how available they are and what they
-/// say they are doing.
+/// say they are doing. Their face is the member's, so a picture they set shows here as it does on
+/// the bar; an agent wears its own mark.
 view card_head(p: device.Person) {
     row(gap: .related, align: .start) {
-        if p.agent {
+        if let face = face_of(p) {
+            ui.Avatar(
+                who: face,
+                colour: p.colour,
+                status: if p.agent { "" } else { presence_status(p) },
+                square: p.agent,
+            )
+        } else if p.agent {
             ui.Avatar(name: p.name, colour: p.colour, square: true, glyph: .bot)
         } else {
             ui.Avatar(name: p.name, colour: p.colour, status: presence_status(p))
@@ -503,43 +635,94 @@ view card_head(p: device.Person) {
                     ui.Text("Follows you", role: .caption, secondary: true)
                 }
             }
-            if p.doing != "" {
-                ui.Text(p.doing, role: .body)
+            // What they say they are doing, plainly, and a line software wrote marked as read off
+            // what they do; an agent's own line is drawn under its card's actions, where a press
+            // on it goes to what it is doing. Where it works stands under their name all the same.
+            if not p.agent and p.doing != "" {
+                if p.automatic {
+                    ui.ListRow(
+                        p.doing,
+                        secondary: std.say("Written automatically from what they do"),
+                        mark: .sparkles,
+                    )
+                } else {
+                    ui.ListRow(p.doing, secondary: std.say("In their own words"))
+                }
             }
-            if where_line(p) != "" {
+            if p.agent and p.in_app != "" {
+                let in_app = p.in_app
+                ui.Text(std.say("In {in_app}"), role: .caption, secondary: true)
+            } else if where_line(p) != "" {
                 ui.Text(where_line(p), role: .caption, secondary: true)
             }
         }
     }
 }
 
-/// The person's own card: their face and name, and the three things that are theirs to say — the
-/// name everyone here sees, what they are doing, and how available they are. Each is one action of
-/// the session's, so an agent does the same, and the change reaches every device.
+/// The person's own card: their face and name, the settings at its top, and the three things that
+/// are theirs to say — the name everyone here sees, what they are doing, and how available they
+/// are. Each is one action of the session's, so an agent does the same, and the change reaches
+/// every device.
+///
+/// There is no Save button, so nothing typed is lost: a field keeps what it holds on Enter, when
+/// it is left, when the card closes, and once typing pauses. A field starts on the name they gave,
+/// never on the words that stand in for one they have not, so an unnamed person is asked for a
+/// name rather than handed something to type over.
 view own_card(board: device.People, someone: device.Person) {
     let me = board.me
-    state name: Text = ""
-    state doing: Text = ""
+    // The field holds the name they gave, never the words that stand in for one they have not.
+    state name: Text = board.me.given
+    // What this device read off their steps is not theirs to edit: the field holds what they said.
+    state doing: Text = if board.me.automatic { "" } else { board.me.doing }
     stack(gap: .related) {
         ask_card()
         row(gap: .related, align: .center) {
-            ui.Avatar(name: me.name, colour: me.colour, status: presence_status(me))
-            stack(gap: .tight) {
-                ui.Text(if me.name != "" { me.name } else { std.say("You") }, role: .subheading)
-                ui.Badge(
-                    availability_word(me),
-                    tone: if me.availability == "away" {
-                        .warning
-                    } else if me.availability == "focusing" { .info } else { .success },
-                )
+            // The picture is the button, where the host offers to change it: what a person aims
+            // at is what changes.
+            if board.photo_change != "" {
+                ui.Button("Change picture", faces: [me_face(board, invoker)], role: .plain) {
+                    on press: device.host_action(device.people, id: board.photo_change)
+                }
+            } else {
+                ui.Avatar(name: me.name, colour: me.colour, status: presence_status(me))
+            }
+            stack(gap: .tight, fill: 1.0) {
+                ui.TextInput(
+                    bind: name,
+                    placeholder: if me.given == "" {
+                        std.say("Add your name")
+                    } else { std.say("Your name") },
+                ) {
+                    on changed(text): device.draft(device.people, field: "name", text: text)
+                    on submit: device.set_name(device.people, name: name)
+                    on blur: device.set_name(device.people, name: name)
+                }
+                ui.Text("How everyone here sees you", role: .caption, secondary: true)
             }
         }
-        ui.TextInput(bind: name, placeholder: "Your name") {
-            on submit: device.set_name(device.people, name: if name == "" { me.name } else { name })
+        if board.photo_change != "" or board.photo_remove != "" {
+            row(gap: .tight, align: .center, wrap: true) {
+                if board.photo_change != "" {
+                    ui.Button("Change picture", icon: .camera, size: .small, role: .plain) {
+                        on press: device.host_action(device.people, id: board.photo_change)
+                    }
+                }
+                if board.photo_remove != "" {
+                    ui.Button("Remove picture", icon: .x, size: .small, role: .plain) {
+                        on press: device.host_action(device.people, id: board.photo_remove)
+                    }
+                }
+            }
         }
-        ui.TextInput(bind: doing, placeholder: "What you are doing") {
-            on submit: device.set_doing(device.people, text: doing)
+        // The card's way into Settings sits at its top, under the person's name and picture:
+        // where someone scanning the card for it looks first, before what they are doing.
+        for a in board.actions.filter(a -> a.group == "settings") {
+            ui.Button(a.title, icon: a.icon, role: .plain) {
+                on press: device.host_action(device.people, id: a.id)
+            }
         }
+        // Status: how available they say they are, then what they are doing in their own words.
+        ui.Text("Status", role: .caption, secondary: true)
         row(gap: .tight, align: .center, wrap: true) {
             for a in ["available", "focusing", "away", "idle"] {
                 ui.Chip(
@@ -551,20 +734,69 @@ view own_card(board: device.People, someone: device.Person) {
                 }
             }
         }
+        ui.TextInput(bind: doing, placeholder: "What you're doing") {
+            on changed(text): device.draft(device.people, field: "doing", text: text)
+            on submit: device.set_doing(device.people, text: doing)
+            on blur: device.set_doing(device.people, text: doing)
+        }
+        // The colour their face is drawn in: the twelve people colours, the one they wear marked,
+        // and a choice that reaches every device at once.
+        if not board.colours.is_empty() {
+            ui.Text("Your colour", role: .caption, secondary: true)
+            ui.ColorSwatchPicker(
+                swatches: board.colours.map(c -> c.colour),
+                columns: 6,
+                selected: me.colour_slot,
+                label: "Your colour",
+            ) {
+                on change(i): device.colour(device.people, slot: i)
+            }
+        }
+        // What the person as others see them can do: keeping who they are, and their picture.
+        if not board.actions.filter(a -> a.group == "identity").is_empty() {
+            ui.Text("Your identity", role: .caption, secondary: true)
+        }
+        for a in board.actions.filter(a -> a.group == "identity").take(2) {
+            ui.Button(a.title, icon: a.icon, role: .plain) {
+                on press: device.host_action(device.people, id: a.id)
+            }
+        }
         // What is the person's own to reach from their card: another of their devices, and their
         // own settings — their accounts, their devices and what they share.
-        row(gap: .tight, align: .center, wrap: true) {
-            ui.Button("Add a device", icon: .plus, size: .small) {
-                on press: device.pair_device(device.people)
+        for a in board.actions.filter(a -> a.group == "devices") {
+            ui.Button(a.title, icon: a.icon, role: .plain) {
+                on press: device.host_action(device.people, id: a.id)
             }
-            ui.Button("Your devices", icon: .settings, size: .small) {
-                on press: device.open_settings(device.people, link: "settings://devices_access")
+        }
+        // The one setting the desktop's control hints have, where the host offers them.
+        if let hints = board.control_hints {
+            ui.Toggle(shown: hints, label: "Show control hints") {
+                on check(turned): device.control_hints(device.people, on: turned)
             }
         }
         if someone.key != "" and not someone.me {
             back_to_everyone()
         }
     }
+}
+
+/// A key shown short: its first eight and last four characters, as a card shows the ID it copies
+/// whole.
+fn short_key(key: Text) -> Text {
+    if key.len() <= 14 {
+        return key
+    }
+    return "{key.slice(0, 8)}…{key.slice(key.len() - 4, key.len())}"
+}
+
+/// The person at this device as a face, for the picture that changes theirs: the member the
+/// workspace lists them as, so the button wears their picture and colour; the person invoking the
+/// view where the workspace lists none.
+fn me_face(board: device.People, me: Actor) -> Actor {
+    if let face = face_of(board.me) {
+        return face
+    }
+    return me
 }
 
 /// What a named availability is called in the person's words.

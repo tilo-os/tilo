@@ -197,14 +197,16 @@ mod panel_services;
 mod part_view;
 #[path = "people.rs"]
 mod people;
+#[path = "people_cards.rs"]
+mod people_cards;
 #[path = "person_workspace.rs"]
 mod person_workspace;
 #[path = "placed_apps.rs"]
 mod placed_apps;
-#[path = "portal_link.rs"]
-mod portal_link;
 #[path = "poker_between_devices.rs"]
 mod poker_between_devices;
+#[path = "portal_link.rs"]
+mod portal_link;
 #[path = "power.rs"]
 mod power;
 #[path = "primary_display.rs"]
