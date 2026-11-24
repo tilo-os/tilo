@@ -4,14 +4,12 @@ use crate::i18n::widget_text;
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{ModelPath, TaffyTreeExt, Widget};
 

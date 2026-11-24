@@ -14,14 +14,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect};
+use vello::kurbo::{Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::component::{Component, Described};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::tokens::{Rhythm, SpacingStep, TextRole};
 use crate::widget::arrange::{Align, Fit, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};

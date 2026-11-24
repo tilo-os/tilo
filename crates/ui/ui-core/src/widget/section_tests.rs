@@ -1,6 +1,7 @@
 use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
 use crate::widget::ListRow;
+use vello::Scene;
 
 fn rect(node: &InspectionNode) -> Rect {
     let [x, y, w, h] = node.rect;

@@ -14,7 +14,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::Icon;
 use crate::platform::PlatformConventions;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -1427,6 +1426,7 @@ pub(crate) fn observed_language(field: &SearchField) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
 
     fn ctx_event(

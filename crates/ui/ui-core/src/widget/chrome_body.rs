@@ -7,7 +7,6 @@ use vello::peniko::Color;
 
 use crate::component::{Component, Described, PartViews};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{ChromeMaterial, Rhythm, SurfaceRole};
 use crate::widget::DrawChild;

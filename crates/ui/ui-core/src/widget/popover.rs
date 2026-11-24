@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -383,10 +382,6 @@ impl PopoverPanel {
 
     fn set_on_dismiss(&mut self, f: Option<Box<dyn FnMut()>>) {
         self.dismiss = f.map(super::dismissal::Dismissal::own);
-    }
-
-    fn surface_id(&self) -> &str {
-        self.label.as_deref().unwrap_or("popover")
     }
 
     fn set_label(&mut self, label: impl Into<String>) {

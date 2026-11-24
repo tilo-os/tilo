@@ -1,6 +1,8 @@
 use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;
 use std::rc::Rc;
+use vello::Scene;
+use vello::kurbo::Affine;
 
 use super::*;
 use crate::testing::{Dispatch, dispatch};

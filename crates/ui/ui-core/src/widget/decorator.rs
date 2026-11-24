@@ -48,8 +48,6 @@ use std::collections::HashMap;
 use super::{AppModel, ModelPath, capability};
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use super::{

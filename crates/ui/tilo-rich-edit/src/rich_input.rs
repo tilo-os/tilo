@@ -6,15 +6,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_ui_graph::rich::{Attr, Block, Embed, InlineView, RichText};
-use vello::Scene;
-use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use crate::rich_text_line::RichTextLine;
 use ui::component::{Bound, Component, Described, Event, Person, Value};
 use ui::permissions::MemberId;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::DrawChild;
 use ui::widget::completion::{CompletionSource, Tier};

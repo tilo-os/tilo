@@ -7,8 +7,7 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
 use crate::paint::PaintCtx;

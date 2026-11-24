@@ -385,9 +385,19 @@ mod owner_view_tests {
             self.text.apply_layout(t, n, o);
         }
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (s, transform, renderer, theme, mut env) = ctx.parts();
-            self.text.draw(&mut crate::draw::DrawCtx::new(s, transform, renderer, theme, env.clone()));
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (s, transform, renderer, theme, mut env) = ctx.parts();
+            self.text.draw(&mut crate::draw::DrawCtx::new(
+                s,
+                transform,
+                renderer,
+                theme,
+                env.clone(),
+            ));
         }
         fn name(&self) -> &'static str {
             "owner-receiver"

@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};

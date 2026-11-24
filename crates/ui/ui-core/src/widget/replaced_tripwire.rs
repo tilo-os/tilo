@@ -6,11 +6,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt, Widget};
 

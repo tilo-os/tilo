@@ -1,5 +1,6 @@
 use super::*;
 use crate::tokens::TextRole;
+use automerge::AutoCommit;
 
 use crate::widget::Widget;
 use std::sync::Arc;

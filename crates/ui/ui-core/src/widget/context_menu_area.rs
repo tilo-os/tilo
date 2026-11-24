@@ -9,13 +9,11 @@
 
 use std::rc::Rc;
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::{ContextMenu, Element, EventCtx, MenuItem, Widget};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
 

@@ -3075,10 +3075,6 @@ impl crate::app_core::ControlCore for App {
         true
     }
 
-    fn control_domain(&self) -> &crate::control_domain::ControlDomain {
-        &self.control_domain
-    }
-
     /// Say that an invocation the person made did not run, and why, at the
     /// control they used: a click is never dropped with only a log line, and
     /// never opens search.

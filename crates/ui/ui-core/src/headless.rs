@@ -9091,10 +9091,6 @@ impl crate::app_core::ControlCore for FrameHarness {
         Ok(started)
     }
 
-    fn control_domain(&self) -> &crate::control_domain::ControlDomain {
-        &self.control_domain
-    }
-
     /// Keep why an invocation the person made did not run, and say it at
     /// the control they used, as the window's host does: a click is never
     /// dropped unseen, and never opens search. With no control to stand at,

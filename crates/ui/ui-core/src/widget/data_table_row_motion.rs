@@ -4,10 +4,7 @@
 
 use super::{DataTableCore, RowIdentity, TableModelChange};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::widget::DrawChild;
-use vello::Scene;
 use vello::kurbo::Affine;
 
 /// The table's rows on their way, and where the last frame showed them.

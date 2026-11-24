@@ -15,7 +15,6 @@ use crate::ColorCompat;
 use crate::LocalState;
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
 use crate::widget::{Image, ImageFit, TaffyTreeExt, Widget};

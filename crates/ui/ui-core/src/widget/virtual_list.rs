@@ -10,8 +10,7 @@ use std::ops::Range;
 
 use taffy::style_helpers::percent;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -22,7 +21,6 @@ use crate::arriving::Arrival;
 
 use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
 use crate::selection::KeySelection;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,

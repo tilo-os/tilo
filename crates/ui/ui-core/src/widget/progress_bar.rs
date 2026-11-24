@@ -2,8 +2,7 @@
 use crate::time::Instant;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Point, Rect, RoundedRect};
 
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
@@ -570,6 +569,8 @@ impl crate::widget::permission::PermissionGuarded for ProgressBar {
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     /// Build a determinate bar with a fixed rect so tests don't have
     /// to spin up the full taffy layout pipeline. Rect spans

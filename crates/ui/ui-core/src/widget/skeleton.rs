@@ -4,8 +4,7 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
 use crate::paint::PaintCtx;

@@ -1,10 +1,10 @@
 //! The [`Widget`] contract: what one node of a toolkit tree implements.
 
 use super::{
-    Affine, AppModel, Disclosing, DrawCtx, Edits, EventCtx, HashMap, Instant, LayoutInfo,
-    ManualPolicy, ModelPath, NativeViewLifecycle, NodeId, ObjId, PhysicalInput, Placement,
-    PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, Remount, Scene, StructureChange,
-    TaffyTree, TextRenderer, Theme, WindowEvent, capability, defaults, router,
+    AppModel, Disclosing, DrawCtx, Edits, EventCtx, HashMap, Instant, LayoutInfo, ManualPolicy,
+    ModelPath, NativeViewLifecycle, NodeId, ObjId, PhysicalInput, Placement, PrimaryScrollAction,
+    PrimaryScrollRegion, PrimaryScrollResult, Remount, StructureChange, TaffyTree, TextRenderer,
+    Theme, WindowEvent, capability, defaults, router,
 };
 
 pub trait Widget {

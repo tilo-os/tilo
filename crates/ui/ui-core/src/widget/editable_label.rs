@@ -5,12 +5,10 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::presence::PresenceCtx;
 use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -797,8 +795,10 @@ impl crate::widget::controls::ActionControls for EditableLabel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
     use automerge::AutoCommit;
+    use vello::Scene;
     use winit::event::Modifiers;
 
     fn drive(el: &mut EditableLabel, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {

@@ -10,10 +10,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -165,7 +164,6 @@ struct StackStyle {
     pad_y: f64,
     min_button: f64,
     glyph: f64,
-    details: TextStyle,
     details_lines: details::Style,
     details_toggle: f64,
     details_gap: f64,
@@ -190,7 +188,6 @@ impl StackStyle {
             pad_y: f64::from(theme.tokens.spacing.s2),
             min_button: f64::from(theme.tokens.metrics.min_pointer_target),
             glyph: if inline { glyph } else { glyph * 2.0 },
-            details: wrapped(TextRole::Caption),
             details_lines: details::Style::new(theme),
             details_toggle: crate::widget::ButtonFace::height(
                 crate::widget::ControlSize::Small,

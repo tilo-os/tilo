@@ -3,12 +3,10 @@
 
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect};
+use vello::kurbo::{Rect, RoundedRect};
 
 use crate::color_compat::ColorCompat;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;

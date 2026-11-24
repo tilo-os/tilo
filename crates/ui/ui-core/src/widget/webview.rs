@@ -12,7 +12,6 @@ use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
 use crate::gesture::NavDirection;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -1359,6 +1358,7 @@ impl crate::widget::ResourceOperations for WebView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use std::sync::Arc;
@@ -2848,6 +2848,7 @@ pub use component::WebViewProps;
 #[cfg(test)]
 mod shared_page_tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::time::testing::with_monotonic_time;
     use crate::webview::paint::stream::wire::Payload;
     use crate::webview::paint::{self, PaintEngine};

@@ -124,9 +124,19 @@ mod tests {
         }
 
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text, theme, mut env) = ctx.parts();
-            self.child.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text, theme, mut env) = ctx.parts();
+            self.child.draw(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
             if std::mem::take(&mut self.rebuild) {
                 self.let_go.push(std::mem::replace(&mut self.child, card()));
                 self.replaced = true;

@@ -5,6 +5,8 @@ use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use crate::widget::{Column, Element};
 use std::cell::Cell;
 use std::rc::Rc;
+use vello::Scene;
+use vello::kurbo::Affine;
 
 fn face_height(face: &ListRowFace<'_>, scale: f32) -> f64 {
     let theme = Theme::dark().with_text_scale(scale);

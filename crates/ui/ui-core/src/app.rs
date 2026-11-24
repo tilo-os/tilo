@@ -2850,7 +2850,6 @@ pub(crate) mod control_fixture_tests {
     use super::*;
     use crate::history_mode::*;
     use std::{cell::RefCell, rc::Rc};
-    use winit::keyboard::{Key, NamedKey};
     pub(crate) struct Fixture {
         child: Box<dyn Widget>,
         pub resources: Rc<RefCell<Vec<tilo_actions::ResourceSpec>>>,
@@ -3021,9 +3020,6 @@ pub(crate) mod control_fixture_tests {
         _host: crate::application_test_support::ProbeHarness,
     }
     impl OwnerGuard {
-        fn close(&self) {
-            self.binding.closing.set(true);
-        }
         fn managed(&self, widget: Box<dyn Widget>) -> ManagedRoot {
             static COMPONENT_HISTORY: HistoryDefinition = HistoryDefinition {
                 app_id: crate::application_test_support::APP,
@@ -3044,13 +3040,6 @@ pub(crate) mod control_fixture_tests {
                 )
                 .unwrap(),
             )
-        }
-        fn revoke(&self) {
-            self.binding
-                .permissions
-                .set(crate::permissions::PermissionContext::stranger(
-                    &crate::permissions::MemberId::person("fixture"),
-                ));
         }
     }
     fn owned(widget: Fixture) -> (Box<dyn Widget>, OwnerGuard) {
@@ -3093,23 +3082,6 @@ pub(crate) mod control_fixture_tests {
         run_layout_pass(app, node, 900, 650, 1.0, structure_rebuilt, None).unwrap();
         draw_frame_content(app, &mut Scene::new(), 900, 650, 1.0, None);
         complete_native_frame_content(app, |_| {});
-    }
-    pub(crate) fn named(app: &mut App, label: &str) -> accesskit::NodeId {
-        app.build_a11y_tree_update(1.0)
-            .nodes
-            .into_iter()
-            .find(|(_, n)| n.label() == Some(label))
-            .map(|(id, _)| id)
-            .unwrap_or_else(|| panic!("missing published {label}"))
-    }
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
-    struct FixtureEdit;
-    impl tilo_actions::Action for FixtureEdit {
-        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-            use automerge::transaction::Transactable;
-            doc.put(automerge::ROOT, "confirmed-document", true)?;
-            Ok(())
-        }
     }
 
     #[test]

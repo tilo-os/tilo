@@ -106,6 +106,7 @@ impl Readout {
     }
 
     /// What it says, as one line: what assistive technology reads.
+    #[cfg(test)]
     pub(crate) fn words(&self) -> String {
         let rows = self
             .rows

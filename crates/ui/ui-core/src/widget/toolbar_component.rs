@@ -135,7 +135,7 @@ impl PartType for Vec<ToolbarPart> {
 /// `bar` with the command of `props` at its end.
 fn push_command(bar: Toolbar, props: ToolbarButtonProps) -> Toolbar {
     let ToolbarButtonProps {
-        key,
+        key: _,
         label,
         icon,
         toggled,

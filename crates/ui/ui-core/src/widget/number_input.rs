@@ -17,8 +17,7 @@ use crate::widget::{AppModel, ModelPath};
 use crate::widget::{TextInput, TextInputKind};
 pub use component::NumberInputProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -1174,6 +1173,8 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
     use automerge::AutoCommit;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     fn layout_with_theme(n: &mut NumberInput, theme: &Theme) {
         let mut tree = TaffyTree::new();

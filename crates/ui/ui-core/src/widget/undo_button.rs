@@ -20,11 +20,9 @@ use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::undo::{UndoAccess, UndoRequest, UndoStatus};
 use crate::widget::Widget;

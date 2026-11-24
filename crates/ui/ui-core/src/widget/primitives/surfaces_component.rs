@@ -1,6 +1,6 @@
 //! [`ModalDialog`], [`FloatingPanel`] and [`Popover`] as described components.
 
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use crate::component::{Component, Described, Event};
 use crate::widget::DrawChild;

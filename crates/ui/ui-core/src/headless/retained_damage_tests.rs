@@ -58,9 +58,19 @@ impl Widget for Chat {
         get_rect
     );
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.root.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.root.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
         let mut rects = Vec::new();
         self.root.for_each_child(&mut |child| {
             rects.push(transform.transform_rect_bbox(child.get_rect()));
@@ -647,9 +657,19 @@ impl Widget for Scrimmed {
         get_rect
     );
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.row.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.row.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
         if self.open {
             let frame = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
             crate::overlay::scrim::modal(scene, transform, frame, 1.0, theme);

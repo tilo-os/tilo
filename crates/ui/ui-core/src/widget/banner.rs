@@ -22,8 +22,7 @@ use std::rc::Rc;
 use automerge::ObjId;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
 use crate::icons::Icon;
@@ -1367,7 +1366,7 @@ impl Widget for Banner {
             }
             // Kept, so its column can draw it leaving when its view stops
             // building it.
-            let mut painted = self.band.take_painted();
+            let painted = self.band.take_painted();
             self.draw_contents(&mut crate::draw::DrawCtx::new(
                 scene,
                 transform,
@@ -1383,7 +1382,7 @@ impl Widget for Banner {
         if self.band.laid_rect.width() <= 0.0 {
             return;
         }
-        let mut painted = self.band.take_painted();
+        let painted = self.band.take_painted();
         self.draw_contents(&mut crate::draw::DrawCtx::new(
             scene,
             transform,

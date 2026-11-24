@@ -839,6 +839,7 @@ impl ActionPalette {
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
+    #[cfg(test)]
     pub(crate) fn activate_bound(
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,

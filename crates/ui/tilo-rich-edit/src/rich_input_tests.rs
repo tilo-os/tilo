@@ -1,8 +1,11 @@
 use super::*;
 use ui::component::{Fired, Intent};
 use ui::testing::dispatch;
+use ui::text_render::TextRenderer;
 use ui::widget::MentionCandidate;
 use ui::widget::completion::{Candidate, CompletionSource, Tier};
+use vello::Scene;
+use vello::kurbo::Affine;
 
 fn topic(name: &str) -> InlineView {
     InlineView::Resource {

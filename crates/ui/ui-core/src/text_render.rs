@@ -177,26 +177,6 @@ pub fn configured_font_system() -> FontSystem {
 }
 
 thread_local! {
-    /// Words are set by a page over this paint ([`without_words`]): glyphs are left out.
-    static WORDS_LEFT_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// `paint` with every glyph left out: the picture a page lays under words it sets itself, so
-/// they are not shown twice.
-pub(crate) fn without_words<R>(paint: impl FnOnce() -> R) -> R {
-    let before = WORDS_LEFT_OUT.with(|left| left.replace(true));
-    let out = paint();
-    WORDS_LEFT_OUT.with(|left| left.set(before));
-    out
-}
-
-/// Whether glyphs are left out of the paint now ([`without_words`]): a widget that keeps its
-/// words as a cached scene leaves that scene out too.
-pub(crate) fn words_left_out() -> bool {
-    WORDS_LEFT_OUT.with(std::cell::Cell::get)
-}
-
-thread_local! {
     static LAYOUT_RENDERERS: std::cell::RefCell<Vec<TextRenderer>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -3138,9 +3118,6 @@ impl TextRenderer {
         color: Color,
         transform: Affine,
     ) {
-        if words_left_out() {
-            return;
-        }
         for run in runs {
             let Some(font) = self.vello_font(run.face_id, run.font_weight) else {
                 continue;
@@ -3574,9 +3551,6 @@ impl TextRenderer {
         let Some(first) = batch.glyphs.first() else {
             return;
         };
-        if words_left_out() {
-            return;
-        }
         let Some(vello_font) = self.vello_font(batch.face_id, first.font_weight) else {
             return;
         };

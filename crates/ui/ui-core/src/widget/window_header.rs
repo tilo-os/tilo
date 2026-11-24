@@ -352,15 +352,6 @@ impl RowControl {
         }
     }
 
-    pub(crate) fn icon(self, resize: crate::widget::window_controls::Resize) -> crate::icons::Icon {
-        use crate::widget::window_controls::WindowControl;
-        match self {
-            RowControl::NewTab => crate::icons::Icon::Plus,
-            RowControl::Maximize => WindowControl::Maximize.icon(resize),
-            RowControl::Close => WindowControl::Close.icon(resize),
-        }
-    }
-
     pub(crate) fn name(self, resize: crate::widget::window_controls::Resize) -> String {
         use crate::widget::window_controls::WindowControl;
         match self {

@@ -5,10 +5,7 @@ use super::{Element, LayoutInfo, Widget, WidgetLayoutError};
 use crate::{Theme, bound_dispatch::BoundNodeMap, text_render::TextRenderer};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-use vello::{
-    Scene,
-    kurbo::{Affine, Point, Rect},
-};
+use vello::kurbo::{Point, Rect};
 
 /// A proposal for one axis of a retained subtree, in logical pixels.
 #[derive(Clone, Copy, Debug)]

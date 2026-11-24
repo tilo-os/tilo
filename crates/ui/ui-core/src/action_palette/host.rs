@@ -4,8 +4,7 @@
 //! the rows come from and where a choice goes.
 
 use crate::i18n::{widget_format, widget_text};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -13,7 +12,6 @@ use crate::platform::PlatformConventions;
 use crate::search::{
     ActivationModifier, Facet, FacetFilter, FieldWeight, SearchGroup, SearchResult,
 };
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, Widget};
 

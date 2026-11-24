@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;

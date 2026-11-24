@@ -6,13 +6,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::icons::Icon;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
 use crate::widget::context_menu::{ContextMenu, MenuItem};

@@ -5,8 +5,7 @@
 //! row holds only the notice's card over the app.
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::search::SearchRequest;
@@ -472,7 +471,11 @@ impl PartRow {
     /// Paint the row from the host's frame at `left`: its band, its parts and the search,
     /// then their menus and the search's options over the app.
     pub(crate) fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, left: f64) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.shown.is_none() {
             return;
@@ -505,10 +508,15 @@ impl PartRow {
                 &card,
             );
         }
-        self.row.paint(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.row.paint(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
         self.search.set_ground(theme.tokens.colors.surfaces.content);
-        self.search
-            .draw_child(scene, transform, text, theme,&env);
+        self.search.draw_child(scene, transform, text, theme, &env);
         let now = crate::motion::frame_now();
         let motion = theme.motion();
         for (control, _) in self.controls.iter() {
@@ -526,10 +534,20 @@ impl PartRow {
             ..self.controls_state
         };
         controls.paint(scene, transform, theme, state);
-        self.row
-            .paint_popups(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
-        self.search
-            .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.row.paint_popups(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
+        self.search.draw_overlay(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 
     /// Hand `event` to the row when it is the row's: a pointer over a part, over one of

@@ -4,13 +4,10 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Stroke};
+use vello::kurbo::{Point, Rect, Stroke};
 use winit::event::WindowEvent;
 
 use crate::platform::PlatformConventions;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::DrawChild;
@@ -621,9 +618,13 @@ impl Widget for NativeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
+    use crate::text_render::TextRenderer;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     #[derive(Clone, Debug, PartialEq)]
     enum Call {

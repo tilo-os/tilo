@@ -1,11 +1,10 @@
 //! Shared retained-child lifecycle only; each composition owns its policy.
 use super::{Element, TaffyTreeExt, Widget};
+use crate::theme::Theme;
 use crate::widget::DrawChild;
-use crate::{text_render::TextRenderer, theme::Theme};
 use std::collections::HashMap;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 #[derive(Default)]
 pub(super) struct Parts {

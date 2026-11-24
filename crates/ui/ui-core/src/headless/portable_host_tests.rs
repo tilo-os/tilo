@@ -112,7 +112,11 @@ impl Widget for Blocker {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text, _theme, mut env) = ctx.parts();
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -156,7 +160,11 @@ impl Widget for OverlayProbe {
     crate::rect_geometry!();
 
     fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_, _, _, _, mut env) = ctx.parts();
         self.draws.set(self.draws.get() + 1);
     }
@@ -325,10 +333,20 @@ impl Widget for Hold {
         node
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.open.get() {
-            self.content.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            self.content.draw(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

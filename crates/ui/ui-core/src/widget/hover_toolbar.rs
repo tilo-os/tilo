@@ -4,13 +4,11 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::motion::{Presence, Transient};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{MotionSource, Rhythm};
 use crate::widget::DrawChild;

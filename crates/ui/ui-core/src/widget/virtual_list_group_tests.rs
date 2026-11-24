@@ -1,6 +1,9 @@
 use super::*;
+use crate::text_render::TextRenderer;
 use std::cell::Cell;
 use std::rc::Rc;
+use vello::Scene;
+use vello::kurbo::Affine;
 
 use crate::testing::Dispatch;
 use crate::theme::Theme;

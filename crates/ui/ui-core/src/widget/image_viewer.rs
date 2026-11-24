@@ -12,7 +12,6 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{self, BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;

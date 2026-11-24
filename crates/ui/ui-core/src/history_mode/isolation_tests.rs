@@ -1,12 +1,12 @@
 use super::host_tests::registration;
 use super::*;
+use crate::theme::Theme;
 use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
     headless::FrameHarness,
     widget::{ActionEmitter, Text, Widget},
 };
-use crate::{text_render::TextRenderer, theme::Theme};
 use automerge::{AutoCommit, ObjId, ROOT, transaction::Transactable};
 use std::{
     cell::{Cell, RefCell},
@@ -14,10 +14,7 @@ use std::{
     rc::Rc,
 };
 use taffy::{NodeId, TaffyTree};
-use vello::{
-    Scene,
-    kurbo::{Affine, Point, Rect},
-};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 fn resource() -> tilo_actions::ResourceSpec {
@@ -224,9 +221,19 @@ impl Widget for LiveOwner {
         self.text.apply_layout(tree, node, origin);
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.text.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.text.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
     fn get_rect(&self) -> Rect {
         self.text.get_rect()

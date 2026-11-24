@@ -4,8 +4,7 @@
 use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
+use vello::kurbo::{Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -15,7 +14,7 @@ use crate::emoji_catalogue::{self, CatalogueGroup};
 use crate::num::{f32_of_f64, f64_of_usize, usize_of_f64};
 use crate::paint::PaintCtx;
 
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextWeight;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::tokens::TextRole;

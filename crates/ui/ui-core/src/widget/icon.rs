@@ -3,13 +3,10 @@
 
 use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 use vello::peniko::Color;
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -221,6 +218,10 @@ impl Widget for IconWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
+    use vello::Scene;
+    use vello::kurbo::Affine;
     use vello_encoding::DrawTag;
 
     fn paint(w: &mut IconWidget) -> Scene {

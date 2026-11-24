@@ -373,7 +373,16 @@ fn actual_text_draw(
 ) -> vello::Scene {
     text.apply_layout_external(vello::kurbo::Rect::new(10.0, 20.0, 10.0 + width, 120.0));
     let mut scene = vello::Scene::new();
-    crate::widget::Widget::draw(text, &mut crate::draw::DrawCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, renderer, &crate::theme::Theme::dark(), crate::presence::PresenceCtx::empty().draw_env()));
+    crate::widget::Widget::draw(
+        text,
+        &mut crate::draw::DrawCtx::new(
+            &mut scene,
+            vello::kurbo::Affine::IDENTITY,
+            renderer,
+            &crate::theme::Theme::dark(),
+            crate::presence::PresenceCtx::empty().draw_env(),
+        ),
+    );
     crate::widget::Widget::mark_drawn(text);
     scene
 }

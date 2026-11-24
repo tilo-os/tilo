@@ -1009,15 +1009,6 @@ impl Sparkline {
         Some(readout)
     }
 
-    /// What of the inspection the picture itself shows: the sample under the pointer, so the
-    /// guide and the dot are drawn again as it moves.
-    fn shown_inspection(&self) -> u64 {
-        use std::hash::{Hash as _, Hasher as _};
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        self.inspection.hovered.hash(&mut hash);
-        hash.finish()
-    }
-
     pub fn set_data(&mut self, data: Vec<f32>) {
         self.dirty = true;
         self.data = data;

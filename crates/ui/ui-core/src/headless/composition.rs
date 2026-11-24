@@ -371,7 +371,12 @@ impl FrameHarness {
                     let transform =
                         Affine::scale(PICTURE_SCALE) * Affine::translate((-rect[0], -rect[1]));
                     crate::widget::DrawChild::draw_child(
-                        widget, &mut scene, transform, text, theme,&presence.draw_env(),
+                        widget,
+                        &mut scene,
+                        transform,
+                        text,
+                        theme,
+                        &presence.draw_env(),
                     );
                     (scene, rect)
                 },

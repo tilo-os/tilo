@@ -5,8 +5,7 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, fr, length, max_content, min_content, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use super::composition_parts::{Parts, retained_parts};
@@ -616,7 +615,7 @@ impl Widget for Card {
             self.activation.is_bound(),
             self.selected,
         );
-        let inner = CardFace::content_theme(theme);
+        let _inner = CardFace::content_theme(theme);
         self.parts.draw(&mut crate::draw::DrawCtx::new(
             scene,
             transform,

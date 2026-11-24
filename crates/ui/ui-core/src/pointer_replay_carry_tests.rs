@@ -8,14 +8,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Point, Rect, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::headless::FrameHarness;
 use crate::icons::Icon;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{EventCtx, PaintedTargets, TaffyTreeExt as _, Widget};
 

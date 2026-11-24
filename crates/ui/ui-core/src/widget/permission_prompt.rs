@@ -5,13 +5,11 @@ use crate::i18n::{widget_format, widget_text};
 use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
+use vello::kurbo::{Point, Rect, RoundedRect, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::presence::PresenceCtx;
 use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -777,7 +775,10 @@ mod tests {
     //! `apply_layout_helper` populates the hit-test rects from a synthetic
     //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
+    use crate::presence::PresenceCtx;
     use automerge::AutoCommit;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     tilo_test_env::scenario! {
         fn a_permission_prompt_offers_its_own_choices_and_keeps_focus;

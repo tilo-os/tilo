@@ -137,21 +137,3 @@ impl Widget for FooterKey {
         false
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn key(label: &str) -> FooterKey {
-        FooterKey {
-            slot: Slot::Primary,
-            label: label.to_owned(),
-            run: None,
-            action_target: "modal.primary".to_owned(),
-            rect: Rect::new(0.0, 0.0, 96.0, 32.0),
-            focused: false,
-            enabled: true,
-            test_id: "modal.primary".to_owned(),
-        }
-    }
-}

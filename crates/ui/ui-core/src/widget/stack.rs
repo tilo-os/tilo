@@ -1,5 +1,4 @@
 use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -7,8 +6,7 @@ use crate::widget::{AppModel, ModelPath};
 use ::collaboration::permissions::PermissionScope;
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::Point;
 use winit::event::WindowEvent;
 
 /// Children painted on top of one another, each `position: Absolute` and anchored at the

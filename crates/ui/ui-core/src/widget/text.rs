@@ -14,7 +14,6 @@ use crate::widget::{AppModel, ModelPath};
 use ::collaboration::permissions::PermissionScope;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
 // One retained input per Text, with a bounded owned payload. Renderer cache
@@ -39,7 +38,7 @@ pub use crate::text_metrics::centered_text_top;
 
 #[cfg(test)]
 pub(crate) fn assert_glyph_run_centred_in_band(
-    scene: &Scene,
+    scene: &vello::Scene,
     run_index: usize,
     text: &str,
     style: &TextStyle,
@@ -62,7 +61,7 @@ pub(crate) fn assert_glyph_run_centred_in_band(
         (expected_top + measured_h / 2.0 - band_centre).abs() < 1e-9,
         "{text:?}: line centre must be the band centre {band_centre}"
     );
-    let mut reference = Scene::new();
+    let mut reference = vello::Scene::new();
     renderer.draw_style(
         &mut reference,
         text,
@@ -1119,10 +1118,7 @@ impl Widget for Text {
                 }
             }
         }
-        // Its words are a cached scene: a picture a page sets words over leaves them out.
-        if !crate::text_render::words_left_out() {
-            self.face.append(scene, transform, self.rect);
-        }
+        self.face.append(scene, transform, self.rect);
         crate::widget::draw_over(
             self,
             &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
@@ -1252,6 +1248,7 @@ impl crate::widget::permission::PermissionGuarded for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vello::Scene;
 
     tilo_test_env::scenario! {
         /// A text: its measure and clamp, its roles and scale, its caches and its accessibility.

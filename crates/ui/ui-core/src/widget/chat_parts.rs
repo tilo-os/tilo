@@ -393,7 +393,7 @@ impl Described for Quote {
             ));
         }
         let mut activation = crate::widget::activation::Activation::new(format!("{key}/quote"));
-        let label = author.as_ref().map_or_else(
+        let _label = author.as_ref().map_or_else(
             || crate::i18n::I18nManager::lookup_plain("quote-open"),
             |author| author.name.clone(),
         );

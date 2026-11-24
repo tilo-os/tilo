@@ -19,7 +19,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::Icon;
 use crate::platform::{PlatformConventions, Shortcut};
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -2270,6 +2269,7 @@ mod placement_tests;
 #[cfg(test)]
 mod nested_and_anchored_tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 

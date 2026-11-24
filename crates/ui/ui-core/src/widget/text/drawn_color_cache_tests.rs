@@ -1,5 +1,6 @@
 //! Text's color cache follows the color it was drawn with.
 use super::*;
+use vello::Scene;
 fn draw_current(text: &mut Text, renderer: &mut TextRenderer, theme: &Theme) -> Scene {
     text.apply_layout_external(vello::kurbo::Rect::new(10.0, 20.0, 810.0, 120.0));
     let mut scene = Scene::new();

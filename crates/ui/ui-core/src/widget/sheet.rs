@@ -9,8 +9,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use std::collections::{HashMap, HashSet};
 
 use taffy::TaffyTree;
-use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Line, Point, Rect, Stroke};
 use vello::peniko::Fill;
 use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -1068,28 +1067,6 @@ impl Sheet {
         out
     }
 
-    /// Paste a copied table into the cells from the selection's top left.
-    fn paste(&mut self, text: &str) {
-        if !self.editable {
-            return;
-        }
-        let (start, _) = self.selection();
-        let mut writes = Vec::new();
-        for (row, line) in text.lines().enumerate() {
-            let Ok(row) = u32::try_from(row) else {
-                break;
-            };
-            for (column, field) in line.split('\t').enumerate() {
-                let Ok(column) = u32::try_from(column) else {
-                    break;
-                };
-                let addr = (start.0.saturating_add(column), start.1.saturating_add(row));
-                writes.push((addr, field.to_owned()));
-            }
-        }
-        self.fire_edit(writes);
-    }
-
     /// Where the fill handle is drawn: the selection's bottom right corner.
     fn fill_handle_rect(&self) -> Rect {
         let (_, end) = self.selection();
@@ -1448,13 +1425,7 @@ impl Widget for Sheet {
                         *ctx.handled = true;
                     }
                 }
-                _ => {}
             },
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {}
             WindowEvent::MouseWheel { delta, .. } => {
                 self.wheel(delta, ctx.modifiers);
                 *ctx.handled = true;

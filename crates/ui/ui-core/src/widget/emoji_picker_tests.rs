@@ -1,6 +1,9 @@
+use crate::text_render::TextRenderer;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+use vello::Scene;
+use vello::kurbo::Affine;
 
 use winit::keyboard::ModifiersState;
 

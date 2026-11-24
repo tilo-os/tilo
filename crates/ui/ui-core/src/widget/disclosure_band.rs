@@ -7,7 +7,6 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use crate::text_render::TextRenderer;

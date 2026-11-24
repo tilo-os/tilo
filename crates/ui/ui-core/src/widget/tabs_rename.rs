@@ -1,8 +1,7 @@
 //! Naming a tab in place: the tab's title becomes a field inside its own pill, set in the bar's
 //! own text role, holding the title selected.
 
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 use winit::event::{ElementState, WindowEvent};
 
 use super::TabBar;

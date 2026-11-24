@@ -6,14 +6,12 @@ use std::hash::Hash;
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 use crate::arriving::{Arrival, ArrivalClock, Source, Step};
 use crate::motion::CrossFade;
 use crate::paint::PaintCtx;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
 use crate::tokens::EffectiveMotion;

@@ -2,7 +2,6 @@
 //! compiler; focused pressed keys are private paint state.
 use crate::{
     a11y::{AccessNode, AccessState, Role},
-    presence::PresenceCtx,
     text_render::TextRenderer,
     theme::Theme,
     tokens::TextRole,

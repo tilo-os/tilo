@@ -10,8 +10,7 @@
 use std::collections::HashMap;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Point, Rect, Vec2};
 
 use super::Side;
 use super::motion::{DrawnPart, PartMotions, draw_posed};

@@ -7,7 +7,6 @@ use vello::peniko::Color;
 use crate::chrome::nav_row_height;
 use crate::component::{Component, PropType, Type, Value};
 use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 

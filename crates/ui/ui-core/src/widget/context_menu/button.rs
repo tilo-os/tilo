@@ -4,13 +4,11 @@
 //! it opens is the one every other menu is.
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::platform::PlatformConventions;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{AppModel, ModelPath, Widget};
 

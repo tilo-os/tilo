@@ -4,6 +4,8 @@ use crate::state::State;
 use crate::widget::Column;
 use std::cell::Cell;
 use std::rc::Rc;
+use vello::Scene;
+use vello::kurbo::Affine;
 
 fn content_hits(content: &BannerContent<'_>, width: f64) -> (f64, BannerHit) {
     let theme = Theme::dark();

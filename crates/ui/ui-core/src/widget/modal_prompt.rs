@@ -29,11 +29,9 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Point, Rect, Vec2};
 use winit::event::WindowEvent;
 
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -375,8 +373,11 @@ impl Widget for PromptBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::testing::dispatch;
     use crate::widget::ModalDialog;
+    use vello::Scene;
+    use vello::kurbo::Affine;
     use vello::kurbo::Point;
     use winit::event::ElementState;
     use winit::keyboard::{Key, NamedKey};

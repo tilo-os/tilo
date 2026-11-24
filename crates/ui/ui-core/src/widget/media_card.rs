@@ -6,8 +6,7 @@ use std::rc::Rc;
 
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{self, Brush, Fill, Gradient};
 use winit::event::WindowEvent;
 

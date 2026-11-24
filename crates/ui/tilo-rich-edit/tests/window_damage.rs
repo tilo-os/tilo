@@ -6,7 +6,6 @@ use tilo_rich_edit::BlockEditor;
 use tilo_ui::headless::FrameHarness;
 
 use tilo_ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
-use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
     AppKind, AppModel, AppWidget, EventCtx, GroupRow, IconDescriptor, ModelPath, ScrollAxis,
@@ -56,9 +55,19 @@ impl Widget for Note {
         self.page.apply_layout(tree, node, origin);
     }
     fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.page.draw(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.page.draw(&mut tilo_ui::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.page.handle_event(event, ctx);

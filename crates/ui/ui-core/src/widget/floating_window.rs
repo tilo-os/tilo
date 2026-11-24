@@ -18,7 +18,6 @@ use crate::widget::ModelPath;
 use automerge::ObjId;
 use std::collections::HashMap;
 use taffy::{NodeId, Size, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -26,7 +25,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::motion::{Appear, Direction, Snap, Zoom};
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Metrics;
@@ -1384,6 +1382,8 @@ mod tests {
         reason = "tests place retained animation clocks at exact elapsed phases"
     )]
     use super::*;
+    use crate::presence::PresenceCtx;
+    use vello::Scene;
     use vello_encoding::DrawTag;
 
     #[test]

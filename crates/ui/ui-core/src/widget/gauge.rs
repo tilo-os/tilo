@@ -11,7 +11,6 @@ use vello::peniko::{Brush, Color, Fill};
 
 use crate::paint::PaintCtx;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
@@ -833,6 +832,7 @@ impl Widget for BarGauge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text_render::TextRenderer;
     use vello_encoding::DrawTag;
 
     fn count_color_tags(scene: &Scene) -> usize {

@@ -11,7 +11,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -1386,6 +1385,7 @@ impl crate::widget::controls::ActionControls for Chip {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::testing::dispatch;
 
     /// A chip in a bar's row: whatever it says, its row is 60 high.

@@ -4,7 +4,6 @@
 use crate::app::framework_history_tests::{app_with_root, layout};
 
 use crate::state::State;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::undo::{UndoRequest, UndoStatus};
 use crate::widget::{Column, Text, Widget};
@@ -13,8 +12,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 /// A row that asks for undo when told to and counts the statuses it is shown.
 struct Asker {
@@ -43,9 +41,19 @@ impl Widget for Asker {
         self.text.apply_layout(tree, node, origin);
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.text.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.text.draw(&mut crate::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
     fn get_rect(&self) -> Rect {
         self.text.get_rect()

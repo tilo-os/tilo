@@ -1,4 +1,5 @@
 use super::*;
+use crate::presence::PresenceCtx;
 use crate::synthetic_input::mouse_press;
 use crate::synthetic_input::mouse_release;
 use crate::synthetic_input::named_key;

@@ -7,16 +7,13 @@
 //! comes back with the row's key, `None` for the list's own — or reported to the host with the
 //! row and the point the host anchors its menu at.
 
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use super::Choosing;
 use super::{AnyModel, ListKey, VirtualRows};
 use crate::a11y::AccessNode;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{Edits, Widget};
 

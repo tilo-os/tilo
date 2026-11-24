@@ -94,10 +94,14 @@ impl Decorations {
             let (text, theme, presence) = (&mut app.text_renderer, &app.theme, &app.presence_ctx);
             header
                 .bar
-                .draw_child(scene, transform, text, theme,&presence.draw_env());
-            header
-                .bar
-                .draw_overlay(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, presence.draw_env()));
+                .draw_child(scene, transform, text, theme, &presence.draw_env());
+            header.bar.draw_overlay(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                presence.draw_env(),
+            ));
         }
     }
 

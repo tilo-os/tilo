@@ -12,7 +12,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::Icon;
 use crate::platform::PlatformConventions;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
@@ -1675,6 +1674,7 @@ impl Widget for FindScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2235,6 +2235,7 @@ mod tests {
 #[cfg(test)]
 mod host_driven_tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
 
     #[derive(Default)]

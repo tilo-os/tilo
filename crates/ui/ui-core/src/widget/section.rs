@@ -10,7 +10,6 @@ use std::rc::Rc;
 use automerge::AutoCommit;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};

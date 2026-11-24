@@ -287,7 +287,7 @@ impl ListRow {
         if let Some(control) = trailing {
             *self = std::mem::replace(self, Self::new("", "")).trailing(control);
         }
-        let label = self.title.clone();
+        let _label = self.title.clone();
         self.activation.set_event(activate);
     }
 }

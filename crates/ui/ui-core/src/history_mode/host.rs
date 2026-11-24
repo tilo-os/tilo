@@ -7,8 +7,6 @@ use super::{
 use crate::widget::ButtonRole;
 use crate::{
     i18n::I18nManager,
-    presence::PresenceCtx,
-    text_render::TextRenderer,
     theme::Theme,
     widget::{ActivityTimeline, Button, Column, Row, TaffyTreeExt, Text, TextInput, Widget},
 };
@@ -19,10 +17,9 @@ use std::{
     rc::Rc,
 };
 use taffy::{Dimension, FlexDirection, NodeId, Size, Style, TaffyTree};
-use vello::{
-    Scene,
-    kurbo::{Affine, Point, Rect},
-};
+#[cfg(feature = "native")]
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 /// Below this width History takes the whole window, its preview a page of its own; at or above it,
 /// History is a panel beside the content.

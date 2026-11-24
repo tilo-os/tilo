@@ -64,7 +64,7 @@ impl Described for Card {
         let mut card = Self::new(Box::new(column)).selected(selected);
         if !activate.is_none() {
             card.activation = Activation::new(key);
-            let label = title.clone().unwrap_or_default();
+            let _label = title.clone().unwrap_or_default();
             card.activation.set_event(activate);
         }
         match title {
@@ -106,7 +106,7 @@ impl Described for Card {
                 self.remove_header();
             }
         }
-        let label = self.title.clone().unwrap_or_default();
+        let _label = self.title.clone().unwrap_or_default();
         self.activation.set_event(activate);
         true
     }

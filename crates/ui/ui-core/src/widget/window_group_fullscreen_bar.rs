@@ -3,13 +3,10 @@
 //! and closing are one press away. The content keeps its whole size, so nothing moves.
 
 use taffy::{Dimension, NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 use super::WindowGroup;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::widget::Widget as _;
 
 impl WindowGroup {

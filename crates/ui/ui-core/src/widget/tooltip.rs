@@ -364,7 +364,6 @@ pub fn chip_paint_bounds(rect: Rect, theme: &Theme) -> Rect {
         .map_or(chip, |shadow| shadow.union(chip))
 }
 
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
@@ -1069,6 +1068,7 @@ mod host_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use vello::kurbo::Point;
 
     fn feed(t: &mut Tooltip, p: Point) {

@@ -31,9 +31,8 @@ use crate::tokens::TextRole;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
-    presence::PresenceCtx,
     surface,
-    text_render::{TextRenderer, TextWeight},
+    text_render::TextWeight,
     theme::Theme,
     widget::{Image, ImageFit, TaffyTreeExt, Widget},
 };

@@ -1,8 +1,7 @@
 //! Breadcrumb widget — a horizontal path indicator with clickable ancestor segments and a chevron icon
 //! between them.
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::icons::Icon;
@@ -592,6 +591,8 @@ mod tests {
     use crate::testing::dispatch;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     fn cursor_at(p: Point) -> WindowEvent {
         crate::synthetic_input::cursor_moved(p.x, p.y)

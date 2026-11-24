@@ -2,6 +2,8 @@ use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
 use std::cell::Cell;
 use std::rc::Rc;
+use vello::Scene;
+use vello::kurbo::Affine;
 
 fn rect(node: &InspectionNode) -> Rect {
     let [x, y, w, h] = node.rect;

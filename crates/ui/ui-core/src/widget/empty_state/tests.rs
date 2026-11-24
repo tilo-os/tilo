@@ -1,5 +1,7 @@
 use super::*;
 use crate::testing::dispatch;
+use automerge::AutoCommit;
+use vello::Scene;
 use vello_encoding::DrawTag;
 
 fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {

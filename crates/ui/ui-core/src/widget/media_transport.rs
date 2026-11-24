@@ -37,8 +37,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Size, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::ImageData;
 
 use crate::component::Event;

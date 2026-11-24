@@ -3,6 +3,7 @@
 //! which pixels of the display its edges fall on.
 
 use super::*;
+use crate::presence::PresenceCtx;
 
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 

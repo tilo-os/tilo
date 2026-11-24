@@ -1,4 +1,7 @@
+use crate::text_render::TextRenderer;
 use std::collections::HashMap;
+use vello::Scene;
+use vello::kurbo::Affine;
 
 use taffy::TaffyTree;
 use vello::kurbo::Point;

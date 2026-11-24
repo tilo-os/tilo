@@ -8,8 +8,6 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -191,6 +189,8 @@ impl Widget for Divider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
     use vello_encoding::DrawTag;
 
     fn lay_out(mut d: Divider) -> (Divider, Rect) {

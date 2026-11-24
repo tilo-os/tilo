@@ -23,7 +23,6 @@ use vello::peniko::Fill;
 
 use crate::i18n::widget_text;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Instant, now};
 use crate::wake::WakeHandle;

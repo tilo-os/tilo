@@ -439,26 +439,6 @@ struct Running {
 }
 
 impl TileHost {
-    /// What a window with no app in it draws as a card: its title and the line under it.
-    fn card_words(&self) -> Option<(String, String)> {
-        if let Some(detail) = &self.resource_error {
-            return Some((resource_unavailable_title(), detail.clone()));
-        }
-        if let Some(detail) = &self.record_transition_error {
-            return Some((
-                crate::i18n::widget_format("widget-document-switch-blocked", &[]),
-                detail.clone(),
-            ));
-        }
-        match &self.content {
-            TileContent::Stub { kind, label } => {
-                Some((label.clone(), format!("{} coming soon", kind.as_str())))
-            }
-            TileContent::Notice { title, detail } => Some((title.clone(), detail.clone())),
-            TileContent::App(_) | TileContent::Arriving => None,
-        }
-    }
-
     /// Move the tile by `dx`; see
     /// [`super::window_group::WindowGroup::offset_layout`]. The content keeps
     /// the rect it was laid out at and is drawn translated instead.
@@ -1964,7 +1944,7 @@ impl Widget for TileHost {
                 transform,
                 &clip,
             );
-            let anim_transform = pose.applied_to(transform);
+            let _anim_transform = pose.applied_to(transform);
             self.draw_window(&mut crate::draw::DrawCtx::new(
                 scene,
                 transform,

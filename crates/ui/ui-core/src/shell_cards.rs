@@ -7,7 +7,7 @@
 //! itself, and every such shell does it through [`ShellCards`]. A card then
 //! stands, draws and takes input in the same place whichever host shows it.
 
-use vello::kurbo::{Affine, Point, Rect, Size};
+use vello::kurbo::{Point, Rect, Size};
 
 use crate::floating_layer::{Card, Corner, Placement};
 use crate::floating_surface::{
@@ -250,10 +250,17 @@ impl ShellCards {
     /// Draw each card by the app in `surface` that owns it, over what the
     /// shell drew.
     pub fn draw(&self, surface: &mut dyn Widget, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         for shown in &self.shown {
-            surface.draw_floating_surface(&shown.id, &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            surface.draw_floating_surface(
+                &shown.id,
+                &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            );
         }
     }
 

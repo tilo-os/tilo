@@ -369,18 +369,6 @@ impl<'a> BarChipFace<'a> {
     }
 }
 
-/// `top` laid over an opaque `under`, as the canvas paints a wash on a lift.
-fn over(top: Color, under: Color) -> Color {
-    let [r, g, b, a] = top.components;
-    let [ur, ug, ub, ua] = under.components;
-    Color::new([
-        r * a + ur * (1.0 - a),
-        g * a + ug * (1.0 - a),
-        b * a + ub * (1.0 - a),
-        a + ua * (1.0 - a),
-    ])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

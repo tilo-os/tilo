@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use super::DrawChild;
@@ -12,7 +11,6 @@ use super::{AppModel, Element, EventCtx, ModelPath, Widget, layout_rect};
 use crate::i18n::I18nManager;
 use crate::interaction::InteractionEnvironment;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 /// A widget's composition: the element tree it rebuilds at every layout, or

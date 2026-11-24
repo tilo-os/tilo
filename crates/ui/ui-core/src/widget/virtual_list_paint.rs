@@ -1,12 +1,9 @@
 //! The list's frame, painted: the rows the viewport holds, the bar beside them, a row's
 //! menu and the way back to what is new, drawn where they stand.
 
-use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 
 use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 
 use super::RowSelection;
 use super::VirtualRows;

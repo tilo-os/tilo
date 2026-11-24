@@ -6,12 +6,9 @@ use zeroize::Zeroizing;
 
 use qrcode::{EcLevel, QrCode};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
@@ -399,6 +396,9 @@ impl Widget for QrWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
+    use vello::Scene;
 
     tilo_test_env::scenario! {
         fn a_qr_code_encodes_paints_and_describes_itself;

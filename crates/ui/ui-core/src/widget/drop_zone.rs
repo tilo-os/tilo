@@ -6,8 +6,7 @@ use std::path::PathBuf;
 
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
@@ -550,6 +549,8 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     tilo_test_env::scenario! {
         /// A drop zone.

@@ -3,8 +3,7 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, fr, length, minmax, percent};
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use super::{Actions, Element, FormControl, Scrollable, Text, Widget};
 use taffy::style_helpers::{line, span};

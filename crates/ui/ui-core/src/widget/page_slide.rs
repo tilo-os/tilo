@@ -4,14 +4,12 @@
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::component::{Component, Described, PartViews};
 use crate::motion::{Drill, DrillDepth, Pose};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::MotionSource;
 use crate::widget::DrawChild;

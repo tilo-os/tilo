@@ -5452,7 +5452,7 @@ impl GroupRow {
             clippy::arithmetic_side_effects,
             reason = "Affine multiplication composes finite floating-point transforms"
         )]
-        let preview_transform = transform * lift;
+        let _preview_transform = transform * lift;
         group.draw_group_drag_visual(&mut crate::draw::DrawCtx::new(
             scene,
             transform,

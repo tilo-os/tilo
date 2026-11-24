@@ -1,5 +1,4 @@
 use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;

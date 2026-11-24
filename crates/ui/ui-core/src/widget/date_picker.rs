@@ -13,7 +13,6 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -912,6 +911,7 @@ fn day_disc(cell: Rect) -> vello::kurbo::Circle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use std::cell::RefCell;

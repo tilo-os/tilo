@@ -1392,23 +1392,6 @@ fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
     assert!(done.with(|checked| *checked), "the tick reaches the box");
 }
 
-/// A list of rows that are list rows, shown as a tree: 0 holds 1, which holds 2.
-fn listed_tree() -> VirtualList<Nested> {
-    use crate::widget::ListRow;
-
-    let model = Nested {
-        keys: vec![0, 1, 2],
-        parents: HashMap::from([(1, 0), (2, 1)]),
-        groups: HashMap::new(),
-    };
-    VirtualList::new(model, 20.0, |_, _, key| {
-        Box::new(ListRow::new(format!("note-{key}"), format!("Note {key}"))) as Element
-    })
-    .with_viewport_height(200.0)
-    .with_tree(Rc::new(TreeMarks::default()))
-    .with_semantic_key(|key| format!("row:{key}"))
-}
-
 fn composed_at<'a>(
     node: &'a crate::composition::Composed,
     widget: &str,

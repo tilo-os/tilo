@@ -1,11 +1,8 @@
 //! The window's bar held by the row its app draws.
 use super::WindowGroup;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::widget::Widget;
 use crate::widget::window_controls::{ControlsState, WindowControl};
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::Point;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 impl WindowGroup {

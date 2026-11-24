@@ -1,9 +1,8 @@
 //! Layout and input routing for chrome plus a borrowed presentation slot. Live ownership/lifecycle
 //! traversal stays entirely with the runner.
 use super::{
-    Affine, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, Point, PresenceCtx,
-    PreviewSide, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer, Theme, Widget,
-    WindowEvent,
+    Affine, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, Point, PreviewSide, Rect, Size,
+    Style, TaffyTree, TaffyTreeExt, Theme, Widget, WindowEvent,
 };
 use crate::widget::DrawChild;
 use crate::widget::{AppModel, ModelPath};
@@ -439,7 +438,11 @@ impl Widget for HistoryHost {
         }
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.motion = theme.motion();
         if self.show_preview() {
@@ -448,7 +451,7 @@ impl Widget for HistoryHost {
             if let Some(preview) = canvas.preview.as_mut() {
                 preview.set_window_presents_search(window_presents);
             }
-            canvas.draw_child(scene, transform, text, theme,&env);
+            canvas.draw_child(scene, transform, text, theme, &env);
         }
         if self.banner_node.is_some() {
             let band = self.banner.get_rect();
@@ -459,8 +462,7 @@ impl Widget for HistoryHost {
                 None,
                 &band,
             );
-            self.banner
-                .draw_child(scene, transform, text, theme,&env);
+            self.banner.draw_child(scene, transform, text, theme, &env);
         }
         let side = self.panel_node.is_some();
         if side && !self.panel_motion.is_open() {
@@ -512,7 +514,7 @@ impl Widget for HistoryHost {
             crate::history_mode::api::bar_edge(scene, transform, theme, self.toolbar.get_rect());
         }
         self.toolbar
-            .draw_child(scene, bar_transform, text, theme,&env);
+            .draw_child(scene, bar_transform, text, theme, &env);
         if side && let Some(head) = self.toolbar.children().first() {
             let style = theme.text(crate::tokens::TextRole::Title);
             let title = crate::i18n::I18nManager::lookup_plain("history-panel-title");
@@ -544,10 +546,10 @@ impl Widget for HistoryHost {
         }
         if self.show_timeline() && !self.timeline_available() {
             self.unavailable
-                .draw_child(scene, bar_transform, text, theme,&env);
+                .draw_child(scene, bar_transform, text, theme, &env);
         } else if self.show_timeline() {
             self.timeline
-                .draw_child(scene, bar_transform, text, theme,&env);
+                .draw_child(scene, bar_transform, text, theme, &env);
         }
         if self.footer_node.is_some() {
             let foot = self.footer.get_rect();
@@ -561,7 +563,7 @@ impl Widget for HistoryHost {
                 theme.tokens.colors.surfaces.inspector,
             );
             self.footer
-                .draw_child(scene, bar_transform, text, theme,&env);
+                .draw_child(scene, bar_transform, text, theme, &env);
         }
         if sliding {
             scene.pop_layer();

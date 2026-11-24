@@ -13,7 +13,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat as _;
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::search::{
     ActivationModifier, CommandRow, PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview,
     SearchResult, SearchRow,
@@ -1865,6 +1864,7 @@ impl Widget for SearchResultsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use crate::search::SearchRegistry;
     use crate::testing::dispatch;
 

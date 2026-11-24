@@ -60,10 +60,6 @@ thread_local! {
     static PRESSES: std::cell::RefCell<Vec<Point>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-pub(crate) fn press_where_drawn(at: Point) {
-    PRESSES.with(|presses| presses.borrow_mut().push(at));
-}
-
 /// The presses asked for since the last call, in order.
 pub(crate) fn take_presses() -> Vec<Point> {
     PRESSES.with(|presses| std::mem::take(&mut *presses.borrow_mut()))

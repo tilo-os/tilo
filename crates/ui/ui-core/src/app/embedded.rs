@@ -8,8 +8,8 @@ use crate::app_core::AppCore as _;
 use std::cell::{Cell, RefCell};
 
 use super::{
-    Affine, App, AppSurface, CursorIcon, HashMap, KurboRect, NodeId, Point, PresenceCtx, Scene,
-    TaffyTree, TextRenderer, Theme, Widget, WindowEvent,
+    Affine, App, AppSurface, CursorIcon, HashMap, KurboRect, NodeId, Point, Scene, TaffyTree,
+    Theme, Widget, WindowEvent,
 };
 use crate::widget::{AppKind, AppWidget, IconDescriptor};
 
@@ -506,7 +506,11 @@ impl Widget for EmbeddedApp {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.paint_generation = self.paint_generation.wrapping_add(1);
         let mut painted = self.painted.borrow_mut();
@@ -997,8 +1001,16 @@ impl crate::widget::CompleteContentProvider for EmbeddedApp {
         self.app.root_widget.complete_content_size()
     }
 
-    fn draw_complete_content(&mut self, bounds: KurboRect, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    fn draw_complete_content(
+        &mut self,
+        bounds: KurboRect,
+        ctx: &mut crate::draw::DrawCtx<'_>,
+    ) -> bool {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.runs();
         use crate::widget::CompleteContentWidgetExt as _;
@@ -1363,6 +1375,8 @@ impl EmbeddedApp {
 #[cfg(test)]
 mod theme_repaint_tests {
     use super::*;
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
 
     pub(super) fn layout(tile: &mut EmbeddedApp, theme: &Theme) {
         let mut taffy = TaffyTree::new();
@@ -1381,7 +1395,13 @@ mod theme_repaint_tests {
 
     pub(super) fn paint(tile: &mut EmbeddedApp, theme: &Theme) -> Vec<u32> {
         let mut scene = Scene::new();
-        tile.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), theme, PresenceCtx::empty().draw_env()));
+        tile.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            PresenceCtx::empty().draw_env(),
+        ));
         scene.encoding().draw_data.clone()
     }
 
@@ -1394,7 +1414,13 @@ mod theme_repaint_tests {
         let recording = crate::scene_parts::Recording::begin();
         let mut scene = Box::new(Scene::new());
         crate::scene_parts::track(&scene);
-        tile.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::translate((40.0, 20.0)), &mut TextRenderer::new(), theme, PresenceCtx::empty().draw_env()));
+        tile.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::translate((40.0, 20.0)),
+            &mut TextRenderer::new(),
+            theme,
+            PresenceCtx::empty().draw_env(),
+        ));
         let parts = recording
             .finish()
             .of(&scene)
@@ -1832,8 +1858,12 @@ mod wake_deadline_tests {
         }
         crate::rect_geometry!();
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (_, _, _, _, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (_, _, _, _, mut env) = ctx.parts();
         }
         fn name(&self) -> &'static str {
             "Asked"
@@ -1862,8 +1892,12 @@ mod wake_deadline_tests {
         }
         crate::rect_geometry!();
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (_, _, _, _, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (_, _, _, _, mut env) = ctx.parts();
             self.frames.set(self.frames.get().saturating_sub(1));
         }
         fn name(&self) -> &'static str {

@@ -3,6 +3,8 @@
 use super::*;
 use crate::time::Duration;
 use crate::widget::Widget;
+use vello::Scene;
+use vello::kurbo::Affine;
 
 const NOONISH: i64 = 1_782_828_300;
 

@@ -76,9 +76,6 @@ pub(crate) struct ControlIdentity {
 }
 
 impl ControlObservation {
-    pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
-        &self.confirmation
-    }
     pub(crate) fn identity(&self) -> &ControlIdentity {
         &self.identity
     }

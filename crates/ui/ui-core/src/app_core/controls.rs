@@ -144,9 +144,6 @@ pub(crate) trait ControlCore: AppCore {
     /// Enter the outer document's API at `request.address`.
     fn invoke_outer_control(&mut self, request: &ResourceInvocation<'_>) -> Started;
 
-    /// The control intents this host's tree registered, by owner.
-    fn control_domain(&self) -> &crate::control_domain::ControlDomain;
-
     /// Say that an invocation the person made did not run, and why, at the control they used.
     fn refuse_visibly(&mut self, error: &ApiError);
 

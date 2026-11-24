@@ -1,17 +1,12 @@
 //! Opaque canvas; the domain renderer never enters the live Widget/action tree.
 use super::{HistoryPreview, PreviewNavigation};
 use crate::{
-    presence::PresenceCtx,
-    text_render::TextRenderer,
     theme::Theme,
     widget::{TaffyTreeExt, Widget},
 };
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::{
-    Scene,
-    kurbo::{Affine, Point, Rect},
-};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{MouseScrollDelta, WindowEvent};
 
 pub(crate) struct PreviewCanvas {
@@ -102,7 +97,11 @@ impl Widget for PreviewCanvas {
         reason = "floating point display geometry is non-authoritative and does not overflow integers"
     )]
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if let Some(preview) = &mut self.preview {
             match preview.layout(self.rect, text, theme) {

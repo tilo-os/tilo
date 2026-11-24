@@ -1,13 +1,11 @@
 use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::SpacingStep;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use ::collaboration::permissions::PermissionScope;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 /// How a [`Spacer`] takes its size.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -185,6 +183,7 @@ impl crate::widget::permission::PermissionGuarded for Spacer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text_render::TextRenderer;
     use crate::widget::{Column, Row, Text};
     use taffy::style_helpers::length;
     use taffy::{AvailableSpace, Size};

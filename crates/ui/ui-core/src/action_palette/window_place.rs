@@ -69,11 +69,6 @@ impl ActionPalette {
         self.scrim.filter(|_| self.is_presented())
     }
 
-    /// The window a confirmation's sheet is in and dims.
-    pub(super) fn sheet_window(&self, viewport: Option<Rect>) -> Rect {
-        self.scrim.or(viewport).unwrap_or(self.rect)
-    }
-
     /// Dim the window behind the card as it arrives, and at once where motion is reduced, as the
     /// arrival itself shows.
     pub(super) fn paint_scrim(

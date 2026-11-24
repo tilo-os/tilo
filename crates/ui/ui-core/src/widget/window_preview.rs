@@ -20,12 +20,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use crate::component::{Component, Described};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::window_well::Wells;
 use crate::widget::{TaffyTreeExt, Widget};

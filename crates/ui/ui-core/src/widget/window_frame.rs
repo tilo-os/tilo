@@ -22,8 +22,7 @@
 //! front and what its controls are; the theme decides everything the frame is made of.
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
+use vello::kurbo::{Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -31,8 +30,6 @@ use winit::keyboard::{Key, NamedKey};
 use crate::chrome::HeaderRowMetrics;
 use crate::component::{Component, Described, Event, PartViews};
 use crate::icons::Icon;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{Rhythm, SpacingStep, TextRole};
 use crate::widget::DrawChild;
@@ -945,7 +942,10 @@ impl WindowFrame {
 mod tests {
     use super::*;
     use crate::component::{Described, Event, ResourceId};
+    use crate::presence::PresenceCtx;
     use crate::widget::{TabItemProps, TabStrip, TabStripProps};
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     /// A window's tabs, as the shell's strip hands them to its frame: two places, the first in
     /// front.
@@ -1103,11 +1103,13 @@ mod tests {
         let mut text = crate::font_catalog::fixture_renderer();
         Widget::draw(
             frame,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            theme,
-            &PresenceCtx::empty(),
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                theme,
+                crate::presence::PresenceCtx::empty().draw_env(),
+            ),
         );
         crate::offscreen::OffscreenRenderer::new(240, 240)
             .render(&scene, vello::peniko::Color::BLACK)

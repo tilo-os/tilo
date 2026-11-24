@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::testing::dispatch;
+use vello::Scene;
 use vello_encoding::DrawTag;
 
 const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);

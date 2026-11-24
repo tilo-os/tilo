@@ -4,8 +4,7 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
@@ -904,6 +903,8 @@ impl Widget for StatGroup {
 mod tests {
     use super::*;
     use crate::headless::FrameHarness;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     tilo_test_env::scenario! {
         /// A stat tile laid out without a host.

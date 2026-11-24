@@ -6,7 +6,6 @@ use vello::kurbo::Affine;
 
 use super::{MentionCandidate, TextCompletion, TextInput};
 use crate::color_compat::ColorCompat as _;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
 impl TextInput {

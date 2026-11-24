@@ -1,13 +1,10 @@
 //! Retained graph composition: real controls on Manual, decorative themed edges.
 use super::composition_parts::{Parts, retained_parts};
 use super::{Element, Manual, MeasureConstraint, Widget};
-use crate::{Theme, text_render::TextRenderer};
+use crate::Theme;
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::{
-    Scene,
-    kurbo::{Affine, BezPath, Point, Rect, Stroke},
-};
+use vello::kurbo::{BezPath, Point, Rect, Stroke};
 
 /// One domain-owned node's placement and ordinary retained content.
 pub struct GraphCanvasNode {

@@ -6,8 +6,7 @@ use crate::num::f32_of_f64;
 use std::collections::HashMap;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 use crate::chrome::header_row;
 

@@ -1,14 +1,12 @@
 //! Avatar: a person's (or an account's) picture, or their initials when no picture exists.
 
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{self, Color, Fill};
 
 use crate::ImageStore;
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextStyle;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::PresenceHue;
@@ -1032,6 +1030,10 @@ impl Widget for Avatar {
 mod tests {
     use super::*;
     use crate::color_compat::ColorCompat;
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
+    use vello::Scene;
+    use vello::kurbo::Affine;
     use vello::peniko::ImageData as PenikoImage;
     use vello_encoding::DrawTag;
 

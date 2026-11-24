@@ -18,6 +18,8 @@
     clippy::arithmetic_side_effects,
     reason = "test scenes and pixel tallies: failures are the assertion"
 )]
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
 
 use super::*;
 use crate::offscreen::OffscreenRenderer;
@@ -128,7 +130,15 @@ fn section(
         &mut scene,
         PartKey::new("test.tile-content", ()),
         vec![REGION],
-        |scene| tile.draw(&mut crate::draw::DrawCtx::new(scene, Affine::IDENTITY, text, theme, PresenceCtx::empty().draw_env())),
+        |scene| {
+            tile.draw(&mut crate::draw::DrawCtx::new(
+                scene,
+                Affine::IDENTITY,
+                text,
+                theme,
+                PresenceCtx::empty().draw_env(),
+            ))
+        },
     );
     scene.pop_layer();
     if host.translucent {

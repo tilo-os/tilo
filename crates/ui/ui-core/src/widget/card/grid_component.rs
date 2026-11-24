@@ -75,7 +75,7 @@ fn card_of(props: CardGridCardProps) -> (String, Element) {
     let mut card = Card::new(Box::new(column)).selected(selected);
     if !activate.is_none() {
         card.activation = Activation::new(key.clone());
-        let label = title.clone().unwrap_or_default();
+        let _label = title.clone().unwrap_or_default();
         card.activation.set_event(activate);
     }
     let card = match title {

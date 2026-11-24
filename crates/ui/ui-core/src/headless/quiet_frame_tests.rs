@@ -70,7 +70,11 @@ impl Widget for Probe {
         true
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_, _, _, _, mut env) = ctx.parts();
         if self.seen.landing.replace(false) {
             self.seen.landed.set(true);

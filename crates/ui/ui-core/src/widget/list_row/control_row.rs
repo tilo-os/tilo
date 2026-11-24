@@ -4,7 +4,6 @@
 use super::{RowMetrics, row_fill};
 use crate::a11y::{AccessNode, AccessState, Role};
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
 use crate::widget::{AppModel, ModelPath, Widget};

@@ -33,7 +33,11 @@ impl Widget for FinalFrameWork {
         );
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         let draws = self.draws.get().saturating_add(1);
         self.draws.set(draws);
@@ -187,7 +191,11 @@ impl Widget for CountedFrames {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (_scene, _transform, _text_renderer, _theme, mut env) = ctx.parts();
         self.drawn.set(self.drawn.get() + 1);
     }

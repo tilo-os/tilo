@@ -1,6 +1,8 @@
 //! What a frame paints, and what it leaves alone.
 
 use super::*;
+use vello::Scene;
+use vello::kurbo::Affine;
 
 const NOONISH: i64 = 1_782_828_300;
 

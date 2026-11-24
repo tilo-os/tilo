@@ -27,8 +27,7 @@ use crate::tokens::colors::PresenceHue;
 use crate::widget::activation::{Activation, Interaction};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::{Color, ImageData};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -1317,7 +1316,7 @@ impl ListRow {
     /// Have a press on the row (or Enter or Space while it has the keyboard) report
     /// `event`: what a component's card does when it opens what it stands for.
     pub fn set_activate(&mut self, event: crate::component::Event) {
-        let label = self.title.clone();
+        let _label = self.title.clone();
         self.activation.set_event(event);
         self.dirty = true;
     }

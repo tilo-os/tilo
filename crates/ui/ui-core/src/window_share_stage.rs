@@ -14,7 +14,6 @@
 
 use automerge::ObjId;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, TouchPhase, WindowEvent};
 
@@ -139,10 +138,13 @@ impl Widget for Shown {
     }
 
     fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.host
-            .draw_child(scene, transform, text, theme,&env);
+        self.host.draw_child(scene, transform, text, theme, &env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -764,7 +766,11 @@ impl Stage {
     /// miniature laid out at a window's size and scaled into its place, a view worked in as it is
     /// laid out.
     pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.refresh_places();
         for place in &self.places {
@@ -804,9 +810,9 @@ impl Stage {
             );
             let outer = env.push_viewport(viewport);
             if working.is_some() {
-                shown.draw_child(scene, at, text, theme,&env);
+                shown.draw_child(scene, at, text, theme, &env);
             } else {
-                shown.host.draw_child(scene, at, text, theme,&env);
+                shown.host.draw_child(scene, at, text, theme, &env);
             }
             env.pop_viewport(outer);
             scene.pop_layer();

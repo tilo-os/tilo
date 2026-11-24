@@ -14,6 +14,7 @@
     clippy::arithmetic_side_effects,
     reason = "test scenes and pixel tallies: failures are the assertion"
 )]
+use vello::Scene;
 
 use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};

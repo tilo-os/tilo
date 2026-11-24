@@ -3,11 +3,9 @@
 use crate::time::Instant;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::kurbo::{Circle, Point, Rect};
 
 use crate::color_compat::ColorCompat;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -252,8 +250,11 @@ impl Widget for Spinner {
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
     use std::collections::HashMap;
     use taffy::prelude::TaffyMaxContent;
+    use vello::Scene;
+    use vello::kurbo::Affine;
     use vello_encoding::DrawTag;
 
     tilo_test_env::scenario! {

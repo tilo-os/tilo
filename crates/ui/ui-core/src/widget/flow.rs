@@ -4,7 +4,6 @@
 //! replays a stable subtree as one append.
 
 use crate::presence::PathSegment;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::DrawChild;

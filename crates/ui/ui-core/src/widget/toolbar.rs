@@ -22,7 +22,6 @@ mod damage;
 mod touch_tests;
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
@@ -2628,6 +2627,7 @@ mod tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use crate::presence::PresenceCtx;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -3158,6 +3158,7 @@ mod lifecycle_tests {
 mod command_state_tests {
     use super::*;
     use crate::icons::Icon;
+    use crate::presence::PresenceCtx;
     use crate::testing::dispatch;
     use std::cell::Cell;
     use std::rc::Rc;

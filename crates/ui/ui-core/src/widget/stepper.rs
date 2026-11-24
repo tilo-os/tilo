@@ -20,8 +20,7 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
+use vello::kurbo::{Circle, Point, Rect, Stroke};
 use vello::peniko::Fill;
 
 use crate::icons::Icon;
@@ -751,6 +750,8 @@ impl crate::widget::controls::ActionControls for Stepper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     const STEPS: [&str; 4] = ["Choose image", "Choose drive", "Write", "Verify"];
 

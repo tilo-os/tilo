@@ -1,6 +1,6 @@
 //! [`ImageCropEditor`] as a described component: crop a picture by its corners.
 
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::component::{Component, Described, Event, Value};

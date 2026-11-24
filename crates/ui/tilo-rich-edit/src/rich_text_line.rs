@@ -17,7 +17,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
@@ -1662,8 +1661,8 @@ impl Widget for RichTextLine {
             let rect = self.inner.get_rect();
             let mut face = std::mem::take(&mut self.face);
             self.paint_into(&mut tilo_ui::DrawCtx::new(
-                scene,
-                transform,
+                face.repaint(rect),
+                Affine::IDENTITY,
                 text_renderer,
                 theme,
                 env.clone(),
@@ -1958,6 +1957,7 @@ fn mark_kind(segment: &MarkSegment) -> Option<ui::text_render::TextKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::presence::PresenceCtx;
     use ui::testing::{Dispatch, dispatch};
     use ui::widget::marks::Mark;
     use winit::keyboard::{ModifiersState, NamedKey};

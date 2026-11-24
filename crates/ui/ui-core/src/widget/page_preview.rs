@@ -5,13 +5,10 @@ use std::collections::HashMap;
 
 use taffy::style_helpers::length;
 use taffy::{NodeId, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Widget};
@@ -192,6 +189,10 @@ impl Widget for PagePreview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     tilo_test_env::scenario! {
         fn a_page_preview_is_flat_and_keeps_a_valid_position;

@@ -9,13 +9,11 @@
 use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use winit::event::WindowEvent;
 
 use crate::component::Event;
 
-use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::arrange::{Part, Stack};

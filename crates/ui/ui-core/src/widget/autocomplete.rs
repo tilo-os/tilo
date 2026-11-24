@@ -5,8 +5,7 @@ use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
+use vello::kurbo::{Point, Rect, RoundedRect, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -1449,6 +1448,8 @@ mod tests {
     use super::*;
     use crate::testing::dispatch;
     use automerge::AutoCommit;
+    use vello::Scene;
+    use vello::kurbo::Affine;
 
     fn suggester_paths() -> Autocomplete {
         Autocomplete::new().with_suggester(|q| {
