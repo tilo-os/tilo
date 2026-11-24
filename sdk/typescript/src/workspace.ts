@@ -211,6 +211,30 @@ export class Members {
   }
 }
 
+/** Content the workspace keeps, named by the address of its bytes. */
+export interface WebCallContent {
+  /** The app whose records keep it; the asking app when left out. */
+  app?: string;
+  /** The address of the bytes: lowercase BLAKE3 hex. */
+  hash: string;
+  /** The filename the part carries. */
+  filename?: string;
+  /** The bytes' media type, such as `image/png`. */
+  contentType?: string;
+}
+
+/** One part of a web call's body: text, JSON, or content the workspace keeps. */
+export interface WebCallPart {
+  /** The form field's name. */
+  name: string;
+  /** The part's text. */
+  text?: string;
+  /** The part's JSON. */
+  json?: unknown;
+  /** Content the workspace keeps, which the vault reads and sends as the part. */
+  content?: WebCallContent;
+}
+
 /** A web request made with a key the vault keeps, by reference. */
 export interface WebCallOptions {
   /** The address to call, at the service the key belongs to. */
@@ -221,8 +245,12 @@ export interface WebCallOptions {
   method?: string;
   /** Headers to send besides the key. */
   headers?: Record<string, string>;
-  /** What to send, as text. */
+  /** What to send, as text. Not beside `bodyParts` or `bodyContent`. */
   body?: string;
+  /** What to send, as the parts of a multipart body. Not beside `body` or `bodyContent`. */
+  bodyParts?: WebCallPart[];
+  /** Content the workspace keeps, sent as the whole body. Not beside `body` or `bodyParts`. */
+  bodyContent?: WebCallContent;
   /** Why you need it, in one sentence your person reads. */
   reason?: string;
 }
@@ -281,6 +309,12 @@ export class Vault {
     }
     if (call.body !== undefined) {
       args.body = call.body;
+    }
+    if (call.bodyParts !== undefined) {
+      args.bodyParts = call.bodyParts;
+    }
+    if (call.bodyContent !== undefined) {
+      args.bodyContent = call.bodyContent;
     }
     if (call.reason !== undefined) {
       args.reason = call.reason;

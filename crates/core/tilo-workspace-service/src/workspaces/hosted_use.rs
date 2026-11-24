@@ -716,9 +716,18 @@ impl Use {
 
     /// What else it would be refused for when it is carried out, with the
     /// vault's `items`: said before anyone is asked about it.
-    fn sendable(&self, workspaces: &Workspaces, items: &VaultItems) -> Result<(), String> {
+    fn sendable(
+        &self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        caller_app: Option<&str>,
+        items: &VaultItems,
+    ) -> Result<(), String> {
         match self {
-            Self::Call(call) => web_call::sendable(call, workspaces.call_reach(), items),
+            Self::Call(call) => {
+                web_call::sendable(call, workspaces.call_reach(), items)?;
+                web_call::sendable_content(call, workspaces, workspace, caller_app)
+            }
             Self::Sign(signing) => sign::sendable(signing),
             Self::Mail(_) | Self::Key(_) | Self::Code(_) => Ok(()),
         }
@@ -733,6 +742,7 @@ impl Use {
         workspaces: &Workspaces,
         (workspace, root): (&str, &Path),
         (by, acting, item): (&str, &tilo_action_policy::Acting, ItemId),
+        caller_app: Option<&str>,
         purpose: UsedFor<'_>,
     ) -> Result<Value, String> {
         match self {
@@ -750,7 +760,15 @@ impl Use {
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
             Self::Call(call) => {
-                web_call::send(workspaces, workspace, call, (by, acting), purpose).await
+                web_call::send(
+                    workspaces,
+                    workspace,
+                    call,
+                    (by, acting),
+                    caller_app,
+                    purpose,
+                )
+                .await
             }
             Self::Sign(signing) => {
                 sign::sign(
@@ -1197,8 +1215,13 @@ impl Workspaces {
         wanted
             .fits(&items, &item, kind, &places)
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
+        let caller_app = turn
+            .caller
+            .acting()
+            .app()
+            .map(|app| app.as_str().to_owned());
         wanted
-            .sendable(self, &items)
+            .sendable(self, &using.workspace, caller_app.as_deref(), &items)
             .map_err(ActionCallError::refused)?;
         drop(items);
         let granted = wanted.takes_leave()
@@ -1233,6 +1256,7 @@ impl Workspaces {
                 self,
                 (&using.workspace, &root),
                 (&using.name, &using.acting(), item),
+                caller_app.as_deref(),
                 purpose,
             )
             .await

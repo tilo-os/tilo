@@ -939,10 +939,46 @@ pub fn use_word(target: &RemoteActionTarget) -> String {
 /// the service answered, the key struck out of it.
 pub const WEB_CALL: &str = "web-call";
 
+/// Content the workspace keeps, named by the address of its bytes: what a
+/// call sends as a part, or as its whole body, without the bytes passing
+/// through the asking app.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ContentRef {
+    /// The app whose records keep the content. The asking app when left out.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app: String,
+    /// The address of the bytes: lowercase BLAKE3 hex.
+    pub hash: String,
+    /// The filename the part carries, when it carries one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub filename: String,
+    /// The bytes' media type (`image/png`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub content_type: String,
+}
+
+/// One part of a call's body: text, JSON, or content its workspace keeps.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebCallPart {
+    /// The form field's name.
+    pub name: String,
+    /// The part's text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The part's JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json: Option<serde_json::Value>,
+    /// Content the workspace keeps, read from its store and sent as the part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<ContentRef>,
+}
+
 /// What [`WEB_CALL`] names: the request, and the item that is its key. The
 /// key goes where its item says its service takes it, never where the
 /// request says.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebCall {
     /// The address to call, at the service the key belongs to.
@@ -956,6 +992,14 @@ pub struct WebCall {
     /// What to send, as text.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
+    /// What to send, as a multipart body of parts: text, JSON and content the
+    /// workspace keeps. Never beside [`Self::body`] or [`Self::body_content`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body_parts: Vec<WebCallPart>,
+    /// Content the workspace keeps, sent as the whole body. Never beside
+    /// [`Self::body`] or [`Self::body_parts`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_content: Option<ContentRef>,
     /// The key, by its reference.
     pub key: ItemRef,
     /// Why whoever asks says it needs the call; empty when it gave none.
@@ -987,6 +1031,11 @@ pub fn call_rows() -> Vec<CatalogueRow> {
              unless it says otherwise), and only to the service the item belongs to: `url` \
              must be at that service's web address, over https. You never hold the key, and \
              it is struck from what you are answered: the status, the headers and the body. \
+             What it sends is `body` text, `bodyParts` (an inline `text` or `json` part, or a \
+             `content` part naming content your workspace keeps by its BLAKE3 hex address, with \
+             its filename and content type), or `bodyContent`, one content reference sent as the \
+             whole body. The server reads that content from the workspace's store: its bytes \
+             never pass through you, and you may name only content the workspace keeps. \
              To get the key, call the vault's `ask` with kind `key`, belongsTo `[\"<the \
              service's web address, such as https://api.example.com>\"]` and `sentIn`, which \
              says how the service takes its key when not as a bearer token: `basic`, \
@@ -1007,7 +1056,25 @@ pub fn call_rows() -> Vec<CatalogueRow> {
                 "Headers to send besides the key, by name. Not the one the key rides in, and \
                  none that signs the request in.",
             ),
-            ActionParam::optional("body", ParamType::Text, "What to send, as text."),
+            ActionParam::optional(
+                "body",
+                ParamType::Text,
+                "What to send, as text. Not beside `bodyParts` or `bodyContent`.",
+            ),
+            ActionParam::optional(
+                "bodyParts",
+                ParamType::Array,
+                "What to send, as the parts of a multipart body: each names its field and holds \
+                 `text`, `json`, or `content`, content the workspace keeps by its BLAKE3 hex \
+                 address with a `filename` and `contentType`. The vault reads the bytes from the \
+                 workspace's store, so they never pass through you.",
+            ),
+            ActionParam::optional(
+                "bodyContent",
+                ParamType::Object,
+                "Content the workspace keeps, by its BLAKE3 hex address with a `filename` and \
+                 `contentType`, sent as the whole body.",
+            ),
             item_param("key", REFERENCE),
             ActionParam::optional("reason", ParamType::Text, REASON),
         ],
@@ -1349,10 +1416,45 @@ mod call_tests {
         }))
         .unwrap();
         assert_eq!(whole.headers["Content-Type"], "application/json");
+        let parts: WebCall = serde_json::from_value(serde_json::json!({
+            "url": "https://api.example.test/v1/upload",
+            "method": "POST",
+            "bodyParts": [
+                {"name": "payload_json", "json": {"content": "hi"}},
+                {"name": "files[0]", "content": {
+                    "app": "so.tilo.chat",
+                    "hash": "ab".repeat(32),
+                    "filename": "a.png",
+                    "contentType": "image/png",
+                }},
+                {"name": "note", "text": "one line"},
+            ],
+            "key": reference,
+        }))
+        .unwrap();
+        assert_eq!(parts.body_parts.len(), 3);
+        assert_eq!(
+            parts.body_parts[0].json,
+            Some(serde_json::json!({"content": "hi"}))
+        );
+        let content = parts.body_parts[1].content.clone().unwrap();
+        assert_eq!(content.app, "so.tilo.chat");
+        assert_eq!(content.filename, "a.png");
+        assert_eq!(content.content_type, "image/png");
+        let raw: WebCall = serde_json::from_value(serde_json::json!({
+            "url": "https://api.example.test/v1/upload",
+            "method": "PUT",
+            "bodyContent": {"hash": "ab".repeat(32), "contentType": "image/png"},
+            "key": reference,
+        }))
+        .unwrap();
+        assert_eq!(raw.body_content.unwrap().hash, "ab".repeat(32));
         for wrong in [
             serde_json::json!({"url": "https://api.example.test", "key": "a key typed out"}),
             serde_json::json!({"url": "https://api.example.test", "key": reference, "secret": "x"}),
             serde_json::json!({"key": reference}),
+            serde_json::json!({"url": "https://api.example.test", "key": reference,
+                "bodyParts": [{"name": "x", "text": "t", "other": 1}]}),
         ] {
             assert!(serde_json::from_value::<WebCall>(wrong).is_err());
         }

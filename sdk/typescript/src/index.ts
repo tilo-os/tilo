@@ -36,7 +36,9 @@ export {
   type VaultAsk,
   type VaultFind,
   type WebCallAnswer,
+  type WebCallContent,
   type WebCallOptions,
+  type WebCallPart,
 } from "./workspace.ts";
 export { resourceProxy, kebab, made, segments } from "./resource.ts";
 export type { Resource, Step, Surface, Entry } from "./resource.ts";

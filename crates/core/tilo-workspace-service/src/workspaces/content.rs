@@ -329,6 +329,23 @@ impl Workspaces {
         })
     }
 
+    /// The bytes `hash` names that this host keeps for the records of `app`
+    /// in `workspace`, checked against the hash: what a record reading one of
+    /// them is answered, without the workspace being looked up first.
+    pub(crate) fn kept_record_bytes(
+        &self,
+        workspace: &str,
+        app: &str,
+        hash: &str,
+    ) -> Option<Vec<u8>> {
+        let sources = self.inner.content.get();
+        sources.iter().find_map(|source| {
+            source
+                .read(workspace, app, hash)
+                .filter(|bytes| tilo_content::verify(hash, bytes))
+        })
+    }
+
     /// Every record of `workspace` the governor's copy holds (or of `only`
     /// among them), each saved with all of its history: what tells a host
     /// which content the workspace still references, now or in a version it

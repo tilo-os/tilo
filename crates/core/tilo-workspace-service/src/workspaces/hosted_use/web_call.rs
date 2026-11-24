@@ -21,6 +21,15 @@
 //! for or sign it in are not the agent's to set, and neither is the header
 //! or the parameter the key rides in.
 //!
+//! What a call sends is the agent's too: text, the parts of a multipart body
+//! (text or JSON inline, or content the workspace keeps by its BLAKE3
+//! address with its filename and type), or one content as the whole body.
+//! Referenced bytes are read from the workspace's store into the request, so
+//! they never pass through the app's frames, and only content this workspace
+//! keeps for the app that asks is sent: anything else is refused with one
+//! reason, before the person is asked. How many bytes were sent is written
+//! down with the use, never what they were.
+//!
 //! What the service answers goes back to the agent with the key struck out
 //! wherever it comes back as it was sent: as it is, percent-encoded, in
 //! base64, in hexadecimal, or escaped for JSON or a page. A key too short
@@ -41,6 +50,7 @@ use accounts::vault_items::{self, ItemId, KeyIn, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
 use tilo_net::{HeaderMap, HeaderName, HeaderValue, Method, Url};
 
+use tilo_actions::remote::person_vault::ContentRef;
 pub(super) use tilo_actions::remote::person_vault::WebCall;
 
 use super::Workspaces;
@@ -61,6 +71,9 @@ const MAX_ANSWER_BYTES: usize = 256 * 1024;
 /// The most headers a call names, and the longest of them.
 const MAX_HEADERS: usize = 32;
 const MAX_HEADER_BYTES: usize = 4 * 1024;
+/// The most parts a call's body holds, and the longest a part's field name.
+const MAX_PARTS: usize = 64;
+const MAX_PART_NAME_BYTES: usize = 200;
 /// The most headers of an answer handed back, and the most of each.
 const MAX_ANSWER_HEADERS: usize = 64;
 const MAX_ANSWER_HEADER_BYTES: usize = 2 * 1024;
@@ -72,6 +85,14 @@ const UNREACHED: &str = "The service could not be reached";
 const NO_ANSWER_IN_TIME: &str = "The service did not answer in time";
 const CANNOT_RIDE: &str = "That key cannot be sent the way its item says";
 const INSIDE: &str = "That address is inside this server's own network, where no key is sent";
+const MANY_BODIES: &str =
+    "A web call sends its body as text, as parts, or as workspace content, not more than one";
+const NOT_A_PART: &str = "A web call's body is parts, each a field name and its text, its JSON, \
+     or the content it carries";
+const TOO_MUCH: &str = "That is more than one web call sends";
+const NOT_KEPT: &str = "A web call sends only content its workspace keeps for the app that asks";
+const NOT_AN_ADDRESS_OF_CONTENT: &str =
+    "Content is named by the 64 lowercase hex characters of its BLAKE3 address";
 
 /// Whether `name`, in lower case, is a header that is not the agent's to set:
 /// the shared withheld set ([`is_withheld_request_header`]), credentials, and
@@ -217,13 +238,274 @@ pub(super) fn sendable(
 ) -> Result<(), String> {
     let url = address(call, reach)?;
     method(call)?;
-    if call.body.len() > MAX_SENT_BYTES {
-        return Err("That is more than one web call sends".to_owned());
-    }
+    check_body(call)?;
     let item = item_of(call)?;
     let key_in = items.key_in(&item).map_err(|error| error.to_string())?;
     headers(call, &key_in)?;
     rides_alone(&url, &key_in)
+}
+
+/// [`sendable`] with the content `call` names read from the store `workspace` keeps it in: what
+/// this workspace does not keep for the app that asks, or for the app the reference names, is
+/// refused here, before anyone is asked about the call. `caller_app` is the app that asks.
+pub(super) fn sendable_content(
+    call: &WebCall,
+    workspaces: &super::Workspaces,
+    workspace: &str,
+    caller_app: Option<&str>,
+) -> Result<(), String> {
+    let content = |app: &str, hash: &str| workspaces.kept_record_bytes(workspace, app, hash);
+    for reference in call.body_content.iter().chain(
+        call.body_parts
+            .iter()
+            .filter_map(|part| part.content.as_ref()),
+    ) {
+        content_bytes(reference, caller_app, &content)?;
+    }
+    Ok(())
+}
+
+/// Whether `call`'s body reads: one of text, parts or content, each part one
+/// of text, JSON or content, its field named, and none of it more than a call
+/// sends. What content a part names is read from the store separately
+/// ([`body_of`]): nothing here opens it.
+fn check_body(call: &WebCall) -> Result<(), String> {
+    let named = usize::from(!call.body.is_empty())
+        .saturating_add(usize::from(!call.body_parts.is_empty()))
+        .saturating_add(usize::from(call.body_content.is_some()));
+    if named > 1 {
+        return Err(MANY_BODIES.to_owned());
+    }
+    if sets_its_own_type(call) {
+        return Err(NOT_A_PART.to_owned());
+    }
+    if call.body.len() > MAX_SENT_BYTES {
+        return Err(TOO_MUCH.to_owned());
+    }
+    if call.body_parts.len() > MAX_PARTS {
+        return Err(NOT_A_PART.to_owned());
+    }
+    let mut inline = call.body.len();
+    for part in &call.body_parts {
+        let name = part.name.trim();
+        if name.is_empty() || name.len() > MAX_PART_NAME_BYTES || name.chars().any(char::is_control)
+        {
+            return Err(NOT_A_PART.to_owned());
+        }
+        let held = usize::from(part.text.is_some())
+            .saturating_add(usize::from(part.json.is_some()))
+            .saturating_add(usize::from(part.content.is_some()));
+        if held != 1 {
+            return Err(NOT_A_PART.to_owned());
+        }
+        if let Some(text) = &part.text {
+            inline = inline.saturating_add(text.len());
+        }
+        if let Some(content) = &part.content {
+            check_content(content)?;
+            check_media_type(&content.content_type)?;
+        }
+    }
+    if let Some(content) = &call.body_content {
+        check_content(content)?;
+        check_media_type(&content.content_type)?;
+    }
+    if inline > MAX_SENT_BYTES {
+        return Err(TOO_MUCH.to_owned());
+    }
+    Ok(())
+}
+
+/// Whether `content` names bytes by a lowercase BLAKE3 address, in an app's
+/// records that is named on one line.
+fn check_content(content: &ContentRef) -> Result<(), String> {
+    let hash = content.hash.trim();
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(NOT_AN_ADDRESS_OF_CONTENT.to_owned());
+    }
+    if !content.app.trim().is_empty() && !names_a_scope(content.app.trim()) {
+        return Err(NOT_A_PART.to_owned());
+    }
+    if content.filename.len() > MAX_PART_NAME_BYTES
+        || content.filename.chars().any(char::is_control)
+    {
+        return Err(NOT_A_PART.to_owned());
+    }
+    Ok(())
+}
+
+/// Whether `name` is what a content store calls a scope: a plain name, never a path.
+fn names_a_scope(name: &str) -> bool {
+    name.len() <= 128
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        && !name.bytes().all(|byte| byte == b'.')
+}
+
+/// Whether `content_type` could ride in a part's or the request's headers.
+fn check_media_type(content_type: &str) -> Result<(), String> {
+    if content_type.len() > MAX_HEADER_BYTES || content_type.chars().any(char::is_control) {
+        return Err(NOT_A_PART.to_owned());
+    }
+    Ok(())
+}
+
+/// What a call sends, ready to be put in the request.
+struct Sending {
+    /// The request's `Content-Type`, when it names one.
+    content_type: Option<String>,
+    bytes: Vec<u8>,
+}
+
+/// One part of a multipart body, its bytes in hand.
+struct SentPart {
+    name: String,
+    filename: Option<String>,
+    content_type: String,
+    bytes: Vec<u8>,
+}
+
+/// What `call` sends: its text, the parts it names with the content they
+/// carry read from the workspace's store, or one content as the whole body.
+/// `caller` is the app that asks, which content naming no app of its own is
+/// read as, and `content` answers (`app`, `hash`) with the bytes the
+/// workspace keeps for that app, or none.
+fn body_of(
+    call: &WebCall,
+    caller: Option<&str>,
+    content: &dyn Fn(&str, &str) -> Option<Vec<u8>>,
+) -> Result<Option<Sending>, String> {
+    check_body(call)?;
+    if !call.body.is_empty() {
+        return Ok(Some(Sending {
+            content_type: None,
+            bytes: call.body.clone().into_bytes(),
+        }));
+    }
+    if let Some(reference) = &call.body_content {
+        let bytes = content_bytes(reference, caller, content)?;
+        if bytes.len() > MAX_SENT_BYTES {
+            return Err(TOO_MUCH.to_owned());
+        }
+        return Ok(Some(Sending {
+            content_type: Some(media_type(reference, "application/octet-stream")),
+            bytes,
+        }));
+    }
+    if call.body_parts.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = Vec::with_capacity(call.body_parts.len());
+    for part in &call.body_parts {
+        let (bytes, content_type) = match (&part.text, &part.json, &part.content) {
+            (Some(text), _, _) => (
+                text.clone().into_bytes(),
+                "text/plain; charset=utf-8".to_owned(),
+            ),
+            (_, Some(json), _) => (
+                serde_json::to_vec(json).map_err(|error| error.to_string())?,
+                "application/json".to_owned(),
+            ),
+            (_, _, Some(reference)) => (
+                content_bytes(reference, caller, content)?,
+                media_type(reference, "application/octet-stream"),
+            ),
+            _ => return Err(NOT_A_PART.to_owned()),
+        };
+        let filename = part
+            .content
+            .as_ref()
+            .map(|content| content.filename.trim())
+            .filter(|filename| !filename.is_empty())
+            .map(str::to_owned);
+        if bytes.len() > MAX_SENT_BYTES {
+            return Err(TOO_MUCH.to_owned());
+        }
+        parts.push(SentPart {
+            name: part.name.trim().to_owned(),
+            filename,
+            content_type,
+            bytes,
+        });
+    }
+    multipart(parts)
+}
+
+/// The bytes `reference` names, from the workspace's store: the one place
+/// content a call carries is read. Refused with one reason, which names
+/// neither the address nor the app it was looked for under.
+fn content_bytes(
+    reference: &ContentRef,
+    caller: Option<&str>,
+    content: &dyn Fn(&str, &str) -> Option<Vec<u8>>,
+) -> Result<Vec<u8>, String> {
+    let hash = reference.hash.trim();
+    let app = match reference.app.trim() {
+        "" => caller.unwrap_or_default(),
+        named => named,
+    };
+    let bytes = content(app, hash).ok_or_else(|| NOT_KEPT.to_owned())?;
+    if !tilo_content::verify(hash, &bytes) {
+        return Err(NOT_KEPT.to_owned());
+    }
+    Ok(bytes)
+}
+
+/// The media type a content part is sent as: its own, or `fallback`.
+fn media_type(reference: &ContentRef, fallback: &str) -> String {
+    match reference.content_type.trim() {
+        "" => fallback.to_owned(),
+        named => named.to_owned(),
+    }
+}
+
+/// `parts` framed as one multipart body, its boundary one no part's bytes
+/// hold.
+fn multipart(parts: Vec<SentPart>) -> Result<Option<Sending>, String> {
+    let mut boundary = String::from("tilo-web-call-boundary-7f3c9a");
+    while parts.iter().any(|part| {
+        part.bytes
+            .windows(boundary.len())
+            .any(|at| at == boundary.as_bytes())
+    }) {
+        boundary.push('x');
+    }
+    let mut bytes = Vec::new();
+    for part in &parts {
+        let name = part.name.replace(['"', '\r', '\n'], "_");
+        let filename = part
+            .filename
+            .as_deref()
+            .map_or_else(String::new, |filename| {
+                format!(
+                    "; filename=\"{}\"",
+                    filename.replace(['"', '\r', '\n'], "_")
+                )
+            });
+        bytes.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"{filename}\r\n\
+                 Content-Type: {}\r\n\r\n",
+                part.content_type
+            )
+            .as_bytes(),
+        );
+        bytes.extend_from_slice(&part.bytes);
+        bytes.extend_from_slice(b"\r\n");
+    }
+    bytes.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    if bytes.len() > MAX_SENT_BYTES {
+        return Err(TOO_MUCH.to_owned());
+    }
+    Ok(Some(Sending {
+        content_type: Some(format!("multipart/form-data; boundary={boundary}")),
+        bytes,
+    }))
 }
 
 /// A header that carries the key: its value prints as withheld.
@@ -235,11 +517,27 @@ fn key_header(name: &str, text: &str) -> Result<(HeaderName, HeaderValue), Strin
     Ok((name, value))
 }
 
-/// What a call does, as its key's use is written down: the method and the
-/// path. Never the address's query, where a key may ride and where whoever
-/// wrote the request may have put anything, and never what is sent.
-fn in_a_line(method: &Method, url: &Url) -> String {
-    format!("{} {}", method.as_str(), url.path())
+/// What a call does, as its key's use is written down: the method, the
+/// path and how many bytes it sent. Never the address's query, where a key
+/// may ride and where whoever wrote the request may have put anything, and
+/// never what is sent.
+fn in_a_line(method: &Method, url: &Url, sent: usize) -> String {
+    if sent == 0 {
+        format!("{} {}", method.as_str(), url.path())
+    } else {
+        format!("{} {} ({sent} bytes)", method.as_str(), url.path())
+    }
+}
+
+/// Whether `call` names the content type its body is framed with, which the
+/// server sets.
+fn sets_its_own_type(call: &WebCall) -> bool {
+    let body_sets_one = call.body_content.is_some() || !call.body_parts.is_empty();
+    body_sets_one
+        && call
+            .headers
+            .keys()
+            .any(|name| name.trim().eq_ignore_ascii_case("content-type"))
 }
 
 /// Make `call` for `by` with the key `workspace`'s vault keeps, from a server that reaches what
@@ -251,29 +549,38 @@ pub(super) async fn send(
     workspace: &str,
     call: WebCall,
     (by, asker): (&str, &tilo_action_policy::Acting),
+    caller_app: Option<&str>,
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
     let reach = workspaces.call_reach();
     let opened = workspaces.open_vault(workspace).await?;
     let mut items = opened.items();
-    let ready = ready(reach, &mut items, call, by, purpose)?;
+    let content = |app: &str, hash: &str| workspaces.kept_record_bytes(workspace, app, hash);
+    let ready = ready(reach, &mut items, call, by, caller_app, purpose, &content)?;
     workspaces
         .write_vault(&opened, items.take_changes(), Some(asker))
         .await?;
     deliver(reach, system_lookup(), ready).await
 }
 
-/// [`send`] with the vault's `items` in hand, looking a name up with `lookup`.
+/// [`send`] with the vault's `items` in hand, looking a name up with `lookup`
+/// and reading the content a call carries with `content`.
 #[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a test names each part of the call it makes, in one chain"
+)]
 async fn send_through(
     reach: Destinations,
     lookup: Lookup,
     items: &mut VaultItems,
     call: WebCall,
     by: &str,
+    caller_app: Option<&str>,
     purpose: UsedFor<'_>,
+    content: &dyn Fn(&str, &str) -> Option<Vec<u8>>,
 ) -> Result<Value, String> {
-    let ready = ready(reach, items, call, by, purpose)?;
+    let ready = ready(reach, items, call, by, caller_app, purpose, content)?;
     deliver(reach, lookup, ready).await
 }
 
@@ -283,24 +590,26 @@ struct Ready {
     method: Method,
     sent: Vec<(HeaderName, HeaderValue)>,
     struck: Struck,
-    body: String,
+    body: Option<Sending>,
 }
 
 /// `call` for `by` with the key the vault's `items` keep, from a server that reaches `reach`:
-/// the one place the reference becomes its secret. The use is written down in `items` with
-/// `purpose` and with what this call does ([`in_a_line`]), whatever `purpose` says of that.
+/// the one place the reference becomes its secret. What the call carries is read from the
+/// workspace's store first (`content`), so content it does not keep is refused before the key is
+/// anywhere. The use is written down in `items` with `purpose` and with what this call does
+/// ([`in_a_line`]), whatever `purpose` says of that.
 fn ready(
     reach: Destinations,
     items: &mut VaultItems,
     call: WebCall,
     by: &str,
+    caller_app: Option<&str>,
     purpose: UsedFor<'_>,
+    content: &dyn Fn(&str, &str) -> Option<Vec<u8>>,
 ) -> Result<Ready, String> {
     let mut url = address(&call, reach)?;
     let method = method(&call)?;
-    if call.body.len() > MAX_SENT_BYTES {
-        return Err("That is more than one web call sends".to_owned());
-    }
+    let body = body_of(&call, caller_app, content)?;
     let (item, kind, places) = wanted(&call)?;
     // The key leaves the vault last, once nothing else refuses the call,
     // and its use is written down before it is handed out.
@@ -308,7 +617,11 @@ fn ready(
     let mut sent = headers(&call, &key_in)?;
     rides_alone(&url, &key_in)?;
     // Said before the key is anywhere in the request.
-    let what = in_a_line(&method, &url);
+    let what = in_a_line(
+        &method,
+        &url,
+        body.as_ref().map_or(0, |body| body.bytes.len()),
+    );
     let purpose = UsedFor {
         what: &what,
         ..purpose
@@ -322,7 +635,7 @@ fn ready(
         method,
         sent,
         struck,
-        body: call.body,
+        body,
     })
 }
 
@@ -342,8 +655,11 @@ async fn deliver(reach: Destinations, lookup: Lookup, ready: Ready) -> Result<Va
     for (name, value) in sent {
         request = request.header(name, value);
     }
-    if !sending.is_empty() {
-        request = request.body(sending);
+    if let Some(sending) = sending {
+        if let Some(content_type) = sending.content_type {
+            request = request.header("content-type", content_type);
+        }
+        request = request.body(sending.bytes);
     }
     // The address may carry the key, and an error of the client's names the
     // address: no refusal here repeats what the client says.
@@ -595,6 +911,11 @@ mod tests {
     /// A made-up key: no service ever issued it.
     const KEY: &str = "made-up key/0123+456?789&for=tests";
 
+    /// A workspace that keeps none of the content a call names.
+    fn no_content(_app: &str, _hash: &str) -> Option<Vec<u8>> {
+        None
+    }
+
     /// A stand-in for the resolver: every name answers `answers`, and each
     /// lookup is counted.
     fn answering(answers: &[&str]) -> (Lookup, Arc<AtomicUsize>) {
@@ -663,7 +984,9 @@ mod tests {
                 &mut items,
                 call.clone(),
                 "Scout",
+                None,
                 UsedFor::default(),
+                &no_content,
             )
             .await;
             assert_eq!(refused, Err(INSIDE.to_owned()), "{answers:?}");
@@ -681,7 +1004,9 @@ mod tests {
             &mut items,
             call,
             "Scout",
+            None,
             UsedFor::default(),
+            &no_content,
         )
         .await;
         assert_eq!(nowhere, Err(UNREACHED.to_owned()));
@@ -704,7 +1029,9 @@ mod tests {
             &mut items,
             call,
             "Scout",
+            None,
             UsedFor::default(),
+            &no_content,
         )
         .await;
         assert_eq!(cut, Err(UNREACHED.to_owned()), "no refusal says more");
@@ -715,9 +1042,10 @@ mod tests {
         );
     }
 
-    /// A call's key is written down as used for the call's method and path,
-    /// under the use's word and with how its person allowed it: never with
-    /// the address's query, and never with what was sent.
+    /// A call's key is written down as used for the call's method, path and
+    /// the size of what it sent, under the use's word and with how its person
+    /// allowed it: never with the address's query, and never with what was
+    /// sent.
     #[tokio::test]
     async fn a_call_is_written_down_by_its_method_and_path_alone() {
         let listening = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -730,7 +1058,8 @@ mod tests {
         let item = item_of(&call).unwrap();
         call.url = format!("{service}/v1/charges?account=7&note=kept-nowhere#end-kept-nowhere");
         call.method = "post".to_owned();
-        call.body = "amount=12&memo=kept-nowhere".to_owned();
+        let body = "amount=12&memo=kept-nowhere";
+        call.body = body.to_owned();
         let (lookup, _) = answering(&["127.0.0.1"]);
         let purpose = UsedFor {
             using: "tilo.vault/web-call",
@@ -743,7 +1072,9 @@ mod tests {
             &mut items,
             call,
             "Scout",
+            None,
             purpose,
+            &no_content,
         )
         .await;
         assert_eq!(cut, Err(UNREACHED.to_owned()));
@@ -751,7 +1082,10 @@ mod tests {
         let uses = items.uses(&item).unwrap();
         assert_eq!(uses.len(), 1);
         assert_eq!(uses[0].using, "tilo.vault/web-call");
-        assert_eq!(uses[0].what, "POST /v1/charges");
+        assert_eq!(
+            uses[0].what,
+            format!("POST /v1/charges ({} bytes)", body.len())
+        );
         assert_eq!(uses[0].allowed, Some(vault_items::Allowance::Once));
         assert_eq!(uses[0].by, "Scout");
         let said = format!("{uses:?}");
