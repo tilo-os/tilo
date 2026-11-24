@@ -727,7 +727,7 @@ async fn keep_peer(daemon: Arc<Daemon>, home: PathBuf, state: PathBuf) {
         }
     };
     *PEER.lock_recover() = Some(Arc::clone(&peer));
-    let Some(account) = daemon.account() else {
+    let Some(account) = daemon.account().await else {
         *NOT_IN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =

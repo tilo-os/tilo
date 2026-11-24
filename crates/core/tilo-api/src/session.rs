@@ -209,9 +209,11 @@ pub trait Here: Send + Sync {
 
     /// The person's account at their server, which makes, branches and deletes their
     /// workspaces and lists those this host does not keep. `None` for a desktop that reaches no
-    /// server.
-    fn account(&self) -> Option<Arc<dyn AccountServer>> {
-        None
+    /// server. Awaited: a device knows the server by reading the copy of the person's own
+    /// workspace, which is served on the runtime its programs run on, so blocking there would
+    /// wait on itself.
+    fn account(&self) -> FoundAccount<'_> {
+        Box::pin(async { None })
     }
 
     /// Keep `workspace`, one the person takes part in, here: a copy of it synced with its host.
@@ -260,6 +262,10 @@ pub trait Here: Send + Sync {
 /// What a [`Here`] or an [`AccountServer`] answers, once it did.
 pub type Asked<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + Send + 'a>>;
+
+/// What a [`Here`] answers for its person's account: `None` when it reaches no server.
+pub type FoundAccount<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Arc<dyn AccountServer>>> + Send + 'a>>;
 
 /// The person's account at their server, as a host asks it for itself, signed as its device.
 pub trait AccountServer: Send + Sync {

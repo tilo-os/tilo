@@ -2488,7 +2488,7 @@ async fn here_answers(
         }
         _ => {}
     }
-    let Some(account) = here.account() else {
+    let Some(account) = here.account().await else {
         return refused(&ServerError::NoAccountHere);
     };
     let asked = match op {
@@ -2666,7 +2666,7 @@ async fn listed_here(
         Err(refused) => return refused,
     };
     let mut workspaces = here.workspaces(key);
-    if let Some(account) = here.account() {
+    if let Some(account) = here.account().await {
         match account.listed(&key.user_public_key, &labels, None).await {
             Ok(listed) => {
                 for row in listed

@@ -2427,3 +2427,95 @@ fn a_plain_socket_peer_is_the_person_only_from_the_persons_own_account() {
         "the app's endpoint answers, not the person's: {app}"
     );
 }
+
+/// A program in the same process as a person's own daemon — a phone's app, which runs the daemon
+/// beside its windows — reaches the person's account over the native endpoint as `tilo` does,
+/// and is answered: the daemon founds their workspace on that first call, and the answer comes
+/// back at once rather than waiting for the copy of the workspace the same process serves.
+#[test]
+fn a_client_in_the_persons_own_daemons_process_is_answered_at_once() {
+    use std::os::unix::fs::DirBuilderExt as _;
+    use std::time::Instant;
+
+    let dir = tempfile::tempdir().unwrap();
+    let private = |path: &std::path::Path| {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .unwrap();
+    };
+    let (home, files, run) = (
+        dir.path().join("home"),
+        dir.path().join("files"),
+        dir.path().join("run"),
+    );
+    for path in [
+        home.clone(),
+        files.join("data"),
+        files.join("config"),
+        files.join("state"),
+        files.join("cache"),
+        run.clone(),
+    ] {
+        private(&path);
+    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", &home)
+        .set("XDG_DATA_HOME", files.join("data"))
+        .set("XDG_CONFIG_HOME", files.join("config"))
+        .set("XDG_STATE_HOME", files.join("state"))
+        .set("XDG_CACHE_HOME", files.join("cache"))
+        .set("XDG_RUNTIME_DIR", &run)
+        .set("TILO_IDENTITY_ROOT", files.join("data/tilo"))
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .remove("TILO_RUNTIME_PROFILE")
+        .remove("CREDENTIALS_DIRECTORY");
+    let profile = super::default_profile().unwrap();
+    private(&profile);
+
+    // This device's own account starts its person, and the daemon starts again to serve them, as
+    // the phone's does.
+    let running = super::Running::start(&profile).unwrap();
+    tilo_api::daemon::this_computer()
+        .unwrap()
+        .found(tilo_api::daemon::Founding::default())
+        .expect("the device starts its person");
+    running.stop().unwrap();
+    let running = super::Running::start(&profile).unwrap();
+    running
+        .person
+        .within(Duration::from_secs(120))
+        .expect("the person's services start");
+
+    // A client of this process, as the phone's app is, calls the person's account: the first
+    // call founds their workspace, and is answered.
+    let asked = Instant::now();
+    let listed = {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(async {
+                let calls =
+                    tilo_api::calls::Calls::open(tilo_api::calls::Reach::default()).await?;
+                calls.workspaces().await
+            })
+            .expect("the person's account is answered")
+    };
+    assert!(
+        listed
+            .get("workspaces")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|listed| !listed.is_empty()),
+        "the person's workspace is listed: {listed}"
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(10),
+        "the account is answered at once, not after a wait this process causes: {:?}",
+        asked.elapsed()
+    );
+
+    running.stop().unwrap();
+}

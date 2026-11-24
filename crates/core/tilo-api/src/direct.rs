@@ -640,10 +640,14 @@ mod tests {
             Err(format!("{workspace} is not entered in this test"))
         }
 
-        fn account(&self) -> Option<std::sync::Arc<dyn crate::session::AccountServer>> {
+        fn account(&self) -> crate::session::FoundAccount<'_> {
             static HOME: std::sync::OnceLock<std::sync::Arc<HomeServer>> =
                 std::sync::OnceLock::new();
-            Some(HOME.get_or_init(std::sync::Arc::default).clone())
+            Box::pin(async {
+                let home: std::sync::Arc<dyn crate::session::AccountServer> =
+                    HOME.get_or_init(std::sync::Arc::default).clone();
+                Some(home)
+            })
         }
 
         fn keep(&self, workspace: &str) -> crate::session::Asked<'_, ()> {

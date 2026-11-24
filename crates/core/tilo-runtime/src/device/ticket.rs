@@ -990,8 +990,11 @@ impl Tickets {
     }
 
     /// Where this device enters its person's workspaces, once it knows.
-    fn here(&self) -> Option<Device> {
-        self.0.home.as_ref().and_then(|home| home.get())
+    async fn here(&self) -> Option<Device> {
+        match &self.0.home {
+            Some(home) => home.get().await,
+            None => None,
+        }
     }
 
     /// This machine's part in its person's update rollout, when this computer is
@@ -1580,6 +1583,7 @@ impl Tickets {
         use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
         let here = self
             .here()
+            .await
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
         let key = self.0.key.clone();
         let issuer = tilo_api::daemon::enter::address_of(&ticket.issuer)?;
@@ -1666,6 +1670,7 @@ impl Tickets {
         };
         let here = self
             .here()
+            .await
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
         let answer = self
             .at_host(

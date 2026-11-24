@@ -972,13 +972,8 @@ impl Daemon {
         self.workspaces.service().sessions().handler.pages()
     }
 
-    /// The device this computer is as it enters its person's workspaces, once it knows their
-    /// server ([`super::home::Home::get`]).
-    pub(crate) fn home(&self) -> Option<Device> {
-        self.home.get()
-    }
-
-    /// What [`Self::home`] is read from, for what enters as this device.
+    /// What the device this computer is is read from, for what enters as it
+    /// ([`super::home::Home::get`]).
     pub(crate) fn home_source(&self) -> Arc<super::home::Home> {
         Arc::clone(&self.home)
     }
@@ -1151,15 +1146,17 @@ impl Daemon {
     }
 
     /// The person's account at their server, asked as this device over the device action service
-    /// ([`super::account`]): the server [`Self::home`] names. `None` while it names none; asked
-    /// again then, so the account is there once the copy of the person's workspace arrives.
-    pub(crate) fn account(&self) -> Option<Arc<super::account::Account>> {
-        if let Some(account) = self.account.lock_recover().as_ref() {
-            return Some(Arc::clone(account));
+    /// ([`super::account`]): the server [`super::home::Home::get`] names. `None` while it names
+    /// none; asked again then, so the account is there once the copy of the person's workspace
+    /// arrives.
+    pub(crate) async fn account(&self) -> Option<Arc<super::account::Account>> {
+        let cached = self.account.lock_recover().as_ref().map(Arc::clone);
+        if let Some(account) = cached {
+            return Some(account);
         }
         let person = tilo_server_protocol::servers::person_workspace_id(&self.cert.user_public_key);
         let person_key = self.cert.user_public_key;
-        let home = self.home()?;
+        let home = self.home.get().await?;
         let server = home.server_address.as_ref()?;
         let account = Arc::new(super::account::Account::at(
             &self.workspaces,
@@ -1394,7 +1391,7 @@ impl Daemon {
             entered,
         ));
         let take_work = member
-            .then(|| take_work::Server::from_login(home.get().as_ref()))
+            .then(|| take_work::Server::from_login(home.get_blocking().as_ref()))
             .flatten();
         // The person's workspace here: their own on a device a ticket made, else the one this
         // computer founds for them the first time they need one.
@@ -3164,8 +3161,11 @@ impl tilo_api::session::Here for DaemonHere {
         tilo_api::session::Here::enter(&*self.daemon()?, workspace, key)
     }
 
-    fn account(&self) -> Option<Arc<dyn tilo_api::session::AccountServer>> {
-        tilo_api::session::Here::account(&*self.daemon().ok()?)
+    fn account(&self) -> tilo_api::session::FoundAccount<'_> {
+        Box::pin(async move {
+            let daemon = self.daemon().ok()?;
+            tilo_api::session::Here::account(&*daemon).await
+        })
     }
 
     fn keep(&self, workspace: &str) -> tilo_api::session::Asked<'_, ()> {
@@ -3248,8 +3248,12 @@ impl tilo_api::session::Here for Daemon {
         })
     }
 
-    fn account(&self) -> Option<Arc<dyn tilo_api::session::AccountServer>> {
-        Daemon::account(self).map(|account| account as Arc<dyn tilo_api::session::AccountServer>)
+    fn account(&self) -> tilo_api::session::FoundAccount<'_> {
+        Box::pin(async move {
+            Daemon::account(self)
+                .await
+                .map(|account| account as Arc<dyn tilo_api::session::AccountServer>)
+        })
     }
 
     fn keep(&self, workspace: &str) -> tilo_api::session::Asked<'_, ()> {
@@ -3261,7 +3265,7 @@ impl tilo_api::session::Here for Daemon {
                 return Ok(());
             }
             let person = self.cert.user_public_key;
-            let account = Daemon::account(self).ok_or(NO_ACCOUNT_YET)?;
+            let account = Daemon::account(self).await.ok_or(NO_ACCOUNT_YET)?;
             let listed = account
                 .listed(
                     &person,

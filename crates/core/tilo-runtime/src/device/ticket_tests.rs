@@ -1278,7 +1278,7 @@ async fn a_claimed_computer_serves_its_new_person_through_their_server_after_a_r
         Some(became.clone()),
     );
     assert_eq!(
-        home.get().as_ref(),
+        home.get().await.as_ref(),
         Some(&became),
         "the ticket's server, at first"
     );
@@ -1323,7 +1323,7 @@ async fn a_claimed_computer_serves_its_new_person_through_their_server_after_a_r
     .await
     .expect("the desk's service opens again");
     let home = crate::device::home::Home::new(Arc::clone(&again), cert, None);
-    let found = home.get().expect("its copy names Ada's server");
+    let found = home.get().await.expect("its copy names Ada's server");
     assert_eq!(found.workspace, admin);
     assert_eq!(found.agent, "Codex", "the agent is the certificate's");
     assert_eq!(
@@ -1431,7 +1431,7 @@ async fn a_root_holders_login_at_a_server_names_it_among_the_persons_hosts() {
         laptop_cert.clone(),
         None,
     ));
-    assert!(home.get().is_none(), "no server is named yet");
+    assert!(home.get().await.is_none(), "no server is named yet");
     let heard = tokio::spawn({
         let home = Arc::clone(&home);
         async move { home.moved().await }
@@ -1474,6 +1474,7 @@ async fn a_root_holders_login_at_a_server_names_it_among_the_persons_hosts() {
     assert_eq!(
         started_again
             .get()
+            .await
             .and_then(|device| device.server_address)
             .map(|address| address.endpoint_addr.id),
         Some(server.node_addr().id),
