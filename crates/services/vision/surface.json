@@ -64,8 +64,8 @@
         },
         {
           "id": "tags",
-          "label": "Say what a picture shows",
-          "description": "Say what a picture shows A sentence saying it, the words in it, and the objects and pets it holds, from the same model `describe` asks.",
+          "label": "Name what a picture shows",
+          "description": "Name what a picture shows The objects and pets in it, as words: the objects first, then the pets, from the same model `describe` asks.",
           "kind": "outside",
           "params": [
             {
