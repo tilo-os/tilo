@@ -133,6 +133,9 @@ impl Shared {
                 DesktopAsk::OpenSettings(link) => {
                     crate::quick_settings::open_settings(self, &link);
                 }
+                // What a `tilo://open#…` link names, shown by the app that keeps it, as a link
+                // the person followed lands.
+                DesktopAsk::OpenLink(link) => self.open_link(&link),
             }
         }
         // What the press asked is carried out: what it closed may be raised again, though the press
@@ -193,6 +196,32 @@ impl Shared {
 
     /// Carry out `intent` where only the session can: who is here, a person's row, an invitation,
     /// another device, History, and the workspace in front's name, leaving and deleting.
+    /// Open what `link`, a `tilo://open#…` address, names: the app that keeps the resource shows
+    /// it, started first when no window of it does. What could not be opened is said to the person
+    /// in the shell, as a link that lands nowhere is.
+    fn open_link(&self, link: &str) {
+        let refused = |why: String| self.handle.acknowledge(why);
+        let Some(apps) = &self.launch else {
+            return refused("No app of this desktop keeps what the link names.".to_owned());
+        };
+        let workspace = self
+            .handle
+            .read(|tree| tree.active_workspace().map(|held| held.id().to_string()));
+        let Some(workspace) = workspace else {
+            return refused("A link opens in a workspace, and none is in front.".to_owned());
+        };
+        match tilo_app::framework::reference::target_of(link) {
+            Ok((app, record, reference)) => {
+                if let Err(error) =
+                    apps.open_reference(&workspace, &app, record.as_deref(), &reference)
+                {
+                    refused(error.to_string());
+                }
+            }
+            Err(why) => refused(why),
+        }
+    }
+
     fn intent(&self, intent: ChromeIntent) {
         let refused = |done: Result<(), String>| {
             if let Err(refusal) = done {

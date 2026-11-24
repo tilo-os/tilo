@@ -133,4 +133,7 @@ pub enum DesktopAsk {
     /// The person asked for Settings at the page `link` names, which only
     /// the host can open: its search runs where the workspaces are.
     OpenSettings(String),
+    /// The person asked to open what `link`, a `tilo://open#…` address, names: the app that keeps
+    /// it shows it, started first when no window of it does.
+    OpenLink(String),
 }

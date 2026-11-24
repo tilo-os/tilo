@@ -140,6 +140,15 @@ pub(crate) enum InviteEffect {
     /// adding to it this way.
     #[effect(screen)]
     ShowPairDevice,
+    /// Open what a `tilo://open#…` link names: the app that keeps it shows it, started first when
+    /// no window of it does. An app that shows a link opens it this way, whoever it was copied
+    /// from.
+    #[effect(screen)]
+    OpenLink {
+        /// The link, a `tilo://open#…` address
+        #[param("The link, a `tilo://open#…` address")]
+        link: String,
+    },
     /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
     #[effect(kind = "outside")]
     CancelInvitation {
@@ -1129,10 +1138,31 @@ impl DeviceLists {
             InviteEffect::ShowConnect => self
                 .handle
                 .choose_host_action(tilo_actions::remote::session_actions::CONNECT_AGENT),
+            // A link opens where the shell's own open lands: the app that keeps what it names
+            // shows it, on the desktop this session runs.
+            InviteEffect::OpenLink { link } => self
+                .asks
+                .borrow_mut()
+                .push(DesktopAsk::OpenLink(link.clone())),
             _ => {}
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
+}
+
+/// The inviting resource as the session publishes it: the links into a workspace, the invite
+/// sheet, connecting an agent or a computer, adding a device, and opening a link. A shell reads it
+/// as `so.tilo.session`'s `invite`, and a package that shows a link calls [`InviteEffect::OpenLink`]
+/// on it.
+#[must_use]
+pub(crate) fn invite_resource() -> ResourceSpec {
+    offer::<InviteEffect>(
+        tilo_resource::LiveRow::typed::<InviteRoot>(
+            INVITE_RESOURCE,
+            crate::i18n::t("session-invite"),
+        )
+        .into_resource(),
+    )
 }
 
 /// The session's own lists as it publishes them: what each is to search and read, under the
@@ -1203,13 +1233,7 @@ impl Service for DeviceLists {
                 )
                 .into_resource(),
             ),
-            offer::<InviteEffect>(
-                tilo_resource::LiveRow::typed::<InviteRoot>(
-                    INVITE_RESOURCE,
-                    crate::i18n::t("session-invite"),
-                )
-                .into_resource(),
-            ),
+            invite_resource(),
             tilo_resource::LiveRow::typed::<StylesRoot>(
                 STYLES_RESOURCE,
                 crate::i18n::t("session-styles"),

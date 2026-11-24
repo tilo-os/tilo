@@ -557,6 +557,7 @@ so-tilo-session-invite-issue-invitation = Einladungslink erstellen
 so-tilo-session-invite-show-invite = Personen einladen
 so-tilo-session-invite-show-connect = Agent oder Computer verbinden
 so-tilo-session-invite-show-pair-device = Gerät hinzufügen
+so-tilo-session-invite-open-link = Einen Link öffnen
 so-tilo-session-invite-cancel-invitation = Einladung zurückziehen
 so-tilo-desktop-overlays-show-surface = Bereich ein- oder ausblenden
 so-tilo-desktop-overlays-walk-switcher = Fenster wechseln

@@ -2423,7 +2423,10 @@ impl AppActions for Apps {
             listed
                 .entry((app.to_owned(), published_in.to_owned()))
                 .or_default()
-                .entry((action.address.resource.clone(), action.address.action.clone()))
+                .entry((
+                    action.address.resource.clone(),
+                    action.address.action.clone(),
+                ))
                 .or_insert(action);
         }
         listed
@@ -2536,6 +2539,26 @@ impl AppActions for Apps {
 }
 
 impl Apps {
+    /// Open `reference`, which `app` keeps in `record` (`None`: the app's own record of the
+    /// workspace), as a link into it opens it: the app shows the resource, started first when no
+    /// window of it does. What a `tilo://open#…` link asks, and what a search row opens.
+    ///
+    /// # Errors
+    /// No app answers here, or the app that keeps the resource could not be reached.
+    pub(crate) fn open_reference(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: Option<&str>,
+        reference: &tilo_reference::ResourceRef,
+    ) -> Result<(), ApiError> {
+        self.deliver(
+            reference.open_target(workspace, app, record),
+            serde_json::Map::new(),
+            workspace,
+        )
+    }
+
     /// Open `uri` in `workspace` in the app that takes it, as [`AppActions::open_uri`] does: the
     /// app this workspace's defaults, the person's own or this machine's open a file with, or the
     /// app that claims the scheme of a link. `None` when nothing here takes it, which an app asking

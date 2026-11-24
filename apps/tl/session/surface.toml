@@ -1014,6 +1014,91 @@ required = true
 type = "text"
 
 [[resources]]
+id = "session:invite"
+kind = "session"
+label = ""
+version = 0
+fields = []
+
+[[resources.verbs]]
+id = "invitations"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
+[[resources.verbs]]
+id = "issue-invitation"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "role"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "invitee_name"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "recipient"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "expires_in_seconds"
+required = false
+type = "int"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
+[[resources.verbs]]
+id = "show-invite"
+kind = "read"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
+[[resources.verbs]]
+id = "show-connect"
+kind = "read"
+
+[[resources.verbs]]
+id = "show-pair-device"
+kind = "read"
+
+[[resources.verbs]]
+id = "open-link"
+kind = "read"
+
+[[resources.verbs.params]]
+name = "link"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "cancel-invitation"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "invite"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
+[[resources]]
 instances = true
 kind = "desktop.window"
 label = ""

@@ -18,10 +18,13 @@ use tilo_reference::ResourceRef;
 use ui_core::widget::ChipLead;
 use ui_core::{Arrival, InvocationCall, RemoteActions};
 
-/// Ask the host to open what `href`, a `tilo://open#…` address, names: the
-/// app that keeps that resource shows it, launched first when no window
-/// shows it. An address that names no app of this desktop is refused.
-pub(crate) fn open_link(opener: &Opener, href: &str) -> Result<(), String> {
+/// What `href`, a `tilo://open#…` address, names: the app that keeps the resource, the record of
+/// the app's workspace it lives in (`None` for the app's own record of the workspace), and the
+/// resource there. An address that names no app of this desktop is refused.
+///
+/// # Errors
+/// The address does not parse, names no resource, or names one no app here keeps.
+pub fn target_of(href: &str) -> Result<(String, Option<String>, ResourceRef), String> {
     let link = tilo_reference::link::Link::parse_native(href).map_err(|error| error.to_string())?;
     let address = link
         .target
@@ -38,8 +41,17 @@ pub(crate) fn open_link(opener: &Opener, href: &str) -> Result<(), String> {
         .record
         .as_ref()
         .map(tilo_reference::link::ResourceSegment::provider_part)
-        .filter(|id| !id.is_empty());
-    opener.open(&app, record, &address.into_ref(String::new()))
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
+    Ok((app, record, address.into_ref(String::new())))
+}
+
+/// Ask the host to open what `href`, a `tilo://open#…` address, names: the
+/// app that keeps that resource shows it, launched first when no window
+/// shows it. An address that names no app of this desktop is refused.
+pub(crate) fn open_link(opener: &Opener, href: &str) -> Result<(), String> {
+    let (app, record, reference) = target_of(href)?;
+    opener.open(&app, record.as_deref(), &reference)
 }
 
 /// Another resource's published action, as an effect calls it
@@ -324,5 +336,31 @@ impl Opener {
         };
         drop(gone);
         self.0.borrow().api.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::target_of;
+
+    /// What a link names is the app and the record that keep the resource, and the resource
+    /// there: an address that carries its record opens there without asking which app keeps its
+    /// kind.
+    #[test]
+    fn a_links_app_record_and_resource_are_what_it_names() {
+        let href = "tilo://open#/me/so.tilo.notes/note:7/tl.so.tilo.notes.Note/n_7";
+        let (app, record, reference) = target_of(href).expect("a note's link opens");
+        assert_eq!(app, "so.tilo.notes");
+        assert_eq!(record.as_deref(), Some("note:7"));
+        assert_eq!(reference.kind, "tl.so.tilo.notes.Note");
+        assert_eq!(reference.id, "n_7");
+        assert_eq!(reference.span, None);
+    }
+
+    /// A link that is no native link, or names no resource of an app, opens nothing.
+    #[test]
+    fn a_link_that_names_no_resource_is_refused() {
+        assert!(target_of("https://tilo.so/#/w/a-workspace").is_err());
+        assert!(target_of("tilo://open#/me/so.tilo.notes").is_err());
     }
 }
