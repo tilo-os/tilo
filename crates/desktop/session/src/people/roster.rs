@@ -965,7 +965,6 @@ impl PeopleOverlay {
             );
         }
         let agent_tag = t("people-panel-agent-tag");
-        let bot_tag = t("people-panel-bot-tag");
         let follow_label = t("people-panel-follow");
         let stop_label = t("people-panel-stop-following");
         let wave_label = t("people-panel-wave");
@@ -1036,16 +1035,8 @@ impl PeopleOverlay {
                     ui::widget::SurfaceLevel::Floating.color(ctx.theme),
                 );
             };
-            // Software is tagged after its name: Bot for the workspace's bots,
-            // Agent for agents.
-            let tags = [(
-                if row.member.is_bot() {
-                    bot_tag.as_str()
-                } else {
-                    agent_tag.as_str()
-                },
-                ChipStyle::Neutral,
-            )];
+            // Software is tagged after its name: Agent for agents.
+            let tags = [(agent_tag.as_str(), ChipStyle::Neutral)];
             let mut face = ListRowFace::new(&row.label);
             let subtitle = joined.as_deref().unwrap_or(&lines.0);
             if !subtitle.is_empty() {
