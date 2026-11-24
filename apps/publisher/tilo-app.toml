@@ -39,8 +39,8 @@ hosts = ["apps.tilo.so"]
 secrets = "via-host"
 
 [sandbox.services]
-collab = "optional@37"
-tilo-fs = "optional@37"
+collab = "optional@40"
+tilo-fs = "optional@40"
 
 [entrypoint]
 bin = "bin/publisher"
