@@ -379,6 +379,9 @@ Every other use stays a call the vault makes itself, such as a web call with the
 secret added, a signature made with a signing key, or the current one-time code
 from a TOTP seed (`vault.item:<id>#code`), where the vault is; a grant
 to use the item lets people, agents and CI call it without ever holding it.
+The daemon's binary is its own crate outside core. It is the one place that links
+core, the language and the device's services, and registers each into core through
+core's traits; no core library names a desktop, os or language crate.
 Engines are device capability, so each device runs one engine host, owned by
 its daemon. It runs every app's engine jobs under each call's grants, with no
 authority of its own, and lives while a job runs. Engine work that needs a
