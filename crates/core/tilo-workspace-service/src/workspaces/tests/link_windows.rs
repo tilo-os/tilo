@@ -472,22 +472,26 @@ async fn a_member_peoples_new_device_is_enrolled_on_its_first_link() {
         reached.own_frames_only,
         "a member's device is no keeping host"
     );
-    tilo_test_env::within("the member's device to be enrolled", async {
-        loop {
-            let held = runtime(&workspaces, created.workspace_id).await;
-            if held
-                .lock()
-                .await
-                .members
-                .member_devices
-                .contains(&member.device_public_key)
-            {
-                return;
+    tokio::time::timeout(
+        WAIT,
+        tilo_test_env::within("the member's device to be enrolled", async {
+            loop {
+                let held = runtime(&workspaces, created.workspace_id).await;
+                if held
+                    .lock()
+                    .await
+                    .members
+                    .member_devices
+                    .contains(&member.device_public_key)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+        }),
+    )
+    .await
+    .expect("a member's first link enrols the device in the workspace's member list");
     drop(workspaces);
     server.shutdown().await;
 }
@@ -593,8 +597,9 @@ async fn an_agent_outside_its_grant_is_refused() {
 }
 
 /// A guest's device admitted to `workspace` by its signed membership: a person
-/// the operator's policy does not list, whose certificate the workspace admits
-/// and whose person `settle` adds to what the handshake trusts.
+/// the operator's policy does not list, whom the workspace's member list holds
+/// and whose certificate it admits, and whom `settle` adds to what the
+/// handshake trusts.
 async fn admitted_guest(
     workspaces: &Workspaces,
     workspace: &str,
@@ -604,6 +609,21 @@ async fn admitted_guest(
 ) -> (DeviceCert, SigningKey) {
     let (member_key, member) =
         crate::workspaces::fixtures::device_cert(root, label, DeviceCapabilities::member());
+    // The workspace holds the guest as a person before it admits a device of
+    // theirs, as adding them by key does: the member list is what admits.
+    workspaces
+        .add_member(
+            workspace,
+            workspaces.serving_certificate(),
+            crate::workspaces::AddMemberRequest {
+                request_id: root.verifying_key().to_bytes(),
+                user_public_key: root.verifying_key().to_bytes(),
+                place: crate::workspaces::MemberPlace::Role(tilo_action_policy::Role::Viewer),
+                name: None,
+            },
+        )
+        .await
+        .expect("the workspace holds the guest as a member");
     crate::workspaces::fixtures::admit_view_reader(workspaces, workspace, admin_key, &member).await;
     // What a settled governance decision does: the workspace's members reach
     // the host's handshake by their roots as well as its policy's own.
@@ -777,13 +797,18 @@ async fn a_blocked_guest_link_ends_and_is_refused_until_the_operator_unblocks_it
             "the person's blocked key ends every device of theirs"
         );
     }
-    for link in [guest_link, second_link] {
+    for (label, link) in [("guest", guest_link), ("guest-2", second_link)] {
+        let ended = tokio::time::timeout(WAIT, link)
+            .await
+            .expect("the person's blocked links end")
+            .expect("its task ends with it");
         assert!(
-            tokio::time::timeout(WAIT, link)
-                .await
-                .expect("the person's blocked links end")
-                .is_err(),
-            "a device of the blocked person is let go"
+            matches!(
+                &ended,
+                Err(tilo_server_protocol::refusal::Refusal::NotAllowed(reason))
+                    if reason == "this host refuses this device"
+            ),
+            "{label}'s link to a device of the blocked person ends refused: {ended:?}"
         );
     }
     guest_endpoint.close().await;

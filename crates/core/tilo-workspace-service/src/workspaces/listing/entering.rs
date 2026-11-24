@@ -316,7 +316,14 @@ impl Workspaces {
                 &key,
                 crate::workspaces::system_time(now),
             ) {
-                Ok(false) => {}
+                // The signed member list has the device already, and the host's
+                // own list of the workspace may not have caught up with it yet:
+                // settling is what lists the device here.
+                Ok(false) => {
+                    if let Err(error) = self.settle(&mut governed).await {
+                        return Some(JoinReply::Refused(error));
+                    }
+                }
                 Ok(true) => {
                     let state = governed.collaboration().clone();
                     if let Err(error) = governed.commit(
