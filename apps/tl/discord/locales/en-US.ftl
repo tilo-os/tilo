@@ -1000,8 +1000,10 @@ d-f23gpsje = Finish import
 
 d-f23gpsje-tilo_only = Tilo only
 
+d-k3qmcewh = Carry native discord
+    .doc = The Discord server the app of old kept, carried once into this app's record: the joinings of both sides (channels, threads, messages, webhooks, roles and emoji), the accounts people linked, the blocked accounts, and the one channel the bridge is confined to.
+
 d-zry53cq3 = Send there
-    .doc = Sends a message through a channel's webhook, as the bridge plans it.
     .w-the-bridge-carries-messages-to-discord = The bridge carries messages to Discord
     .w-there-is-no-such-channel-in = There is no such channel in the server
     .w-that-is-not-one-of-the = That is not one of the bridge's webhooks

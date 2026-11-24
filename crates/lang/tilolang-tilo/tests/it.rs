@@ -26,6 +26,7 @@ mod composer;
 mod contacts;
 mod containers;
 mod discussion;
+mod discord_migration;
 mod disks;
 mod done_days;
 mod engines;

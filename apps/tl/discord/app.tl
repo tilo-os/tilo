@@ -1234,6 +1234,138 @@ action finish_import(d: Discord, tilo_only: List<Text>) {
 }
 
 /// Sends a message through a channel's webhook, as the bridge plans it.
+// ---- the app it was ----
+
+/// The kind a mapping the app of old kept names.
+fn mapped_kind(name: Text) -> MappedKind {
+    if name == "category" {
+        .category
+    } else if name == "thread" {
+        .thread
+    } else if name == "message" {
+        .message
+    } else if name == "webhook" {
+        .webhook
+    } else if name == "role" {
+        .role
+    } else if name == "emoji" {
+        .emoji
+    } else {
+        .channel
+    }
+}
+
+/// Which side a mapping the app of old kept was made on.
+fn origin_side(name: Text) -> OriginSide {
+    if name == "discord" { .discord } else { .tilo }
+}
+
+/// The kind of a channel the app of old observed.
+fn channel_kind(name: Text) -> ChannelKind {
+    if name == "voice" {
+        .voice
+    } else if name == "category" {
+        .category
+    } else if name == "thread" {
+        .thread
+    } else {
+        .text
+    }
+}
+
+/// A time the app of old kept as milliseconds since 1970, as the ISO text this app keeps.
+fn iso_of(millis: Int) -> Text {
+    "{Time("1970-01-01T00:00:00Z") + Duration(millis)}"
+}
+
+/// The Discord server the app of old kept, carried once into this app's record: the joinings of
+/// both sides (channels, threads, messages, webhooks, roles and emoji), the accounts people
+/// linked, the blocked accounts, and the one channel the bridge is confined to. Running it again
+/// adds nothing twice and changes nothing.
+migration action carry_native_discord(accounts: Accounts) {
+    let earlier = earlier(accounts)
+    let held = earlier.find(e -> e.of == "")
+    if let g = held {
+        let guild_id = g.texts.get("guild_id") ?? ""
+        if guild_id != "" {
+            let server = g.texts.get("name") ?? ""
+            let existing = accounts.accounts.find(d -> d.guild_id == guild_id)
+            let account = if let d = existing {
+                d
+            } else {
+                accounts.accounts.insert(Discord(name: if server == "" { "Discord" } else { server }))
+            }
+            if account.guild_id == "" {
+                account.guild_id = guild_id
+                account.server = server
+                account.name = if server == "" { account.name } else { server }
+                account.only_channel = g.texts.get("only_channel") ?? ""
+                account.mirror_channels = (g.texts.get("mirror_channels") ?? "false") == "true"
+                account.map_roles = (g.texts.get("map_roles") ?? "false") == "true"
+                account.ownership = if (g.texts.get("ownership") ?? "importing") == "adopted" {
+                    .adopted
+                } else {
+                    .importing
+                }
+                account.bot_user = g.texts.get("bot_user") ?? ""
+                account.sign_in_page = g.texts.get("sign_in_page") ?? ""
+            }
+            for blocked in g.lists.get("blocked_personas") ?? [] {
+                if not account.blocked_personas.contains(blocked) {
+                    account.blocked_personas.add(blocked)
+                }
+            }
+            for m in earlier.filter(e -> e.of == "map") {
+                let kind = mapped_kind(m.texts.get("kind") ?? "")
+                let tilo = m.texts.get("tilo") ?? ""
+                let discord = m.texts.get("discord") ?? ""
+                if tilo != "" and discord != "" and not account.map.any(x -> x.kind == kind and x.tilo == tilo) {
+                    account.map.insert(Mapping(
+                        kind: kind,
+                        tilo: tilo,
+                        discord: discord,
+                        origin: origin_side(m.texts.get("origin") ?? ""),
+                        persona: m.texts.get("persona") ?? "",
+                        root: m.texts.get("root") ?? "",
+                        picture: m.texts.get("picture") ?? "",
+                    ))
+                }
+            }
+            for l in earlier.filter(e -> e.of == "links") {
+                let user = l.texts.get("discord_user") ?? ""
+                let at = l.texts.get("linked_at")?.to_int() ?? 0
+                if user != "" and not account.links.any(x -> x.discord_user == user) {
+                    account.links.insert(Link(
+                        discord_user: user,
+                        person: l.texts.get("person") ?? "",
+                        linked_at: iso_of(at),
+                        user_name: l.texts.get("user_name") ?? "",
+                        display_name: l.texts.get("display_name") ?? "",
+                        avatar: l.texts.get("avatar") ?? "",
+                        interaction: l.texts.get("interaction") ?? "",
+                        photo: l.texts.get("photo") ?? "",
+                        photo_avatar: l.texts.get("photo_avatar") ?? "",
+                    ))
+                }
+            }
+            for c in earlier.filter(e -> e.of == "channels") {
+                let id = c.texts.get("id") ?? ""
+                let parent = c.texts.get("parent") ?? ""
+                if id != "" and not account.channels.any(x -> x.id == id) {
+                    account.channels.insert(DChannel(
+                        id: id,
+                        kind: channel_kind(c.texts.get("kind") ?? ""),
+                        name: c.texts.get("name") ?? "",
+                        parent: if parent == "" { .none } else { .some(parent) },
+                        position: c.texts.get("position")?.to_int() ?? 0,
+                        topic: c.texts.get("topic") ?? "",
+                    ))
+                }
+            }
+        }
+    }
+}
+
 // ---- messages and reactions --------------------------------------------------------------
 action send_there(d: Discord, op: SendOp) {
     require bridge(invoker) "The bridge carries messages to Discord"
