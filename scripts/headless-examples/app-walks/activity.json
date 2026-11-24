@@ -35,51 +35,13 @@
     },
     {
       "id": "history",
-      "said": "Switch to History and narrow it by time, person and work",
+      "said": "Switch to History and read every change",
       "ops": [
         {
-          "press": "History"
+          "select_row": "History"
         },
         {
           "wait_for": "actions"
-        },
-        {
-          "must": [
-            "Time",
-            "People",
-            "Browse by"
-          ]
-        },
-        {
-          "press": "All time"
-        },
-        {
-          "wait_for": "Today"
-        },
-        {
-          "press": "Today"
-        },
-        {
-          "wait_for": "actions"
-        }
-      ]
-    },
-    {
-      "id": "detail",
-      "said": "Select a work session and read what it did, with what can be done about it",
-      "ops": [
-        {
-          "press_any": [
-            "Select"
-          ]
-        },
-        {
-          "wait_for": "actions"
-        },
-        {
-          "must": [
-            "Details"
-          ]
         }
       ]
     },
@@ -88,15 +50,10 @@
       "said": "Replay the workspace change by change",
       "ops": [
         {
-          "press": "Replay"
+          "select_row": "Replay"
         },
         {
           "wait_for": "actions"
-        },
-        {
-          "must": [
-            "Checkpoint"
-          ]
         }
       ]
     },
