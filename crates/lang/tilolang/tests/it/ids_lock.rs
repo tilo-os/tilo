@@ -17,7 +17,7 @@ tilo_test_env::scenario! {
         for name in [
             "Counter",
             "Counter.value",
-            "increment",
+            "increment@Counter",
             "counter",
             "counter#plus",
         ] {
@@ -31,7 +31,7 @@ tilo_test_env::scenario! {
     {
         let c = compile(&fixture("counter.tl"));
         let increment = c.meta.action_named("increment").expect("the action");
-        assert_eq!(Some(increment.id.as_str()), c.ids.get("increment"));
+        assert_eq!(Some(increment.id.as_str()), c.ids.get("increment@Counter"));
         let view = c.meta.view_named("counter").expect("the view");
         assert_eq!(Some(view.id.as_str()), c.ids.get("counter"));
         assert_eq!(view.anchor_named("plus"), c.ids.get("counter#plus"));
@@ -73,7 +73,7 @@ tilo_test_env::scenario! {
             &mut SeededEntropy(2),
         )
         .expect("compiles");
-        assert_ne!(a.get("increment"), c.ids.get("increment"));
+        assert_ne!(a.get("increment@Counter"), c.ids.get("increment@Counter"));
     }
 
     phase rename_keeps_the_id_and_everything_under_it;
@@ -103,13 +103,13 @@ tilo_test_env::scenario! {
     {
         let mut lock = lock_of(&fixture("counter.tl"));
         assert!(lock.rename("Nope", "X").is_err());
-        assert!(lock.rename("increment", "counter").is_err());
+        assert!(lock.rename("increment@Counter", "counter").is_err());
     }
 
     phase a_removed_declaration_is_retired_and_its_id_is_never_reused;
     {
         let first = lock_of(&fixture("counter.tl"));
-        let old = first.get("increment").map(str::to_string).expect("id");
+        let old = first.get("increment@Counter").map(str::to_string).expect("id");
         let src = fixture("counter.tl")
             .replace("action increment(c: Counter) {\n    c.value += 1\n}\n", "")
             .replace("on: increment(c)", "on: increment2(c)");
@@ -120,12 +120,12 @@ tilo_test_env::scenario! {
         );
         let after =
             tilolang::compile_package_with(&src, &first, &[], &mut SeededEntropy(3)).expect("compiles");
-        assert!(after.ids.get("increment").is_none());
+        assert!(after.ids.get("increment@Counter").is_none());
         assert!(
             after
                 .ids
                 .retired()
-                .any(|(n, i)| n == "increment" && i == old)
+                .any(|(n, i)| n == "increment@Counter" && i == old)
         );
         // Declaring the name again assigns a new id, never the retired one.
         let back = tilolang::compile_package_with(
@@ -135,7 +135,7 @@ tilo_test_env::scenario! {
             &mut SeededEntropy(3),
         )
         .expect("compiles");
-        let fresh = back.ids.get("increment").expect("id");
+        let fresh = back.ids.get("increment@Counter").expect("id");
         assert_ne!(fresh, old);
         assert!(back.ids.retired().any(|(_, i)| i == old));
         assert!(back.ids.to_text().contains("# retired"));

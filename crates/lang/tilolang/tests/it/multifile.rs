@@ -652,7 +652,7 @@ tilo_test_env::scenario! {
             ["count"]
         );
         assert_eq!(lib.meta.roots.len(), 1, "a resource of the library's own");
-        for name in ["Mark", "Marks", "Importance", "add", "count"] {
+        for name in ["Mark", "Marks", "Importance", "add@Marks", "count"] {
             assert!(lib.ids.get(name).is_some(), "`{name}` is locked");
         }
         assert!(lib.ids.get("Mark.title").is_some());

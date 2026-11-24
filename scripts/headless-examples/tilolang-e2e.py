@@ -193,8 +193,9 @@ def toolkit_word(name: str, key: str) -> str:
 
 
 def app_word(name: str, declared: str, attribute: str | None = None, **args) -> str:
-    """What a window of the tilolang app `name` calls its declaration `declared` (an action, a
-    view), or one of the words it says there (`attribute`, `w-<slug>`), with `args` placed."""
+    """What a window of the tilolang app `name` calls its declaration `declared` (a view, or an
+    action on its resource type: `check@Task`), or one of the words it says there (`attribute`,
+    `w-<slug>`), with `args` placed."""
     key = f"d-{app_id_of(name, declared)}" + (f".{attribute}" if attribute else "")
     return say(f"apps/tl/{name}", key, window_language(name), **args)
 
@@ -747,7 +748,7 @@ def check_today(session: Session, out: Path, before: bytes) -> dict:
     # The tasks the two checks above finished: what the cleanup counts, in the words Today files
     # its note with in the person's language.
     finished = 2
-    note = app_word("today", "morning_cleanup", "w-morning-done", n=finished)
+    note = app_word("today", "morning_cleanup@todo.Tasks", "w-morning-done", n=finished)
     allow, deny = (say("crates/desktop/sheets", key) for key in ("portal-allow-once", "portal-deny"))
     named_before = named(session)
     # The cleanup, pressed on Today's window: the app runs it, which either files its note in
@@ -847,7 +848,7 @@ def menu_complete(session: Session, title: str) -> dict:
     # A row's own command: every task's menu offers it, so its identity names the action and not
     # the row it stands on. It is pressed here where the one open menu draws it, by the words it
     # reads in — the check that nothing else of the window offers those words is below.
-    complete = app_word("tasks", "check", "w-complete")
+    complete = app_word("tasks", "check@Task", "w-complete")
     shown = named(session)
     if complete in shown:
         raise Failed(f"the window names {complete} before {title!r}'s menu opens: {shown}")

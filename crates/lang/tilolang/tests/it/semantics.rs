@@ -375,8 +375,8 @@ tilo_test_env::scenario! {
         );
         crate::common::validate(&c.wasm);
         let source = tilolang::messages::source_catalogue(&c.meta);
-        let pin = tilolang::messages::key_of(c.ids.get("pin").expect("the action"));
-        let tally = tilolang::messages::key_of(c.ids.get("tally").expect("the action"));
+        let pin = tilolang::messages::key_of(c.ids.get("pin@Note").expect("the action"));
+        let tally = tilolang::messages::key_of(c.ids.get("tally@Book").expect("the action"));
         for line in [
             format!("{pin} = Pin"),
             "    .w-pin = Pin".to_owned(),
@@ -402,8 +402,8 @@ tilo_test_env::scenario! {
             "type Line {\n    said: Text\n}\n\ntype Talk {\n    lines: Collection<Line>\n}\n\nroot Talk\n\ndefault view talk for Talk\n\n/// Posts a line.\naction say(t: Talk, said: Text) {\n    t.lines.insert(Line(said: said))\n}\n\n/// Posts a line that says how many came before it.\naction greet(t: Talk) {\n    let n = t.lines.count()\n    say(t, std.say(\"{n} lines before this\"))\n}\n\nview talk(t: Talk) {\n    for l in t.lines {\n        text(l.said)\n    }\n}",
         );
         crate::common::validate(&c.wasm);
-        let say = tilolang::messages::key_of(c.ids.get("say").expect("the app's own action"));
-        let greet = tilolang::messages::key_of(c.ids.get("greet").expect("the action"));
+        let say = tilolang::messages::key_of(c.ids.get("say@Talk").expect("the app's own action"));
+        let greet = tilolang::messages::key_of(c.ids.get("greet@Talk").expect("the action"));
         let source = tilolang::messages::source_catalogue(&c.meta);
         for line in [
             format!("{say} = Say"),
@@ -430,7 +430,7 @@ tilo_test_env::scenario! {
             "type Video {\n    title: Text\n    watch_later: Bool\n}\ntype Tube {\n    videos: Collection<Video>\n}\nroot Tube\ndefault view tube for Tube\n/// Keeps the video to watch later, or takes it off the list.\naction watch_later(v: Video, saved: Bool (label: \"On the Watch later list\") = not v.watch_later, at: Int = 0) {\n    v.watch_later = saved\n}\nview tube(t: Tube) {\n    for v in t.videos {\n        button(watch_later(v))\n    }\n}",
         );
         crate::common::validate(&c.wasm);
-        let action = tilolang::messages::key_of(c.ids.get("watch_later").expect("the action"));
+        let action = tilolang::messages::key_of(c.ids.get("watch_later@Video").expect("the action"));
         let source = tilolang::messages::source_catalogue(&c.meta);
         assert!(
             source.contains(&format!("{action}-saved = On the Watch later list")),

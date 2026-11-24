@@ -282,20 +282,39 @@ pub fn present_key(action: &str) -> String {
 
 pub const PRESENT_SUFFIX: &str = "~present";
 
-/// The ids-lock name of the action `a` of `m`: its name, or, where another action of `m` has the
-/// same name, its name on the resource type it takes first (`join@WifiNetwork`). An action's name
-/// belongs to its resource type, so two types' `join` are two actions, each with its own id.
+/// The ids-lock name of the action `a` of `m`: its name on the resource type it takes first
+/// (`join@WifiNetwork`), or its bare name when it takes none. An action's name belongs to its
+/// resource type, so two types' `join` are two actions, each with its own id, and the key is the
+/// action's own: a second type declaring `join` never changes the first one's id. An action that
+/// takes no resource first cannot share its name with another (E011), so its bare name is its own.
 pub fn action_key(m: &Module, a: &crate::ast::ActionDecl) -> String {
-    let shared = m.items.iter().any(|item| {
-        matches!(item, Item::Action(other)
-            if other.name.name == a.name.name && !std::ptr::eq(other, a))
-    });
     match a.params.first().map(|p| &p.ty.kind) {
-        Some(crate::ast::TypeExprKind::Named(path)) if shared => {
+        Some(crate::ast::TypeExprKind::Named(path)) if names_a_resource(m, path) => {
             let ty: Vec<&str> = path.iter().map(|part| part.name.as_str()).collect();
             format!("{}@{}", a.name.name, ty.join("."))
         }
         _ => a.name.name.clone(),
+    }
+}
+
+/// Whether the type `path` names, in `m`, can be a resource: not a value type of the language
+/// (`Text`, `std.Identifier`, `json.Value`) or one of `m`'s enums. A package's own type of a
+/// language type's name shadows it.
+fn names_a_resource(m: &Module, path: &[crate::ast::Ident]) -> bool {
+    let own = |want: fn(&Item, &str) -> bool| match path {
+        [name] => m.items.iter().any(|item| want(item, &name.name)),
+        _ => false,
+    };
+    if own(|item, name| matches!(item, Item::Type(t) if t.name.name == name)) {
+        return true;
+    }
+    if own(|item, name| matches!(item, Item::Enum(e) if e.name.name == name)) {
+        return false;
+    }
+    let dotted: Vec<&str> = path.iter().map(|part| part.name.as_str()).collect();
+    match dotted.as_slice() {
+        [name] => crate::types::language_type(name).is_none(),
+        dotted => crate::types::named(dotted).is_none(),
     }
 }
 

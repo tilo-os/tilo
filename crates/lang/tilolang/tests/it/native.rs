@@ -271,7 +271,7 @@ tilo_test_env::scenario! {
         let pin = action(&c.meta, "toggle_pin");
         assert_eq!(pin.label, "Pin", "the else branch is the static label");
         assert_eq!(pin.icon.as_deref(), Some("pin"));
-        let id = c.ids.get("toggle_pin~present").expect("an id in the lock");
+        let id = c.ids.get("toggle_pin@Note~present").expect("an id in the lock");
         assert_eq!(pin.present.as_deref(), Some(id));
         let view = c
             .meta

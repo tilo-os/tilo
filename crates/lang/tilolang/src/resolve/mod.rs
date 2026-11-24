@@ -1705,8 +1705,8 @@ impl Resolver<'_> {
                 self.template(v);
                 continue;
             }
-            // An action's key in the ids lock: its name, or its name on its resource type where
-            // another action shares the name.
+            // An action's key in the ids lock: its name on the resource type it takes first, or its
+            // bare name when it takes none.
             let key = match item {
                 Item::Action(a) => crate::ids::action_key(module, a),
                 _ => String::new(),

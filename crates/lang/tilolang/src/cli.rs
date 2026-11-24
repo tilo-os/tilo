@@ -234,7 +234,7 @@ fn explain(b: &BuiltPackage, changes: &[(char, String)], what: &str) {
             "a scenario's hidden action"
         } else if name.contains('#') {
             "an anchor (`as name`)"
-        } else if name.contains('.') {
+        } else if name.contains('.') && !name.contains('@') {
             "a field, case or view state"
         } else {
             "a declaration"

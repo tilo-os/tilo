@@ -73,7 +73,7 @@ A declaration the lock does not name gets a new id, and the compiled package's l
 ```text
 Counter = ctype222
 Counter.value = cvalue22
-add = addact22
+add@Counter = addact22
 counter = cview222
 counter#plus = cplus222
 ```

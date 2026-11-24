@@ -121,9 +121,17 @@ fn refined_blocks(catalogue: &str) -> Vec<(String, String)> {
 }
 
 /// A declared name as a label: in words, its first letter upper case (`NoteOrder` is `Note order`).
+/// The resource type in an action's lock name is not part of its words: the view presenting
+/// `join@Wifi` is called as `join`'s is.
 #[must_use]
 pub fn label(name: &str) -> String {
-    let words = in_words(name);
+    let words = match name.split_once('@') {
+        Some((verb, on)) => match on.split_once('~') {
+            Some((_, rest)) => in_words(&format!("{verb}~{rest}")),
+            None => in_words(verb),
+        },
+        None => in_words(name),
+    };
     let mut chars = words.chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
@@ -340,7 +348,11 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         }
         // What the person types where they answer its ask, each labelled.
         for (n, take) in action.takes.iter().enumerate() {
-            attribute(&mut out, &crate::meta::take_key(n + 1), &pattern(&take.label));
+            attribute(
+                &mut out,
+                &crate::meta::take_key(n + 1),
+                &pattern(&take.label),
+            );
         }
         // What it tells a person, as a notification shows it.
         for word in meta.words.iter().filter(|word| word.view == action.id) {

@@ -125,3 +125,38 @@ tilo_test_env::scenario! {
         assert!(got.iter().any(|c| c == "E022"), "{got:?}");
     }
 }
+
+const SAVED_JOIN: &str =
+    "/// Join the saved network.\naction join(s: Saved) {\n    s.auto = true\n}\n";
+
+/// The networks package with the ids `lock` gave its last build.
+fn networks_after(body: &str, lock: &tilolang::IdsLock, seed: u64) -> Compiled {
+    let src = format!("app t.net \"Networks\"\n{body}\n");
+    tilolang::compile_package_with(&src, lock, &[], &mut tilolang::SeededEntropy(seed))
+        .unwrap_or_else(|d| panic!("{body}\n{d:#?}"))
+}
+
+tilo_test_env::scenario! {
+    /// An action's id is its own: a second resource type declaring the same verb leaves the
+    /// first type's action, and what was stored or granted under its id, as it was.
+    fn an_actions_id_stays_when_another_type_declares_its_verb;
+
+    phase a_second_types_join_leaves_the_first_ones_id;
+    {
+        let one = NETWORKS.replace(SAVED_JOIN, "");
+        assert_ne!(one, NETWORKS, "the package starts with one join");
+        let first = networks_after(&one, &tilolang::IdsLock::new(), 1);
+        let wifi = id_of(&first.meta, "join", "Wifi");
+        let second = networks_after(NETWORKS, &first.ids, 2);
+        assert_eq!(id_of(&second.meta, "join", "Wifi"), wifi, "{:?}", second.ids);
+        assert_ne!(id_of(&second.meta, "join", "Saved"), wifi);
+        assert!(
+            second.ids.retired().next().is_none(),
+            "nothing the first build named is retired: {:?}",
+            second.ids
+        );
+        // Taking the second join away again leaves the first one's id too.
+        let third = networks_after(&one, &second.ids, 3);
+        assert_eq!(id_of(&third.meta, "join", "Wifi"), wifi);
+    }
+}

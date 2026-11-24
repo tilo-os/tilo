@@ -13,13 +13,13 @@ board = t5kjcxjq
 card_page = zzww2gmr
 card_row = aa76g3qb
 card_tile = ufycrk6s
-delete_card = jx22rl4l
-move_before = xsmkgxl2
-move_to = yp6qgach
-new_card = dw7khkq2
-new_column = 2lxgfocl
-place_cards = pf6eoju5
-rename_column = yjwm6mjf
+delete_card@Column = jx22rl4l
+move_before@Column = xsmkgxl2
+move_to@Card = yp6qgach
+new_card@Column = dw7khkq2
+new_column@Board = 2lxgfocl
+place_cards@Board = pf6eoju5
+rename_column@Column = yjwm6mjf
 scenario "a release board" = w2awzeqx
 
 # retired
