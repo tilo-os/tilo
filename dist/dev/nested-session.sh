@@ -366,22 +366,17 @@ runtime_id=tilo-runtime/$runtime_version
 # alone (--binaries-only): the launcher runs it on the app's runtime, whose
 # loader and libraries it links, so a loader set of its own is never read.
 tilolang_bin=$thin/tilolang-process
-# Beside it, the tilolang host (crates/lang/tilolang-process), which runs a workspace's tilolang
-# apps by one author as instances: built without the toolkit, it runs on the app runtime's
-# loader and libraries alone.
-tilolang_process_bin=$bin/tilolang-process
 if [[ -f $tilolang_bin ]]; then
-    [[ -f $tilolang_process_bin ]] || die "no tilolang host at $tilolang_process_bin"
     # shellcheck source=/dev/null
     . "$repo_root/tools/apps/tilolang_packages.sh"
     tilolang_version=$(tilolang_runtime_version "$repo_root") \
         || die "cannot read the tilolang runtime version"
-    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin" "$tilolang_process_bin"; } | sha256sum | cut -c1-64)
+    tilolang_key=$( { printf '%s\n' binaries-only "$tilolang_version" "$runtime_version" "$pubkey"; sha256sum "$tilolang_bin"; } | sha256sum | cut -c1-64)
     if [[ ! -f $runtimes/.tilolang-key || $(<"$runtimes/.tilolang-key") != "$tilolang_key" \
           || ! -f $runtimes/$tilolang_version/bundle.toml ]]; then
         say "baking the tilolang runtime bundle"
         mkdir -p "$state/work"
-        tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$tilolang_bin" "$tilolang_process_bin" \
+        tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$tilolang_bin" \
             "$identity" "$state/work/tilolang" "$tilolang_version" \
             || die "could not bake the tilolang runtime bundle"
         rm -rf "$runtimes/$tilolang_version"

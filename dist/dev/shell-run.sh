@@ -317,14 +317,8 @@ say "the apps run on $app_runtime"
 . "$repo_root/tools/apps/tilolang_packages.sh"
 tilolang_version=$(tilolang_runtime_version "$repo_root") \
     || die "cannot read the tilolang runtime version"
-# Beside it, the tilolang host (crates/lang/tilolang-process), which runs a workspace's tilolang
-# apps by one author as instances, as `nested-session.sh` bakes it: without it every tilolang
-# app's window and every agent program finds no host to run in. `nested-session-build.sh` builds
-# it without the toolkit, so it runs on the app runtime's loader and libraries alone.
-tilolang_process_bin=$repo_root/target/nested-session/bin/tilolang-process
-[[ -f $tilolang_process_bin ]] || die "no tilolang host at $tilolang_process_bin: run dist/dev/nested-session-build.sh"
 say "baking the tilolang runtime bundle $tilolang_version"
-tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$tilolang_bin" "$tilolang_process_bin" \
+tilolang_bake_runtime "$bin/tilo-runtime-bundle" "$tilolang_bin" \
     "$identity" "$runtimes/$tilolang_version" "$tilolang_version" \
     || die "could not bake the tilolang runtime bundle"
 tilolang_runtime=tilolang/$tilolang_version
