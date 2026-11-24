@@ -952,6 +952,44 @@ action open_attachment(f: Attached) uses files (icon: .external_link, label: "Op
     }
 }
 
+/// The content address an attachment's bytes read at: the hash after `tilo-blob://`.
+fn attached_hash(f: Attached) -> Text {
+    if let at = f.blob.find("://") { f.blob.slice(at + 3, f.blob.len()) } else { f.blob }
+}
+
+/// What the workspace's host stopped keeping of `f`, when it stopped keeping it: a limit said so,
+/// and every device reads the host's refusals as the workspace's content. The bytes stay where
+/// they were posted, so the file still opens from whoever keeps it.
+fn refusal_of(f: Attached) -> Option<workspace.Refusal> {
+    workspace.content.refusals.find(r -> r.hash == attached_hash(f))
+}
+
+/// Why the host did not keep an attachment: the limit it went over, in the words of what it
+/// counts, and what that limit allowed.
+fn refused_why(f: Attached, r: workspace.Refusal) -> Text {
+    let allowed = std.mib(r.allowed)
+    if r.limit == "file" {
+        "The host didn't keep {f.name}: it is larger than the {allowed} it keeps of one file."
+    } else if r.limit == "member" {
+        "The host didn't keep {f.name}: this person's files take more than their {allowed}."
+    } else if r.limit == "hourly" {
+        "The host didn't keep {f.name}: this person posted more than {allowed} this hour."
+    } else if r.limit == "workspace" {
+        "The host didn't keep {f.name}: the workspace keeps more than {allowed} on it."
+    } else {
+        "The host didn't keep {f.name}: it is more than the {allowed} this host keeps."
+    }
+}
+
+/// Who can raise the limit a refusal names.
+fn refused_raise(r: workspace.Refusal) -> Text {
+    if r.raise == "host" {
+        "The host's person can raise it in the server's settings."
+    } else {
+        "The workspace's owners can raise it in Settings, under Content limits."
+    }
+}
+
 /// Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the
 /// one already open, else a new one in the sidebar. The message is sent as every message is.
 action write_to(all: Conversations, who: Actor, body: RichText) -> Message uses notify (
@@ -2042,10 +2080,24 @@ view message(
         turn_steps(m)
     }
     if not m.attachments.is_empty() {
-        row(gap: .tight, wrap: true) {
+        stack(gap: .tight) {
+            row(gap: .tight, wrap: true) {
+                for f in m.attachments {
+                    if let _ = refusal_of(f) {
+                        ui.Chip(f.name, icon: .triangle_alert, tone: .warning) {
+                            on press: open_attachment(f)
+                        }
+                    } else {
+                        ui.Chip(f.name, icon: .paperclip) {
+                            on press: open_attachment(f)
+                        }
+                    }
+                }
+            }
             for f in m.attachments {
-                ui.Chip(f.name, icon: .paperclip) {
-                    on press: open_attachment(f)
+                if let r = refusal_of(f) {
+                    ui.StatusLine(refused_why(f, r), status: .warning)
+                    ui.Text(refused_raise(r), role: .caption, secondary: true)
                 }
             }
         }

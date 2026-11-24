@@ -2620,3 +2620,93 @@ fn the_workspaces_people_are_a_page_of_their_own() {
         assert!(shown.contains(&part.to_owned()), "{part} in {shown:?}");
     }
 }
+
+/// A file a message carries whose content the host stopped keeping: the poster reads why on the
+/// attachment, naming the limit and who can raise it, and the status goes when the limit is
+/// raised and the content kept again. The record the message lives in is not touched: the file
+/// still opens from the device that posted it.
+#[test]
+fn a_refusal_shows_on_the_attachment_and_clears_when_the_limit_is_raised() {
+    use tilolang_tilo::content::{RefusedContent, WorkspaceContent};
+
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let hash = "ab".repeat(32);
+    let file = Value::file(tilolang_runtime::blob::FileValue::new(
+        "site-plan.pdf",
+        "application/pdf",
+        30 * 1_048_576,
+        hash.clone(),
+    ));
+    call(
+        &ada,
+        "send",
+        vec![
+            design.clone(),
+            rich("The plan."),
+            Value::none(),
+            Value::List(vec![file]),
+        ],
+    );
+    ada.commit();
+    let mut view = open(&ada, &target(&design));
+    let kept: Vec<String> = rows(&mut view).iter().flat_map(texts).collect();
+    assert!(
+        !kept.iter().any(|text| text.contains("didn't keep")),
+        "kept at first: {kept:?}"
+    );
+
+    let twenty_five = 25 * 1_048_576;
+    ada.host.give_content(&WorkspaceContent {
+        file_bytes: twenty_five,
+        member_bytes: 250 * 1_048_576,
+        hourly_bytes: 250 * 1_048_576,
+        refusals: vec![RefusedContent {
+            record: "so.tilo.chat/message".to_owned(),
+            hash: hash.clone(),
+            bytes: 30 * 1_048_576,
+            limit: "file".to_owned(),
+            allowed: twenty_five,
+            member: "ada".to_owned(),
+            at: 1,
+            raise: "owners".to_owned(),
+        }],
+        host_person: None,
+    });
+    view.poll_patches().unwrap();
+    let shown: Vec<String> = rows(&mut view).iter().flat_map(texts).collect();
+    assert!(
+        shown
+            .iter()
+            .any(|text| text.contains("site-plan.pdf") && text.contains("25 MiB")),
+        "the file and what the limit allowed: {shown:?}"
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|text| text.contains("owners can raise it")),
+        "who can raise it: {shown:?}"
+    );
+
+    // Raised: the limit allows it, the host keeps it again, and the refusal record is gone.
+    ada.host.give_content(&WorkspaceContent {
+        file_bytes: 50 * 1_048_576,
+        member_bytes: 250 * 1_048_576,
+        hourly_bytes: 250 * 1_048_576,
+        refusals: Vec::new(),
+        host_person: None,
+    });
+    view.poll_patches().unwrap();
+    let shown: Vec<String> = rows(&mut view).iter().flat_map(texts).collect();
+    assert!(
+        !shown.iter().any(|text| text.contains("didn't keep")),
+        "the status clears: {shown:?}"
+    );
+    assert!(
+        shown.iter().any(|text| text.contains("site-plan.pdf")),
+        "the attachment stays: {shown:?}"
+    );
+}
