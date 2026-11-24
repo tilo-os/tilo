@@ -51,6 +51,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -763,13 +764,17 @@ class Session:
     def start(self, *, apps: str = APPS, fresh: bool = True, out: Path | None = None,
               tag: str = "session", tapps: list[Path] | None = None,
               env: dict | None = None,
-              session_args: list[str] | None = None) -> "Session":
+              session_args: list[str] | None = None,
+              abort: Callable[[], str | None] | None = None) -> "Session":
         """Start the session on its state. `fresh` forgets the saved desktop, so
         the session opens the way a first login does; without it the
         workspaces, windows and their layout come back as they were left.
         `session_args` go to `tilo-session` itself, after the script's `--`:
         the further displays of a multi-display shell (`--output`), or another
-        backend's options."""
+        backend's options. `abort` is asked while the session starts, and a
+        reason it gives ends the wait at once with that reason, for a start
+        whose failure the wait would outlast (a service the session was told
+        to rely on)."""
         if self.proc is not None:
             raise Failed("the session is running already")
         self._launch_out = Path(out).resolve() if out else self.state
@@ -785,7 +790,8 @@ class Session:
         # back — its apps, the tapps it installed and the arguments it was given
         # — so a person who signs in again meets the desktop they had.
         self._started_with = {"apps": apps, "tapps": tapps, "env": env,
-                              "session_args": session_args, "out": self._launch_out}
+                              "session_args": session_args, "out": self._launch_out,
+                              "abort": abort}
         # The launcher has errexit enabled and writes its progress before
         # starting the desktop. A stale handle on a VM's shared output mount
         # can make one of those writes exit the launcher. Keep its open log
@@ -821,8 +827,7 @@ class Session:
                     argv, stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
                     env=launch_env,
                 )
-            until("the session to start",
-                  lambda: ready.is_file() or self.proc.poll() is not None, 300, 0.25)
+            until("the session to start", lambda: self._starting(ready, abort), 300, 0.25)
             if self.proc.poll() is not None:
                 code = self.proc.returncode
                 self.proc = None
@@ -836,6 +841,15 @@ class Session:
             self._keep_launch_file(self.launcher_log)
         self._keep_launch_file(ready)
         return self
+
+    def _starting(self, ready: Path, abort: Callable[[], str | None] | None) -> bool:
+        """Whether the session has started, or ended: `abort`'s reason for the start failing
+        ends the wait with the reason itself, rather than the deadline's timeout."""
+        if abort is not None:
+            why = abort()
+            if why:
+                raise Failed(why)
+        return ready.is_file() or self.proc.poll() is not None
 
     def _keep_launch_file(self, path: Path) -> None:
         if self._launch_out == path.parent:

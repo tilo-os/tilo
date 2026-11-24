@@ -312,9 +312,11 @@ class MachineFiles:
 
     The machine's start waits for the person's identity, which the session mints as it comes
     up: the daemon presents that identity, so it starts beside the session and the session
-    waits for it (the blob socket and pid below) before it starts the desktop. Only a caller
-    that is root and named a session account starts one; a walk on a developer's own desktop
-    keeps the session's own daemon."""
+    waits for it (the blob socket and pid below) before it starts the desktop. A daemon that
+    fails ends the walk at once with what it said (``failure``): the session was told to
+    rely on it, and a session waiting out its start would only report a timeout. Only a
+    caller that is root and named a session account starts one; a walk on a developer's own
+    desktop keeps the session's own daemon."""
 
     #: Where the daemon announces its main pid, as a service manager announces a unit's: the
     #: session reads it to record the login's files endpoint.
@@ -434,6 +436,12 @@ class MachineFiles:
 
     def log_path(self) -> Path:
         return self.out / "logs" / "machine-files.log"
+
+    def failure(self) -> str | None:
+        """Why the machine's daemon did not start, once it did not: a session told to rely
+        on it must not wait out its start for a workspace that never comes, nor walk as
+        though it had one."""
+        return self.trouble
 
     def stop(self) -> None:
         """End the machine's daemon and unmount its workspace, as a walk that ends leaves neither."""
@@ -2897,7 +2905,7 @@ class Walk:
                 self.session.start(apps=apps_of(spec, self.variant),
                                    fresh=True, out=self.out / "logs", tag=self.variant,
                                    tapps=tapps, session_args=session_args_of(spec, self.variant),
-                                   env=env)
+                                   env=env, abort=machine.failure)
                 self.devices = start_devices(spec, self.variant, self.session, self.state,
                                              self.out, apps_of(spec, self.variant), tapps)
             except BaseException:
@@ -3552,7 +3560,8 @@ def main() -> int:
                 began = time.monotonic()
                 try:
                     session.start(apps=apps, fresh=True, out=out / "logs", tag=variant,
-                                  tapps=tapps, session_args=session_args_of(first, variant), env=env)
+                                  tapps=tapps, session_args=session_args_of(first, variant), env=env,
+                                  abort=machine.failure)
                     devices = start_devices(first, variant, session, state, out, apps, tapps)
                 except BaseException:
                     session.stop()
