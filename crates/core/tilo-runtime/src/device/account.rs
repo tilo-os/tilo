@@ -149,9 +149,7 @@ impl Account {
                 joined: false,
                 after: after.clone(),
                 wait_ms: after.as_ref().map(|_| LIST_WAIT_MS),
-                document: true,
-                listing: false,
-                decide: false,
+                answer: tilo_actions::remote::ReadAnswer::Document,
             };
             let readings = self.read_records(read).await?;
             if let Some(list) = PersonWorkspaces::of_readings(&readings)? {
@@ -172,9 +170,7 @@ impl Account {
                 joined: false,
                 after: None,
                 wait_ms: None,
-                document: false,
-                listing: false,
-                decide: false,
+                answer: tilo_actions::remote::ReadAnswer::Reading,
             })
             .await;
         let names = devices
@@ -193,9 +189,7 @@ impl Account {
                 joined: false,
                 after: None,
                 wait_ms: None,
-                document: false,
-                listing: false,
-                decide: false,
+                answer: tilo_actions::remote::ReadAnswer::Reading,
             };
             if let Ok(reading) = self.read_records(record(MEMBERSHIP_APP, &member)).await {
                 list.with_membership(&named, &reading);

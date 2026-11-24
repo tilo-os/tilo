@@ -619,9 +619,7 @@ impl Device {
                 joined: false,
                 after: None,
                 wait_ms: None,
-                document: false,
-                listing: false,
-                decide: false,
+                answer: tilo_actions::remote::ReadAnswer::Reading,
             },
         )
         .await;
@@ -645,9 +643,7 @@ impl Device {
                 joined: false,
                 after: None,
                 wait_ms: None,
-                document: false,
-                listing: false,
-                decide: false,
+                answer: tilo_actions::remote::ReadAnswer::Reading,
             };
             if let Some(reading) =
                 Self::read_fields(&actions, record(MEMBERSHIP_APP, &member)).await
