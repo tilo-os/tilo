@@ -2706,12 +2706,43 @@ impl KeyProvider {
             if remaining.is_zero() {
                 return Some(Err(not_ready(wait)));
             }
-            let changed = tokio::time::timeout(remaining, self.workspace_changed(workspace, after));
-            if changed.await.is_err() {
+            if !within(remaining, self.workspace_changed(workspace, after)).await {
                 return Some(Err(not_ready(wait)));
             }
         }
     }
+}
+
+/// Whether `changed` finishes before `wait` passes. On a Tokio runtime its timer measures the
+/// wait. A caller that polls on a thread of its own (a session's main thread, its search index)
+/// holds no runtime and no timer, so a thread measures the wait for it, and ends as soon as
+/// `changed` does.
+async fn within<F: std::future::Future>(wait: Duration, changed: F) -> bool {
+    #[cfg(not(target_family = "wasm"))]
+    if tokio::runtime::Handle::try_current().is_err() {
+        let (passed, deadline) = tokio::sync::oneshot::channel::<()>();
+        // Dropped when this returns, which ends the thread's wait at once.
+        let (done, ended) = std::sync::mpsc::channel::<()>();
+        let measuring = std::thread::Builder::new()
+            .name("tilo-keys-wait".into())
+            .spawn(move || {
+                if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = ended.recv_timeout(wait) {
+                    let _ = passed.send(());
+                }
+            });
+        if let Err(error) = measuring {
+            tracing::error!(%error, "no thread measures the wait for a group's keys: it ends now");
+            return false;
+        }
+        let changed = std::pin::pin!(changed);
+        let finished = tokio::select! {
+            _ = changed => true,
+            _ = deadline => false,
+        };
+        drop(done);
+        return finished;
+    }
+    tokio::time::timeout(wait, changed).await.is_ok()
 }
 
 /// What a caller waiting `wait` for a group's keys is told when they never
