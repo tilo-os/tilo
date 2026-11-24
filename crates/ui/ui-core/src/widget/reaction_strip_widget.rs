@@ -195,7 +195,7 @@ impl ReactionStripWidget {
             react,
         };
         if react {
-            crate::emoji_catalogue::record_recent(emoji);
+            crate::emoji_catalogue::record_used(emoji);
         }
         if let Some(action) = &mut self.action
             && let Err(error) = action.emit(toggle.clone())

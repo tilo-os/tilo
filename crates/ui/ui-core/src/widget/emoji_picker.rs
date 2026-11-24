@@ -445,8 +445,8 @@ impl EmojiPicker {
             section(&mut self.items, Some(t("emoji-chooser-workspace")), custom);
             section(
                 &mut self.items,
-                Some(t("emoji-chooser-recent")),
-                emoji_catalogue::recents()
+                Some(t("emoji-chooser-frequent")),
+                emoji_catalogue::frequent()
                     .into_iter()
                     .map(Item::Emoji)
                     .collect(),
@@ -758,7 +758,7 @@ impl EmojiPicker {
     }
 
     fn pick(&mut self, text: String) {
-        emoji_catalogue::record_recent(&text);
+        emoji_catalogue::record_used(&text);
         self.events.push(PickerEvent::Picked(text));
         if self.framed {
             self.close();

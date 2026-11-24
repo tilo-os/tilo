@@ -23,6 +23,7 @@ mod capture;
 mod chained;
 mod chat;
 mod chat_agents;
+mod chat_emoji;
 mod chat_liveshare;
 mod chat_persona_shot;
 mod composer;

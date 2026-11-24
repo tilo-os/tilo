@@ -62,8 +62,7 @@ mod runtime;
 mod window_bar;
 use runtime::{
     AccessibilityRuntime, ActionRuntime, BrokerReply, CollaborationRuntime, ContinuationRuntime,
-    HeldOwnInvocation, HistoryRuntime, InputRuntime, LayoutRuntime,
-    PresenceRuntime, WindowRuntime,
+    HeldOwnInvocation, HistoryRuntime, InputRuntime, LayoutRuntime, PresenceRuntime, WindowRuntime,
 };
 include!("app/continuation.rs");
 include!("app/dev_session.rs");
@@ -682,7 +681,7 @@ impl AppConstructionInputs {
         #[cfg(feature = "native")]
         crate::process::native::install_default_if_unset(None);
         #[cfg(feature = "native")]
-        crate::emoji_catalogue::keep_recents_on_the_device();
+        crate::emoji_catalogue::keep_uses_on_the_device();
         Self {
             control_domain: None,
             collab_manager,
