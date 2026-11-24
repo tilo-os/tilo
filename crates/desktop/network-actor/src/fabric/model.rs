@@ -143,15 +143,8 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         session_id: String,
     },
-    /// A target-issued, short-lived permission delivered to its controller.
-    InputLeaseGranted {
-        lease: InputLease,
-    },
-    InputLeaseRevoked {
-        nonce: [u8; 16],
-    },
     /// One non-durable input event, accepted only while the target still
-    /// retains the matching lease it issued.
+    /// holds the matching hand-over it let in.
     Input {
         lease_nonce: [u8; 16],
         event: FabricInputEvent,
@@ -424,10 +417,6 @@ pub enum PersonalFabricAction {
     CertifyAnswer {
         answer: Vec<u8>,
     },
-    /// The sender's pointer pushes against the edge that leads to the
-    /// receiving device: grant it an [`InputLease`] if this device takes
-    /// the person's input from their other devices.
-    InputLeaseAsk,
     /// What the pointer under `lease_nonce` carried across to the
     /// receiving device in the middle of a drag. The drag goes on there.
     DragCarried {
@@ -722,7 +711,6 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::InputLeaseAsk => {}
             PersonalFabricAction::DragCarried { lease_nonce, drag } => {
                 if lease_nonce == &[0; 16] || !drag.valid() {
                     return Err(FabricError::InvalidAction);
@@ -734,8 +722,7 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::FabricClockProbe { nonce, .. }
-            | PersonalFabricAction::InputLeaseRevoked { nonce } => {
+            PersonalFabricAction::FabricClockProbe { nonce, .. } => {
                 if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
@@ -882,15 +869,6 @@ impl PersonalFabricActionEnvelope {
                 lease_nonce,
             } => {
                 if forwarding_id == &[0; 16] || lease_nonce == &[0; 16] {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::InputLeaseGranted { lease } => {
-                if &lease.target != transport_source
-                    || &lease.controller != local_target
-                    || lease.nonce == [0; 16]
-                    || lease.validate_at(now_unix_ms).is_err()
-                {
                     return Err(FabricError::InvalidAction);
                 }
             }

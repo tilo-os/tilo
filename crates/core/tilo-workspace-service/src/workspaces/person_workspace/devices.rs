@@ -31,6 +31,13 @@
 //! whether it holds the accessory's bond, the first says it let go, and the other says it
 //! connected it, each step a write the two sessions read from the record.
 //!
+//! The person's one keyboard and pointer across their devices is handed over in the record too
+//! ([`InputHand`]): the device whose pointer pushes past its screen's edge asks the one beyond for
+//! it ([`Devices::ask_input`]), that device lets it in for a while when the person lets their
+//! devices drive it ([`Devices::grant_input`]), and either ends it ([`Devices::end_input`]). Which
+//! device drives which is read there by every device of theirs; the input itself travels between
+//! the two.
+//!
 //! What the person's root signs lives in their record: the mark of the device
 //! that keeps it ([`Devices::mark_root_holder`]) and the revocation of one it
 //! takes back ([`Devices::revoke_device`]), each a signature a reader checks
@@ -80,6 +87,8 @@ pub struct Devices {
     pub wakes: Collection<WakeAsk>,
     /// The latest move of each Bluetooth accessory asked, by its address (uppercase).
     pub moves: Collection<AccessoryMove>,
+    /// Who drives each device's keyboard and pointer, or asked to, by the key of the device driven.
+    pub inputs: Collection<InputHand>,
 }
 
 /// One move of a Bluetooth accessory from one of the person's devices to another, and how far it
@@ -120,6 +129,30 @@ pub enum MoveStage {
     NotConnected,
     /// One of the two gave the move up, because the other left or it took too long.
     GivenUp,
+}
+
+/// The person's keyboard and pointer of one device of theirs, handed to another: the device that
+/// asked to drive it and when, and once the driven device let it in, what it lets in, under which
+/// nonce and until when. Times are ms since the epoch; `granted_ms` is `0` while it was only asked.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
+pub struct InputHand {
+    /// The device that drives, or asked to, by key (lowercase hex).
+    pub driver: String,
+    pub asked_ms: i64,
+    /// What the input under this hand-over is told by, 16 bytes in hex: empty while asked.
+    pub nonce: String,
+    pub keyboard: bool,
+    pub pointer: bool,
+    pub granted_ms: i64,
+    pub until_ms: i64,
+}
+
+impl InputHand {
+    /// Whether `driver` drives the device under it at `now_ms`, letting in what it lets in.
+    #[must_use]
+    pub fn holds(&self, driver: &str, now_ms: i64) -> bool {
+        self.driver == driver && self.granted_ms > 0 && now_ms < self.until_ms
+    }
 }
 
 /// One wake of a device of the person's that sleeps: who asked it and when, which device of theirs
@@ -329,6 +362,41 @@ impl Devices {
             session.active_ms,
             session.using,
         ))
+    }
+
+    /// The action that asks to drive `driven` from `driver` at `asked_ms`.
+    #[must_use]
+    pub fn asking_input(
+        driven: &[u8; 32],
+        driver: &[u8; 32],
+        asked_ms: i64,
+    ) -> tilo_resource::Invoke<Self> {
+        Self::ASK_INPUT.with((hex::encode(driven), hex::encode(driver), asked_ms))
+    }
+
+    /// The action that lets `hand.driver` drive `driven` as `hand` says.
+    #[must_use]
+    pub fn granting_input(driven: &[u8; 32], hand: &InputHand) -> tilo_resource::Invoke<Self> {
+        Self::GRANT_INPUT.with((
+            hex::encode(driven),
+            hand.driver.clone(),
+            hand.asked_ms,
+            hand.nonce.clone(),
+            hand.keyboard,
+            hand.pointer,
+            hand.granted_ms,
+            hand.until_ms,
+        ))
+    }
+
+    /// The action that ends the hand-over of `driven` to `driver` under `nonce`.
+    #[must_use]
+    pub fn ending_input(
+        driven: &[u8; 32],
+        driver: &[u8; 32],
+        nonce: &str,
+    ) -> tilo_resource::Invoke<Self> {
+        Self::END_INPUT.with((hex::encode(driven), hex::encode(driver), nonce.to_owned()))
     }
 
     /// The action that keeps `answer` as what the person answered a boot.
@@ -815,6 +883,48 @@ impl Devices {
         Ok(())
     }
 
+    /// Ask to drive `driven`'s keyboard and pointer from `driver`, at `asked_ms`: replaces an
+    /// earlier hand-over of it that no longer holds, and is left for the one that does.
+    #[action]
+    pub fn ask_input(
+        &mut self,
+        driven: String,
+        driver: String,
+        asked_ms: i64,
+    ) -> Result<(), Refusal> {
+        validate_key(&driven)?;
+        validate_key(&driver)?;
+        if driven == driver
+            || !self.devices.contains(&Id::from_raw(driven.clone()))
+            || !self.devices.contains(&Id::from_raw(driver.clone()))
+        {
+            return Err(Refusal::new("a device drives another of your devices"));
+        }
+        if asked_ms <= 0 {
+            return Err(Refusal::new("a hand-over is asked at a time since the epoch"));
+        }
+        let driven = Id::from_raw(driven);
+        if self
+            .inputs
+            .get(&driven)
+            .is_some_and(|kept| kept.granted_ms > 0 && asked_ms < kept.until_ms)
+        {
+            return Ok(());
+        }
+        let ask = InputHand {
+            driver,
+            asked_ms,
+            ..InputHand::default()
+        };
+        match self.inputs.get_mut(&driven) {
+            Some(kept) => *kept = ask,
+            None => {
+                self.inputs.push(driven, ask);
+            }
+        }
+        Ok(())
+    }
+
     /// Say whether the device the accessory at `address` moves to holds its bond, for the move
     /// asked at `asked_ns`, at `at_ns`.
     #[action(housekeeping)]
@@ -924,6 +1034,62 @@ impl Devices {
         {
             kept.stage = to;
             kept.at_ns = at_ns;
+        }
+        Ok(())
+    }
+
+    /// Let `driver` drive `driven`'s keyboard, pointer or both under `nonce` from `granted_ms`
+    /// until `until_ms`, as `driven` decides for the ask `driver` made at `asked_ms`.
+    #[action]
+    #[allow(clippy::too_many_arguments, reason = "each is one fact of the hand-over, by name")]
+    pub fn grant_input(
+        &mut self,
+        driven: String,
+        driver: String,
+        asked_ms: i64,
+        nonce: String,
+        keyboard: bool,
+        pointer: bool,
+        granted_ms: i64,
+        until_ms: i64,
+    ) -> Result<(), Refusal> {
+        validate_bytes(&nonce, 16)?;
+        if !(keyboard || pointer) {
+            return Err(Refusal::new("a hand-over lets in the keyboard, the pointer or both"));
+        }
+        if granted_ms <= 0 || until_ms <= granted_ms {
+            return Err(Refusal::new("a hand-over holds from when it was made until a later time"));
+        }
+        let Some(kept) = self.inputs.get_mut(&Id::from_raw(driven)) else {
+            return Err(Refusal::new("nobody asked to drive that device"));
+        };
+        if kept.driver != driver || kept.asked_ms != asked_ms {
+            return Err(Refusal::new("another ask to drive that device came since"));
+        }
+        kept.nonce = nonce;
+        kept.keyboard = keyboard;
+        kept.pointer = pointer;
+        kept.granted_ms = granted_ms;
+        kept.until_ms = until_ms;
+        Ok(())
+    }
+
+    /// End the hand-over of `driven` under `nonce` (empty for one only asked by `driver`): the
+    /// keyboard and pointer are its own again.
+    #[action]
+    pub fn end_input(
+        &mut self,
+        driven: String,
+        driver: String,
+        nonce: String,
+    ) -> Result<(), Refusal> {
+        let driven = Id::from_raw(driven);
+        if self
+            .inputs
+            .get(&driven)
+            .is_some_and(|kept| kept.driver == driver && kept.nonce == nonce)
+        {
+            self.inputs.retain(|id, _| *id != driven);
         }
         Ok(())
     }
@@ -1187,5 +1353,64 @@ mod tests {
                 "{slot} names no disk"
             );
         }
+    }
+
+    /// The person's keyboard and pointer of one device are handed to another in the record: asked
+    /// by the device that would drive, let in by the driven one for the ask it answers, and ended
+    /// by either; an ask while a hand-over holds leaves it as it is.
+    #[test]
+    fn a_device_is_driven_by_another_only_once_it_let_it_in() {
+        let (laptop, phone) = ([1; 32], [2; 32]);
+        let mut devices = tilo_resource::Replica::<Devices>::new();
+        assert!(
+            devices.apply(Devices::asking_input(&phone, &laptop, 10)).is_err(),
+            "a device the record does not keep drives nothing"
+        );
+        for device in [laptop, phone] {
+            devices
+                .apply(Devices::KEEP_DEVICE.with((hex::encode(device), "00".to_owned())))
+                .expect("the device is kept");
+        }
+        assert!(
+            devices.apply(Devices::asking_input(&laptop, &laptop, 10)).is_err(),
+            "a device does not drive itself"
+        );
+        devices
+            .apply(Devices::asking_input(&phone, &laptop, 10))
+            .expect("the laptop asks to drive the phone");
+        let hand = |state: &Devices| state.inputs.get(&Id::from_raw(hex::encode(phone))).cloned();
+        let asked = hand(&devices.state().unwrap()).expect("the ask is kept");
+        assert!(!asked.holds(&hex::encode(laptop), 11), "an ask drives nothing yet");
+
+        let granted = InputHand {
+            nonce: hex::encode([9; 16]),
+            keyboard: true,
+            pointer: true,
+            granted_ms: 12,
+            until_ms: 1_000,
+            ..asked.clone()
+        };
+        assert!(
+            devices
+                .apply(Devices::granting_input(&phone, &InputHand { asked_ms: 9, ..granted.clone() }))
+                .is_err(),
+            "a grant answers the ask it was made for"
+        );
+        devices
+            .apply(Devices::granting_input(&phone, &granted))
+            .expect("the phone lets the laptop in");
+        assert!(hand(&devices.state().unwrap()).unwrap().holds(&hex::encode(laptop), 500));
+        assert!(!hand(&devices.state().unwrap()).unwrap().holds(&hex::encode(laptop), 1_000));
+
+        // Another ask while it holds leaves it.
+        devices
+            .apply(Devices::asking_input(&phone, &laptop, 20))
+            .expect("asked again");
+        assert_eq!(hand(&devices.state().unwrap()), Some(granted.clone()));
+
+        devices
+            .apply(Devices::ending_input(&phone, &laptop, &granted.nonce))
+            .expect("the hand-over ends");
+        assert_eq!(hand(&devices.state().unwrap()), None, "the phone's input is its own again");
     }
 }

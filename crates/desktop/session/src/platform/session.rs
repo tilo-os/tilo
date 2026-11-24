@@ -789,6 +789,8 @@ impl Session {
         let shared_input = fabric.as_ref().map(|link| {
             Arc::new(crate::shared_input::SharedInput::new(
                 Arc::clone(link),
+                sync.as_ref().and_then(|sync| sync.person_resources()),
+                options.wake.handle(),
                 continuity.clone(),
                 placed,
             ))

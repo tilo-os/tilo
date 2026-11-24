@@ -528,9 +528,6 @@ impl crate::Session {
             | PersonalFabricAction::MediaCancelled { .. }
             // The person's keyboard and pointer between their devices, while this session takes
             // part in no fabric that could carry them.
-            | PersonalFabricAction::InputLeaseAsk
-            | PersonalFabricAction::InputLeaseGranted { .. }
-            | PersonalFabricAction::InputLeaseRevoked { .. }
             | PersonalFabricAction::Input { .. }
             | PersonalFabricAction::DragCarried { .. }
             | PersonalFabricAction::NearbyDrop { .. }

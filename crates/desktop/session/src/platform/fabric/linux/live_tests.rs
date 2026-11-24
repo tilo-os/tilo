@@ -176,7 +176,7 @@ fn an_action_is_delivered_once() {
 
     laptop
         .link
-        .try_send_personal_fabric_action(&desktop.id, PersonalFabricAction::InputLeaseAsk)
+        .try_send_personal_fabric_action(&desktop.id, PersonalFabricAction::RemoteAudioCancel { session_id: [1; 16] })
         .expect("the desktop is on a session with the laptop");
     let sent = laptop.sent();
     for payload in sent.iter().chain(sent.iter()) {

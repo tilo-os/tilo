@@ -3,12 +3,15 @@
 //! shared placement places them (Settings → Displays), goes on there, and the keyboard follows
 //! it. Pushing back across the edge, or pressing Ctrl+Alt+Escape here, brings both back.
 //!
-//! The input travels as actions on the person's device fabric: the direct, authenticated session
-//! between two devices certified by the same person, which nobody else's device can join. The
-//! device being driven decides: it grants a short-lived lease only while the person's Display &
-//! input continuity and its automatic grants are on, takes an event only under the lease it
-//! issued, and hands what it takes to its compositor the way every remote input reaches it — past
-//! the firewall that lets the person's own hand there win and that a lock shuts.
+//! Which device drives which is the record of the person's devices ([`InputHand`]): the device
+//! whose pointer pushes toward another's screen asks there for it, and the device being driven
+//! decides, letting it in for a short while only while the person's Display & input continuity and
+//! its automatic grants are on, and ending it when they turn off. Every device of theirs reads who
+//! drives whom there. The input itself travels on the person's device fabric: the direct,
+//! authenticated session between two devices certified by the same person, which nobody else's
+//! device can join. The driven device takes an event only under the hand-over it let in, and hands
+//! what it takes to its compositor the way every remote input reaches it — past the firewall that
+//! lets the person's own hand there win and that a lock shuts.
 //!
 //! Crossing has hysteresis: the pointer must push [`PUSH_THROUGH`] logical pixels past an edge
 //! before it leaves a device, so a pointer resting against the edge stays where it is.
@@ -32,6 +35,9 @@ use tilo_compositor::{Compositor, InputEvent, ObservedInput};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surface::Scroll;
+use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, InputHand};
+
+use crate::PersonResources;
 
 use crate::platform::fabric::{
     CarriedDrag, CarriedOffer, Continuity, DeviceId, FabricInputEvent, InputLease,
@@ -115,6 +121,8 @@ struct Landing {
 /// any, and the devices driving it.
 pub(crate) struct SharedInput {
     fabric: SharedLink,
+    /// The person's own workspace, whose record of their devices says who drives whom.
+    hands: Option<PersonResources>,
     continuity: Continuity,
     placed: PlacementWatch,
     state: std::sync::Mutex<State>,
@@ -176,6 +184,8 @@ struct State {
     warp: Option<(f64, f64)>,
     /// The leases this device granted, by nonce.
     issued: BTreeMap<[u8; 16], InputLease>,
+    /// How far the record of the person's devices moved as this device last read who drives whom.
+    hands_read: Option<u64>,
     /// What the devices driving this one sent since the last pass, and when each said it.
     incoming: std::collections::VecDeque<(DeviceId, Arrived, u64)>,
     /// What this desktop's pointer carries in a drag, as the last pass saw it.
@@ -238,9 +248,28 @@ struct Active {
 }
 
 impl SharedInput {
-    pub(crate) fn new(fabric: SharedLink, continuity: Continuity, placed: PlacementWatch) -> Self {
+    /// The person's keyboard and pointer here, over `fabric` for the input and the record of
+    /// their devices in `hands` for who drives whom: each move of the record wakes the session's
+    /// pass with `wake`, so an ask of this device is answered and a hand-over it got is taken up
+    /// though nothing happens on its own screen.
+    pub(crate) fn new(
+        fabric: SharedLink,
+        hands: Option<PersonResources>,
+        wake: tilo_service::Wake,
+        continuity: Continuity,
+        placed: PlacementWatch,
+    ) -> Self {
+        if let Some(resources) = &hands {
+            let mut moved = resources.changes();
+            tilo_rt::app().spawn(async move {
+                while moved.changed().await.is_ok() {
+                    wake();
+                }
+            });
+        }
         Self {
             fabric,
+            hands,
             continuity,
             placed,
             state: std::sync::Mutex::new(State::default()),
@@ -621,9 +650,17 @@ impl SharedInput {
             return;
         }
         state.asked.insert(device.clone(), now);
-        let _ = self
-            .fabric
-            .try_send_personal_fabric_action(device, PersonalFabricAction::InputLeaseAsk);
+        let (Some(resources), Some(driven), Some(driver)) = (
+            &self.hands,
+            key_of(device),
+            state.local.as_ref().and_then(key_of),
+        ) else {
+            return;
+        };
+        let asked_ms = unix_ms(tilo_clock::unix_now_ms());
+        resources.apply(DEVICES, move || {
+            Devices::asking_input(&driven, &driver, asked_ms)
+        });
     }
 
     /// Ask every other device whose screens stand in the placement for a lease, so the pointer
@@ -645,35 +682,13 @@ impl SharedInput {
         }
     }
 
-    /// Take an action of the person's other devices that is this one's: a lease asked of it or
-    /// granted to it, or input under a lease it granted. `false` for every other action.
+    /// Take an action of the person's other devices that is this one's: input under a hand-over it
+    /// let in. `false` for every other action.
     pub(crate) fn route(&self, envelope: &PersonalFabricActionEnvelope) -> bool {
         let source = &envelope.source;
         let mut state = self.state.lock_recover();
         self.know_local(&mut state);
         match &envelope.action {
-            PersonalFabricAction::InputLeaseAsk => {
-                self.grant(&mut state, source);
-            }
-            PersonalFabricAction::InputLeaseGranted { lease } => {
-                if state
-                    .local
-                    .as_ref()
-                    .is_some_and(|local| lease.binds(local, source))
-                    && lease.validate_at(tilo_clock::unix_now_ms()).is_ok()
-                {
-                    state.asked.remove(source);
-                    state.leases.insert(source.clone(), lease.clone());
-                }
-            }
-            PersonalFabricAction::InputLeaseRevoked { nonce } => {
-                state
-                    .leases
-                    .retain(|device, lease| !(device == source && &lease.nonce == nonce));
-                if let Some(active) = state.active.take_if(|active| &active.nonce == nonce) {
-                    self.end(&mut state, active);
-                }
-            }
             PersonalFabricAction::Input { lease_nonce, event } => {
                 if self.admits(&state, source, lease_nonce, |lease| allowed(lease, event)) {
                     if state.entered.insert(*lease_nonce) {
@@ -731,9 +746,80 @@ impl SharedInput {
         }
     }
 
-    /// Grant `controller` a lease on this device's keyboard and pointer, when the person lets
-    /// their other devices drive it: the one lease it holds from here.
-    fn grant(&self, state: &mut State, controller: &DeviceId) {
+    /// Read who drives whom in the record of the person's devices, when it moved: let in the
+    /// device that asked to drive this one, take up the hand-over a device let this one have, and
+    /// let go of what was ended.
+    fn read_hands(&self, state: &mut State) {
+        let Some(resources) = &self.hands else {
+            return;
+        };
+        let moved = *resources.changes().borrow();
+        if state.hands_read == Some(moved) {
+            return;
+        }
+        state.hands_read = Some(moved);
+        let Some(local) = state.local.clone() else {
+            state.hands_read = None;
+            return;
+        };
+        let devices = resources.read::<Devices>(DEVICES).unwrap_or_default();
+        let mut granted = BTreeMap::new();
+        let mut asked_here = Vec::new();
+        let mut kept_here = BTreeSet::new();
+        for (driven, hand) in devices.inputs.iter() {
+            let Ok(driven) = DeviceId::new(driven.as_str()) else {
+                continue;
+            };
+            let Ok(driver) = DeviceId::new(hand.driver.as_str()) else {
+                continue;
+            };
+            if driven == local {
+                match nonce_of(hand) {
+                    Some(nonce) => {
+                        kept_here.insert(nonce);
+                    }
+                    None => asked_here.push((driver, hand.asked_ms)),
+                }
+            } else if driver == local
+                && let Some(lease) = lease_of(hand, &local, &driven)
+            {
+                granted.insert(driven, lease);
+            }
+        }
+        for (device, lease) in &granted {
+            state.asked.remove(device);
+            state.leases.insert(device.clone(), lease.clone());
+        }
+        // A hand-over ended, or one the driven device let in afresh, is no longer this one's.
+        let ended: Vec<[u8; 16]> = state
+            .leases
+            .iter()
+            .filter(|(device, lease)| granted.get(*device).is_none_or(|kept| kept != *lease))
+            .map(|(_, lease)| lease.nonce)
+            .collect();
+        state.leases.retain(|_, lease| !ended.contains(&lease.nonce));
+        if let Some(active) = state
+            .active
+            .take_if(|active| ended.contains(&active.nonce))
+        {
+            self.end(state, active);
+        }
+        // What this device let in is ended once the record no longer holds it; one it let in a
+        // moment ago may not have reached the record yet.
+        let now = tilo_clock::unix_now_ms();
+        let landing = u64::try_from(ASK_AGAIN.as_millis()).unwrap_or(u64::MAX);
+        state.issued.retain(|nonce, lease| {
+            kept_here.contains(nonce) || now.saturating_sub(lease.issued_unix_ms) < landing
+        });
+        for (driver, asked_ms) in asked_here {
+            self.grant(state, &driver, asked_ms);
+        }
+    }
+
+    /// Let `controller` drive this device's keyboard and pointer for the ask it made at
+    /// `asked_ms`, when the person lets their other devices drive it: the one hand-over it holds
+    /// from here.
+    fn grant(&self, state: &mut State, controller: &DeviceId, asked_ms: i64) {
         if !self.continuity.display_input_permitted() {
             tracing::debug!(
                 controller = controller.as_str(),
@@ -757,15 +843,20 @@ impl SharedInput {
         state.issued.retain(|_, issued| {
             &issued.controller != controller && issued.validate_at(now).is_ok()
         });
-        let sent = self.fabric.try_send_personal_fabric_action(
-            controller,
-            PersonalFabricAction::InputLeaseGranted {
-                lease: lease.clone(),
-            },
-        );
-        if sent.is_ok() {
-            state.issued.insert(lease.nonce, lease);
-        }
+        let (Some(resources), Some(driven)) = (&self.hands, key_of(&lease.target)) else {
+            return;
+        };
+        let hand = InputHand {
+            driver: controller.as_str().to_owned(),
+            asked_ms,
+            nonce: hex::encode(lease.nonce),
+            keyboard: lease.allow_keyboard,
+            pointer: lease.allow_pointer,
+            granted_ms: unix_ms(lease.issued_unix_ms),
+            until_ms: unix_ms(lease.expires_unix_ms),
+        };
+        resources.apply(DEVICES, move || Devices::granting_input(&driven, &hand));
+        state.issued.insert(lease.nonce, lease);
     }
 
     /// The session's pass: follow the placement and the lock, keep the pointer out of sight while
@@ -781,6 +872,7 @@ impl SharedInput {
             .filter(|formats| !formats.is_empty())
             .map(Carrying::Content)
             .or_else(on_the_bus);
+        self.read_hands(&mut state);
         let released = self.hand_over(&mut state, compositor, shell);
         let generation = (
             PersonDisplays::published_generation(),
@@ -1116,10 +1208,16 @@ impl SharedInput {
     /// The person turned Display & input off here: every lease this device granted ends.
     fn revoke(&self, state: &mut State) {
         for (nonce, lease) in std::mem::take(&mut state.issued) {
-            let _ = self.fabric.try_send_personal_fabric_action(
-                &lease.controller,
-                PersonalFabricAction::InputLeaseRevoked { nonce },
-            );
+            if let (Some(resources), Some(driven), Some(driver)) = (
+                &self.hands,
+                key_of(&lease.target),
+                key_of(&lease.controller),
+            ) {
+                let nonce = hex::encode(nonce);
+                resources.apply(DEVICES, move || {
+                    Devices::ending_input(&driven, &driver, &nonce)
+                });
+            }
         }
     }
 
@@ -1256,6 +1354,45 @@ fn keep_carried(
         })
         .collect();
     (!offers.is_empty()).then_some((workspace, offers))
+}
+
+/// The key of the device `device` names: its id is the key in hex.
+fn key_of(device: &DeviceId) -> Option<[u8; 32]> {
+    let mut key = [0; 32];
+    hex::decode_to_slice(device.as_str(), &mut key).ok()?;
+    Some(key)
+}
+
+/// A time in ms since the epoch, as the record keeps it.
+fn unix_ms(ms: u64) -> i64 {
+    i64::try_from(ms).unwrap_or(i64::MAX)
+}
+
+/// The nonce a hand-over was let in under; `None` while it is only asked.
+fn nonce_of(hand: &InputHand) -> Option<[u8; 16]> {
+    if hand.granted_ms <= 0 {
+        return None;
+    }
+    let mut nonce = [0; 16];
+    hex::decode_to_slice(&hand.nonce, &mut nonce).ok()?;
+    Some(nonce)
+}
+
+/// The lease `hand` gives `local` on `driven`, while it holds.
+fn lease_of(hand: &InputHand, local: &DeviceId, driven: &DeviceId) -> Option<InputLease> {
+    let lease = InputLease {
+        controller: local.clone(),
+        target: driven.clone(),
+        issued_unix_ms: u64::try_from(hand.granted_ms).ok()?,
+        expires_unix_ms: u64::try_from(hand.until_ms).ok()?,
+        nonce: nonce_of(hand)?,
+        allow_keyboard: hand.keyboard,
+        allow_pointer: hand.pointer,
+    };
+    lease
+        .validate_at(tilo_clock::unix_now_ms())
+        .is_ok()
+        .then_some(lease)
 }
 
 /// The release of `button` .
@@ -1397,6 +1534,8 @@ mod tests {
         });
         let shared = SharedInput::new(
             std::sync::Arc::clone(&recorded) as SharedLink,
+            None,
+            std::sync::Arc::new(|| {}),
             Continuity::default(),
             PlacementWatch::default(),
         );
