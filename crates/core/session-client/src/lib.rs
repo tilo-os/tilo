@@ -61,8 +61,8 @@ pub use link::{
 pub use membership_check::{MemoryPeerStore, PeerEntry, PeerStore};
 pub use network::{
     Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Event, Kept, Outbox, PageShown,
-    Receipt, RecvTimeoutError, RosterDevice, SayPresence, Topic, Transport, TryRecvError, Waits,
-    answer, topic_of,
+    Receipt, RecvTimeoutError, RosterDevice, SayPresence, Saying, TellWord, Topic, Transport,
+    TryRecvError, Waits, answer, topic_of,
 };
 pub use presence::OwnPresence;
 pub use saying::saying;

@@ -36,7 +36,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use tilo_desktop_model::TabId;
 use tilo_live::capture::Session as CaptureSession;

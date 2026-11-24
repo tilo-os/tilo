@@ -15,7 +15,7 @@ default = []
 live_session = ["dep:moq-net", "dep:hex", "dep:n0-future"]
 # An app's call lane: the call one app's connection carries into a workspace's call, published
 # through the session the device's daemon holds.
-app_call = ["live_session", "dep:tilo-actions"]
+app_call = ["live_session", "dep:tilo-actions", "dep:tokio", "tokio/rt"]
 # The relay: the copying and admitting half, which runs on the device that
 # serves a live session.
 relay = ["live_session", "dep:bytes", "dep:tokio", "dep:serde_json"]

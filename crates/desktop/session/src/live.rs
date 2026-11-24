@@ -8,6 +8,11 @@
 //! under the workspace's keys, and what the live session hears comes back opened. There is no
 //! second session here and no key to hold.
 //!
+//! Presence is the daemon's to say: the device has one word in each workspace, which the daemon
+//! puts together from what this session tells it of the person over the shell link
+//! ([`Telling`]) and what the device's apps say, and publishes. This session hears everyone
+//! else's over its links, as it hears the rest.
+//!
 //! How far each workspace's live session came — open, waiting for keys, a relay not reached, a
 //! relay that refused this device — is the daemon's to know, published as its own reading of the
 //! device ([`tilo_live::link::SESSIONS`]); this session follows it and shows it beside the
@@ -19,9 +24,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use runtime_collab::wire::shell::{ShellCall, ShellInCall, ShellWord, SpokenFor};
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::capture::Session as CaptureSession;
-use tilo_live::link::{self, Opening};
+use tilo_live::link::Opening;
 use tilo_live::link_call::Call;
 use tilo_lock::MutexRecover as _;
 
@@ -200,6 +206,11 @@ struct Shared {
     wake: Arc<dyn Fn() + Send + Sync>,
     runtime: std::sync::OnceLock<tokio::runtime::Handle>,
     links: std::sync::OnceLock<Links>,
+    /// The shell link the person's word is told to the daemon on, once the session has it.
+    shell: std::sync::OnceLock<runtime_collab::ShellClient>,
+    /// What is yet to be told, and what wakes the telling.
+    told: Mutex<Told>,
+    telling: tokio::sync::Notify,
 }
 
 impl Live {
@@ -218,6 +229,9 @@ impl Live {
                 wake,
                 runtime: std::sync::OnceLock::new(),
                 links: std::sync::OnceLock::new(),
+                shell: std::sync::OnceLock::new(),
+                told: Mutex::default(),
+                telling: tokio::sync::Notify::new(),
             }),
             sessions: None,
             turned: None,
@@ -331,9 +345,17 @@ impl Live {
         OwnDevices::new(Arc::clone(&self.shared))
     }
 
-    /// A handle that says this device's presence on the session's live links.
-    pub(crate) fn saying(&self) -> Say {
-        Say(Arc::clone(&self.shared))
+    /// What tells the device's daemon the person's word, for the daemon to say as the device's
+    /// one word in each workspace: the session publishes no presence of its own.
+    pub(crate) fn telling(&self) -> Telling {
+        Telling(Arc::clone(&self.shared))
+    }
+
+    /// Tell the daemon the person's word over `shell`, the shell link it handed this session,
+    /// from now on. Only the first call counts.
+    pub(crate) fn tell_through(&self, shell: runtime_collab::ShellClient) {
+        let _ = self.shared.shell.set(shell);
+        self.shared.telling.notify_one();
     }
 }
 
@@ -359,6 +381,7 @@ fn run(shared: Arc<Shared>, mut stopped: tokio::sync::mpsc::UnboundedReceiver<()
         return;
     };
     let _ = shared.runtime.set(runtime.handle().clone());
+    runtime.spawn(tell_daemon(Arc::clone(&shared)));
     runtime.block_on(async move {
         loop {
             let workspaces = shared.engine.workspaces();
@@ -450,38 +473,108 @@ impl Shared {
     }
 }
 
-/// This device's presence track, as the session says it over its links.
-pub(crate) struct Say(Arc<Shared>);
+/// What the session tells the device's daemon of the person: their word in each workspace, and
+/// the calls they join and leave, each on the shell link. Only the newest word of a workspace is
+/// told: one that was overtaken before it left is not owed.
+pub(crate) struct Telling(Arc<Shared>);
 
-impl std::fmt::Debug for Say {
+impl std::fmt::Debug for Telling {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("live session")
+        f.write_str("the device's daemon")
     }
 }
 
-impl crate::sync::SayPresence for Say {
-    fn say(
+impl tilo_session_client::TellWord for Telling {
+    fn tell(
         &self,
         workspace: WorkspaceId,
-        frames: &[(u32, collab_types::presence::Presence)],
-    ) -> Result<(), String> {
-        let call = self
-            .0
-            .calls
-            .lock_recover()
-            .get(&workspace)
-            .cloned()
-            .ok_or_else(|| "this workspace has no live session".to_owned())?;
-        for (sequence, presence) in frames {
-            let body = presence.encode().map_err(|_| "presence".to_owned())?;
-            call.publish(tilo_live::live::Track::Presence, *sequence, &body)
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(())
+        word: Option<tilo_live::presence::Own>,
+        agents: Vec<(String, String, collab_types::presence::ShellPresence)>,
+    ) {
+        let said = ShellCall::Say {
+            workspace: workspace.to_string(),
+            word: word.map(|word| Box::new(word_of(word))),
+            agents: agents
+                .into_iter()
+                .map(|(session, member, face)| SpokenFor {
+                    session,
+                    member,
+                    face,
+                })
+                .collect(),
+        };
+        self.0.told.lock_recover().words.insert(workspace, said);
+        self.0.telling.notify_one();
+    }
+
+    fn join(&self, workspace: WorkspaceId, call: Option<tilo_live::presence::Call>) {
+        let workspace = workspace.to_string();
+        let asked = match call {
+            Some(call) => ShellCall::Join {
+                workspace,
+                call: ShellInCall {
+                    call: call.call,
+                    camera: call.camera,
+                    screen: call.screen,
+                    muted: call.muted,
+                    deafened: call.deafened,
+                },
+            },
+            None => ShellCall::Leave { workspace },
+        };
+        self.0.told.lock_recover().calls.push(asked);
+        self.0.telling.notify_one();
     }
 }
 
-/// The session's links as a source of openings, for [`Live::open_links`].
-pub(crate) fn links_of(open: impl Fn() -> Opening + Send + Sync + 'static) -> Links {
-    Arc::new(open)
+/// What the session has yet to tell the daemon.
+#[derive(Default)]
+struct Told {
+    /// The newest word of each workspace.
+    words: BTreeMap<WorkspaceId, ShellCall>,
+    /// The joins and leaves, in the order the person made them.
+    calls: Vec<ShellCall>,
+}
+
+/// Tell the daemon what the session has to tell, as it comes, until the session ends.
+async fn tell_daemon(shared: Arc<Shared>) {
+    loop {
+        shared.telling.notified().await;
+        let Some(shell) = shared.shell.get() else {
+            continue;
+        };
+        let told = std::mem::take(&mut *shared.told.lock_recover());
+        for call in told.calls.into_iter().chain(told.words.into_values()) {
+            if let Err(error) = shell.call(call).await {
+                tilo_failure::ignored!(
+                    "presence is ephemeral: the next word says where the person is again",
+                    tracing::debug!(?error, "the daemon was not told the person's word")
+                );
+            }
+        }
+    }
+}
+
+/// The person's word, as the shell link carries it to the daemon.
+fn word_of(own: tilo_live::presence::Own) -> ShellWord {
+    ShellWord {
+        label: own.label,
+        device: own.device,
+        user: own.user,
+        profile_ms: own.profile_ms,
+        status: own.status.map(|status| (status.text, status.automatic)),
+        availability: own.availability,
+        call: own.call.map(|call| ShellInCall {
+            call: call.call,
+            camera: call.camera,
+            screen: call.screen,
+            muted: call.muted,
+            deafened: call.deafened,
+        }),
+        following: own.following,
+        wave: own.wave,
+        pointer: own.pointer.map(|point| (point.tab, point.x, point.y)),
+        shell: own.shell,
+        apps: own.apps,
+    }
 }

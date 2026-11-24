@@ -35,6 +35,7 @@ use tilo_live::presence::{Board, Call, Own};
 use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
+use tilo_live::speaker::Speaker;
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 
 const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -64,10 +65,11 @@ fn local_relay() -> Relay {
     Relay::new(Arc::new(Nobody))
 }
 
-fn setup(relay: Relay, keys: ContentKeys) -> CallSetup {
-    // The session the device's daemon holds, as a local relay serves it here.
+fn setup(relay: &Relay, keys: ContentKeys) -> CallSetup {
+    // The session the device's daemon holds, as a local relay serves it here, and the device's
+    // one word in it: a device with no desktop session says who it is from its certificate.
     let session = LiveSession::local(
-        &relay,
+        relay,
         &Join {
             scope: Scope::workspace(WORKSPACE.to_owned()),
             device: BRIDGE,
@@ -79,16 +81,41 @@ fn setup(relay: Relay, keys: ContentKeys) -> CallSetup {
     )
     .expect("a local live session");
     session.set_calls(BTreeMap::new(), BTreeMap::new());
-    session.set_call_keys(CALL, 0, keys);
+    let session = Arc::new(session);
+    let speaker = Speaker::start(
+        &session,
+        WORKSPACE,
+        BRIDGE,
+        Own {
+            label: "home-server".to_owned(),
+            device: "home-server".to_owned(),
+            user: Some("aa".repeat(32)),
+            ..Own::default()
+        },
+    );
+    // Joining is the daemon's: it says the device is in the call and holds the call's keys,
+    // which never reach the app.
+    let joining = Arc::clone(&speaker);
+    let join: tilo_live::app_call::JoinCall = Arc::new(move |call| {
+        let Some(call) = call else {
+            joining.set_joined(None);
+            return Ok(None);
+        };
+        let channel = call.channel.clone();
+        joining.set_joined(Some(Call {
+            call,
+            camera: false,
+            screen: false,
+            muted: false,
+            deafened: false,
+        }));
+        joining.session().set_call_keys(&channel, 0, keys.clone());
+        Ok(Some((channel, 0)))
+    });
     CallSetup {
-        workspace: WORKSPACE.to_owned(),
-        device: BRIDGE,
-        device_name: "home-server".to_owned(),
-        person: Some("aa".repeat(32)),
         service: "discord".to_owned(),
-        channel: CALL.to_owned(),
-        generation: 0,
-        session: Arc::new(session),
+        speaker,
+        join,
     }
 }
 
@@ -377,7 +404,7 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
             let _ = stream.flush();
         })
     };
-    let lane = AppLane::new(Ok(setup(relay.clone(), keys.clone())), out);
+    let lane = AppLane::new(Ok(setup(&relay, keys.clone())), out);
     assert!(lane.granted().is_ok());
     serve(server, lane, written);
 
@@ -441,12 +468,14 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     assert_eq!(dana.label, "Dana");
     assert!(dana.deafened, "her service says her ear is off too");
 
-    // One frame she says reaches the call, named as her own voice.
-    app.send(RemoteActionMessage::CallHeard(CallAudio {
-        speaker: "7001".into(),
-        opus: vec![1, 2, 3],
-    }));
+    // What she says reaches the call, named as her own voice. Her service sends a frame every
+    // 20 ms; the call asks for the bridge's voice a moment after it joins, and the frames before
+    // that have nobody to go to.
     let heard = until(&mut grace, "Dana is heard", |grace| {
+        app.send(RemoteActionMessage::CallHeard(CallAudio {
+            speaker: "7001".into(),
+            opus: vec![1, 2, 3],
+        }));
         grace
             .voices
             .iter()
@@ -534,10 +563,24 @@ fn a_pair_for_another_call_than_the_one_admitted_is_refused() {
     let relay = local_relay();
     let keys = keys();
     let (server, client) = UnixStream::pair().unwrap();
-    let lane = AppLane::new(Ok(setup(relay, keys)), Arc::new(|_| {}));
+    let lane = AppLane::new(Ok(setup(&relay, keys)), Arc::new(|_| {}));
     let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
     serve(server, lane, written);
     let app = App::of(client);
+    // The app's first carry joins its call: that is the call it was admitted to.
+    let answer = app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
+        correlation,
+        pair: Some(BridgedCall {
+            outside: OUTSIDE.into(),
+            tilo: CALL.into(),
+        }),
+    });
+    assert!(
+        answer
+            .pointer("/message/CallCarryResponse/result/Ok")
+            .is_some(),
+        "the first pair was carried: {answer}"
+    );
     let answer = app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
         correlation,
         pair: Some(BridgedCall {
@@ -573,7 +616,7 @@ fn the_app_is_never_handed_a_key() {
             let _ = stream.flush();
         })
     };
-    let lane = AppLane::new(Ok(setup(relay.clone(), keys.clone())), out);
+    let lane = AppLane::new(Ok(setup(&relay, keys.clone())), out);
     serve(server, lane, written);
 
     let app = App::of(client);

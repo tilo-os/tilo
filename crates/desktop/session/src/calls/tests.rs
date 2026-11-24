@@ -8,7 +8,9 @@
 //! and a tone instead of a microphone.
 
 use std::sync::Arc;
+
 use std::time::{Duration, Instant};
+use tilo_live::live_session::LiveSession;
 
 use crate::platform::fabric::Continuity;
 use crate::sync::Event;

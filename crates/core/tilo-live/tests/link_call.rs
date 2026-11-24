@@ -147,13 +147,19 @@ tilo_test_env::scenario! {
                 "what the daemon handed back opens as the presence it was"
             );
 
-            // The desktop says itself: the daemon seals it as the device, and the peer hears
-            // the device say it.
-            call.publish(Track::Presence, 2, &said("drawing")).unwrap();
+            // The desktop's presence is the daemon's to say: the link carries none of it.
+            assert!(matches!(
+                call.publish(Track::Presence, 2, &said("drawing")),
+                Err(tilo_live::live_session::LiveError::Invalid)
+            ));
+
+            // What the desktop is doing it says itself: the daemon seals it as the device, and
+            // the peer hears the device say it.
+            call.publish(Track::Activity, 2, &said("drawing")).unwrap();
             let heard = until(|| {
                 let mut heard = None;
                 while let Some(object) = peer.try_recv() {
-                    if object.track == Track::Presence && object.sender == DAEMON {
+                    if object.track == Track::Activity && object.sender == DAEMON {
                         heard = Some(object);
                     }
                 }

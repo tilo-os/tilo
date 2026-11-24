@@ -813,12 +813,21 @@ pub(crate) struct Live {
     /// This device's own place in each workspace's live session, as this daemon holds it: what
     /// an app's call lane joins through, and what the person's desktop drives over its link.
     calls: Mutex<BTreeMap<WorkspaceId, Arc<super::live_call::CallSession>>>,
+    /// What the device's apps and the person's shell say in each workspace, kept to say again in
+    /// a live session that opens later, and the apps that hear the others' words.
+    pub(super) speaking: super::live_speaking::Speaking,
+    /// This live session itself, for what answers on its behalf later.
+    this: std::sync::Weak<Live>,
 }
 
 impl Live {
     /// The live session of `workspaces`' device, on `relay` when its keeping already runs one (a
     /// server's), and on a relay of its own otherwise. Must be called inside the daemon's runtime.
-    pub(crate) fn new(workspaces: &Arc<ServiceWorkspaces>, relay: Option<Relay>) -> Arc<Self> {
+    pub(crate) fn new(
+        workspaces: &Arc<ServiceWorkspaces>,
+        relay: Option<Relay>,
+        fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
+    ) -> Arc<Self> {
         let (changed, _) = tokio::sync::watch::channel(0);
         let shared = Arc::new(Shared {
             workspaces: Arc::clone(workspaces),
@@ -853,15 +862,40 @@ impl Live {
         let serves = relay.is_none();
         let relay =
             relay.unwrap_or_else(|| Relay::new(Arc::clone(&shared) as Arc<dyn RelayAuthority>));
-        let live = Arc::new(Self {
+        let live = Arc::new_cyclic(|this| Self {
             shared,
             relay,
             endpoint: workspaces.endpoint(),
             serves,
             calls: Mutex::default(),
+            speaking: super::live_speaking::Speaking::new(fanout),
+            this: this.clone(),
         });
+        live.speaking.hear_apps(&live);
+        // An app joins and leaves a call through the device's one dispatch, as any action.
+        workspaces.copies().providers().provide(
+            super::live_speaking::PROVIDER,
+            super::live_speaking::PROVIDER,
+            tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+            Arc::new(super::live_speaking::LiveCalls(Arc::downgrade(&live))),
+        );
         live.follow();
         live
+    }
+
+    /// This live session, while it runs.
+    pub(super) fn weak(&self) -> std::sync::Weak<Self> {
+        self.this.clone()
+    }
+
+    /// The person this device belongs to, by their root key.
+    pub(super) fn person(&self) -> [u8; 32] {
+        self.shared.workspaces.device_cert().user_public_key
+    }
+
+    /// The workspaces this device holds.
+    pub(super) fn workspaces(&self) -> &Arc<ServiceWorkspaces> {
+        &self.shared.workspaces
     }
 
     /// Admit this device's person's devices to its own scope by `person`, the record of them, from
@@ -911,6 +945,7 @@ impl Live {
                     return;
                 };
                 let held = live.shared.workspaces.copies().ids().await;
+                live.speaking.follow_workspaces(&held);
                 if live.serves {
                     let observing = Arc::clone(&live.shared);
                     let workspaces = held.clone();
@@ -1021,11 +1056,11 @@ impl Live {
             &self.endpoint,
             &certificate,
             serving,
-            relay_name.clone(),
             own,
             workspace,
             keys,
             roster,
+            self.base_word(&devices),
         )
         .await
         {
@@ -1043,6 +1078,7 @@ impl Live {
                         }
                     }));
                 }
+                self.speaking.speak_in(workspace, call.speaker());
                 self.calls
                     .lock_recover()
                     .insert(workspace, Arc::clone(&call));
@@ -1081,8 +1117,23 @@ impl Live {
         }
     }
 
+    /// What this device says of itself with no person's shell running: its name, as its
+    /// certificate gives it, and its person.
+    fn base_word(&self, devices: &[Device]) -> tilo_live::presence::Own {
+        let cert = self.shared.workspaces.device_cert();
+        let name = tilo_user_identity::device_name(&cert.device_label)
+            .map(str::to_owned)
+            .unwrap_or_else(|| name_of(devices, self.shared.device));
+        tilo_live::presence::Own {
+            label: name.clone(),
+            device: name,
+            user: Some(hex::encode(cert.user_public_key)),
+            ..tilo_live::presence::Own::default()
+        }
+    }
+
     /// What the workspace's calls allow now, and the person each of its member devices is.
-    fn call_gate(&self, workspace: WorkspaceId) -> super::live_call::CallGate {
+    pub(super) fn call_gate(&self, workspace: WorkspaceId) -> super::live_call::CallGate {
         self.shared
             .workspaces
             .copies()
@@ -1297,14 +1348,6 @@ impl Shared {
                 true
             }
         };
-        if moved {
-            SessionReads::moved(self);
-        }
-    }
-
-    /// Forget `workspace`'s state: this device is in no live session of it here.
-    fn forget_session(&self, workspace: WorkspaceId) {
-        let moved = self.sessions.lock_recover().remove(&workspace).is_some();
         if moved {
             SessionReads::moved(self);
         }

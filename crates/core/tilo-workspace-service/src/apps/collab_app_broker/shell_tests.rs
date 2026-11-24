@@ -297,6 +297,7 @@ async fn device_carrying(live: Option<crate::apps::shell::LiveLinks>) -> Device 
                 workspaces: host.workspaces().clone(),
                 identity: None,
                 live,
+                speaking: None,
             })),
             // A person's call an app makes is admitted with its evidence, as on a device.
             journal_root: Some(dir.path().join("invocations")),

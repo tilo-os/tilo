@@ -33,7 +33,7 @@ use tilo_session_client::client::Shell as PolicyShell;
 use tilo_session_client::message_policy::WorkspaceAction;
 use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
 #[cfg(target_os = "linux")]
-use tilo_session_client::{Cmd, Enrolled, Event, Outbox, SayPresence, Topic};
+use tilo_session_client::{Cmd, Enrolled, Event, Outbox, Topic};
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::here::{Here, LiveMember, Person};
 #[cfg(target_os = "linux")]
@@ -1247,10 +1247,12 @@ impl Client {
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
         attach_bound(link.as_ref(), link_outbox, endpoint_handle.get());
-        // This device's presence is the live session's own.
-        let saying = live
-            .as_ref()
-            .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>);
+        // This device's presence is its daemon's to say: the session tells it the person's word.
+        let saying = live.as_ref().map(|live| {
+            tilo_session_client::Saying::Word(
+                Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>
+            )
+        });
         let inner = SessionClient::over(
             Transport {
                 outgoing: Arc::clone(&outgoing),
@@ -1599,6 +1601,7 @@ impl Client {
         };
         live.follow_turned_away(turned);
         live.follow_sessions(sessions);
+        live.tell_through(daemon.clone());
         live.open_links(Arc::new(move || {
             let daemon = daemon.clone();
             Box::pin(async move {

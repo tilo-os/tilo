@@ -203,6 +203,7 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
             workspaces,
             identity: None,
             live: None,
+            speaking: None,
         })),
         ..ProcessServices::default()
     };

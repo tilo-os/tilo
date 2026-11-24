@@ -51,6 +51,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tilo_desktop_model::TabId;
 use tilo_live::capture::Session as CaptureSession;
+#[cfg(test)]
 use tilo_live::live_session::LiveSession;
 use tilo_live::live_session::MAX_HEARD;
 use tilo_session_core::desktop::i18n::{t, t_args};

@@ -175,16 +175,23 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    /// The device's live session, once the daemon runs it.
+    #[cfg(test)]
+    pub(crate) fn live(&self) -> Option<&Arc<super::live_relay::Live>> {
+        self.live.get()
+    }
+
     /// What an app's call lane needs to carry one of its calls into a workspace's call through
-    /// the live session this device holds: the call it is admitted to, and the session. No key
-    /// material and no relay are part of it.
+    /// the live session this device holds: the device's word there, and the way to join a call as
+    /// the app, through the device's one dispatch under the app's grants. No key material and no
+    /// relay are part of it.
     ///
     /// # Errors
     ///
-    /// This device runs no live session, the app's workspace has none, or the device is in no
-    /// call the app could carry: the lane refuses every carry with the reason.
+    /// This device runs no live session, or the app's workspace has none: the lane refuses every
+    /// carry with the reason.
     pub(crate) fn app_call_setup(
-        &self,
+        self: &Arc<Self>,
         at: &crate::seats::AppAt,
     ) -> Result<tilo_live::app_call::CallSetup, String> {
         let live = self
@@ -196,24 +203,57 @@ impl Daemon {
         let call = live
             .call_session(workspace)
             .ok_or("this computer holds no live session for the app's workspace")?;
-        let (channel, generation) = call
-            .session()
-            .call_keys_wanted()
-            .ok_or("this computer is in no call this app can carry")?;
+        let daemon = Arc::downgrade(self);
+        let (app, named) = (at.app.clone(), at.workspace.clone());
+        let join: tilo_live::app_call::JoinCall = Arc::new(move |call| {
+            let daemon = daemon
+                .upgrade()
+                .ok_or("this computer's daemon is stopping")?;
+            let (tree, caller) = daemon
+                .app_tree(&app, &named)
+                .map_err(|error| error.to_string())?;
+            let request = match call {
+                Some(call) => super::live_speaking::request(
+                    super::live_speaking::JOIN,
+                    serde_json::to_value(super::live_speaking::Joining {
+                        channel: call.channel,
+                        name: call.name,
+                        bridge: call.bridge,
+                    })
+                    .map_err(|error| error.to_string())?,
+                ),
+                None => super::live_speaking::request(
+                    super::live_speaking::LEAVE,
+                    serde_json::Value::Object(serde_json::Map::new()),
+                ),
+            };
+            let receipt = tilo_actions::remote::ActionProvider::invoke(&tree, &caller, request)
+                .wait_timeout(JOIN_WAIT)
+                .ok()
+                .flatten()
+                .ok_or("the device did not answer the join in time")?
+                .map_err(|error| error.to_string())?;
+            match receipt.status {
+                tilo_actions::remote::ReceiptStatus::Completed { output } => match output.value {
+                    Some(value) => serde_json::from_value::<super::live_speaking::Joined>(value)
+                        .map(|joined| Some((joined.channel, joined.generation)))
+                        .map_err(|error| error.to_string()),
+                    None => Ok(None),
+                },
+                tilo_actions::remote::ReceiptStatus::Failed { error } => Err(error.message),
+                other => Err(format!("the join did not finish: {other:?}")),
+            }
+        });
         Ok(tilo_live::app_call::CallSetup {
-            workspace: at.workspace.clone(),
-            device: self.cert.device_public_key,
-            device_name: tilo_user_identity::device_name(&self.cert.device_label)
-                .unwrap_or_default()
-                .to_owned(),
-            person: Some(hex::encode(self.cert.user_public_key)),
             service: at.app.clone(),
-            channel,
-            generation,
-            session: call.shared(),
+            speaker: Arc::clone(call.speaker()),
+            join,
         })
     }
 }
+
+/// How long an app's join of a call may take: its keys may have to arrive first.
+const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The services a profile is served as: the person's own runtime, or the same
 /// in development.
@@ -1690,6 +1730,7 @@ impl Daemon {
             super::live_relay::Live::new(
                 &workspaces,
                 kept.as_ref().and_then(super::keep::Kept::live_relay),
+                Arc::clone(&fanout),
             )
         };
         stage("serving the device's endpoint");
@@ -2805,6 +2846,7 @@ fn broker_services(
             shell_processes(parts.apps, parts.workspaces),
             Arc::clone(&parts.identity),
             Some(live_links(parts.live)),
+            Arc::clone(parts.live) as Arc<dyn tilo_workspace_service::apps::shell::ShellSpeaking>,
         ))),
         // A workspace placed on a host has its records changed there: the person's actions on
         // them are sent to the host, which decides and runs them, and the change reaches this

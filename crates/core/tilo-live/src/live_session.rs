@@ -211,6 +211,10 @@ pub struct Join {
     pub presence: bool,
 }
 
+/// What hears the objects of one track a live session opens, beside its reader
+/// ([`LiveSession::tap`]): `false` once it no longer listens.
+pub type Tap = Arc<dyn Fn(&Heard) -> bool + Send + Sync>;
+
 /// One object a live session heard, already opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Heard {
@@ -339,6 +343,9 @@ pub(crate) struct Shared {
     /// capture a page.
     demand_revision: AtomicU64,
     heard: Mutex<VecDeque<Heard>>,
+    /// What else hears the objects of a track as they are opened, beside whoever reads
+    /// [`LiveSession::try_recv`]: the device's own board, a bridge's ear.
+    taps: Mutex<Vec<(Track, Tap)>>,
     /// How many objects this live session opened from its peers, and why it could not
     /// open what a reader got: the answer a member needs when it hears nobody
     /// who is in the roster.
@@ -427,6 +434,7 @@ impl Shared {
             demands: Mutex::new(Demands::default()),
             demand_revision: AtomicU64::new(0),
             heard: Mutex::new(VecDeque::new()),
+            taps: Mutex::new(Vec::new()),
             heard_total: AtomicU64::new(0),
             presence_from: Mutex::new(BTreeMap::new()),
             refusals: Mutex::new(BTreeMap::new()),
@@ -609,6 +617,24 @@ impl Shared {
                 counts.0 = counts.0.saturating_add(1);
             }
             drop(from);
+        }
+        // Gathered first, so no tap runs while the list is held: a tap may add another.
+        #[expect(
+            clippy::needless_collect,
+            reason = "the list's lock is let go before any tap runs"
+        )]
+        let taps: Vec<Tap> = self
+            .taps
+            .lock_recover()
+            .iter()
+            .filter(|(track, _)| *track == heard.track)
+            .map(|(_, tap)| Arc::clone(tap))
+            .collect();
+        let gone: Vec<Tap> = taps.into_iter().filter(|tap| !tap(&heard)).collect();
+        if !gone.is_empty() {
+            self.taps
+                .lock_recover()
+                .retain(|(_, tap)| gone.iter().all(|gone| !Arc::ptr_eq(gone, tap)));
         }
         {
             let mut queue = self.heard.lock_recover();
@@ -1359,6 +1385,13 @@ impl LiveSession {
     /// Ask `changed` to run whenever [`Self::unheard`] says otherwise.
     pub fn set_unheard_changed(&self, changed: Arc<dyn Fn() + Send + Sync>) {
         *self.shared.unheard_hook.lock_recover() = Some(changed);
+    }
+
+    /// Hand each object of `track` this live session opens to `tap` as well as to its reader,
+    /// for as long as `tap` answers that it still listens: what the device's own board and a
+    /// bridge hear by while a desktop's link reads the rest.
+    pub fn tap(&self, track: Track, tap: Tap) {
+        self.shared.taps.lock_recover().push((track, tap));
     }
 
     /// Read the peers' presence from now on, or stop reading it: a device

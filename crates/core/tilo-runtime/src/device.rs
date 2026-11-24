@@ -55,6 +55,7 @@ pub(crate) mod layout;
 mod live;
 mod live_call;
 mod live_relay;
+mod live_speaking;
 pub(crate) mod local;
 mod mcp_server;
 pub(crate) mod migrate;

@@ -154,12 +154,12 @@ fn live_session(device: EndpointId) -> BTreeMap<String, crate::live::Sessions> {
             },
         )
         .expect("a local live session"),
-    ) as crate::live::Sessions;
+    );
     for (_, other) in joined.iter() {
         other.set_roster(LiveRoster::new(devices.iter().copied()));
     }
     joined.push((*device.as_bytes(), Arc::clone(&live_session)));
-    BTreeMap::from([(WORKSPACE.to_owned(), live_session)])
+    BTreeMap::from([(WORKSPACE.to_owned(), live_session as crate::live::Sessions)])
 }
 
 fn device(seed: u8) -> EndpointId {

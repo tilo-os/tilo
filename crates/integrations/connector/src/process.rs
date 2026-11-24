@@ -14,8 +14,7 @@ use tokio::sync::{Mutex, broadcast, oneshot, watch};
 use crate::EventLog;
 use crate::framing::{read_frame_async, write_frame_async};
 use crate::protocol::{
-    ATTACH_FIELD, Bytes, CallLink, FromWorker, Outcome, OutsideCall, PROTOCOL_VERSION,
-    PUBLISH_FIELD, ToWorker,
+    ATTACH_FIELD, Bytes, FromWorker, Outcome, PROTOCOL_VERSION, PUBLISH_FIELD, ToWorker,
 };
 
 /// The host's content store, as far as a worker's ops need it. The worker

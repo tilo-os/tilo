@@ -1553,6 +1553,7 @@ async fn shell_on_a_joined_workspace(
                 workspaces: member.workspaces().clone(),
                 identity: None,
                 live: None,
+                speaking: None,
             })),
             ..crate::apps::services::ProcessServices::default()
         },
