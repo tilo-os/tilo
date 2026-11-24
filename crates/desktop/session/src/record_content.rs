@@ -168,6 +168,20 @@ impl RecordContent {
     ///
     /// # Errors
     /// The workspace names no store, or the store refused the bytes.
+    /// Keep `bytes` under `app`'s scope in `workspace` — the scope a file's content is read
+    /// under — and answer their address.
+    pub(crate) fn keep_under(
+        &self,
+        workspace: &str,
+        app: &str,
+        bytes: &[u8],
+    ) -> Result<String, String> {
+        self.on(workspace, app, |scoped| {
+            scoped.put(bytes, "application/octet-stream")
+        })
+        .map(|kept| kept.hash)
+    }
+
     pub(crate) fn keep(&self, workspace: &str, bytes: &[u8]) -> Result<String, String> {
         self.keep_in(workspace, PUT_SCOPE, bytes)
     }

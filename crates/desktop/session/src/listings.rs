@@ -59,7 +59,11 @@ pub(crate) struct Listings {
 impl Listings {
     /// The listings of whichever workspace `handle` says the person is in, waking the session's
     /// loop through `wake` when one moves.
-    pub(crate) fn new(daemon: DaemonShell, handle: DesktopHandle, wake: tilo_service::Wake) -> Self {
+    pub(crate) fn new(
+        daemon: DaemonShell,
+        handle: DesktopHandle,
+        wake: tilo_service::Wake,
+    ) -> Self {
         Self {
             daemon,
             handle,
@@ -131,7 +135,7 @@ impl Listings {
                             wake();
                         }
                         Err(error) => {
-                            tracing::debug!(%error, %workspace, app, "a listing did not read");
+                            tracing::warn!(%error, %workspace, app, "a listing did not read");
                             tokio::time::sleep(ASK_AGAIN).await;
                         }
                     }

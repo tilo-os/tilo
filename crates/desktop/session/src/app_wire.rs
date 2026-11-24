@@ -459,10 +459,6 @@ pub struct Hosted {
     /// The person's settings, which Settings' window changes through the broker as another
     /// provider's actions: the session keeps them, so its service answers them here.
     pub settings_steps: Option<std::sync::Arc<crate::settings_steps::SettingsSteps>>,
-    /// This session's Nearby Send: the person's other devices, and the spool
-    /// a file reaches them from. `None` on a session that runs none, where
-    /// Files' send has no route at all.
-    pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
     /// Files' clipboard: what a person copied or cut there, pasted into a
     /// folder of this desktop's, and what it put on the desktop's clipboard.
     pub file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
@@ -1078,7 +1074,6 @@ fn broker_services(
         task_programs,
         session_actions,
         settings_steps,
-        nearby,
         file_clipboard,
         item_lending,
         fanout,
@@ -1275,16 +1270,9 @@ fn broker_services(
         // call is decided on the certificate the broker attested for the app's
         // connection in its workspace, and the vault stays on this device.
         browser_service_sessions: BrokerService::when(service_sessions),
-        // Files offers a file to the person's other devices over the same
-        // device fabric this session already runs: one Nearby Send stages a
-        // screenshot and a file alike, and the receiving device's person
-        // chooses where it lands there.
-        nearby_transfer: BrokerService::when(nearby.map(|nearby| {
-            nearby
-                as std::sync::Arc<
-                    dyn tilo_workspace_service::apps::services::NearbyTransferServices,
-                >
-        })),
+        // Nearby Send is the device daemon's: its offers, transfers and content reach another
+        // of the person's devices over the action service the daemon already serves.
+        nearby_transfer: BrokerService::unserved("Nearby Send is the device daemon's"),
         // A person copies and cuts in Files and pastes the copy in another
         // folder or another app: what they copied is offered here, and every
         // file of it is pasted by the same engine the desktop's own paste of
@@ -1690,7 +1678,6 @@ mod tests {
                 keys: None,
             },
             own_device: None,
-            nearby: None,
             engine: None,
             view: None,
             action_offload: None,

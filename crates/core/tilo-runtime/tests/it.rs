@@ -119,6 +119,8 @@ mod migrate_engine;
 mod migrate_walk;
 #[path = "migrate_window.rs"]
 mod migrate_window;
+#[path = "nearby_send.rs"]
+mod nearby_send;
 #[path = "provided.rs"]
 mod provided;
 #[path = "refresh_reads.rs"]

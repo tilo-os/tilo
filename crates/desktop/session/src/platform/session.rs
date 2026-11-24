@@ -783,25 +783,23 @@ impl Session {
                 placed,
             ))
         });
-        // Nearby Send: one engine for every file that leaves this device for
-        // another of the person's, whether a screenshot the studio sends or a
-        // file Files hands over. It stages into this machine's own spool, and
-        // the session's pass turns when a hand-over moves.
-        let nearby = match crate::nearby_transfer::NearbyTransfer::open(
-            fabric.clone(),
-            crate::nearby_transfer::spool_root(),
-            continuity,
+        // Nearby Send: the device's daemon holds the offers and transfers, carries the content
+        // between the person's devices and answers them on the action service it already serves.
+        // This session keeps the seat's parts — the share sheet, the files handed over and the
+        // receiver no device of theirs is — and reads and presses the daemon's resource over the
+        // shell link.
+        let nearby_shares: Rc<RefCell<Vec<String>>> = Rc::default();
+        let sharing = Rc::clone(&nearby_shares);
+        let nearby = crate::nearby_send::Served::new(
+            daemon.clone(),
+            std::sync::Arc::clone(&record_content),
+            continuity.clone(),
+            Box::new(move |resource: &str| {
+                sharing.borrow_mut().push(resource.to_owned());
+                Ok(())
+            }),
             options.wake.handle(),
-        ) {
-            Ok(nearby) => Some(nearby),
-            Err(error) => {
-                tracing::warn!(%error, "no thread takes what is sent nearby");
-                None
-            }
-        };
-        if let (Some(sync), Some(nearby)) = (&sync, &nearby) {
-            sync.attach_nearby(std::sync::Arc::clone(nearby));
-        }
+        );
         // The machine's status, which the bar's status cluster shows as the
         // battery, network and volume glyphs, the lock screen shows under its
         // card and the shell reads: every part of it is read off the services
@@ -1086,7 +1084,7 @@ impl Session {
             &mut compositor,
             &mut published,
             &options,
-            nearby.as_ref(),
+            Some(&nearby),
             Rc::clone(&capture_io),
             capture_notes,
             &live_activities,
@@ -1208,7 +1206,6 @@ impl Session {
                 task_programs,
                 session_actions: Some(std::sync::Arc::clone(&session_actions)),
                 settings_steps: Some(std::sync::Arc::clone(&settings_steps)),
-                nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
         // The person's own line calls through the device's one dispatch, as their own click does,
@@ -1240,7 +1237,7 @@ impl Session {
         // What Files may read, and where a received file may land, is what
         // this session's workspaces grant it: read off the shell the broker
         // decides against.
-        if let (Some(nearby), Some(app_wire)) = (&nearby, &app_wire) {
+        if let Some(app_wire) = &app_wire {
             nearby.attach_authority(std::sync::Arc::clone(&app_wire.layout)
                 as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>);
         }
@@ -1267,7 +1264,7 @@ impl Session {
         let questions = Some(asker.clone());
         // A file handed to a receiver that is not one of the person's devices waits on the same
         // asking for them to verify that receiver.
-        if let (Some(questions), Some(nearby)) = (&questions, &nearby) {
+        if let Some(questions) = &questions {
             nearby.air_drop().ask_with(questions.clone());
         }
         // Every service this session serves, from the one table that says who serves each: the
@@ -1512,43 +1509,7 @@ impl Session {
         // read and press: the same engine Files reaches, as the same certified
         // route, in the workspace in front. A share the resource asks for waits
         // here for the pass that opens the invitation sheet.
-        let nearby_shares: Rc<RefCell<Vec<String>>> = Rc::default();
-        if let (Some(nearby), Some(app_wire)) = (&nearby, &app_wire) {
-            let layout = std::sync::Arc::clone(&app_wire.layout);
-            let shares = Rc::clone(&nearby_shares);
-            services
-                .borrow_mut()
-                .add(Box::new(crate::nearby_send::Served::new(
-                    tilo_workspace_service::apps::nearby_send::NearbySend::new(
-                        std::sync::Arc::clone(nearby)
-                            as std::sync::Arc<
-                                dyn tilo_workspace_service::apps::services::NearbyTransferServices,
-                            >,
-                        options.person.clone(),
-                        move || {
-                            let mut active = String::new();
-                            // A workspace that cannot be read is no workspace: the engine
-                            // refuses a send with none, and the person is told why in the log.
-                            if let Err(error) =
-                                tilo_broker_core::services::WorkspaceAuthority::with_tree(
-                                    &*layout,
-                                    &mut |tree| active = tree.active.to_string(),
-                                )
-                            {
-                                tracing::warn!(
-                                    %error,
-                                    "nearby send cannot tell which workspace is in front"
-                                );
-                            }
-                            active
-                        },
-                        move |resource| {
-                            shares.borrow_mut().push(resource.to_owned());
-                            Ok(())
-                        },
-                    ),
-                )));
-        }
+        services.borrow_mut().add(Box::new(nearby.clone()));
         // The shell's own records reach the API as any app's do the moment its package runs.
         shell.share_records(&services, &session_services);
         // So do the records the services keep of every app the session runs itself (a seeded

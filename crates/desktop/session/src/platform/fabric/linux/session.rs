@@ -128,7 +128,6 @@ pub(crate) struct SessionFabric {
     continuity: Continuity,
     /// This session's Nearby Send, once the session made it: where the bytes of a transfer one of
     /// the person's devices offers or streams come in.
-    nearby: Mutex<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
     /// The endpoints heard on this device's local network, of which the person's devices are
     /// reachable without a server.
     lan: tilo_endpoint_reachability::Nearby,
@@ -198,7 +197,6 @@ impl SessionFabric {
             outgoing: reach.outgoing,
             user_public_key: reach.user_public_key,
             continuity: reach.continuity,
-            nearby: Mutex::new(None),
             lan: reach.lan,
         })
     }
@@ -217,10 +215,6 @@ impl SessionFabric {
     }
 
     /// This session's Nearby Send takes what the person's devices offer and stream here.
-    pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
-        *self.nearby.lock_recover() = Some(nearby);
-    }
-
     /// One of the person's devices proved itself on its session with this one. What it proves is
     /// the grant to tell it what this device says of itself, so it is told at once: both sides say
     /// themselves on the session's start and neither has to ask. Two devices can bring up a
@@ -297,14 +291,10 @@ impl SessionFabric {
                     }
                 }
             }
-            // The bytes of a Nearby Send this device took: the transfer engine holds them for the
-            // device that proved itself here.
-            PersonalFabricPayload::NearbyTransfer(frame) => {
-                let nearby = self.nearby.lock_recover().clone();
-                let device = self.live.lock_recover().device_behind(peer);
-                if let (Some(nearby), Some(device)) = (nearby, device) {
-                    nearby.frame(&device, frame);
-                }
+            // A Nearby Send's bytes are the device daemon's, carried over its action service:
+            // none arrive on the session's fabric.
+            PersonalFabricPayload::NearbyTransfer(_frame) => {
+                tracing::debug!(%peer, "a nearby spool frame is dropped");
             }
             // What the person's devices carry for each other of their records belongs to their
             // own store's links; this session routes none of it and drops it rather than

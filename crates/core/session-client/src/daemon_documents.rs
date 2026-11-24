@@ -167,6 +167,53 @@ impl DaemonShell {
         answered(self.ask_blocking(call)?)
     }
 
+    /// Run `request`, a typed action of a resource of `workspace`, as the person, and answer its
+    /// receipt as it stands: completed, accepted to wait for their yes, or refused. What a call
+    /// the dispatch keeps as an asked record answers with, where [`Self::dispatch`] waits for it
+    /// to settle.
+    ///
+    /// # Errors
+    /// As [`Self::ask`], or the dispatch answered no receipt.
+    pub async fn invoke_receipt(
+        &self,
+        workspace: Option<&str>,
+        request: InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, String> {
+        let call = dispatched(workspace, &RemoteActionMessage::Invoke(request))?;
+        let ShellReply::Action(frame) = self.ask(call).await? else {
+            return Err("the daemon answered something else".to_owned());
+        };
+        let message = RemoteActionFrame::decode(&frame)
+            .map_err(|error| error.to_string())?
+            .message;
+        match message {
+            RemoteActionMessage::Receipt(receipt) => Ok(receipt),
+            other => Err(format!("the dispatch answered something else: {other:?}")),
+        }
+    }
+
+    /// [`Self::invoke_receipt`] from a thread that is not the runtime's.
+    ///
+    /// # Errors
+    /// As [`Self::invoke_receipt`].
+    pub fn invoke_receipt_blocking(
+        &self,
+        workspace: Option<&str>,
+        request: InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, String> {
+        let call = dispatched(workspace, &RemoteActionMessage::Invoke(request))?;
+        let ShellReply::Action(frame) = self.ask_blocking(call)? else {
+            return Err("the daemon answered something else".to_owned());
+        };
+        let message = RemoteActionFrame::decode(&frame)
+            .map_err(|error| error.to_string())?
+            .message;
+        match message {
+            RemoteActionMessage::Receipt(receipt) => Ok(receipt),
+            other => Err(format!("the dispatch answered something else: {other:?}")),
+        }
+    }
+
     /// The readings of `read`, as the device reads them for the person.
     ///
     /// # Errors

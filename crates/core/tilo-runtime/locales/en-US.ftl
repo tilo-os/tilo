@@ -35,3 +35,17 @@ window-follow-follow = Follow someone's view
 window-follow-follow-detail = Tells a workspace's apps on this device whose view you follow.
 window-follow-handoff = Move a window
 window-follow-handoff-detail = Asks an app on this device for the next step of moving its window to another device.
+
+# Nearby Send between the person's devices, as the daemon carries it and their shell shows it.
+nearby-send-resource = Nearby Send
+nearby-send-offer = Send a file to a device
+nearby-send-offer-detail = Offers a file this device already holds to another of your devices, which chooses where it lands.
+nearby-send-keep = Keep a file a device sent
+nearby-send-keep-detail = Keeps a file another of your devices offered, in the folder you choose.
+nearby-send-refuse = Turn down a file
+nearby-send-refuse-detail = Turns down a file another of your devices offered.
+nearby-send-stop = Stop a transfer
+nearby-send-stop-detail = Stops a transfer going out or coming in.
+nearby-send-again = Offer a file again
+nearby-send-again-detail = Offers a transfer that failed again.
+nearby-send-keep-question = Keep “{ $name }” from { $device }?

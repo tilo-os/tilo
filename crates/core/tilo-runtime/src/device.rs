@@ -50,6 +50,7 @@ mod live;
 pub(crate) mod local;
 mod mcp_server;
 pub(crate) mod migrate;
+pub mod nearby;
 mod offload_place;
 mod own_device;
 #[cfg(unix)]
@@ -65,6 +66,7 @@ pub(crate) mod presence;
 pub mod processes;
 /// The resources the daemon publishes to the apps attached to it: one table, a provider each.
 pub mod published;
+mod reading;
 pub(crate) mod records;
 mod search;
 pub mod serve;

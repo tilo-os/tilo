@@ -42,7 +42,8 @@ pub(crate) struct SeatServed(Arc<watch::Sender<u64>>);
 impl SeatServed {
     /// What the seat's providers offer moved: each is published to the daemon again.
     pub(crate) fn moved(&self) {
-        self.0.send_modify(|generation| *generation = generation.wrapping_add(1));
+        self.0
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 }
 
@@ -99,7 +100,7 @@ fn provide<T: Admits + Send + Sync + 'static>(
         while moved.changed().await.is_ok() {
             let generation = *moved.borrow_and_update();
             if let Err(error) = provided.publish(&page(provider.as_ref(), generation)).await {
-                tracing::debug!(%error, provider = T::PROVIDER, "the daemon is handed this provider's steps no more");
+                tracing::warn!(%error, provider = T::PROVIDER, "the daemon is handed this provider's steps no more");
                 return;
             }
         }

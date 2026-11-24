@@ -279,7 +279,6 @@ pub(crate) const CALLED_SERVICES: &[(&str, &str)] = &[
         "live_activities",
     ),
     ("ui::collaboration::file_clipboard", "file_clipboard"),
-    ("NearbyTransferCommand", "nearby_transfer"),
 ];
 
 /// The services shipped apps still call that this session serves nothing of: a list that only shrinks,

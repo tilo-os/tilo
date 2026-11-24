@@ -51,7 +51,7 @@ use ui::widget::{
 use crate::Options;
 use crate::capture_io::{CaptureIo, NO_WORKER, Note, Sound, WriteFailed, Written};
 use crate::capture_send::Sends;
-use crate::nearby_transfer::NearbyTransfer;
+use crate::nearby_send::Served;
 use crate::sheets::Sheet;
 
 /// One frame every this long: the replay buffer's rate, so a recording and a clip of what just
@@ -98,9 +98,8 @@ pub(crate) struct CaptureStudio {
     marking: VecDeque<Marking>,
     /// The last screenshot, for its receipt and for opening it again.
     last: Option<Kept>,
-    /// The session's transfer engine, when this session runs on a device fabric: who a screenshot
-    /// may be sent to.
-    nearby: Option<Arc<NearbyTransfer>>,
+    /// Who a screenshot may be sent to: the person's other devices, as the daemon lists them.
+    nearby: Option<Served>,
     /// The screenshots on their way to those devices.
     sends: Sends,
     /// What became of sending the last screenshot, while its receipt shows that.
@@ -236,7 +235,7 @@ pub(crate) fn mount(
     compositor: &mut Compositor,
     surfaces: &mut Surfaces,
     options: &Options,
-    nearby: Option<&Arc<NearbyTransfer>>,
+    nearby: Option<&Served>,
     io: Rc<CaptureIo>,
     notes: Receiver<Note>,
     board: &Arc<runtime_collab::LiveActivities>,

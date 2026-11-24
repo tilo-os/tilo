@@ -24,8 +24,7 @@ use tilo_workspace_service::apps::collab_app_broker::{AudioOutputServices, Nativ
 use tilo_workspace_service::apps::seat::{self, MediaContext, SeatReading, SeatView, calls};
 use tilo_workspace_service::apps::services::{
     BrowserServiceSessionServices, DisplayControlContext, DisplayControlServices,
-    NearbyTransferRequestContext, NearbyTransferServices, PublishedResources,
-    WifiContinuityServices,
+    PublishedResources, WifiContinuityServices,
 };
 
 /// How long a wait for a change is held here before it is answered as it stands: the daemon asks
@@ -46,8 +45,6 @@ pub(crate) struct SeatParts {
     pub tools: Option<crate::tools::Handle>,
     /// The fabric whose speaker groups Settings manages.
     pub fabric: Option<crate::platform::fabric::SharedLink>,
-    /// Nearby Send's spool and the person's devices in reach.
-    pub nearby: Option<Arc<crate::nearby_transfer::NearbyTransfer>>,
     /// What the session's services publish (the sound, the network, the displays), as apps read
     /// and change it.
     pub published: Arc<dyn PublishedResources>,
@@ -234,10 +231,11 @@ async fn shortcut_table(
         }
     })
     .await;
-    let table = match waited {
-        Ok(table) => table,
-        Err(_) => read().await,
-    };
+    let table =
+        match tilo_failure::ignored!("a wait that ran out reads the table as it stands", waited) {
+            Ok(table) => table,
+            Err(_elapsed) => read().await,
+        };
     drop(listener);
     table
 }
@@ -390,31 +388,7 @@ impl SeatProvider {
                     after,
                 )
             }
-            (calls::NEARBY_TRANSFER, call) => {
-                let Some(nearby) = parts.nearby.clone() else {
-                    return unserved("Nearby Send");
-                };
-                if call == calls::DISCONNECT {
-                    if let Ok(peer) = field::<u64>(&arguments, "peer") {
-                        nearby.disconnect(peer);
-                    }
-                    return Box::pin(std::future::ready(Ok(Value::Null)));
-                }
-                let context = match field::<NearbyTransferRequestContext>(&arguments, "context") {
-                    Ok(context) => context,
-                    Err(why) => return failed(why),
-                };
-                match call {
-                    calls::COMMAND => {
-                        blocking(move || nearby.command(&context, field(&arguments, "command")?))
-                    }
-                    calls::CHANGED => match field::<u64>(&arguments, "after") {
-                        Ok(after) => held(nearby.changed(&context, after), after),
-                        Err(why) => failed(why),
-                    },
-                    other => failed(format!("Nearby Send takes no {other}")),
-                }
-            }
+            (calls::NEARBY_TRANSFER, _) => unserved("Nearby Send"),
             (calls::PUBLISHED, call) => self.published(call, &arguments),
             (calls::WORKSPACE_NODES, calls::ASK) => {
                 let Some(nodes) = parts.workspace_nodes.clone() else {
@@ -475,8 +449,8 @@ impl SeatProvider {
                             .map_err(|error| error.to_string())?;
                         let action = arguments["action"].as_str();
                         // Model Providers' writes are held to the providers' own rules.
-                        let check: Option<runtime_collab::settings::host::Check> = providers
-                            .then(|| {
+                        let check: Option<runtime_collab::settings::host::Check> =
+                            providers.then(|| {
                                 Arc::new(agent_provider_config::management::check_write)
                                     as runtime_collab::settings::host::Check
                             });
@@ -516,9 +490,12 @@ impl SeatProvider {
                 Box::pin(async move {
                     let app = field::<String>(&arguments, "app")?;
                     let after = field::<u64>(&arguments, "after")?;
-                    match tokio::time::timeout(HELD, board.controls(&app, after)).await {
+                    match tilo_failure::ignored!(
+                        "a wait for the board that ran out answers as it stands",
+                        tokio::time::timeout(HELD, board.controls(&app, after)).await
+                    ) {
                         Ok(taken) => answered(taken),
-                        Err(_) => Ok(Value::Null),
+                        Err(_elapsed) => Ok(Value::Null),
                     }
                 })
             }
@@ -651,7 +628,12 @@ impl SeatProvider {
         };
         let reading = |(revision, reading): (u64, Option<Vec<u8>>)| SeatReading {
             revision,
-            reading: reading.and_then(|reading| serde_json::from_slice(&reading).ok()),
+            reading: reading.and_then(|reading| {
+                tilo_failure::ignored!(
+                    "a reading that does not read shows nothing",
+                    serde_json::from_slice(&reading).ok()
+                )
+            }),
         };
         match call {
             calls::SNAPSHOT => {
@@ -719,10 +701,18 @@ impl ActionProvider for SeatProvider {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        Pending::ready(Ok(CataloguePage::from_rows(String::new(), Vec::new(), &query)))
+        Pending::ready(Ok(CataloguePage::from_rows(
+            String::new(),
+            Vec::new(),
+            &query,
+        )))
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &tilo_actions::InvocationId) -> Pending<Result<(), ActionCallError>> {
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 

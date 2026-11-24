@@ -336,8 +336,6 @@ pub(crate) struct Local {
     /// This device's fabric, when it is a certified device of the person's: `None` on a session
     /// that takes part as nobody.
     fabric: Option<Arc<SessionFabric>>,
-    /// This session's Nearby Send, once the session made it.
-    nearby: RefCell<Option<Arc<crate::nearby_transfer::NearbyTransfer>>>,
     /// The workspaces' live resources, told which devices this session reaches in each: a row
     /// live on a device that went away goes with it.
     live_rows: tilo_workspace_service::live::LiveRows,
@@ -700,16 +698,10 @@ impl Local {
                     if let Some(link) = &self.link {
                         link.sibling_arrived();
                     }
-                    if let Some(nearby) = self.nearby() {
-                        nearby.devices_changed();
-                    }
                 }
                 DesktopEvent::SiblingLeft { peer } => {
                     if let Some(fabric) = &self.fabric {
                         fabric.sibling_left(peer);
-                    }
-                    if let Some(nearby) = self.nearby() {
-                        nearby.devices_changed();
                     }
                 }
                 DesktopEvent::PersonalFabric {
@@ -721,16 +713,7 @@ impl Local {
                         fabric.arrived(peer, &payload, received);
                     }
                 }
-                DesktopEvent::NearbyTransferProgress {
-                    transfer_id,
-                    sent_bytes,
-                    total_bytes,
-                    status,
-                } => {
-                    if let Some(nearby) = self.nearby() {
-                        nearby.progress(transfer_id, sent_bytes, total_bytes, status);
-                    }
-                }
+                DesktopEvent::NearbyTransferProgress { .. } => {}
             }
         }
     }
@@ -760,27 +743,8 @@ impl Local {
         self.fabric.as_ref()?.person_resources()
     }
 
-    /// This session's Nearby Send, when the session made one.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn nearby(&self) -> Option<Arc<crate::nearby_transfer::NearbyTransfer>> {
-        self.nearby.borrow().clone()
-    }
-
-    /// Give this session's Nearby Send the fabric it runs on: what the person's devices offer and
-    /// stream here, and what they say of a transfer's progress, reaches it.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
-        if let Some(fabric) = &self.fabric {
-            fabric.attach_nearby(Arc::clone(&nearby));
-        }
-        self.nearby.replace(Some(nearby));
-    }
-
     /// The actions one of the person's devices sent this one since the last call, for the session's
-    /// pass to carry out. A Nearby Send is carried out here instead, by this client's own transfer
-    /// engine: the offer, the checkpoint, the withdrawal and the ending of a transfer are the
-    /// engine's to take, whether or not a session runs on this client.
+    /// pass to carry out.
     #[must_use]
     pub(crate) fn fabric_actions(
         &self,
@@ -789,18 +753,7 @@ impl Local {
         if let Some(fabric) = &self.fabric {
             actions.extend(fabric.take_actions());
         }
-        let Some(nearby) = self.nearby() else {
-            return actions;
-        };
-        let mut rest = Vec::with_capacity(actions.len());
-        for envelope in actions {
-            if crate::nearby_transfer::carried_by_engine(&envelope.action) {
-                nearby.action(&envelope.source, envelope.request_id, &envelope.action);
-            } else {
-                rest.push(envelope);
-            }
-        }
-        rest
+        actions
     }
 
     /// The workspaces' live session: what this session says into and hears from each of them, and the
@@ -1169,11 +1122,6 @@ impl Host for Hosting {
         // timed against them can play in time.
         if let Some(fabric) = &local.fabric {
             fabric.pump_clock();
-        }
-        // What no device acknowledged of a send this device made is offered again, and what the
-        // person's devices offered here waits for their answer.
-        if let Some(nearby) = local.nearby() {
-            nearby.pump();
         }
         if moved {
             local.note_reachability(client);
@@ -1710,12 +1658,6 @@ impl Client {
         true
     }
 
-    /// Give this session's Nearby Send the fabric it runs on.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn attach_nearby(&self, nearby: Arc<crate::nearby_transfer::NearbyTransfer>) {
-        self.hosting.local.attach_nearby(nearby);
-    }
-
     /// Dial the person's other devices as this session's siblings, and wake the session when
     /// their own workspace moves: the session between two of theirs is where they tell each other
     /// what they hold, and carries their device fabric.
@@ -1995,7 +1937,6 @@ impl Local {
                 versions,
                 topologies: RefCell::new(std::collections::BTreeMap::new()),
                 fabric,
-                nearby: RefCell::new(None),
                 live_rows,
                 reachability: RefCell::new(reachability),
                 live: RefCell::new(live),
@@ -2031,7 +1972,6 @@ impl Local {
             versions,
             topologies: RefCell::new(std::collections::BTreeMap::new()),
             fabric: None,
-            nearby: RefCell::new(None),
             live_rows: tilo_workspace_service::live::LiveRows::default(),
             reachability: RefCell::new(Reachability::default()),
             live: RefCell::new(None),

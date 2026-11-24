@@ -484,6 +484,38 @@ impl Host {
         self.dial(random_key(), workspace).await
     }
 
+    /// A device of this person's, `label`, that serves `provider` beside the device's dispatcher:
+    /// what another device of theirs answers with on the action link.
+    pub async fn member_serving(
+        &self,
+        label: &str,
+        workspace: &str,
+        provider: Arc<dyn ActionProvider + Send + Sync>,
+    ) -> Member {
+        let (key, cert) = self.certify(label, DeviceCapabilities::member());
+        self.daemon()
+            .workspaces()
+            .enter(workspace, &cert)
+            .await
+            .unwrap();
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let service = ActionService::new(key.clone(), Arc::new(NoActions));
+        service.add_provider(provider);
+        let remote = Arc::new(service.remote(&endpoint, &self.daemon().endpoint_addr(), workspace));
+        Member {
+            remote,
+            _service: service,
+            _endpoint: endpoint,
+        }
+    }
+
     /// `key`, whatever certifies it, asking the daemon over the device link for `workspace`.
     pub async fn dial(&self, key: SigningKey, workspace: &str) -> Member {
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -690,6 +722,12 @@ pub struct Member {
 }
 
 impl Member {
+    /// This device's key, as its certificate names it.
+    #[must_use]
+    pub fn device(&self) -> [u8; 32] {
+        self.remote.device()
+    }
+
     /// This device's endpoint, as it dials a host's terminal streams.
     #[must_use]
     pub fn endpoint(&self) -> &iroh::Endpoint {

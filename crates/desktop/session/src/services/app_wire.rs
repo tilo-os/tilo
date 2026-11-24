@@ -169,9 +169,6 @@ pub(crate) struct Collaboration<'a> {
     /// The person's settings, offered where Settings' window invokes them: the provider its
     /// controls name, answered by the session's settings service.
     pub settings_steps: Option<std::sync::Arc<crate::settings_steps::SettingsSteps>>,
-    /// This session's Nearby Send: the fabric it reaches the person's other devices on, and the
-    /// spool a file leaves from.
-    pub nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
 }
 
 /// Where this session's apps reach its services, when it serves them: the
@@ -242,7 +239,6 @@ pub(crate) fn start_app_wire(
         task_programs,
         session_actions,
         settings_steps,
-        nearby,
     } = collaboration;
     let Some(path) = app_wire_path(options)? else {
         return Ok(None);
@@ -299,12 +295,17 @@ pub(crate) fn start_app_wire(
         )
     });
     // A person session reaches the hosts of its workspaces through the daemon's dispatch.
-    let hosts = daemon.as_ref().ok().zip(view.as_ref()).map(|(shell, view)| {
-        std::sync::Arc::new(crate::broker_services::DaemonHosts {
-            view: std::sync::Arc::clone(view),
-            dispatch: shell.dispatch(),
-        }) as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
-    });
+    let hosts = daemon
+        .as_ref()
+        .ok()
+        .zip(view.as_ref())
+        .map(|(shell, view)| {
+            std::sync::Arc::new(crate::broker_services::DaemonHosts {
+                view: std::sync::Arc::clone(view),
+                dispatch: shell.dispatch(),
+            })
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
+        });
     let fabric = acting_fabric(options, sync);
     let (hosted, socket, terminals) = match &daemon {
         // The device's daemon serves this session's apps: each connection is attested here and
@@ -323,7 +324,6 @@ pub(crate) fn start_app_wire(
                     records,
                     tools: services.tools,
                     fabric: fabric.clone(),
-                    nearby,
                     view: view.as_ref(),
                     engine: engine.as_ref(),
                     shell,
@@ -391,7 +391,6 @@ pub(crate) fn start_app_wire(
                     task_programs,
                     session_actions,
                     settings_steps,
-                    nearby,
                     file_clipboard: std::sync::Arc::clone(&file_clipboard),
                     item_lending: std::sync::Arc::clone(&item_lending),
                     fanout: std::sync::Arc::clone(&fanout),
@@ -434,7 +433,6 @@ struct SeatInputs<'a> {
     records: Option<std::sync::Arc<crate::resource_index::RecordChanges>>,
     tools: Option<crate::tools::Handle>,
     fabric: Option<crate::platform::fabric::SharedLink>,
-    nearby: Option<std::sync::Arc<crate::nearby_transfer::NearbyTransfer>>,
     view: Option<&'a std::sync::Arc<crate::workspace_view::WorkspaceView>>,
     engine: Option<&'a std::sync::Arc<crate::engine::Engine>>,
     shell: &'a runtime_collab::ShellClient,
@@ -455,7 +453,6 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         records,
         tools,
         fabric,
-        nearby,
         view,
         engine,
         shell,
@@ -474,7 +471,9 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
     });
     crate::seat_services::SeatParts {
         #[cfg(target_os = "linux")]
-        audio_output: Some(std::sync::Arc::new(crate::audio_output::AppAudioOutput::new())),
+        audio_output: Some(std::sync::Arc::new(
+            crate::audio_output::AppAudioOutput::new(),
+        )),
         #[cfg(not(target_os = "linux"))]
         audio_output: None,
         native_media: calls_service.map(|media| {
@@ -494,10 +493,11 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         )
         .map(|wifi| {
             std::sync::Arc::new(wifi)
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::WifiContinuityServices>
+                as std::sync::Arc<
+                    dyn tilo_workspace_service::apps::services::WifiContinuityServices,
+                >
         }),
         fabric,
-        nearby,
         published: std::sync::Arc::clone(link) as _,
         workspace_nodes: crate::workspace_nodes::WorkspaceNodes::service(view),
         settings,
@@ -750,7 +750,8 @@ impl ServedServices {
         &self,
         services: &mut Services,
         request: &tilo_actions::remote::InvokeRequest,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError> {
+    ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>
+    {
         use tilo_actions::remote::{ActionCallError, InvocationReceipt, ReceiptStatus};
         let invocation = request.invocation;
         let address = &request.target.address;
@@ -787,10 +788,7 @@ impl ServedServices {
             }
             None => return Err(ActionCallError::UnknownAction),
         };
-        Ok(InvocationReceipt {
-            invocation,
-            status,
-        })
+        Ok(InvocationReceipt { invocation, status })
     }
 
     /// What the person reads before answering a call of `address`: the action by its own label,
@@ -828,10 +826,7 @@ impl tilo_actions::remote::ActionProvider for ServicesOnDispatch {
         _caller: &tilo_actions::remote::Caller,
         _query: tilo_actions::remote::CatalogueQuery,
     ) -> tilo_actions::remote::Pending<
-        Result<
-            tilo_actions::remote::CataloguePage,
-            tilo_actions::remote::ActionCallError,
-        >,
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionCallError>,
     > {
         tilo_actions::remote::Pending::ready(Ok(self.page.clone()))
     }
@@ -841,10 +836,7 @@ impl tilo_actions::remote::ActionProvider for ServicesOnDispatch {
         _caller: &tilo_actions::remote::Caller,
         request: tilo_actions::remote::InvokeRequest,
     ) -> tilo_actions::remote::Pending<
-        Result<
-            tilo_actions::remote::InvocationReceipt,
-            tilo_actions::remote::ActionCallError,
-        >,
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
         use tilo_actions::remote::ActionCallError;
         let (done, answer) = tilo_actions::remote::pending();

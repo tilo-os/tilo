@@ -1368,7 +1368,13 @@ impl Daemon {
         // session's broker through the device's dispatch.
         let wifi = super::wifi::Wifi::new(personal.clone(), identity.key.clone());
         wifi.register(&workspaces.copies().providers());
-        apps.device_grants().keep_in(std::sync::Arc::new(personal));
+        // Nearby Send between the person's devices: the offers and transfers answered over the
+        // action service this daemon already serves, staged and kept on the device's content
+        // shelf, and read by their shell as the resource it lists.
+        let nearby = super::nearby::Nearby::new(&workspaces, personal.clone());
+        nearby.register(&workspaces.copies().providers());
+        apps.device_grants()
+            .keep_in(std::sync::Arc::new(personal.clone()));
         // The person's devices, as the record of their own workspace holds them, each revocation
         // the root's own signature: what `tilo-identity` admits a device by, and the one copy of it.
         let devices = std::sync::Arc::new(tilo_identity::sources::DevicesTrust::new());
@@ -1454,6 +1460,8 @@ impl Daemon {
                 files: Arc::clone(&files_daemons),
                 wifi,
                 key_sessions: key_sessions.as_ref(),
+                personal: personal.clone(),
+                nearby: Arc::clone(&nearby),
                 #[cfg(unix)]
                 shell_links: &shell_links,
                 #[cfg(unix)]
@@ -1584,9 +1592,9 @@ impl Daemon {
         // The apps installed here that keep a long-lived connection: the trigger runner takes
         // each one's turn where this device has what it needs, and runs it while it holds it.
         #[cfg(unix)]
-        workspaces
-            .copies()
-            .run_connections(Arc::clone(&apps) as Arc<dyn tilo_workspace_service::work::HostConnections>);
+        workspaces.copies().run_connections(
+            Arc::clone(&apps) as Arc<dyn tilo_workspace_service::work::HostConnections>
+        );
         start_triggers(&broker, &workspaces, &invocations);
         let replicas = take_work_files(
             &TakenFiles {
@@ -2046,6 +2054,12 @@ struct BrokerParts<'a> {
     files: Arc<tilo_workspace_service::files::socket::Daemons>,
     /// The Wi-Fi passphrases the person's devices share.
     wifi: Arc<super::wifi::Wifi>,
+    /// What is the person's alone, kept in their own workspace: their devices, which Nearby
+    /// Send lists.
+    personal: tilo_workspace_service::workspaces::PersonResources,
+    /// Nearby Send's offers and transfers, which this device's shell reads and its person
+    /// answers.
+    nearby: Arc<super::nearby::Nearby>,
     /// The links of the shells this daemon starts.
     #[cfg(unix)]
     shell_links: &'a Arc<tilo_workspace_service::apps::shell::ShellLinks>,
@@ -2174,12 +2188,17 @@ fn broker_services(
     // this device's workspace service keeps them. Its verbs stay the action API's, which the
     // daemon already answers.
     let mcp_server: Arc<dyn PublishedResources> =
-        Arc::new(super::mcp_server::Published::new(parts.workspaces));
+        Arc::new(super::mcp_server::published(parts.workspaces));
     let published: Arc<dyn PublishedResources> = Arc::new(
         super::published::Published::new()
             .serving(
                 &[super::server_settings::SERVER],
                 Arc::clone(&server_settings),
+            )
+            // Nearby Send's offers and transfers, read by the person's shell over the shell link.
+            .serving(
+                &[super::nearby::RESOURCE],
+                Arc::new(parts.nearby.published()),
             )
             // What is live in the workspaces this device keeps, which the desktop shows.
             .serving(

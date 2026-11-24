@@ -33,3 +33,17 @@ window-follow-follow = Der Ansicht von jemandem folgen
 window-follow-follow-detail = Sagt den Apps eines Arbeitsbereichs auf diesem Gerät, wessen Ansicht du folgst.
 window-follow-handoff = Ein Fenster verschieben
 window-follow-handoff-detail = Bittet eine App auf diesem Gerät um den nächsten Schritt, ihr Fenster auf ein anderes Gerät zu verschieben.
+
+# Nearby Send between the person's devices, as the daemon carries it and their shell shows it.
+nearby-send-resource = In der Nähe senden
+nearby-send-offer = Eine Datei an ein Gerät senden
+nearby-send-offer-detail = Bietet eine Datei, die dieses Gerät schon hält, einem anderen deiner Geräte an, das wählt, wo sie landet.
+nearby-send-keep = Eine gesendete Datei behalten
+nearby-send-keep-detail = Behält eine Datei, die ein anderes deiner Geräte angeboten hat, in dem Ordner, den du wählst.
+nearby-send-refuse = Eine Datei ablehnen
+nearby-send-refuse-detail = Lehnt eine Datei ab, die ein anderes deiner Geräte angeboten hat.
+nearby-send-stop = Eine Übertragung anhalten
+nearby-send-stop-detail = Hält eine Übertragung an, die hinaus- oder hereingeht.
+nearby-send-again = Eine Datei erneut anbieten
+nearby-send-again-detail = Bietet eine fehlgeschlagene Übertragung erneut an.
+nearby-send-keep-question = „{ $name }“ von { $device } behalten?
