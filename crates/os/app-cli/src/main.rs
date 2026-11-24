@@ -896,6 +896,17 @@ fn rollback(query: &str, to: Option<&str>) -> ExitCode {
         text("publisher"),
     );
     let running = app_cli::installed_version(&id).ok().flatten();
+    // A rollback goes back: the version the workspace ran before may still be newer than the
+    // one this device runs, and naming it would be an update.
+    if let Some(running) = running.as_deref()
+        && !tilo_app_package::version::compare(&version_of(target), running).is_lt()
+    {
+        eprintln!(
+            "app: a rollback goes back: {id} is {running}, not {}",
+            version_of(target)
+        );
+        return ExitCode::FAILURE;
+    }
     match app_cli::device::update_to(&id, &release) {
         Ok(_) => {
             println!(
