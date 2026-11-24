@@ -1190,16 +1190,17 @@ async fn a_workspace_ask_is_answered_only_by_the_persons_approve_of_its_record()
     let (state, _bridge) = AppBrokerState::test_state(None, ProcessServices::default());
     let now = tilo_clock::unix_now_ns() / 1_000_000_000;
     let workspace_id = workspace.id().to_string();
-    let answer_with = |caller: &Caller, confirmation: Option<&tilo_actions::remote::Confirmation>| {
-        let actor = BrokerActor::for_caller(caller);
-        state.framework_policy(
-            (&workspace, &actor, now),
-            (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
-            confirmation,
-            false,
-            false,
-        )
-    };
+    let answer_with =
+        |caller: &Caller, confirmation: Option<&tilo_actions::remote::Confirmation>| {
+            let actor = BrokerActor::for_caller(caller);
+            state.framework_policy(
+                (&workspace, &actor, now),
+                (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
+                confirmation,
+                false,
+                false,
+            )
+        };
     let answer = |caller: &Caller| answer_with(caller, None);
 
     let here = Caller::own_person(&person).in_workspace(&workspace_id);
