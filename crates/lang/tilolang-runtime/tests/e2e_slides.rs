@@ -768,17 +768,21 @@ mod cases {
     fn a_new_text_box_is_the_one_that_takes_the_keyboard() {
         let s = Slides::new();
         let mut view = s.window();
-        // The insert tool stands in the tools row a view of its own draws, inside the deck's
-        // frame: a window presses it through the view it is shown through.
-        let names: Vec<String> = s
-            .app
-            .meta()
-            .views
-            .iter()
-            .map(|v| format!("{}:anchors={:?}:calls={:?}", v.name, v.anchors.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), v.calls))
-            .collect();
-        eprintln!("VIEWS {names:?}");
-        let insert = s.app.anchor("deck", "insert_text");
+        // The insert tool is the control the window draws: a view's frame holds the nodes of
+        // the views it calls, and the deck calls its tools row inside the shell's content part,
+        // which the test harness's anchor walk does not reach yet (`ViewMeta.calls` records the
+        // call under the part, not under the deck). The control is pressed where it stands.
+        let insert = {
+            let mut buttons = Vec::new();
+            of_kind(view.tree(), "ui.Button", &mut buttons);
+            buttons
+                .iter()
+                .find(|node| node.props.get("label") == Some(&Value::text("Text")))
+                .map_or_else(
+                    || panic!("the insert tool: {}", dump(view.tree())),
+                    |node| node.key.clone(),
+                )
+        };
         assert!(matches!(
             view.press(&insert).unwrap(),
             InvokeOutcome::Done(_)
