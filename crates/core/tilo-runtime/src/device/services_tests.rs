@@ -113,7 +113,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         services,
     );
     let qualified = broker
-        .certified_local_action_provider(admission.caller(), admission.presentation())
+        .certified_local_action_provider(admission.caller(), admission.presentation(), false)
         .unwrap();
     broker.replace_published_surfaces_for_test(vec![PublishedSurface {
         peer_id: 7,
@@ -1621,9 +1621,46 @@ fn a_plain_connection_is_the_person_the_daemon_serves() {
 const AGENT_TICKET_TEST: &str =
     "device::services::tests::an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none";
 
-/// Adding a computer is the person's own act: a plain connection of theirs that asks for a ticket
-/// is answered none, and the call waits as their asking card. Waiting for the ticket served last
-/// to be taken answers which computer took it, and issues nothing.
+/// The name the device's agent goes by in the ticket tests: an agent of the person's, as a
+/// computer of theirs makes one for the runs it serves.
+const AGENT_TICKET_AGENT: &str = "scout";
+
+/// The device's own agent `name` in `workspace`, as the daemon makes one for a run it serves: the
+/// provider its calls go through, and the caller its admission is — a real agent, admitted by this
+/// device rather than one a test spells out.
+fn the_devices_agent(
+    daemon: &Arc<Daemon>,
+    workspace: &str,
+    name: &str,
+) -> (RuntimeActionProvider, Caller) {
+    let time = daemon
+        .policy_origin
+        .capture()
+        .expect("the device's policy clock");
+    // The second of the run is the admission's caller, the person: the agent's own caller is
+    // what the run's calls go as.
+    let (run, _) = daemon
+        .provider_for(workspace)
+        .expect("the device serves its own workspace")
+        .agent_session(workspace, &daemon.actor, &time, |person| {
+            (
+                tilo_actions::remote::device_agent_id(person, name),
+                name.to_owned(),
+            )
+        })
+        .expect("the device makes its agent a key");
+    let caller = run
+        .session
+        .as_ref()
+        .expect("the agent's run was admitted")
+        .acting()
+        .clone();
+    (run, caller)
+}
+
+/// Adding a computer is the person's own act: an agent of theirs that asks for a ticket is
+/// answered none, and the call waits as their asking card, showing the agent that asks. Waiting
+/// for the ticket served last to be taken answers which computer took it, and issues nothing.
 #[test]
 fn an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none() {
     use tilo_actions::InvocationUpdate;
@@ -1634,11 +1671,11 @@ fn an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none() {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    daemon.workspace().unwrap();
-    let (provider, caller) = daemon.connection_tree_in(None).unwrap();
+    let workspace = daemon.workspace().unwrap();
+    let (provider, caller) = the_devices_agent(&daemon, &workspace, AGENT_TICKET_AGENT);
     assert!(
-        !caller.acting().is_agent(),
-        "a plain connection is the person: {caller:?}"
+        caller.acting().is_agent(),
+        "the device's agent asks: {caller:?}"
     );
     let person_key = daemon.workspaces.device_cert().user_public_key;
     let issue = |wait: bool| {
@@ -1696,8 +1733,8 @@ fn an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none() {
         "the root of a device of theirs answers it"
     );
     assert!(
-        !matches!(&ask.facts.by, AskedBy::Agent(_)),
-        "the person's own call asks no agent's: {:?}",
+        matches!(&ask.facts.by, AskedBy::Agent(named) if named.name == AGENT_TICKET_AGENT),
+        "an agent's call says which agent asks: {:?}",
         ask.facts.by
     );
 
@@ -1747,11 +1784,11 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
-    daemon.workspace().unwrap();
-    let (provider, caller) = daemon.connection_tree_in(None).unwrap();
+    let workspace = daemon.workspace().unwrap();
+    let (provider, caller) = the_devices_agent(&daemon, &workspace, AGENT_TICKET_AGENT);
     assert!(
-        !caller.acting().is_agent(),
-        "a plain connection is the person"
+        caller.acting().is_agent(),
+        "the device's agent asks: {caller:?}"
     );
     let cert = daemon.workspaces.device_cert();
     let person = Caller::authenticated(cert.user_public_key, cert.device_public_key);
@@ -1829,7 +1866,7 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
             .expect("the call is admitted")
     };
 
-    // The person asks, and is answered no ticket: the call waits as their own to answer.
+    // The agent asks, and is answered no ticket: the call waits as its person's to answer.
     let request = issue();
     let invocation = request.invocation;
     let receipt = ask(request);
