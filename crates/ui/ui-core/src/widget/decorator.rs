@@ -51,7 +51,7 @@ use taffy::{NodeId, TaffyTree};
 use winit::event::WindowEvent;
 
 use super::{
-    DrawChild, EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
+    EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
     PrimaryScrollResult, Widget,
 };
 use crate::text_render::TextRenderer;
@@ -285,7 +285,7 @@ macro_rules! decorator_trait {
 decorator_trait! {
     $
     trait {
-        type Inner: Widget + AsDynWidget + DrawChild + ?Sized;
+        type Inner: Widget + AsDynWidget + ?Sized;
 
         fn inner(&self) -> &Self::Inner;
 
@@ -298,17 +298,16 @@ decorator_trait! {
             false
         }
 
-        /// [`Widget::draw`], drawing the inner widget under the decorator's own key.
+        /// [`Widget::draw`] of the inner widget, in the scene part its parent opened for the
+        /// decorator: a decorator is the widget it wraps, so it paints no part of its own. The
+        /// blanket [`Widget`] impl notes the paint as a secret's when [`Self::withholds_captures`]
+        /// says so.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
+        )]
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-            let (scene, transform, text_renderer, theme, env) = ctx.parts();
-            DrawChild::draw_child(
-                self.inner_mut(),
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &env,
-            );
+            self.inner_mut().draw(ctx);
         }
 
         #[doc(hidden)]
@@ -413,10 +412,6 @@ decorator_trait! {
 
         /// [`Widget::draw`], noting the paint as a secret's when
         /// [`Decorator::withholds_captures`] says so.
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
-        )]
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
             if Decorator::withholds_captures(self) {
                 crate::secret_paint::note_secret_painted();
