@@ -74,6 +74,7 @@ d-vynm7ten = Temporären Netzzugang beenden
 
 d-xa7fjun4 = Datei geöffnet
     .doc = Das Dokument, das die Person gewählt hat, in `program` öffnen.
+    .w-this-program-cannot-receive-a-file = Dieses Programm kann keine Datei empfangen
 
 d-xa7fjun4-program = Programm
 
@@ -194,7 +195,6 @@ d-rytkiloj = Fenster
     .w-open = Öffnen
     .w-stop = Beenden
     .w-open-a-file-in-it = Eine Datei darin öffnen
-    .w-this-program-cannot-receive-a-file = Dieses Programm kann keine Datei empfangen.
     .w-open-in-windows = In Windows öffnen
     .w-open-with = Öffnen mit
     .w-let-the-catalogue-decide = Den Katalog entscheiden lassen
