@@ -237,8 +237,8 @@ pub fn trust() -> TrustList {
 ///
 /// # Errors
 /// No desktop answered, the action is unknown or ambiguous, or it failed.
-pub fn workspace_call(name: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
-    tilo_control::packages::call(name, &args)
+pub fn workspace_call(name: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    tilo_control::packages::call(name, args)
 }
 
 thread_local! {
