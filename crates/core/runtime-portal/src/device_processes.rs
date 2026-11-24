@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::MemberAccess;
 
 use crate::packet::{Descriptor, Packet};
-use crate::process_link::{AppAccess, Locale, OpenRequest};
+use crate::process_link::{AppAccess, Locale, MediaCommand, MediaView, OpenRequest};
 
 /// The launcher's flag for a window whose instance a tilolang process runs.
 pub const PROCESS_ARG: &str = "--tilolang-process";
@@ -45,12 +45,18 @@ pub enum ToDevice {
     },
     /// The processes running now.
     Running,
+    /// Run `command` as the Playback `id`'s own action, on the instance that plays it.
+    Media { id: String, command: MediaCommand },
+    /// Tell this connection what each app plays from now on, as its Playback moves
+    /// ([`FromDevice::Media`], after [`FromDevice::Following`]), in place of the connection told
+    /// before: what the desktop's media controls show.
+    FollowMedia,
 }
 
 impl Packet for ToDevice {}
 
 /// The daemon's answer to a [`ToDevice`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum FromDevice {
     /// The instance runs: whether its process started for it. `Err` says why it runs nowhere
     /// (the workspace is not the person's here, the app does not verify, no process took it).
@@ -59,6 +65,20 @@ pub enum FromDevice {
     Running(Vec<Running>),
     /// What changed was said to the processes it is about.
     Told,
+    /// A [`ToDevice::Media`]: whether a process here plays that Playback.
+    Pressed(bool),
+    /// A [`ToDevice::FollowMedia`]: what each app plays follows on this connection.
+    Following,
+    /// What an app plays now, on a connection that follows it.
+    Media(MediaChange),
+}
+
+/// What one of the device's apps plays, as the system's media controls hear it: the Playback's
+/// whole view when it moved, or the id of the one that stopped playing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum MediaChange {
+    Playing(MediaView),
+    Stopped(String),
 }
 
 impl Packet for FromDevice {}
@@ -194,6 +214,39 @@ impl Device {
         match self.ask(&ToDevice::Running)? {
             FromDevice::Running(running) => Ok(running),
             other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Run `command` as the Playback `id`'s own action: whether a process here plays it.
+    ///
+    /// # Errors
+    /// The connection's error.
+    pub fn media_command(&self, id: &str, command: MediaCommand) -> io::Result<bool> {
+        match self.ask(&ToDevice::Media {
+            id: id.to_owned(),
+            command,
+        })? {
+            FromDevice::Pressed(pressed) => Ok(pressed),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// A connection each [`MediaChange`] of the device's apps follows on, as
+    /// [`FromDevice::Media`], from now on: read it with [`Packet::receive`] until it ends, which
+    /// it does when another follows them instead or the daemon ends.
+    ///
+    /// # Errors
+    /// The connection's error.
+    pub fn follow_media(&self) -> io::Result<Descriptor> {
+        let connection = (self.connect)()?;
+        ToDevice::FollowMedia.send(&connection)?;
+        match FromDevice::receive(&connection)? {
+            Some(FromDevice::Following) => Ok(connection),
+            Some(other) => Err(unexpected(&other)),
+            None => Err(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                "the device's daemon closed the connection without following its apps' media",
+            )),
         }
     }
 

@@ -1,7 +1,9 @@
 //! The system's media controls over every Playback the apps here play.
 //!
-//! A tilolang app never publishes a player itself: it writes its Playback resource, and the host
-//! of its windows says what that Playback holds ([`runtime_portal::process_link::MediaView`]).
+//! A tilolang app never publishes a player itself: it writes its Playback resource, and the
+//! process the device's daemon runs it in says what that Playback holds
+//! ([`runtime_portal::process_link::MediaView`]), on a connection the session follows the
+//! daemon's processes on ([`runtime_portal::device_processes::Device::follow_media`]).
 //! One board here decides which of them a bare media key reaches — the one a person last touched
 //! — publishes each to the desktop and turns what the desktop asks into the Playback's own
 //! action, run by the host that plays it. Music, Video, Tube and any other app that plays reach
@@ -10,40 +12,72 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+use runtime_portal::device_processes::{FromDevice, MediaChange};
+use runtime_portal::packet::Packet as _;
 use runtime_portal::process_link::{MediaCommand, MediaView};
 use tilo_media_controls::{Command, MediaControls, PlayerView, Status};
-use tilo_runtime::device::processes::MediaChange;
 use tilo_service::Wake;
 
 /// The controls over the apps this session runs, and what each of them last said it plays.
 pub(crate) struct Serving {
     controls: MediaControls,
-    /// What the apps' hosts said since the last pass.
+    /// What the daemon's processes said since the last pass.
     changes: Receiver<MediaChange>,
     /// What plays now, by the Playback's id.
     playing: BTreeMap<String, PlayerView>,
 }
 
 impl Serving {
-    /// Show the Playbacks the session's apps play: what a control asks runs through `apps`'
-    /// processes as the Playback's own action. Nothing is served where the session starts no
-    /// app or has no runtime to serve the desktop's controls on.
+    /// Show the Playbacks the device's apps play: what a control asks runs in the daemon's
+    /// processes as the Playback's own action. Nothing is served where the session reaches no
+    /// daemon or has no runtime to serve the desktop's controls on.
     pub(crate) fn start(apps: &crate::apps::Apps, wake: Wake) -> Option<Self> {
-        let processes = apps.processes()?;
+        let processes = apps.device_processes().ok()?;
         let runtime = tilo_rt::try_app().ok()?;
-        let (sends, changes) = std::sync::mpsc::channel();
-        // What the hosts say comes on their own threads: it is queued for the loop, which is
-        // woken to take it.
-        let sends = std::sync::Mutex::new(sends);
-        processes.on_media(std::sync::Arc::new(move |change| {
-            if let Ok(sends) = sends.lock() {
-                let _ = sends.send(change);
+        let following = match processes.follow_media() {
+            Ok(following) => following,
+            Err(error) => {
+                tracing::warn!(%error, "the desktop's media controls follow no app");
+                return None;
             }
-            wake();
-        }));
+        };
+        let (sends, changes) = std::sync::mpsc::channel();
+        // What the processes say comes on a thread of its own: it is queued for the loop, which
+        // is woken to take it.
+        let reading = std::thread::Builder::new()
+            .name("media-follow".into())
+            .spawn(move || {
+                loop {
+                    match FromDevice::receive(&following) {
+                        Ok(Some(FromDevice::Media(change))) => {
+                            if sends.send(change).is_err() {
+                                return;
+                            }
+                            wake();
+                        }
+                        Ok(Some(other)) => {
+                            tracing::warn!(
+                                ?other,
+                                "the daemon said something else of its apps' media"
+                            );
+                        }
+                        Ok(None) => return,
+                        Err(error) => {
+                            tracing::warn!(%error, "the daemon's apps' media no longer read");
+                            return;
+                        }
+                    }
+                }
+            });
+        if let Err(error) = reading {
+            tracing::warn!(%error, "the desktop's media controls follow no app");
+            return None;
+        }
         let controls = MediaControls::start(runtime.handle(), {
             std::sync::Arc::new(move |id: &str, command: Command| {
-                let _ = processes.media_command(id, said(command));
+                if let Err(error) = processes.media_command(id, said(command)) {
+                    tracing::warn!(%error, "a media control did not reach the daemon");
+                }
             })
         });
         Some(Self {

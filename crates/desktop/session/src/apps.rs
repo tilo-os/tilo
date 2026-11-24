@@ -723,7 +723,7 @@ impl Apps {
 
     /// The device's tilolang processes, which this session hands its tilolang windows' instances
     /// to, or why it reaches none.
-    fn device_processes(&self) -> Result<DeviceProcesses, String> {
+    pub(crate) fn device_processes(&self) -> Result<DeviceProcesses, String> {
         self.state
             .borrow()
             .processes

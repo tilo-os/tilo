@@ -50,7 +50,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use launcher::run::tilolang_process::VerifiedInstance;
-use runtime_portal::device_processes::{FromDevice, HandedFds, HandedInstance, Running, ToDevice};
+use runtime_portal::device_processes::{
+    FromDevice, HandedFds, HandedInstance, MediaChange, Running, ToDevice,
+};
 use runtime_portal::process_link::{
     AppAccess, AppBuild, FromProcess, InstanceFds, InstanceRequest, MediaCommand, MediaView,
     OpenRequest, Packet as _, TaskFds, TaskRequest, ToProcess,
@@ -215,14 +217,6 @@ pub(crate) type Has = dyn Fn(&str) -> bool + Send + Sync;
 
 /// How an installed app is verified for a process: the workspace it is installed in, and the app.
 type Verifies = dyn Fn(&str, &str) -> Result<VerifiedInstance, String> + Send + Sync;
-
-/// What one of the device's apps plays, as the system's media controls hear it: the Playback's
-/// whole view when it moved, or the id of the one that stopped playing.
-#[derive(Clone, Debug)]
-pub enum MediaChange {
-    Playing(MediaView),
-    Stopped(String),
-}
 
 /// Who plays what: what the system's media controls are told, and which process and instance
 /// plays each Playback, so a control the person presses reaches it.
@@ -505,6 +499,29 @@ impl Processes {
                 FromDevice::Told
             }
             ToDevice::Running => FromDevice::Running(self.instances()),
+            ToDevice::Media { id, command } => {
+                FromDevice::Pressed(self.media_command(&id, command))
+            }
+            ToDevice::FollowMedia => {
+                if let Err(error) = FromDevice::Following.send(connection) {
+                    tracing::warn!(%error, "the desktop's media controls follow nothing");
+                    return;
+                }
+                // The connection stays open while it is told: the next to follow replaces it.
+                let following = match connection.try_clone() {
+                    Ok(following) => following,
+                    Err(error) => {
+                        tracing::warn!(%error, "the desktop's media controls follow nothing");
+                        return;
+                    }
+                };
+                self.on_media(Arc::new(move |change| {
+                    if let Err(error) = FromDevice::Media(change).send(&following) {
+                        tracing::debug!(%error, "the desktop's media controls stopped following");
+                    }
+                }));
+                return;
+            }
         };
         if let Err(error) = answer.send(connection) {
             tracing::warn!(%error, "a hand-over to the processes was not answered");
@@ -1446,6 +1463,57 @@ mod tests {
         assert!(
             handed.window && handed.content,
             "the window's own connections reach the process"
+        );
+    }
+
+    /// The desktop's media controls follow what the daemon's processes play over the shell's
+    /// connection, and a control for a Playback nothing here plays reaches no process.
+    #[test]
+    fn the_desktops_media_controls_follow_the_daemons_processes() {
+        use runtime_portal::device_processes::MediaChange;
+        let device = Device::new();
+        let daemon = device.shell();
+        let following = daemon.follow_media().unwrap();
+        let key = HostKey {
+            workspace: WORKSPACE.to_owned(),
+            app: NOTES.to_owned(),
+            alone: None,
+            runtime: "tilolang@1".to_owned(),
+            app_runtime: "tilo@1".to_owned(),
+        };
+        let view = MediaView {
+            id: "playback-1".to_owned(),
+            identity: "Video".to_owned(),
+            title: "Undersea cables".to_owned(),
+            artist: String::new(),
+            art_url: String::new(),
+            playing: true,
+            position_us: 0,
+            length_us: 60_000_000,
+            volume: 1.0,
+            rate: 1.0,
+            can_next: false,
+            can_prev: false,
+        };
+        device.processes.media(&key, 7, Some(view.clone()));
+        assert_eq!(
+            FromDevice::receive(&following).unwrap(),
+            Some(FromDevice::Media(MediaChange::Playing(view))),
+            "what an app plays reaches the desktop's controls"
+        );
+        device.processes.media(&key, 7, None);
+        assert_eq!(
+            FromDevice::receive(&following).unwrap(),
+            Some(FromDevice::Media(MediaChange::Stopped(
+                "playback-1".to_owned()
+            ))),
+            "a Playback that stopped leaves them"
+        );
+        assert!(
+            !daemon
+                .media_command("playback-1", MediaCommand::Toggle)
+                .unwrap(),
+            "a control for a Playback nothing plays reaches no process"
         );
     }
 
