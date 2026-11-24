@@ -4080,11 +4080,14 @@ fn a_conversations_row_offers_its_own_actions() {
 // whichever order they reached the workspace in.
 #[test]
 fn conversations_of_one_moment_list_in_one_order() {
-    let listed = |first: &str, second: &str| -> Vec<String> {
+    // The same two conversations, reaching the workspace in either order.
+    let alpha = ("ada@analytical.example", "Alpha");
+    let beta = ("bo@chen.example", "Beta");
+    let listed = |arrived: [(&str, &str); 2]| -> Vec<String> {
         let servers = empty_servers();
         let (_connector, mut session) = window_of(account(&servers));
         let root = session.mail_root();
-        for (from, subject) in [(first, "Alpha"), (second, "Beta")] {
+        for (from, subject) in arrived {
             session.call(
                 "deliver_message",
                 &root,
@@ -4134,8 +4137,8 @@ fn conversations_of_one_moment_list_in_one_order() {
         }
         subjects
     };
-    let one = listed("ada@analytical.example", "bo@chen.example");
-    let other = listed("bo@chen.example", "ada@analytical.example");
+    let one = listed([alpha, beta]);
+    let other = listed([beta, alpha]);
     assert_eq!(one.len(), 2, "both conversations are listed");
     assert_eq!(
         one, other,
