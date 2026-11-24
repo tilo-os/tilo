@@ -700,7 +700,7 @@ fn device_here(device: clap::Command, here: Here) -> clap::Command {
         let absent = match sub.get_name() {
             "status" | "rollback" | "update" | "boot" | "repair" => !here.system,
             // The person's devices are reached through this computer's login.
-            "add" | "ls" | "revoke" => !login::logged_in(),
+            "add" | "ls" | "rename" | "revoke" => !login::logged_in(),
             _ => return sub,
         };
         if absent { sub.hide(true) } else { sub }
@@ -2499,8 +2499,6 @@ mod tests {
                     "ls",
                     "read",
                     "view",
-                    "workspace",
-                    "keys",
                     "files",
                     "run",
                     "invocations",

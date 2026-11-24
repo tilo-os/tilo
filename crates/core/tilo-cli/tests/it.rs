@@ -60,7 +60,7 @@ fn every_old_name_runs_its_help_through_the_alias() {
     std::fs::create_dir_all(&bin).unwrap();
     let moved = moved();
     // The list parsed whole: its first, a middle and its last entry are there.
-    for known in ["tilo-crypto", "tilo-server", "tilo-vm"] {
+    for known in ["tilo-crypto", "tilo-installer", "tilo-vm"] {
         assert!(
             moved.iter().any(|name| name == known),
             "{known} in {moved:?}"

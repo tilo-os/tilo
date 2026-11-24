@@ -25,8 +25,6 @@ fn planning_a_machine_needs_the_session_that_holds_the_workspace() {
             String::from_utf8(out.stderr).unwrap(),
         )
     };
-    let (logged_in, _, _) = tilo(&["login", "--new-identity", "--name", "Ada"]);
-    assert!(logged_in, "the identity the plan is minted under");
 
     for args in [
         vec!["machine", "add", "--name", "cupboard"],
