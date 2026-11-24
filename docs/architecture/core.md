@@ -514,7 +514,7 @@ There are seven ways to add a device:
   the founder's own device, never by a server or a page; joining one needs
   no device of one's own. A computer several people sign in to is each
   one's own device: its one daemon keeps a root per account, sealed to that
-  account and signing only its calls, so a new person can found there. An
+  account and signing only its calls, so a new person can found there. A workspace's VM is a device of the person it runs for, listed in their devices like any other, whose certificate reaches that one workspace alone, the way an agent's key reaches only its agent. An
   installed image carries no identity, at most a one-use ticket its person issued.
 - **One way to add a device**: a ticket. `tilo device add` issues one and
   `tilo login <ticket>` uses it; the root certifies the new device. There are
