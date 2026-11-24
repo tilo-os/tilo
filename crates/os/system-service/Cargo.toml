@@ -8,8 +8,8 @@ license.workspace = true
 
 [dependencies]
 bounded-command = { path = "../../platform/bounded-command" }
-# What the disk holds: the same roots the storage policy scans.
-desktop-policy = { path = "../../desktop/default-apps" }
+# What the disk holds, by category and owner, and the cache cleaner.
+tilo-storage-scan = { path = "../storage-scan" }
 os-actions = { path = "../os-actions" }
 # The protocol the drive service speaks; the service itself is not the session's.
 tilo-ntfs-mount = { path = "../ntfs-mount", default-features = false }

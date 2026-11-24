@@ -7,8 +7,6 @@
 
 pub mod defaults;
 pub mod mimeapps;
-#[cfg(all(feature = "host-storage", not(target_arch = "wasm32")))]
-pub mod storage;
 
 pub use defaults::{
     AppCandidate, DefaultAppError, DefaultAppResolver, DefaultAppSelection,
@@ -16,9 +14,3 @@ pub use defaults::{
     WorkspaceDefaultPolicy, WorkspaceDefaults,
 };
 pub use mimeapps::{MimeAppsChain, MimeAppsList, host_app_id, host_desktop_id};
-#[cfg(all(feature = "host-storage", not(target_arch = "wasm32")))]
-pub use storage::{
-    CleanupError, CleanupItem, CleanupKind, CleanupPreview, CleanupReport, StorageCategory,
-    StorageEntry, StorageRoots, StorageSnapshot, apply_cleanup, preview_cache_cleanup,
-    scan_storage,
-};

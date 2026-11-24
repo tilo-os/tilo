@@ -1,15 +1,15 @@
 //! The `storage` resource: what [`tilo_system_resources::storage`] says it is, published with
 //! the actions of [`StorageAction`].
 //!
-//! The scan reads the same roots the disk's storage policy does ([`desktop_policy::scan_storage`])
+//! The scan reads the same roots the disk's storage policy does ([`tilo_storage_scan::scan_storage`])
 //! and previews what clearing the apps' cache frees. A scan runs when the service starts and
 //! whenever the resource is asked to scan again, never on every read of the machine.
 
 use std::path::PathBuf;
 
-use desktop_policy::{StorageCategory, StorageRoots};
 use tilo_actions::ResourceSpec;
 use tilo_service::offer;
+use tilo_storage_scan::{StorageCategory, StorageRoots};
 use tilo_system_resources::storage::{
     CategoryUsage, DiskUsage, STORAGE, Storage, StorageAction, StoredItem,
 };
@@ -37,11 +37,11 @@ pub fn resource(_storage: &Storage) -> ResourceSpec {
 #[must_use]
 pub fn scan() -> Storage {
     let roots = StorageRoots::discover();
-    let snapshot = desktop_policy::scan_storage(&roots);
+    let snapshot = tilo_storage_scan::scan_storage(&roots);
     let cache_bytes = roots
         .app_cache
         .as_deref()
-        .and_then(|root| desktop_policy::preview_cache_cleanup(root).ok())
+        .and_then(|root| tilo_storage_scan::preview_cache_cleanup(root).ok())
         .map_or(0, |preview| preview.total_bytes);
     let disk = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -110,8 +110,8 @@ pub fn clear_cache() -> Result<(), String> {
         .app_cache
         .ok_or_else(|| "This computer keeps no app cache".to_owned())?;
     let preview =
-        desktop_policy::preview_cache_cleanup(&root).map_err(|error| error.to_string())?;
+        tilo_storage_scan::preview_cache_cleanup(&root).map_err(|error| error.to_string())?;
     let selected: Vec<usize> = (0..preview.items.len()).collect();
-    desktop_policy::apply_cleanup(&preview, &selected).map_err(|error| error.to_string())?;
+    tilo_storage_scan::apply_cleanup(&preview, &selected).map_err(|error| error.to_string())?;
     Ok(())
 }

@@ -3646,7 +3646,6 @@ dependencies = [
 name = "desktop-policy"
 version = "0.1.0"
 dependencies = [
- "package-store",
  "serde",
  "serde_json",
  "settings-store",
@@ -14488,6 +14487,7 @@ dependencies = [
  "tilo-process",
  "tilo-rt",
  "tilo-server-protocol",
+ "tilo-storage-scan",
  "tilo-system-resources",
  "tilo-taffy",
  "tilo-test-env",
@@ -21166,6 +21166,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-storage-scan"
+version = "0.1.0"
+dependencies = [
+ "package-store",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-paths",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-store-engine"
 version = "0.1.0"
 dependencies = [
@@ -21233,7 +21244,6 @@ version = "0.1.0"
 dependencies = [
  "block-devices",
  "bounded-command",
- "desktop-policy",
  "os-actions",
  "serde",
  "serde_json",
@@ -21247,6 +21257,7 @@ dependencies = [
  "tilo-paths",
  "tilo-resource",
  "tilo-service",
+ "tilo-storage-scan",
  "tilo-system-resources",
  "tilo-system-stats",
  "tilo-test-env",
@@ -27952,6 +27963,7 @@ dependencies = [
  "tilo-spotify",
  "tilo-staging-reclaim",
  "tilo-startup-metrics",
+ "tilo-storage-scan",
  "tilo-store-engine",
  "tilo-subject",
  "tilo-system-info",

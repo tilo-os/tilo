@@ -64,6 +64,8 @@ settings-model = { path = "../../crates/sdk/settings-model" }
 settings-sections = { path = "../../crates/system/settings-sections" }
 tilo-accessibility-settings = { path = "../../crates/desktop/tilo-accessibility-settings", features = ["model"] }
 desktop-policy = { path = "../../crates/desktop/default-apps" }
+# The storage pane's scan and cache cleaner.
+tilo-storage-scan = { path = "../../crates/os/storage-scan" }
 package-store = { path = "../../crates/core/package-store" }
 # Installed manifests are read through the package format's one decoder,
 # not the sandbox launcher's library.

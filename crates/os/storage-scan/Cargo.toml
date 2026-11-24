@@ -1,0 +1,22 @@
+[package]
+name = "tilo-storage-scan"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "What the device's disk holds, by category and owner, and a cache cleaner that previews what it would delete."
+
+[dependencies]
+tilo-paths.workspace = true
+thiserror.workspace = true
+# Which packages are installed and where their trees are.
+package-store = { version = "0.1.0", path = "../../core/package-store" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

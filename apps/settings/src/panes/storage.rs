@@ -7,7 +7,6 @@ mod residency;
 
 pub use residency::{DeviceResidency, Fleet};
 
-use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
 use runtime_fs::storage::{
     CachePolicy, DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, ResidencySummary,
@@ -16,6 +15,7 @@ use runtime_fs::storage::{
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use tilo_storage_scan::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 
 use provider_settings_ui::bound::SettingRows as _;
 use ui::LocalState;
@@ -326,11 +326,11 @@ pub(crate) struct StorageScan {
 impl StorageScan {
     fn of(roots: &StorageRoots, disk: Option<&std::path::Path>) -> Self {
         Self {
-            snapshot: desktop_policy::scan_storage(roots),
+            snapshot: tilo_storage_scan::scan_storage(roots),
             cleanup: roots
                 .app_cache
                 .as_deref()
-                .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok()),
+                .and_then(|p| tilo_storage_scan::preview_cache_cleanup(p).ok()),
             capacity: disk.and_then(|path| os_actions::disk_capacity(path).ok()),
             names: crate::installed::names(),
         }
@@ -400,7 +400,7 @@ impl StorageDevice for DeviceStorage {
     fn clean_up(&self, preview: &CleanupPreview) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         let selected: Vec<usize> = (0..preview.items.len()).collect();
-        desktop_policy::apply_cleanup(preview, &selected)
+        tilo_storage_scan::apply_cleanup(preview, &selected)
             .map(drop)
             .map_err(|error| error.to_string())
     }
@@ -1617,7 +1617,7 @@ mod tests {
             }
             StorageScan {
                 snapshot: StorageSnapshot {
-                    entries: vec![desktop_policy::StorageEntry {
+                    entries: vec![tilo_storage_scan::StorageEntry {
                         category: StorageCategory::InstalledApps,
                         owner: STALLED_APP.into(),
                         path: "/nonexistent/stalled".into(),
@@ -1810,7 +1810,7 @@ mod tests {
             snapshot: StorageSnapshot {
                 entries: entries
                     .into_iter()
-                    .map(|(owner, category, bytes)| desktop_policy::StorageEntry {
+                    .map(|(owner, category, bytes)| tilo_storage_scan::StorageEntry {
                         category,
                         owner: owner.to_owned(),
                         path: format!("/trees/{owner}").into(),

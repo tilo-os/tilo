@@ -548,6 +548,7 @@ members = [
     "crates/system/settings-sections",
     "crates/integrations/ssh-agent-client",
     "crates/os/staging-reclaim",
+    "crates/os/storage-scan",
     "crates/engines/swipe",
     "crates/os/tilo-bluez",
     "crates/core/tilo-cli",

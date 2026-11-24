@@ -1298,6 +1298,7 @@ doc = false
 "tilo-spotify" = { path = "../../crates/integrations/tilo-spotify", default-features = false, features = ["default", "native"] }
 "tilo-staging-reclaim" = { path = "../../crates/os/staging-reclaim", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../crates/core/tilo-startup-metrics", default-features = false, features = [] }
+"tilo-storage-scan" = { path = "../../crates/os/storage-scan", default-features = false, features = [] }
 "tilo-store-engine" = { path = "../../crates/engines/store-engine", default-features = false, features = [] }
 "tilo-subject" = { path = "../../crates/engines/tilo-subject", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../crates/platform/tilo-system-info", default-features = false, features = [] }
@@ -4078,6 +4079,7 @@ doc = false
 "tilo-spotify" = { path = "../../crates/integrations/tilo-spotify", default-features = false, features = ["default", "native"] }
 "tilo-staging-reclaim" = { path = "../../crates/os/staging-reclaim", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../crates/core/tilo-startup-metrics", default-features = false, features = [] }
+"tilo-storage-scan" = { path = "../../crates/os/storage-scan", default-features = false, features = [] }
 "tilo-subject" = { path = "../../crates/engines/tilo-subject", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../crates/platform/tilo-system-info", default-features = false, features = [] }
 "tilo-system-resources" = { path = "../../crates/desktop/tilo-system-resources", default-features = false, features = [] }
