@@ -457,13 +457,13 @@ fn room() -> Room {
         &host,
         &chat.meta,
         "new_category",
-        vec![all, Value::text("Team")],
+        vec![all.clone(), Value::text("Team")],
     );
     let design = call(
         &host,
         &chat.meta,
-        "add_channel",
-        vec![team, Value::text("design")],
+        "new_channel",
+        vec![all, Value::text("design"), Value::text(""), Value::some(team)],
     );
     let said = Value::Rich(tilolang_tilo::runtime::rich::RichValue::from_text(SAID));
     let message = call(

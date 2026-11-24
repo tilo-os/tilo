@@ -160,8 +160,12 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     let (ada, loaded) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
-    let team = call(&ada, "new_category", vec![all, Value::text("Team")]);
-    let design = call(&ada, "add_channel", vec![team, Value::text("design")]);
+    let team = call(&ada, "new_category", vec![all.clone(), Value::text("Team")]);
+    let design = call(
+        &ada,
+        "new_channel",
+        vec![all, Value::text("design"), Value::text(""), Value::some(team)],
+    );
     ada.commit();
     let ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
     // Phrases say their id and arguments, so a count shows in what a chip says.

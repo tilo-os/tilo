@@ -414,6 +414,13 @@ impl<'a> Parser<'a> {
     /// A case's name after `.`: an identifier, or a keyword the platform names a case by (the
     /// icon `.type`). A declaration still cannot be named by a keyword.
     fn variant_name(&mut self) -> PResult<Ident> {
+        self.name_after_dot("a variant name")
+    }
+
+    /// A name after `.` or `?.`: an identifier, or a keyword the platform names a case or a field
+    /// by (the icon `.type`, an invocation's `.action`). A declaration still cannot be named by
+    /// a keyword, so only what the platform declares is reached this way.
+    fn name_after_dot(&mut self, what: &str) -> PResult<Ident> {
         match self.peek().clone() {
             Tok::Ident(name) => {
                 let span = self.bump().span;
@@ -431,7 +438,7 @@ impl<'a> Parser<'a> {
                     from_template_of: None,
                 })
             }
-            _ => self.unexpected("a variant name"),
+            _ => self.unexpected(what),
         }
     }
 
@@ -2276,7 +2283,7 @@ impl<'a> Parser<'a> {
         loop {
             if self.is(&Tok::Dot) {
                 self.bump();
-                let name = self.ident("a field or method name after `.`")?;
+                let name = self.name_after_dot("a field or method name after `.`")?;
                 let span = e.span.to(name.span);
                 e = Expr {
                     kind: ExprKind::Field {
@@ -2287,7 +2294,7 @@ impl<'a> Parser<'a> {
                 };
             } else if self.is(&Tok::QDot) {
                 self.bump();
-                let name = self.ident("a field or method name after `?.`")?;
+                let name = self.name_after_dot("a field or method name after `?.`")?;
                 let mut end = name.span;
                 let args = if self.is(&Tok::LParen) {
                     self.bump();

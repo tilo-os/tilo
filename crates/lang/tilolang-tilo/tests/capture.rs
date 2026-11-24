@@ -198,8 +198,13 @@ fn a_task_captured_from_a_message_says_what_it_was_made_from() {
     let channel = invoke(
         &ada,
         CHAT_APP,
-        "add_channel",
-        vec![category, Value::text("design")],
+        "new_channel",
+        vec![
+            Value::resource(&chat),
+            Value::text("design"),
+            Value::text(""),
+            Value::some(category),
+        ],
     );
     let message = invoke(
         &ada,

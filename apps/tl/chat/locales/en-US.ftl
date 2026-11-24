@@ -267,12 +267,14 @@ d-so72kbuk-filter-accepted = Accepted
 d-so72kbuk-filter-at = At
 
 d-msf7yzn7 = New channel
-    .doc = Adds a text channel to the sidebar, about `topic` when it is given.
+    .doc = Adds a text channel to the sidebar, under `category` when it is given and about `topic` when that is.
     .w-new-channel = new-channel
 
 d-msf7yzn7-name = Name
 
 d-msf7yzn7-topic = Topic
+
+d-msf7yzn7-category = Category
 
 d-26f7sh5k = New category
     .doc = Adds a category to the sidebar.
@@ -280,25 +282,13 @@ d-26f7sh5k = New category
 
 d-26f7sh5k-name = Name
 
-d-abono4ra = New channel
-    .doc = Adds a text channel to a category, about `topic` when it is given.
-    .w-new-channel = new-channel
-
-d-abono4ra-name = Name
-
-d-abono4ra-topic = Topic
-
 d-egiu6ag4 = New voice channel
-    .doc = Adds a voice channel to the sidebar.
+    .doc = Adds a voice channel to the sidebar, under `category` when it is given.
     .w-voice = Voice
 
 d-egiu6ag4-name = Name
 
-d-bjtbjfox = New voice channel
-    .doc = Adds a voice channel to a category.
-    .w-voice = Voice
-
-d-bjtbjfox-name = Name
+d-egiu6ag4-category = Category
 
 d-dra3nelb = New skill
     .doc = Starts a skill, called `name`.

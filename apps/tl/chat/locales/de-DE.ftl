@@ -182,18 +182,16 @@ d-so72kbuk-filter-accepted = Angenommen
 d-so72kbuk-filter-at = Wann
 
 d-msf7yzn7 = Neuer Kanal
-    .doc = Fügt der Seitenleiste einen Textkanal hinzu, über `topic`, wenn es angegeben ist.
+    .doc = Fügt der Seitenleiste einen Textkanal hinzu, unter `category`, wenn sie angegeben ist, und über `topic`, wenn es angegeben ist.
     .w-new-channel = new-channel
 
 d-msf7yzn7-topic = Thema
 
+d-msf7yzn7-category = Kategorie
+
 d-26f7sh5k = Neue Kategorie
     .doc = Fügt der Seitenleiste eine Kategorie hinzu.
     .w-new-category = Neue Kategorie
-
-d-abono4ra = Neuer Kanal
-    .doc = Fügt einer Kategorie einen Textkanal hinzu, über `topic`, wenn es angegeben ist.
-    .w-new-channel = new-channel
 
 d-uhenzjex = Problem melden
     .doc = Meldet ein Problem, auf das jemand beim Benutzen von Tilo gestoßen ist, im Kanal #feedback des Arbeitsbereichs, den die erste Meldung eröffnet.
@@ -205,8 +203,6 @@ d-uhenzjex-body = Text
 d-v6wnfixl = Problem melden~present
 
 d-x32afsaz = Person anschreiben~present
-
-d-abono4ra-topic = Thema
 
 d-tkh5jonr = Personen der Direktnachrichten übernehmen
     .doc = Die Direktnachrichten, die eine frühere Version mit nur einer Person führte (`person`) und die jedes Mitglied lesen konnte: in jeder sind diese Person und wer sie geöffnet hat, wie ihr Verlauf sagt.
@@ -395,8 +391,6 @@ d-msf7yzn7-name = Name
 
 d-26f7sh5k-name = Name
 
-d-abono4ra-name = Name
-
 d-3cetzzm3-who = Wer
 
 d-rkqdq6oi = Unterhaltung mit
@@ -449,16 +443,12 @@ d-xr347kui = Sprachkanal
 d-olqjezxu = Name
 
 d-egiu6ag4 = Neuer Sprachkanal
-    .doc = Fügt der Seitenleiste einen Sprachkanal hinzu.
+    .doc = Fügt der Seitenleiste einen Sprachkanal hinzu, unter `category`, wenn sie angegeben ist.
     .w-voice = Sprache
 
 d-egiu6ag4-name = Name
 
-d-bjtbjfox = Neuer Sprachkanal
-    .doc = Fügt einer Kategorie einen Sprachkanal hinzu.
-    .w-voice = Sprache
-
-d-bjtbjfox-name = Name
+d-egiu6ag4-category = Kategorie
 
 d-dra3nelb = Neue Fähigkeit
     .doc = Beginnt eine Fähigkeit namens `name`.

@@ -240,13 +240,16 @@ default view skill for Skill
 
 row view skill_row for Skill
 
-/// Adds a text channel to the sidebar, about `topic` when it is given.
+/// Adds a text channel to the sidebar, under `category` when it is given and about `topic` when
+/// that is.
 primary action new_channel(
     all: Conversations,
     name: Text = std.say("new-channel"),
     topic: Text = "",
+    category: Option<Category> = .none,
 ) -> TextChannel (icon: .plus, label: "New channel") {
-    all.channels.insert(TextChannel(name: name, topic: topic))
+    let made = TextChannel(name: name, topic: topic)
+    if let c = category { c.channels.insert(made) } else { all.channels.insert(made) }
 }
 
 /// Adds a category to the sidebar.
@@ -257,29 +260,14 @@ action new_category(all: Conversations, name: Text = std.say("New category")) ->
     all.channels.insert(Category(name: name))
 }
 
-/// Adds a text channel to a category, about `topic` when it is given.
-action add_channel(
-    c: Category,
-    name: Text = std.say("new-channel"),
-    topic: Text = "",
-) -> TextChannel (icon: .plus, label: "New channel") {
-    c.channels.insert(TextChannel(name: name, topic: topic))
-}
-
-/// Adds a voice channel to the sidebar.
-action new_voice_channel(all: Conversations, name: Text = std.say("Voice")) -> VoiceChannel (
-    icon: .volume_2,
-    label: "New voice channel",
-) {
-    all.channels.insert(VoiceChannel(name: name))
-}
-
-/// Adds a voice channel to a category.
-action add_voice_channel(c: Category, name: Text = std.say("Voice")) -> VoiceChannel (
-    icon: .volume_2,
-    label: "New voice channel",
-) {
-    c.channels.insert(VoiceChannel(name: name))
+/// Adds a voice channel to the sidebar, under `category` when it is given.
+action new_voice_channel(
+    all: Conversations,
+    name: Text = std.say("Voice"),
+    category: Option<Category> = .none,
+) -> VoiceChannel (icon: .volume_2, label: "New voice channel") {
+    let made = VoiceChannel(name: name)
+    if let c = category { c.channels.insert(made) } else { all.channels.insert(made) }
 }
 
 /// Starts a skill, called `name`. What it is for and how its work is done are written on its
@@ -809,9 +797,9 @@ action summarize(to: TextChannel | Thread | Direct, summary: Text) (
     label: "Summarize",
 ) {
     match to {
-        c: TextChannel => c.summary = summary,
-        t: Thread => t.summary = summary,
-        d: Direct => d.summary = summary,
+        c: TextChannel => { c.summary = summary }
+        t: Thread => { t.summary = summary }
+        d: Direct => { d.summary = summary }
     }
 }
 
@@ -1843,13 +1831,15 @@ scenario "a team's channels" -> TextChannel {
     let general = invoke(new_channel(conversations, "general", topic: "Anything, really"))
     invoke(new_channel(conversations, "random"))
     let team = invoke(new_category(conversations, "Team"))
-    let design = invoke(add_channel(team, "design", topic: "Reviews and critique"))
-    invoke(add_channel(team, "release"))
-    invoke(add_channel(team, "planning"))
-    invoke(add_voice_channel(team, "Standup"))
+    let design = invoke(
+        new_channel(conversations, "design", topic: "Reviews and critique", category: .some(team)),
+    )
+    invoke(new_channel(conversations, "release", category: .some(team)))
+    invoke(new_channel(conversations, "planning", category: .some(team)))
+    invoke(new_voice_channel(conversations, "Standup", category: .some(team)))
     let social = invoke(new_category(conversations, "Social"))
-    invoke(add_channel(social, "weekend"))
-    invoke(add_channel(social, "books"))
+    invoke(new_channel(conversations, "weekend", category: .some(social)))
+    invoke(new_channel(conversations, "books", category: .some(social)))
     invoke(new_voice_channel(conversations, "Lounge"))
     invoke(
         send(design, RichText("The new onboarding build is on the test machines.")),
