@@ -2,7 +2,8 @@
 //! boot `tilo device add` makes a one-use ticket, which the VM gets as the systemd credential
 //! `tilo.ticket` and spends; `tilo device add` then names the device that joined, and tilo-vm
 //! records it as the device it asks from then on. A machine with no person of its own (CI, a
-//! fresh builder) gets a throwaway one under tilo-vm's state directory first.
+//! fresh builder) gets a throwaway one under tilo-vm's state directory first, served by a daemon
+//! tilo-vm runs for it while the VM joins ([`OwnDaemon`]).
 
 use std::io::{BufRead as _, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -15,7 +16,7 @@ use super::{App, Resolved};
 use crate::config::{self, DeviceRoute};
 use crate::error::CliError;
 use crate::hypervisor::{self, run_all};
-use crate::remote::{Machine, own_env, tilo_program};
+use crate::remote::{Machine, OwnDaemon, own_env, tilo_program};
 use crate::sshkey;
 
 /// How long a booting VM has to spend its ticket.
@@ -26,6 +27,9 @@ pub(super) struct Joining {
     child: Child,
     said: mpsc::Receiver<String>,
     workspace: String,
+    /// The daemon of tilo-vm's own person, which takes the VM in, while it joins; it stops after
+    /// `tilo device add` does.
+    _daemon: Option<OwnDaemon>,
 }
 
 impl Drop for Joining {
@@ -37,18 +41,20 @@ impl Drop for Joining {
 
 impl App {
     /// The person this machine adds VMs as: its own login, else tilo-vm's throwaway one under
-    /// `Err(dir)`, made now when there is none. That one's workspace is founded by the daemon the
-    /// first `tilo device add` starts, so it is asked for once that printed its ticket.
-    fn adding_machine(&self) -> Result<Result<Machine, std::path::PathBuf>, CliError> {
+    /// `Err(dir)`, made now when there is none, with the daemon serving it. That one's workspace
+    /// is founded by its daemon, so it is asked for once `tilo device add` printed its ticket.
+    fn adding_machine(&self) -> Result<Adding, CliError> {
         if let Some(machine) = &self.machine {
-            return Ok(Ok(machine.clone()));
+            let daemon = machine.scope.as_deref().map(OwnDaemon::start).transpose()?;
+            return Ok((Ok(machine.clone()), daemon));
         }
         if let Some(machine) = Machine::here()? {
-            return Ok(Ok(machine));
+            return Ok((Ok(machine), None));
         }
         let dir = config::own_identity_dir(&self.registry_path);
+        let daemon = OwnDaemon::start(&dir)?;
         if let Some(machine) = Machine::own(&dir)? {
-            return Ok(Ok(machine));
+            return Ok((Ok(machine), Some(daemon)));
         }
         let output = Command::new(tilo_program())
             .args(["login", "--new-identity", "--json"])
@@ -68,7 +74,7 @@ impl App {
                 dir.display()
             );
         }
-        Ok(Err(dir))
+        Ok((Err(dir), Some(daemon)))
     }
 
     /// Give `vm` a ticket for its next boot, when it is no device yet and its hypervisor has a
@@ -78,7 +84,7 @@ impl App {
         if vm.entry.device.is_some() || adapter.capabilities().credentials.is_none() {
             return Ok(None);
         }
-        let adding = self.adding_machine()?;
+        let (adding, daemon) = self.adding_machine()?;
         let mut child = Command::new(tilo_program())
             .args(["device", "add", "--json"])
             .envs(
@@ -106,6 +112,7 @@ impl App {
             child,
             said,
             workspace: String::new(),
+            _daemon: daemon,
         };
         let ticket = joining
             .next("ticket", Duration::from_secs(60))?
@@ -188,6 +195,10 @@ impl Joining {
         Ok(value.get(field).and_then(Value::as_str).map(str::to_owned))
     }
 }
+
+/// Who adds a VM: this machine's person, or tilo-vm's own under `Err(dir)` when it is founded
+/// only now; and the daemon tilo-vm runs for its own person.
+type Adding = (Result<Machine, std::path::PathBuf>, Option<OwnDaemon>);
 
 fn join_failed(vm: &Resolved, why: &str) -> CliError {
     CliError::Unreachable {
