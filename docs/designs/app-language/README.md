@@ -380,34 +380,40 @@ is seen again a tick that came due while it was away fires once. The length is a
 seconds. Both forms are the toolkit's `ui.Timer` and its `tick` event, which a view can also
 write out in full.
 
-### Device work and jobs
+### The device's work
 
-An app runs sandboxed: decoding, painting and reading pictures is the device's work, asked by
-name. `engine.call(op, input)` answers now; `engine.start(op, input)` starts a job and answers its
-id; `engine.cancel(job)` stops it. A job says how far it has got as it moves, and a view reads that
-with `engine.state(job)`: the device pushes it, and the view is drawn again when it changes, so
-nothing asks the engine how far it is.
-
-A job started with `done:` is held work. When the job ends, finished or stopped, the action runs
-as the person who started it, with the job's last word as its last argument, whether or not a
-window of the app is open then:
+Work an app cannot do in its sandbox (a render, a scan, a backup, a print) is the device's,
+asked by an op name the app owns. `engine.call(op, input)` answers now. `engine.start` runs a
+job that outlives the action that started it, and names what happens as it moves:
 
 ```
-action import_folder(lib: Library, files: List<File>) {
-    match engine.start("import", json.encode(ImportAsk(files: chosen(files))), done: imported(lib)) {
-        .ok(said) => { lib.import_job = said }
-        .err(why) => { lib.trouble = why }
+action record(c: Camera) {
+    match engine.start("record", json.encode(ask), done: j -> recorded(c, j)) {
+        .ok(job) => { prefs_of(c).recording = job }
+        .err(why) => { prefs_of(c).trouble = why }
     }
 }
 
-action imported(lib: Library, outcome: Text) {
-    // `outcome` is what the job said last: what it read, and what it could not.
+action recorded(c: Camera, j: host.Job) {
+    if j.state == .done { ... json.decode<Recorded>(j.detail) ... }
 }
 ```
 
-The `done:` action is the app's own; the call leaves out its last parameter, a `Text`, which the
-job fills. Stopping the job (`engine.cancel(job)`) ends it, so its `done:` still runs with what it
-did up to then.
+The start answers the job's path, `devices/<device>/jobs/<job>`: a record the device that runs
+the job keeps. When the job ends, that device runs the action `done:` names, as a call of the
+person who started it, whether or not a window is still open; `progress:` runs as it moves on.
+A handler is one of the app's actions, handed the job as it is, its other arguments values and
+resources the starting action has now, because it runs later and elsewhere: never a computation
+over the job, which the checker refuses. `engine.job(path)` reads the record as a `host.Job`
+(its state, how much of how much is done, its error, and the op's own detail); a view reads it
+too and is drawn again as the job moves, so a progress bar asks nothing. `engine.cancel(path)`
+stops it, and `done:` runs with the job cancelled.
+
+`engine.stream(op, input)` starts a job that keeps sending frames, which a view shows by
+`tilo-live://<job>`, and says of itself what `engine.state(job)` reads: whether it is connecting,
+what it is, or why it ended, pushed as it changes. `engine.check(check_id)` starts a check the
+project's host approved, as a job whose record says how far the host has got and, once it ends,
+the receipt of what it observed.
 
 ## Packages and libraries
 
