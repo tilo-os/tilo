@@ -597,13 +597,20 @@ impl Caller {
     /// ([`tilo_action_policy::roles::certified_agent`]): its person's default delegation, which
     /// the workspace's own grants naming the agent then narrow. Nothing for a caller no
     /// certificate names as an agent: it holds only what the workspace grants it.
+    ///
+    /// The certificate delegates to an agent a device **handed** its session
+    /// ([`Self::delegated_to`]) or a workspace's **roster** bound ([`Self::on_roster`]): a caller
+    /// that only says it is an agent acting for a person, on that person's key, is named by no
+    /// session and no roster, and is offered nothing.
     #[must_use]
     pub fn certified(&self, workspace: &str) -> Vec<tilo_action_policy::Grant> {
         let (Some(agent), Some(person)) = (self.acting.agent_id(), self.acting.acted_for_person())
         else {
             return Vec::new();
         };
-        if self.device_public_key.is_none() {
+        if self.device_public_key.is_none()
+            || (self.roster_created_at.is_none() && !self.session_delegated)
+        {
             return Vec::new();
         }
         tilo_action_policy::roles::certified_agent(workspace, agent, person)
