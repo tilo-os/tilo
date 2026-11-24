@@ -67,6 +67,9 @@ tilo_test_env::scenario! {
     {
         let held = "type Box {\n    held: json.Value\n}\n";
         assert_eq!(with_items(held), ["E023"]);
+        // Nor inside one: a list or an option of documents is documents replaced whole.
+        let listed = "type Box {\n    found: List<json.Value>\n    maybe: Option<json.Value>\n}\n";
+        assert_eq!(with_items(listed), ["E023", "E023"]);
     }
 
     phase a_match_over_a_value_names_every_kind;

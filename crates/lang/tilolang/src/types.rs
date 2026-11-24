@@ -457,6 +457,23 @@ pub fn is_transient(ty: &Ty) -> bool {
     )
 }
 
+/// Whether `ty` is a JSON document or holds one anywhere inside it (`List<json.Value>`,
+/// `Option<json.Value>`): never what a field holds, since a document replaces itself whole.
+#[must_use]
+pub fn holds_json(ty: &Ty) -> bool {
+    match ty {
+        Ty::Json => true,
+        Ty::List(inner)
+        | Ty::Set(inner)
+        | Ty::Map(inner)
+        | Ty::Collection(inner)
+        | Ty::Option(inner) => holds_json(inner),
+        Ty::Result(ok, err) => holds_json(ok) || holds_json(err),
+        Ty::Tuple(items) => items.iter().any(holds_json),
+        _ => false,
+    }
+}
+
 /// Whether `key` is the host's `Resource`: the type that stands for any resource, of whichever app.
 #[must_use]
 pub fn is_any_resource(key: &TypeKey) -> bool {

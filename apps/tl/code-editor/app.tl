@@ -291,12 +291,19 @@ type FormatAnswer {
     error: Text = ""
 }
 
+/// The work the server is doing, as the engine reports it (`Indexing`, 42).
+type ServerProgress {
+    title: Text = ""
+    detail: Text = ""
+    percent: Option<Int>
+}
+
 type ServerState {
     state: Text = ""
     server: Text = ""
     failure: Text = ""
-    /// The progress of the work the server is doing (`Indexing 42%`), as the engine wrote it.
-    progress: Option<json.Value>
+    /// The progress of the work the server is doing (`Indexing 42%`).
+    progress: Option<ServerProgress>
     /// Each file's problems, by the path it stands at.
     diagnostics: Option<Map<List<Diag>>>
     answer: Text = ""
@@ -1867,9 +1874,9 @@ action poll_server(p: Project) {
                 }
                 p.server_trouble = state.failure
                 if let progress = state.progress {
-                    let title = std.json_text(progress, "title")
-                    let percent = std.json_number(progress, "percent")
-                    p.server_progress = if percent > 0 { "{title} {percent}%" } else { title }
+                    let percent = progress.percent ?? 0
+                    p.server_progress =
+                        if percent > 0 { "{progress.title} {percent}%" } else { progress.title }
                 } else {
                     p.server_progress = ""
                 }
