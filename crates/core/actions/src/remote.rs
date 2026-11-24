@@ -97,7 +97,8 @@ pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;
 pub use application::{
     APPLICATION_PROVIDER, ApplicationLaunch, CONTENT_HASH_ARGUMENT, NAME_ARGUMENT,
     application_action_target, application_open_target, application_provider,
-    application_provider_resource, application_resource_target, valid_file_name,
+    application_provider_resource, application_provider_token, application_resource_target,
+    valid_file_name,
 };
 pub use confirmation::{
     ASK, ASK_PROVIDER, ASK_RESOURCE, ASK_WITH_CHOICES, Confirmation, ConfirmationQuestion,

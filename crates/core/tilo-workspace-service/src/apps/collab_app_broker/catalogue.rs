@@ -259,7 +259,7 @@ impl AppBrokerState {
                     .into_iter()
                     .filter_map(|row| row.action)
                     .collect::<Vec<_>>();
-                (registered.provider, registered.app.to_owned(), actions)
+                (registered.provider, registered.app.to_string(), actions)
             })
             .collect::<Vec<_>>();
         // One policy sample decides every row; serialization runs after the

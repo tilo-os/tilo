@@ -466,6 +466,151 @@ tilo_test_env::scenario! {
     }
 }
 
+// A call that shows nothing starts a Rust app's own process with no window, through the same
+// launch a window goes through, and the process that runs takes the next call: the daemon hands
+// the broker a launch it attests as one with no window, so it is never handed an `open`.
+#[cfg(target_os = "linux")]
+tilo_test_env::scenario! {
+    fn a_rust_app_runs_with_no_window_and_takes_its_calls_there;
+
+    phase a_call_that_shows_nothing_starts_the_apps_process_and_the_next_call_reuses_it;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
+        // The toolkit's loop is what runs the app's code, even drawing nothing: it is handed
+        // the display, as a window's launch is.
+        let display = root.join("wayland-0");
+        std::fs::write(&display, b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &display);
+        let said = root.join("said");
+        let launcher = tilo_test_env::stand_in(
+            root.join("tilo-launcher"),
+            &format!(
+                "printf '%s\\n' \"$@\" > '{said}.args'\nenv > '{said}.env'\nhold\n",
+                said = said.display()
+            ),
+        )
+        .unwrap();
+        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+
+        let mut start = apps
+            .windowless(VIEWER, WORKSPACE)
+            .unwrap()
+            .expect("a Rust app installed here runs its own process with no window");
+        start
+            .try_recv()
+            .expect("the start is answered once the process runs")
+            .expect("the process started");
+        assert_eq!(
+            apps.launched.0.lock().unwrap().len(),
+            1,
+            "one process runs it"
+        );
+        let (pid, no_window) = apps
+            .launched
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(pid, record)| (*pid, record.no_window))
+            .next()
+            .unwrap();
+        assert!(no_window, "the launch shows no window");
+
+        let handed = wait_for(&format!("{}.args", said.display()));
+        assert!(
+            handed.contains("--app-id") && handed.contains(VIEWER),
+            "the launcher starts the app's package: {handed}"
+        );
+        assert!(
+            handed.contains("--wayland-socket"),
+            "the loop that runs its code is handed the display: {handed}"
+        );
+        let env = wait_for(&format!("{}.env", said.display()));
+        let idle = format!("TILO_NO_WINDOW_IDLE={}", crate::IDLE.as_secs());
+        assert!(
+            env.lines().any(|line| line == "TILO_WINDOWLESS=1"),
+            "the process takes its actions and draws nothing: {env}"
+        );
+        assert!(
+            env.lines().any(|line| line == idle.as_str()),
+            "it ends after the idle time a tilolang process does: {env}"
+        );
+
+        // The broker asks who the process behind a connection is, and is told it shows no
+        // window: nothing hands it an `open`.
+        let launch = apps
+            .authenticated_launch(pid, VIEWER, WORKSPACE, None)
+            .unwrap()
+            .expect("the process is the launch this device made");
+        assert!(launch.windowless, "it shows no window");
+        assert!(
+            apps.attest_process(pid, VIEWER, WORKSPACE),
+            "the app's connection is its own launch's"
+        );
+
+        // The next call finds the process that runs: nothing starts.
+        let mut again = apps
+            .windowless(VIEWER, WORKSPACE)
+            .unwrap()
+            .expect("the running process takes the next call");
+        again
+            .try_recv()
+            .expect("a call that finds it running is answered at once")
+            .expect("nothing failed");
+        assert_eq!(
+            apps.launched.0.lock().unwrap().len(),
+            1,
+            "the running process is reused, not started again"
+        );
+    }
+
+    phase an_app_that_is_not_installed_starts_nothing_without_a_window;
+    {
+        let (_temp, root) = canonical_temp();
+        let store = Store::new(&root);
+        let apps = apps(&store, &root, Vec::new());
+        assert!(
+            apps.windowless("so.tilo.unknown", WORKSPACE).unwrap().is_none(),
+            "an app that is not installed runs nowhere"
+        );
+        assert!(apps.launched.0.lock().unwrap().is_empty(), "nothing started");
+    }
+
+    phase a_call_into_a_workspace_this_runtime_does_not_serve_is_refused;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
+        let apps = apps(&store, &root, Vec::new());
+        let refused = apps
+            .windowless(VIEWER, "4f1d0f7a-9d0e-4c43-8d3b-2f6f7b8f3a21")
+            .map(|_| ())
+            .unwrap_err();
+        assert!(refused.contains("not served by this runtime"), "{refused}");
+        assert!(apps.launched.0.lock().unwrap().is_empty(), "nothing started");
+    }
+}
+
+/// What a stand-in wrote to `path`, once it wrote it: a launch's own arguments and environment
+/// are the launcher's to record, and the process runs on until the test ends.
+#[cfg(target_os = "linux")]
+fn wait_for(path: &str) -> String {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Ok(written) = std::fs::read_to_string(path) {
+            return written;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "the launcher wrote {path} in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn a_payload_that_does_not_verify_is_refused() {
@@ -726,7 +871,7 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
     assert!(refused.contains("no tilolang app"), "{refused}");
     assert!(
         apps.windowless(VIEWER, WORKSPACE).unwrap().is_none(),
-        "an app that is no tilolang app is launched as it always was"
+        "an app that is not installed here starts nothing without a window"
     );
 }
 

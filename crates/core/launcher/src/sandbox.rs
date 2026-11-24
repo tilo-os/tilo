@@ -390,6 +390,7 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
         "TILO_CONTINUITY_RESUME_SCHEMA",
         "TILO_CONTINUITY_RESUME_HEX",
         tilo_process::environment::WINDOWLESS_ENV,
+        tilo_process::environment::NO_WINDOW_IDLE_ENV,
         // The item the window opens on (a conversation another member's send landed in): a
         // process started for that window learns it nowhere else.
         tilo_process::environment::REVEAL_ENV,
@@ -407,6 +408,12 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
                     && value.bytes().all(|byte| byte.is_ascii_digit())
                     && value.parse::<u16>().is_ok_and(|version| version > 0)))
             && (key != tilo_process::environment::WINDOWLESS_ENV || value == "1")
+            && (key != tilo_process::environment::NO_WINDOW_IDLE_ENV
+                || (value.len() <= 5
+                    && value.bytes().all(|byte| byte.is_ascii_digit())
+                    && value
+                        .parse::<u32>()
+                        .is_ok_and(|seconds| (1..=86_400).contains(&seconds))))
             && (key != "TILO_CONTINUITY_RESUME_HEX"
                 || (value.len() <= 64 * 1024 && value.bytes().all(|byte| byte.is_ascii_hexdigit())))
         {

@@ -1251,12 +1251,12 @@ impl AppBrokerState {
                     // finds it by its app.
                     providers.push(CatalogueProvider {
                         provider: registered.provider.to_string(),
-                        app_id: registered.app.to_owned(),
+                        app_id: registered.app.to_string(),
                         workspace: workspace_id.clone(),
                         document_id: String::new(),
                         browsable: true,
                     });
-                    if scope.wants(&registered.provider) && scope.wants_app(registered.app) {
+                    if scope.wants(&registered.provider) && scope.wants_app(&registered.app) {
                         Self::registered_rows(
                             (&workspace, &policy, now),
                             registered,
@@ -1467,7 +1467,7 @@ impl AppBrokerState {
                             workspace,
                             actor,
                             now,
-                            registered.app,
+                            &registered.app,
                             (
                                 &action.resource_kind,
                                 &action.address.resource,
@@ -1479,7 +1479,7 @@ impl AppBrokerState {
                 })
                 .map(|row| CatalogueRow {
                     provider: registered.provider.to_string(),
-                    app_id: registered.app.to_owned(),
+                    app_id: registered.app.to_string(),
                     ..row
                 }),
         );

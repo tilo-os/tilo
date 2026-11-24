@@ -37,9 +37,9 @@ pub use tilo_process::environment;
 mod recording;
 
 pub use environment::{
-    AccessibilityInputs, ContinuationMetadata, ProcessEnvironment, ProcessIdentity, ProcessPaths,
-    REVEAL_ENV, RunnerDiagnostics, WINDOWLESS_ENV, environment, install_environment,
-    parse_posix_locale,
+    AccessibilityInputs, ContinuationMetadata, NO_WINDOW_IDLE_ENV, ProcessEnvironment,
+    ProcessIdentity, ProcessPaths, REVEAL_ENV, RunnerDiagnostics, WINDOWLESS_ENV, environment,
+    install_environment, parse_posix_locale,
 };
 pub use recording::ProcessRecorder;
 

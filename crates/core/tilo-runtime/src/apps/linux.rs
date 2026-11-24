@@ -27,9 +27,22 @@ pub(super) fn launch(
     workspace: &str,
     sockets: &Sockets,
     original: &super::original::OriginalLaunch,
+    shows: super::Shows,
 ) -> Result<Launch, String> {
     let (mut command, launcher) = command(apps, app, workspace, sockets, original)?;
+    // Both a window and a process with no window reach the display: the toolkit's loop is what
+    // runs the app's code, and it draws nothing when the launch shows no window.
     command.arg("--wayland-socket").arg(wayland_socket()?);
+    if shows == super::Shows::Nothing {
+        // The process draws nothing, takes the app's actions and publishes what it offers, and
+        // ends after the idle time a tilolang process does; the dispatch starts it again.
+        command
+            .env(ui::process::WINDOWLESS_ENV, "1")
+            .env(
+                ui::process::NO_WINDOW_IDLE_ENV,
+                crate::IDLE.as_secs().to_string(),
+            );
+    }
     // The launcher waits here until the caller has recorded its pid, so it
     // can never connect before the broker could attest it.
     let registration = launcher::launch_hold::install(&mut command)

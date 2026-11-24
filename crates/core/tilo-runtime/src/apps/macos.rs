@@ -23,6 +23,7 @@ pub(super) fn launch(
     app: &InstalledApp,
     workspace: &str,
     sockets: &Sockets,
+    shows: super::Shows,
 ) -> Result<Launch, String> {
     let catalog = apps
         .catalog
@@ -88,6 +89,18 @@ pub(super) fn launch(
     }
     if let Some(runtime) = runtime.as_deref() {
         env.extend(gstreamer_env(runtime));
+    }
+    if shows == super::Shows::Nothing {
+        // The process draws nothing, takes the app's actions and publishes what it offers, and
+        // ends after the idle time a tilolang process does; the dispatch starts it again.
+        env.push((
+            OsString::from(ui::process::WINDOWLESS_ENV),
+            OsString::from("1"),
+        ));
+        env.push((
+            OsString::from(ui::process::NO_WINDOW_IDLE_ENV),
+            OsString::from(crate::IDLE.as_secs().to_string()),
+        ));
     }
     let (capabilities, egress) = apps.launch_capabilities(app, workspace, &manifest);
     let request = launcher_macos::LaunchRequest {

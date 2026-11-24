@@ -64,6 +64,13 @@ pub const COLLAB_SOCKET: &str = "collab.sock";
 pub const IDENTITY_SOCKET: &str = "identity.sock";
 pub const BLOB_SOCKET: &str = "blobs.sock";
 
+/// How long a process the daemon runs for an app goes on with no call before it ends: long
+/// enough that an app called again finds it running, short enough that the apps of an afternoon
+/// don't hold a small device's memory. It is the same for an app's process whichever language
+/// the app is written in, and the call that comes after starts it again.
+#[cfg(unix)]
+pub const IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.
 #[cfg(unix)]

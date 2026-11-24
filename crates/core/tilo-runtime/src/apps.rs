@@ -56,6 +56,21 @@ pub(crate) struct OpenedView {
     pub link: std::os::unix::net::UnixStream,
 }
 
+/// Whether a launch of an app shows a window, or runs the app's code with none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shows {
+    Window,
+    Nothing,
+}
+
+/// A start that has already happened: the answer a call gets when the process that takes it
+/// runs already.
+fn ready_when_started() -> tilo_workspace_service::apps::services::WindowlessStart {
+    let (started, start) = tokio::sync::oneshot::channel();
+    let _ = started.send(Ok(()));
+    start
+}
+
 /// The profile's installed applications and the launches it made.
 pub struct Apps {
     /// The stores the profile reads; `None` when no app store can be
@@ -515,6 +530,18 @@ impl Apps {
 
     /// Launch `app_id` into this profile's workspace through the platform
     /// launcher; the launch's handle, recorded for attestation.
+    ///
+    /// # Errors
+    /// The workspace is not served here, the app is not installed, or no
+    /// launcher can start it.
+    pub fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
+        self.start_showing(app_id, workspace, Shows::Window)
+    }
+
+    /// [`Self::start`], showing a window or running the app's code with none.
+    ///
+    /// # Errors
+    /// As [`Self::start`].
     #[cfg_attr(
         not(any(target_os = "linux", target_os = "macos")),
         expect(
@@ -523,7 +550,7 @@ impl Apps {
             reason = "with no app sandbox here, the launch is refused before it starts"
         )
     )]
-    pub fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
+    fn start_showing(&self, app_id: &str, workspace: &str, shows: Shows) -> Result<Launch, String> {
         if !self
             .grants
             .get()
@@ -543,15 +570,18 @@ impl Apps {
         #[cfg(target_os = "linux")]
         let original = self.original_launch(&app)?;
         #[cfg(target_os = "linux")]
-        let mut launch = linux::launch(self, &app, workspace, &sockets, &original)?;
+        let mut launch = linux::launch(self, &app, workspace, &sockets, &original, shows)?;
         #[cfg(target_os = "macos")]
-        let mut launch = macos::launch(self, &app, workspace, &sockets)?;
+        let mut launch = macos::launch(self, &app, workspace, &sockets, shows)?;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let mut launch: Launch = {
-            let _ = (&app, &sockets);
+            let _ = (&app, &sockets, shows);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
-        if !self.launched.record(launch.pid, &app.app_id, workspace) {
+        if !self
+            .launched
+            .record_showing(launch.pid, &app.app_id, workspace, shows)
+        {
             launch.kill();
             return Err(format!(
                 "refusing to keep {app_id} running: its process could not be identified"
@@ -567,14 +597,15 @@ impl Apps {
         Ok(launch)
     }
 
-    /// [`Self::start`] `app` in `workspace`, forgetting its record once the
-    /// process is reaped; the launch's ticket.
+    /// [`Self::start_showing`] `app` in `workspace` with `shows`, forgetting its record once
+    /// the process is reaped; the launch's ticket.
     fn start_watched(
         &self,
         app: &str,
-        workspace: &tilo_desktop_model::Workspace,
+        workspace: &str,
+        shows: Shows,
     ) -> Result<Option<u64>, String> {
-        let launch = self.start(app, &workspace.id().to_string())?;
+        let launch = self.start_showing(app, workspace, shows)?;
         let ticket = self.launched.ticket(launch.pid);
         let launched = Arc::clone(&self.launched);
         std::thread::Builder::new()
@@ -716,7 +747,8 @@ impl LauncherServices for Apps {
         _: Option<&str>,
         _: &LaunchPlace,
     ) -> Result<(), String> {
-        self.start_watched(app, workspace).map(drop)
+        self.start_watched(app, &workspace.id().to_string(), Shows::Window)
+            .map(drop)
     }
 
     /// A plain launch answers the ticket its process connects with; this
@@ -732,7 +764,7 @@ impl LauncherServices for Apps {
             return Err("opening launch content is unsupported on this host".into());
         }
         Ok(self
-            .start_watched(app, workspace)?
+            .start_watched(app, &workspace.id().to_string(), Shows::Window)?
             .map_or(LaunchOutcome::Unconfirmed, |ticket| {
                 LaunchOutcome::Started { ticket }
             }))
@@ -743,7 +775,10 @@ impl LauncherServices for Apps {
     }
 
     /// A tilolang app runs an instance here that shows nothing, in its sandboxed process, to take
-    /// the call that asked for it; other apps' actions launch them.
+    /// the call that asked for it; a Rust app runs its own process with no window, started the way
+    /// its window is, handed the workspace's services and granted what the workspace granted it.
+    /// Either publishes its actions where the dispatch reaches them, and takes the call there.
+    /// `None` for an app that can do neither: what it is launched as a window for says why.
     fn windowless(
         &self,
         app: &str,
@@ -757,8 +792,25 @@ impl LauncherServices for Apps {
                 .start_with_no_view(app, workspace, origin)
                 .map(Some);
         }
-        let _ = (app, workspace);
-        Ok(None)
+        // The process that runs already takes the call: nothing starts.
+        if self.launched.no_window_running(app, workspace) {
+            return Ok(Some(ready_when_started()));
+        }
+        let Some(installed) = self
+            .installed()
+            .into_iter()
+            .find(|installed| installed.app_id == app)
+        else {
+            return Ok(None);
+        };
+        if !installed.has_gui {
+            // No window to open either: the launch that follows says so, as it always did.
+            return Ok(None);
+        }
+        // Started and answered: the broker waits for what the process publishes, as it does for
+        // a tilolang process with no view.
+        let _ = self.start_watched(app, workspace, Shows::Nothing)?;
+        Ok(Some(ready_when_started()))
     }
 
     fn authenticated_launch(
@@ -792,7 +844,8 @@ impl LauncherServices for Apps {
         Ok(Some(AuthenticatedApplicationLaunch {
             continuation_instance: None,
             launch_ticket: self.launched.ticket(pid),
-            windowless: false,
+            // A launch with no window takes the app's actions and is never handed an `open`.
+            windowless: self.launched.no_window(pid, app, workspace),
             opened_for: None,
         }))
     }
@@ -921,12 +974,21 @@ struct LaunchRecord {
     /// What the launch answered its `open` with ([`LaunchOutcome::Started`]),
     /// for the broker to tie the process's connection back to it.
     ticket: u64,
+    /// The launch shows no window: its connection takes the app's actions on its records and is
+    /// never handed an `open`.
+    no_window: bool,
 }
 
 impl Launched {
-    /// Record `pid` as `app` in `workspace`; `false` when its start time cannot
+    /// Record `pid` as `app` in `workspace`, showing a window; `false` when its start time cannot
     /// be read.
     fn record(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.record_showing(pid, app, workspace, Shows::Window)
+    }
+
+    /// Record `pid` as `app` in `workspace` showing `shows`; `false` when its start time cannot
+    /// be read.
+    fn record_showing(&self, pid: u32, app: &str, workspace: &str, shows: Shows) -> bool {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
@@ -938,9 +1000,21 @@ impl Launched {
                 app: app.to_owned(),
                 workspace: workspace.to_owned(),
                 ticket,
+                no_window: shows == Shows::Nothing,
             },
         );
         true
+    }
+
+    /// Whether a process this device started with no window runs `app` in `workspace` now.
+    fn no_window_running(&self, app: &str, workspace: &str) -> bool {
+        let launches = self.0.lock_recover();
+        launches.iter().any(|(pid, record)| {
+            record.no_window
+                && record.app == app
+                && record.workspace == workspace
+                && process_start_time(*pid) == Some(record.start_time)
+        })
     }
 
     /// The ticket of the launch recorded for `pid`, whatever it attests.
@@ -951,16 +1025,26 @@ impl Launched {
     /// Whether `pid` is still the process recorded for exactly `app` and
     /// `workspace`.
     fn attest(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.no_window_of(pid, app, workspace).is_some()
+    }
+
+    /// Whether `pid` is the process this device started with no window for `app` in `workspace`.
+    fn no_window(&self, pid: u32, app: &str, workspace: &str) -> bool {
+        self.no_window_of(pid, app, workspace) == Some(true)
+    }
+
+    /// Whether `pid` is still the process recorded for exactly `app` and `workspace`, and
+    /// whether that launch shows no window.
+    fn no_window_of(&self, pid: u32, app: &str, workspace: &str) -> Option<bool> {
         let launches = self.0.lock_recover();
-        let Some(record) = launches.get(&pid) else {
-            return false;
-        };
-        let (recorded, same) = (
+        let record = launches.get(&pid)?;
+        let (recorded, same, no_window) = (
             record.start_time,
             record.app == app && record.workspace == workspace,
+            record.no_window,
         );
         drop(launches);
-        same && process_start_time(pid) == Some(recorded)
+        (same && process_start_time(pid) == Some(recorded)).then_some(no_window)
     }
 
     /// Forget `pid`, once its process has been reaped.

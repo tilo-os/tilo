@@ -30,6 +30,14 @@ pub fn process_environment() -> super::ProcessEnvironment {
                 .filter(|factor| factor.is_finite() && *factor > 0.0)
         })
     }
+    /// Whole seconds, within a day: a bound the launcher also enforces.
+    fn seconds(name: &str) -> Option<std::time::Duration> {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|seconds| (1..=86_400).contains(seconds))
+            .map(std::time::Duration::from_secs)
+    }
     let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     let ui_set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     let continuity_resume = text("TILO_CONTINUITY_RESUME_HEX")
@@ -100,6 +108,7 @@ pub fn process_environment() -> super::ProcessEnvironment {
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
         reveal: text(super::REVEAL_ENV),
         windowless: std::env::var_os(super::WINDOWLESS_ENV).is_some_and(|value| value == "1"),
+        no_window_idle: seconds(super::NO_WINDOW_IDLE_ENV),
     }
 }
 

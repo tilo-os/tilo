@@ -197,6 +197,13 @@ struct AppHandler {
     /// and makes no window. The first window the shell asks of the process
     /// takes its place ([`process_windows`]).
     windowless: bool,
+    /// How long a process the daemon started with no window runs on with no
+    /// call before it ends ([`crate::process::NO_WINDOW_IDLE_ENV`]): the
+    /// daemon starts it again on the next call. `None` for a process that
+    /// stays until it is ended.
+    no_window_idle: Option<crate::time::Duration>,
+    /// When a call last came to this process, which is when the loop last woke.
+    no_window_seen: crate::time::Instant,
 }
 
 #[cfg(test)]
@@ -3919,11 +3926,26 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // With no window to draw, a wake runs the passes a frame runs
             // before it paints: the app takes its actions and publishes.
             if self.windowless {
-                event_loop.set_control_flow(
-                    self.app
-                        .wake_unshown()
-                        .map_or(ControlFlow::Wait, ControlFlow::WaitUntil),
-                );
+                let next = self.app.wake_unshown();
+                // A process the daemon started with no window ends once no call came for
+                // the time it was given, and the daemon starts it again on the next one. One
+                // that has a wake of its own scheduled has work, and is never idle: it wakes
+                // for that as it always did.
+                let idle_until = match next {
+                    Some(_) => None,
+                    None => self.no_window_idle.map(|idle| self.no_window_seen + idle),
+                };
+                if idle_until.is_some_and(|until| crate::time::now() >= until) {
+                    self.closing.set(true);
+                    event_loop.exit();
+                    return;
+                }
+                self.no_window_seen = crate::time::now();
+                event_loop.set_control_flow(match (next, idle_until) {
+                    (Some(next), _) => ControlFlow::WaitUntil(next),
+                    (None, Some(idle)) => ControlFlow::WaitUntil(idle),
+                    (None, None) => ControlFlow::Wait,
+                });
             }
             return;
         };
@@ -5131,6 +5153,7 @@ impl App {
         let open = open.and_then(|open| process_windows::serve_link(&proxy).map(|()| open));
         let mut handler = self.into_handler(&proxy, native_scenario, setup);
         handler.windowless = crate::process::environment().windowless;
+        handler.no_window_idle = crate::process::environment().no_window_idle;
         let mut handler = process_windows::ProcessWindows::new(handler, proxy, open);
         // Run on demand, so a window that gives its place to the next one
         // (`hand_over`) keeps the loop for that window to run on. On every
@@ -5307,6 +5330,8 @@ impl App {
             handing_over: false,
             closing: std::cell::Cell::new(false),
             windowless: false,
+            no_window_idle: None,
+            no_window_seen: crate::time::now(),
         }
     }
 }

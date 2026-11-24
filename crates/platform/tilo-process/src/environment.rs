@@ -157,6 +157,11 @@ pub const REVEAL_ENV: &str = "TILO_WINDOW_REVEAL";
 /// a window only once the shell asks it for one.
 pub const WINDOWLESS_ENV: &str = "TILO_WINDOWLESS";
 
+/// The seconds a process the daemon started with no window runs on with no call for, after
+/// which it ends: the daemon starts it again on the next call. A process the session starts
+/// with no window is given none, and runs until the session ends it.
+pub const NO_WINDOW_IDLE_ENV: &str = "TILO_NO_WINDOW_IDLE";
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProcessEnvironment {
     pub identity: ProcessIdentity,
@@ -170,6 +175,9 @@ pub struct ProcessEnvironment {
     pub ui_graph_dir: Option<PathBuf>,
     pub reveal: Option<String>,
     pub windowless: bool,
+    /// How long a process with no window runs on with no call before it ends
+    /// ([`NO_WINDOW_IDLE_ENV`]): `None` for one that stays until it is ended.
+    pub no_window_idle: Option<std::time::Duration>,
 }
 
 static INSTALLED: RwLock<Option<Arc<ProcessEnvironment>>> = RwLock::new(None);

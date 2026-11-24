@@ -349,7 +349,7 @@ impl AppBrokerState {
         else {
             return Err(abandon(ActionCallError::UnknownAction));
         };
-        let app_id = registered.app;
+        let app_id = &registered.app;
         let (workspace, policy, now) = self
             .current_framework_authority(caller, origin, workspace_id)
             .map_err(abandon)?;
@@ -374,7 +374,7 @@ impl AppBrokerState {
         }
         self.framework_policy(
             (&workspace, &policy, now),
-            (app_id, &descriptor),
+            (app_id.as_ref(), &descriptor),
             request.confirmation.as_ref(),
             approved,
             false,
@@ -433,14 +433,14 @@ impl AppBrokerState {
             return Err(abandon(ActionCallError::NotPermitted));
         };
         let argument = request.argument.to_slot();
-        let app_id = registered.app;
+        let app_id = &registered.app;
         let admitted = self
             .admit_host_action(
                 caller,
                 origin,
                 super::host_action_admission::HostActionAdmission {
                     workspace: workspace_id,
-                    app_id,
+                    app_id: app_id.as_ref(),
                     descriptor: &descriptor,
                     request,
                 },
@@ -496,7 +496,7 @@ impl AppBrokerState {
                 caller: caller.clone(),
                 origin: origin.cloned(),
                 workspace: workspace_id.to_owned(),
-                app_id: app_id.to_owned(),
+                app_id: app_id.to_string(),
                 descriptor,
                 approved,
             };
@@ -1346,7 +1346,7 @@ mod identity_admin_tests {
                         let worker = scope.spawn(move || {
                             let registered = crate::workspaces::providers::Registered {
                                 provider: device_tickets::PROVIDER.into(),
-                                app: "so.tilo.settings",
+                                app: "so.tilo.settings".into(),
                                 reach: Reach::ThisDevice,
                                 answers: steps as Arc<dyn ActionProvider + Send + Sync>,
                             };

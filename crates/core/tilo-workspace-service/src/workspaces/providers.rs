@@ -78,7 +78,7 @@ pub struct Registered {
     /// The provider id a call names.
     pub provider: Arc<str>,
     /// The application whose grants decide its actions.
-    pub app: &'static str,
+    pub app: Arc<str>,
     /// How far it reaches.
     pub reach: Reach,
     /// What answers its calls.
@@ -143,23 +143,61 @@ impl Providers {
     /// on, decided by the grants of the application `app` and reaching as far as `reach`.
     pub fn provide(
         &self,
-        provider: &'static str,
-        app: &'static str,
+        provider: &str,
+        app: &str,
         reach: Reach,
         answers: Arc<dyn ActionProvider + Send + Sync>,
     ) {
         let published = answers.published();
-        let provider: Arc<str> = Arc::from(provider);
         self.0.provided.write_recover().insert(
-            Arc::clone(&provider),
+            Arc::from(provider),
             Registered {
-                provider,
-                app,
+                provider: Arc::from(provider),
+                app: Arc::from(app),
                 reach,
                 answers,
                 published,
             },
         );
+    }
+
+    /// Answer the calls that name `app`'s actions in `workspace` with `answers` from now on,
+    /// decided by the workspace's grants for the app and reaching as far as `reach`: the one
+    /// registration every app process's actions go through, whichever language the app is
+    /// written in. An app's code calls by address and never knows which process answers it.
+    pub fn provide_app(
+        &self,
+        workspace: &str,
+        app: &str,
+        reach: Reach,
+        answers: Arc<dyn ActionProvider + Send + Sync>,
+    ) {
+        self.provide(
+            &tilo_actions::remote::application_provider_token(workspace, app),
+            app,
+            reach,
+            answers,
+        );
+    }
+
+    /// Stop answering `app`'s calls in `workspace` with `answers`: a call that names them from
+    /// now on finds no process. A provider registered since under that name is left as it is.
+    pub fn withdraw_app(
+        &self,
+        workspace: &str,
+        app: &str,
+        answers: &Arc<dyn ActionProvider + Send + Sync>,
+    ) {
+        self.withdraw(
+            &tilo_actions::remote::application_provider_token(workspace, app),
+            answers,
+        );
+    }
+
+    /// The provider id `app`'s process registers under, in `workspace`.
+    #[must_use]
+    pub fn app_provider(workspace: &str, app: &str) -> String {
+        tilo_actions::remote::application_provider_token(workspace, app)
     }
 
     /// The registered provider that published the address `target` names, whichever provider
@@ -228,7 +266,7 @@ impl Providers {
     pub fn serve(
         &self,
         provider: &str,
-        app: &'static str,
+        app: &str,
         reach: Reach,
         answers: Arc<dyn ActionProvider + Send + Sync>,
     ) -> Result<(), String> {
@@ -238,12 +276,11 @@ impl Providers {
         {
             return Err(format!("{provider} is served on this device already"));
         }
-        let provider: Arc<str> = Arc::from(provider);
         provided.insert(
-            Arc::clone(&provider),
+            Arc::from(provider),
             Registered {
-                provider,
-                app,
+                provider: Arc::from(provider),
+                app: Arc::from(app),
                 reach,
                 published: answers.published(),
                 answers,
@@ -411,7 +448,7 @@ impl Providers {
                 &workspaces,
                 device,
                 &workspace,
-                registered.app,
+                &registered.app,
                 &address.resource,
                 &address.action,
             )
@@ -490,5 +527,116 @@ async fn permits(
         Err(error) => Err(ActionCallError::Refused {
             reason: format!("this device is not admitted to the workspace: {error}"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+    use tilo_actions::remote::{
+        CataloguePage, CatalogueQuery, InvokeArgument, InvokeRequest, Pending, PendingPoll,
+        RemoteActionTarget, application_action_target, application_provider_token,
+    };
+
+    /// An app process's answers, which record the provider token each call reached it under.
+    #[derive(Default)]
+    struct Process(Mutex<Vec<String>>);
+
+    impl ActionProvider for Process {
+        fn query(
+            &self,
+            _caller: &Caller,
+            _query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Ok(CataloguePage::default()))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            self.0
+                .lock()
+                .expect("the calls taken")
+                .push(request.target.provider.to_string());
+            Pending::ready(Err(ActionCallError::Unavailable {
+                reason: "the app's answer is its own".into(),
+            }))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+    }
+
+    fn request(token: &str) -> InvokeRequest {
+        InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: token.into(),
+                address: tilo_actions::ActionAddress::new("scratchpad.note", "field-edit"),
+            },
+            argument: InvokeArgument::default(),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            on_behalf_of: None,
+            appearance: None,
+            signed: None,
+        }
+    }
+
+    /// An app process registers under its workspace's token and is taken back when it ends; a
+    /// call naming the token reaches it, and a device reaches it when it reaches devices.
+    #[test]
+    fn an_apps_process_is_registered_under_its_token_and_taken_back_when_it_ends() {
+        const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+        const APP: &str = "so.tilo.scratchpad";
+        let providers = Providers::default();
+        let process = Arc::new(Process::default());
+        assert_eq!(
+            application_provider_token(WORKSPACE, APP),
+            Providers::app_provider(WORKSPACE, APP),
+            "the app's process registers under the token a call names"
+        );
+        let answers: Arc<dyn ActionProvider + Send + Sync> = process.clone();
+        providers.provide_app(WORKSPACE, APP, Reach::Devices, Arc::clone(&answers));
+        let registered = providers
+            .get(&Providers::app_provider(WORKSPACE, APP))
+            .expect("the token names the app's process");
+        assert_eq!(
+            registered.app.as_ref(),
+            APP,
+            "its calls are decided by the app's own grants"
+        );
+        assert!(providers.serves(&Providers::app_provider(WORKSPACE, APP)));
+
+        let target = application_action_target(WORKSPACE, APP, "scratchpad.note", "field-edit");
+        let caller = Caller::local_person("ada").in_workspace(WORKSPACE);
+        let mut answer = providers
+            .invoke(&caller, request(&target.provider))
+            .expect("the call reaches the app's process");
+        assert!(
+            matches!(answer.poll_ready(), PendingPoll::Ready(Err(_))),
+            "the process answered"
+        );
+        assert_eq!(
+            process.0.lock().expect("the calls taken").clone(),
+            vec![target.provider.clone()],
+            "the call reached the app's process under its token"
+        );
+
+        providers.withdraw_app(WORKSPACE, APP, &answers);
+        assert!(
+            providers
+                .get(&Providers::app_provider(WORKSPACE, APP))
+                .is_none(),
+            "a call after the process ended finds it no more"
+        );
+        assert!(!providers.serves(&Providers::app_provider(WORKSPACE, APP)));
     }
 }

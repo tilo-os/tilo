@@ -278,6 +278,13 @@ impl ApplicationLaunch {
 /// whether or not it is running; see [`application_action_target`].
 pub const APPLICATION_PROVIDER: &str = "application";
 
+/// The provider token naming `app_id`'s actions in `workspace`, whether or not the app runs:
+/// the token a call reaches its process by ([`application_action_target`]).
+#[must_use]
+pub fn application_provider_token(workspace: &str, app_id: &str) -> String {
+    format!("{APPLICATION_PROVIDER}:{workspace}:{app_id}")
+}
+
 /// The target of the action `app_id` offers on `resource` in workspace
 /// `workspace`. The provider delivers it to the running app, or launches the app into
 /// the workspace first and delivers it once the app offers the action; the
@@ -290,7 +297,7 @@ pub fn application_action_target(
     action: impl Into<String>,
 ) -> RemoteActionTarget {
     RemoteActionTarget {
-        provider: format!("{APPLICATION_PROVIDER}:{workspace}:{app_id}"),
+        provider: application_provider_token(workspace, app_id),
         address: ActionAddress::new(resource, action),
     }
 }

@@ -47,7 +47,7 @@ use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use launcher::run::tilolang_process::VerifiedInstance;
 use runtime_portal::device_processes::{
@@ -81,8 +81,9 @@ const PERSON_VIEWS_APP: &str = "so.tilo.lang.views";
 
 /// How long a process runs on with no call before it ends: long enough that an app closed and
 /// opened again finds its process running, short enough that the apps of an afternoon don't hold a
-/// small device's memory.
-pub const IDLE: Duration = Duration::from_secs(5 * 60);
+/// small device's memory. It is the one period every app process the daemon runs keeps
+/// ([`crate::IDLE`]).
+pub use crate::IDLE;
 
 /// How many of its last error lines a process that ended without saying why is reported by.
 const SAID_LINES: usize = 8;
