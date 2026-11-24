@@ -1366,6 +1366,7 @@ impl Session {
                 .as_ref()
                 .and_then(|desktop| desktop.documents())
                 .cloned(),
+            view: view.clone(),
             daemon: daemon_link.clone().ok(),
         });
         // The system's media controls show every Playback the session's apps play, and a media

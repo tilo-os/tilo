@@ -270,6 +270,10 @@ pub(crate) struct Serving {
     pub windows: Option<crate::windows_compat::Serving>,
     /// The files people choose for apps, while the session serves them to its sandboxes.
     pub documents: Option<tilo_documents::Documents>,
+    /// The person's workspaces as the device's daemon publishes them: where a chosen file of a
+    /// workspace's tree is granted to the app on its node. `None` when this session reaches no
+    /// daemon.
+    pub view: Option<Arc<crate::workspace_view::WorkspaceView>>,
     /// The shell link the device's daemon handed this session: its identity service is the one
     /// the apps sign in through. `None` for a session the host placed in a workspace's VM, which
     /// runs no device daemon and serves its apps' identity itself.
@@ -357,6 +361,12 @@ pub(crate) fn start(mut serving: Serving) -> Served {
                 served.chooser = chooser::serve(chooser::Serving {
                     questions: serving.questions.clone(),
                     documents: serving.documents.take().unwrap_or_default(),
+                    files: serving.view.as_ref().map(|view| {
+                        Arc::new(chooser::PolicyFiles::new(
+                            Arc::clone(view),
+                            serving.person.clone(),
+                        )) as Arc<dyn chooser::WorkspaceFiles>
+                    }),
                     wake: serving.wake.clone(),
                 })
                 .inspect_err(|error| tracing::warn!(%error, "the chooser service is unavailable"))
