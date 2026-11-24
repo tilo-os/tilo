@@ -279,7 +279,7 @@ pub trait AccountServer: Send + Sync {
         _person: &[u8; 32],
         _labels: &tilo_server_protocol::workspaces::WorkspaceLabels,
         _workspace: Option<&str>,
-    ) -> Asked<'_, Result<tilo_server_protocol::workspaces::PersonWorkspaces, String>> {
+    ) -> Asked<'_, tilo_server_protocol::workspaces::PersonWorkspaces> {
         Box::pin(async { Ok(tilo_server_protocol::workspaces::PersonWorkspaces::default()) })
     }
 }

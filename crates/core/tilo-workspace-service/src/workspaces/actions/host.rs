@@ -62,7 +62,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 24] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 23] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
