@@ -845,6 +845,10 @@ pub struct BlockEditor {
     /// last told: a layout that fills the same number says nothing.
     page_count_event: Option<ui::component::Event>,
     published_page_count: Option<i64>,
+    /// The view asking which sheet the caret stands on (`page_shown`), and the sheet it was last
+    /// told: a caret that stays on its sheet says nothing.
+    page_shown_event: Option<ui::component::Event>,
+    published_page_shown: Option<i64>,
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
@@ -1054,6 +1058,8 @@ impl BlockEditor {
             pages: None,
             page_count_event: None,
             published_page_count: None,
+            page_shown_event: None,
+            published_page_shown: None,
             presence_key: None,
             body: None,
         };
@@ -2203,6 +2209,7 @@ impl BlockEditor {
             self.focused = Some(target);
             self.is_focused = true;
             self.dirty = true;
+            self.publish_page_shown(None);
             return;
         }
         if let Some(prev) = self.focused
@@ -2225,6 +2232,7 @@ impl BlockEditor {
         self.focused = Some(target);
         self.is_focused = true;
         self.dirty = true;
+        self.publish_page_shown(None);
     }
 
     /// Show the block a view asks for (`reveal`): a heading by its place among the document's
@@ -9035,6 +9043,7 @@ impl BlockEditor {
         }
         self.stack.width = Some(width);
         self.publish_page_count();
+        self.publish_page_shown(None);
     }
 
     /// Stack every block at `width` in its own flow coordinates, without the room a page break
@@ -9375,6 +9384,51 @@ impl BlockEditor {
         if let Some(event) = &self.page_count_event {
             event.fire(Some(ui::component::Value::Int(pages)));
         }
+    }
+
+    /// Tell the view which sheet the caret stands on, or the sheet the view's top shows where the
+    /// document has no caret, each time that changes: a status band reads the "N" in "Page N of M".
+    /// One continuous page is none, as the count is.
+    ///
+    /// `view_top` is the top of what the host shows, when the frame drawing it asks.
+    fn publish_page_shown(&mut self, view_top: Option<f32>) {
+        let Some(page) = self.page_shown(view_top) else {
+            return;
+        };
+        if self.published_page_shown == Some(page) {
+            return;
+        }
+        self.published_page_shown = Some(page);
+        if let Some(event) = &self.page_shown_event {
+            event.fire(Some(ui::component::Value::Int(page)));
+        }
+    }
+
+    /// The sheet the caret stands on, in its stack's coordinates, or the one the view's top shows
+    /// with no caret: one-based, zero when the document writes on one continuous page, and
+    /// nothing while a papered document is not laid out yet.
+    fn page_shown(&self, view_top: Option<f32>) -> Option<i64> {
+        if self.pages.is_none() {
+            return Some(0);
+        }
+        if self.stack.pages.pages.is_empty() {
+            return None;
+        }
+        let caret = self
+            .document_caret_rect()
+            .map(|caret| ui::num::f32_of_f64(caret.y0 - self.rect.y0));
+        let y = caret
+            .or(view_top)
+            .or_else(|| self.focused.and_then(|index| self.stack.tops.get(index).copied()))
+            .unwrap_or(0.0);
+        let page = self
+            .stack
+            .pages
+            .pages
+            .iter()
+            .filter(|start| **start <= y + 0.01)
+            .count();
+        Some(i64::try_from(page).unwrap_or(i64::MAX).max(1))
     }
 
     /// Each block's rectangle from the last stack, rounded exactly as Taffy
@@ -10867,6 +10921,11 @@ impl Widget for BlockEditor {
         scene.append(&own, None);
         #[cfg(test)]
         drop(suffix_probe);
+        // With no caret to ask, the sheet the view shows is the one its top stands on.
+        self.publish_page_shown(
+            env.viewport
+                .map(|view| ui::num::f32_of_f64(view.y0 - self.rect.y0)),
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -10916,6 +10975,7 @@ impl Widget for BlockEditor {
         };
         self.edit_scope.widen(scope);
         let _ = self.take_body_edits();
+        self.publish_page_shown(None);
     }
 
     fn name(&self) -> &'static str {

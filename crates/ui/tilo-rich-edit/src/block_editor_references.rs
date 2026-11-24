@@ -126,6 +126,11 @@ pub struct BlockEditorProps {
     /// changes: what a status bar writes as "Page N of M". Zero writes on one continuous page.
     #[component(event(value = i64))]
     pub page_count: Event,
+    /// The sheet the caret stands on, or the sheet the view's top shows where the document has
+    /// no caret, each time that changes: the "N" a status bar writes in "Page N of M", one-based.
+    /// Zero writes on one continuous page.
+    #[component(event(value = i64))]
+    pub page_shown: Event,
     /// Words set in every page's top margin, such as the document's title.
     pub header: Option<String>,
     /// Words set in every page's bottom margin, before the page number.
@@ -486,6 +491,7 @@ impl Described for BlockEditor {
             format: _,
             page,
             page_count,
+            page_shown,
             header,
             footer,
             margin_top,
@@ -529,6 +535,7 @@ impl Described for BlockEditor {
             comment,
             open_reference,
             page_count,
+            page_shown,
         });
         editor.offer_slash(&slash, slash_image, slash_page);
         editor.set_image_store(Some(ui::pictures::Pictures::window().store().clone()));
@@ -582,6 +589,7 @@ impl Described for BlockEditor {
             format,
             page,
             page_count,
+            page_shown,
             header,
             footer,
             margin_top,
@@ -614,6 +622,7 @@ impl Described for BlockEditor {
             comment,
             open_reference,
             page_count,
+            page_shown,
         });
         self.offer_slash(&slash, slash_image, slash_page);
         self.set_look(size, align.as_deref());
@@ -664,6 +673,7 @@ struct Offered {
     comment: Event,
     open_reference: Event,
     page_count: Event,
+    page_shown: Event,
 }
 
 impl BlockEditor {
@@ -680,9 +690,11 @@ impl BlockEditor {
             comment,
             open_reference,
             page_count,
+            page_shown,
         } = offered;
         self.references.changes = changes;
         self.page_count_event = Some(page_count);
+        self.page_shown_event = Some(page_shown);
         let answering = !links_query.is_none();
         self.set_links(
             links
