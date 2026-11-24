@@ -131,7 +131,6 @@ async fn local_report_admission(
                 connection_id: 903,
                 verified_identity: identity.clone(),
                 resource_type: None,
-                route_access: RouteAccess::Own,
                 lease: None,
                 _hold: None,
             });
@@ -224,7 +223,6 @@ async fn local_report_admission(
                 connection_id: 904,
                 verified_identity: identity.clone(),
                 resource_type: None,
-                route_access: RouteAccess::Own,
                 lease: None,
                 _hold: None,
             });

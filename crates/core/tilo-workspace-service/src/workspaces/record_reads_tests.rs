@@ -741,6 +741,82 @@ async fn an_app_changes_its_own_records_and_no_kind_it_did_not_declare() {
     h.server.shutdown().await;
 }
 
+/// What an app keeps open of a record is bounded by what its manifest declares, whatever its
+/// person may read: another app's record only where it declares that read, and that one never
+/// changed; its own as its person may.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_keeps_open_only_the_records_its_manifest_declares() {
+    static NOTE_KINDS: &[u8] =
+        b"[[resources]]\nkind = \"tilo.notes.Note\"\nlabel = \"Note\"\nversion = 1\n";
+    static READS_NOTES: &[u8] = b"reads = [\"tilo.notes.Note\"]\n\n[[resources]]\nkind = \"test.reader.Card\"\nlabel = \"Card\"\nversion = 1\n";
+    collab_types::app_surface::register_package(NOTES, NOTE_KINDS);
+    collab_types::app_surface::register_package("test.notes-reader", READS_NOTES);
+    let h = host().await;
+    let (reads, _broker) = dispatch_reads(&h);
+    let app = |app: &str| {
+        Caller::local_app(app)
+            .acting_for(h.person.clone())
+            .in_workspace(h.kitchen.clone())
+    };
+    let decide_read = |caller: Caller| {
+        let (reads, address) = (
+            std::sync::Arc::clone(&reads),
+            ResourceAddress {
+                workspace: h.kitchen.clone(),
+                app: NOTES.to_owned(),
+                record: String::new(),
+            },
+        );
+        tokio::task::spawn_blocking(move || {
+            match reads
+                .may_read(&caller, &address)
+                .wait_timeout(std::time::Duration::MAX)
+            {
+                Ok(Some(decided)) => decided,
+                _ => panic!("the read decision answered"),
+            }
+        })
+    };
+    // Notes reads and changes its own record.
+    let read = decide_read(app(NOTES)).await.expect("the decision ran");
+    assert!(read.is_ok(), "{read:?}");
+    let write = write_with(
+        std::sync::Arc::clone(&reads),
+        &app(NOTES),
+        &h.kitchen,
+        NOTES,
+        "",
+    )
+    .await;
+    assert!(write.is_ok(), "{write:?}");
+    // An app that declares it reads notes reads the record, and changes nothing of it.
+    let read = decide_read(app("test.notes-reader"))
+        .await
+        .expect("the decision ran");
+    assert!(read.is_ok(), "{read:?}");
+    let write = write_with(
+        std::sync::Arc::clone(&reads),
+        &app("test.notes-reader"),
+        &h.kitchen,
+        NOTES,
+        "",
+    )
+    .await;
+    assert!(not_changed(&write), "{write:?}");
+    // An app that declares no read of notes keeps it open neither way, its person's grants
+    // notwithstanding.
+    let read = decide_read(app("so.tilo.messages"))
+        .await
+        .expect("the decision ran");
+    assert!(
+        matches!(&read, Err(ActionCallError::Refused { reason }) if reason.contains("declares no read")),
+        "{read:?}"
+    );
+    let write = write_with(reads, &app("so.tilo.messages"), &h.kitchen, NOTES, "").await;
+    assert!(not_changed(&write), "{write:?}");
+    h.server.shutdown().await;
+}
+
 /// A grant that reads a record alone changes nothing of it: a change needs the grant to allow one
 /// at the record's node, whichever app asks.
 #[tokio::test(flavor = "multi_thread")]

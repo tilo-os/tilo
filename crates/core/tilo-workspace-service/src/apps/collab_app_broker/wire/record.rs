@@ -41,7 +41,9 @@ impl AppConnection {
             }
         }
         let certificate = (identity.certificate)(&route.cluster_id).map_err(|error| {
-            BrokerError::failed(format!("this device has no identity in the workspace: {error}"))
+            BrokerError::failed(format!(
+                "this device has no identity in the workspace: {error}"
+            ))
         })?;
         let mut verified_identity = admit_device_certificate(
             &route,
@@ -59,8 +61,8 @@ impl AppConnection {
         phases.mark("verify");
         let resource_route = route.clone();
         // An attested launch holds its own route; another app's only to read a record whose
-        // kinds it declared it reads, as the device's one reader lets the person read it.
-        let route_access = match self.lease.local_media.as_ref() {
+        // kinds it declared it reads, as the device's one reader lets it read it.
+        let reach = match self.lease.local_media.as_ref() {
             Some(app) => {
                 let own_workspace = verified_identity
                     .verified
@@ -73,17 +75,17 @@ impl AppConnection {
                         app.app_id
                     )));
                 }
-                let access = attested_route_access(&app.app_id, &route, own_workspace)
+                let reach = app_reach(&app.app_id, &session::route_address(&route), own_workspace)
                     .map_err(BrokerError::failed)?;
-                if access == RouteAccess::ReadOnly {
+                if reach == AppReach::Reads {
                     state
-                        .person_reads_joined(&verified_identity, &app.app_id, &route)
+                        .app_reads_record(&verified_identity, &app.app_id, &route)
                         .await
                         .map_err(BrokerError::failed)?;
                 }
-                access
+                reach
             }
-            None => RouteAccess::Own,
+            None => AppReach::Changes,
         };
         // The app a person's launcher started is the worker of that app's routes on this device:
         // the launcher verified which app it released and who it released it for, which is the
@@ -123,7 +125,7 @@ impl AppConnection {
             }
         } else if state.durable_owner_required
             && !route.app_id.is_empty()
-            && matches!(route_access, RouteAccess::Own)
+            && reach == AppReach::Changes
             && packaged_app.is_none()
             && !kept_for_every_app_of_the_workspace(&resource_route)
         {
@@ -202,7 +204,6 @@ impl AppConnection {
             connection_id: peer_id,
             verified_identity,
             resource_type,
-            route_access,
             lease: Some(Rc::clone(&self.lease)),
             _hold: Some(hold),
         };
@@ -219,8 +220,64 @@ impl AppConnection {
 /// Whether `route` names a record every app of its workspace opens
 /// ([`collab_types::workspace_document`]): the workspace keeps it rather than the app that
 /// writes it, so any admitted app of the workspace holds its route, and
-/// [`attested_route_access`] lets it change the record as the workspace's grants on the
-/// owner decide.
+/// the device's one reader lets it change the record as the workspace's grants on the owner
+/// decide.
 fn kept_for_every_app_of_the_workspace(route: &CrdtRoute) -> bool {
     collab_types::shared_workspace_document(&route.app_id, &route.document_id).is_some()
+}
+
+impl AppBrokerState {
+    /// Whether the app `app`, acting as the person `identity` certifies, may read `route`'s
+    /// record, another app's it opens to read: as the device's one reader decides, and where the
+    /// person is to be asked first, once they answer the read's asked record
+    /// ([`tilo_actions::remote::asked::AskedReads`]).
+    pub(super) async fn app_reads_record(
+        &self,
+        identity: &AdmittedJoinIdentity,
+        app: &str,
+        route: &CrdtRoute,
+    ) -> Result<(), String> {
+        use tilo_actions::remote::ActionCallError;
+        use tilo_actions::remote::asked::AskedFacts;
+        let refused = || {
+            format!(
+                "the person may not read the record of {} that {app} reads",
+                route.app_id
+            )
+        };
+        let reads = self.records().ok_or_else(refused)?;
+        let caller = identity
+            .certified_caller(&route.cluster_id, false)
+            .through_app(app);
+        let address = session::route_address(route);
+        // The device's reader may block to decide, never on the broker's own thread.
+        let (deciding, deciding_for) = (caller.clone(), address.clone());
+        let decided = tokio::task::spawn_blocking(move || reads.may_read(&deciding, &deciding_for))
+            .await
+            .map_err(|_| refused())?
+            .await;
+        let facts = match decided {
+            Some(Ok(())) => return Ok(()),
+            Some(Err(ActionCallError::ConfirmationRequired(facts))) => *facts,
+            Some(Err(ActionCallError::Refused { reason })) => {
+                return Err(format!("{}: {reason}", refused()));
+            }
+            _ => return Err(refused()),
+        };
+        let asked = self.asked_reads().ok_or_else(refused)?;
+        let facts = AskedFacts {
+            verb: if facts.verb.is_empty() {
+                tilo_actions::remote::asked::READ.to_owned()
+            } else {
+                facts.verb
+            },
+            on: facts.on.or_else(|| Some(route.document_id.clone())),
+            ..facts
+        };
+        match asked.ask_read(&caller, app, &address, facts).await {
+            Some(Ok(())) => Ok(()),
+            Some(Err(why)) => Err(format!("{}: {why}", refused())),
+            None => Err(refused()),
+        }
+    }
 }

@@ -71,8 +71,7 @@ mod app_settings_tests;
 #[cfg(test)]
 mod authority_sample_tests;
 mod canonical_route;
-mod route_access;
-use route_access::{RouteAccess, attested_route_access};
+use crate::workspaces::record_reads::{AppReach, app_reach};
 mod committed_document;
 mod content_put;
 mod resource_read;
@@ -817,6 +816,3 @@ mod host_worker_capacity_tests;
 #[cfg(test)]
 #[path = "collab_app_broker/resource_view_tests.rs"]
 mod resource_view_tests;
-
-#[cfg(test)]
-mod person_document_join_tests;

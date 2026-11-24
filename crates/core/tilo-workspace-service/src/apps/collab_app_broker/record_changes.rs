@@ -103,12 +103,8 @@ impl JoinedChannel {
         route: &CrdtRoute,
     ) -> Result<(), BrokerError> {
         use tilo_actions::remote::ActionCallError::ConfirmationRequired;
-        let address = tilo_actions::remote::ResourceAddress {
-            workspace: route.cluster_id.clone(),
-            app: route.app_id.clone(),
-            record: route.document_id.clone(),
-        };
-        let caller = admitted.certified_caller(&route.cluster_id, false);
+        let address = session::route_address(route);
+        let caller = self.record_caller(admitted, route);
         let allowed = self.state.records().is_some_and(|reads| {
             matches!(
                 reads

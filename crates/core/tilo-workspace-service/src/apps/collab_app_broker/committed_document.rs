@@ -1,6 +1,6 @@
 //! Current committed reads on the actual admitted channel.
 mod capture;
-use super::{Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, RouteAccess, Weak};
+use super::{AppReach, Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, Weak};
 use crate::apps::workspace_keys::KeyProvider;
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
@@ -480,7 +480,7 @@ impl JoinedChannel {
             .and_then(|lease| lease.local_media.clone());
         let state = Arc::downgrade(&self.state);
         let checked_route = route.clone();
-        let read_only = self.route_access == RouteAccess::ReadOnly;
+        let read_only = self.reach() == Ok(AppReach::Reads);
         let revalidate = Arc::new(move || {
             let state = state.upgrade().ok_or("committed read broker ended")?;
             if !state.is_accepting() {
@@ -499,14 +499,12 @@ impl JoinedChannel {
                 // Another app's record is read as the device's one reader lets
                 // the person read it, as the join decided, and again at every read:
                 // one it would ask about, the person allowed when it was joined.
-                let address = tilo_actions::remote::ResourceAddress {
-                    workspace: checked_route.cluster_id.clone(),
-                    app: checked_route.app_id.clone(),
-                    record: checked_route.document_id.clone(),
-                };
+                let address = super::session::route_address(&checked_route);
                 let reads = |reads: Arc<dyn tilo_actions::remote::ResourceReads>| {
                     use tilo_actions::remote::ActionCallError::ConfirmationRequired;
-                    let caller = admitted.certified_caller(&address.workspace, false);
+                    let caller = admitted
+                        .certified_caller(&address.workspace, false)
+                        .through_app(local.app_id.as_str());
                     let decided = reads
                         .may_read(&caller, &address)
                         .wait_timeout(Duration::MAX);

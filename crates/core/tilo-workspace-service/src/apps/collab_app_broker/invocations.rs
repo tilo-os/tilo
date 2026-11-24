@@ -44,7 +44,7 @@ impl AppBrokerState {
     }
 
     /// Keep a read the person is asked about through `asked`, the device's dispatch: what an
-    /// app's join of such a record waits on from now on ([`Self::person_reads_joined`]).
+    /// app's join of such a record waits on from now on ([`Self::app_reads_record`]).
     pub fn serve_asked_reads(&self, asked: Arc<dyn tilo_actions::remote::asked::AskedReads>) {
         let _ = self.asked_reads.set(asked);
     }

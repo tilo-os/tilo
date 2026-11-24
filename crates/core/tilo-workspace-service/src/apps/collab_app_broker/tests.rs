@@ -512,7 +512,6 @@ impl LocalDirectoryFixture {
                 }
             }),
             resource_type: None,
-            route_access: RouteAccess::Own,
             lease: None,
             _hold: None,
         })

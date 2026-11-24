@@ -193,9 +193,6 @@ pub(super) struct JoinedChannel {
     pub(super) verified_identity: AdmittedJoinIdentity,
     /// The resource kind the app named for this route's record, if any.
     pub(super) resource_type: Option<String>,
-    /// Whether the app may change what this channel carries, or only read
-    /// it (another app's record it declared it reads).
-    pub(super) route_access: RouteAccess,
     /// Production handles share the root RPC connection lease. Direct unit
     /// fixtures use `None` and retain the legacy one-handle cleanup behavior.
     pub(super) lease: Option<Rc<ConnectionLease>>,
@@ -214,12 +211,49 @@ impl Drop for JoinedChannel {
 }
 
 impl JoinedChannel {
-    /// Refuse a change on a channel the app holds only to read: no app writes on another app's
+    /// The app a launcher attested this channel's connection as, when one did.
+    pub(super) fn launched_app(&self) -> Option<&str> {
+        self.lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .map(|local| local.app_id.as_str())
+    }
+
+    /// What the channel's app reaches of its record by what its manifest declares, as the
+    /// device's one reader decides it ([`app_reach`]). A connection no launcher attested holds
+    /// its routes as its admission does.
+    pub(super) fn reach(&self) -> Result<AppReach, String> {
+        let Some(app) = self.launched_app() else {
+            return Ok(AppReach::Changes);
+        };
+        let route = self.route();
+        let own_workspace = self
+            .verified_identity
+            .verified
+            .owns_person_workspace(&route.cluster_id);
+        app_reach(app, &route_address(&route), own_workspace)
+    }
+
+    /// The caller this channel's calls about its record are decided as: its admitted identity
+    /// in the record's workspace, through the app a launcher attested it as.
+    pub(super) fn record_caller(
+        &self,
+        admitted: &AdmittedJoinIdentity,
+        route: &CrdtRoute,
+    ) -> tilo_actions::remote::Caller {
+        let caller = admitted.certified_caller(&route.cluster_id, false);
+        match self.launched_app() {
+            Some(app) => caller.through_app(app),
+            None => caller,
+        }
+    }
+
+    /// Refuse a publication for a route the app does not change: no app writes on another app's
     /// route.
     pub(super) fn writable(&self) -> Result<(), BrokerError> {
-        match self.route_access {
-            RouteAccess::Own => Ok(()),
-            RouteAccess::ReadOnly => Err(BrokerError::failed(format!(
+        match self.reach() {
+            Ok(AppReach::Changes) => Ok(()),
+            Ok(AppReach::Reads) | Err(_) => Err(BrokerError::failed(format!(
                 "this connection reads {}'s record and changes nothing on it; another app's \
                  resources change only through its actions",
                 self.route().app_id
@@ -236,12 +270,8 @@ impl JoinedChannel {
         admitted: &AdmittedJoinIdentity,
         route: &CrdtRoute,
     ) -> Result<(), BrokerError> {
-        let address = tilo_actions::remote::ResourceAddress {
-            workspace: route.cluster_id.clone(),
-            app: route.app_id.clone(),
-            record: route.document_id.clone(),
-        };
-        let caller = admitted.certified_caller(&route.cluster_id, false);
+        let address = route_address(route);
+        let caller = self.record_caller(admitted, route);
         let decided = self.state.records().map(|reads| {
             reads
                 .may_write(&caller, &address)
@@ -1153,4 +1183,13 @@ pub(super) async fn drive_connection(
         wire::serve(connection, outgoing, reader, writer).await
     };
     served.map_err(|error| BrokerError::failed(error.to_string()))
+}
+
+/// The record `route` names, as the device's one reader addresses it.
+pub(super) fn route_address(route: &CrdtRoute) -> tilo_actions::remote::ResourceAddress {
+    tilo_actions::remote::ResourceAddress {
+        workspace: route.cluster_id.clone(),
+        app: route.app_id.clone(),
+        record: route.document_id.clone(),
+    }
 }

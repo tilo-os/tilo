@@ -86,7 +86,103 @@ fn device_refused() -> ActionCallError {
     }
 }
 
+/// What an app reaches of a record by what its signed manifest declares, whatever its person's
+/// grants there allow ([`app_reach`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AppReach {
+    /// Its own records, the workspace's (a record of no app) and a record every app of the
+    /// workspace opens: it reads and changes them as its caller's grants decide.
+    Changes,
+    /// Another app's record of a kind it declares it reads (`reads` in its manifest), or a record
+    /// of the person's its manifest declares: read, live, and never changed. It changes another
+    /// app's resources only by invoking that app's actions.
+    Reads,
+}
+
+/// What `app` reaches of `address` by what its manifest declares: its own records, a record of no
+/// app and one every app of the workspace opens ([`collab_types::WORKSPACE_DOCUMENTS`]) to read and
+/// change; another app's record, read-only, where it declares that it reads that app's kinds. In
+/// the person's own workspace (`own_workspace`) only the records of theirs it declares
+/// ([`persons_record`]). Anything else is refused, saying why.
+pub(crate) fn app_reach(
+    app: &str,
+    address: &ResourceAddress,
+    own_workspace: bool,
+) -> Result<AppReach, String> {
+    if own_workspace {
+        persons_record(app, address)?;
+    }
+    if address.app.is_empty() || address.app == app {
+        return Ok(AppReach::Changes);
+    }
+    // A workspace record is changed from any app's window of its workspace; the workspace's
+    // grants on its owner decide each change.
+    if collab_types::shared_workspace_document(&address.app, &address.record).is_some() {
+        return Ok(AppReach::Changes);
+    }
+    if !own_workspace && !collab_types::app_surface::reads_app(app, &address.app) {
+        return Err(format!(
+            "{app} declares no read of {}'s resources; it changes another app's resources only \
+             by invoking its actions",
+            address.app
+        ));
+    }
+    Ok(AppReach::Reads)
+}
+
+/// Whether `app` reaches `address` in the person's own workspace: its own record of the
+/// workspace naming no record, which holds none; one of the workspace's records, when it is the
+/// record's app or declares that it reads that app's kinds; or a record of the person's whose
+/// kind its manifest declares (its own, or another app's it reads). The person's workspace holds
+/// nothing else for an app.
+pub(crate) fn persons_record(app: &str, address: &ResourceAddress) -> Result<(), String> {
+    let own = address.app.is_empty() || address.app == app;
+    if own && address.record.is_empty() {
+        return Ok(());
+    }
+    if collab_types::shared_workspace_document(&address.app, &address.record).is_some() {
+        if own || collab_types::app_surface::reads_app(app, &address.app) {
+            return Ok(());
+        }
+        return Err(format!(
+            "{app} declares no read of {}'s resources",
+            address.app
+        ));
+    }
+    let kind = collab_types::person_resource_type(&address.record)
+        .ok_or("an app reaches the person's workspace only for one of their records")?;
+    if !collab_types::app_surface::keeps_person_resource(app, kind) {
+        return Err(format!(
+            "{app} declares no record of the person's of kind {kind}"
+        ));
+    }
+    Ok(())
+}
+
 impl RecordReads {
+    /// What an app caller reaches of `address` by what its app declares ([`app_reach`]): every
+    /// caller that acts through no app, and a resource that is no app's record (who is here, a
+    /// workspace's keys, its invocations), reach it as their grants decide.
+    fn declared(caller: &Caller, address: &ResourceAddress) -> Result<AppReach, ActionCallError> {
+        let Some(app) = caller.acting().app() else {
+            return Ok(AppReach::Changes);
+        };
+        if [
+            PRESENCE,
+            KEY_GRANTS,
+            tilo_actions::remote::workspace_invocations::PROVIDER,
+        ]
+        .contains(&address.app.as_str())
+        {
+            return Ok(AppReach::Changes);
+        }
+        let own_workspace = caller.user_public_key().is_some_and(|person| {
+            tilo_server_protocol::servers::person_workspace_id(person) == address.workspace
+        });
+        app_reach(app.as_str(), address, own_workspace)
+            .map_err(|reason| ActionCallError::Refused { reason })
+    }
+
     /// The reader of a device's action service: the workspaces it holds, and the app action
     /// server it was given.
     pub(crate) fn of_device(
@@ -560,6 +656,10 @@ impl ResourceReads for RecordReads {
                 Err(refusal) => tilo_actions::remote::Pending::ready(Err(refusal)),
             };
         }
+        // An app keeps open only the records its manifest lets it reach.
+        if let Err(refusal) = Self::declared(caller, address) {
+            return tilo_actions::remote::Pending::ready(Err(refusal));
+        }
         let state = self
             .workspaces
             .as_ref()
@@ -580,6 +680,14 @@ impl ResourceReads for RecordReads {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> tilo_actions::remote::Pending<tilo_actions::remote::Decided> {
+        // An app changes only the records its manifest lets it change: another app's it reads
+        // at most, and changes through that app's actions.
+        match Self::declared(caller, address) {
+            Ok(AppReach::Changes) => {}
+            Ok(AppReach::Reads) | Err(_) => {
+                return tilo_actions::remote::Pending::ready(Err(write_refused()));
+            }
+        }
         let state = self
             .workspaces
             .as_ref()
@@ -783,3 +891,7 @@ impl ResourceReads for RecordReads {
 #[cfg(test)]
 #[path = "record_reads_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "app_reach_tests.rs"]
+mod app_reach_tests;

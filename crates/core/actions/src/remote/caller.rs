@@ -361,6 +361,15 @@ impl Caller {
         self
     }
 
+    /// The caller, acting through the app `app` the provider admitted its connection for: an app
+    /// process acting as its person. Set only by that provider, never from a payload. The one
+    /// reader bounds what such a caller keeps open of a record by what the app declares.
+    #[must_use]
+    pub fn through_app(mut self, app: impl Into<String>) -> Self {
+        self.acting = self.acting.in_app(app.into());
+        self
+    }
+
     /// This person's own device hands the connection to agent `agent_id`, acting for them: a
     /// program in the workspace's machine its person let in, which has no key of its own yet.
     /// The agent is the actor, and it may do only what both the person and the delegation a

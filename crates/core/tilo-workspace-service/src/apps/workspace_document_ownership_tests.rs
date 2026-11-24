@@ -22,8 +22,20 @@ mod workspace_document_ownership {
         route: &CrdtRoute,
         socket: &tokio::net::UnixStream,
     ) -> JoinedChannel {
+        launched_as(LAUNCHED, workspace, identity, route, socket)
+    }
+
+    /// A channel on `route` held by a connection the launcher attested for
+    /// `app` in the fixture's workspace.
+    fn launched_as(
+        app: &str,
+        workspace: &signed_worker::OriginalWorkspace,
+        identity: &AdmittedJoinIdentity,
+        route: &CrdtRoute,
+        socket: &tokio::net::UnixStream,
+    ) -> JoinedChannel {
         let local = native_media::LocalAppConnection::attested(
-            LAUNCHED.into(),
+            app.into(),
             workspace.route.cluster_id.clone(),
             native_media::PeerProcess::from_socket(socket).unwrap(),
             crate::apps::services::AuthenticatedApplicationLaunch {
@@ -43,7 +55,6 @@ mod workspace_document_ownership {
             connection_id: 91,
             verified_identity: identity.clone(),
             resource_type: route_resource_type(route, None).unwrap(),
-            route_access: RouteAccess::Own,
             lease: Some(Rc::new(ConnectionLease {
                 local_media: Some(local),
                 state: workspace.state.clone(),
@@ -123,10 +134,10 @@ mod workspace_document_ownership {
             .await;
     }
 
-    /// Another app's record a launch joined to read (its surface declares the
+    /// Another app's record a launch opened to read (its manifest declares the
     /// read) is read under the launch's own ownership and the person's access
-    /// on that record, whether or not the workspace already holds it: the
-    /// same route joined as the launch's own is refused, as is one of another
+    /// on that record, whether or not the workspace already holds it: a launch
+    /// that declares no such read is refused, as is a record of another
     /// workspace, and the read ends with the launch.
     #[tokio::test(flavor = "current_thread")]
     async fn a_launch_reads_another_apps_record_it_joined_to_read() {
@@ -140,22 +151,28 @@ mod workspace_document_ownership {
                 let (identity, _connection) = admitted(&workspace).await;
                 let (socket, _peer) = tokio::net::UnixStream::pair().unwrap();
                 let cluster = workspace.route.cluster_id.clone();
+                collab_types::app_surface::register_package(
+                    "test.ownership-tasks",
+                    b"[[resources]]\nkind = \"test.ownership-tasks.Task\"\nlabel = \"Task\"\nversion = 1\n",
+                );
+                collab_types::app_surface::register_package(
+                    "test.ownership-planner",
+                    b"reads = [\"test.ownership-tasks.Task\"]\n\n[[resources]]\nkind = \"test.ownership-planner.Plan\"\nlabel = \"Plan\"\nversion = 1\n",
+                );
                 let read = |route: &CrdtRoute| {
-                    let mut channel = launched_channel(&workspace, &identity, route, &socket);
-                    channel.route_access = RouteAccess::ReadOnly;
-                    channel
+                    launched_as("test.ownership-planner", &workspace, &identity, route, &socket)
                 };
-                let tasks = CrdtRoute::record("so.tilo.tasks", &cluster, "");
+                let tasks = CrdtRoute::record("test.ownership-tasks", &cluster, "");
                 let channel = read(&tasks);
                 let context = channel
                     .document_read_context()
-                    .expect("a launch reads the record it joined to read");
+                    .expect("a launch reads the record it opened to read");
                 let refused = launched_channel(&workspace, &identity, &tasks, &socket)
                     .document_read_context()
                     .err();
-                assert!(refused.is_some(), "the launch keeps no record of Tasks");
+                assert!(refused.is_some(), "a launch that declares no read of Tasks reads none");
                 let elsewhere = CrdtRoute::record(
-                    "so.tilo.tasks",
+                    "test.ownership-tasks",
                     tilo_desktop_model::WorkspaceId::new().to_string(),
                     "",
                 );

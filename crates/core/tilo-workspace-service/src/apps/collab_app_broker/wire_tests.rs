@@ -68,7 +68,7 @@ impl Workspace {
     /// An endpoint of `seed`'s person on its own wire connection, holding
     /// the workspace's route.
     fn endpoint(&self, seed: u8) -> Endpoint {
-        let (connection, outgoing, channel) = self.connection(seed, RouteAccess::Own);
+        let (connection, outgoing, channel) = self.connection(seed);
         Endpoint::serve(connection, outgoing, channel)
     }
 
@@ -77,7 +77,6 @@ impl Workspace {
     fn connection(
         &self,
         seed: u8,
-        route_access: RouteAccess,
     ) -> (
         Rc<WireConnection>,
         mpsc::UnboundedReceiver<HostFrame>,
@@ -105,7 +104,6 @@ impl Workspace {
             connection_id: hold,
             verified_identity: admitted,
             resource_type: None,
-            route_access,
             lease: None,
             _hold: None,
         })));
@@ -324,7 +322,11 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                 .unwrap();
             let channel = watcher.channel.clone();
             assert_eq!(
-                watcher.call(Operation::Leave { record: channel.key }).await,
+                watcher
+                    .call(Operation::Leave {
+                        record: channel.key
+                    })
+                    .await,
                 Ok(Reply::Done),
                 "nothing more arrives on an ended subscription before the next reply"
             );
@@ -862,7 +864,7 @@ async fn an_app_reads_through_its_certified_route_and_its_writes_are_decided_by_
             let decides = Arc::new(Decides(AtomicBool::new(false)));
             let reads: Arc<dyn tilo_actions::remote::ResourceReads> = decides.clone();
             workspace.state.serve_records(reads);
-            let (connection, outgoing, handle) = workspace.connection(9, RouteAccess::ReadOnly);
+            let (connection, outgoing, handle) = workspace.connection(9);
             let mut endpoint = Endpoint::serve(connection, outgoing, handle.clone());
             let ask = |handle, command: &Command, on_behalf_of| Operation::Command {
                 record: handle,
@@ -917,7 +919,7 @@ async fn an_app_reads_through_its_certified_route_and_its_writes_are_decided_by_
                 .unwrap();
             assert_eq!(store.0.lock().unwrap().len(), 2);
 
-            let (connection, outgoing, handle) = workspace.connection(9, RouteAccess::Own);
+            let (connection, outgoing, handle) = workspace.connection(9);
             let mut endpoint = Endpoint::serve(connection, outgoing, handle.clone());
             let denied = endpoint
                 .call(ask(handle.clone(), &write, vec![1; 16]))
@@ -1123,7 +1125,7 @@ async fn the_wire_client_calls_and_subscribes_against_the_host() {
         .run_until(async {
             let workspace = Workspace::new(&[11, 12]);
             let connect = |seed: u8| {
-                let (connection, outgoing, channel) = workspace.connection(seed, RouteAccess::Own);
+                let (connection, outgoing, channel) = workspace.connection(seed);
                 let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
                 let (reader, writer) = host.into_split();
                 tokio::task::spawn_local(serve(connection, outgoing, reader, writer));

@@ -44,7 +44,6 @@ async fn checkout_channel(
         connection_id: peer,
         verified_identity: identity,
         resource_type: None,
-        route_access: RouteAccess::Own,
         lease: Some(Rc::new(ConnectionLease {
             local_media: local.clone(),
             state: workspace.state.clone(),
@@ -250,6 +249,21 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 .only(peer)
                 .unwrap()
                 .clone();
+            // A launch of another app, which declares no read of the route's app: it changes
+            // nothing on the route.
+            let (socket, _peer_socket) = tokio::net::UnixStream::pair().unwrap();
+            let reader = native_media::LocalAppConnection::attested(
+                "test.checkout-reader".into(),
+                workspace.route.cluster_id.clone(),
+                native_media::PeerProcess::from_socket(&socket).unwrap(),
+                crate::apps::services::AuthenticatedApplicationLaunch {
+                    continuation_instance: Some(74),
+                    launch_ticket: None,
+                    windowless: false,
+                    opened_for: None,
+                },
+            )
+            .unwrap();
             let channel = wire_channel(JoinedChannel {
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: workspace.state.clone(),
@@ -259,8 +273,12 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 connection_id: peer,
                 verified_identity: identity,
                 resource_type: None,
-                route_access: RouteAccess::ReadOnly,
-                lease: None,
+                lease: Some(Rc::new(ConnectionLease {
+                    local_media: Some(reader),
+                    state: workspace.state.clone(),
+                    directories: workspace.directories.clone(),
+                    peer_id: peer,
+                })),
                 _hold: None,
             });
             let change = serde_json::to_vec(&tilo_resource_store::wire::Command::RecordChange {

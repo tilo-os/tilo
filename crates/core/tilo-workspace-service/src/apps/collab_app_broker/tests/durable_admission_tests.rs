@@ -249,7 +249,6 @@ async fn invocation_journal_invalid_updates_never_persist() {
             channel_id: fixture.route.channel_key(), peer_id: 999, connection_id: 999,
             verified_identity: caller.admitted.clone(),
             resource_type: None,
-            route_access: RouteAccess::Own,
             lease: None, _hold: None,
         });
         assert!(update_app(&foreign, wire_id, &tilo_actions::InvocationUpdate::Succeeded {

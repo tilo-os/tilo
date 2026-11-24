@@ -679,7 +679,6 @@ async fn an_idle_held_read_body() {
         connection_id: peer_id,
         verified_identity: admitted,
         resource_type: None,
-        route_access: super::super::RouteAccess::Own,
         lease: None,
         _hold: None,
     });
