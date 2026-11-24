@@ -90,6 +90,13 @@ nav = "Engines"
 description = "How compiled packages run: the tiered engine, wasmi, Cranelift and Winch."
 
 [[page]]
+slug = "embedding"
+source = "docs/tilolang/embedding.md"
+section = "Runtime"
+nav = "Run tilolang in your own program"
+description = "Compile a package, run its actions, read its resources and build its views from your own Rust program, with the crates on crates.io."
+
+[[page]]
 slug = "publishing"
 source = "docs/designs/app-language/publishing.md"
 section = "Runtime"

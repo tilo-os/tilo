@@ -1163,6 +1163,21 @@ cache = false
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 secrets = ["CARGO_REGISTRY_TOKEN"]
 
+# Programs outside Tilo built on the published crates alone (tools/sdk/published_crates_proof.py):
+# each guide's program (docs/tilolang/embedding.md: compile a tilolang package, run an action,
+# read the resource, build the view) is written into a new project that depends on the crates
+# by version, with no patch and no path, built offline against a local registry of the crates
+# packaged here and what they resolve to on crates.io, and run; its output must be what the
+# guide shows.
+[[check]]
+name = "published-crates-proof"
+# Packaging and the registry resolve against crates.io: no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "python3 -I tools/sdk/published_crates_proof.py"
+requires = ["arch=x86_64"]
+timeout_secs = 3600
+on = ["dispatch", "idle"]
+
 # tilolang in a browser, as the npm package `tilolang`, tools/ci/publish/tilolang-npm.sh:
 # tilolang-web's page module (wasm-bindgen's `web` build) and the startup fonts its windows set
 # text in. tilolang-npm builds it in the builder image, which carries wasm-bindgen and the wasm
