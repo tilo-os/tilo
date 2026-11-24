@@ -41,6 +41,7 @@ first_party_apps! {
     OSK => "so.tilo.osk",
     PASSWORDS => "so.tilo.passwords",
     PDF_VIEWER => "so.tilo.pdf-viewer",
+    PHONE => "so.tilo.phone",
     PHOTOS => "so.tilo.photos",
     PLAYBACK => "so.tilo.playback",
     POKER => "so.tilo.poker",

@@ -144,8 +144,9 @@ impl PhoneView {
             return false;
         };
         let workspace = workspace.unwrap_or_default();
-        let id = uuid::Uuid::parse_str(&workspace)
-            .unwrap_or_else(|_| uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes()));
+        let id = uuid::Uuid::parse_str(&workspace).unwrap_or_else(|_| {
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes())
+        });
         let route = tilolang_process::route_of(&bundle.meta, id, ME);
         let spec = tilolang_process::hosted::Spec::new(app.clone(), workspace, 1, ME);
         match tilolang_process::window::hosted::HostedWindow::in_process(
@@ -285,10 +286,7 @@ impl Origin for PhoneOrigin {
             "refused": seen.refused.unwrap_or_default(),
         });
         let apps = serde_json::json!({ "installed": seen.apps });
-        for (id, ty, reading) in [
-            (DEVICES, "Devices", devices),
-            (APPS, "Apps", apps),
-        ] {
+        for (id, ty, reading) in [(DEVICES, "Devices", devices), (APPS, "Apps", apps)] {
             let ty = format!("{}#{ty}", tilolang_tilo::platform_apps::DEVICE_APP);
             let Some(target) = ResourceRef::parse_id(id, &ty) else {
                 tracing::error!(id, "the phone's reading names no resource");
@@ -303,7 +301,11 @@ impl Origin for PhoneOrigin {
         Polled::default()
     }
 
-    fn deliver(&mut self, capability: &str, _payload: &serde_json::Value) -> tilolang_tilo::runtime::Delivery {
+    fn deliver(
+        &mut self,
+        capability: &str,
+        _payload: &serde_json::Value,
+    ) -> tilolang_tilo::runtime::Delivery {
         tilolang_tilo::runtime::Delivery::Rejected(format!("the phone serves no `{capability}`"))
     }
 }
@@ -329,7 +331,9 @@ impl PhoneInvoker {
 impl Invoker for PhoneInvoker {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         let Invocation::Action { name, .. } = invocation else {
-            return Invoked::Failed("a phone's shell keeps no record of its own to change".to_owned());
+            return Invoked::Failed(
+                "a phone's shell keeps no record of its own to change".to_owned(),
+            );
         };
         let asked = |field: &str| {
             Self::argument(invocation, field)

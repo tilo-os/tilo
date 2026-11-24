@@ -49,8 +49,7 @@ impl Device {
     /// # Errors
     /// The daemon did not start, or no runtime for its API calls could be made.
     pub fn start(profile: &Path) -> Result<Self> {
-        let running = Running::start(profile)
-            .context("the device daemon did not start")?;
+        let running = Running::start(profile).context("the device daemon did not start")?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("tilo-phone-api")
@@ -83,7 +82,9 @@ impl Device {
         if !tilo_device_identity::login::claimed(&Self::login_place()?, &key) {
             return Ok(Devices::default());
         }
-        let listed = self.runtime.block_on(async { Self::calls().await?.workspaces().await })?;
+        let listed = self
+            .runtime
+            .block_on(async { Self::calls().await?.workspaces().await })?;
         let workspaces = listed
             .get("workspaces")
             .and_then(Value::as_array)
@@ -110,9 +111,9 @@ impl Device {
     /// # Errors
     /// The daemon answered with a refusal.
     pub fn apps(&self, workspace: &str) -> Result<Vec<App>> {
-        let listed = self.runtime.block_on(async {
-            Self::calls().await?.list(Some(workspace), None, None).await
-        })?;
+        let listed = self
+            .runtime
+            .block_on(async { Self::calls().await?.list(Some(workspace), None, None).await })?;
         Ok(listed
             .get("rows")
             .and_then(Value::as_array)
@@ -208,9 +209,10 @@ impl Device {
     }
 
     fn device_key() -> Result<[u8; 32]> {
-        let (signing, _) =
-            tilo_device_identity::persist::load_or_create_device_key(&tilo_api::calls::device_keys())
-                .context("reading this device's key")?;
+        let (signing, _) = tilo_device_identity::persist::load_or_create_device_key(
+            &tilo_api::calls::device_keys(),
+        )
+        .context("reading this device's key")?;
         Ok(signing.verifying_key().to_bytes())
     }
 

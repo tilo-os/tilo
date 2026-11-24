@@ -1,4 +1,4 @@
-//! Tilo on a phone (`so.tilo`): the device daemon every Tilo computer runs, started on this app's
+//! Tilo on a phone (`so.tilo.phone`): the device daemon every Tilo computer runs, started on this app's
 //! own threads, since a phone runs no daemon process of its own; and the shell's `phone` view,
 //! drawn natively over what that daemon reads. A person signs in with a ticket another of their
 //! devices printed, picks one of their workspaces, and opens its apps, each the tilolang app
@@ -50,7 +50,9 @@ fn worker() -> Result<&'static worker::Worker, String> {
 
 /// The apps the phone opens: those the APK carries; elsewhere (a test, a developer's computer)
 /// those under `TILO_PHONE_APPS`.
-fn bundles() -> Result<std::collections::BTreeMap<String, std::sync::Arc<tilolang_tilo::bundle::Bundle>>, String> {
+fn bundles()
+-> Result<std::collections::BTreeMap<String, std::sync::Arc<tilolang_tilo::bundle::Bundle>>, String>
+{
     #[cfg(target_os = "android")]
     {
         let data = tilo_paths::data_dir().ok_or("no app data directory")?;
@@ -58,8 +60,10 @@ fn bundles() -> Result<std::collections::BTreeMap<String, std::sync::Arc<tilolan
     }
     #[cfg(not(target_os = "android"))]
     {
-        std::env::var_os("TILO_PHONE_APPS")
-            .map_or_else(|| Ok(std::collections::BTreeMap::default()), |dir| bundles::read(std::path::Path::new(&dir)))
+        std::env::var_os("TILO_PHONE_APPS").map_or_else(
+            || Ok(std::collections::BTreeMap::default()),
+            |dir| bundles::read(std::path::Path::new(&dir)),
+        )
     }
 }
 
@@ -84,7 +88,7 @@ fn opened(cx: &ViewCx<Workspace>) -> Result<view::PhoneView, String> {
 
 impl ResourceApp for Phone {
     type Resource = Workspace;
-    const ID: &'static str = "so.tilo";
+    const ID: &'static str = "so.tilo.phone";
     const TITLE: &'static str = "Tilo";
     const ICON: Option<&'static str> = Some("tilo");
     const WORKSPACE_RESOURCE: bool = true;

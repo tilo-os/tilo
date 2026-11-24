@@ -71,7 +71,10 @@ impl Worker {
     /// What the worker last read.
     #[must_use]
     pub fn seen(&self) -> Seen {
-        self.seen.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.seen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 

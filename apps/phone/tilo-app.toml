@@ -1,5 +1,5 @@
 [package]
-id = "so.tilo"
+id = "so.tilo.phone"
 name = "Tilo"
 category = "System"
 version = "0.1.0"
