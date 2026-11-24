@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Artwork` is a `Resource` of the app's `canvas.artwork`, made by its factory with the
+ * `Artwork` is a `Resource` of the app's `tl.so.tilo.canvas.Artwork`, made by its factory with the
  * resource's path (`canvas/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,791 +22,563 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.canvas@6690ea648a6b5cb5";
+export const SURFACE = "so.tilo.canvas@34cab672aa7431c3";
 
-export interface AddLayer {
-  id: string | null;
+/** The arguments of `rename_layer`. */
+export interface RenameLayerArgs {
+  layer: Layer;
   name: string;
-  medium: string | null;
-  opacity: number | null;
-  above: string | null;
-  texture: number | null;
 }
 
-export interface Adjust {
-  exposure: number | null;
-  contrast: number | null;
-  highlights: number | null;
-  shadows: number | null;
-  saturation: number | null;
-  vibrance: number | null;
-  hue: number | null;
-  temperature: number | null;
-  tint: number | null;
-  curve: number[][] | null;
-  grayscale: boolean | null;
-  invert: boolean | null;
-  blur: number | null;
-  sharpen: number | null;
-  vignette: number | null;
-}
-
-export interface Align {
-  ids: string[];
-  edge: string | null;
-  distribute: string | null;
-  to: string | null;
-}
-
-export interface Arrange {
-  ids: string[];
-  to: string;
-  of: string | null;
-}
-
-export interface Chart {
-  labels: string[];
-  values: number[];
-  kind: string | null;
-  box: number[] | null;
-  max: number | null;
-  bar_width: number | null;
-  colour: string | null;
-  label_size: number | null;
-  values_shown: boolean | null;
-  title: string | null;
-  id: string | null;
-  layer: string | null;
-}
-
-export interface Combine {
-  ids: string[];
-  op: string;
-}
-
-export interface Draw {
-  layer: string | null;
-  marks: NewMark[];
-}
-
-export interface EditLayer {
-  id: string;
-  name: string | null;
-  group: string | null;
-  medium: string | null;
-  opacity: number | null;
-  visible: boolean | null;
-  locked: boolean | null;
-  to: string | null;
-  texture: number | null;
-  adjust: unknown | null;
-  mask: string | null;
-  invert: boolean | null;
-  clip: boolean | null;
-}
-
-export interface EditMarks {
-  pixelated: boolean | null;
-  ids: string[];
-  name: string | null;
-  shape: unknown | null;
-  dash: number[] | null;
-  cap: string | null;
-  join: string | null;
-  blend: string | null;
-  shadow: unknown | null;
-  inner_shadow: unknown | null;
-  grain: number | null;
-  feather: number | null;
-  group: string | null;
-  clip: string | null;
-  fill: string | null;
-  gradient: unknown | null;
-  stroke: string | null;
-  stroke_width: number | null;
-  opacity: number | null;
-  brush: string | null;
-  size: number | null;
-  brush_size: number | null;
-  angle: number | null;
-  wet: boolean | null;
-  params: Record<string, number> | null;
-  move_by: number[] | null;
-  scale: number | null;
-  rotate: number | null;
-  layer: string | null;
-  transform: number[] | null;
-  flip: string | null;
-  crop: number[] | null;
-  straighten: number | null;
-  adjust: Adjust | null;
-  smooth: number | null;
-  simplify: number | null;
-  extend: number[][] | null;
-  split: number[] | null;
-  merge: boolean | null;
-}
-
-export interface Gradient {
-  kind: string;
-  from: number[];
-  to: number[];
-  stops: unknown[];
-  focal: number[] | null;
-}
-
-export interface Ground {
-  texture: string;
-  colour: string;
-}
-
-export interface ImportSvg {
-  svg: string;
-  layer: string | null;
-  group: string | null;
-  fit: number[] | null;
-}
-
-export interface Layer {
-  id: string;
-  name: string;
-  group: string;
-  order: string;
-  medium: string;
-  opacity: number;
-  visible: boolean;
-  texture: number;
-  locked: boolean;
-  adjust: Adjust | null;
-  mask_of: string;
-  base: number;
-  invert: boolean;
-  clip: boolean;
-  unlinked: boolean;
-}
-
-export interface Mark {
-  id: string;
-  layer: string;
-  order: string;
-  name: string;
-  shape: Shape;
-  style: Style;
-  transform: number[] | null;
-  group: string;
-  clip: string;
-  area: string;
-}
-
-export interface Matte {
-  src: string;
-  rect: number[];
-}
-
-export interface MediumSpec {
-  id: string;
-  label: string;
-  engine: string;
-  description: string;
-  params: Record<string, number>;
-  ground: string | null;
-  palette: PigmentSpec[];
-}
-
-export interface NewArtwork {
-  title: string | null;
-  size: string | null;
-  landscape: boolean | null;
-  width: number | null;
-  height: number | null;
-  start: string | null;
-  texture: string | null;
-  ground_colour: string | null;
-  medium: string | null;
-}
-
-export interface NewMark {
-  pixelated: boolean | null;
-  id: string | null;
-  name: string | null;
-  shape: Shape;
-  fill: string | null;
-  gradient: Gradient | null;
-  stroke: string | null;
-  stroke_width: number | null;
-  opacity: number | null;
-  brush_size: number | null;
-  brush: string | null;
-  angle: number | null;
-  wet: boolean | null;
-  params: Record<string, number> | null;
-  dash: number[] | null;
-  cap: string | null;
-  join: string | null;
-  blend: string | null;
-  shadow: Shadow | null;
-  inner_shadow: unknown | null;
-  grain: number | null;
-  feather: number | null;
-  group: string | null;
-  clip: string | null;
-  transform: number[] | null;
-}
-
-export interface NewStroke {
-  id: string | null;
-  name: string | null;
-  points: number[][];
-  size: number;
-  colour: string;
-  brush: string | null;
-  opacity: number | null;
-  wet: boolean | null;
-  params: Record<string, number> | null;
-  forks: number | null;
-  spread: number | null;
-  dabs: number | null;
-  scatter: number | null;
-  dab_length: number | null;
-  hatch: number | null;
-  angle: number | null;
-  clip: string | null;
-}
-
-export interface Open {
-  path: string;
-  title: string | null;
-}
-
-export interface OpenArtwork {
-  file: string;
-}
-
-export interface Paint {
-  layer: string | null;
-  strokes: NewStroke[];
-  group: string | null;
-}
-
-export interface PigmentSpec {
-  name: string;
-  colour: string;
-  granulation: number;
-  strength: number;
-}
-
-export interface RemoveLayer {
-  id: string;
-}
-
-export interface RemoveMarks {
-  ids: string[];
-  layer: string | null;
-  along: number[][] | null;
-}
-
-export interface RemoveMedium {
-  id: string;
-}
-
-export interface SaveMedium {
-  medium: MediumSpec;
-}
-
-export interface Select {
-  rect: number[] | null;
-  ellipse: number[] | null;
-  points: number[][] | null;
-  d: string | null;
-  marks: string[] | null;
-  matte: Matte | null;
-  mode: string | null;
-  feather: number | null;
-  grow: number | null;
-  invert: boolean | null;
-}
-
-export interface SetArtwork {
-  title: string | null;
-  width: number | null;
-  height: number | null;
-  texture: string | null;
-  ground_colour: string | null;
-  crop: number[] | null;
-  fit: string | null;
-}
-
-export interface SetReference {
-  image: string | null;
-  frame: number[] | null;
-  opacity: number | null;
-  visible: boolean | null;
-  remove: boolean | null;
-}
-
-export interface Shadow {
-  offset: number[];
-  blur: number;
-  colour: string | null;
-}
-
-/** One of rect, ellipse, polygon, line, path, text, stroke, image: an object whose case the app tags it with. */
-export type Shape = Record<string, unknown>;
-
-export interface Style {
-  pixelated: boolean;
-  fill: string | null;
-  gradient: unknown | null;
-  stroke: string | null;
-  stroke_width: number;
-  opacity: number | null;
-  brush: string | null;
-  brush_size: number | null;
-  angle: number | null;
-  wet: boolean;
-  params: Record<string, number>;
-  dash: number[];
-  cap: string | null;
-  join: string | null;
-  blend: string | null;
-  shadow: unknown | null;
-  inner_shadow: unknown | null;
-  grain: number | null;
-  feather: number | null;
-  adjust: Adjust | null;
-}
-
-export interface UseSelection {
-  do: string;
-  layer: string | null;
-  colour: string | null;
-  width: number | null;
-  id: string | null;
-  defringe: boolean | null;
-  cleaned: string[][] | null;
-}
-
-/** The arguments of `edit-marks`. */
-export interface EditMarksArgs {
-  ids: string[];
-  pixelated?: boolean;
-  name?: string;
-  shape?: unknown;
-  dash?: number[];
-  cap?: string;
-  join?: string;
-  blend?: string;
-  shadow?: unknown;
-  inner_shadow?: unknown;
-  grain?: number;
-  feather?: number;
-  group?: string;
-  clip?: string;
-  fill?: string;
-  gradient?: unknown;
-  stroke?: string;
-  stroke_width?: number;
-  opacity?: number;
-  brush?: string;
-  size?: number;
-  brush_size?: number;
-  angle?: number;
-  wet?: boolean;
-  params?: Record<string, number>;
-  move_by?: number[];
-  scale?: number;
-  rotate?: number;
-  layer?: string;
-  transform?: number[];
-  flip?: string;
-  crop?: number[];
-  straighten?: number;
-  adjust?: Adjust;
-  smooth?: number;
-  simplify?: number;
-  extend?: number[][];
-  split?: number[];
-  merge?: boolean;
-}
-
-/** The arguments of `remove-marks`. */
-export interface RemoveMarksArgs {
-  ids?: string[];
-  layer?: string;
-  along?: number[][];
-}
-
-/** The arguments of `arrange`. */
-export interface ArrangeArgs {
-  ids: string[];
-  to: string;
-  of?: string;
-}
-
-/** The arguments of `add-layer`. */
-export interface AddLayerArgs {
-  name: string;
-  id?: string;
-  medium?: string;
-  opacity?: number;
-  above?: string;
-  texture?: number;
-}
-
-/** The arguments of `edit-layer`. */
-export interface EditLayerArgs {
-  id: string;
-  name?: string;
-  group?: string;
-  medium?: string;
-  opacity?: number;
-  visible?: boolean;
+/** The arguments of `lock_layer`. */
+export interface LockLayerArgs {
+  layer: Layer;
   locked?: boolean;
-  to?: string;
-  texture?: number;
-  adjust?: unknown;
-  mask?: string;
-  invert?: boolean;
-  clip?: boolean;
 }
 
-/** The arguments of `remove-layer`. */
+/** The arguments of `move_layer_up`. */
+export interface MoveLayerUpArgs {
+  layer: Layer;
+}
+
+/** The arguments of `move_layer_down`. */
+export interface MoveLayerDownArgs {
+  layer: Layer;
+}
+
+/** The arguments of `merge_layer_down`. */
+export interface MergeLayerDownArgs {
+  layer: Layer;
+}
+
+/** The arguments of `show_layer`. */
+export interface ShowLayerArgs {
+  layer: Layer;
+  visible: boolean;
+}
+
+/** The arguments of `remove_layer`. */
 export interface RemoveLayerArgs {
-  id: string;
+  layer: Layer;
 }
 
-/** The arguments of `set-artwork`. */
+/** The arguments of `set_artwork`. */
 export interface SetArtworkArgs {
   title?: string;
   width?: number;
   height?: number;
-  texture?: string;
-  ground_colour?: string;
-  crop?: number[];
-  fit?: string;
 }
 
-/** The arguments of `save-medium`. */
-export interface SaveMediumArgs {
-  medium: MediumSpec;
+/** The arguments of `extend_stroke`. */
+export interface ExtendStrokeArgs {
+  m: Mark;
+  point: number[];
 }
 
-/** The arguments of `remove-medium`. */
-export interface RemoveMediumArgs {
-  id: string;
+/** The arguments of `remove_mark`. */
+export interface RemoveMarkArgs {
+  m: Mark;
 }
 
-/** The arguments of `align`. */
-export interface AlignArgs {
-  ids: string[];
-  edge?: string;
-  distribute?: string;
-  to?: string;
+/** The arguments of `recolour`. */
+export interface RecolourArgs {
+  m: Mark;
+  colour: string;
 }
 
-/** The arguments of `set-reference`. */
-export interface SetReferenceArgs {
-  image?: string;
-  frame?: number[];
-  opacity?: number;
-  visible?: boolean;
-  remove?: boolean;
+/** The arguments of `resize_mark`. */
+export interface ResizeMarkArgs {
+  m: Mark;
+  size: number;
 }
 
-/** The arguments of `open-picture`. */
-export interface OpenPictureArgs {
-  path: string;
-  title?: string;
+/** The arguments of `select_area`. */
+export interface SelectAreaArgs {
+  d: string;
+  feather?: number;
 }
 
-/** The arguments of `new-artwork`. */
-export interface NewArtworkArgs {
-  title?: string;
-  size?: string;
-  landscape?: boolean;
-  width?: number;
-  height?: number;
-  start?: string;
-  texture?: string;
-  ground_colour?: string;
-  medium?: string;
+/** The arguments of `clear_selection`. */
+export interface ClearSelectionArgs {
 }
 
-/** The arguments of `open-artwork`. */
-export interface OpenArtworkArgs {
-  file: string;
+/** The arguments of `draw_look`. */
+export interface DrawLookArgs {
+  size?: number;
 }
 
-/** The arguments of `combine`. */
-export interface CombineArgs {
-  ids: string[];
-  op: string;
+/** The arguments of `clear_notice`. */
+export interface ClearNoticeArgs {
 }
 
-/** Artwork — `canvas.artwork`. */
+/** The arguments of `start_paint`. */
+export interface StartPaintArgs {
+  tool: string;
+  brush: string;
+  point: number[];
+  size: number;
+  colour: string;
+  layer?: Layer;
+}
+
+/** Artwork — `tl.so.tilo.canvas.Artwork`. */
 export interface Artwork extends tilo.Resource {
-  title: string;
-  width: number;
-  height: number;
-  ground: Ground;
-  layers: Array<tilo.Entry<Layer>>;
-  marks: Array<tilo.Entry<Mark>>;
-  media: Record<string, unknown>;
-  reference: unknown | null;
-  selection: unknown | null;
-  paint(args: {
-    strokes: NewStroke[];
-    layer?: string;
-    group?: string;
-  }): Promise<unknown>;
-  draw(args: {
-    marks: NewMark[];
-    layer?: string;
-  }): Promise<unknown>;
-  chart(args: {
-    labels: string[];
-    values: number[];
-    kind?: string;
-    box?: number[];
-    max?: number;
-    bar_width?: number;
-    colour?: string;
-    label_size?: number;
-    values_shown?: boolean;
-    title?: string;
-    id?: string;
-    layer?: string;
-  }): Promise<unknown>;
-  editMarks(args: {
-    ids: string[];
-    pixelated?: boolean;
+  zp2ztcwq: string;  // title
+  izpefh4x: number;  // width
+  "5ui5uh6r": number;  // height
+  fh35sews: string;  // ground_texture
+  zdv3lz52: string;  // ground_colour
+  xu4h6ew2: Array<tilo.Entry<Layer>>;  // layers
+  btwv4xq5: Array<tilo.Entry<Mark>>;  // marks
+  "4wmc4l7b": Array<tilo.Entry<Picture>>;  // pictures
+  ob6rlf7s: Area | null;  // selection
+  k2slfiuy: string;  // look
+  meooqdog: string;  // notice
+  /** Adds a layer on top of the artwork. */
+  add_layer(args?: {
     name?: string;
-    shape?: unknown;
-    dash?: number[];
-    cap?: string;
-    join?: string;
-    blend?: string;
-    shadow?: unknown;
-    inner_shadow?: unknown;
-    grain?: number;
-    feather?: number;
-    group?: string;
-    clip?: string;
-    fill?: string;
-    gradient?: unknown;
-    stroke?: string;
-    stroke_width?: number;
-    opacity?: number;
-    brush?: string;
-    size?: number;
-    brush_size?: number;
-    angle?: number;
-    wet?: boolean;
-    params?: Record<string, number>;
-    move_by?: number[];
-    scale?: number;
-    rotate?: number;
-    layer?: string;
-    transform?: number[];
-    flip?: string;
-    crop?: number[];
-    straighten?: number;
-    adjust?: Adjust;
-    smooth?: number;
-    simplify?: number;
-    extend?: number[][];
-    split?: number[];
-    merge?: boolean;
-  }): Promise<void>;
-  /** Runs `edit-marks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  editMarksMany(items: EditMarksArgs[]): Promise<tilo.ActionAnswer[]>;
-  removeMarks(args?: {
-    ids?: string[];
-    layer?: string;
-    along?: number[][];
-  }): Promise<void>;
-  /** Runs `remove-marks` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  removeMarksMany(items: RemoveMarksArgs[]): Promise<tilo.ActionAnswer[]>;
-  arrange(args: {
-    ids: string[];
-    to: string;
-    of?: string;
-  }): Promise<void>;
-  /** Runs `arrange` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  arrangeMany(items: ArrangeArgs[]): Promise<tilo.ActionAnswer[]>;
-  addLayer(args: {
+  }): Promise<Layer>;
+  /** Renames a layer. Two layers never share a name: a mark names its layer by it. */
+  rename_layer(args: {
+    layer: Layer;
     name: string;
-    id?: string;
-    medium?: string;
-    opacity?: number;
-    above?: string;
-    texture?: number;
   }): Promise<void>;
-  /** Runs `add-layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  addLayerMany(items: AddLayerArgs[]): Promise<tilo.ActionAnswer[]>;
-  editLayer(args: {
-    id: string;
-    name?: string;
-    group?: string;
-    medium?: string;
-    opacity?: number;
-    visible?: boolean;
+  /** Runs `rename_layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_layerMany(items: RenameLayerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Holds a layer still, so the pointer passes through its marks, or lets its marks be picked again. */
+  lock_layer(args: {
+    layer: Layer;
     locked?: boolean;
-    to?: string;
-    texture?: number;
-    adjust?: unknown;
-    mask?: string;
-    invert?: boolean;
-    clip?: boolean;
   }): Promise<void>;
-  /** Runs `edit-layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  editLayerMany(items: EditLayerArgs[]): Promise<tilo.ActionAnswer[]>;
-  removeLayer(args: {
-    id: string;
+  /** Runs `lock_layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  lock_layerMany(items: LockLayerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves a layer one place up in the stack. */
+  move_layer_up(args: {
+    layer: Layer;
   }): Promise<void>;
-  /** Runs `remove-layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  removeLayerMany(items: RemoveLayerArgs[]): Promise<tilo.ActionAnswer[]>;
-  setArtwork(args?: {
+  /** Runs `move_layer_up` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_layer_upMany(items: MoveLayerUpArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves a layer one place down in the stack. */
+  move_layer_down(args: {
+    layer: Layer;
+  }): Promise<void>;
+  /** Runs `move_layer_down` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_layer_downMany(items: MoveLayerDownArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Copies a layer and everything on it, above the original. */
+  duplicate_layer(args: {
+    layer: Layer;
+  }): Promise<Layer>;
+  /** Folds a layer into the one under it: its marks join that layer, and it is gone. */
+  merge_layer_down(args: {
+    layer: Layer;
+  }): Promise<void>;
+  /** Runs `merge_layer_down` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  merge_layer_downMany(items: MergeLayerDownArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Shows or hides a layer. */
+  show_layer(args: {
+    layer: Layer;
+    visible: boolean;
+  }): Promise<void>;
+  /** Runs `show_layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  show_layerMany(items: ShowLayerArgs[]): Promise<tilo.ActionAnswer[]>;
+  remove_layer(args: {
+    layer: Layer;
+  }): Promise<void>;
+  /** Runs `remove_layer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remove_layerMany(items: RemoveLayerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets what the artwork is called and how big it is. */
+  set_artwork(args?: {
     title?: string;
     width?: number;
     height?: number;
-    texture?: string;
-    ground_colour?: string;
-    crop?: number[];
-    fit?: string;
   }): Promise<void>;
-  /** Runs `set-artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setArtworkMany(items: SetArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
-  saveMedium(args: {
-    medium: MediumSpec;
+  /** Runs `set_artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_artworkMany(items: SetArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Lays one brush stroke where the hand went, its point `[x, y, pressure]` in artwork units. */
+  add_stroke(args: {
+    point: number[];
+    size: number;
+    colour: string;
+    brush: string;
+    layer?: Layer;
+  }): Promise<Mark>;
+  /** Adds the next point to the stroke being painted. */
+  extend_stroke(args: {
+    m: Mark;
+    point: number[];
   }): Promise<void>;
-  /** Runs `save-medium` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  saveMediumMany(items: SaveMediumArgs[]): Promise<tilo.ActionAnswer[]>;
-  removeMedium(args: {
-    id: string;
+  /** Runs `extend_stroke` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  extend_strokeMany(items: ExtendStrokeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The layer a stroke lands on when none is chosen: the top one that shows and is not held still. An artwork whose layers are all hidden or locked gains one to paint on. */
+  top_layer(): Promise<Layer>;
+  /** Draws a shape, its SVG path data in artwork units. */
+  add_shape(args: {
+    d: string;
+    colour: string;
+    layer?: Layer;
+  }): Promise<Mark>;
+  remove_mark(args: {
+    m: Mark;
   }): Promise<void>;
-  /** Runs `remove-medium` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  removeMediumMany(items: RemoveMediumArgs[]): Promise<tilo.ActionAnswer[]>;
-  align(args: {
-    ids: string[];
-    edge?: string;
-    distribute?: string;
-    to?: string;
+  /** Runs `remove_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remove_markMany(items: RemoveMarkArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Recolours a mark. */
+  recolour(args: {
+    m: Mark;
+    colour: string;
   }): Promise<void>;
-  /** Runs `align` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  alignMany(items: AlignArgs[]): Promise<tilo.ActionAnswer[]>;
-  setReference(args?: {
-    image?: string;
-    frame?: number[];
-    opacity?: number;
-    visible?: boolean;
-    remove?: boolean;
+  /** Runs `recolour` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  recolourMany(items: RecolourArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Makes a mark bigger or smaller. */
+  resize_mark(args: {
+    m: Mark;
+    size: number;
   }): Promise<void>;
-  /** Runs `set-reference` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setReferenceMany(items: SetReferenceArgs[]): Promise<tilo.ActionAnswer[]>;
-  importSvg(args: {
-    svg: string;
-    layer?: string;
-    group?: string;
-    fit?: number[];
-  }): Promise<unknown>;
-  openPicture(args: {
-    path: string;
-    title?: string;
-  }): Promise<void>;
-  /** Runs `open-picture` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  openPictureMany(items: OpenPictureArgs[]): Promise<tilo.ActionAnswer[]>;
-  newArtwork(args?: {
-    title?: string;
-    size?: string;
-    landscape?: boolean;
-    width?: number;
-    height?: number;
-    start?: string;
-    texture?: string;
-    ground_colour?: string;
-    medium?: string;
-  }): Promise<void>;
-  /** Runs `new-artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  newArtworkMany(items: NewArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
-  openArtwork(args: {
-    file: string;
-  }): Promise<void>;
-  /** Runs `open-artwork` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  openArtworkMany(items: OpenArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
-  select(args?: {
-    rect?: number[];
-    ellipse?: number[];
-    points?: number[][];
-    d?: string;
-    marks?: string[];
-    matte?: Matte;
-    mode?: string;
+  /** Runs `resize_mark` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  resize_markMany(items: ResizeMarkArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Places a picture the person chose on the top layer, fitted inside the artwork and centred: the picture stays its own object, so it moves, crops and syncs like paint. */
+  place_picture(args: {
+    file: unknown;
+  }): Promise<Mark>;
+  /** Selects an area, its outline as SVG path data. */
+  select_area(args: {
+    d: string;
     feather?: number;
-    grow?: number;
-    invert?: boolean;
-  }): Promise<unknown>;
-  useSelection(args: {
-    do: string;
-    layer?: string;
-    colour?: string;
-    width?: number;
-    id?: string;
-    defringe?: boolean;
-    cleaned?: string[][];
-  }): Promise<unknown>;
-  combine(args: {
-    ids: string[];
-    op: string;
   }): Promise<void>;
-  /** Runs `combine` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  combineMany(items: CombineArgs[]): Promise<tilo.ActionAnswer[]>;
-  look(args?: {
-    region?: number[];
+  /** Runs `select_area` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  select_areaMany(items: SelectAreaArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Lets go of the selection. */
+  clear_selection(): Promise<void>;
+  /** Runs `clear_selection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clear_selectionMany(items: ClearSelectionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Fills the selection as a path mark on a layer. */
+  fill_selection(args: {
+    colour: string;
+    layer?: Layer;
+  }): Promise<Mark | null>;
+  /** The picture of the artwork as it stands, kept on it, so the surface shows it under the hand. */
+  draw_look(args?: {
     size?: number;
+  }): Promise<void>;
+  /** Runs `draw_look` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  draw_lookMany(items: DrawLookArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Writes the artwork at full size as a PNG, JPEG or WebP picture. */
+  export_picture(args?: {
     format?: string;
-    grid?: boolean;
-    layers?: string[];
-    version?: string;
-    reference?: boolean;
-  }): Promise<void>;
-  measure(args: {
-    ids: string[];
-    version?: string;
-  }): Promise<void>;
-  export(args?: {
-    transparent?: boolean;
     scale?: number;
-    format?: string;
-    quality?: number;
-    path?: string;
+  }): Promise<unknown | null>;
+  /** Writes the artwork as an SVG document. */
+  export_svg(): Promise<string>;
+  /** Saves the artwork as a `.artwork` package carrying its pictures. */
+  save_artwork(): Promise<unknown | null>;
+  /** Imports an SVG document as marks on a layer: each shape the device's drawing engine read from it becomes a mark, so the import is drawn, saved and shown like paint the person laid. */
+  import_svg(args: {
+    markup: string;
+  }): Promise<string>;
+  /** Clears the notice a person has read. */
+  clear_notice(): Promise<void>;
+  /** Runs `clear_notice` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clear_noticeMany(items: ClearNoticeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Starts what the hand lays down at `point`: a stroke with the paint loaded, or nothing when the tool draws a shape, whose outline only exists once the hand lifts. It lands on `layer`, the one the person chose, or the top one that takes paint. */
+  start_paint(args: {
+    tool: string;
+    brush: string;
+    point: number[];
+    size: number;
+    colour: string;
+    layer?: Layer;
   }): Promise<void>;
-  compareVersions(args: {
-    from: string;
-    to?: string;
-    look?: boolean;
-  }): Promise<void>;
-  exportSvg(args?: {
-    ids?: string[];
-    outline_text?: boolean;
-    path?: string;
-  }): Promise<void>;
-  compare(args?: {
-    region?: number[];
-    mode?: string;
-    size?: number;
-  }): Promise<void>;
-  saveArtwork(args?: {
-    path?: string;
-  }): Promise<void>;
+  /** Runs `start_paint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  start_paintMany(items: StartPaintArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes the next point of the stroke being painted. A shape tool paints nothing while the hand moves: its outline is drawn when the hand lifts. */
+  continue_paint(args: {
+    tool: string;
+    brush: string;
+    point: number[];
+    size: number;
+    colour: string;
+  }): Promise<Mark | null>;
+  /** Ends what the hand laid down at `point`: the stroke takes its last point and closes, or a shape is drawn across the drag that made it. */
+  finish_paint(args: {
+    tool: string;
+    brush: string;
+    from: number[];
+    point: number[];
+    size: number;
+    colour: string;
+    layer?: Layer;
+  }): Promise<Mark | null>;
 }
 
 /** The actions `Artwork` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ARTWORK_ACTIONS = ["paint", "draw", "chart", "editMarks", "editMarksMany", "removeMarks", "removeMarksMany", "arrange", "arrangeMany", "addLayer", "addLayerMany", "editLayer", "editLayerMany", "removeLayer", "removeLayerMany", "setArtwork", "setArtworkMany", "saveMedium", "saveMediumMany", "removeMedium", "removeMediumMany", "align", "alignMany", "setReference", "setReferenceMany", "importSvg", "openPicture", "openPictureMany", "newArtwork", "newArtworkMany", "openArtwork", "openArtworkMany", "select", "useSelection", "combine", "combineMany", "look", "measure", "export", "compareVersions", "exportSvg", "compare", "saveArtwork"] as const;
+export const ARTWORK_ACTIONS = ["add_layer", "rename_layer", "rename_layerMany", "lock_layer", "lock_layerMany", "move_layer_up", "move_layer_upMany", "move_layer_down", "move_layer_downMany", "duplicate_layer", "merge_layer_down", "merge_layer_downMany", "show_layer", "show_layerMany", "remove_layer", "remove_layerMany", "set_artwork", "set_artworkMany", "add_stroke", "extend_stroke", "extend_strokeMany", "top_layer", "add_shape", "remove_mark", "remove_markMany", "recolour", "recolourMany", "resize_mark", "resize_markMany", "place_picture", "select_area", "select_areaMany", "clear_selection", "clear_selectionMany", "fill_selection", "draw_look", "draw_lookMany", "export_picture", "export_svg", "save_artwork", "import_svg", "clear_notice", "clear_noticeMany", "start_paint", "start_paintMany", "continue_paint", "finish_paint"] as const;
 
-/** The `canvas.artwork` kind at `path`. */
+/** The `tl.so.tilo.canvas.Artwork` kind at `path`. */
 export function artwork(ws: tilo.Workspace, path: string): Artwork {
   return resourceProxy(ws, path, SURFACE, ARTWORK_ACTIONS) as unknown as Artwork;
+}
+
+/** Layer — `tl.so.tilo.canvas.Layer`. */
+export interface Layer extends tilo.Resource {
+  bplq2q5j: string;  // name
+  ilxjjxxz: string;  // medium
+  smoxtxmk: number;  // opacity
+  evne54yw: boolean;  // visible
+  nagaw3zw: boolean;  // locked
+  yzvcnjuy: number;  // texture
+}
+
+/** The actions `Layer` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LAYER_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.Layer` kind at `path`. */
+export function layer(ws: tilo.Workspace, path: string): Layer {
+  return resourceProxy(ws, path, SURFACE, LAYER_ACTIONS) as unknown as Layer;
+}
+
+/** Mark — `tl.so.tilo.canvas.Mark`. */
+export interface Mark extends tilo.Resource {
+  "3mgqcu4c": string;  // name
+  xeahkwbd: Layer;  // layer
+  pwxdvgoe: string;  // kind
+  "4eq3fpao": number[];  // points
+  qxx46dqp: string;  // d
+  vmqyvhnc: number;  // size
+  fnl5j4dd: string;  // colour
+  omem6tkf: string;  // brush
+  kytiqfia: number;  // opacity
+  y5teghkv: boolean;  // open
+  cdvrgjan: string;  // src
+  vniyw6t3: number;  // x
+  v3wlgndz: number;  // y
+  "4nv5sha3": number;  // width
+  hlvljkif: number;  // height
+}
+
+/** The actions `Mark` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MARK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.Mark` kind at `path`. */
+export function mark(ws: tilo.Workspace, path: string): Mark {
+  return resourceProxy(ws, path, SURFACE, MARK_ACTIONS) as unknown as Mark;
+}
+
+/** Area — `tl.so.tilo.canvas.Area`. */
+export interface Area extends tilo.Resource {
+  k26xq4t7: string;  // d
+  enongrrr: number;  // feather
+}
+
+/** The actions `Area` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const AREA_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.Area` kind at `path`. */
+export function area(ws: tilo.Workspace, path: string): Area {
+  return resourceProxy(ws, path, SURFACE, AREA_ACTIONS) as unknown as Area;
+}
+
+/** Picture — `tl.so.tilo.canvas.Picture`. */
+export interface Picture extends tilo.Resource {
+  di5h6qir: string;  // name
+  "4be6ojwm": string;  // url
+  rp5ikqj7: number;  // width
+  "4r7lfx7t": number;  // height
+}
+
+/** The actions `Picture` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PICTURE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.Picture` kind at `path`. */
+export function picture(ws: tilo.Workspace, path: string): Picture {
+  return resourceProxy(ws, path, SURFACE, PICTURE_ACTIONS) as unknown as Picture;
+}
+
+/** Library — `tl.so.tilo.canvas.Library`. */
+export interface Library extends tilo.Resource {
+  "5gxbqk6v": Array<tilo.Entry<Artwork>>;  // artworks
+  /** Opens a saved artwork from the file a person, Files or another app hands over. */
+  open_artwork(args: {
+    file: unknown;
+  }): Promise<Artwork>;
+  /** A blank artwork begun with a problem to show, so a file that cannot be opened still lands where a person can read why. */
+  blank_with(args: {
+    why: string;
+  }): Promise<Artwork>;
+  /** Starts a blank artwork with one plain layer. */
+  new_artwork(args: {
+    title: string;
+    width: number;
+    height: number;
+  }): Promise<Artwork>;
+}
+
+/** The actions `Library` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIBRARY_ACTIONS = ["open_artwork", "blank_with", "new_artwork"] as const;
+
+/** The `tl.so.tilo.canvas.Library` kind at `path`. */
+export function library(ws: tilo.Workspace, path: string): Library {
+  return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
+}
+
+/** LookRequest — `tl.so.tilo.canvas.LookRequest`. */
+export interface LookRequest extends tilo.Resource {
+  hhu6bz5c: number;  // size
+  ubid4c7s: string;  // format
+}
+
+/** The actions `LookRequest` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LOOKREQUEST_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.LookRequest` kind at `path`. */
+export function lookRequest(ws: tilo.Workspace, path: string): LookRequest {
+  return resourceProxy(ws, path, SURFACE, LOOKREQUEST_ACTIONS) as unknown as LookRequest;
+}
+
+/** ExportRequest — `tl.so.tilo.canvas.ExportRequest`. */
+export interface ExportRequest extends tilo.Resource {
+  ottkj6jd: string;  // format
+  "5mutx32x": number;  // scale
+}
+
+/** The actions `ExportRequest` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const EXPORTREQUEST_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.ExportRequest` kind at `path`. */
+export function exportRequest(ws: tilo.Workspace, path: string): ExportRequest {
+  return resourceProxy(ws, path, SURFACE, EXPORTREQUEST_ACTIONS) as unknown as ExportRequest;
+}
+
+/** SvgRequest — `tl.so.tilo.canvas.SvgRequest`. */
+export interface SvgRequest extends tilo.Resource {
+  c35hmrf6: string[] | null;  // ids
+  gqfdwswn: boolean | null;  // outline_text
+}
+
+/** The actions `SvgRequest` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SVGREQUEST_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.SvgRequest` kind at `path`. */
+export function svgRequest(ws: tilo.Workspace, path: string): SvgRequest {
+  return resourceProxy(ws, path, SURFACE, SVGREQUEST_ACTIONS) as unknown as SvgRequest;
+}
+
+/** PlaceRequest — `tl.so.tilo.canvas.PlaceRequest`. */
+export interface PlaceRequest extends tilo.Resource {
+  "2w4n3dr2": string | null;  // layer
+  zxu35ztu: string | null;  // group
+  ulngw3pf: number[] | null;  // fit
+}
+
+/** The actions `PlaceRequest` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PLACEREQUEST_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.PlaceRequest` kind at `path`. */
+export function placeRequest(ws: tilo.Workspace, path: string): PlaceRequest {
+  return resourceProxy(ws, path, SURFACE, PLACEREQUEST_ACTIONS) as unknown as PlaceRequest;
+}
+
+/** ArtworkJson — `tl.so.tilo.canvas.ArtworkJson`. */
+export interface ArtworkJson extends tilo.Resource {
+  j3bzgr3f: string;  // title
+  dowdfhi2: number;  // width
+  vlrgzghe: number;  // height
+  lotrow4q: string;  // ground_texture
+  mpyvrw7z: string;  // ground_colour
+  xubd3xon: LayerJson[];  // layers
+  lowvdtkg: MarkJson[];  // marks
+  "5h6vjvk2": AreaJson | null;  // selection
+}
+
+/** The actions `ArtworkJson` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ARTWORKJSON_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.ArtworkJson` kind at `path`. */
+export function artworkJson(ws: tilo.Workspace, path: string): ArtworkJson {
+  return resourceProxy(ws, path, SURFACE, ARTWORKJSON_ACTIONS) as unknown as ArtworkJson;
+}
+
+/** LayerJson — `tl.so.tilo.canvas.LayerJson`. */
+export interface LayerJson extends tilo.Resource {
+  xunw6qmv: string;  // name
+  sxka2uxh: string;  // medium
+  aka7ql3b: number;  // opacity
+  "4h7cxhog": boolean;  // visible
+  "2r4nberb": boolean;  // locked
+  xlvw3rkz: number;  // texture
+}
+
+/** The actions `LayerJson` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LAYERJSON_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.LayerJson` kind at `path`. */
+export function layerJson(ws: tilo.Workspace, path: string): LayerJson {
+  return resourceProxy(ws, path, SURFACE, LAYERJSON_ACTIONS) as unknown as LayerJson;
+}
+
+/** MarkJson — `tl.so.tilo.canvas.MarkJson`. */
+export interface MarkJson extends tilo.Resource {
+  "67wvmkkq": string;  // name
+  jk7lnwfw: LayerJson;  // layer
+  xy2goji2: string;  // kind
+  ysn6onwt: number[];  // points
+  vmvvarxw: string;  // d
+  hajhmux3: number;  // size
+  gtn2xdwh: string;  // colour
+  pqrpx7k3: string;  // brush
+  kolk77nz: number;  // opacity
+  "7hgp7nbk": string;  // src
+  vtafbavc: number;  // x
+  el3izuuy: number;  // y
+  jzpg25ot: number;  // width
+  k7jjvary: number;  // height
+}
+
+/** The actions `MarkJson` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MARKJSON_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.MarkJson` kind at `path`. */
+export function markJson(ws: tilo.Workspace, path: string): MarkJson {
+  return resourceProxy(ws, path, SURFACE, MARKJSON_ACTIONS) as unknown as MarkJson;
+}
+
+/** AreaJson — `tl.so.tilo.canvas.AreaJson`. */
+export interface AreaJson extends tilo.Resource {
+  nxcluiyf: string;  // d
+  jxpwvxya: number;  // feather
+}
+
+/** The actions `AreaJson` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const AREAJSON_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas.AreaJson` kind at `path`. */
+export function areaJson(ws: tilo.Workspace, path: string): AreaJson {
+  return resourceProxy(ws, path, SURFACE, AREAJSON_ACTIONS) as unknown as AreaJson;
+}
+
+/** Canvas — `tl.so.tilo.canvas`. */
+export interface Canvas extends tilo.Resource {
+}
+
+/** The actions `Canvas` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CANVAS_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.canvas` kind at `path`. */
+export function canvas(ws: tilo.Workspace, path: string): Canvas {
+  return resourceProxy(ws, path, SURFACE, CANVAS_ACTIONS) as unknown as Canvas;
 }
 
