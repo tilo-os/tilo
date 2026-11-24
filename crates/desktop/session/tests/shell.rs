@@ -1485,7 +1485,7 @@ fn someone_here(
 
 /// Someone nobody named, here as the person `person` (their user root, hex), the workspace's policy
 /// having admitted them.
-fn someone_unnamed(at: usize, person: &str) -> tilo_session_core::desktop::here::LiveMember {
+fn someone_unnamed(person: &str) -> tilo_session_core::desktop::here::LiveMember {
     tilo_session_core::desktop::here::LiveMember {
         publisher: person.to_owned(),
         kind: "person".to_owned(),
@@ -1527,10 +1527,6 @@ struct SomeoneReading {
     agent: bool,
     #[serde(default)]
     bot: bool,
-    #[serde(default)]
-    follows: String,
-    #[serde(default)]
-    joined: String,
 }
 
 fn people_reading(session: &Session) -> PeopleReading {
@@ -1845,7 +1841,7 @@ fn a_row_nobody_named_says_when_they_joined() {
     session.step(Duration::from_millis(1)).expect("step");
     set_the_people(
         &session,
-        vec![someone_unnamed(1, &early), someone_unnamed(2, &late)],
+        vec![someone_unnamed(&early), someone_unnamed(&late)],
     );
     open_who_is_here(&mut session);
     let said = crate::common::wait_for(
