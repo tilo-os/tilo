@@ -48,6 +48,8 @@ pub mod apple_push;
 #[cfg(feature = "agents")]
 pub mod browser_actions;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod browser_sessions;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod content;
 #[cfg(feature = "web")]
 pub mod content_links;
@@ -59,8 +61,6 @@ pub mod entry;
 pub mod hosted_browser;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod kept_content;
-#[cfg(feature = "agents")]
-pub mod linux_devices;
 #[cfg(not(target_arch = "wasm32"))]
 mod page_tickets;
 #[cfg(not(target_arch = "wasm32"))]

@@ -216,6 +216,7 @@ impl Keeping {
             endpoint,
             relay,
             app_serving,
+            browser_sessions,
         } = on;
         let state_root = dir.to_path_buf();
         state_root.clone_into(&mut cfg.state_root);
@@ -228,6 +229,7 @@ impl Keeping {
                 endpoint,
                 joined,
                 app_serving,
+                browser_sessions,
             }))
             .map_err(|error| io::Error::other(format!("what this server keeps: {error}")))?;
         // A server serves its own web UI where its configuration places one, unless its
@@ -382,6 +384,9 @@ pub(crate) struct On<'a> {
     /// What answers the apps' actions and serves their pages as a browser opens them: this
     /// device's keys' sessions ([`crate::key_sessions`]).
     pub(crate) app_serving: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
+    /// Where the server's Browser sessions start: the device's environments, when it pays for
+    /// its workspaces' machines.
+    pub(crate) browser_sessions: Option<tilo_server::browser_sessions::Sessions>,
 }
 
 /// What this server keeps, for as long as it runs.

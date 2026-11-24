@@ -554,7 +554,7 @@ server's runs. A member that runs the workspace's VMs also answers its browser
 environments' opens there (`tilo_actions::remote::browser`), which the host's
 hosted-VM service starts beside the Linux VM; the server asks for them the way
 it asks for a shell command, as a Linux turn the member takes
-(`crates/core/tilo-server/src/linux_devices.rs`). The first time the server
+(`crates/core/tilo-runtime/src/device/environments.rs`). The first time the server
 asks about a workspace the member does not hold yet, the member enters it: it asks
 the server's own `workspace.enter`, which answers an invitation naming the member's
 person, and redeems it as a device joins any workspace. The server decides

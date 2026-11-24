@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use linux_vm::hosted::control::{self, OpenBrowser, Reply, Request};
 use tilo_actions::remote::browser::{self, OpenedBrowser};
-use tilo_server::linux_devices::Follow;
+use tilo_runtime::device::environments::Follow;
 
 use super::linux_turn::{placed_with, stop};
 

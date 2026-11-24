@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 use tilo_actions::remote::server_account::{NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
-    CataloguePage, CatalogueQuery, Confirmation, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, workspace_provider,
+    CataloguePage, CatalogueQuery, Confirmation, InvocationReceipt, InvocationState,
+    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
+    workspace_provider,
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_peer_state::actions::testing::duplex;
@@ -35,9 +35,7 @@ use tilo_user_identity::{
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT};
 
-use crate::common::{
-    Linked, TestDevice, TestServer, TestUser, spawn_server,
-};
+use crate::common::{Linked, TestDevice, TestServer, TestUser, spawn_server};
 use tilo_server::hosted_browser::APP;
 use tilo_workspace_service::agents::windows::PAGE_RESOURCE;
 
@@ -233,7 +231,10 @@ fn observed(
 }
 
 /// Every question that waits for the person, as `tilo.asking#list` lists them.
-async fn questions(remote: &RemoteDevice, caller: &Caller) -> Vec<tilo_actions::remote::asked::Asked> {
+async fn questions(
+    remote: &RemoteDevice,
+    caller: &Caller,
+) -> Vec<tilo_actions::remote::asked::Asked> {
     let request = InvokeRequest {
         on_behalf_of: None,
         invocation: InvocationId::new(),
@@ -593,7 +594,7 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
     let environments = Arc::new(InProcessEnvironments::default());
     let browsers = Arc::new(
         HostedBrowsers::new(
-            Box::new(EnvironmentsHandle(Arc::clone(&environments))),
+            Arc::clone(&environments) as Arc<dyn BrowserSessions>,
             Box::new(SharedMeter(Arc::clone(&meter))),
             "acct_ada".into(),
         )
@@ -654,19 +655,6 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
         browsers,
         environments,
         meter,
-    }
-}
-
-/// The environments a test started, behind the trait the server holds.
-struct EnvironmentsHandle(Arc<InProcessEnvironments>);
-
-impl BrowserSessions for EnvironmentsHandle {
-    fn start(&self, material: &Material) -> Result<Window, String> {
-        self.0.start(material)
-    }
-
-    fn stop(&self, workspace: &str) {
-        self.0.stop(workspace);
     }
 }
 
@@ -1053,7 +1041,9 @@ async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_pers
             "{action} ran without asking: {ran:?}"
         );
         assert!(
-            questions(&approver_actions, &approver_caller).await.is_empty(),
+            questions(&approver_actions, &approver_caller)
+                .await
+                .is_empty(),
             "{action} asked the person, and a page an agent may read and fill asks nothing"
         );
     }
@@ -1220,7 +1210,9 @@ async fn a_keys_page_actions_run_at_once_where_its_person_let_it_operate_them() 
             "{action} ran without asking: the page action was still a question ({ran:?})"
         );
         assert!(
-            questions(&approver_actions, &approver_caller).await.is_empty(),
+            questions(&approver_actions, &approver_caller)
+                .await
+                .is_empty(),
             "{action} asked the person, whose key may operate the page"
         );
     }
@@ -1309,7 +1301,10 @@ async fn a_keys_page_actions_ask_first_where_it_may_not_operate_them() {
             "{action} waits for the person"
         );
         let question = asked(&approver_actions, &approver_caller).await;
-        assert_eq!(question.name, action, "{action} is what they are asked about");
+        assert_eq!(
+            question.name, action,
+            "{action} is what they are asked about"
+        );
         answer(
             &approver_actions,
             &approver_caller,
@@ -2176,7 +2171,9 @@ async fn only_the_windows_own_device_releases_what_it_holds() {
         "another device does not answer for the window's page"
     );
     assert!(
-        questions(&approver_actions, &approver_caller).await.is_empty(),
+        questions(&approver_actions, &approver_caller)
+            .await
+            .is_empty(),
         "nobody is asked about a hold another device reports"
     );
 }
@@ -2547,7 +2544,9 @@ async fn an_approved_submission_is_performed_once() {
     let handed = seen.lock().unwrap().iter().filter(|h| h.approved).count();
     assert_eq!(handed, 1, "the window was handed the person's answer once");
     assert!(
-        questions(&approver_actions, &approver_caller).await.is_empty(),
+        questions(&approver_actions, &approver_caller)
+            .await
+            .is_empty(),
         "the person is not asked again"
     );
 }

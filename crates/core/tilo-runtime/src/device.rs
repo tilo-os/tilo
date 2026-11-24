@@ -31,7 +31,7 @@ pub mod compute;
 mod confirm;
 mod content;
 #[cfg(target_os = "linux")]
-mod environments;
+pub mod environments;
 // The device's content, and on Tilo OS the steps that change it; elsewhere a device offers no steps.
 #[cfg(unix)]
 pub mod control;

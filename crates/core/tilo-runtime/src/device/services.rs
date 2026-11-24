@@ -794,6 +794,15 @@ impl Daemon {
                 }
             }
         }
+        // The workspaces' Linux work: the Terminal environments of the runtime beside this
+        // device, and on a server that pays for their machines, the work on their devices that
+        // run Linux, whose Browser its host serves.
+        #[cfg(target_os = "linux")]
+        let environments = Arc::new(super::environments::Environments::here());
+        #[cfg(target_os = "linux")]
+        let browser_sessions = environments.sessions();
+        #[cfg(not(target_os = "linux"))]
+        let browser_sessions = None;
         // What a server keeps beyond its copies, on the workspace service it governs.
         let serves_pages = keeping.is_some();
         let kept = match (keeping, relay, itself) {
@@ -811,6 +820,7 @@ impl Daemon {
                         Arc::clone(sessions)
                             as Arc<dyn tilo_workspace_service::app_serving::AppActionServer>
                     }),
+                    browser_sessions,
                 })?)
             }
             _ => None,
@@ -1200,11 +1210,9 @@ impl Daemon {
             Err(why) => tracing::warn!(%why, "this device keeps no packages"),
         }
         // A branch made here takes its source's Terminal environments from the runtime that
-        // keeps them.
+        // keeps them, and its machine from the device keeping that.
         #[cfg(target_os = "linux")]
-        workspaces
-            .copies()
-            .machines(Arc::new(super::environments::Environments::here()));
+        workspaces.copies().machines(environments);
         stage("serving the workspaces' trees to the files daemon");
         let files_tree = super::files_tree::serve(
             &tilo_device_identity::login::files_tree_socket().map_err(io::Error::other)?,

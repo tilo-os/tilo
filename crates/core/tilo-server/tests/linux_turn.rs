@@ -13,6 +13,7 @@
     reason = "the host, the members and their routers stay up until the test ends"
 )]
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,8 +25,8 @@ use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandReq
 use tilo_actions::remote::{ActionProvider as _, Caller, InvokeArgument, InvokeRequest};
 use tilo_agent_session::shell::{ShellRan, Watching};
 use tilo_peer_state::actions::{ActionService, NoActions};
+use tilo_runtime::device::environments::{Environments, Paid, Timing, WAITING};
 use tilo_runtime::device::take_work;
-use tilo_server::linux_devices::{LinuxDevices, Timing, WAITING};
 use tilo_server::servers::{self, person_workspace_id};
 use tilo_server_protocol::WorkSetting;
 use tilo_user_identity::DeviceCapabilities;
@@ -114,7 +115,7 @@ impl VmHost {
 /// A workspace served by a server whose person's VM hosts take its Linux work.
 pub(super) struct Placed {
     pub(super) workspace: String,
-    pub(super) shells: Arc<LinuxDevices>,
+    pub(super) shells: Arc<Environments>,
     pub(super) vm_hosts: Vec<VmHost>,
     pub(super) hosted: Hosted,
 }
@@ -172,7 +173,13 @@ pub(super) async fn placed_with(count: usize, browsers: Option<std::path::PathBu
         });
     }
 
-    let shells = Arc::new(LinuxDevices::new("acct-1".into(), VmSize::Small).with_timing(QUICK));
+    // The server's environments, with no runtime beside it: its Linux work runs on the
+    // devices that take it.
+    let paid = Paid {
+        account: "acct-1".into(),
+        size: VmSize::Small,
+    };
+    let shells = Arc::new(Environments::new(PathBuf::new(), Some(paid)).with_timing(QUICK));
     shells.ask_from(
         workspaces.action_service(),
         hosted.router.endpoint().clone(),

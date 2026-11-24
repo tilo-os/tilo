@@ -156,7 +156,7 @@ pub struct Server {
     /// The workspaces this server governs; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
     /// The Browser this host places for its workspaces' pages, when it serves
-    /// Browser ([`crate::hosted_browser::HostedBrowsers::from_env`]).
+    /// Browser ([`crate::hosted_browser::HostedBrowsers::serving`]).
     #[cfg(all(feature = "web", feature = "agents"))]
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
     /// What this host keeps for each workspace it serves.
@@ -195,6 +195,9 @@ pub struct OnDevice {
     pub joined: bool,
     /// What answers the apps' actions addressed to this device, when it serves apps.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
+    /// Where this host's Browser sessions start, when the device hands it any: its
+    /// workspaces' devices that run Linux, on a host that pays for their machines.
+    pub browser_sessions: Option<crate::browser_sessions::Sessions>,
 }
 
 /// The server state the page's pre-session routes answer with.
@@ -524,6 +527,7 @@ impl Server {
             endpoint: endpoint.clone(),
             joined,
             app_serving,
+            browser_sessions: None,
         })
         .await?;
         let mut router = Router::builder(endpoint);
@@ -591,6 +595,7 @@ impl Server {
             endpoint,
             joined,
             app_serving,
+            browser_sessions,
         } = parts;
         if cfg.work.takes_nothing() {
             return Err(ServerError::Identity(
@@ -753,8 +758,10 @@ impl Server {
         // A host that sells Linux machines places its workspaces' Browser in them: the
         // questions a window asks reach the person through the same store every other call on
         // this device waits in, and their answer goes back to the window that asked.
+        #[cfg(not(all(feature = "web", feature = "agents")))]
+        let _ = browser_sessions;
         #[cfg(all(feature = "web", feature = "agents"))]
-        let browsers = match crate::hosted_browser::HostedBrowsers::from_env() {
+        let browsers = match crate::hosted_browser::HostedBrowsers::serving(browser_sessions) {
             Ok(None) => None,
             Ok(Some(browsers)) => {
                 let browsers = Arc::new(browsers);

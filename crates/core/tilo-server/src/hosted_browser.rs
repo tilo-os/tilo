@@ -81,14 +81,14 @@ pub use turn_fills::FILL_PAGE_ITEM;
 use crate::WorkspaceId;
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
+use tilo_actions::remote::asked::{AskedDispatch, AskedRecords, AskedStore, RecordRef};
 use tilo_actions::remote::linux_apps::{self, AppLaunch};
 use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refusal};
-use tilo_actions::remote::asked::{AskedDispatch, AskedRecords, AskedStore, RecordRef};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
-    CataloguePage, CatalogueProvider, CatalogueQuery, Completer, Confirmation,
-    ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus,
-    RemoteActionMessage, argument_digest, pending, provider_workspace, workspace_provider,
+    CataloguePage, CatalogueProvider, CatalogueQuery, Completer, Confirmation, ConfirmedInvocation,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
+    argument_digest, pending, provider_workspace, workspace_provider,
 };
 use tilo_actions::{
     ActionFailure, ActionKind, ActionSpec, EncodedAction, ExecutionMode, InvocationUpdate,
@@ -150,9 +150,7 @@ fn published() -> Vec<ResourceSpec> {
     contract.kind = ActionKind::Outside;
     // Starting the session takes as long as its VM takes to wake: the call is answered once the
     // window is up, and followed meanwhile as any background action is.
-    contract.execution = ExecutionMode::Background {
-        cancellable: false,
-    };
+    contract.execution = ExecutionMode::Background { cancellable: false };
     spec.actions.push(action);
     vec![spec]
 }
@@ -247,89 +245,7 @@ pub fn server_address() -> Result<EndpointAddr, String> {
 /// cannot disagree about what it holds.
 pub use tilo_server_protocol::hosted::Material;
 
-/// A browser session that is up, and the window it holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Window {
-    /// The device of the workspace the session in the VM joined as.
-    pub device: [u8; 32],
-    /// The provider token the window publishes under (`browser@42`): what a
-    /// page action names in place of the app.
-    pub provider: String,
-}
-
-/// The service that starts and stops a workspace's browser sessions.
-///
-/// The workspace's devices that run Linux implement this
-/// ([`crate::linux_devices::LinuxDevices`]): the one that takes the turn starts
-/// the session in the workspace's VM with the [`Material`], and it answers once
-/// the session reports its window live.
-pub trait BrowserSessions: Send + Sync {
-    /// Start the workspace's browser session with `material`, and answer its
-    /// window once it is live.
-    ///
-    /// # Errors
-    ///
-    /// The words to refuse the open with: no host had room, or the host
-    /// would not start it.
-    fn start(&self, material: &Material) -> Result<Window, String>;
-
-    /// The workspace's browser session stopped, or must: its device is
-    /// forgotten and its window no longer exists.
-    fn stop(&self, workspace: &str);
-
-    /// Start `launch` in the workspace's Linux apps session, starting that
-    /// session with `material` when none runs, and answer once it is up and
-    /// was told to start the app. The app's windows join the shell as they
-    /// map.
-    ///
-    /// # Errors
-    ///
-    /// The words to refuse the open with, and the plans' typed refusal when
-    /// the account may not run Linux.
-    fn start_app(&self, material: &Material, launch: &AppLaunch) -> Result<Window, AppRefusal> {
-        let _ = (material, launch);
-        Err(AppRefusal::Words(
-            "this host starts no Linux apps session".to_owned(),
-        ))
-    }
-
-    /// The workspace's Linux apps session stopped, or must.
-    fn stop_apps(&self, workspace: &str) {
-        let _ = workspace;
-    }
-
-    /// Ask the hosts that run sessions as `actions`'s device, from `endpoint`:
-    /// this host's own, once it runs, holding `workspaces` read on `runtime`.
-    /// Sessions that need no host to ask ignore it.
-    fn ask_from(
-        &self,
-        actions: tilo_peer_state::actions::ActionService,
-        endpoint: iroh::Endpoint,
-        workspaces: crate::workspaces::Workspaces,
-        runtime: tokio::runtime::Handle,
-    ) {
-        let _ = (actions, endpoint, workspaces, runtime);
-    }
-}
-
-/// Why a workspace's Linux app did not open.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AppRefusal {
-    /// The account's plan does not let it run Linux: the plans' own typed
-    /// refusal, which says what would let it through.
-    Refused(Refusal),
-    /// Anything else, in words for whoever opened it.
-    Words(String),
-}
-
-impl std::fmt::Display for AppRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Refused(refusal) => f.write_str(&refusal.message),
-            Self::Words(words) => f.write_str(words),
-        }
-    }
-}
+pub use crate::browser_sessions::{AppRefusal, BrowserSessions, Sessions, Window};
 
 /// What a host counts page actions against: its plans and the account's
 /// member access.
@@ -511,7 +427,7 @@ const HANDED: usize = 8192;
 /// The Browser this host places for its workspaces, and the page actions it
 /// hands to the windows.
 pub struct HostedBrowsers {
-    sessions: Box<dyn BrowserSessions>,
+    sessions: Arc<dyn BrowserSessions>,
     meter: Box<dyn BrowserMeter>,
     /// Who pays for the workspaces' VMs, as this host knows it.
     account: String,
@@ -570,7 +486,7 @@ impl HostedBrowsers {
     /// A host that places Browser through `sessions`, counting page
     /// actions of `account` in `meter`.
     pub fn new(
-        sessions: Box<dyn BrowserSessions>,
+        sessions: Arc<dyn BrowserSessions>,
         meter: Box<dyn BrowserMeter>,
         account: String,
     ) -> Self {
@@ -602,20 +518,18 @@ impl HostedBrowsers {
         self
     }
 
-    /// The Browser this host's environment names, when it serves Browser
-    /// at all: where they start and stop (the workspaces' devices that run
-    /// Linux, [`crate::linux_devices::LinuxDevices`]), the log their page
-    /// actions are counted in ([`crate::browser_actions::BrowserMeter`]), and
-    /// the address the sessions reach this host at.
+    /// The Browser this host serves through `sessions`, when the daemon hands it any (the
+    /// workspaces' devices that run Linux, on a host that pays for their machines): the log
+    /// their page actions are counted in ([`crate::browser_actions::BrowserMeter`]) and the
+    /// address the sessions reach this host at come from its environment.
     ///
     /// # Errors
     ///
-    /// Sessions are named but cannot be started, or their page actions
-    /// cannot be counted: a host that runs browsers without counting them
-    /// would serve them free of charge, so the start fails rather than run
-    /// half of it.
-    pub fn from_env() -> Result<Option<Self>, String> {
-        let Some(sessions) = crate::linux_devices::LinuxDevices::from_env() else {
+    /// Sessions are handed but their page actions cannot be counted, or the address they
+    /// reach this host at is not named: a host that runs browsers without counting them would
+    /// serve them free of charge, so the start fails rather than run half of it.
+    pub fn serving(sessions: Option<Sessions>) -> Result<Option<Self>, String> {
+        let Some(Sessions { sessions, account }) = sessions else {
             return Ok(None);
         };
         let meter = crate::browser_actions::BrowserMeter::from_env()?.ok_or_else(|| {
@@ -629,12 +543,7 @@ impl HostedBrowsers {
         // The address their sessions reach this host at is part of serving
         // them: a host that cannot say it fails here, not at the first open.
         server_address()?;
-        let account = sessions.account().to_owned();
-        Ok(Some(Self::new(
-            Box::new(sessions),
-            Box::new(meter),
-            account,
-        )))
+        Ok(Some(Self::new(sessions, Box::new(meter), account)))
     }
 
     /// Answer this device's workspaces' calls as the provider this host is: `app.so.tilo.browser#open`
@@ -687,7 +596,6 @@ impl HostedBrowsers {
         };
         providers.withdraw(provider, &answers);
     }
-
 
     /// Name the host's identity and workspaces, once it runs: needed to
     /// certify a session's device and to list it in its workspace. It is also
@@ -929,9 +837,10 @@ impl HostedBrowsers {
     /// window holds it.
     fn ask_context(&self, invocation: tilo_actions::InvocationId) -> serde_json::Value {
         let handed = self.handed.lock_recover();
-        handed.get(&invocation).map_or(serde_json::Value::Null, |entry| {
-            serde_json::json!({ "workspace": entry.workspace })
-        })
+        handed.get(&invocation).map_or(
+            serde_json::Value::Null,
+            |entry| serde_json::json!({ "workspace": entry.workspace }),
+        )
     }
 
     /// Admit the call `caller` asked for again on their approve of its record, carrying their
@@ -974,11 +883,7 @@ impl HostedBrowsers {
                 invocation: request.invocation,
             };
             for (_, waiter) in entry.waiting.drain(..) {
-                waiter.complete(state_message(
-                    request.invocation,
-                    accepted.clone(),
-                    None,
-                ));
+                waiter.complete(state_message(request.invocation, accepted.clone(), None));
             }
         }
         // The window it is handed to runs it once, counted as any page action is; so that its
@@ -988,10 +893,7 @@ impl HostedBrowsers {
         let runtime = self.runtime().ok_or_else(not_waiting)?;
         let answer = hand.frame(
             workspace_id,
-            (
-                device,
-                caller.user_public_key().copied().unwrap_or([0; 32]),
-            ),
+            (device, caller.user_public_key().copied().unwrap_or([0; 32])),
             window,
             RemoteActionMessage::Invoke(request),
         );
@@ -1091,12 +993,14 @@ impl HostedBrowsers {
                 let mut handed = self.handed.lock_recover();
                 let entry = handed.get_mut(&receipt.invocation)?;
                 entry.stage = Stage::Asked(record.clone());
-                let waiting = InvocationState::new(
-                    receipt.invocation,
-                    record.waiting(receipt.invocation),
-                );
+                let waiting =
+                    InvocationState::new(receipt.invocation, record.waiting(receipt.invocation));
                 for (_, waiter) in entry.waiting.drain(..) {
-                    waiter.complete(state_message(receipt.invocation, waiting.update.clone(), None));
+                    waiter.complete(state_message(
+                        receipt.invocation,
+                        waiting.update.clone(),
+                        None,
+                    ));
                 }
                 Some(RemoteActionMessage::Receipt(waiting.receipt()))
             }
@@ -1827,9 +1731,10 @@ impl HostedBrowsers {
         let placed = Arc::clone(self);
         let record = RECORD.to_owned();
         let opening = record.clone();
-        let placement = tokio::task::spawn_blocking(move || placed.place(&name, workspace_id, &opening))
-            .await
-            .unwrap_or_else(|error| Err(format!("the placement ended: {error}")));
+        let placement =
+            tokio::task::spawn_blocking(move || placed.place(&name, workspace_id, &opening))
+                .await
+                .unwrap_or_else(|error| Err(format!("the placement ended: {error}")));
         match placement {
             Ok(_) => Ok(InvocationReceipt {
                 invocation: request.invocation,
@@ -1878,10 +1783,7 @@ impl HostedBrowsers {
         let Some(hand) = self.hand() else {
             return Err(still_starting());
         };
-        let from = (
-            device,
-            caller.user_public_key().copied().unwrap_or([0; 32]),
-        );
+        let from = (device, caller.user_public_key().copied().unwrap_or([0; 32]));
         let Some(Some(answer)) = hand.frame(workspace_id, from, window, message).await else {
             return Err(ActionCallError::Unavailable {
                 reason: "this host reaches no Browser window".to_owned(),
@@ -1889,7 +1791,9 @@ impl HostedBrowsers {
         };
         // What the window answered is read as the host reads it — counted once it ran, and kept
         // as the call's asked record where it waits for the person — and answered to the caller.
-        let answered = self.relayed(workspace_id, window, &answer).unwrap_or(answer);
+        let answered = self
+            .relayed(workspace_id, window, &answer)
+            .unwrap_or(answer);
         receipt_answer(Some(answered))
     }
 
@@ -1962,13 +1866,14 @@ impl ActionProvider for HostedBrowsers {
             };
             let (completer, answer) = pending();
             runtime.spawn(async move {
-                completer.complete(match hand.frame(workspace_id, from, window.device, message).await
-                {
-                    Some(Some(RemoteActionMessage::CatalogueResponse { result, .. })) => result,
-                    _ => Err(ActionCallError::Unavailable {
-                        reason: "the Browser window did not answer its listing".to_owned(),
-                    }),
-                });
+                completer.complete(
+                    match hand.frame(workspace_id, from, window.device, message).await {
+                        Some(Some(RemoteActionMessage::CatalogueResponse { result, .. })) => result,
+                        _ => Err(ActionCallError::Unavailable {
+                            reason: "the Browser window did not answer its listing".to_owned(),
+                        }),
+                    },
+                );
             });
             return answer;
         }
@@ -2771,27 +2676,36 @@ mod tests {
     }
 
     #[test]
-    fn a_host_serves_browsers_only_when_it_names_where_they_start_where_it_is_reached_and_what_it_counts()
-     {
+    fn a_host_serves_browsers_only_when_it_is_handed_sessions_is_reached_and_counts_them() {
         use crate::browser_actions::BrowserMeter;
-        use tilo_server_account::{ACCOUNT_ENV, ACTIONS_LOG_ENV, PLANS_ENV, SOCKET_ENV};
+        use tilo_server_account::{ACTIONS_LOG_ENV, PLANS_ENV};
+
+        struct NoMachines;
+        impl BrowserSessions for NoMachines {
+            fn start(&self, _: &Material) -> Result<Window, String> {
+                Err("no machines".into())
+            }
+            fn stop(&self, _: &str) {}
+        }
+        let sessions = || {
+            Some(Sessions {
+                sessions: Arc::new(NoMachines),
+                account: "acct-1".into(),
+            })
+        };
 
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(SOCKET_ENV)
-            .remove(ACCOUNT_ENV)
-            .remove(ACTIONS_LOG_ENV)
+        env.remove(ACTIONS_LOG_ENV)
             .remove(PLANS_ENV)
             .remove(SERVER_ENV);
         assert!(
-            HostedBrowsers::from_env().unwrap().is_none(),
-            "a host that pays for no machines starts no Browser"
+            HostedBrowsers::serving(None).unwrap().is_none(),
+            "a host the daemon hands no sessions starts no Browser"
         );
 
-        // An account alone is half a host: without a log it would serve
-        // Browser free of charge.
+        // Sessions without a log would be served free of charge.
         let dir = tempfile::tempdir().unwrap();
-        env.set(ACCOUNT_ENV, "acct-1");
-        let error = HostedBrowsers::from_env().err().unwrap();
+        let error = HostedBrowsers::serving(sessions()).err().unwrap();
         assert!(error.contains(ACTIONS_LOG_ENV), "{error}");
         assert!(BrowserMeter::from_env().unwrap().is_none());
 
@@ -2799,7 +2713,7 @@ mod tests {
         // it where they cannot.
         env.set(ACTIONS_LOG_ENV, dir.path().join("actions.jsonl"))
             .set(PLANS_ENV, dir.path().join("plans.json"));
-        let error = HostedBrowsers::from_env().err().unwrap();
+        let error = HostedBrowsers::serving(sessions()).err().unwrap();
         assert!(error.contains(SERVER_ENV), "{error}");
 
         // All of them: this host places its workspaces' Browser.
@@ -2809,6 +2723,6 @@ mod tests {
                 .to_bytes(),
         );
         env.set(SERVER_ENV, format!("{key}@127.0.0.1:7704"));
-        assert!(HostedBrowsers::from_env().unwrap().is_some());
+        assert!(HostedBrowsers::serving(sessions()).unwrap().is_some());
     }
 }

@@ -19,7 +19,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (the daemon's `agents` build):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
-agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
+agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-workspace-emoji", "dep:collaboration", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 # The host / server daemon.
@@ -162,9 +162,7 @@ futures = { workspace = true, optional = true }
 # The keyed hash of a visitor's address the entry's wait-list windows count.
 hmac = { workspace = true, optional = true }
 tilo-agent-session = { path = "../agent-session", optional = true }
-# The workspaces' shells a host serving their records runs: ush's own
-# commands here, Linux programs in the workspace's hosted VM.
-ush = { path = "../../vm/ush", optional = true, features = ["quic"] }
+# The machine sizes the Browser page actions a host counts are billed at.
 linux-vm = { path = "../../vm/linux-vm", optional = true, default-features = false }
 # What the host's account standing is read from: its plans file and the
 # log of the Browser page actions this host ran for it.
@@ -303,6 +301,8 @@ tilo-thumbnail = { path = "../../engines/thumbnail" }
 tilo-content = { path = "../content" }
 tilo-resource = { path = "../tilo-resource" }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
+# The device's daemon this host is part of, with the environments it hands the host's
+# Browser.
 tilo-runtime = { path = "../tilo-runtime" }
 tilo-app-package = { path = "../tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }

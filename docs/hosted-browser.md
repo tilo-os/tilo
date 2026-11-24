@@ -196,7 +196,7 @@ command.
 
 A workspace's Browser runs where its shells run: on the device that takes the
 workspace's Linux turn
-([`linux_devices.rs`](../crates/core/tilo-server/src/linux_devices.rs)):
+([`environments.rs`](../crates/core/tilo-runtime/src/device/environments.rs)):
 
 1. Someone opens Browser: a person in their window, or an agent with a scoped
    key calling `app.so.tilo.browser#open`. The host answers the open as a

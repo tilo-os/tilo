@@ -206,6 +206,8 @@ fuser.workspace = true
 # The member that takes work runs its workspaces' shells: ush's own commands
 # in process, and Linux programs in the local hosted-VM service.
 ush = { path = "../../vm/ush", features = ["quic"] }
+# The size of the machines a server pays for on its workspaces' devices that run Linux.
+linux-vm = { path = "../../vm/linux-vm", default-features = false }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
