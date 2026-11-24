@@ -11,8 +11,8 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Space, UiNode,
-        Value, ViewInstance,
+        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
+        ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/slides/app.tl");
@@ -93,21 +93,6 @@ mod cases {
                 .unwrap_or_else(|e| panic!("deck: {e}"));
             view.set_lazy_rows(false).unwrap();
             view
-        }
-
-        /// Why the app refused `action` with `given`, as its `require` says it.
-        fn refused(&self, action: &str, given: &[(&str, Value)]) -> String {
-            let args = self.app.args(&self.rt, action, given);
-            let id = self.app.action(action);
-            match self.rt.invoke_action(&me(), (id.as_str(), args)) {
-                Ok(other) => panic!("{action} was expected to be refused, and answered {other:?}"),
-                Err(error) => format!("{error:?}"),
-            }
-        }
-
-        /// Every change the deck's document holds, oldest first.
-        fn changes(&self) -> Vec<tilolang_runtime::ChangeNote> {
-            self.rt.history(&self.deck.doc).unwrap()
         }
     }
 
@@ -829,7 +814,7 @@ mod cases {
             "the box the press made takes the keyboard: {:?}",
             editor.props.get("focus")
         );
-
+    }
     #[test]
     fn an_empty_box_opens_on_the_click_that_chooses_it() {
         use tilolang_runtime::{BindTarget, Binding};
@@ -918,7 +903,10 @@ mod cases {
         let text = s.case("ElementKind", "ElementKind.text");
         let image = s.case("ElementKind", "ElementKind.image");
 
-        let why = s.refused("add_element", &[("s", Value::resource(&slide)), ("kind", image.clone())]);
+        let why = s.refused(
+            "add_element",
+            &[("s", Value::resource(&slide)), ("kind", image.clone())],
+        );
         assert!(why.contains("A picture needs its source"), "{why}");
 
         let why = s.refused(
@@ -928,7 +916,9 @@ mod cases {
                 ("kind", image),
                 (
                     "text",
-                    some(Value::Rich(tilolang_runtime::rich::RichValue::from_text("words"))),
+                    some(Value::Rich(tilolang_runtime::rich::RichValue::from_text(
+                        "words",
+                    ))),
                 ),
             ],
         );
@@ -998,9 +988,14 @@ mod cases {
     fn a_script_renames_the_deck_through_the_title_edit_the_bar_uses() {
         let s = Slides::new();
         let before = s.changes();
-        let args = s
-            .app
-            .args(&s.rt, "set_title", &[("d", Value::resource(&s.deck)), ("title", Value::text("Q3 review"))]);
+        let args = s.app.args(
+            &s.rt,
+            "set_title",
+            &[
+                ("d", Value::resource(&s.deck)),
+                ("title", Value::text("Q3 review")),
+            ],
+        );
         s.call("set_title", args);
         assert_eq!(
             s.rt.read(&s.deck, "title").unwrap(),
@@ -1148,7 +1143,10 @@ mod cases {
             1,
             "a wide window keeps the notes in the inspector alone"
         );
-        assert!(view.set_space("", Space::from_rem(20.0, 40.0)), "the window narrowed");
+        assert!(
+            view.set_space("", Space::from_rem(20.0, 40.0)),
+            "the window narrowed"
+        );
         view.poll_patches().unwrap();
         assert_eq!(
             notes_editors(&view),
@@ -1156,5 +1154,131 @@ mod cases {
             "a compact window shows the notes under the slide as well"
         );
     }
+
+    /// The slide's notes as the window binds them: the editor the inspector (and a compact
+    /// window's content) places for the notes of `slide`.
+    fn notes_binders(view: &ViewInstance, slide: &ResourceRef) -> usize {
+        use tilolang_runtime::{BindTarget, Binding};
+
+        let mut editors = Vec::new();
+        of_kind(view.tree(), "ui.BlockEditor", &mut editors);
+        editors
+            .iter()
+            .filter(|node| {
+                matches!(
+                    &node.binding,
+                    Some(Binding {
+                        target: BindTarget::Field { target, .. },
+                        ..
+                    }) if target.id_string() == slide.id_string()
+                )
+            })
+            .count()
+    }
+
+    #[test]
+    fn the_notes_follow_the_slide_the_deck_shows_and_never_a_deleted_one() {
+        let s = Slides::new();
+        let first = s.slide(0);
+        let second = returned_ref(s.call_with(
+            "add_slide",
+            &[
+                ("d", Value::resource(&s.deck)),
+                ("title", Value::text("Second")),
+            ],
+        ));
+        let write = |slide: &ResourceRef, words: &str| {
+            let args = s.app.args(
+                &s.rt,
+                "set_notes",
+                &[
+                    ("s", Value::resource(slide)),
+                    (
+                        "notes",
+                        Value::Rich(tilolang_runtime::rich::RichValue::from_text(words)),
+                    ),
+                ],
+            );
+            s.call("set_notes", args);
+        };
+        write(&first, "the first slide's words");
+        write(&second, "the second slide's words");
+
+        let mut view = s.window();
+        view.set_view_state("current", Value::text(&second.id_string()));
+        view.poll_patches().unwrap();
+        assert_eq!(
+            notes_binders(&view, &second),
+            1,
+            "the notes editor binds the slide the deck shows: {}",
+            dump(view.tree())
+        );
+        assert_eq!(notes_binders(&view, &first), 0);
+
+        // The shown slide goes, as the rail's Delete takes it: the deck lands on the slide it
+        // still holds, and its notes are the ones the editor binds. Nothing edits the gone
+        // slide's notes any more.
+        s.call(
+            "delete_slide",
+            vec![Value::resource(&s.deck), Value::resource(&second)],
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(
+            notes_binders(&view, &second),
+            0,
+            "the notes of a deleted slide close: {}",
+            dump(view.tree())
+        );
+        assert_eq!(
+            notes_binders(&view, &first),
+            1,
+            "the notes editor follows the slide that is shown now"
+        );
+    }
+
+    #[test]
+    fn a_slide_change_rebinds_the_notes_and_the_other_slides_words_stay() {
+        let s = Slides::new();
+        let first = s.slide(0);
+        let second = returned_ref(s.call_with(
+            "add_slide",
+            &[
+                ("d", Value::resource(&s.deck)),
+                ("title", Value::text("Second")),
+            ],
+        ));
+        let mut view = s.window();
+        assert_eq!(notes_binders(&view, &first), 1);
+        assert_eq!(notes_binders(&view, &second), 0);
+
+        view.set_view_state("current", Value::text(&second.id_string()));
+        view.poll_patches().unwrap();
+        assert_eq!(
+            notes_binders(&view, &second),
+            1,
+            "a slide change moves the notes editor to the new slide"
+        );
+        assert_eq!(notes_binders(&view, &first), 0);
+
+        // Writing the notes the window shows lands on the slide it shows, and the slide that
+        // was left keeps its words.
+        let args = s.app.args(
+            &s.rt,
+            "set_notes",
+            &[
+                ("s", Value::resource(&second)),
+                (
+                    "notes",
+                    Value::Rich(tilolang_runtime::rich::RichValue::from_text("new words")),
+                ),
+            ],
+        );
+        s.call("set_notes", args);
+        let read = |slide: &ResourceRef| match s.rt.read(slide, "notes").unwrap() {
+            Value::Rich(rich) => rich.written_text(),
+            other => panic!("notes read as {other:?}"),
+        };
+        assert_eq!(read(&second), "new words");
+        assert_eq!(read(&first), "", "the slide left behind keeps its words");
     }
 }

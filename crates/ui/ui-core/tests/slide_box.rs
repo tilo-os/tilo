@@ -5,10 +5,12 @@
 
 use tilo_rich_edit::BlockEditor;
 use tilo_ui::component::{Described, Event, Fired, Intent, Value};
-use tilo_ui::widget::{Stage, StagePinProps, StageProps, Widget};
 use tilo_ui::headless::FrameHarness;
-use tilo_ui::{Intents, State, Theme, accesskit, collaboration, font_catalog, synthetic_input,
-    text_selection, time, winit};
+use tilo_ui::widget::{Stage, StagePinProps, StageProps, Widget};
+use tilo_ui::{
+    Intents, State, Theme, accesskit, collaboration, font_catalog, synthetic_input, text_selection,
+    time, winit,
+};
 
 const DEVICE: (u32, u32) = (800, 600);
 /// The page's own size, as a slide's is.
@@ -187,9 +189,7 @@ fn a_slide_box_takes_composed_letters_and_reads_to_a_reader() {
         "u".into(),
         None,
     )));
-    host.dispatch_to_root(&winit::event::WindowEvent::Ime(Ime::Commit(
-        "ü".into(),
-    )));
+    host.dispatch_to_root(&winit::event::WindowEvent::Ime(Ime::Commit("ü".into())));
     assert_eq!(
         editor(&mut host).blocks()[0].text(),
         "ü",
@@ -239,7 +239,9 @@ fn deck(count: i64) -> (FrameHarness, Intents<Fired>) {
             height: Some(120),
             moves: true,
             menu: Vec::new(),
-            body: vec![Box::new(BlockEditor::from_markdown(&format!("box {index}")))],
+            body: vec![Box::new(BlockEditor::from_markdown(&format!(
+                "box {index}"
+            )))],
         })
         .collect();
     let stage = Stage::from_props(
@@ -255,11 +257,7 @@ fn deck(count: i64) -> (FrameHarness, Intents<Fired>) {
             ..StageProps::default()
         },
     );
-    let host = FrameHarness::new(
-        State::new(),
-        Box::new(stage),
-        DEVICE,
-    );
+    let host = FrameHarness::new(State::new(), Box::new(stage), DEVICE);
     (host, queue)
 }
 
@@ -289,15 +287,9 @@ fn a_deck_takes_tab_and_the_arrows_on_its_boxes() {
         .set_focus(true);
 
     // Tab walks the boxes, wrapping past the last.
-    host.dispatch_to_root(&synthetic_input::named_key(
-        winit::keyboard::NamedKey::Tab,
-    ));
-    host.dispatch_to_root(&synthetic_input::named_key(
-        winit::keyboard::NamedKey::Tab,
-    ));
-    host.dispatch_to_root(&synthetic_input::named_key(
-        winit::keyboard::NamedKey::Tab,
-    ));
+    host.dispatch_to_root(&synthetic_input::named_key(winit::keyboard::NamedKey::Tab));
+    host.dispatch_to_root(&synthetic_input::named_key(winit::keyboard::NamedKey::Tab));
+    host.dispatch_to_root(&synthetic_input::named_key(winit::keyboard::NamedKey::Tab));
     assert_eq!(
         fired(&queue, "select"),
         ["box-0", "box-1", "box-0"],
@@ -308,7 +300,11 @@ fn a_deck_takes_tab_and_the_arrows_on_its_boxes() {
     host.dispatch_to_root(&synthetic_input::named_key(
         winit::keyboard::NamedKey::ArrowRight,
     ));
-    assert_eq!(fired(&queue, "moved"), ["box-0"], "an arrow moves the chosen box");
+    assert_eq!(
+        fired(&queue, "moved"),
+        ["box-0"],
+        "an arrow moves the chosen box"
+    );
 }
 
 #[test]
@@ -328,11 +324,7 @@ fn a_slide_box_keeps_its_words_while_it_moves_and_idles_after_the_drop() {
     host.dispatch_to_root(&synthetic_input::cursor_moved(x, y));
     host.dispatch_to_root(&synthetic_input::mouse_release());
 
-    assert_eq!(
-        fired(&queue, "moved"),
-        ["box-0"],
-        "the hand moved the box"
-    );
+    assert_eq!(fired(&queue, "moved"), ["box-0"], "the hand moved the box");
     assert_eq!(
         editor(&mut host).blocks()[0].text(),
         WORDS,
