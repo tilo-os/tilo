@@ -83,8 +83,27 @@ fn resolve(
 ) -> Vec<AppRelease> {
     defaults
         .iter()
-        .filter_map(|app| release_of(app, offered).or_else(|| from_cache(app, cached)))
+        .filter_map(|app| match release_of(app, offered) {
+            Some(release) => Some(with_known_surface(release, cached)),
+            None => from_cache(app, cached),
+        })
         .collect()
+}
+
+/// `release` with the surface the device's cache knows of it, when the offer named none and the
+/// cache holds that same package: its signed payload says what it publishes. An offer that names
+/// none otherwise leaves it unknown, for the device that installs it to read from the bytes.
+fn with_known_surface(
+    mut release: AppRelease,
+    cached: &dyn Fn(&str) -> Option<AppRelease>,
+) -> AppRelease {
+    if release.surface.is_empty()
+        && let Some(held) = cached(&release.app)
+        && held.package == release.package
+    {
+        release.surface = held.surface;
+    }
+    release
 }
 
 /// The release of `app` the device's package cache holds, when `cached` has one that validates.
@@ -215,6 +234,37 @@ mod tests {
         assert!(
             resolve(&["so.tilo.notes"], &offered, &|_| None).is_empty(),
             "a default app the catalogue does not carry yet is not recorded"
+        );
+    }
+
+    #[test]
+    fn an_offer_naming_no_surface_takes_the_one_the_cache_holds_of_that_package() {
+        let root = "a".repeat(64);
+        let held = |package: String| {
+            move |app: &str| {
+                (app == "so.tilo.files").then(|| AppRelease {
+                    app: app.into(),
+                    version: "2.1.0".into(),
+                    surface: "c".repeat(64),
+                    package: package.clone(),
+                    publisher: "b".repeat(64),
+                    file: None,
+                    dev: false,
+                    pinned: false,
+                    payload: AppPayload::Tapp,
+                })
+            }
+        };
+        let offered = vec![entry("so.tilo.files", "2.1.0", &root, &"b".repeat(64), "")];
+        assert_eq!(
+            resolve(&["so.tilo.files"], &offered, &held(root.clone()))[0].surface,
+            "c".repeat(64),
+            "the package's own signed surface, read where the device holds it"
+        );
+        assert_eq!(
+            resolve(&["so.tilo.files"], &offered, &held("d".repeat(64)))[0].surface,
+            "",
+            "another package's surface is never this one's: it stays unknown"
         );
     }
 
