@@ -1890,6 +1890,10 @@ impl crate::Session {
         // One part per display: a display plugged in, taken away or taken by a fullscreen window
         // moves its part.
         shell.follow_displays(&mut self.compositor, &mut self.shared.published, &identify);
+        // The cards their apps draw themselves stand where the shell's cards hold their place:
+        // note the block each card keeps this pass, whether or not the shell asked anything of
+        // the session, and one the shell shows none for has its app draw the activity itself.
+        self.shared.live.place_drawn(|name| shell.control(name));
         if !shell.has_asks() {
             return Ok(());
         }
@@ -2007,12 +2011,6 @@ impl crate::Session {
         // workspaces or closed is followed on the pass it happened on, in every workspace of
         // the shell, not only the one in front (`docs/architecture/apps.md` §1, §8).
         crate::connectors::reconcile(self);
-        // The cards their apps draw themselves stand where the shell's cards hold their place:
-        // each app is told the block its card keeps for it this pass, and one the shell does not
-        // show draws the activity in its own window.
-        if let Some(shell) = self.shell.as_ref() {
-            self.shared.live.place_drawn(|name| shell.control(name));
-        }
         Ok(())
     }
 
