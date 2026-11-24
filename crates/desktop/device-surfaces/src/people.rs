@@ -36,8 +36,8 @@ pub struct People {
     pub arrived: Vec<String>,
     /// The first time in a public workspace, what its people see of the person; empty otherwise.
     pub arrived_seen: String,
-    /// This person may invite someone into the workspace in front: its owner's grant decides, and
-    /// where it is not theirs the roster offers no invite at all.
+    /// This person may invite someone into the workspace in front, as the loop last answered it:
+    /// its owner's grant decides.
     pub may_invite: bool,
 }
 

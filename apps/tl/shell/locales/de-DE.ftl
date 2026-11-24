@@ -1918,23 +1918,61 @@ d-mxfb2qdk = Wo-Zeile
     .w-working-in = Arbeitet in { $title }
     .w-viewing = Sieht { $title }
     .w-in = In { $in_app }
-    .w-in-2 = In { $call }
 
 d-xgvy7oje = Personen
-    .w-who-is-here = Wer hier ist
-    .w-people = Personen
     .w-close = Schließen
 
 d-vb456dpi = Liste
     .w-you = Du
     .w-nobody-else-is-here = Niemand sonst ist hier
     .w-invite-someone-to-this-workspace-or = Lade jemanden in diesen Arbeitsbereich ein oder öffne denselben auf einem anderen Gerät
+    .w-people = Personen
+    .w-agents = Agenten
     .w-invite-someone = Jemanden einladen
 
 d-vyjuo52r = Zeile einer Person
     .w-someone = Jemand
-    .w-follows-you = Folgt dir
-    .w-in-a-call = In einem Anruf
+    .w-joined = Beigetreten um { $joined }
+    .w-go-there = Dorthin gehen
+
+d-cddyuqgj = Gruppenüberschrift
+
+d-uw37p3tz = Titel der Liste
+    .w-who-is-here = Wer hier ist
+    .w-people = Personen
+
+d-yvvycv2a = Hier-Zeile
+    .w-just-you = Nur du
+    .w-you-and-1-other = Du und 1 weitere Person
+    .w-you-and-others = Du und { $others } weitere
+
+d-erf3idj7 = Software-Art
+    .w-bot = Bot
+    .w-agent = Agent
+
+d-2gu42kpe = Folgt-Zeile
+    .w-following-you = { $place }, folgt dir
+    .w-following-you-2 = Folgt dir
+    .w-following = { $place }, folgt { $who }
+    .w-following-2 = Folgt { $who }
+
+d-vmdtf5fq = Tut-Zeile
+    .w-in = In { $call }
+    .w-focusing = Fokussiert
+    .w-away = Abwesend
+    .w-idle = Inaktiv
+
+d-ph4t2ijg = Winken-Schaltfläche
+    .w-waved = Gewunken
+    .w-you-waved-at = Du hast { $name } gewunken
+    .w-wave = Winken
+    .w-wave-at = { $name } zuwinken
+
+d-nf2tfrzm = Folgen-Schaltfläche
+    .w-stop = Stopp
+    .w-stop-following = { $name } nicht mehr folgen
+    .w-follow = Folgen
+    .w-follow-2 = { $name } folgen
 
 d-lkpaptdc = Karte einer Person
     .w-stop-following = Nicht mehr folgen
