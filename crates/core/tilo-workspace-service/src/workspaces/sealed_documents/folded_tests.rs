@@ -148,7 +148,6 @@ async fn the_host_checks_a_checkpoint_it_holds_the_keys_of() {
             workspace,
             governor,
             governor_key,
-            member_key,
             member_cert,
             member,
             ..
@@ -207,38 +206,22 @@ async fn the_host_checks_a_checkpoint_it_holds_the_keys_of() {
     .await;
 
     let state = workspaces.workspace(&workspace).await.unwrap();
-    let mut state = state.lock().await;
     assert!(
         !state
+            .lock()
+            .await
             .peer()
             .publication()
             .checkpoint_reached((APP, RESOURCE), (author, seq)),
         "the member that wrote the checkpoint has not checked it: its writes stay"
     );
 
-    // The member checks the checkpoint it wrote, as its own engine does, and keeps that it did:
-    // every device with the record's keys has now, so the workspace's stores drop its writes.
-    let mut candidate = state.peer().clone();
-    let (checkpoint, holds) = candidate
-        .publication()
-        .check_leading_checkpoint((APP, RESOURCE), &mut |op| member.open(op))
-        .expect("the writes the checkpoint stands in for are here");
-    assert!(holds, "the checkpoint holds what its writes merge to");
-    candidate
-        .workspace_mut()
-        .record_checkpoint_check(
-            &member_cert,
-            (APP, RESOURCE),
-            &checkpoint,
-            &member_key,
-            tilo_clock::wall(),
-        )
-        .unwrap();
-    state
-        .commit(candidate, &governor_key, tilo_clock::wall(), |entry, _| {
-            Ok(entry.collaboration.clone())
-        })
-        .unwrap();
+    // The member checks the checkpoint it wrote, as its own engine does: every device with the
+    // record's keys has now, so the workspace's stores drop its writes.
+    member
+        .checks_its_checkpoint(&workspaces, &workspace, &member_cert, &governor_key)
+        .await;
+    let state = state.lock().await;
     assert!(
         state
             .peer()
@@ -269,7 +252,9 @@ async fn a_compaction_folds_the_writes_of_every_author_a_newcomer_replays() {
             workspace,
             workspace_id,
             governor,
+            governor_key,
             member_key,
+            member_cert,
             member,
             ..
         },
@@ -299,6 +284,9 @@ async fn a_compaction_folds_the_writes_of_every_author_a_newcomer_replays() {
         .try_into()
         .unwrap();
     session.send(compaction.clone());
+    member
+        .checks_its_checkpoint(&workspaces, &workspace, &member_cert, &governor_key)
+        .await;
     // What a newcomer is sent past the checkpoint travels as itself.
     send_member_fields(
         &member,

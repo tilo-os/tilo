@@ -420,6 +420,49 @@ impl SealingMember {
         }
     }
 
+    /// The member, `cert`, checks the checkpoint it wrote against the writes it stands in for
+    /// once the workspace's copy leads the record with it, as its own engine does, and keeps that
+    /// it did in its own row of the workspace, committed by the governor, `governor_key`. A store
+    /// drops those writes once every device with the record's keys has.
+    pub async fn checks_its_checkpoint(
+        &self,
+        workspaces: &Workspaces,
+        workspace: &str,
+        cert: &DeviceCert,
+        governor_key: &SigningKey,
+    ) {
+        let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
+        let author = self.key.verifying_key().to_bytes();
+        let state = workspaces.workspace(workspace).await.unwrap();
+        tilo_test_env::within("the member checks the checkpoint it wrote", async {
+            loop {
+                let mut state = state.lock().await;
+                let mut candidate = state.peer().clone();
+                if let Some((checkpoint, holds)) = candidate
+                    .publication()
+                    .check_leading_checkpoint((app, record), &mut |op| self.open(op))
+                    && checkpoint.author.as_bytes() == &author
+                {
+                    assert!(holds, "the checkpoint holds what its writes merge to");
+                    let now = tilo_clock::wall();
+                    candidate
+                        .workspace_mut()
+                        .record_checkpoint_check(cert, (app, record), &checkpoint, &self.key, now)
+                        .unwrap();
+                    state
+                        .commit(candidate, governor_key, now, |entry, _| {
+                            Ok(entry.collaboration.clone())
+                        })
+                        .unwrap();
+                    return;
+                }
+                drop(state);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+    }
+
     /// Open `op`, any write of the record's history, under any epoch this
     /// member holds, a compaction included.
     pub(super) fn open(&self, op: &SignedOp) -> Result<Vec<u8>, String> {

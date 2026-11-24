@@ -493,7 +493,9 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
             workspaces,
             workspace,
             workspace_id,
+            governor_key,
             member_key,
+            member_cert,
             member,
             ..
         },
@@ -511,6 +513,9 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
         .try_into()
         .unwrap();
     session.send(compaction);
+    member
+        .checks_its_checkpoint(&workspaces, &workspace, &member_cert, &governor_key)
+        .await;
     // What a newcomer is sent past the checkpoint travels as itself.
     for index in WRITES..WRITES + 3 {
         seal_and_send_title(&member, &session, &workspace, &format!("line {index}"));
