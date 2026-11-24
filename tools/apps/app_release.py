@@ -188,6 +188,11 @@ def app_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
     for manifest in sorted((root / "apps").glob("*/tilo-app.toml")):
         directory = manifest.parent
         cargo = tomllib.loads((directory / "Cargo.toml").read_text())
+        # An app whose crate builds no executable is not a desktop package: Tilo on a phone
+        # (apps/phone) is a library `tilo-app build --platform android` packs into an APK, and
+        # os/scripts/build-thin-apps.sh leaves it out the same way.
+        if not (directory / "src" / "main.rs").is_file() and not cargo.get("bin"):
+            continue
         app = tomllib.loads(manifest.read_text())
         name = directory.name
         binary = Path(app["entrypoint"]["bin"]).name
