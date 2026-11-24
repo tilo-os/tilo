@@ -67,6 +67,9 @@ one resource to everyone.
   A change that fails a reader's check is refused on its own, and the record
   stays readable without it. One bad change, from a buggy writer or a hostile
   member, never makes a resource unreadable.
+  Every change names a member, and a change that names no one is refused.
+  A device's own upkeep, such as a server keeping a workspace, names the
+  person the device belongs to and is signed by the device.
   A workspace held only by one person's computer is complete.
 - Changes move over one link, device to device. Reaching a device through a
   server means reaching it through a device that is online.
