@@ -368,8 +368,10 @@ pub fn write_snapshot(project: &Project) -> Vec<u8> {
 }
 
 pub fn read_snapshot(bytes: &[u8]) -> Result<Project, String> {
-    tilo_resource::Replica::<Project>::load(bytes)
-        .and_then(|replica| replica.state())
+    use tilo_resource::Fields as _;
+    tilo_resource::Doc::load(bytes)
+        .map_err(tilo_resource::ModelError::from)
+        .and_then(|doc| Project::read_fields(&doc, &automerge::ROOT))
         .map_err(|error| format!("the timeline does not read: {error}"))
 }
 

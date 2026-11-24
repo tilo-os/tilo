@@ -1,3 +1,9 @@
+## The lock screen's power actions
+
+power-suspend = Suspend
+power-restart = Restart
+power-shut-down = Shut down
+
 ## Display change
 
 display-confirm-keep = Keep

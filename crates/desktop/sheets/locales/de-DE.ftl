@@ -1,3 +1,9 @@
+## The lock screen's power actions
+
+power-suspend = Bereitschaft
+power-restart = Neu starten
+power-shut-down = Ausschalten
+
 ## Display change
 
 display-confirm-keep = Behalten
