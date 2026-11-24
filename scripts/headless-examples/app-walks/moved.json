@@ -132,47 +132,58 @@
     "test": "crates/lang/tilolang-runtime/tests/e2e_notes.rs:343"
   },
   "so.tilo.session activities.layer#activate-window": {
-    "to": "so.tilo.session tl.so.tilo.shell.Shell#open_item, the open on a live card in quick settings",
+    "to": "so.tilo.session tl.so.tilo.shell.Shell#open_item",
+    "description": "the open on a live card in quick settings",
     "test": "crates/desktop/session/tests/live_activities.rs:144"
   },
   "so.tilo.session activities.layer#apply": {
-    "to": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
+    "to": "so.tilo.session session.live#keep-off-bar",
+    "description": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
     "test": "crates/desktop/session/src/live_list.rs:526"
   },
   "so.tilo.session activities.layer#close": {
-    "to": "so.tilo.session session.live#end-live, the end in a card's header",
+    "to": "so.tilo.session session.live#end-live",
+    "description": "the end in a card's header",
     "test": "crates/desktop/session/tests/session/activities.rs:233"
   },
   "so.tilo.session activities.layer#collapse": {
-    "to": "so.tilo.session session.live#fold-live, a card folded back into the bar's pill",
+    "to": "so.tilo.session session.live#fold-live",
+    "description": "a card folded back into the bar's pill",
     "test": "crates/desktop/session/tests/session/activities.rs:265"
   },
   "so.tilo.session activities.layer#control": {
-    "to": "so.tilo.session session.live#press-live, a control on a card",
+    "to": "so.tilo.session session.live#press-live",
+    "description": "a control on a card",
     "test": "crates/desktop/session/tests/session/activities.rs:287"
   },
   "so.tilo.session activities.layer#field-edit": {
-    "to": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
+    "to": "so.tilo.session session.live#keep-off-bar",
+    "description": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
     "test": "crates/desktop/session/src/live_list.rs:526"
   },
   "so.tilo.session activities.layer#group": {
-    "to": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
+    "to": "so.tilo.session session.live#keep-off-bar",
+    "description": "the live rows keep no fields of their own to edit: what the person decides of one (kept off the bar) is so.tilo.session session.live#keep-off-bar, and a live resource's own fields change by its type's actions",
     "test": "crates/desktop/session/src/live_list.rs:526"
   },
   "so.tilo.session activities.layer#open-link": {
-    "to": "a live row is its resource (`tl:<app>:<id>`): its link is that resource's own",
+    "to": "so.tilo.session tl.so.tilo.shell.Shell#open_item",
+    "description": "a live row is its resource (`tl:<app>:<id>`): its link is that resource's own",
     "test": "crates/desktop/session/tests/live_activities.rs:144"
   },
   "so.tilo.session activities.layer#outline": {
-    "to": "each card stands over the windows in the tilolang shell's corner column, at most three, in the corner the person chose (tl.so.tilo.shell.Shell#dock_cards)",
+    "to": "so.tilo.session tl.so.tilo.shell.Shell#dock_cards",
+    "description": "each card stands over the windows in the tilolang shell's corner column, at most three, in the corner the person chose",
     "test": "crates/desktop/session/tests/session/activities.rs:308"
   },
   "so.tilo.session activities.layer#render": {
-    "to": "the tilolang shell draws each card from its live row, or holds the block an app draws its own card in",
+    "to": "so.tilo.session session.live#expand-live",
+    "description": "the tilolang shell draws each card from its live row, or holds the block an app draws its own card in",
     "test": "crates/desktop/session/tests/hosted_windows.rs:311"
   },
   "so.tilo.session activities.layer#share-link": {
-    "to": "a live row is its resource (`tl:<app>:<id>`): its link is that resource's own",
+    "to": "so.tilo.session tl.so.tilo.shell#share-link",
+    "description": "a live row is its resource (`tl:<app>:<id>`): its link is that resource's own",
     "test": "crates/desktop/session/tests/live_activities.rs:144"
   },
   "so.tilo.session notifications.banners#open": {
@@ -180,8 +191,9 @@
     "test": "crates/desktop/session/src/notifications/tests.rs:1666"
   },
   "so.tilo.session tilo.control#invoke": {
-    "to": "so.tilo.session portal-sheet.question#cancel",
-    "test": "crates/desktop/session/tests/questions.rs:340"
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "description": "a question's cancel is its asked record's own resolve, declined",
+    "test": "crates/desktop/session/src/program_asks/tests.rs:402"
   },
   "so.tilo.settings settings.mcp-server#apply": {
     "to": "tilo.invocations workspace.invocations#resolve",
@@ -365,7 +377,7 @@
   },
   "so.tilo.tasks tasks.issues#share-link": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#share-link",
-    "test": "crates/lang/tilolang-tilo/tests/share.rs:82"
+    "test": "crates/lang/tilolang-service/tests/share.rs:82"
   },
   "so.tilo.tasks tasks.issues#show-board": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open-board",
@@ -493,7 +505,7 @@
   },
   "so.tilo.tasks tasks.tracker#share-link": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#share-link",
-    "test": "crates/lang/tilolang-tilo/tests/share.rs:82"
+    "test": "crates/lang/tilolang-service/tests/share.rs:82"
   },
   "so.tilo.tasks tasks.tracker#show-board": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open-board",

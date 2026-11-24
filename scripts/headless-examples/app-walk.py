@@ -3277,9 +3277,10 @@ MOVED = WALKS / "moved.json"
 
 def moved() -> dict:
     """Where each capability that left its place lives now: `{"<app> <kind>#<op>":
-    {"to": "<app> <kind>#<op>" | "<what does it now>", "test": "<walk/step or test>"}}`,
-    written by the change that moves or deletes it (core.md, "The rule for every
-    piece"). A key with `*` names every capability it matches, moved alike."""
+    {"to": "<app> <kind>#<op>", "description": "<what it does now>", "test":
+    "<path>:<line>"}}`, written by the change that moves or deletes it (core.md,
+    "The rule for every piece"). A key with `*` names every capability it matches,
+    moved alike."""
     return json.loads(MOVED.read_text()) if MOVED.is_file() else {}
 
 
