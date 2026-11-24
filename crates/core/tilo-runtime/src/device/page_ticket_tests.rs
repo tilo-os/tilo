@@ -686,3 +686,140 @@ async fn a_guest_link_signs_in_the_tab_that_handed_its_ticket_to_the_web_host() 
     web_host.close().await;
     server.shutdown().await;
 }
+
+/// `tilo device add <ticket>` signs a browser in at a server that serves a workspace, as a site's
+/// does: the daemon's call about its ticket reaches the tickets the server serves, though the
+/// server answers the workspace's own calls through its apps' dispatcher, and the tab ends
+/// signed in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tilo_device_add_signs_a_browser_in_at_a_server_serving_a_workspace() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let state = tempfile::tempdir().unwrap();
+    let (server_key, server_cert) = enrol(&root, "eu1", DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let reached = endpoint(&server_key).await;
+    let server = tilo_server::daemon::Server::start_on_endpoint_with_protocols(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+        },
+        reached,
+        tilo_workspace_service::Reaching::OnItsOwn,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .clone();
+    let workspace = hosted.create("Studio").await.unwrap().workspace;
+    hosted
+        .enter(&workspace, &laptop_cert)
+        .await
+        .expect("a device of the person enters the workspace");
+    let login = tilo_device_identity::login::Device {
+        site: "https://tilo.test/".into(),
+        host_origin: "https://eu1.tilo.test".into(),
+        workspace: workspace.clone(),
+        workspace_name: Some("Studio".into()),
+        agent: String::new(),
+        cert: laptop_cert.clone(),
+        server_cert: server_cert.clone(),
+        server_address: Some(tilo_server_protocol::web::ServerAddress {
+            endpoint_addr: server.node_addr(),
+            relay_url: None,
+            web: None,
+        }),
+    };
+
+    // The laptop's daemon, logged in at the server.
+    let identity = tempfile::tempdir().unwrap();
+    tilo_identity::provisioning::import_single_device_root(
+        identity.path(),
+        &root,
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+    let laptop_endpoint = endpoint(&laptop_key).await;
+    let copies = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("laptop-service"),
+        &laptop_key,
+        &laptop_cert,
+        &tilo_api::daemon::enter::server_of(&login).await.unwrap(),
+    )
+    .await
+    .expect("the laptop's service opens");
+    let laptop = Tickets::new(
+        (laptop_key.clone(), laptop_cert.clone()),
+        laptop_endpoint.clone(),
+        Some(Arc::new(crate::device::home::Home::new(
+            copies,
+            laptop_cert.clone(),
+            Some(login.clone()),
+        ))),
+        root_in(identity.path().to_path_buf()),
+        None,
+        None,
+        tilo_device_identity::login::Place::at(
+            state.path().join("laptop"),
+            tilo_device_identity::IdentityPaths::under(state.path().join("laptop-keys")),
+        ),
+        ActionService::new(laptop_key.clone(), Arc::new(NoActions)),
+    );
+
+    // The server's web entry: a tab asks to be signed in as Ada and is shown a ticket.
+    let host = server_cert.device_public_key;
+    let tab = TicketLink::new(tilo_server_client::ServerAddress::at(server.node_addr()));
+    let key = new_key();
+    let user = hex::encode(root.verifying_key().to_bytes());
+    let minted = ask(
+        &tab,
+        &key,
+        host,
+        ISSUE,
+        json!({"direction": "sign-in", "user": user, "label": "Firefox on Linux"}),
+    )
+    .await
+    .expect("the tab asks to be signed in as Ada");
+    let text = minted["ticket"]
+        .as_str()
+        .expect("a ticket to show")
+        .to_owned();
+    let shown = Ticket::parse(&text).unwrap();
+    assert_eq!(
+        shown.issuer.endpoint,
+        *server.node_addr().id.as_bytes(),
+        "the ticket names the server's endpoint"
+    );
+
+    // `tilo device add <ticket>` on the laptop: what waits, then the root's certificate for it.
+    let pending = ask_device(&laptop, PENDING, json!({ "ticket": text }))
+        .await
+        .expect("the daemon reads what waits at the server");
+    assert_eq!(
+        pending["device"],
+        hex::encode(key.verifying_key().to_bytes())
+    );
+    let cert = signed_for(&root, &key, "Firefox on Linux");
+    ask_device(&laptop, APPROVE, json!({ "ticket": text, "cert": cert }))
+        .await
+        .expect("the daemon signs the browser in");
+
+    let (_, certified, host_cert) = followed(&tab, &key, host, &minted["id"]).await;
+    assert_eq!(
+        certified, cert,
+        "the browser is signed in as the root signed it"
+    );
+    assert_eq!(
+        host_cert.device_public_key, host,
+        "by the server's own certificate"
+    );
+
+    tab.close().await;
+    server.shutdown().await;
+}
