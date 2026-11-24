@@ -208,11 +208,12 @@ impl Driver {
 
     /// Take up everything the app's widgets read, also what was written where no pass would take
     /// it up until something else asked for one (local state a test or a host set from outside):
-    /// the frame's own model pump advances and synchronizes it, forced past the observation that
-    /// would call the sync quiet, then that frame shows it. What a capture, an audit or a settled
-    /// test reads is then never a stale snapshot.
+    /// the model is synchronized now, as a hosted worker's pump synchronizes it when told to, and
+    /// the frame that shows it follows. The sync does not advance the widgets' update — the frame's
+    /// own pump does that, once — so a frame nothing else moved stays quiet. What a capture, an
+    /// audit or a settled test reads is then never a stale snapshot.
     pub fn refresh_model(&mut self) {
-        self.app.needs_sync = true;
+        let _ = self.app.sync_model(true);
         self.run_frame();
     }
 

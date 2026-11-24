@@ -588,6 +588,9 @@ impl Driver {
             crate::widget::layout::placing_again_in(tree, || {
                 self.app.apply_history_presentation(root);
             });
+            // What stood under a still pointer may have moved: the next press replays where the
+            // pointer is, as a frame that placed moved geometry does.
+            self.app.input.pointer_replay.mark_unsettled();
         }
         let root = self.app.root_widget.as_ref();
         if root.is_layout_dirty() || root.layout_needs_measure() || root.needs_redraw() {
