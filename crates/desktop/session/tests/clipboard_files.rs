@@ -31,9 +31,14 @@ const STAGING_PREFIX: &str = ".tilo-transfer-";
 const RECEIPT: &str = "so.tilo.session-file-paste";
 /// How many files the folder of the crash test holds.
 const BIG: usize = 500;
+/// A session whose pastes are written down in device records of the test's own, as a desktop's
+/// are in the records its daemon keeps.
 fn session() -> Session {
     Session::headless(
-        Options::default(),
+        Options {
+            records: Some(DeviceRecords::held()),
+            ..Options::default()
+        },
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("session")
@@ -516,7 +521,13 @@ fn kill_mid_transfer_child() {
     let mut paths = tree(&source, 6);
     paths.push(source.join("big"));
 
-    let mut session = session();
+    // The shell of the daemon that started this process: it writes the paste down in that
+    // device's records, on the link the daemon handed it.
+    let mut session = Session::headless(
+        Options::default(),
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+    )
+    .expect("session");
     copy(&mut session, &paths, true);
     paste_into(&mut session, &destination, None);
     // The paste dies at the moment `stage` names (it ends this process there, as a power cut
