@@ -29,7 +29,9 @@ ironcalc_base.workspace = true
 iana-time-zone.workspace = true
 jiff.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# A Notion export's properties keep the order the database wrote them in, so a sheet's columns
+# read in the same order as the table they came from.
+serde_json = { workspace = true, features = ["preserve_order"] }
 anyhow.workspace = true
 
 [lints]

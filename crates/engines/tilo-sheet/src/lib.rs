@@ -621,7 +621,7 @@ mod tests {
         assert_eq!(sheet.rows, 3);
         assert_eq!(sheet.columns, 1);
         assert_eq!(sheet.cells["A3"].shown, "5");
-        assert_eq!(sheet.cells["A1"].shown, "2,00\u{00A0}");
+        assert_eq!(sheet.cells["A1"].shown, "2,00\u{00A0}\u{20AC}");
         assert_eq!(sheet.cells["A1"].kind, "number");
     }
 

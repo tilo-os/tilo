@@ -185,8 +185,12 @@ fn table_of(block: &Value, words: &Words) -> Option<ImportedTable> {
 
 fn database_of(block: &Value, words: &Words) -> Option<ImportedTable> {
     let body = block.get("child_database")?;
-    let rows = body
-        .get("rows")
+    // The export nests a database's rows under `results` (the listing a page keeps), and an
+    // API database query keeps them under `rows` or `children`; read whichever it brought.
+    let rows = block
+        .get("results")
+        .or_else(|| body.get("rows"))
+        .or_else(|| body.get("results"))
         .or_else(|| block.get("children"))
         .and_then(Value::as_array)?;
     if rows.is_empty() {

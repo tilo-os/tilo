@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn a_fill_extends_a_series_and_moves_copied_formulas() {
         let mut book = book();
-        book.sheets[0].cells.insert("A3".into(), "=A2+1".into());
+        book.sheets[0].cells.insert("A2".into(), "=A2+1".into());
         let change = Change::Fill {
             sheet: "Sheet1".into(),
             source: "A2".into(),

@@ -474,7 +474,8 @@ pub fn format_currency(n: f64, c: Currency) -> String {
         out.push_str(&amount);
     } else {
         out.push_str(&amount);
-        out.push(' ');
+        // A non-breaking space keeps the symbol on the same line as its amount.
+        out.push('\u{00A0}');
         out.push_str(c.symbol());
     }
     out
@@ -797,10 +798,10 @@ mod tests {
         {
             assert_eq!(format_currency(1234.5, Currency::USD), "$1,234.50");
             assert_eq!(format_currency(-1200.0, Currency::USD), "-$1,200.00");
-            assert_eq!(format_currency(1234.5, Currency::EUR), "1.234,50 \u{20AC}");
+            assert_eq!(format_currency(1234.5, Currency::EUR), "1.234,50\u{00A0}\u{20AC}");
             assert_eq!(format_currency(99.9, Currency::GBP), "\u{00A3}99.90");
             assert_eq!(format_currency(1234.5, Currency::JPY), "\u{00A5}1,235");
-            assert_eq!(format_currency(50.0, Currency::CHF), "50.00 CHF");
+            assert_eq!(format_currency(50.0, Currency::CHF), "50.00\u{00A0}CHF");
         }
 
         {
