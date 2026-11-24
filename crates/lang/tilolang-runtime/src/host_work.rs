@@ -321,10 +321,16 @@ pub fn job_value(record: &serde_json::Value) -> Value {
                 .unwrap_or(0),
         )
     };
-    let state = match record.get("state").and_then(serde_json::Value::as_str) {
-        Some(state @ ("queued" | "running" | "done" | "failed" | "cancelled")) => state,
-        _ => "failed",
-    };
+    let state = record
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .filter(|state| {
+            matches!(
+                *state,
+                "queued" | "running" | "done" | "failed" | "cancelled"
+            )
+        })
+        .unwrap_or("failed");
     let error = detail
         .and_then(|d| d.get("error"))
         .or_else(|| record.get("why"))
@@ -430,12 +436,12 @@ impl Core {
                 Value::Action(handler) => crate::value::job_handler_to_json(&handler)
                     .map(Some)
                     .map_err(HostFail::Trap),
-                other => trap(&format!(
+                other => trap(format!(
                     "a job's handler is an action, not a {}",
                     other.kind_name()
                 )),
             },
-            other => trap(&format!(
+            other => trap(format!(
                 "a job's handler is an optional action, not a {}",
                 other.kind_name()
             )),
