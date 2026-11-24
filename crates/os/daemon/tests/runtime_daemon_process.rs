@@ -24,6 +24,10 @@ fn host(profile: &Path) -> Command {
     let mut command = Command::new(runtime_binary());
     command
         .env("TILO_RUNTIME_PROFILE", profile)
+        // The device's key and certificates live in the profile, as the service names them to
+        // this computer: the daemon starts as the person `set_up` certified only when the
+        // certificate it reads is the one made here.
+        .env("TILO_IDENTITY_ROOT", profile.join("identity"))
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         .env_remove("TILO_RUNTIME_STANDALONE");
@@ -92,18 +96,40 @@ impl DaemonProfile {
             "{}",
             json!({"jsonrpc":"2.0","id":1,"method":"ping"})
         )?;
-        let output = client.wait_with_output()?;
+        let mut said = client.stdout.take().context("the client's answer")?;
+        let mut why = client.stderr.take().context("the client's reason")?;
+        // The daemon admits the call only once the workspace is founded, which can take as long
+        // as its own wait for the person's services: a client that is still there after that
+        // waited on a founding that never finished, and says so with the daemon's own log.
+        let deadline = Instant::now()
+            .checked_add(LAUNCHER_START_CAP.saturating_add(Duration::from_secs(60)))
+            .context("the first call's deadline")?;
+        let ended = loop {
+            if let Some(status) = client.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = client.kill();
+                let _ = client.wait();
+                bail!(
+                    "the person's first call founded no workspace and did not end (who: {})\n{}",
+                    who_briefly(self.path()),
+                    self.log()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        let mut answer = String::new();
+        std::io::Read::read_to_string(&mut said, &mut answer)?;
+        let mut reason = String::new();
+        std::io::Read::read_to_string(&mut why, &mut reason)?;
         ensure!(
-            output.status.success(),
-            "the person's first call failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            ended.success(),
+            "the person's first call failed: {reason}\n{}",
+            self.log()
         );
-        let reply: Value = serde_json::from_slice(&output.stdout).with_context(|| {
-            format!(
-                "the first call's answer: {:?}",
-                String::from_utf8_lossy(&output.stdout)
-            )
-        })?;
+        let reply: Value = serde_json::from_str(&answer)
+            .with_context(|| format!("the first call's answer: {answer:?}\n{}", self.log()))?;
         ensure!(
             reply.get("id") == Some(&json!(1)),
             "the first call's answer: {reply}"
@@ -113,9 +139,14 @@ impl DaemonProfile {
                 .get("workspace")
                 .and_then(Value::as_str)
                 .is_some_and(|workspace| !workspace.is_empty()),
-            "the person's first call founded no workspace"
+            "the person's first call founded no workspace\n{}",
+            self.log()
         );
         Ok(())
+    }
+    /// The profile's daemon log, as it stands.
+    fn log(&self) -> String {
+        std::fs::read_to_string(self.path().join("daemon.log")).unwrap_or_default()
     }
     fn unstarted() -> Result<Self> {
         use std::os::unix::fs::PermissionsExt;
@@ -237,19 +268,39 @@ fn a_public_approved_check_configuration_refuses_the_daemon_start() -> Result<()
     Ok(())
 }
 
-/// The runtime's answer to a `status` request on the profile's socket.
-fn status(profile: &Path) -> Result<Value> {
+/// Who the daemon says it is, asked with a short bound: a daemon stuck admitting the person's
+/// call answers nothing at all.
+fn who_briefly(profile: &Path) -> String {
+    (|| -> Result<Value> {
+        let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        stream.write_all(b"{\"native\":\"account#who\"}\n")?;
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line)?;
+        Ok(serde_json::from_str(&line)?)
+    })()
+    .map_or_else(
+        |error| format!("unanswered: {error}"),
+        |who| who.to_string(),
+    )
+}
+/// The runtime's answer to `request` on the profile's socket.
+fn ask(profile: &Path, request: &Value) -> Result<Value> {
     let mut stream = UnixStream::connect(profile.join("native.sock"))
         .context("connecting to the runtime's profile socket")?;
     stream
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
-        .context("bounding the status reply")?;
+        .context("bounding the reply")?;
     stream
-        .write_all(b"{\"native\":\"status\"}\n")
-        .context("asking the runtime for its status")?;
+        .write_all(format!("{request}\n").as_bytes())
+        .context("asking the runtime")?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line)?;
-    serde_json::from_str(&line).with_context(|| format!("the status reply: {line:?}"))
+    serde_json::from_str(&line).with_context(|| format!("the answer to {request}: {line:?}"))
+}
+/// The runtime's answer to a `status` request on the profile's socket.
+fn status(profile: &Path) -> Result<Value> {
+    ask(profile, &json!({"native": "status"}))
 }
 /// The daemon serving `profile`'s socket, as its status names it.
 fn daemon(profile: &Path) -> Result<Value> {
