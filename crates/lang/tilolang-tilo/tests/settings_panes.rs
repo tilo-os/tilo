@@ -42,8 +42,7 @@ fn settings_with(access: Option<MemberAccess>) -> (Host, tilolang::Compiled) {
         move || access.clone(),
     )
     .expect("a host");
-    host.load_compiled(&compiled)
-        .expect("the package loads");
+    host.load_compiled(&compiled).expect("the package loads");
     // The platform's packages it uses, as a window's process loads them: what a pane reads of the
     // workspace or the device is a resource their readings and actions come from.
     tilolang_tilo::platform_apps::load(&host, &compiled.meta.uses);
@@ -93,10 +92,18 @@ fn a_setting_opens_the_pane_it_is_on_and_a_page_its_own() {
     invoke(&host, "show_setting", vec![Value::text("keyboard.layout")]);
     assert_eq!(pane(&host), "input", "a keyboard setting is on Input");
 
-    invoke(&host, "show_setting", vec![Value::text("a11y.high_contrast")]);
+    invoke(
+        &host,
+        "show_setting",
+        vec![Value::text("a11y.high_contrast")],
+    );
     assert_eq!(pane(&host), "accessibility");
 
-    invoke(&host, "show_setting", vec![Value::text("notifications.banners")]);
+    invoke(
+        &host,
+        "show_setting",
+        vec![Value::text("notifications.banners")],
+    );
     assert_eq!(pane(&host), "notifications");
 
     invoke(&host, "open_pane", vec![Value::text("external_accounts")]);
@@ -265,4 +272,3 @@ fn an_owner_sets_the_limits_the_pane_shows() {
     assert_eq!(arg("member_bytes"), Some(Value::Int(250 * 1_048_576)));
     assert_eq!(arg("hourly_bytes"), Some(Value::Int(250 * 1_048_576)));
 }
-
