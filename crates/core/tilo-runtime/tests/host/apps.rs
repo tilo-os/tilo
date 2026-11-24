@@ -96,6 +96,7 @@ pub fn install_source(name: &str, source: &str) {
             tilo_runtime: package::DEFAULT_TILO_RUNTIME.to_owned(),
             tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
             version: "0.1.0".to_owned(),
+            locked: false,
         },
         &publisher,
     )
