@@ -21,6 +21,8 @@ pub mod join_log;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_transport;
 mod kept_states;
+#[cfg(not(target_arch = "wasm32"))]
+mod link_proof;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
 pub mod loopback;
 mod person_records;
@@ -72,8 +74,8 @@ mod state;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 pub mod transport;
-pub mod workspace;
 mod verified_certificate;
+pub mod workspace;
 /// The person's answers about the devices of their machines, kept in their own workspace.
 pub use device_answers::{
     DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, PERSON_RECORDS_APP, Refusal,
@@ -81,19 +83,19 @@ pub use device_answers::{
 /// The person's own workspace, as a part of a session reads and writes its documents.
 pub use person_records::{DocumentEdit, PersonDocuments};
 pub use state::CallGate;
-pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 pub use state::ChangeRefused;
 pub use state::DocumentKeysBasis;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
 pub use state::mail_send_lease;
 pub use state::{CHANNELS as REGISTRY_CHANNELS, PackageRegistry, RevokedPublisher, TrustAttestor};
+pub use state::{CHECKPOINT_CHECKS_KEY, CheckpointCheck};
 pub use state::{
     CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus, DONE_KEY, DelegateInactive,
     DocumentRow, Done, GovernedAccess, GovernedAgent, GovernedDelegateRow, HELD_COPIES_KEY,
-    HeldCopy, HeldDocument, HolderCopy, InstalledApp, KeptDocument, LEASES_KEY,
-    Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member,
-    MemberId, MemberList, MembershipError, MergedDocument, Missing, NotAdmitted, OpenedDocument,
+    HeldCopy, HeldDocument, HolderCopy, InstalledApp, KeptDocument, LEASES_KEY, Lease, LeaseClaim,
+    MAX_HELD_BYTES, MAX_HELD_FOR_GOVERNANCE_PER_WRITER, MAX_HELD_INPUTS, Member, MemberId,
+    MemberList, MembershipError, MergedDocument, Missing, NotAdmitted, OpenedDocument,
     OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance,
     PeerGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPublication, PeerPublicationMut,
     PeerWorkspace, PeerWorkspaceMut, ReceiveOutcome, Reseal, RowError, SCHEDULES_KEY,

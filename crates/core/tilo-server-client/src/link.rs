@@ -206,11 +206,27 @@ impl Dialer {
     }
 }
 
+/// Who the host at the other end of [`prove_stream`] must prove to be.
+#[derive(Clone, Copy, Debug)]
+pub enum ExpectedHost {
+    /// A device of the person whose root is `user`, and `device` when it names one: a device of
+    /// the person's own, or a host a session was pinned to by its person.
+    Person {
+        /// The person's root key.
+        user: [u8; 32],
+        /// The host device, when the caller knows which.
+        device: Option<[u8; 32]>,
+    },
+    /// Exactly the device dialled, of whichever person: the host of a workspace another person
+    /// shares, which its signed address names by device.
+    Device([u8; 32]),
+}
+
 /// The client half of the member handshake over `send`/`recv`, the stream
 /// pair a device already opened on a host: hello, the host's proof checked as
-/// the person and device `expected_user`/`expected_device` name, and this
-/// device's own proof. What a live session runs on the first stream of its
-/// link before the stream carries its own protocol.
+/// `expected` names it, and this device's own proof. What a live session and a
+/// workspace's link run on the first stream of their link before the stream
+/// carries its own protocol.
 ///
 /// # Errors
 ///
@@ -222,8 +238,7 @@ pub async fn prove_stream<R, W>(
     cert: &tilo_user_identity::DeviceCert,
     signer: &dyn crate::signer::DeviceSigner,
     revocations: &tilo_user_identity::RevocationList,
-    expected_user: [u8; 32],
-    expected_device: Option<[u8; 32]>,
+    expected: ExpectedHost,
 ) -> Result<tilo_server_protocol::auth::AuthenticatedPeer, String>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -252,8 +267,17 @@ where
         None => return Err("the host answered nothing".into()),
     };
     let now = tilo_clock::unix_now_ns();
-    let peer = auth::verify_hello_ack(&ack, &expected_user, revocations, now, &client_nonce)
-        .map_err(|error| error.to_string())?;
+    let (peer, expected_device) = match expected {
+        ExpectedHost::Person { user, device } => (
+            auth::verify_hello_ack(&ack, &user, revocations, now, &client_nonce),
+            device,
+        ),
+        ExpectedHost::Device(device) => (
+            auth::verify_pinned_host_ack(&ack, revocations, now, &client_nonce),
+            Some(device),
+        ),
+    };
+    let peer = peer.map_err(|error| error.to_string())?;
     if expected_device.is_some_and(|expected| peer.cert.device_public_key != expected) {
         return Err("the host proved another device than the one dialled".into());
     }

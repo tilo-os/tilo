@@ -904,19 +904,18 @@ impl Task {
     ///
     /// An actions link proves nothing: each request it carries is signed by the device that
     /// made it, and the host reads the link's first frame as the request it is. A records link
-    /// is served only to a device the host knows, and where its carrier names no endpoint key —
-    /// a page's WebTransport session — the device proves itself with the server's handshake on
-    /// the link's first stream ([`tilo_server_client::link::Link::prove_member`]). Over iroh the
-    /// endpoint this device runs under its key is who it is.
+    /// is served only to a device the host knows: the device proves itself with the server's
+    /// handshake on the link's first stream ([`tilo_server_client::link::Link::prove_member`]),
+    /// over iroh as over a page's WebTransport session, whose carrier names no endpoint key.
     async fn reach(
         &mut self,
         purpose: Purpose,
     ) -> Result<tilo_server_client::link::Link, LinkError> {
         let dialer = self.dial.dialer(&self.config, self.signer.as_ref()).await?;
         let link = dialer.link(purpose).await?;
-        if purpose == Purpose::Records
-            && self.config.host.carrier() == tilo_server_client::Carrier::WebTransport
-        {
+        // A workspace's link proves its device on its first stream over every carrier: the host
+        // reads the proof before the dial names the workspace.
+        if purpose == Purpose::Records {
             link.prove_member(
                 &self.config.cert,
                 self.signer.as_ref(),

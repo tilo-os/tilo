@@ -450,8 +450,10 @@ async fn proven_live_session_link(
         &join.cert,
         join.signer.as_ref(),
         &join.revocations,
-        join.server_cert.user_public_key,
-        Some(join.server_cert.device_public_key),
+        tilo_server_client::link::ExpectedHost::Person {
+            user: join.server_cert.user_public_key,
+            device: Some(join.server_cert.device_public_key),
+        },
     )
     .await;
     if proved.is_err() {

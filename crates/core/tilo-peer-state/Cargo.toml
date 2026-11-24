@@ -80,7 +80,7 @@ workspace-hack = { version = "0.1" }
 # Writes the file-backed store: owner-only, crash-safe replacement.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-content = { path = "../content" }
-# The random id of each enrollment challenge request.
+# The random id of each enrollment challenge request, and a link proof's nonce.
 getrandom.workspace = true
 rand_core.workspace = true
 # The device identity an enrollment presents to the issuing host.

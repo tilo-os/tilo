@@ -106,7 +106,7 @@ async fn four_devices() -> Four {
     }
     // tilo.sh is the person's always-on server: it has its entry among their servers, as a
     // server enters itself there once it has their workspace.
-    tilo_server::servers::enroll(workspaces, &host.server.node_addr())
+    tilo_server::servers::enroll(workspaces, &host.server.node_addr(), None)
         .await
         .expect("the server enters itself among the person's servers");
     let (desktop_home, desktop_person) = (desktop_session.clone(), desktop_session.clone());

@@ -1563,7 +1563,65 @@ impl DirectSync {
             .connect(addr, DIRECT_ALPN)
             .await
             .map_err(|error| Refusal::Other(error.to_string()))?;
+        // The link's first stream proves this device to the one dialled, and that one back,
+        // before the dial names its workspace: every host reads the proof first.
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .map_err(|error| Refusal::Other(error.to_string()))?;
+        let workspace = self.workspace().map_err(Refusal::Other)?;
+        crate::link_proof::prove_dialled(
+            &mut send,
+            &mut recv,
+            &self.certificate().map_err(Refusal::Other)?,
+            self.0.signer.as_ref(),
+            &self.revocations(),
+            &workspace.to_string(),
+            device,
+        )
+        .await
+        .map_err(Refusal::Other)?;
+        send.finish()
+            .map_err(|error| Refusal::Other(error.to_string()))?;
         self.named_over(Arc::new(connection), device, takes).await
+    }
+
+    /// Prove the device at the other end of `connection`, a link this device accepted, on its
+    /// first stream ([`crate::link_proof`]), as the device the connection's own key names.
+    ///
+    /// # Errors
+    ///
+    /// The device did not prove itself, or proved another device than the connection's.
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn prove_accepted(&self, connection: &Connection) -> Result<(), String> {
+        let (mut send, mut recv) = connection
+            .accept_bi()
+            .await
+            .map_err(|error| error.to_string())?;
+        let proved = crate::link_proof::proved_dialler(
+            &mut send,
+            &mut recv,
+            &self.certificate()?,
+            self.0.signer.as_ref(),
+            &self.revocations(),
+        )
+        .await?;
+        if proved != Transport::remote(connection) {
+            return Err("the dialling device proved another key than its connection's".into());
+        }
+        Ok(())
+    }
+
+    /// The revocations this device's replica of the workspace holds: what a link's proof checks
+    /// the device at the other end against.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn revocations(&self) -> tilo_user_identity::RevocationList {
+        let mut revocations = tilo_user_identity::RevocationList::new();
+        for entry in self.0.replica.lock().revocations() {
+            // An entry this workspace cannot verify is one it does not keep.
+            let _ = revocations.insert(entry);
+        }
+        revocations
     }
 
     /// Name this device's workspace on `transport` ([`LinkFrame::Workspace`])
@@ -3502,9 +3560,12 @@ impl ProtocolHandler for DirectSync {
         // A connection this device accepts is a member's, so this device is
         // the workspace's host on it.
         self.host();
-        self.serve(&connection)
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
+        async {
+            self.prove_accepted(&connection).await?;
+            self.serve(&connection).await
+        }
+        .await
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
     }
 }
 
@@ -3636,9 +3697,21 @@ impl Serving {
 #[cfg(not(target_arch = "wasm32"))]
 impl ProtocolHandler for Serving {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        self.serve_link(&connection)
-            .await
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
+        async {
+            // Every link this host serves is this device's: any of them proves it, and the dial
+            // proves its device before it names the workspace it wants.
+            let any = self.links.read_recover().values().next().cloned();
+            let Some(link) = any else {
+                return Err(refuse(
+                    &connection,
+                    &Refusal::Other("this host holds no such workspace".into()),
+                ));
+            };
+            link.prove_accepted(&connection).await?;
+            self.serve_link(&connection).await
+        }
+        .await
+        .map_err(|error| AcceptError::from_err(std::io::Error::other(error)))
     }
 }
 
