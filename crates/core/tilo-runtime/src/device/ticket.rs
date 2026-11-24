@@ -416,7 +416,7 @@ fn server_rows() -> Vec<CatalogueRow> {
              this machine when left out.",
         )
     };
-    let service = |what: &str| ActionParam::required("service", ParamType::Text, what);
+    let service = |what: &'static str| ActionParam::required("service", ParamType::Text, what);
     let mut rows = vec![row(None)];
     for action in tilo_server::operations::ACTIONS {
         let (label, description, mut params) = match action {

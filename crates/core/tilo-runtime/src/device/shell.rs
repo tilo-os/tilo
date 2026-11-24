@@ -348,7 +348,7 @@ async fn ask(
     let (actions, endpoint, _) = workspaces
         .turn_action_service()
         .ok_or("this device runs no action service")?;
-    actions.reach_device_at(device, *addr.id.as_bytes());
+    actions.keyed_apart(device, *addr.id.as_bytes());
     let followed = Arc::new(actions.remote(&endpoint, &addr, &workspace))
         .invoke_until_settled(request, tilo_peer_state::actions::FOLLOW_DEADLINE)
         .await;

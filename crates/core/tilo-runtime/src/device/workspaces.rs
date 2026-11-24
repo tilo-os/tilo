@@ -163,7 +163,7 @@ impl ServiceWorkspaces {
         .map_err(|error| format!("this device's workspace service: {error}"))?;
         let mut opened = Self::unopened(Arc::new(service), identity, endpoint);
         opened.keys = Some(keys);
-        opened.groups = Some((dir.join(GROUPS), vault_key(key)));
+        opened.groups = Some((dir.join(GROUPS), own_device::vault_key(key)));
         Ok(Arc::new(opened))
     }
 
@@ -392,7 +392,10 @@ impl ServiceWorkspaces {
                 tracing::warn!(%error, "this device was not entered among its person's servers");
             }
         }
-        self.service.workspaces().hold_as_members(device.hosts()).await;
+        self.service
+            .workspaces()
+            .hold_as_members(device.hosts())
+            .await;
     }
 
     /// Close the service and its endpoint, as the process ending would: what the service holds
@@ -458,12 +461,6 @@ impl ServiceWorkspaces {
     /// Told each time this profile starts holding a workspace as a member.
     pub(crate) fn entered(&self) -> Arc<tokio::sync::Notify> {
         self.copies().members_held()
-    }
-
-    /// The workspace founded here, which the service governs, once it is: on a computer with no
-    /// login, the one whose records the device reads as itself.
-    pub(crate) fn founded(&self) -> Option<WorkspaceId> {
-        self.own.get().copied()
     }
 
     /// Whether this profile holds `workspace` as a member copy.
@@ -1004,6 +1001,21 @@ async fn copy_of(
         Some(copy) => Some(copy),
         None => workspaces.governed_copy(workspace).await,
     }
+}
+
+/// The reader groups kept at `path` and those a desktop kept (`carried`, as the file was), as one
+/// list: what the key service reads as it takes in the groups.
+fn readers_with(path: &Path, carried: &[u8]) -> Result<Vec<u8>, String> {
+    let mut readers: Vec<(String, String)> =
+        tilo_files::native::atomic::json::load_or_default(path);
+    let carried: Vec<(String, String)> = serde_json::from_slice(carried)
+        .map_err(|error| format!("the desktop's {READER_GROUPS}: {error}"))?;
+    for reader in carried {
+        if !readers.contains(&reader) {
+            readers.push(reader);
+        }
+    }
+    serde_json::to_vec(&readers).map_err(|error| error.to_string())
 }
 
 impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {

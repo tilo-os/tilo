@@ -254,63 +254,67 @@ impl DeviceLayouts {
             LayoutHere::Unwritten | LayoutHere::Elsewhere => None,
         };
         let mut windows = Vec::new();
-        let reading = desktop.as_ref().map_or_else(LayoutReading::default, |desktop| {
-            tilo_desktop_model::reading::of(
-                &desktop.tree,
-                String::new(),
-                &Naming {
-                    workspace: &|name: &str| name.trim().to_owned(),
-                    row: &|name: &str, at: usize| {
-                        let name = name.trim();
-                        if name.is_empty() {
-                            format!("Strip {}", at.saturating_add(1))
+        let reading = desktop
+            .as_ref()
+            .map_or_else(LayoutReading::default, |desktop| {
+                tilo_desktop_model::reading::of(
+                    &desktop.tree,
+                    String::new(),
+                    &Naming {
+                        workspace: &|name: &str| name.trim().to_owned(),
+                        row: &|name: &str, at: usize| {
+                            let name = name.trim();
+                            if name.is_empty() {
+                                format!("Strip {}", at.saturating_add(1))
+                            } else {
+                                name.to_owned()
+                            }
+                        },
+                    },
+                    |tab, group| {
+                        let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .map(String::from)
+                            .unwrap_or_default();
+                        let app_title = if app.is_empty() {
+                            String::new()
                         } else {
-                            name.to_owned()
+                            title(&app)
+                        };
+                        let shown = tab.title.trim().to_owned();
+                        let name = match (shown.is_empty(), app_title.is_empty()) {
+                            (false, false) if shown != app_title => {
+                                format!("{shown} — {app_title}")
+                            }
+                            (false, _) => shown.clone(),
+                            (true, _) => app_title.clone(),
+                        };
+                        let record = desktop
+                            .records
+                            .iter()
+                            .find(|(on, _)| *on == tab.id)
+                            .map(|(_, record)| record.clone())
+                            .unwrap_or_default();
+                        windows.push(json!({
+                            "key": tab.id.to_string(),
+                            "app": app,
+                            "app_title": app_title,
+                            "record": record,
+                        }));
+                        LayoutPlaceReading {
+                            key: tab.id.to_string(),
+                            strip: group.to_string(),
+                            shows: app,
+                            shown_as: tab.view.clone(),
+                            // What the window shows is its app's to draw, where its app runs.
+                            resource: String::new(),
+                            title: shown,
+                            name,
+                            pinned: tab.pinned,
+                            shell: SHELL.to_owned(),
                         }
                     },
-                },
-                |tab, group| {
-                    let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile)
-                        .map(String::from)
-                        .unwrap_or_default();
-                    let app_title = if app.is_empty() {
-                        String::new()
-                    } else {
-                        title(&app)
-                    };
-                    let shown = tab.title.trim().to_owned();
-                    let name = match (shown.is_empty(), app_title.is_empty()) {
-                        (false, false) if shown != app_title => format!("{shown} — {app_title}"),
-                        (false, _) => shown.clone(),
-                        (true, _) => app_title.clone(),
-                    };
-                    let record = desktop
-                        .records
-                        .iter()
-                        .find(|(on, _)| *on == tab.id)
-                        .map(|(_, record)| record.clone())
-                        .unwrap_or_default();
-                    windows.push(json!({
-                        "key": tab.id.to_string(),
-                        "app": app,
-                        "app_title": app_title,
-                        "record": record,
-                    }));
-                    LayoutPlaceReading {
-                        key: tab.id.to_string(),
-                        strip: group.to_string(),
-                        shows: app,
-                        shown_as: tab.view.clone(),
-                        // What the window shows is its app's to draw, where its app runs.
-                        resource: String::new(),
-                        title: shown,
-                        name,
-                        pinned: tab.pinned,
-                        shell: SHELL.to_owned(),
-                    }
-                },
-            )
-        });
+                )
+            });
         json!({
             "layout": reading,
             "windows": windows,
@@ -367,9 +371,9 @@ pub(crate) struct LayoutActions {
 impl LayoutActions {
     /// The actions on the layouts of the workspaces `workspaces` keeps, naming apps by `titles`.
     pub(crate) fn new(workspaces: Arc<ServiceWorkspaces>, titles: Titles) -> Self {
-        let mut resource = tilo_resource::offer::<LayoutAction>(
-            tilo_resource::typed_resource::<LayoutRow>(RESOURCE, "Layout"),
-        );
+        let mut resource = tilo_resource::offer::<LayoutAction>(tilo_resource::typed_resource::<
+            LayoutRow,
+        >(RESOURCE, "Layout"));
         resource.app_id = Some(PROVIDER.to_owned());
         Self {
             layouts: Arc::new(DeviceLayouts::new(workspaces)),
@@ -389,13 +393,8 @@ impl LayoutActions {
             InvokeArgument::Json(arguments) => arguments.clone(),
             InvokeArgument::None | InvokeArgument::Text(_) => Map::new(),
         };
-        tilo_service::decode::<LayoutAction>(
-            &self.resources,
-            RESOURCE,
-            &address.action,
-            &arguments,
-        )
-        .map_err(|error| ActionCallError::from_api(&error))
+        tilo_service::decode::<LayoutAction>(&self.resources, RESOURCE, &address.action, &arguments)
+            .map_err(|error| ActionCallError::from_api(&error))
     }
 }
 
@@ -513,6 +512,12 @@ impl ActionProvider for LayoutActions {
             done.complete(Ok(receipt));
         });
         answer
+    }
+
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        Pending::ready(Err(ActionCallError::NotCancellable {
+            reason: "a layout change ends as it is asked".to_owned(),
+        }))
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {

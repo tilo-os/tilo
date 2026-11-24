@@ -47,7 +47,7 @@ impl Account {
         workspace: &str,
     ) -> Self {
         let actions = own.copies().action_service();
-        actions.reach_device_at(server_device, *server.id.as_bytes());
+        actions.keyed_apart(server_device, *server.id.as_bytes());
         Self {
             server: Arc::new(actions.remote(&own.endpoint(), server, workspace)),
         }
@@ -115,7 +115,11 @@ impl Account {
             on_behalf_of: None,
             read,
         };
-        match Arc::clone(&self.server).ask_message(message).await {
+        match Arc::clone(&self.server)
+            .ask_message(message)
+            .await
+            .flatten()
+        {
             Some(RemoteActionMessage::ResourceReading { result, .. }) => {
                 let text = result.map_err(|error| error.to_string())?;
                 serde_json::from_str(&text).map_err(|error| error.to_string())
@@ -173,11 +177,10 @@ impl Account {
                 answer: tilo_actions::remote::ReadAnswer::Reading,
             })
             .await;
-        let names = devices
-            .as_ref()
-            .map_or_else(std::collections::BTreeMap::new, |value| {
-                tilo_server_protocol::devices::names(value)
-            });
+        let names = devices.as_ref().map_or_else(
+            |_| std::collections::BTreeMap::new(),
+            |value| tilo_server_protocol::devices::names(value),
+        );
         list.with_hosts(&names, Some(&self.server.device()));
         let member = member_record(person);
         for index in 0..list.workspaces.len() {

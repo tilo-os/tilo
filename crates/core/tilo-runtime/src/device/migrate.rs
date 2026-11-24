@@ -32,7 +32,9 @@ impl Daemon {
     pub fn serve_migrations(self: &Arc<Self>) {
         let host = DaemonHost {
             daemon: Arc::downgrade(self),
-            workspace: self.workspace().to_owned(),
+            workspace: self
+                .mcp_workspace(None)
+                .expect("the device's own workspace is the one it answers without asking"),
             dir: self.dir(),
         };
         self.provide(

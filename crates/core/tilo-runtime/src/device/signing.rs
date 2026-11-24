@@ -395,12 +395,6 @@ pub fn answer_sign_in(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let ask = SignInAsk {
-        audience: &audience,
-        challenge,
-        client: &client,
-        grant: grant_ask,
-    };
     let root = tilo_identity::store::load_from_path(root_record()?)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let device = tilo_device_identity::persist::load_device_key(keys)
@@ -409,7 +403,15 @@ pub fn answer_sign_in(
         .map_err(|error| io::Error::other(error.to_string()))?;
     let signed =
         block_on_owned(
-            async move { answer_sign_in(&root, &device, &cert.device_label, &ask).await },
+            async move {
+                let ask = SignInAsk {
+                    audience: &audience,
+                    challenge,
+                    client: &client,
+                    grant: grant_ask,
+                };
+                answer_sign_in(&root, &device, &cert.device_label, &ask).await
+            },
         )
         .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(json!({ "proof": signed.proof, "grant": signed.grant }))

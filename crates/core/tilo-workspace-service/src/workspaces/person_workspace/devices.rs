@@ -483,7 +483,7 @@ pub async fn of(workspaces: &super::Workspaces, person: &[u8; 32]) -> Devices {
 /// The root did not sign, or the record refused the device or the mark.
 pub async fn mark_root_holder(
     workspaces: &super::Workspaces,
-    root: &dyn tilo_user_identity::StatementSigner,
+    root: &(dyn tilo_user_identity::StatementSigner + Sync),
     cert: &DeviceCert,
 ) -> Result<(), String> {
     let device = cert.device_public_key;

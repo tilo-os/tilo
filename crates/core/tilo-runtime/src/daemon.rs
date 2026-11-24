@@ -1123,11 +1123,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         }
         let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
         let server = match (self.session_factory)() {
-            Ok(server) => Arc::new(server.with_media(self.media.clone()).with_devices(
-                self.other_devices.clone().map(|other_devices| {
-                    Arc::new(other_devices) as Arc<dyn tilo_mcp::devices::DeviceDirectory>
-                }),
-            )),
+            Ok(server) => Arc::new(server.with_media(self.media.clone())),
             Err(error) => {
                 // Told why, as an agent whose person revoked its key is.
                 tracing::debug!(%error, "native MCP session admission unavailable");

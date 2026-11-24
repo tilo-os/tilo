@@ -50,7 +50,6 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed, this_device};
-use tilo_workspace_service::app_serving::AppActionServer as _;
 use tilo_workspace_service::apps::{
     collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
     collab_core::{BrokerChannels, BrokerSealChecks},
@@ -772,7 +771,7 @@ impl Daemon {
             let founded = person_workspace(&identity.cert.user_public_key);
             (founded.to_string(), Some(founded))
         };
-        let apps = Arc::new(apps::Apps::from_env(root, sockets, &workspace_id));
+        let apps = Arc::new(apps::Apps::from_env(root, sockets));
         let brokers = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         // What apps may found records with here: the kinds their installed
@@ -1160,11 +1159,11 @@ impl Daemon {
         // A device that keeps the person's root says so in their devices record, signed by that
         // root, and answers what their devices without it hand on; every device follows the
         // calls kept for one, to take them up or to show how its own ended.
-        let root = self::root().ok().flatten();
+        let held_root = self::root().ok().flatten();
         let (copies, cert) = (workspaces.copies().clone(), identity.cert.clone());
         let (serving, following) = (Tickets::clone(&tickets), Arc::downgrade(&asked));
         tilo_rt::app().handle().spawn(async move {
-            if let Some(root) = root {
+            if let Some(root) = held_root {
                 match tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
                     &copies, &root, &cert,
                 )
@@ -1563,7 +1562,6 @@ fn open_workspaces(
             key: &key,
             identity: device,
             endpoint,
-            governs,
             seal_checks: Arc::new(BrokerSealChecks(brokers)),
             apps,
             configure,
@@ -1916,15 +1914,14 @@ impl RuntimeServices for Daemon {
                 blobs: &self.blob_socket,
             },
         )?;
-        self.apps.handed_connections(child.id(), app_id);
         Ok(child)
     }
 
     fn media(&self) -> Option<Arc<dyn tilo_mcp::MediaReader>> {
-        Some(Arc::new(profile::BlobMedia::new(
-            &self.blob_socket,
-            &self.workspace,
-        )))
+        Some(Arc::new(profile::BlobMedia::new(&self.blob_socket, {
+            let workspace = self.workspace.clone();
+            Box::new(move || Ok(workspace.clone()))
+        })))
     }
 }
 
@@ -2008,7 +2005,9 @@ impl PersonDispatch {
             asked: Some(Arc::clone(&self.asked)),
         })
     }
+}
 
+impl Daemon {
     /// The sessions of an account signed in on this computer as another person than the
     /// device's, each a run of `key` (certified by `cert`) in the device's workspace: its calls
     /// act as that key, and the workspace grants it what it grants its person, never what the
@@ -2396,7 +2395,7 @@ impl tilo_api::session::AccountHere for Daemon {
             return Vec::new();
         }
         let scope = key.scope();
-        tilo_api::session::Here::workspaces(self)
+        tilo_api::session::Here::workspaces(self, key.cert())
             .into_iter()
             .filter(|workspace| scope.reaches(&workspace.id))
             .collect()
@@ -2783,7 +2782,7 @@ fn refused(error: &ActionCallError) -> ServerError {
 
 /// The refusal `reason` names, in the words a person reads, when it carries one.
 fn refusal_reason(reason: &str) -> Option<String> {
-    tilo_server_protocol::workspaces::Refusal::from_reason(reason)
+    tilo_server_protocol::workspaces::AdminRefusal::from_reason(reason)
         .map(|refusal| refusal.to_string())
 }
 
@@ -3090,7 +3089,7 @@ impl RuntimeActionProvider {
         let receipt = InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {
-                output: ActionOutput {
+                output: tilo_actions::ActionOutput {
                     value: Some(Value::Null),
                     resources: Vec::new(),
                 },
@@ -3402,11 +3401,11 @@ impl DispatchReads {
             let page = self.broker.state().invocation_listing(
                 &self.workspace,
                 caller,
-                &WorkspaceInvocationsQuery {
+                &tilo_actions::remote::workspace_invocations::InvocationsQuery {
                     limit: tilo_actions::remote::workspace_invocations::MOST,
                     cursor: cursor.take(),
                     invocation: invocation.clone(),
-                    ..WorkspaceInvocationsQuery::default()
+                    ..tilo_actions::remote::workspace_invocations::InvocationsQuery::default()
                 },
             )?;
             items.extend(page.items);
@@ -4179,24 +4178,6 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority f
 
     fn authorize(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
         self.admitted(workspace, cert)
-    }
-
-    /// This device governs the workspace founded on it, and no other.
-    fn governs(&self, workspace: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
-        let Ok(held) = self.held() else {
-            return false;
-        };
-        device.is_none_or(|device| *device == held.device_cert().device_public_key)
-            && held
-                .founded()
-                .is_some_and(|founded| founded.to_string() == workspace.to_string())
-    }
-
-    /// The device's own certificate, which it reads the workspace founded on it under.
-    fn own_device(&self) -> Option<DeviceCert> {
-        let held = self.held().ok()?;
-        held.founded()?;
-        Some(held.device_cert().clone())
     }
 
     fn authorize_join(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
