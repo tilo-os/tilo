@@ -3078,6 +3078,34 @@
             "option": "int"
           },
           "readonly": true
+        },
+        {
+          "path": "charge_limit",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "ChargeLimit"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "ChargeLimit",
+          "doc": "Where the pack stops charging, and the values this machine takes.",
+          "fields": [
+            {
+              "name": "current",
+              "type": "int"
+            },
+            {
+              "name": "choices",
+              "type": {
+                "list": "int"
+              }
+            }
+          ]
         }
       ]
     },
@@ -8554,6 +8582,186 @@
               "type": "float"
             }
           ]
+        },
+        {
+          "id": "arrange-displays",
+          "label": "Move a display",
+          "description": "Move a display on the arrangement Its top-left corner on the desktop, in logical pixels; the other displays stay where they are.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "x",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              },
+              "type": "int"
+            },
+            {
+              "name": "y",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "set-display-mode",
+          "label": "Choose a display's resolution",
+          "description": "Choose a display's resolution and refresh rate The change is tried for a moment and kept, or the previous mode comes back.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "width",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              },
+              "type": "int"
+            },
+            {
+              "name": "height",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              },
+              "type": "int"
+            },
+            {
+              "name": "refresh_mhz",
+              "required": false,
+              "schema": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "int"
+              }
+            }
+          ]
+        },
+        {
+          "id": "set-display-scale",
+          "label": "Set a display's scale",
+          "description": "Set a display's scale How many physical pixels it draws a logical pixel with.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "scale",
+              "required": true,
+              "schema": {
+                "type": "number"
+              },
+              "type": "float"
+            }
+          ]
+        },
+        {
+          "id": "rotate-display",
+          "label": "Turn a display's picture",
+          "description": "Turn a display's picture",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "transform",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "make-display-primary",
+          "label": "Make a display the primary one",
+          "description": "Make a display the primary one The display a shell tells apart from the others, and where it counts from.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "display",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "identify-displays",
+          "label": "Number the screens",
+          "description": "Number the screens Each display says its number and name for a moment, so a person sees which is which.",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "keep-display-change",
+          "label": "Keep the display change being tried",
+          "description": "Keep the display change being tried",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "transaction",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              },
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "id": "revert-display-change",
+          "label": "Put the displays back as they were",
+          "description": "Put the displays back as they were",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "transaction",
+              "required": true,
+              "schema": {
+                "type": "integer"
+              },
+              "type": "int"
+            }
+          ]
         }
       ],
       "fields": [
@@ -8565,6 +8773,12 @@
               "named": "Display"
             }
           },
+          "readonly": true
+        },
+        {
+          "path": "mode",
+          "stored": "value",
+          "type": "text",
           "readonly": true
         },
         {
@@ -8636,6 +8850,58 @@
               "type": {
                 "named": "DisplayCapabilities"
               }
+            },
+            {
+              "name": "x",
+              "type": "int"
+            },
+            {
+              "name": "y",
+              "type": "int"
+            },
+            {
+              "name": "width",
+              "type": "int"
+            },
+            {
+              "name": "height",
+              "type": "int"
+            },
+            {
+              "name": "scale",
+              "type": "float"
+            },
+            {
+              "name": "transform",
+              "type": "text"
+            },
+            {
+              "name": "primary",
+              "type": "bool"
+            },
+            {
+              "name": "mode",
+              "type": {
+                "option": {
+                  "named": "Mode"
+                }
+              }
+            },
+            {
+              "name": "modes",
+              "type": {
+                "list": {
+                  "named": "Mode"
+                }
+              }
+            },
+            {
+              "name": "hdr",
+              "type": "bool"
+            },
+            {
+              "name": "vrr",
+              "type": "bool"
             }
           ]
         },
@@ -8658,6 +8924,24 @@
             {
               "name": "bt2020_gamut",
               "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "Mode",
+          "doc": "A size and rate a display can be driven at.",
+          "fields": [
+            {
+              "name": "width",
+              "type": "int"
+            },
+            {
+              "name": "height",
+              "type": "int"
+            },
+            {
+              "name": "refresh_mhz",
+              "type": "int"
             }
           ]
         }
@@ -14085,6 +14369,22 @@
           "description": "Show how a new device of the person's joins them: Settings' devices page, where \"Add a device\" prints the ticket it logs in with. An app that lists what acts as the person offers adding to it this way.",
           "kind": "read",
           "params": []
+        },
+        {
+          "id": "open-link",
+          "label": "Open a link",
+          "description": "Open what a `tilo://open#…` link names: the app that keeps it shows it, started first when no window of it does. An app that shows a link opens it this way, whoever it was copied from.",
+          "kind": "read",
+          "params": [
+            {
+              "name": "link",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
         },
         {
           "id": "cancel-invitation",
