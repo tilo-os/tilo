@@ -2740,18 +2740,27 @@ impl FloatingSurfaceProvider for WindowGroup {
     }
 }
 
+/// A group stands in no record of its own; its keyboard shortcuts are those
+/// of the window it shows.
+impl crate::bound_dispatch::BoundWidget for WindowGroup {
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        None
+    }
+
+    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
+        (!self.is_closing()).then(|| self.active_tab_id())
+    }
+}
+
 impl Widget for WindowGroup {
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
         dyn crate::widget::presence_topology::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::component_lifecycle::ComponentLifecycle
+        dyn crate::component_lifecycle::ComponentLifecycle,
+        dyn crate::bound_dispatch::BoundWidget
     );
-
-    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
-        (!self.is_closing()).then(|| self.active_tab_id())
-    }
 
     /// The focused window is where Tab travels: its bar (the tab list, the agent that opened it, the
     /// app's parts, its controls) and the app's own controls, and never the other windows or the
@@ -2951,18 +2960,13 @@ impl Widget for WindowGroup {
         true
     }
 
-    #[allow(
-        private_interfaces,
-        reason = "toolkit-only checked ownership traversal"
-    )]
-    fn visit_components(
-        &mut self,
-        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
-    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        for child in self.hosts.iter_mut().map(|(_, host)| host) {
-            child.visit_components(request)?;
-        }
-        Ok(())
+    /// Every window the group holds, the hidden ones included: each still owns
+    /// its records.
+    fn retained_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.hosts
+            .iter_mut()
+            .map(|(_, host)| host.as_mut() as &mut dyn Widget)
+            .collect()
     }
 
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {

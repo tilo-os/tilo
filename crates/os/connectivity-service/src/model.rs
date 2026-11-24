@@ -24,6 +24,9 @@ pub struct Network {
     pub link: Option<Link>,
     /// The networks this device keeps, in the order it lists them.
     pub saved: Vec<SavedNetwork>,
+    /// Whether this device asks before it joins an open Wi-Fi network it keeps: on, none of
+    /// them joins by itself.
+    pub ask_before_open_networks: bool,
     /// Actions taken and not yet answered by the device, by id.
     pub pending: Vec<String>,
     /// Why the last change did not happen, until the next one.
@@ -155,6 +158,8 @@ pub struct SavedNetwork {
     pub proxy: Option<String>,
     /// The Wi-Fi profile keeps its name hidden.
     pub hidden: bool,
+    /// A Wi-Fi network that joins without a password.
+    pub open: bool,
     /// How its addresses are set; `None` when the device could not read them.
     pub ipv4: Option<SavedIpv4>,
     /// Whether a wake packet over it wakes this device; `None` when the device could not read it.
@@ -676,6 +681,11 @@ pub struct ModemUnit {
     pub signal: Option<u8>,
     pub technology: Option<Technology>,
     pub operator: Option<String>,
+    /// The operators the last scan found, the one it stands on first; empty until one is asked
+    /// for.
+    pub operators: Vec<Operator>,
+    /// The last code sent to the network and what it answered; `None` until one is.
+    pub code: Option<Code>,
     pub registration: Registration,
     /// The network types it may use now, as a key (`5g-4g-3g`).
     pub network_type: Option<String>,
@@ -703,6 +713,100 @@ impl ModemUnit {
             .iter()
             .find(|sim| sim.active)
             .or_else(|| self.sims.first())
+    }
+}
+
+/// An operator the modem can reach.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Operator {
+    /// Its MCC and MNC (`26201`), which the modem is told to stand on it by.
+    pub code: String,
+    pub name: String,
+    pub state: OperatorState,
+}
+
+/// Whether a modem may use an operator it reaches.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum OperatorState {
+    #[default]
+    Unknown,
+    Available,
+    /// The network the modem stands on now.
+    Current,
+    /// This SIM may not use it.
+    Forbidden,
+}
+
+impl OperatorState {
+    /// The order operators are listed in: the one the modem stands on, then those it may use.
+    const fn rank(self) -> u8 {
+        match self {
+            Self::Current => 0,
+            Self::Available => 1,
+            Self::Unknown => 2,
+            Self::Forbidden => 3,
+        }
+    }
+}
+
+/// The operators a scan found, the one the modem stands on first, then by name.
+#[must_use]
+pub fn ordered_operators(mut operators: Vec<Operator>) -> Vec<Operator> {
+    operators.sort_by(|a, b| {
+        a.state
+            .rank()
+            .cmp(&b.state.rank())
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.code.cmp(&b.code))
+    });
+    operators
+}
+
+impl From<os_actions::Availability> for OperatorState {
+    fn from(availability: os_actions::Availability) -> Self {
+        match availability {
+            os_actions::Availability::Unknown => Self::Unknown,
+            os_actions::Availability::Available => Self::Available,
+            os_actions::Availability::Current => Self::Current,
+            os_actions::Availability::Forbidden => Self::Forbidden,
+        }
+    }
+}
+
+impl From<&os_actions::Operator> for Operator {
+    fn from(operator: &os_actions::Operator) -> Self {
+        Self {
+            code: operator.code.clone(),
+            name: operator.name.clone(),
+            state: OperatorState::from(operator.availability),
+        }
+    }
+}
+
+/// What the network answered a code, and whether it waits for the person's answer.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct Code {
+    /// What the network said: a balance, a bundle or a menu.
+    pub text: String,
+    /// The session waits for the person to answer.
+    pub awaiting: bool,
+}
+
+impl From<&os_actions::CodeAnswer> for Code {
+    fn from(answer: &os_actions::CodeAnswer) -> Self {
+        Self {
+            text: answer.text.clone(),
+            awaiting: answer.awaiting,
+        }
     }
 }
 
@@ -944,6 +1048,8 @@ impl From<&os_actions::modem::ModemInfo> for ModemUnit {
             signal: modem.signal,
             technology: modem.technology.map(Technology::from),
             operator: modem.operator.clone(),
+            operators: Vec::new(),
+            code: None,
             registration: Registration::from(modem.registration),
             network_type: modem.modes.map(os_actions::NetworkModes::key),
             network_types: modem

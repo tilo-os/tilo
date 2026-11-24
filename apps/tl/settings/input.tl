@@ -610,8 +610,12 @@ view input_pane() {
             ui.Text("No drawing tablet is attached.", role: .caption, secondary: true)
         }
         let screens = device.displays.displays
+        let shortcuts = settings.shortcuts_table
+        let shortcut_ids = shortcuts.bindings.map(b -> "shortcut:" + b.id)
+        let shortcut_words = shortcuts.bindings.map(b -> shortcut_word(b.id, b.chord))
         for tablet in tablets {
             let mapping = d.tablets.get(tablet.key)
+            let chosen = settings.tablet_choices.tablets.get(tablet.key)
             ui.ListRow(
                 tablet.name,
                 secondary: if tablet.kind == .tablet_pad {
@@ -723,147 +727,94 @@ view input_pane() {
                 for button in ["lower", "upper", "third"] {
                     setting(
                         "{button_words(button)} pen button",
-                        "What the button on the pen's barrel does",
+                        "What the button on the pen's barrel does, a click or any desktop shortcut",
                     ) {
-                        ui.ToggleGroup(
-                            selected: .some(pen_index(mapping, button)),
+                        ui.Dropdown(
+                            value: pen_choice(chosen, button),
+                            options: [
+                                "As itself",
+                                "Left click",
+                                "Middle click",
+                                "Right click",
+                                "Back",
+                                "Forward",
+                                "Nothing",
+                            ]
+                                + shortcut_words,
+                            values: [
+                                "default",
+                                "left",
+                                "middle",
+                                "right",
+                                "back",
+                                "forward",
+                                "disabled",
+                            ]
+                                + shortcut_ids,
                             caption: "{button_words(button)} pen button",
                         ) {
-                            ui.Segment("As itself") {
-                                on press: settings.set_tablet_button(
-                                    settings.input_device,
-                                    tablet.key,
-                                    button,
-                                    "default",
-                                )
-                            }
-                            ui.Segment("Left click") {
-                                on press: settings.set_tablet_button(
-                                    settings.input_device,
-                                    tablet.key,
-                                    button,
-                                    "left",
-                                )
-                            }
-                            ui.Segment("Middle click") {
-                                on press: settings.set_tablet_button(
-                                    settings.input_device,
-                                    tablet.key,
-                                    button,
-                                    "middle",
-                                )
-                            }
-                            ui.Segment("Right click") {
-                                on press: settings.set_tablet_button(
-                                    settings.input_device,
-                                    tablet.key,
-                                    button,
-                                    "right",
-                                )
-                            }
-                            ui.Segment("Back") {
-                                on press: settings.set_tablet_button(
-                                    settings.input_device,
-                                    tablet.key,
-                                    button,
-                                    "back",
-                                )
-                            }
-                            ui.Segment("Forward") {
-                                on press: settings.set_tablet_button(
-                                    settings.input_device,
-                                    tablet.key,
-                                    button,
-                                    "forward",
-                                )
-                            }
-                            ui.Segment("Nothing") {
-                                on press: settings.set_tablet_button(
-                                    settings.input_device,
-                                    tablet.key,
-                                    button,
-                                    "disabled",
-                                )
-                            }
+                            on change(choice): settings.set_tablet_button(
+                                settings.input_device,
+                                tablet.key,
+                                button,
+                                choice,
+                            )
                         }
                     }
                 }
-                setting("The eraser end", "What turning the pen over does") {
-                    ui.ToggleGroup(
-                        selected: .some(eraser_index(mapping)),
+                setting(
+                    "The eraser end",
+                    "What turning the pen over does, erasing or any desktop shortcut",
+                ) {
+                    ui.Dropdown(
+                        value: eraser_choice(chosen),
+                        options: [
+                            "Erases",
+                            "Left click",
+                            "Middle click",
+                            "Right click",
+                            "Back",
+                            "Forward",
+                        ]
+                            + shortcut_words,
+                        values: ["native", "left", "middle", "right", "back", "forward"]
+                            + shortcut_ids,
                         caption: "The eraser end",
                     ) {
-                        ui.Segment("Erases") {
-                            on press: settings.set_tablet_eraser(
-                                settings.input_device,
-                                tablet.key,
-                                "native",
-                            )
-                        }
-                        ui.Segment("Left click") {
-                            on press: settings.set_tablet_eraser(
-                                settings.input_device,
-                                tablet.key,
-                                "left",
-                            )
-                        }
-                        ui.Segment("Middle click") {
-                            on press: settings.set_tablet_eraser(
-                                settings.input_device,
-                                tablet.key,
-                                "middle",
-                            )
-                        }
-                        ui.Segment("Right click") {
-                            on press: settings.set_tablet_eraser(
-                                settings.input_device,
-                                tablet.key,
-                                "right",
-                            )
-                        }
-                        ui.Segment("Back") {
-                            on press: settings.set_tablet_eraser(
-                                settings.input_device,
-                                tablet.key,
-                                "back",
-                            )
-                        }
-                        ui.Segment("Forward") {
-                            on press: settings.set_tablet_eraser(
-                                settings.input_device,
-                                tablet.key,
-                                "forward",
-                            )
-                        }
+                        on change(choice): settings.set_tablet_eraser(
+                            settings.input_device,
+                            tablet.key,
+                            choice,
+                        )
                     }
                 }
             }
             if tablet.pad_buttons > 0 {
                 ui.Text("Its pad's buttons", role: .caption, secondary: true)
                 for button in range_of(tablet.pad_buttons) {
-                    ui.ListRow(
-                        "Button {button + 1}",
-                        secondary: pad_button_words(mapping, button),
-                        icon: .tablet,
-                    ) {
-                        trailing: {
-                            row(gap: .tight, align: .center, wrap: true) {
-                                ui.Button("Show the pad's map", size: .small) {
-                                    on press: settings.set_pad_button(
-                                        settings.input_device,
-                                        tablet.key,
-                                        button,
-                                        "show-map",
-                                    )
-                                }
-                                ui.Button("Nothing", size: .small) {
-                                    on press: settings.set_pad_button(
-                                        settings.input_device,
-                                        tablet.key,
-                                        button,
-                                        "none",
-                                    )
-                                }
+                    if tablet.pad_mode_buttons.any(m -> m == button) {
+                        ui.ListRow(
+                            "Button {button + 1}",
+                            secondary: "Switches the pad between its modes",
+                            icon: .tablet,
+                        )
+                    } else {
+                        setting(
+                            "Button {button + 1}",
+                            "What pressing it does: shows the pad's map, or a desktop shortcut",
+                        ) {
+                            ui.Dropdown(
+                                value: pad_button_choice(chosen, button),
+                                options: ["Does nothing", "Shows the pad's map"] + shortcut_words,
+                                values: ["none", "show-map"] + shortcut_ids,
+                                caption: "Button {button + 1}",
+                            ) {
+                                on change(choice): settings.set_pad_button(
+                                    settings.input_device,
+                                    tablet.key,
+                                    button,
+                                    choice,
+                                )
                             }
                         }
                     }
@@ -874,74 +825,40 @@ view input_pane() {
                     tablet.pad_rings.len()
                 } else { tablet.pad_strips.len() }
                 for index in range_of(count) {
-                    setting(
-                        if kind == "ring" { "Ring {index + 1}" } else { "Strip {index + 1}" },
-                        "What turning or sliding it does",
-                    ) {
-                        ui.ToggleGroup(
-                            selected: .some(dial_index(dial_now(mapping, kind, index))),
-                            caption: if kind == "ring" {
-                                "Ring {index + 1}"
-                            } else { "Strip {index + 1}" },
-                        ) {
-                            ui.Segment("Nothing") {
-                                on press: settings.set_pad_dial(
-                                    settings.input_device,
-                                    tablet.key,
-                                    kind,
-                                    index,
-                                    0,
+                    let modes = dial_modes(tablet, kind, index)
+                    let name = if kind == "ring" { "Ring {index + 1}" } else { "Strip {index + 1}" }
+                    for mode in range_of(modes) {
+                        let label = if modes > 1 {
+                            "{name}, mode {mode + 1}"
+                        } else if kind == "ring" { "Ring {index + 1}" } else { "Strip {index + 1}" }
+                        setting(label, "What turning or sliding it does in this mode") {
+                            ui.Dropdown(
+                                value: dial_choice(chosen, kind, index, mode),
+                                options: [
+                                    "Nothing",
+                                    "Scroll",
+                                    "Zoom",
+                                    "Brush size",
+                                    "Volume",
+                                    "Brightness",
+                                ],
+                                values: [
                                     "nothing",
-                                )
-                            }
-                            ui.Segment("Scroll") {
-                                on press: settings.set_pad_dial(
-                                    settings.input_device,
-                                    tablet.key,
-                                    kind,
-                                    index,
-                                    0,
                                     "scroll",
-                                )
-                            }
-                            ui.Segment("Zoom") {
-                                on press: settings.set_pad_dial(
-                                    settings.input_device,
-                                    tablet.key,
-                                    kind,
-                                    index,
-                                    0,
                                     "zoom",
-                                )
-                            }
-                            ui.Segment("Brush size") {
-                                on press: settings.set_pad_dial(
-                                    settings.input_device,
-                                    tablet.key,
-                                    kind,
-                                    index,
-                                    0,
                                     "brush-size",
-                                )
-                            }
-                            ui.Segment("Volume") {
-                                on press: settings.set_pad_dial(
-                                    settings.input_device,
-                                    tablet.key,
-                                    kind,
-                                    index,
-                                    0,
                                     "volume",
-                                )
-                            }
-                            ui.Segment("Brightness") {
-                                on press: settings.set_pad_dial(
+                                    "brightness",
+                                ],
+                                caption: label,
+                            ) {
+                                on change(choice): settings.set_pad_dial(
                                     settings.input_device,
                                     tablet.key,
                                     kind,
                                     index,
-                                    0,
-                                    "brightness",
+                                    mode,
+                                    choice,
                                 )
                             }
                         }
@@ -990,34 +907,55 @@ fn numbers(at: Int, count: Int, out: List<Int>) -> List<Int> {
     if at >= count { out } else { numbers(at + 1, count, out + [at]) }
 }
 
-/// Which of the pen's choices the button at `place` takes now.
-fn pen_index(mapping: Option<settings.TabletConfig>, place: Text) -> Int {
-    let chosen = if let held = mapping {
+/// A shortcut as the choice that runs it, in the words the Shortcuts pane names it: what it
+/// does, and the keys it is on now.
+fn shortcut_word(id: Text, chord: Text) -> Text {
+    if chord == "" { shortcut_label(id) } else { "{shortcut_label(id)} ({chord})" }
+}
+
+/// The choice the pen button at `place` takes now.
+fn pen_choice(chosen: Option<settings.TabletChoiceIds>, place: Text) -> Text {
+    if let held = chosen {
         if place == "lower" {
             held.lower_button
         } else if place == "upper" { held.upper_button } else { held.third_button }
-    } else { .default }
-    if chosen == .default {
-        0
-    } else if chosen == .left {
-        1
-    } else if chosen == .middle {
-        2
-    } else if chosen == .right {
-        3
-    } else if chosen == .back { 4 } else if chosen == .forward { 5 } else { 6 }
+    } else { "default" }
 }
 
-/// Which of the eraser's choices it takes now.
-fn eraser_index(mapping: Option<settings.TabletConfig>) -> Int {
-    let chosen = if let held = mapping { held.eraser } else { .native }
-    if chosen == .native {
-        0
-    } else if chosen == .left {
-        1
-    } else if chosen == .middle {
-        2
-    } else if chosen == .right { 3 } else if chosen == .back { 4 } else { 5 }
+/// The choice the eraser end takes now.
+fn eraser_choice(chosen: Option<settings.TabletChoiceIds>) -> Text {
+    if let held = chosen { held.eraser } else { "native" }
+}
+
+/// The choice pad button `button` takes now.
+fn pad_button_choice(chosen: Option<settings.TabletChoiceIds>, button: Int) -> Text {
+    if let held = chosen {
+        held.pad_buttons.get(button.to_text()) ?? "none"
+    } else { "none" }
+}
+
+/// The choice a ring or strip takes in `mode`.
+fn dial_choice(
+    chosen: Option<settings.TabletChoiceIds>,
+    kind: Text,
+    index: Int,
+    mode: Int,
+) -> Text {
+    if let held = chosen {
+        let modes = if kind == "ring" {
+            held.pad_rings.get(index.to_text())
+        } else { held.pad_strips.get(index.to_text()) }
+        (modes ?? []).at(mode) ?? "nothing"
+    } else { "nothing" }
+}
+
+/// The modes the ring or strip `index` switches between, as the pad reports them: at least one,
+/// and no more than a mapping can name.
+fn dial_modes(tablet: device.InputDevice, kind: Text, index: Int) -> Int {
+    let modes = if kind == "ring" {
+        tablet.pad_rings.at(index)
+    } else { tablet.pad_strips.at(index) }
+    (modes ?? 1).max(1).min(8)
 }
 
 /// The tip feel a pressure curve stands for, counting from the softest: a curve of the pane's own
@@ -1045,42 +983,6 @@ fn curve_equal(curve: List<Float>, preset: List<Float>) -> Bool {
         and curve
             .map((value, i) -> (value - (preset.at(i) ?? 0.0)).abs() < 0.001)
             .all(close -> close)
-}
-
-/// What a pad's button does now.
-fn pad_button_words(mapping: Option<settings.TabletConfig>, button: Int) -> Text {
-    if let held = mapping {
-        if held.pad_map_button == .some(button) {
-            "Shows the pad's map"
-        } else if held.pad_buttons.get(button.to_text()) != .none {
-            "Runs a shortcut"
-        } else { "Does nothing" }
-    } else { "Does nothing" }
-}
-
-/// What a ring or strip does in the modes the pane offers: the first mode's action.
-fn dial_now(
-    mapping: Option<settings.TabletConfig>,
-    kind: Text,
-    index: Int,
-) -> settings.PadDialAction {
-    let dial = if let held = mapping {
-        if kind == "ring" {
-            held.pad_rings.get(index.to_text())
-        } else { held.pad_strips.get(index.to_text()) }
-    } else { .none }
-    if let modes = dial { modes.at(0) ?? .nothing } else { .nothing }
-}
-
-/// Which of a ring's or strip's choices it takes now.
-fn dial_index(chosen: settings.PadDialAction) -> Int {
-    if chosen == .nothing {
-        0
-    } else if chosen == .scroll {
-        1
-    } else if chosen == .zoom {
-        2
-    } else if chosen == .brush_size { 3 } else if chosen == .volume { 4 } else { 5 }
 }
 
 /// What a stored paste shortcut is called.

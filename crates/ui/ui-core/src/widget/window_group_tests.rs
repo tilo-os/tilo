@@ -1623,11 +1623,11 @@ fn refused_final_tab_close_restores_live_group_input() {
     );
     assert!(group.request_close_tab(1));
     assert!(group.is_closing());
-    assert_eq!(group.keyboard_input_scope(), None);
+    assert_eq!(crate::bound_dispatch::keyboard_input_scope(&group), None);
     assert!(group.cancel_tab_close(1));
     assert!(!group.is_closing());
     assert!(!group.has_closing_host(1));
-    assert_eq!(group.keyboard_input_scope(), Some(1));
+    assert_eq!(crate::bound_dispatch::keyboard_input_scope(&group), Some(1));
     assert!(group.has_host(1));
 }
 

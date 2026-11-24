@@ -552,6 +552,7 @@ mod tests {
             doc: String::new(),
             params: Vec::new(),
             anchors: Vec::new(),
+            calls: Vec::new(),
             reaches: Vec::new(),
             state: Vec::new(),
             presents: None,

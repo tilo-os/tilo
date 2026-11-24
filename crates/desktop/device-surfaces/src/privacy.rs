@@ -114,6 +114,10 @@ pub struct InUse {
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
 pub struct Answer {
+    /// The answer as the resource it is: the consent the session's portal publishes
+    /// (`portal:consent:…`), whose `forget` takes it back.
+    #[serde(rename = "$address", default)]
+    pub address: tilo_resource::Handle<ConsentRow>,
     /// The application it answers for.
     pub app: String,
     /// What people call it, from the device's own lists.
@@ -132,6 +136,85 @@ pub struct Answer {
     pub this_device: bool,
 }
 
+/// One application that stored or read the person's saved passwords and keys.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct SecretApp {
+    /// The application, as the secret store names it (`binary:/usr/bin/chromium`).
+    pub id: String,
+    /// What people call it, from the device's own lists.
+    pub name: String,
+    /// Whether it may use the saved passwords and keys now.
+    pub allowed: bool,
+    /// How many times it used the store.
+    pub uses: u64,
+    /// How many saved items it keeps.
+    pub items: u32,
+}
+
+/// The applications that use this device's saved passwords and keys.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct SavedSecrets {
+    /// Each application, in the order the store lists them.
+    pub apps: Vec<SecretApp>,
+    /// Why the store cannot be listed, when it cannot: an empty list then means unknown, never
+    /// that no application uses it.
+    #[serde(default)]
+    pub read_error: Option<String>,
+}
+
+/// Whether a protection of this device is on, off, or cannot be read here.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Protection {
+    /// The device cannot say, or this is not a device it can be read on.
+    #[default]
+    Unknown,
+    /// It is in force.
+    On,
+    /// It is not in force.
+    Off,
+}
+
+/// The firewall in force on this device.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum FirewallInForce {
+    /// The firewall could not be read.
+    #[default]
+    Unknown,
+    /// `firewalld` serves it.
+    Firewalld,
+    /// The kernel's own ruleset carries it.
+    Nftables,
+    /// Nothing filters the device's traffic.
+    Off,
+}
+
+/// What protects this device itself, apart from any workspace: its disk, its firmware and its
+/// firewall.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct Security {
+    /// Whether the disk this system runs from is encrypted.
+    pub disk_encryption: Protection,
+    /// Whether the firmware verifies what it boots.
+    pub secure_boot: Protection,
+    /// The firewall in force.
+    pub firewall: FirewallInForce,
+    /// Why the firewall could not be read, when it could not.
+    #[serde(default)]
+    pub firewall_error: Option<String>,
+}
+
 /// What this machine does with the person's privacy now, as one reads it.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
@@ -142,14 +225,66 @@ pub struct Reading {
     /// What the person answered about the devices of theirs, on any of their devices, oldest
     /// first.
     pub answers: Vec<Answer>,
+    /// The applications that use this device's saved passwords and keys, when the store was read:
+    /// a reading that leaves it out says nothing of them.
+    #[serde(default)]
+    pub secrets: Option<SavedSecrets>,
+    /// What protects this device itself, when it was read: a reading that leaves it out says
+    /// nothing of it.
+    #[serde(default)]
+    pub security: Option<Security>,
 }
 
 /// What this machine does with the person's privacy, as a view of another language reads it.
 #[must_use]
 pub fn surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<Reading, tilo_resource::NoEffect>(
-        "privacy", "Privacy",
-    )
+    tilo_resource::surface::reading_surface::<Reading, PrivacyAction>("privacy", "Privacy")
+}
+
+/// What the person may change about this device's privacy from the reading itself.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.privacy")]
+pub enum PrivacyAction {
+    /// Let an application use the saved passwords and keys again, or stop it. What it saved stays
+    /// until it is forgotten.
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    SetSecretsAccess {
+        #[param("The application identity the secret store recorded")]
+        app: String,
+        #[param("Whether the application may use saved secrets")]
+        allowed: bool,
+    },
+    /// Remove an application's saved secrets and its record.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    ForgetSecrets {
+        #[param("The application identity the secret store recorded")]
+        app: String,
+    },
+}
+
+/// One answer the person gave, as the resource it is: the consent the session's portal publishes
+/// for it, which is what its `forget` is called on.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.consent", label = "Consent")]
+pub struct ConsentRow;
+
+/// What a kept device answer offers.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.portal.consent")]
+pub enum ConsentEffect {
+    /// Take back what the application was allowed or refused
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent)]
+    Forget,
+}
+
+/// A kept device answer as a view of another language calls it: the `forget` its reading's
+/// address offers.
+#[must_use]
+pub fn consent_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::row_surface::<ConsentRow, ConsentEffect>()
 }
 
 #[cfg(test)]
@@ -174,6 +309,9 @@ mod tests {
                 }],
             }],
             answers: vec![Answer {
+                address: tilo_resource::Handle::new(
+                    "portal:consent:Laptop\u{1f}so.tilo.recorder\u{1f}camera",
+                ),
                 app: "so.tilo.recorder".into(),
                 name: "Recorder".into(),
                 capability: Capability::Camera,
@@ -183,6 +321,22 @@ mod tests {
                 device: "Laptop".into(),
                 this_device: true,
             }],
+            secrets: Some(SavedSecrets {
+                apps: vec![SecretApp {
+                    id: "binary:/usr/bin/chromium".into(),
+                    name: "Chromium".into(),
+                    allowed: true,
+                    uses: 42,
+                    items: 3,
+                }],
+                read_error: None,
+            }),
+            security: Some(Security {
+                disk_encryption: Protection::On,
+                secure_boot: Protection::Off,
+                firewall: FirewallInForce::Firewalld,
+                firewall_error: None,
+            }),
         };
         let json = serde_json::to_value(&reading).expect("a reading writes as JSON");
         assert_eq!(
@@ -198,6 +352,34 @@ mod tests {
         let surface = surface();
         assert_eq!(surface.kind, "privacy");
         assert_eq!(surface.label, "Privacy");
-        assert!(surface.verbs.is_empty(), "a posture has no verbs");
+        let verbs: Vec<&str> = surface.verbs.iter().map(|verb| verb.id.as_str()).collect();
+        assert_eq!(
+            verbs,
+            vec!["set-secrets-access", "forget-secrets"],
+            "the reading offers what the person may change of it"
+        );
+    }
+
+    /// An answer's address is the consent resource the pane calls `forget` on: the surface says
+    /// which kind the row is, and that kind offers the one verb that takes an answer back.
+    #[test]
+    fn an_answer_is_the_consent_its_forget_is_called_on() {
+        let answer = Answer {
+            address: tilo_resource::Handle::new(
+                "portal:consent:Laptop\u{1f}so.tilo.recorder\u{1f}camera",
+            ),
+            app: "so.tilo.recorder".into(),
+            ..Answer::default()
+        };
+        let json = serde_json::to_value(&answer).expect("the answer writes as JSON");
+        assert_eq!(
+            json["$address"],
+            serde_json::json!("portal:consent:Laptop\u{1f}so.tilo.recorder\u{1f}camera"),
+            "the address is where the answer's own verb is called"
+        );
+        let consent = consent_surface();
+        assert_eq!(consent.kind, "portal.consent");
+        let verbs: Vec<&str> = consent.verbs.iter().map(|verb| verb.id.as_str()).collect();
+        assert_eq!(verbs, vec!["forget"]);
     }
 }

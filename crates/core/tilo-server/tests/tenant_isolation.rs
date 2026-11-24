@@ -515,7 +515,7 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
         globex_actions.ask_message(invite_action(&t.globex.workspace)),
     )
     .await
-    .flatten();
+    .and_then(Result::ok);
     assert!(
         !matches!(
             answer,
@@ -543,7 +543,7 @@ async fn one_tenants_member_cannot_read_write_or_invoke_in_another_tenants_works
         to_bob.ask_message(invite_action(&t.globex.workspace)),
     )
     .await
-    .flatten();
+    .and_then(Result::ok);
     assert!(
         !matches!(
             direct,

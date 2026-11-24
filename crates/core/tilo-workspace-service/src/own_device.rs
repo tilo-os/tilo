@@ -15,7 +15,6 @@ pub use key_service::KeyService;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use collab_types::signer::DeviceSigner;
 use tilo_user_identity::DeviceCert;
@@ -27,12 +26,7 @@ use crate::workspaces::{
     MemberDevice,
 };
 
-/// How long the service waits for the device's key service to open a group: far more than the
-/// wait before the device founds the group itself
-/// ([`tilo_workspace_keys::founding_wait`]) and the work a first write does beside it, so a
-/// fresh workspace's first write is not refused for keys that are about to arrive.
-pub const OPEN_WAIT: Duration = Duration::from_secs(30);
-const _: () = assert!(OPEN_WAIT.as_secs() > tilo_workspace_keys::founding_wait().as_secs());
+pub use crate::workspaces::sealed_documents::OPEN_WAIT;
 
 /// The device a service is opened for: the certificate its person issued it, and what signs as
 /// it. What the service writes in a workspace this device takes part in is signed as it.

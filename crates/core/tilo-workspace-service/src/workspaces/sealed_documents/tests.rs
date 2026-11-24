@@ -493,7 +493,9 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
             workspaces,
             workspace,
             workspace_id,
+            governor_key,
             member_key,
+            member_cert,
             member,
             ..
         },
@@ -511,6 +513,9 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
         .try_into()
         .unwrap();
     session.send(compaction);
+    member
+        .checks_its_checkpoint(&workspaces, &workspace, &member_cert, &governor_key)
+        .await;
     // What a newcomer is sent past the checkpoint travels as itself.
     for index in WRITES..WRITES + 3 {
         seal_and_send_title(&member, &session, &workspace, &format!("line {index}"));
@@ -1268,25 +1273,31 @@ async fn a_write_reaches_every_member_once() {
         "the other linked device hears each of the device's writes once"
     );
     let heard = &mut writer.heard;
-    let echoed = tilo_test_env::within("the writer hears the other device's writes", async {
-        let mut echoed = Vec::new();
-        loop {
-            let frame = heard.recv().await.unwrap();
-            if write_of(&frame.message, other_author) == Some(WRITES) {
-                return echoed;
+    let (others, echoed) =
+        tilo_test_env::within("the writer hears the other device's writes", async {
+            let (mut others, mut echoed) = (Vec::new(), Vec::new());
+            loop {
+                let frame = heard.recv().await.unwrap();
+                if let Some(seq) = write_of(&frame.message, writer_author) {
+                    echoed.push((seq, frame.retained));
+                }
+                if let Some(seq) = write_of(&frame.message, other_author) {
+                    others.push(seq);
+                    if seq == WRITES {
+                        return (others, echoed);
+                    }
+                }
             }
-            if let Some(seq) = write_of(&frame.message, writer_author) {
-                echoed.push(("its own", seq, frame.retained));
-            }
-            if let Some(seq) = write_of(&frame.message, other_author) {
-                echoed.push(("the other device's", seq, frame.retained));
-            }
-        }
-    })
-    .await;
+        })
+        .await;
+    assert_eq!(
+        others,
+        (1..=WRITES).collect::<Vec<_>>(),
+        "the writer hears each of the other device's writes once"
+    );
     assert!(
         echoed.is_empty(),
-        "no write came back to its author or reached the writer twice: {echoed:?}"
+        "none of the writer's own writes comes back to it: {echoed:?}"
     );
     eprintln!(
         "{WRITES} writes of a linked device reached the other device and the writer's link in {:?}",

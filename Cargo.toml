@@ -377,6 +377,7 @@ members = [
     "crates/engines/loadable/contact-directory",
     "crates/engines/loadable/diffmerge",
     "crates/engines/loadable/git",
+    "crates/engines/loadable/grayjay",
     "crates/engines/loadable/emoji",
     "crates/engines/loadable/highlight",
     "crates/engines/loadable/theme-painter",
@@ -907,6 +908,10 @@ debug = "line-tables-only"
 # packages' tests read it and keep it. A package setting wins over that profile-wide one.
 # tilo-liveness names stack frames from its own executable's symbol table (src/symtab.rs).
 [profile.test.package.tilo-liveness]
+strip = false
+# The panic-boundary test finds the panicking function's name in the backtrace the abort hook
+# prints, which a stripped executable cannot give it.
+[profile.test.package.tilo-rt]
 strip = false
 # The session's logging test finds the test's own function in a panic's backtrace. It is a package
 # of its own so that the session's tests, which link the compositor, don't keep theirs.

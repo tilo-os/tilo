@@ -23,7 +23,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, Patch, PatchAction, Prop, ReadDoc, ScalarValue};
 use tilo_actions::ActionContext;
 /// Whether a version is the schema genesis rather than anyone's step.
-pub use tilo_doc::model::is_schema_genesis;
+pub use tilo_resource::history::is_schema_genesis;
 use tilo_resource::history::{self, StepFacts, Version};
 
 use crate::history::revert::revert_changes;
@@ -273,7 +273,7 @@ thread_local! {
 /// change costs the same however large the document is.
 fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
     use automerge::legacy::{Key, ObjectId, OpType};
-    if tilo_doc::model::is_schema_genesis(version)
+    if is_schema_genesis(version)
         || version
             .context
             .as_ref()
@@ -387,7 +387,7 @@ fn root_key_of(doc: &automerge::Automerge, obj: &automerge::legacy::ObjectId) ->
 /// the reference its reading of the change's own operations must equal.
 #[cfg(test)]
 fn kind_by_diff(doc: &automerge::Automerge, version: &Version) -> Kind {
-    if tilo_doc::model::is_schema_genesis(version)
+    if is_schema_genesis(version)
         || version
             .context
             .as_ref()

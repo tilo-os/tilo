@@ -124,7 +124,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     workspaces.call_private_model_addresses(true);
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
 
     let step: SignInStep = answered(
@@ -179,7 +179,7 @@ async fn a_nextcloud_login_flow_keeps_the_account_and_its_calendar() {
     // Another workspace's member shows none of it, and can stop none of it.
     let (elsewhere, elsewhere_id, _) = governed(workspaces).await;
     let bob_device = admit(workspaces, &elsewhere, &owner, 2).await;
-    let bob_page = actions.in_workspace_as(elsewhere_id, &bob_device);
+    let bob_page = actions.device_page(elsewhere_id, &bob_device);
     let theirs: MailAccounts = answered(
         settled(bob_page.invoke(
             &caller(&bob_device),
@@ -226,7 +226,7 @@ async fn a_nextcloud_sign_in_to_an_inside_address_is_refused_and_touches_nobody(
     let workspaces = server.workspaces();
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let ada = caller(&device);
 
     for inside in [

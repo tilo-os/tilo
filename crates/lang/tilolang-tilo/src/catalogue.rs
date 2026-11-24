@@ -251,6 +251,16 @@ pub fn verb_id(ty: &str, verb: &str) -> String {
     format!("{ty}/{verb}")
 }
 
+/// The verbs every resource of a kind has, which no app declares: the system's Copy link, whose
+/// link the host serving the resource mints. Their ids name the resource's type as an app's own
+/// verbs do ([`verb_id`]), so a call chooses them the same way and the host answers them where the
+/// resource is served.
+pub const SYSTEM_VERBS: &[(&str, &str, &str)] = &[(
+    tilo_actions::remote::SHARE_LINK_ACTION,
+    "Copy link",
+    "The link to this resource, which other devices and people open it by.",
+)];
+
 /// The id of the action `verb` of the resource type `ty` declares: its [`verb_id`], or, for a
 /// tilolang package's verb (one offered by a name of its own), the id its declaration keeps
 /// (`qymo5lg2`). That id is already the declaration's alone, whatever other type declares the
@@ -760,6 +770,63 @@ impl Reader<'_> {
         let ty = self.types.get(&surface.kind).cloned().unwrap_or_default();
         for verb in surface.verbs.iter().filter(|verb| !platform_verb(verb)) {
             self.action(verb, &ty, own.as_deref(), &rename);
+        }
+        // A resource of a kind code reads has the system's verbs as well as the app's own: a
+        // menu offers them on every resource, and a program calls them on one as it calls the
+        // app's (`card.share_link()`).
+        if let Some(own) = own.as_deref() {
+            self.system_verbs(own, &ty);
+        }
+    }
+
+    /// The verbs every resource has ([`SYSTEM_VERBS`]), declared on the type `own` as the surface
+    /// resource kind's verbs are: id [`verb_id`] of `ty`, the resource taken first. A verb the
+    /// app declares itself is kept as the app wrote it.
+    fn system_verbs(&mut self, own: &str, ty: &str) {
+        for &(verb, label, doc) in SYSTEM_VERBS {
+            let id = verb_id(ty, verb);
+            if self.meta.actions.iter().any(|action| action.id == id) {
+                continue;
+            }
+            self.meta.actions.push(ActionMeta {
+                id,
+                verb: verb.to_owned(),
+                name: action_name(verb),
+                doc: doc.to_owned(),
+                params: vec![ParamMeta {
+                    name: snake_case(own),
+                    ty: self.own(own),
+                    default: None,
+                    place: false,
+                    entry: false,
+                    label: None,
+                }],
+                result: Some("Text".to_owned()),
+                class: EffectClass::Read,
+                label: label.to_owned(),
+                icon: None,
+                role: None,
+                scenario: false,
+                did: None,
+                did_many: None,
+                search: None,
+                present: None,
+                toggles: None,
+                settles: None,
+                key: None,
+                group: None,
+                guard: false,
+                applies: false,
+                uses: Vec::new(),
+                outside: Vec::new(),
+                invokes: false,
+                opens: Vec::new(),
+                shows: Vec::new(),
+                takes: Vec::new(),
+                carries: false,
+                proposal: None,
+                reaches: Vec::new(),
+            });
         }
     }
 

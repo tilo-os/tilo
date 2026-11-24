@@ -340,7 +340,7 @@ impl Workspaces {
             .calendar_with_item(
                 (&using.workspace, &root),
                 adding,
-                (&using.name, &using.acting()),
+                (&using.name, &using.acting(), Some(request)),
             )
             .await
             .map_err(refused)?;

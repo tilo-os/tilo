@@ -554,6 +554,7 @@ fn probe(
                 input: tilo_actions::InputSpec::None,
                 params: Vec::new(),
                 view: None,
+                effects: Vec::new(),
             },
         );
         let mut page = CataloguePage::from_rows("1".into(), vec![row], &query);

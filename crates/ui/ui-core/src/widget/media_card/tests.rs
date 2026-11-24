@@ -469,3 +469,52 @@ fn a_shelf_of_grids_lays_out_at_every_width() {
         assert!(rect(&root).area() > 0.0, "{viewport:?}: nothing laid out");
     }
 }
+
+/// A compact card is the pill a bar shows what plays in: a bar control high, its art a square at
+/// the leading edge and its title beside it, never the tall card a grid column lays.
+#[test]
+fn a_compact_card_is_a_bar_control_tall_pill_beside_its_art() {
+    let theme = Theme::dark();
+    let control = f64::from(theme.tokens.metrics.bar_control_height);
+    let card = MediaCard::new("now-playing", MediaSource::Placeholder)
+        .title("Clair de lune")
+        .meta("Claude Debussy")
+        .compact(true);
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(card),
+        (600, 200),
+        theme.clone(),
+    );
+    let pill = rect(&harness.inspection().root);
+    assert!(
+        (pill.height() - control).abs() < 0.5,
+        "a compact card is one bar control high: {pill:?} for a {control} control"
+    );
+    assert!(
+        pill.width() > control + 0.5,
+        "the title stands beside the art: {pill:?}"
+    );
+    assert!(
+        pill.width() <= MediaSize::Regular.extent(&theme) + 0.5,
+        "it still never widens past a card's column: {pill:?}"
+    );
+    let mut text = TextRenderer::new();
+    let title = f64::from(
+        text.measure_style("Clair de lune", None, &theme.text(TextRole::Body))
+            .0,
+    );
+    let hugging = control + f64::from(theme.tokens.spacing.s2) + title;
+    assert!(
+        (pill.width() - hugging).abs() < 1.0,
+        "it hugs its art and title rather than a column: {pill:?}, {hugging} for art, gap and title"
+    );
+    let art = MediaCardFace::new(MediaArt::Placeholder)
+        .compact(true)
+        .art_rect(pill);
+    assert!(
+        (art.width() - art.height()).abs() < 0.5 && (art.height() - control).abs() < 0.5,
+        "the art is a square as tall as the pill, at its leading edge: {art:?}"
+    );
+    assert!((art.x0 - pill.x0).abs() < 0.5, "the art leads: {art:?}");
+}

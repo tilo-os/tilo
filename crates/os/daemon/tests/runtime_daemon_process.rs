@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixStream,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -270,95 +270,42 @@ fn ask(profile: &Path, request: &Value) -> Result<Value> {
 fn status(profile: &Path) -> Result<Value> {
     ask(profile, &json!({"native": "status"}))
 }
+/// An MCP `ping` answered on the profile's socket, through the session the daemon admits the
+/// person to: every MCP request of a connection is answered on the one app runtime.
+fn ping(profile: &Path) -> Result<()> {
+    let reply = ask(profile, &json!({"jsonrpc":"2.0","id":9,"method":"ping"}))?;
+    ensure!(
+        reply.get("id") == Some(&json!(9)),
+        "the ping's answer: {reply}"
+    );
+    ensure!(
+        reply.get("result") == Some(&json!({})),
+        "the ping's answer: {reply}"
+    );
+    Ok(())
+}
 /// The daemon serving `profile`'s socket, as its status names it.
 fn daemon(profile: &Path) -> Result<Value> {
     let status = status(profile)?;
     status.get("pid").cloned().context("a status without a pid")
 }
-fn run_true(profile: &Path, app: &str) -> Result<std::process::Output> {
-    Ok(host(profile)
-        .args(["--run-app", app, "--", "/usr/bin/true"])
-        .output_locked()?)
+/// A person's program asking this computer to start `app`: what `--run-app` sends, as the
+/// launcher run a person makes. The app this computer resolves decides what runs.
+fn run_app(profile: &Path, app: &str) -> Result<std::process::Output> {
+    Ok(host(profile).args(["--run-app", app]).output_locked()?)
 }
-/// [`run_true`]'s app, which must have started; the launcher's stderr is why not.
-fn app_starts(profile: &Path, app: &str) -> Result<()> {
-    let output = run_true(profile, app)?;
-    ensure!(
-        output.status.success(),
-        "starting {app} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(())
+/// The daemon's answer to a launch request for `app` in the workspace it serves.
+fn launch(profile: &Path, app: &str) -> Result<Value> {
+    let workspace = status(profile)?
+        .get("workspace")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    ask(
+        profile,
+        &json!({"native": "launch", "app_id": app, "workspace": workspace, "presentation": false}),
+    )
 }
-/// A helper app's collaboration manager once it has joined the broker.
-/// Construction returns while the connection is still being made; the
-/// helper polls until it settles.
-fn connected_manager() -> Result<ui::collaboration::CollaborationManager> {
-    let mut manager = ui::collaboration::CollaborationManager::new();
-    let started = Instant::now();
-    while manager.state() == ui::collaboration::CollaborationState::Connecting
-        && started.elapsed() < tilo_test_env::hang_bound()
-    {
-        let _ = manager.poll();
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    ensure!(
-        manager.is_connected(),
-        "the helper app never connected: {:?}",
-        manager.state()
-    );
-    Ok(manager)
-}
-/// The app instances MCP `resources/list` reports, once: each as its
-/// `app_id` and the `uri` of its own connection.
-fn apps_once(stream: &mut UnixStream) -> Result<Vec<Value>> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-    writeln!(
-        stream,
-        "{}",
-        json!({"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}})
-    )?;
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    let reply: Value =
-        serde_json::from_str(&line).with_context(|| format!("the apps reply: {line:?}"))?;
-    let resources = reply
-        .get("result")
-        .and_then(|result| result.get("resources"))
-        .and_then(Value::as_array)
-        .with_context(|| format!("the reply reports no apps: {reply}"))?;
-    // Each is named `<app id> (<instance>)`.
-    Ok(resources
-        .iter()
-        .map(|resource| {
-            let name = resource["name"].as_str().unwrap_or_default();
-            let app_id = name.split_once(" (").map_or(name, |(app, _)| app);
-            json!({"app_id": app_id, "peer_id": resource["uri"]})
-        })
-        .collect())
-}
-/// The app instances `resources/list` reports, once `count` of them run.
-fn listed_apps(stream: &mut UnixStream, count: usize) -> Result<Vec<Value>> {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let apps = apps_once(stream)?;
-        if apps.len() == count {
-            return Ok(apps);
-        }
-        ensure!(
-            Instant::now() < deadline,
-            "expected {count} apps, got {apps:?}"
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-/// The app ids of `apps`, in the order they were listed.
-fn app_ids(apps: &[Value]) -> Vec<&str> {
-    apps.iter()
-        .filter_map(|app| app.get("app_id").and_then(Value::as_str))
-        .collect()
-}
-
 #[test]
 fn launches_reuse_the_one_daemon_which_recovers_a_stale_socket() -> Result<()> {
     let mut profile = DaemonProfile::unstarted()?;
@@ -366,12 +313,25 @@ fn launches_reuse_the_one_daemon_which_recovers_a_stale_socket() -> Result<()> {
     drop(stale);
     profile.start()?;
     profile.found()?;
-    app_starts(profile.path(), "dev.tilo.first")?;
     let before = daemon(profile.path())?;
-    app_starts(profile.path(), "dev.tilo.second")?;
+    // One daemon answers each program that names an app, and names the app it cannot start:
+    // starting an app never starts a second daemon.
+    for app in ["dev.tilo.first", "dev.tilo.second"] {
+        let refused = run_app(profile.path(), app)?;
+        ensure!(
+            !refused.status.success(),
+            "an app this computer has not installed started"
+        );
+        ensure!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("is not installed on this computer"),
+            "a launch must say the app is not installed: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
     ensure!(
         daemon(profile.path())? == before,
-        "the second launch started another daemon"
+        "a launch started another daemon"
     );
     let published = status(profile.path())?;
     ensure!(
@@ -389,12 +349,17 @@ fn simultaneous_launches_share_one_daemon_and_mcp_eof_keeps_it_alive() -> Result
     let mut children = (0..5)
         .map(|_| {
             host(profile.path())
-                .args(["--run-app", "dev.tilo.race", "--", "/usr/bin/true"])
+                .args(["--run-app", "dev.tilo.race"])
                 .spawn_locked()
         })
         .collect::<std::io::Result<Vec<Child>>>()?;
     for child in &mut children {
-        ensure!(child.wait()?.success(), "a racing launcher failed");
+        // Each racing launch is answered by the one daemon: the app is not installed here, and
+        // the daemon that says so is the one that keeps serving.
+        ensure!(
+            !child.wait()?.success(),
+            "an app this computer has not installed started"
+        );
     }
     let before = daemon(profile.path())?;
     let mut proxy = host(profile.path())
@@ -426,36 +391,8 @@ fn simultaneous_launches_share_one_daemon_and_mcp_eof_keeps_it_alive() -> Result
     Ok(())
 }
 #[test]
-fn run_app_preserves_arguments_cwd_and_connected_descriptors() -> Result<()> {
-    let profile = DaemonProfile::new()?;
-    let output = host(profile.path())
-        .env_remove("TILO_WORKSPACE_ID")
-        .env_remove("TILO_PARTICIPATION")
-        .current_dir("/tmp")
-        .args(["--run-app", "dev.tilo.argv", "--", "/bin/sh", "-c", "printf '%s\\n' \"$PWD\" \"$1\" \"$2\" \"$3\" \"$TILO_PACKAGE_ID\" \"$TILO_PARTICIPATION\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\"", "sentinel", "two words", "--strange=✓", "--apps"])
-        .output_locked()?;
-    ensure!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let text = String::from_utf8(output.stdout).context("the app's output")?;
-    let working_directory = std::fs::canonicalize("/tmp")?;
-    ensure!(
-        text.lines().next() == working_directory.to_str(),
-        "the app's working directory is not the launcher's: {text}"
-    );
-    ensure!(
-        text.contains("\ntwo words\n--strange=✓\n--apps\ndev.tilo.argv\nauthor\n"),
-        "{text}"
-    );
-    ensure!(text.lines().count() == 8, "{text}");
-    Ok(())
-}
-#[test]
 fn live_profile_lock_fails_without_unlinking_owners_socket() -> Result<()> {
     let profile = DaemonProfile::new()?;
-    app_starts(profile.path(), "dev.tilo.first")?;
     let before = daemon(profile.path())?;
     let competing = host(profile.path()).output_locked()?;
     ensure!(
@@ -479,115 +416,16 @@ fn unsafe_profile_and_relative_override_are_rejected() -> Result<()> {
     let root = tempfile::tempdir()?;
     std::os::unix::fs::symlink(root.path(), root.path().join("link"))?;
     ensure!(
-        !run_true(&root.path().join("link"), "dev.tilo.test")?
+        !run_app(&root.path().join("link"), "dev.tilo.test")?
             .status
             .success(),
         "a symlinked profile was accepted"
     );
     ensure!(
-        !run_true(Path::new("relative-profile"), "dev.tilo.test")?
+        !run_app(Path::new("relative-profile"), "dev.tilo.test")?
             .status
             .success(),
         "a relative profile was accepted"
-    );
-    Ok(())
-}
-
-#[test]
-fn independent_sdk_apps_late_join_and_survive_another_app_exit() -> Result<()> {
-    struct Children(Vec<Child>);
-    impl Drop for Children {
-        fn drop(&mut self) {
-            for child in &mut self.0 {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-    // As libtest names it: a module of `tests/it.rs`.
-    const TEST: &str =
-        "runtime_daemon_process::independent_sdk_apps_late_join_and_survive_another_app_exit";
-    if let Ok(app_id) = std::env::var("TILO_NATIVE_SDK_HELPER") {
-        runtime_portal::native::ensure_attached(&app_id)?;
-        let mut manager = connected_manager()?;
-        manager.publish_action_directory(ui::collaboration::local_app_id());
-        loop {
-            let _ = manager.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-    let profile = DaemonProfile::new()?;
-    let mut apps = Children(Vec::new());
-    let start_app = |id: &str| -> Result<Child> {
-        let log = std::fs::File::create(profile.path().join(format!("{id}.log")))?;
-        Ok(Command::new(std::env::current_exe()?)
-            .args(["--exact", TEST, "--nocapture"])
-            .env("TILO_NATIVE_SDK_HELPER", id)
-            .env("TILO_RUNTIME_PROFILE", profile.path())
-            .env("TILO_RUNTIME_BINARY", runtime_binary())
-            .env_remove("TILO_SVC_COLLAB_FD")
-            .env_remove("TILO_SVC_IDENTITY_FD")
-            .env_remove("TILO_RUNTIME_STANDALONE")
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log.try_clone()?))
-            .stderr(Stdio::from(log))
-            .spawn_locked()?)
-    };
-    apps.0.push(start_app("dev.tilo.independent-first")?);
-    // The app's own launcher bounds the daemon start and exits with the
-    // reason when it fails, so wait as long as that launcher is alive.
-    let deadline = Instant::now()
-        .checked_add(LAUNCHER_START_CAP)
-        .context("the launcher's bound is past the clock's range")?;
-    while UnixStream::connect(profile.path().join("native.sock")).is_err() {
-        let first = apps.0.first_mut().context("the first app is gone")?;
-        ensure!(
-            first.try_wait()?.is_none() && Instant::now() < deadline,
-            "first SDK process did not start daemon; child log: {}",
-            std::fs::read_to_string(profile.path().join("dev.tilo.independent-first.log"))
-                .unwrap_or_else(|error| format!("child log unavailable: {error}"))
-                .chars()
-                .take(8192)
-                .collect::<String>()
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    let mut stream = UnixStream::connect(profile.path().join("native.sock"))?;
-    stream.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
-    let only = listed_apps(&mut stream, 1)?;
-    ensure!(
-        app_ids(&only) == ["dev.tilo.independent-first"],
-        "the first app is not the only one listed: {only:?}"
-    );
-    let before = daemon(profile.path())?;
-    apps.0.push(start_app("dev.tilo.independent-second")?);
-    let both = listed_apps(&mut stream, 2)?;
-    let [one, two] = both.as_slice() else {
-        bail!("expected two apps, got {both:?}");
-    };
-    ensure!(
-        one.get("peer_id") != two.get("peer_id"),
-        "both apps hold the same connection: {both:?}"
-    );
-    ensure!(
-        daemon(profile.path())? == before,
-        "the second app restarted the daemon"
-    );
-    let first = apps.0.first_mut().context("the first app is gone")?;
-    first.kill()?;
-    first.wait()?;
-    let survivor = listed_apps(&mut stream, 1)?;
-    ensure!(
-        app_ids(&survivor) == ["dev.tilo.independent-second"],
-        "the app that stayed is not the one listed: {survivor:?}"
-    );
-    ensure!(
-        apps.0
-            .get_mut(1)
-            .context("the second app is gone")?
-            .try_wait()?
-            .is_none(),
-        "the second app died with the first"
     );
     Ok(())
 }
@@ -598,7 +436,7 @@ fn public_profile_and_symlinked_device_lock_are_refused() -> Result<()> {
     // A launcher and a daemon both refuse a profile anyone can write to, and change nothing.
     let profile = DaemonProfile::unstarted()?;
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o777))?;
-    let output = run_true(profile.path(), "dev.tilo.test")?;
+    let output = run_app(profile.path(), "dev.tilo.test")?;
     ensure!(
         !output.status.success(),
         "a launcher accepted a public profile"
@@ -630,121 +468,169 @@ fn public_profile_and_symlinked_device_lock_are_refused() -> Result<()> {
     Ok(())
 }
 
+/// A program that opens the collaboration service for itself, naming an app this computer never
+/// launched, is refused as no app — and told how to run so this computer launches it.
+/// A launch that names a program is refused before anything starts: what runs is the app this
+/// computer has installed, never a program its caller names.
 #[test]
-fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() -> Result<()> {
-    use std::os::unix::process::CommandExt;
-    struct Family(Child);
-    impl Drop for Family {
-        fn drop(&mut self) {
-            if let Some(group) = i32::try_from(self.0.id()).ok().and_then(i32::checked_neg) {
-                unsafe {
-                    libc::kill(group, libc::SIGKILL);
-                }
-            }
-            let _ = self.0.wait();
-        }
-    }
-    // As libtest names it: a module of `tests/it.rs`.
-    const TEST: &str =
-        "runtime_daemon_process::ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime";
-    const APP: &str = "dev.tilo.parent-child";
-    if let Ok(stage) = std::env::var("TILO_SDK_FAMILY_STAGE") {
-        runtime_portal::native::ensure_attached(APP)?;
-        let mut manager = connected_manager()?;
-        manager.publish_action_directory(ui::collaboration::local_app_id());
-        let _child = if stage == "parent" {
-            // No service-environment clearing: this is ordinary Command spawn
-            // after the SDK has adopted both parent's service descriptors.
-            Some(
-                Command::new(std::env::current_exe()?)
-                    .args(["--exact", TEST, "--nocapture"])
-                    .env("TILO_SDK_FAMILY_STAGE", "child")
-                    .spawn_locked()?,
-            )
-        } else {
-            None
-        };
-        loop {
-            let _ = manager.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
+fn a_launch_that_names_a_program_is_refused() -> Result<()> {
     let profile = DaemonProfile::new()?;
-    let log_path = profile.path().join("family.log");
-    let log = std::fs::File::create(&log_path)?;
-    let mut command = host(profile.path());
-    command
-        .args(["--run-app", APP, "--"])
-        .arg(std::env::current_exe()?)
-        .args(["--exact", TEST, "--nocapture"])
-        .env("TILO_SDK_FAMILY_STAGE", "parent")
-        .env("TILO_RUNTIME_BINARY", runtime_binary())
-        .process_group(0)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log));
-    let mut family = Family(command.spawn_locked()?);
-    // The launcher bounds the daemon start itself and exits with the reason
-    // when it fails, which the loop reports at once.
-    let deadline = Instant::now()
-        .checked_add(LAUNCHER_START_CAP)
-        .context("the launcher's bound is past the clock's range")?;
-    loop {
-        ensure!(
-            family.0.try_wait()?.is_none(),
-            "{}",
-            std::fs::read_to_string(&log_path)?
-        );
-        if let Ok(mut stream) = UnixStream::connect(profile.path().join("native.sock")) {
-            stream.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
-            let apps = apps_once(&mut stream)?;
-            if let [one, two] = apps.as_slice() {
-                ensure!(
-                    app_ids(&apps).iter().all(|app| *app == APP),
-                    "another app was reported: {apps:?}"
-                );
-                ensure!(
-                    one.get("peer_id") != two.get("peer_id"),
-                    "the parent and child share a connection: {apps:?}"
-                );
-                break;
-            }
-        }
-        ensure!(
-            Instant::now() < deadline,
-            "parent/child did not both register: {}",
-            std::fs::read_to_string(&log_path)?
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    let workspace = status(profile.path())?
+        .get("workspace")
+        .and_then(Value::as_str)
+        .context("the daemon names no workspace")?
+        .to_owned();
+    let answer = ask(
+        profile.path(),
+        &json!({
+            "native": "launch",
+            "app_id": "so.tilo.passwords",
+            "workspace": workspace,
+            "presentation": false,
+            "executable": "/bin/sh",
+        }),
+    )?;
+    ensure!(
+        answer
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|error| error.contains("unknown field")),
+        "a launch that names a program must be refused: {answer}"
+    );
+    // Nothing of it ran: the daemon is the one that served the request.
+    ensure!(
+        status(profile.path())?
+            .get("pid")
+            .and_then(Value::as_u64)
+            .is_some_and(|pid| pid != 0),
+        "the daemon stopped"
+    );
+    Ok(())
+}
+
+/// A launch of an app this computer has not installed is refused, saying how to install it, and
+/// the person's MCP connection keeps answering beside the refusal.
+#[test]
+fn a_launch_of_an_uninstalled_app_is_refused_and_mcp_still_answers() -> Result<()> {
+    let profile = DaemonProfile::new()?;
+    let answer = launch(profile.path(), "so.tilo.passwords")?;
+    let refused = answer
+        .get("error")
+        .and_then(Value::as_str)
+        .context("an uninstalled app was started")?;
+    ensure!(
+        refused.contains("so.tilo.passwords is not installed on this computer")
+            && refused.contains("tilo app install so.tilo.passwords"),
+        "the refusal must say how to install the app: {refused}"
+    );
+    ping(profile.path())?;
+    let listed = ask(
+        profile.path(),
+        &json!({"jsonrpc":"2.0","id":1,"method":"resources/list","params":{}}),
+    )?;
+    ensure!(
+        listed
+            .get("result")
+            .and_then(|result| result.get("resources"))
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty),
+        "nothing runs, so resources/list lists no app: {listed}"
+    );
     Ok(())
 }
 
 #[test]
-fn explicit_profile_overrides_are_propagated_to_app_descendants() -> Result<()> {
+fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> Result<()> {
+    const ATTACHED: &str = "TILO_SELF_ATTACHED_PROGRAM";
+    const WORKSPACE: &str = "TILO_SELF_ATTACHED_WORKSPACE";
+    const APP: &str = "dev.tilo.self-attached";
+    if let Ok(file) = std::env::var(ATTACHED) {
+        let profile = PathBuf::from(
+            std::env::var_os("TILO_RUNTIME_PROFILE").context("the profile is named")?,
+        );
+        let workspace = std::env::var(WORKSPACE).context("the workspace is named")?;
+        // This program makes the collaboration connection itself, as a program started by hand
+        // does, and names an app this computer never launched.
+        let mut stream = UnixStream::connect(profile.join(tilo_runtime::COLLAB_SOCKET))
+            .context("connecting to the collaboration socket")?;
+        runtime_portal::launch_handoff::write(&mut stream, APP, &workspace)
+            .context("naming the app this program claims to be")?;
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set(
+            "TILO_SVC_COLLAB_FD",
+            std::os::fd::AsRawFd::as_raw_fd(&stream).to_string(),
+        );
+        environment.set("TILO_PACKAGE_ID", APP);
+        environment.set("TILO_WORKSPACE_ID", &workspace);
+        let mut manager = ui::collaboration::CollaborationManager::new();
+        let deadline = Instant::now()
+            .checked_add(tilo_test_env::hang_bound())
+            .context("the refusal's deadline")?;
+        loop {
+            let state = manager.state();
+            if let ui::collaboration::CollaborationState::Offline(_) = &state {
+                std::fs::write(&file, format!("{state:?}"))?;
+                return Ok(());
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "the unattested program was never refused: {state:?}"
+            );
+            // Publishing opens one of the app's records, which the workspace service decides for an app:
+            // what a program that attached for itself asks first.
+            let _ = manager.publish_action_directory(ui::collaboration::local_app_id());
+            let _ = manager.poll();
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
     let profile = DaemonProfile::new()?;
-    let output = host(profile.path())
-        .env("TILO_RUNTIME_PROFILE", "/must-not-be-used")
-        .arg("--profile")
-        .arg(profile.path())
-        .args([
-            "--run-app",
-            "dev.tilo.profile",
-            "--",
-            "/bin/sh",
-            "-c",
-            "printf '%s' \"$TILO_RUNTIME_PROFILE\"",
-        ])
-        .output_locked()?;
-    ensure!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+    let workspace = status(profile.path())?
+        .get("workspace")
+        .and_then(Value::as_str)
+        .filter(|workspace| !workspace.is_empty())
+        .context("the daemon names no workspace")?
+        .to_owned();
+    let file = profile.path().join("attached.refusal");
+    let log_path = profile.path().join("attached.log");
+    let log = std::fs::File::create(&log_path)?;
+    let name = format!(
+        "{}::a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run",
+        module_path!()
     );
-    let printed = String::from_utf8(output.stdout).context("the app's output")?;
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .args(["--exact", name.as_str(), "--nocapture", "--test-threads", "1"])
+        .env(ATTACHED, &file)
+        .env(WORKSPACE, &workspace)
+        .env("TILO_RUNTIME_PROFILE", profile.path())
+        .env_remove("TILO_SVC_COLLAB_FD")
+        .env_remove("TILO_SVC_IDENTITY_FD")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log));
+    let mut program = command.spawn_locked()?;
+    let deadline = Instant::now()
+        .checked_add(LAUNCHER_START_CAP)
+        .context("the program's deadline")?;
+    let refused = loop {
+        let said = std::fs::read_to_string(&file).unwrap_or_default();
+        if !said.is_empty() {
+            break said;
+        }
+        ensure!(
+            program.try_wait()?.is_none() && Instant::now() < deadline,
+            "the attaching program said nothing:\n{}",
+            std::fs::read_to_string(&log_path).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
     ensure!(
-        Some(printed.as_str()) == profile.path().to_str(),
-        "the app did not inherit the explicit profile: {printed:?}"
+        refused.contains("is not one this computer made"),
+        "the refusal must say this computer made no launch: {refused}"
+    );
+    ensure!(
+        refused.contains("`tilo-runtime --run-app"),
+        "the refusal must say how to run the program so this computer launches it: {refused}"
     );
     Ok(())
 }

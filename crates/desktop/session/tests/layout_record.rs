@@ -24,44 +24,46 @@ use tilo_session_core::layout;
 use tilo_compositor::InputEvent;
 use tilo_session::{Options, Session};
 
-/// The person at this device, by their root identity (hex).
+/// The person a session of a plain device, one no identity names, starts as.
 const ADA: &str = "abababababababababababababababababababababababababababababababab";
-/// Another member of the same workspace.
-const BO: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+
+thread_local! {
+    /// This computer: its device daemon, holding its workspaces, and the home it runs on. A layout
+    /// is a workspace's own record, which the daemon keeps and signs, so a session reaches its
+    /// layout only as its daemon's shell; two sessions of one of these are the same computer
+    /// started twice.
+    static DEVICE: crate::common::Device =
+        crate::common::device_daemon(crate::common::device_home(), None);
+    /// Where a session of this computer that is handed no state keeps its own services' files.
+    static STATE: tempfile::TempDir = tempfile::tempdir().expect("a state directory");
+}
 
 fn session() -> Session {
     session_in(None)
 }
 
-/// Options for a session on this device, whose workspaces it holds.
-fn options(state: Option<std::path::PathBuf>) -> Options {
-    Options {
-        person: ADA.to_owned(),
-        state: Some(state.unwrap_or_else(crate::common::device_state)),
-        collab: false,
-        ..Options::default()
-    }
-}
-
-/// The person at this device, as the session's own identity reads it.
+/// The person at this device, as the session's own identity reads it: the daemon's person.
 fn person() -> String {
-    tilo_session::identity::own_person(&options(None))
+    DEVICE.with(|device| device.person.clone())
 }
 
-/// A session of `person` 's: the device's layout is a workspace's layout, so it is one that holds
-/// its workspaces.
-fn session_as(person: &str) -> Session {
-    crate::common::headless(Options {
-        person: person.to_owned(),
-        state: None,
-        collab: false,
-        ..Options::default()
-    })
+/// A session on a computer of someone else's: its layouts are the layouts of the workspaces it
+/// holds, and it holds none of this one's.
+fn another_computer() -> Session {
+    crate::common::on_its_daemon(
+        &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        Options {
+            collab: false,
+            ..Options::default()
+        },
+    )
 }
 
-/// A session that keeps its state in `state` when it is given, else in this test's own device.
+/// A session on this computer that keeps its state in `state` when it is given, else in this
+/// computer's own.
 fn session_in(state: Option<std::path::PathBuf>) -> Session {
-    crate::common::headless(options(state))
+    let state = state.unwrap_or_else(|| STATE.with(|state| state.path().to_path_buf()));
+    DEVICE.with(|device| device.session(&state))
 }
 
 fn step(session: &mut Session) {
@@ -348,11 +350,11 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
 #[test]
 fn a_float_is_in_the_workspaces_layout_so_the_next_start_shows_it() {
     let _settled = ui::motion::testing::settled();
-    // A device of this machine's own, holding its workspaces: the identity is minted in its home,
-    // so its engine opens and its layout is the workspace's.
-    let state = crate::common::device_state();
+    // This computer's device, holding its workspaces: its sessions are its daemon's shells, and
+    // the layout they show is the workspace's.
+    let state = tempfile::tempdir().expect("a state directory");
     let (window, strip) = {
-        let mut session = session_in(Some(state.clone()));
+        let mut session = session_in(Some(state.path().to_path_buf()));
         step(&mut session);
         let window = open_window(&mut session, "org.example.Notes");
         step(&mut session);
@@ -373,7 +375,7 @@ fn a_float_is_in_the_workspaces_layout_so_the_next_start_shows_it() {
         (window, strip)
     };
 
-    let mut next = session_in(Some(state));
+    let mut next = session_in(Some(state.path().to_path_buf()));
     step(&mut next);
     let back = strip_reading_of(&next, window);
     assert!(back.floating, "the next start shows it floating");
@@ -469,14 +471,14 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
 }
 
 // (3) One record answers what the layout is: the layout's own, which the workspace shares.
-// Nothing is kept beside it, and another member of the workspace reads none of it.
+// Nothing is kept beside it, and a computer that holds none of those workspaces reads none of it.
 #[test]
 fn the_layout_is_the_shells_own_and_no_record_beside_it() {
     let _settled = ui::motion::testing::settled();
-    // A device of this machine's own, holding its workspaces: the identity is minted in its home,
-    // so its engine opens and its layout is the workspace's.
-    let state = crate::common::device_state();
-    let mut here = session_in(Some(state.clone()));
+    // This computer's device, holding its workspaces: its sessions are its daemon's shells, and
+    // the layout they show is the workspace's.
+    let state = tempfile::tempdir().expect("a state directory");
+    let mut here = session_in(Some(state.path().to_path_buf()));
     step(&mut here);
     let window = open_window(&mut here, "org.example.Notes");
     let second = add_strip(&here, "Second");
@@ -491,7 +493,9 @@ fn the_layout_is_the_shells_own_and_no_record_beside_it() {
         Some(second),
         "the layout holds the move"
     );
-    let records = here.device_records().expect("the session keeps the device's records");
+    let records = here
+        .device_records()
+        .expect("the session keeps the device's records");
     drop(here);
 
     // The workspace's layout record keeps the layout; what this device keeps is what it
@@ -501,13 +505,13 @@ fn the_layout_is_the_shells_own_and_no_record_beside_it() {
         "the device keeps what it shows"
     );
     assert!(
-        !state.join("tilo").join("layout.automerge").exists(),
+        !state.path().join("tilo").join("layout.automerge").exists(),
         "no second record of the layout is kept"
     );
 
-    // Another member of the workspace runs a layout of their own: nothing of this one's layout
-    // is theirs.
-    let mut theirs = session_as(BO);
+    // A computer of someone else's runs the layouts of their own workspaces: nothing of this
+    // one's layout is theirs.
+    let mut theirs = another_computer();
     step(&mut theirs);
     assert!(
         place_of(&theirs, window).is_none(),
@@ -520,11 +524,11 @@ fn the_layout_is_the_shells_own_and_no_record_beside_it() {
 #[test]
 fn a_places_view_and_pin_are_kept_with_the_shell_across_a_restart() {
     let _settled = ui::motion::testing::settled();
-    // A device of this machine's own, holding its workspaces: the identity is minted in its home,
-    // so its engine opens and its layout is the workspace's.
-    let state = crate::common::device_state();
+    // This computer's device, holding its workspaces: its sessions are its daemon's shells, and
+    // the layout they show is the workspace's.
+    let state = tempfile::tempdir().expect("a state directory");
     let place = {
-        let mut session = session_in(Some(state.clone()));
+        let mut session = session_in(Some(state.path().to_path_buf()));
         step(&mut session);
         let window = open_window(&mut session, "org.example.Notes");
         step(&mut session);
@@ -557,7 +561,7 @@ fn a_places_view_and_pin_are_kept_with_the_shell_across_a_restart() {
         window
     };
 
-    let mut next = session_in(Some(state));
+    let mut next = session_in(Some(state.path().to_path_buf()));
     step(&mut next);
     let back = place_of(&next, place).expect("the place came back");
     assert_eq!(back.shown_as, "editor", "the view the place shows");
@@ -569,11 +573,11 @@ fn a_places_view_and_pin_are_kept_with_the_shell_across_a_restart() {
 #[test]
 fn a_launch_that_left_no_window_is_gone_after_a_restart() {
     let _settled = ui::motion::testing::settled();
-    // A device of this machine's own, holding its workspaces: the identity is minted in its home,
-    // so its engine opens and its layout is the workspace's.
-    let state = crate::common::device_state();
+    // This computer's device, holding its workspaces: its sessions are its daemon's shells, and
+    // the layout they show is the workspace's.
+    let state = tempfile::tempdir().expect("a state directory");
     let (window, place) = {
-        let mut session = session_in(Some(state.clone()));
+        let mut session = session_in(Some(state.path().to_path_buf()));
         step(&mut session);
         let window = open_window(&mut session, "org.example.Notes");
         // A launch of Files opened its place, and no window came for it.
@@ -613,7 +617,7 @@ fn a_launch_that_left_no_window_is_gone_after_a_restart() {
         (window, tab)
     };
 
-    let mut next = session_in(Some(state));
+    let mut next = session_in(Some(state.path().to_path_buf()));
     step(&mut next);
     let tabs: Vec<u64> = next.handle().read(|tree| {
         tree.workspaces

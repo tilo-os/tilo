@@ -581,7 +581,7 @@ same geometry:
 | Settings rows | `FormSection::grouped()` |
 | An object (app, document, comment, connection) | `Card` / `CardFace` in a `CardGrid` |
 | A number and what it measures | `StatTile` / `StatTileFace` in a `StatGroup` |
-| Covers, thumbnails, album art, photos | `MediaCard` / `MediaCardFace` in a `MediaGrid` (`justified_rows` for photos), or alone where a view shows one thing: a grid column wide |
+| Covers, thumbnails, album art, photos | `MediaCard` / `MediaCardFace` in a `MediaGrid` (`justified_rows` for photos), alone where a view shows one thing (a grid column wide), or compact in a band: a bar control high, art and title in one row (a bar's now-playing pill) |
 | A file drop target | `DropZone` / `DropZoneFace` |
 | An app that opens a file: its empty state and a drop anywhere on the window | `FileOpenSurface` |
 | Content still loading | `Skeleton` / `SkeletonFace` |
@@ -1547,6 +1547,7 @@ says how (no curve, duration, spring constant or eased ratio of its own):
 | `Disclose` / `Extent` | expand and collapse; a panel's height following its page (clip, never re-layout) |
 | `PanelSlide` | sidebars, drawers, the inspector; content beside reflows once, at the wide end; edge sheets |
 | `CrossFade` | content swapped in place |
+| `Swap` | one view replaced by another whole in place (a stage's page, a slide): the old stays laid out and fades out over the first 60 %, the new fades in over `fast`; a key plays it at `fast`, and a change no hand made and reduced motion land it |
 | `ListChange` | rows arriving, leaving, changing places |
 | `Snap` | carousels settling on a detent with the release velocity |
 | `Zoom` | one thing becoming another (window and overview card) |

@@ -87,7 +87,7 @@ fn owned_resources_at<W: Widget + ?Sized>(
         });
     }
     widget.for_each_child(&mut |child| {
-        if !child.has_separate_document_owner() {
+        if !crate::bound_dispatch::has_separate_document_owner(child) {
             owned_resources_at(child, owner.map(|_| false), doc, address, resources);
         }
     });
@@ -121,7 +121,7 @@ fn provider_at<W: Widget + ?Sized>(
             }
         });
     widget.for_each_child(&mut |child| {
-        if found.is_none() && !child.has_separate_document_owner() {
+        if found.is_none() && !crate::bound_dispatch::has_separate_document_owner(child) {
             found = provider_at(child, false, binding, address);
         }
     });
@@ -129,7 +129,7 @@ fn provider_at<W: Widget + ?Sized>(
 }
 impl ResourceReadRequest<'_> {
     pub(crate) fn visit<W: Widget + ?Sized>(&mut self, root: &W) -> Result<(), ApiError> {
-        if let Some(binding) = root.callback_binding() {
+        if let Some(binding) = crate::bound_dispatch::callback_binding(root) {
             binding
                 .enter()
                 .map_err(|e| refused("resource_unavailable", format!("{e:?}")))?;
@@ -142,7 +142,7 @@ impl ResourceReadRequest<'_> {
                     .read_document(&AutoCommit::new(), |doc, _| {
                         let mut resources = Vec::new();
                         root.for_each_child(&mut |child| {
-                            if !child.has_separate_document_owner() {
+                            if !crate::bound_dispatch::has_separate_document_owner(child) {
                                 component_resources(child, doc, self.address, &mut resources);
                             }
                         });
@@ -150,7 +150,7 @@ impl ResourceReadRequest<'_> {
                             && claims(&resources, address) == 0
                         {
                             root.for_each_child(&mut |child| {
-                                if !child.has_separate_document_owner()
+                                if !crate::bound_dispatch::has_separate_document_owner(child)
                                     && let Some(resource) = provider(child, &binding, address)
                                 {
                                     resources.push(resource);
@@ -166,7 +166,7 @@ impl ResourceReadRequest<'_> {
                     interactive: !self.hidden,
                 });
             }
-        } else if root.has_separate_document_owner() {
+        } else if crate::bound_dispatch::has_separate_document_owner(root) {
             return Err(refused(
                 "resource_unavailable",
                 "Separate document ownership is unavailable",
@@ -175,7 +175,7 @@ impl ResourceReadRequest<'_> {
         let mut result = Ok(());
         root.for_each_child(&mut |child| {
             if result.is_ok() {
-                result = child.visit_resource_owners(self);
+                result = crate::bound_dispatch::visit_resource_owners(child, self);
             }
         });
         result
@@ -184,7 +184,7 @@ impl ResourceReadRequest<'_> {
     pub(crate) fn tile(&mut self, interactive: bool, live: &dyn Widget) -> Result<(), ApiError> {
         let old_hidden = self.hidden;
         self.hidden |= !interactive;
-        let result = live.visit_resource_owners(self);
+        let result = crate::bound_dispatch::visit_resource_owners(live, self);
         self.hidden = old_hidden;
         result
     }
@@ -198,7 +198,7 @@ fn inventory(
         owners: vec![],
         hidden: false,
     };
-    root.visit_resource_owners(&mut request)?;
+    crate::bound_dispatch::visit_resource_owners(root, &mut request)?;
     Ok(request.owners)
 }
 fn claims(resources: &[ResourceSpec], address: &ActionAddress) -> usize {
@@ -224,7 +224,7 @@ pub(crate) fn select_local_target(
     address: &ActionAddress,
 ) -> Result<LocalResourceTarget, ApiError> {
     let mut resources = Vec::new();
-    if !root.has_separate_document_owner() {
+    if !crate::bound_dispatch::has_separate_document_owner(root) {
         owned_resources(root, doc, Some(address), &mut resources);
     }
     let mut count = claims(&resources, address);

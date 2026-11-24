@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
+use ui_core::bound_dispatch::BoundWidget;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::capability::SearchSource;
@@ -221,6 +222,18 @@ impl RootWidget {
     }
 }
 
+// The root stands in the record its view stands in, and keeps the person's
+// records open beside it.
+impl BoundWidget for RootWidget {
+    fn callback_binding(&self) -> Option<ui_core::bound_dispatch::CallbackBinding> {
+        ui_core::bound_dispatch::callback_binding(self.0.view())
+    }
+
+    fn resource_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
+        self.0.resource_owners()
+    }
+}
+
 impl Decorator for RootWidget {
     type Inner = dyn Widget;
 
@@ -239,6 +252,8 @@ impl Decorator for RootWidget {
             request.provide::<dyn Decorated>(self);
         } else if request.wants::<dyn ResourceOperations>() {
             request.provide::<dyn ResourceOperations>(self);
+        } else if request.wants::<dyn BoundWidget>() {
+            request.provide::<dyn BoundWidget>(self);
         } else {
             self.0.provide(request);
         }
@@ -281,10 +296,6 @@ impl Decorator for RootWidget {
 
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
         self.0.view_only_scroll(event)
-    }
-
-    fn resource_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
-        self.0.resource_owners()
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

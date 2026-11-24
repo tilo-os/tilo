@@ -319,6 +319,14 @@ impl KeptTurn {
     }
 }
 
+/// What a web call is on in the person's vault: the item, the places the call may use, and
+/// what the vault says of the item.
+struct ItemIn<'a> {
+    item: &'a ItemId,
+    places: &'a [Place],
+    facts: &'a accounts::vault_items::ItemFacts,
+}
+
 impl Workspaces {
     /// The turn `caller` works, as its workspace's list of its agents keeps the agent; `None`
     /// for a caller that is no agent in that list.
@@ -745,19 +753,29 @@ impl Use {
         (workspace, root): (&str, &Path),
         (by, acting, item): (&str, &tilo_action_policy::Acting, ItemId),
         caller_app: Option<&str>,
-        purpose: UsedFor<'_>,
+        (purpose, asked): (UsedFor<'_>, &InvokeRequest),
     ) -> Result<Value, String> {
         match self {
             Self::Mail(adding) => {
                 let kept = workspaces
-                    .mail_with_item((workspace, root), adding, (by, acting), purpose)
+                    .mail_with_item(
+                        (workspace, root),
+                        adding,
+                        (by, acting, Some(asked)),
+                        purpose,
+                    )
                     .await?;
                 workspaces.person_settings_changed();
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
             Self::Key(setting) => {
                 let kept = workspaces
-                    .key_from_item((workspace, root), &setting, (by, acting), purpose)
+                    .key_from_item(
+                        (workspace, root),
+                        &setting,
+                        (by, acting, Some(asked)),
+                        purpose,
+                    )
                     .await?;
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
@@ -766,7 +784,7 @@ impl Use {
                     workspaces,
                     workspace,
                     call,
-                    (by, acting),
+                    (by, acting, asked),
                     caller_app,
                     purpose,
                 )
@@ -778,7 +796,7 @@ impl Use {
                     workspace,
                     &signing,
                     &item,
-                    (by, acting),
+                    (by, acting, asked),
                     purpose,
                 )
                 .await
@@ -837,10 +855,10 @@ async fn page_text(
     workspace: &str,
     (item, kind): (&ItemId, vault_items::ItemKind),
     site: &Place,
-    (by, asker): (&str, &tilo_action_policy::Acting),
+    (by, asker, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
 ) -> Result<PageText, String> {
     workspaces
-        .changing_vault(workspace, Some(asker), |items| match kind {
+        .changing_vault(workspace, (Some(asker), Some(asked)), |items| match kind {
             vault_items::ItemKind::CodeGenerator => {
                 items.code_at(item, site, by).map(PageText::Code)
             }
@@ -1274,7 +1292,7 @@ impl Workspaces {
                 (&using.workspace, &root),
                 (&using.name, &using.acting(), item),
                 caller_app.as_deref(),
-                purpose,
+                (purpose, request),
             )
             .await
             .map_err(ActionCallError::refused)
@@ -1320,7 +1338,16 @@ impl Workspaces {
             .await
         {
             self.ask_web_call(
-                workspace, app, request, &call, &target, &item, &places, &facts,
+                workspace,
+                app,
+                request,
+                &call,
+                &target,
+                ItemIn {
+                    item: &item,
+                    places: &places,
+                    facts: &facts,
+                },
             )
             .map_err(refused)?;
             return Err(refused(super::vault_release::call_asked_first(app)));
@@ -1338,7 +1365,7 @@ impl Workspaces {
             self,
             workspace,
             call,
-            (app, caller.acting()),
+            (app, caller.acting(), request),
             Some(app),
             purpose,
         )
@@ -1372,10 +1399,6 @@ impl Workspaces {
     /// Ask `app`'s person whether it may call the service `call` names with `item`, as an asked
     /// record whose "Approve and grant" writes the grant on that item at those places alone:
     /// unless one asks already.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one ask names the call, the app and what it is on"
-    )]
     fn ask_web_call(
         &self,
         workspace: &str,
@@ -1383,9 +1406,7 @@ impl Workspaces {
         request: &InvokeRequest,
         call: &web_call::WebCall,
         target: &RemoteActionTarget,
-        item: &ItemId,
-        places: &[Place],
-        facts: &accounts::vault_items::ItemFacts,
+        on: ItemIn<'_>,
     ) -> Result<(), String> {
         let (store, records) = self
             .vault_asks()
@@ -1393,7 +1414,7 @@ impl Workspaces {
         let target = RemoteActionTarget {
             provider: target.provider.clone(),
             address: tilo_actions::ActionAddress::new(
-                use_resource(item, places),
+                use_resource(on.item, on.places),
                 target.address.action.clone(),
             ),
         };
@@ -1415,12 +1436,12 @@ impl Workspaces {
         let caller = Caller::local_app(app)
             .acting_for(hex::encode(self.device_cert().user_public_key))
             .in_workspace(workspace);
-        let title = if facts.title.trim().is_empty() {
+        let title = if on.facts.title.trim().is_empty() {
             "a vault item".to_owned()
         } else {
-            facts.title.clone()
+            on.facts.title.clone()
         };
-        let places: Vec<&str> = places.iter().map(Place::as_str).collect();
+        let places: Vec<&str> = on.places.iter().map(Place::as_str).collect();
         let service = if places.is_empty() {
             "a service".to_owned()
         } else {
@@ -1439,7 +1460,7 @@ impl Workspaces {
             ),
             on: Some(title),
             facts: vec![
-                Fact::new("Item", super::vault_release::kind_word(facts.kind)),
+                Fact::new("Item", super::vault_release::kind_word(on.facts.kind)),
                 Fact::new("Goes to", places.join(" ")),
                 Fact::new("Calls", format!("{method} {}", call.url.trim())),
             ],
@@ -1629,7 +1650,7 @@ impl Workspaces {
             &using.workspace,
             (&item, kind),
             &site,
-            (&using.name, &using.acting()),
+            (&using.name, &using.acting(), request),
         )
         .await
         .map_err(ActionCallError::refused)

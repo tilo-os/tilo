@@ -25,6 +25,7 @@ __all__ = [
     "ProblemReport",
     "TiloSettings",
     "ImportThemeArgs",
+    "MoveSharedScreenArgs",
     "OpenPaneArgs",
     "ShowSettingArgs",
     "ReviewContrastArgs",
@@ -36,6 +37,15 @@ ImportThemeArgs = TypedDict("ImportThemeArgs", {
     "file": "Any",
 })
 """The arguments of `import_theme`."""
+
+MoveSharedScreenArgs = TypedDict("MoveSharedScreenArgs", {
+    "night": "Any",
+    "screens": "list[Any]",
+    "picked": "int",
+    "start": "list[float]",
+    "let_go": "list[float]",
+})
+"""The arguments of `move_shared_screen`."""
 
 OpenPaneArgs = TypedDict("OpenPaneArgs", {
     "page": "str",
@@ -68,7 +78,7 @@ ReviewContrastNowArgs = TypedDict("ReviewContrastNowArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.settings@3adcc0e7d181e2cf"
+    __surface__ = "so.tilo.settings@4968411ed7e719ce"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -129,8 +139,8 @@ class Notice(Resource):
 
 class Settings(Resource):
     """Settings — `tl.so.tilo.settings.Settings`."""
-    __surface__ = "so.tilo.settings@3adcc0e7d181e2cf"
-    m2ye55z2: str  # pane
+    __surface__ = "so.tilo.settings@4968411ed7e719ce"
+    vfi4twig: str  # pane
 
     def import_theme(self, *, file: Any) -> None:
         """Takes in a theme saved with Export, from this workspace or another: every role, tuned value and glass shader, once it is admitted and keeps every contrast floor. Importing names it by its own name, so what a person exported under a name comes back under one."""
@@ -147,13 +157,28 @@ class Settings(Resource):
 
 class ProblemReport(Resource):
     """ProblemReport — `tl.so.tilo.settings.ProblemReport`."""
-    __surface__ = "so.tilo.settings@3adcc0e7d181e2cf"
-    kopqq6j4: str  # body
+    __surface__ = "so.tilo.settings@4968411ed7e719ce"
+    kb2c7b7e: str  # body
 
 
 class TiloSettings(Resource):
     """Settings — `tl.so.tilo.settings`."""
-    __surface__ = "so.tilo.settings@3adcc0e7d181e2cf"
+    __surface__ = "so.tilo.settings@4968411ed7e719ce"
+    def move_shared_screen(self,
+        *,
+        night: Any,
+        screens: list[Any],
+        picked: int,
+        start: list[float],
+        let_go: list[float],
+    ) -> None:
+        """Move the device whose screen was dragged so that screen stands where the pointer was let go, in the shared space's own pixels, snapped to a small grid. Every screen of that device moves with it; a drag too small to mean anything is not a change."""
+        return self.action("move_shared_screen", night=night, screens=screens, picked=picked, start=start, let_go=let_go)
+
+    def move_shared_screen_many(self, items: list[MoveSharedScreenArgs]) -> list[dict[str, Any]]:
+        """Runs `move_shared_screen` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_shared_screen", items)
+
     def move_screen(self,
         *,
         screens: Any,
@@ -253,6 +278,6 @@ class TiloSettings(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"move_screen", "set_sdr_brightness", "open_pane", "open_pane_many", "show_setting", "show_setting_many", "open_manage_page", "open_invoice", "set_processors_room", "set_memory_room", "send_problem_report", "review_contrast", "review_contrast_many", "review_contrast_on", "review_contrast_on_many", "review_contrast_now", "review_contrast_now_many", "export_theme"})
+    __actions__ = frozenset({"move_shared_screen", "move_shared_screen_many", "move_screen", "set_sdr_brightness", "open_pane", "open_pane_many", "show_setting", "show_setting_many", "open_manage_page", "open_invoice", "set_processors_room", "set_memory_room", "send_problem_report", "review_contrast", "review_contrast_many", "review_contrast_on", "review_contrast_on_many", "review_contrast_now", "review_contrast_now_many", "export_theme"})
 
 

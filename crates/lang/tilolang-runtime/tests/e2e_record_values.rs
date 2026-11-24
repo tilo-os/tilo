@@ -1,7 +1,8 @@
 //! Record values end to end: a record built with its fields, read from text or taken out of a
 //! list is a value its code edits field by field, in a fn or an action, without asking the store;
 //! the store holds the edited values once an action inserts them, and a resource's field set
-//! still writes the resource.
+//! still writes the resource. A value of a type an action declares as a parameter's is one the
+//! action may be handed: it reads it, and a change to it fails where it is written.
 
 #[cfg(test)]
 mod cases {
@@ -167,5 +168,161 @@ action keep(l: Line, found_text: Text, one_text: Text) {
             "editing a value taken out of a list leaves the list as it was"
         );
         assert_eq!(text(&rt, &line, "label"), "kept");
+    }
+
+    const IMPORTING: &str = r#"app so.tilo.importing "Importing"
+
+type Part {
+    name: Text
+}
+
+type Holder {
+    parts: List<Part>
+}
+
+type Box {
+    parts: Collection<Part>
+    note: Text
+}
+
+root Box
+
+default view box for Box
+
+view box(b: Box) {
+    text(b.note)
+}
+
+/// Keeps one part a file brings.
+action keep_one(b: Box, p: Part) {
+    b.parts.insert(p)
+}
+
+/// Reads the parts a file holds into the box.
+action adopt(b: Box, text: Text) {
+    match json.decode<Holder>(text) {
+        .ok(h) => {
+            for p in h.parts {
+                keep_one(b, p)
+            }
+            b.note = "read"
+        }
+        .err(why) => { b.note = why }
+    }
+}
+
+/// Renames one part a file brings, expecting the name to be kept.
+action rename_one(b: Box, p: Part) {
+    p.name = "renamed"
+}
+
+action rename_in(b: Box, text: Text) {
+    match json.decode<Holder>(text) {
+        .ok(h) => {
+            for p in h.parts {
+                rename_one(b, p)
+            }
+            b.note = "renamed"
+        }
+        .err(why) => { b.note = why }
+    }
+}
+"#;
+
+    const PARTS: &str = r#"{"parts":[{"name":"First"},{"name":"Second"}]}"#;
+
+    fn part_names(rt: &Runtime, b: &ResourceRef) -> Vec<String> {
+        let Value::List(items) = rt.read(b, "parts").unwrap() else {
+            panic!("a list of parts");
+        };
+        items
+            .iter()
+            .map(|item| {
+                let Value::Ref(r) = item else {
+                    panic!("a stored part: {item:?}");
+                };
+                text(rt, &r.target, "name")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_decoded_record_reaches_the_action_that_takes_its_type() {
+        let app = App::compile(IMPORTING, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let b = rt.create("Box").unwrap();
+        let adopt = app.action("adopt");
+        rt.invoke_action(
+            &me(),
+            (
+                adopt.as_str(),
+                vec![Value::resource(&b), Value::Text(PARTS.to_owned())],
+            ),
+        )
+        .unwrap_or_else(|e| panic!("the value the decoder checked is handed over: {e}"));
+        assert_eq!(part_names(&rt, &b), vec!["First", "Second"]);
+        assert_eq!(text(&rt, &b, "note"), "read");
+    }
+
+    #[test]
+    fn a_record_value_of_another_type_is_refused_by_its_name() {
+        let app = App::compile(IMPORTING, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let b = rt.create("Box").unwrap();
+        let holder = app
+            .meta()
+            .types
+            .iter()
+            .find(|t| t.name == "Holder")
+            .expect("the app declares Holder")
+            .id
+            .clone();
+        let keep = app.action("keep_one");
+        let failed = rt
+            .invoke_action(
+                &me(),
+                (
+                    keep.as_str(),
+                    vec![
+                        Value::resource(&b),
+                        Value::Rec(tilolang_runtime::RecordInit {
+                            ty: holder,
+                            fields: std::collections::BTreeMap::new(),
+                        }),
+                    ],
+                ),
+            )
+            .expect_err("a Holder is no Part");
+        let said = format!("{failed}");
+        assert!(
+            said.contains("a record of `Holder` is no `Part`"),
+            "the refusal names the value's own type and the parameter's: {said}"
+        );
+    }
+
+    #[test]
+    fn a_value_an_action_changes_fails_where_it_is_written() {
+        let app = App::compile(IMPORTING, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let b = rt.create("Box").unwrap();
+        let rename = app.action("rename_in");
+        let failed = rt
+            .invoke_action(
+                &me(),
+                (
+                    rename.as_str(),
+                    vec![Value::resource(&b), Value::Text(PARTS.to_owned())],
+                ),
+            )
+            .expect_err("a value names no resource to change");
+        let said = format!("{failed}");
+        assert!(
+            said.contains("a record value an action is handed names no resource to change"),
+            "the failure says what a handed value is: {said}"
+        );
+        assert!(part_names(&rt, &b).is_empty(), "nothing was kept");
     }
 }

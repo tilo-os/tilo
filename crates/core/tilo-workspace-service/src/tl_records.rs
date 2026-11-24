@@ -421,6 +421,27 @@ impl Record {
 
 impl tilolang_tilo::resources::Port for Record {
     fn command(&self, command: Command) -> Result<Reply, String> {
+        // A read answers from the store the workspace reads through without its lock: it needs no
+        // reactor and no thread of its own, and never waits for a write that waits on the key
+        // service or a link, nor for a whole pass of the record's index.
+        if !command.writes() {
+            if let Some(answer) =
+                self.workspaces
+                    .read_record_now(&self.workspace, &self.reader, &command)
+            {
+                return answer;
+            }
+            // A workspace whose reading is not kept here yet reads as it opens: it waits for the
+            // workspace's lock once, on a thread of its own.
+            let workspaces = self.workspaces.clone();
+            let (workspace, reader, command) =
+                (self.workspace.clone(), self.reader.clone(), command);
+            return crate::device_documents::on_its_own(async move {
+                workspaces
+                    .resource_read(&workspace, &reader, &command)
+                    .await
+            });
+        }
         let workspaces = self.workspaces.clone();
         let (workspace, app, reader) = (
             self.workspace.clone(),
@@ -428,16 +449,8 @@ impl tilolang_tilo::resources::Port for Record {
             self.reader.clone(),
         );
         let Some(runtime) = &self.runtime else {
-            if command.writes() {
-                return Err(format!(
-                    "{app}'s record was opened to be read, and takes no write"
-                ));
-            }
-            return crate::device_documents::on_its_own(Self::carry(
-                workspaces,
-                (workspace, app, reader),
-                command,
-                Arc::clone(&self.refused),
+            return Err(format!(
+                "{app}'s record was opened to be read, and takes no write"
             ));
         };
         let carried = Self::carry(
@@ -1146,13 +1159,16 @@ pub struct RecordCall<'a> {
 
 impl crate::workspaces::Workspaces {
     /// `app`'s record of `workspace`, as this device's workspace service holds it, read as
-    /// `reader` reads it, its commands waiting on the reactor this is called on.
+    /// `reader` reads it: a read answers from the store the workspace reads through without its
+    /// lock, and a write is carried on the service's writes thread, whose thread nothing else
+    /// uses, or on the reactor this is called on where the service has none.
     ///
     /// # Errors
-    /// This is called outside a reactor.
+    /// No reactor is here to carry the record's writes.
     pub fn tl_record(&self, workspace: &str, app: &str, reader: &str) -> Result<Record, String> {
-        let runtime = tokio::runtime::Handle::try_current()
-            .map_err(|error| format!("{app}'s record is read on a reactor: {error}"))?;
+        let runtime = self
+            .record_writes_runtime()
+            .ok_or_else(|| format!("{app}'s record is written on a reactor"))?;
         Ok(Record {
             workspaces: self.clone(),
             workspace: workspace.to_owned(),

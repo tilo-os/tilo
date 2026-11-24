@@ -179,6 +179,7 @@ fn descriptor(language: Option<&str>) -> tilo_actions::ActionDescriptor {
         input: tilo_actions::InputSpec::None,
         params: PARAMS.to_vec(),
         view: None,
+        effects: Vec::new(),
     }
 }
 

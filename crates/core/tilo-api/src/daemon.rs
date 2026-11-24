@@ -265,7 +265,13 @@ impl DaemonPlace {
         &self,
         within: Duration,
         founding: &Founding,
-    ) -> Result<(tilo_files::native::socket::Stream, Option<serde_json::Value>), String> {
+    ) -> Result<
+        (
+            tilo_files::native::socket::Stream,
+            Option<serde_json::Value>,
+        ),
+        String,
+    > {
         let answer = self.wait_for(within, Some(founding))?;
         let stream =
             tilo_files::native::socket::connect(&self.native).map_err(|error| error.to_string())?;
@@ -314,7 +320,10 @@ impl DaemonPlace {
                 // A device no person's certificate names serves nobody yet: its own account
                 // founds its person here, as its first command always has.
                 if !self.system && who::who().is_ok_and(|who| !who.claimed) {
-                    return self.found(founding.cloned().unwrap_or_default());
+                    return founding.map_or_else(
+                        || self.found(&Founding::default()),
+                        |founding| self.found(founding),
+                    );
                 }
                 return Ok(None);
             }
@@ -404,7 +413,7 @@ impl DaemonPlace {
     ///
     /// # Errors
     /// The daemon does not answer, or could not found the person.
-    pub fn found(&self, founding: Founding) -> Result<Option<serde_json::Value>, String> {
+    pub fn found(&self, founding: &Founding) -> Result<Option<serde_json::Value>, String> {
         // Founding a person starts their services before it can issue the tickets a founder
         // asked for: the call is answered in parts, and followed until it settles.
         match self.act_followed(tilo_device_identity::login::FOUND, founding.arguments()) {

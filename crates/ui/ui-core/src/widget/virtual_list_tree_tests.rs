@@ -1407,12 +1407,6 @@ fn composed_at<'a>(
     found
 }
 
-fn holds(node: &crate::composition::Composed, path: &str) -> bool {
-    node.children
-        .iter()
-        .any(|child| child.path == path || holds(child, path))
-}
-
 /// The row saying `text`: the list item that owns the words, not an outer row that holds it too.
 fn row_named<'a>(
     root: &'a crate::composition::Composed,
@@ -1554,10 +1548,31 @@ fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
         folds_first(branch),
         "the arrived branch offers its disclosure: {branch:?}"
     );
+    // The branch holds the rows under it as a tree does: its node stands open at the top of the
+    // tree and theirs a level in, and they stand after it in the list's page.
+    let branch_node = branch.semantics.as_ref().expect("a reader reads the branch");
+    assert_eq!(branch_node.level, Some(1), "the branch stands at the top");
+    assert_eq!(
+        branch_node.state.expanded,
+        Some(true),
+        "and open on the rows under it"
+    );
     let under = row_named(&composition.root, "Note 1").expect("the row under it");
+    assert_eq!(
+        under.semantics.as_ref().and_then(|node| node.level),
+        Some(2),
+        "the row under it stands a level in: {under:?}"
+    );
+    let place = |path: &str| {
+        list_node
+            .children
+            .iter()
+            .position(|row| row.path == path)
+            .unwrap_or_else(|| panic!("{path} stands in the list: {list_node:?}"))
+    };
     assert!(
-        holds(branch, &under.path),
-        "and holds the rows under it: {branch:?}"
+        place(&branch.path) < place(&under.path),
+        "and stands after the branch in the list: {list_node:?}"
     );
     assert_eq!(disclosures(&mut harness), 1, "and a reader hears it");
 }

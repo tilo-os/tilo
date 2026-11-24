@@ -12,11 +12,14 @@ struct BoundRoot {
     parts: Parts,
     binding: CallbackBinding,
 }
-impl Widget for BoundRoot {
-    retained_parts!("BoundRoot");
+impl crate::bound_dispatch::BoundWidget for BoundRoot {
     fn callback_binding(&self) -> Option<CallbackBinding> {
         Some(self.binding.clone())
     }
+}
+impl Widget for BoundRoot {
+    crate::provides!(dyn crate::bound_dispatch::BoundWidget);
+    retained_parts!("BoundRoot");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

@@ -166,6 +166,9 @@ pub struct Module {
     /// The views a capture or a stream leaves out, by id: those that declare `protect capture`,
     /// those a protected template expanded in, and those showing one of either.
     pub capture_protected: Vec<String>,
+    /// Each call of one view from another, the caller first: the nested views that stand in a
+    /// view's frame.
+    pub view_calls: Vec<(String, String)>,
 }
 
 /// An argument of an action a view applies that computes from view state (`set(open, not open)`),
@@ -229,9 +232,13 @@ impl Expr {
         Self { kind, ty }
     }
 
+    /// What stands where checking found no value: a diagnostic names it, or a template's type
+    /// parameter no argument bound (a defaulted `Option<M>` left `.none`), whose code then never
+    /// runs but still has to validate. It is held as `Ty::Error` is, an `i32` handle, so the
+    /// module around it type-checks either way.
     pub const fn error() -> Self {
         Self {
-            kind: Ek::Int(0),
+            kind: Ek::I32(0),
             ty: Ty::Error,
         }
     }

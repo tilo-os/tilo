@@ -129,6 +129,7 @@ pub mod diff;
 pub mod effect;
 pub mod evolution;
 pub mod footprint;
+mod frecency;
 pub mod genesis;
 pub mod group;
 pub mod history;
@@ -195,6 +196,7 @@ pub use effect::{
     offer,
 };
 pub use evolution::Unreadable;
+pub use frecency::{Frecency, frecency};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
 pub use kind::{Kinds, ResourceKind};

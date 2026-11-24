@@ -6,7 +6,7 @@ use crate::diag::{Diagnostic, Span};
 use crate::ids::IdsLock;
 use crate::meta::PackageMeta;
 use crate::prims;
-use crate::types::{MergeKind, Ty, TypeKey};
+use crate::types::{EffectClass, MergeKind, Ty, TypeKey};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod effects;
@@ -65,6 +65,10 @@ pub struct Env {
     /// finds its own by this and never by its name.
     pub actions: HashMap<ast::NodeId, usize>,
     pub imports: Vec<Import>,
+    /// The apps the module names with `use`: an unqualified type name one of them declares is what
+    /// the module means before one a package the platform put in scope declares, and one of the
+    /// module's own is what it means before either.
+    pub named_imports: BTreeSet<String>,
     /// `view#anchor` to id.
     pub anchors: HashMap<String, String>,
     pub enums: Vec<EnumInfo>,
@@ -153,6 +157,44 @@ impl Env {
 
     pub fn type_info(&self, key: &TypeKey) -> Option<&TypeInfo> {
         self.types.iter().find(|t| &t.key == key)
+    }
+
+    /// The types `name` names, the ones the module means first: its own, then those of the packages
+    /// it names with `use`, then those of the packages in scope without being named (the library's,
+    /// the toolkit's, a session's agent words). A caller that needs the one type a bare name means
+    /// takes the first layer that holds any: several in it are still several.
+    #[must_use]
+    pub fn types_named(&self, name: &str) -> Vec<&TypeInfo> {
+        self.types_matching(name, true)
+    }
+
+    /// [`Self::types_named`], matched by case too when `exact` is not set.
+    fn types_matching(&self, name: &str, exact: bool) -> Vec<&TypeInfo> {
+        let matches = |t: &&TypeInfo| {
+            if exact {
+                t.key.name == name
+            } else {
+                t.key.name.eq_ignore_ascii_case(name)
+            }
+        };
+        let all: Vec<&TypeInfo> = self.types.iter().filter(matches).collect();
+        let own: Vec<&TypeInfo> = all
+            .iter()
+            .copied()
+            .filter(|t| t.key.app == self.app)
+            .collect();
+        if !own.is_empty() {
+            return own;
+        }
+        let named: Vec<&TypeInfo> = all
+            .iter()
+            .copied()
+            .filter(|t| self.named_imports.contains(&t.key.app))
+            .collect();
+        if !named.is_empty() {
+            return named;
+        }
+        all
     }
 
     pub fn enum_info(&self, key: &TypeKey) -> Option<&EnumInfo> {
@@ -321,6 +363,14 @@ impl Env {
                     t.key.name.eq_ignore_ascii_case(ty)
                 }
         };
+        if want_app.is_none() {
+            // A bare type is the module's own where it has one, then a package's it names.
+            return self
+                .types_matching(ty, true)
+                .into_iter()
+                .next()
+                .or_else(|| self.types_matching(ty, false).into_iter().next());
+        }
         self.types
             .iter()
             .find(|t| matches_name(t, true))
@@ -678,6 +728,7 @@ pub fn resolve(
     r.imports(module, imports);
     r.types(module, lock);
     r.callables(module, lock);
+    r.system_verbs();
     r.triggers(module, lock);
     for item in &module.items {
         if let Item::View(v) = item
@@ -693,6 +744,48 @@ pub fn resolve(
     r.one_shortcut_each(module);
     r.one_settler_each(module);
     r.env
+}
+
+impl Resolver<'_> {
+    /// The verbs every resource has, offered on every record type the module can name: the
+    /// system's Copy link, which the host serving the resource mints. A package declares none of
+    /// them; a type whose meta already offers one (a native app's surface) keeps that one. The
+    /// host answers a call of one by the verb its id ends in, never as a package's action.
+    fn system_verbs(&mut self) {
+        let app = self.env.app.clone();
+        let types: Vec<TypeKey> = self.env.types.iter().map(|info| info.key.clone()).collect();
+        for key in types {
+            if self.env.action_on(&key, "share_link").is_some() {
+                continue;
+            }
+            let own = key.app == app;
+            self.env.callables.push(Callable {
+                kind: CKind::Action,
+                name: "share_link".to_owned(),
+                id: format!("{}#{}/share-link", key.app, key.name),
+                app: key.app.clone(),
+                own,
+                func: None,
+                params: vec![ParamInfo {
+                    name: "resource".to_owned(),
+                    ty: Ty::Record(key),
+                    default: None,
+                    place: false,
+                    label: None,
+                    entry: false,
+                }],
+                result: Ty::Text,
+                class: Some(EffectClass::Read),
+                uses: BTreeSet::new(),
+                present: Presentation {
+                    label: "Copy link".to_owned(),
+                    ..Presentation::default()
+                },
+                access: Access::Offered,
+                capture_protected: false,
+            });
+        }
+    }
 }
 
 /// The toolkit component a view body makes: its one call, after its state and `let`s, when that is
@@ -778,6 +871,7 @@ impl Resolver<'_> {
                 continue;
             }
             self.env.add_import(&alias, meta);
+            self.env.named_imports.insert(meta.app.clone());
         }
     }
 

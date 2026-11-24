@@ -53,6 +53,8 @@ jiff.workspace = true
 tilo-reference = { version = "0.1.0", path = "../../core/reference" }
 # Order keys of placed items (`place`): the fractional keys every collection orders by.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+# Which document a resource id lives in: the store's rule, which names the documents a view reads.
+tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 # Why an app declined an edit: the reason a window tells the person in their own language.
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 serde.workspace = true
@@ -102,7 +104,7 @@ workspace-hack = { version = "0.1" }
 [features]
 # Every shipped build runs the tiered engine; without the feature, wasmi alone.
 default = ["wasmtime"]
-wasmtime = ["dep:wasmtime", "tilo-wasm-host/wasmtime"]
+wasmtime = ["dep:wasmtime"]
 
 [dev-dependencies]
 # The database engine the Database Client asks by name, driven end to end by its test. No version:

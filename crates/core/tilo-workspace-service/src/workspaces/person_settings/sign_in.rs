@@ -190,7 +190,7 @@ impl Workspaces {
     /// [`BEGIN_SIGN_IN`]: tilo_actions::remote::person_accounts::BEGIN_SIGN_IN
     pub(super) async fn begin_sign_in(
         &self,
-        (person, workspace): ([u8; 32], &str),
+        (person, workspace, call): ([u8; 32], &str, Option<&tilo_actions::remote::InvokeRequest>),
         asking: &BeginSignIn,
         reach: &tilo_account_probe::imap::Reach,
     ) -> Result<SignInStep, String> {
@@ -201,7 +201,7 @@ impl Workspaces {
             return Err("Too many sign-ins are open here. Finish or cancel one first".into());
         }
         if provider == Provider::Nextcloud {
-            self.begin_nextcloud((person, workspace), services, asking, reach)
+            self.begin_nextcloud((person, workspace, call), services, asking, reach)
                 .await
         } else {
             Err(format!(
@@ -213,7 +213,7 @@ impl Workspaces {
 
     async fn begin_nextcloud(
         &self,
-        (person, workspace): ([u8; 32], &str),
+        (person, workspace, call): ([u8; 32], &str, Option<&tilo_actions::remote::InvokeRequest>),
         services: Services,
         asking: &BeginSignIn,
         reach: &tilo_account_probe::imap::Reach,
@@ -264,6 +264,8 @@ impl Workspaces {
         let workspaces = self.clone();
         let workspace = workspace.to_owned();
         let asker = tilo_action_policy::Acting::person(hex::encode(person));
+        // The login is kept as the call that began the sign-in asked, once the server sends it.
+        let call = call.cloned();
         let kept_id = id.clone();
         let cancelled_at = now_ms().saturating_add(minutes_ms(NEXTCLOUD_MINUTES));
         tokio::spawn(async move {
@@ -278,7 +280,7 @@ impl Workspaces {
             .await;
             let waited = match waited {
                 Ok(Ok(login)) => Ok(Box::pin(keep_nextcloud(
-                    workspaces.vault_for(&workspace, &asker),
+                    workspaces.vault_serving(&workspace, &asker, call.as_ref()),
                     &login,
                     services,
                     &account,
@@ -307,12 +309,12 @@ impl Workspaces {
     /// the accounts once it is listed.
     pub(super) async fn begin_account_sign_in(
         &self,
-        (person, workspace): ([u8; 32], &str),
+        (person, workspace, call): ([u8; 32], &str, Option<&tilo_actions::remote::InvokeRequest>),
         asking: &BeginSignIn,
     ) -> Result<SignInStep, String> {
         let reach = self.inner.models.mail_reach();
         let step = self
-            .begin_sign_in((person, workspace), asking, &reach)
+            .begin_sign_in((person, workspace, call), asking, &reach)
             .await;
         if step.is_ok() {
             self.person_settings_changed();
@@ -802,7 +804,7 @@ pub(super) async fn accounts_sign_in(
             let asking: BeginSignIn = super::argument(request, "a provider to sign in with")?;
             super::answer(
                 &workspaces
-                    .begin_account_sign_in((person, workspace), &asking)
+                    .begin_account_sign_in((person, workspace, Some(request)), &asking)
                     .await,
             )
         }
@@ -1277,7 +1279,7 @@ mod tests {
         let asked = Arc::new(AtomicUsize::new(0));
         let public = Reach::public().looked_up_by(turning(&asked));
         let refused = workspaces
-            .begin_sign_in(([1; 32], "workspace-a"), &asking, &public)
+            .begin_sign_in(([1; 32], "workspace-a", None), &asking, &public)
             .await
             .unwrap_err();
         assert_eq!(
@@ -1301,7 +1303,7 @@ mod tests {
         ] {
             let err = workspaces
                 .begin_sign_in(
-                    ([1; 32], "workspace-a"),
+                    ([1; 32], "workspace-a", None),
                     &nextcloud_asking(inside.to_owned()),
                     &strict,
                 )
@@ -1325,7 +1327,7 @@ mod tests {
         assert_eq!(
             workspaces
                 .begin_sign_in(
-                    ([1; 32], "workspace-a"),
+                    ([1; 32], "workspace-a", None),
                     &nextcloud_asking(inside_named),
                     &inside_reach,
                 )
@@ -1352,7 +1354,7 @@ mod tests {
             assert_eq!(
                 workspaces
                     .begin_sign_in(
-                        ([1; 32], "workspace-a"),
+                        ([1; 32], "workspace-a", None),
                         &nextcloud_asking(missing_named.clone()),
                         &unresolvable,
                     )
@@ -1366,7 +1368,7 @@ mod tests {
         // Where the operator lets the server call its own network, it connects
         // as on main, proving the listener counts connections.
         let open = workspaces
-            .begin_sign_in(([1; 32], "workspace-a"), &asking, &Reach::any())
+            .begin_sign_in(([1; 32], "workspace-a", None), &asking, &Reach::any())
             .await;
         assert!(
             open.is_err(),

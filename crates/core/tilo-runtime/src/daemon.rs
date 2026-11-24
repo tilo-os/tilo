@@ -5,10 +5,7 @@ use crate::seats::{AppAt, Seated, Seats};
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 use std::{
-    ffi::OsString,
     io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::Command,
@@ -123,7 +120,7 @@ fn running(profile: &Path) -> io::Result<Status> {
             Ok(status) => {
                 if !tilo_api::daemon::system_daemon() {
                     tilo_api::daemon::this_computer()
-                        .and_then(|place| place.found(tilo_api::daemon::Founding::default()))
+                        .and_then(|place| place.found(&tilo_api::daemon::Founding::default()))
                         .map_err(io::Error::other)?;
                 }
                 return Ok(status);
@@ -322,6 +319,16 @@ impl Running {
     #[must_use]
     pub fn native_socket(&self) -> &Path {
         &self.native
+    }
+
+    /// The person's services once they run, waiting up to `within` for them to start: the
+    /// workspaces this daemon holds and the packages it installed from them, which a view of the
+    /// device in this process reads.
+    pub(crate) fn services(
+        &self,
+        within: Duration,
+    ) -> io::Result<Arc<crate::device::services::Daemon>> {
+        self.person.within(within)
     }
 
     /// Wait up to `within` for the person's services to run: a test's proof that the daemon
@@ -705,6 +712,10 @@ fn the_persons(
         agents: None,
         frames: Frames::of_the_person(session),
         to_agents: Some(session.agents().clone()),
+        #[cfg(unix)]
+        launch: Some(launch_take(session)),
+        #[cfg(not(unix))]
+        launch: None,
     }
 }
 
@@ -880,6 +891,7 @@ impl Native {
             agents: None,
             frames,
             to_agents: None,
+            launch: None,
         }
         .take(stream, slot, Some(seated))
     }
@@ -1070,7 +1082,14 @@ pub(crate) struct Endpoint<H> {
     /// the device's one session, which every agent of the computer shares. An endpoint without
     /// one serves an agent the device's own actions, as any other MCP client.
     to_agents: Option<crate::device::serve::Agents>,
+    /// What starts an app this computer's person asks it to run (`--run-app`): the daemon makes
+    /// the launch, so the app is attested as one. `None` for an endpoint that starts nothing.
+    launch: Option<Arc<LaunchTake>>,
 }
+
+/// A launcher's request to start an app on this computer, with what the connection sent with it.
+type LaunchTake =
+    Arc<dyn Fn(Stream, &[u8], Vec<runtime_portal::process_link::Descriptor>) + Send + Sync>;
 
 /// The endpoint every agent of this computer's login reaches at its device socket: the
 /// daemon's own workspace, as the native endpoint serves the person's apps, each connection a
@@ -1089,8 +1108,11 @@ pub(crate) fn agents_endpoint(
         media: daemon.media(),
         other_devices: daemon.other_devices(),
         agents: Some(agents),
-        frames: Frames::of_the_person(daemon),
+        // An agent's connection is its own run, never the person's own act: an action frame it
+        // sends acts as its person and what a workspace asks of them is put to them.
+        frames: Frames::of_a_persons_program(daemon),
         to_agents: None,
+        launch: None,
     }
 }
 
@@ -1112,6 +1134,7 @@ fn key_endpoint(session: &Arc<Daemon>) -> KeyTake {
             other_devices: None,
             agents: None,
             to_agents: None,
+            launch: None,
         }
         .take(stream, slot, Some(seated))
     })
@@ -1222,6 +1245,7 @@ impl<H> Clone for Endpoint<H> {
             agents: self.agents.clone(),
             frames: self.frames.clone(),
             to_agents: self.to_agents.clone(),
+            launch: self.launch.clone(),
         }
     }
 }
@@ -1262,9 +1286,6 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // A first line that is an action frame says the connection speaks the action wire,
         // answered as whoever its account is admitted as.
         let line = first.strip_suffix(b"\n").unwrap_or(&first);
-        // Whether the first line asks what this device is, read before anything admits it.
-        let asked_status = serde_json::from_slice::<Value>(line)
-            .is_ok_and(|request| request == json!({"native": "status"}));
         if crate::device::local::is_frame(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
             return self.frames.serve(stream, line, input);
@@ -1309,39 +1330,32 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             }
             return;
         }
-        // What this device is, answered before a session is admitted: asking founds no
-        // workspace and waits for none, since a desktop about to hand its workspaces over asks,
-        // and a computer whose person's part is still starting must say how it stands.
-        if asked_status {
-            if let Ok(answer) = serde_json::to_vec(&(self.status)()) {
-                let _ = (&stream).write_all(&answer);
-                let _ = (&stream).write_all(b"\n");
-            }
-            let _ = stream.shutdown(std::net::Shutdown::Both);
+        // A launcher asks this computer to start an app: the daemon makes the launch, as it
+        // makes every launch, so the app is attested as the one it runs. The request is the
+        // whole connection, and the request's standard input and output ride it.
+        #[cfg(unix)]
+        if let Some(launch) = self.launch.clone().filter(|_| is_launch_request(&first)) {
+            launch(stream, &first, descriptors);
             return;
         }
         let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
-        let server = match (self.session_factory)() {
-            Ok(server) => Arc::new(server.with_media(self.media.clone())),
-            Err(error) => {
-                // Told why, as an agent whose person revoked its key is.
-                tracing::debug!(%error, "native MCP session admission unavailable");
-                crate::device::serve::refuse(&stream, &error.to_string());
-                return;
-            }
+        // The session is admitted by the first request that needs one, never by a connection's
+        // coming: a connection that only asks what this device is (a desktop about to hand its
+        // workspaces over, a computer whose person's part is still starting) must be answered
+        // without founding a workspace or waiting for one, and goes on asking as it likes.
+        let admit = || {
+            Ok::<_, io::Error>(Arc::new(
+                (self.session_factory)()?.with_media(self.media.clone()),
+            ))
         };
-        if let Some(agents) = &self.agents {
-            agents.visit();
-        }
-        let agent = self.agents.as_deref();
         if let Err(error) = serve_connection(
             &stream,
             input,
-            &server,
+            &admit,
             &(self.status)(),
             &self.search,
             seated,
-            agent,
+            self.agents.clone(),
         ) {
             tracing::debug!(%error, "native runtime client disconnected");
         }
@@ -1437,16 +1451,18 @@ fn serve_seat(
 }
 
 /// Answer one native connection: the daemon's own requests in order, and
-/// MCP requests as [`serve_lines`] does, overlapping one another. An `agent`'s connection hears
-/// first what [`Presence::answer_first`] answers.
+/// MCP requests as [`serve_lines`] does, overlapping one another. The session is admitted by
+/// `admit` the first time a request needs one, so a connection that only asks what this device
+/// is is answered without one. An `agent`'s connection hears first what [`Presence::answer_first`]
+/// answers.
 fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>(
     stream: &Stream,
     input: impl Read + Send + 'static,
-    server: &Arc<McpServer<H>>,
+    admit: &dyn Fn() -> io::Result<Arc<McpServer<H>>>,
     status: &Status,
     search: &OnceLock<Arc<tilo_os_search::OsSearch>>,
     seated: Option<&Seated>,
-    agent: Option<&Presence>,
+    agent: Option<Arc<Presence>>,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -1458,6 +1474,9 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     // An agent whose person revoked its key acts no further: its next request is answered why,
     // and the connection ends there.
     let ending = tilo_mcp::lines::Ending::default();
+    // The session this connection reaches, admitted by the first request that needs one: what
+    // this device is is answered without it, so asking founds no workspace and waits for none.
+    let mut session: Option<Arc<McpServer<H>>> = None;
     let answer = |value: Value| {
         if let Some(answer) = seated.and_then(|seated| seated.answer(&value)) {
             return answer;
@@ -1472,13 +1491,31 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
             }));
         }
         let native = value.get("native").and_then(Value::as_str);
-        Answer::InOrder(match native {
-            Some("status") if value == json!({"native":"status"}) => {
-                let status = status.clone();
-                Box::pin(async move { Ok(Some(status)) })
+        if native == Some("status") && value == json!({"native":"status"}) {
+            let status = status.clone();
+            return Answer::InOrder(Box::pin(async move { Ok(Some(status)) }));
+        }
+        let server = if let Some(server) = session.clone() {
+            server
+        } else {
+            match admit() {
+                Ok(admitted) => {
+                    if let Some(agents) = &agent {
+                        agents.visit();
+                    }
+                    session = Some(Arc::clone(&admitted));
+                    admitted
+                }
+                Err(error) => {
+                    // Told why, as an agent whose person revoked its key is.
+                    tracing::debug!(%error, "native MCP session admission unavailable");
+                    return ending.refusing(&value, error.to_string());
+                }
             }
+        };
+        Answer::InOrder(match native {
             Some("activate") => {
-                Box::pin(async move { Ok(Some(answer_activate(server, &value).await)) })
+                Box::pin(async move { Ok(Some(answer_activate(&server, &value).await)) })
             }
             Some(tilo_host_search::OPEN) => Box::pin(async move {
                 Ok(Some(match search.get() {
@@ -1487,14 +1524,14 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
                 }))
             }),
             _ => {
-                if let Some(refused) = ending.answer(server, &value) {
+                if let Some(refused) = ending.answer(&server, &value) {
                     return refused;
                 }
                 return match &agent {
                     Some(agents) => agents
                         .answer_first(value)
-                        .unwrap_or_else(|value| mcp_answer(server, value)),
-                    None => mcp_answer(server, value),
+                        .unwrap_or_else(|value| mcp_answer(&server, value)),
+                    None => mcp_answer(&server, value),
                 };
             }
         })
@@ -1606,91 +1643,169 @@ pub fn connect(
     )
 }
 
-/// Attach connected service descriptors and replace this host with the app.
-///
-/// # Errors
-/// The daemon does not run, the app's connections could not be made, or the app did not start.
+/// What a launcher asks this computer's daemon to do: start an app.
 #[cfg(unix)]
-pub fn run_app(
-    profile: &Path,
-    app_id: &str,
-    workspace: Option<&str>,
-    executable: &OsString,
-    args: &[OsString],
-) -> io::Result<()> {
-    let status = running(profile)?;
-    // Only the argument-free default presentation is interchangeable here.
-    // App-specific arguments must run their own parser and are never discarded.
-    let launch_guard =
-        if args.is_empty() && workspace.is_none_or(|workspace| workspace == status.workspace) {
-            match default_launch_guard(profile, app_id, Duration::from_secs(3))? {
-                Some(guard) => Some(guard),
-                None => return Ok(()),
-            }
-        } else {
-            None
+const LAUNCH: &str = "launch";
+
+/// How long a second start of an app's default presentation waits for the first to show its
+/// window before it is refused.
+#[cfg(unix)]
+const PRESENTATION_GRACE: Duration = Duration::from_secs(3);
+
+/// `{"native":"launch", ...}`: a person's program asking this computer to start an app.
+///
+/// It names only the app, the workspace and whether it is the app's default presentation. What
+/// runs — the program, its sandbox, its grants and the records it reaches — is the installed
+/// package this computer resolves the name to: a program is never one the caller names.
+#[cfg(unix)]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LaunchRequest {
+    native: String,
+    app_id: String,
+    /// The workspace the caller read from this daemon a moment before.
+    workspace: String,
+    /// Whether this starts the app's default presentation, which one already shown answers.
+    presentation: bool,
+}
+
+/// Whether `request` asks this computer to start an app.
+#[cfg(unix)]
+fn is_launch_request(request: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(request)
+        .is_ok_and(|request| request.get("native").and_then(Value::as_str) == Some(LAUNCH))
+}
+
+/// What answers a launcher's request: it starts the app this computer has installed, on the
+/// launch path a window takes, so the launch record exists before the app's connection does, and
+/// tells the caller it started.
+#[cfg(unix)]
+fn launch_take(session: &Arc<Daemon>) -> LaunchTake {
+    let session = Arc::downgrade(session);
+    Arc::new(move |mut stream, request, descriptors| {
+        let reply = match start_requested(&session, request, descriptors) {
+            Ok(reply) => reply,
+            Err(error) => json!({"error": error.to_string()}),
         };
-    let owner = std::process::id().to_string();
-    // Only the bootstrap exec for this exact process can request resumption.
-    // A same-app ordinary child must run its own command handler first.
-    let resume = std::env::var_os("TILO_RUNTIME_CONNECTION_OWNER_PID").as_deref()
-        == Some(std::ffi::OsStr::new(&owner))
-        && std::env::var_os("TILO_RUNTIME_RESUME_LIVE").as_deref()
-            == Some(std::ffi::OsStr::new(app_id));
-    let mut command = Command::new(executable);
-    command.args(args);
-    // This process is introducing the local runtime workspace. A launcher that
-    // already named a workspace keeps its participation, including fail-closed
-    // viewer. A personal attach has no workspace yet, and the person who owns this
-    // runtime may edit their own app.
-    // A joined workspace's role is the one its governor admitted.
-    if workspace.is_none()
-        && std::env::var_os("TILO_WORKSPACE_ID").is_none()
-        && std::env::var_os("TILO_PARTICIPATION").is_none()
-    {
-        command.env("TILO_PARTICIPATION", "author");
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+        if let Err(error) = writeln!(stream, "{reply}") {
+            tracing::debug!(%error, "a launch request's answer");
+        }
+    })
+}
+
+/// Start the app `request` names, as this computer's person asks: the installed package decides
+/// what runs, and the launch path a window takes starts it and records the process.
+#[cfg(unix)]
+fn start_requested(
+    session: &std::sync::Weak<Daemon>,
+    request: &[u8],
+    descriptors: Vec<runtime_portal::process_link::Descriptor>,
+) -> io::Result<Value> {
+    let request: LaunchRequest = serde_json::from_slice(request)
+        .map_err(|error| invalid(format!("the launch request: {error}")))?;
+    if request.native != LAUNCH {
+        return Err(invalid("this is not a launch request"));
     }
-    let sockets = sockets(profile)?;
-    let connections = host::Connections::prepare(
-        &mut command,
-        app_id,
-        workspace.unwrap_or(&status.workspace),
-        &host::ServiceSockets {
-            collab: &sockets.join(COLLAB_SOCKET),
-            identity: &sockets.join(IDENTITY_SOCKET),
-            blobs: &sockets.join(BLOB_SOCKET),
-        },
-    )?;
-    command
-        .env("TILO_RUNTIME_CONNECTION_OWNER_PID", owner)
-        .env("TILO_RUNTIME_PROFILE", profile)
-        .env(
-            "TILO_RUNTIME_NATIVE",
-            sockets.join(tilo_paths::machine::DAEMON_NATIVE),
-        );
-    if resume {
-        command.env("TILO_RUNTIME_RESUME_LIVE", app_id);
+    if request.app_id.trim().is_empty() || request.app_id.len() > 4096 {
+        return Err(invalid("invalid application identity"));
     }
-    if let Some(guard) = &launch_guard {
-        use std::os::fd::AsRawFd;
-        let fd = guard.file().as_raw_fd();
-        command.env("TILO_RUNTIME_LAUNCH_GUARD_FD", fd.to_string());
-        // SAFETY: the guard stays owned until exec and only fcntl runs here.
-        unsafe {
-            command.pre_exec(move || {
-                let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
+    if request.workspace.trim().is_empty() || request.workspace.len() > 4096 {
+        return Err(invalid("a launch names a workspace"));
+    }
+    if !descriptors.is_empty() {
+        return Err(invalid(
+            "a launch of an app this computer has installed carries no streams",
+        ));
+    }
+    let daemon = session
+        .upgrade()
+        .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+    // The workspace the app runs in is the one this daemon serves now: a caller that read
+    // another a moment ago is told, rather than starting an app into a workspace gone.
+    let serving = daemon
+        .workspace()
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    if serving.is_empty() {
+        return Err(io::Error::other(
+            "this computer serves no workspace to start an app in yet",
+        ));
+    }
+    if serving != request.workspace {
+        return Err(io::Error::other(format!(
+            "this computer serves {serving} now, not {}; start the app again",
+            request.workspace
+        )));
+    }
+    let apps = daemon.apps();
+    // What runs is the package this computer has installed: the request's name is a name, never
+    // a program.
+    let app = apps
+        .installed_here(&request.app_id)
+        .map_err(io::Error::other)?;
+    if !app.has_gui {
+        return Err(io::Error::other(format!(
+            "{} has no window to open",
+            app.app_id
+        )));
+    }
+    // The app's default presentation is one: a second start shows the one running, and while the
+    // first has shown nothing the launch's own lock waits for it, as a launch takes it.
+    let guard = if request.presentation {
+        match default_launch_guard(apps.root(), &app.app_id, PRESENTATION_GRACE)? {
+            Some(guard) => Some(guard),
+            None => return Ok(json!({"activated": true})),
         }
     } else {
-        command.env_remove("TILO_RUNTIME_LAUNCH_GUARD_FD");
+        None
+    };
+    apps.start_watched_window(&app.app_id, &serving, guard)
+        .map_err(io::Error::other)?;
+    Ok(json!({"started": true}))
+}
+
+/// Ask the daemon at `profile` to start an app, and answer what it said.
+#[cfg(unix)]
+fn ask_launch(profile: &Path, request: &Value) -> io::Result<Value> {
+    let stream = std::os::unix::net::UnixStream::connect(native_socket(profile)?)?;
+    stream.set_read_timeout(Some(ANSWERING))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    (&stream).write_all(format!("{request}\n").as_bytes())?;
+    let mut answer = String::new();
+    BufReader::new(stream).read_line(&mut answer)?;
+    serde_json::from_str(&answer)
+        .map_err(|error| invalid(format!("the launch request's answer, {answer:?}: {error}")))
+}
+
+/// Start an app on this computer, through the daemon serving `profile`: the app this computer has
+/// installed, started the way a window is. The caller names an app and nothing else: what runs,
+/// with which program, sandbox and grants, is the installed package.
+///
+/// # Errors
+/// The daemon does not run, the app is not installed, or the launcher refuses it.
+#[cfg(unix)]
+pub fn run_app(profile: &Path, app_id: &str, workspace: Option<&str>) -> io::Result<()> {
+    let status = running(profile)?;
+    let workspace = workspace.unwrap_or(&status.workspace).to_owned();
+    if workspace.is_empty() {
+        return Err(io::Error::other(
+            "this computer serves no workspace to start an app in yet",
+        ));
     }
-    let error = command.exec();
-    drop(connections);
-    Err(error)
+    // Starting the app of the workspace this computer serves is its default presentation: a
+    // second start shows the window already running.
+    let presentation = workspace == status.workspace;
+    let request = json!({
+        "native": LAUNCH,
+        "app_id": app_id,
+        "workspace": workspace,
+        "presentation": presentation,
+    });
+    let answer = ask_launch(profile, &request)?;
+    match answer.get("error").and_then(Value::as_str) {
+        Some(error) => Err(io::Error::other(error.to_owned())),
+        None => Ok(()),
+    }
 }
 
 /// An app on Windows is handed its services on its process link, by the daemon that starts it;
@@ -1699,13 +1814,7 @@ pub fn run_app(
 /// # Errors
 /// Always [`io::ErrorKind::Unsupported`].
 #[cfg(windows)]
-pub fn run_app(
-    _profile: &Path,
-    _app_id: &str,
-    _workspace: Option<&str>,
-    _executable: &OsString,
-    _args: &[OsString],
-) -> io::Result<()> {
+pub fn run_app(_profile: &Path, _app_id: &str, _workspace: Option<&str>) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "--run-app attaches a Unix app to the daemon; a Windows app is handed its services by \

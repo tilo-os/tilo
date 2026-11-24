@@ -119,6 +119,13 @@ never changes an id that grants and records already name.
   holds for those readers, or, for a new reader set, makes the group key and
   wraps it for each reader itself, and the setup syncs later like any change.
   Nothing waits on a host. What a device already received cannot be taken back.
+  Every record in a workspace is sealed; one every member reads is sealed under
+  the all-members group, and a clear write is refused. So the store's frames are
+  the only copy, and catching up reads them for every record.
+  A host that holds no device in the workspace stores and relays sealed frames
+  and writes no record: a member device founds the workspace, and checkpoints
+  come from the frames. A server reads content only once the workspace adds it
+  as a device.
 - A window does not decide permissions itself. The device's daemon answers
   for the actions a view shows, the window holds those answers for its
   controls and updates them live as grants change, and the call is still
@@ -388,8 +395,9 @@ to their resolved addresses alone. Calling services whose media servers aren't
 their hostnames (Discord's voice server is an address handed out inside the
 call's own connection) need a grant the person sees as such: calls may send
 audio and video to any internet address. It is UDP alone, through the proxy,
-recorded and rate-limited, and open only while a call of that app is live;
-its TCP stays per host. The process never holds raw network. A live
+recorded, and open only while a call of that app is live; its TCP stays per
+host. The grant, the live call and the person's consent are its bound: a 1080p
+share or four speakers' video goes past any fixed cap, so the proxy keeps none. The process never holds raw network. A live
 call, its keys and an app's call lane are the daemon's, so a device with no
 session carries a call, and the desktop is a client of it. Passwords an app keeps are vault items, never
 fields of its own records. An item says which app and purpose it serves, and the

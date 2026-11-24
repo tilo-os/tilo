@@ -306,6 +306,7 @@ impl Checker<'_> {
             "record_at" => return self.builtin_record_at(args, span),
             "change_of" => return self.builtin_change_of(args, span),
             "changed" => return self.builtin_changed(args, span),
+            "ranked" => return self.builtin_ranked(args, span),
             "unseen" => return self.builtin_unseen(args, span),
             "unreadable" => return self.builtin_unreadable(args, span),
             "linked" => return self.builtin_links(args, span),
@@ -454,7 +455,7 @@ impl Checker<'_> {
         span: Span,
         sig: &str,
     ) -> Vec<Ex> {
-        self.bind_args_or_default(name, params, args, span, sig, false, false)
+        self.bind_args_or_default(name, params, args, span, sig, false)
             .into_iter()
             .map(|s| s.unwrap_or_else(Ex::error))
             .collect()
@@ -469,7 +470,6 @@ impl Checker<'_> {
         span: Span,
         sig: &str,
         at_press: bool,
-        tilolang_action: bool,
     ) -> Vec<Option<Ex>> {
         let mut slots: Vec<Option<Ex>> = vec![None; params.len()];
         let mut pos = 0usize;
@@ -525,17 +525,6 @@ impl Checker<'_> {
             } else {
                 self.expr_as(&a.value, &p.ty)
             };
-            if tilolang_action && Self::resource_ty(&p.ty) && self.ex_is_record_value(&v) {
-                let t = self.show(&p.ty);
-                self.err(
-                    "E020",
-                    a.value.span,
-                    format!(
-                        "`{name}` takes a resource for `{}`, and this is a record value: it has no id until the store makes one. Insert it first and give what the store made (`let made = collection.insert({t}(…))`), or give the action the text it was read from and `json.decode<{t}>(text)` inside it",
-                        p.name
-                    ),
-                );
-            }
             match slots.get_mut(i) {
                 Some(slot @ None) => *slot = Some(v),
                 _ => self.err(
@@ -788,16 +777,7 @@ impl Checker<'_> {
         let sig = c.signature(&self.env.app);
         // An action a view applies runs when its event fires: the view state it takes is read then.
         let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
-        let tilolang_action = c.kind == CKind::Action && !self.env.is_native(&c.app);
-        let bound = self.bind_args_or_default(
-            &c.name,
-            &c.params,
-            args,
-            span,
-            &sig,
-            at_press,
-            tilolang_action,
-        );
+        let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
         self.call_bound(c, bound, span)
     }
 
@@ -808,17 +788,8 @@ impl Checker<'_> {
         let sig = c.signature(&self.env.app);
         let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
         let rest = c.params.get(1..).unwrap_or_default();
-        let tilolang_action = c.kind == CKind::Action && !self.env.is_native(&c.app);
         let bound = std::iter::once(Some(on))
-            .chain(self.bind_args_or_default(
-                &c.name,
-                rest,
-                args,
-                span,
-                &sig,
-                at_press,
-                tilolang_action,
-            ))
+            .chain(self.bind_args_or_default(&c.name, rest, args, span, &sig, at_press))
             .collect();
         self.call_bound(c, bound, span)
     }

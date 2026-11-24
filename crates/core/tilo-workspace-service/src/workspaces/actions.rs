@@ -1199,6 +1199,7 @@ impl Verb {
                 input: InputSpec::None,
                 params,
                 view: None,
+                effects: Vec::new(),
             }),
             has_children: false,
             visibility: None,
@@ -1642,8 +1643,22 @@ struct Offer {
 impl Offer {
     /// Offer `rows`, which `publisher` publishes on `workspace`; a provider
     /// offering nothing is not named.
-    fn add(&mut self, publisher: Publisher, workspace: &str, rows: Vec<CatalogueRow>) {
+    /// Each action is offered with what it declares it writes besides its own resource
+    /// ([`tilo_actions::remote::declared_effects`]), so whoever lists it reads that.
+    fn add(&mut self, publisher: Publisher, workspace: &str, mut rows: Vec<CatalogueRow>) {
         if !rows.is_empty() {
+            for row in &mut rows {
+                if let Some(action) = row.action.as_mut()
+                    && action.effects.is_empty()
+                {
+                    action.effects = tilo_actions::remote::declared_effects(
+                        &tilo_actions::remote::RemoteActionTarget {
+                            provider: row.provider.clone(),
+                            address: action.address.clone(),
+                        },
+                    );
+                }
+            }
             self.providers.push(publisher.entry(workspace));
             self.rows.extend(rows);
         }
@@ -4728,6 +4743,35 @@ const TAKEN_BACK: &str = "Whoever asked took the question back";
 
 /// The name the store knows this host's dispatch by, across its restarts.
 pub(super) const HOST_DISPATCH: &str = "host";
+
+/// The parameters the action `target` names is published with, where it is one of the host's
+/// own that takes what a person keeps secret: its vault's and its mail accounts', by their own
+/// provider or in a workspace's governance tree. `None` for any other.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn published_params(
+    target: &tilo_actions::remote::RemoteActionTarget,
+) -> Option<Vec<ActionParam>> {
+    let address = &target.address;
+    if let Some((_, action)) = vault::vault_action(address) {
+        return vault::params_of(action);
+    }
+    if let Some((_, action)) = mail::account_action(address) {
+        return mail::account_params_of(action);
+    }
+    match target.provider.as_str() {
+        person_vault::PROVIDER => vault::params_of(&address.action),
+        person_accounts::PROVIDER => mail::account_params_of(&address.action),
+        _ => None,
+    }
+}
+
+/// [`published_params`] where the host keeps none of those.
+#[cfg(target_arch = "wasm32")]
+pub(super) fn published_params(
+    _target: &tilo_actions::remote::RemoteActionTarget,
+) -> Option<Vec<ActionParam>> {
+    None
+}
 
 /// What this host keeps beside a call that waits for its person's yes, to admit it again
 /// after a restart: the workspace it acts in and the device certificate it was asked under.

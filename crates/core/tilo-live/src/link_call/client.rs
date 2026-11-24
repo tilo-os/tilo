@@ -2,7 +2,7 @@
 //! and what it hears opened, as its capture, playout and drawing need them.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -41,6 +41,9 @@ pub struct Call {
     device: [u8; 32],
     /// The capture the desktop publishes, by track name, as the daemon reads it.
     tracks: Mutex<BTreeMap<String, moq_net::track::Producer>>,
+    /// The broadcast itself, kept for as long as the link: a broadcast stops being announced
+    /// when its last producer goes.
+    _capture: moq_net::broadcast::Producer,
     /// Moves every timestamp written, so an object is never written at one before it.
     clock: AtomicU64,
     _connected: carrier::Connected,
@@ -53,7 +56,7 @@ pub struct Call {
 struct Shared {
     heard: Mutex<VecDeque<Heard>>,
     heard_total: AtomicU64,
-    unheard: AtomicU64,
+    unheard: AtomicUsize,
     refused: Mutex<BTreeMap<String, usize>>,
     presence_from: Mutex<BTreeMap<[u8; 32], (u64, u64)>>,
     demand: Mutex<super::Demand>,
@@ -92,7 +95,7 @@ impl Call {
         let shared = Arc::new(Shared {
             heard: Mutex::default(),
             heard_total: AtomicU64::new(0),
-            unheard: AtomicU64::new(0),
+            unheard: AtomicUsize::new(0),
             refused: Mutex::default(),
             presence_from: Mutex::default(),
             demand: Mutex::default(),
@@ -129,21 +132,16 @@ impl Call {
         broadcast
             .announce(moq_net::origin::Route::default())
             .map_err(|error| error.to_string())?;
-        // The reader's view of what the daemon hands back exists before the link starts, so
-        // nothing the daemon announces at once is missed.
-        let Some(held_names) = crate::live::exact(&[HELD]) else {
-            return Err("the held broadcast is not a name".to_owned());
-        };
-        let handed = held
-            .consume()
-            .scope("", &held_names)
-            .map_err(|error| error.to_string())?;
         let connected = Self::connect(&open, &workspace, capture.consume(), held.clone()).await?;
+        // The reader's view of what the daemon hands back: the daemon announces its broadcast
+        // before the session starts, and a view made from the origin reads it as it is.
+        let handed = held.consume();
         let readers = vec![Task::spawn(read_held(handed, Arc::clone(&shared)))];
         Ok(Arc::new(Self {
             shared,
             device,
             tracks: Mutex::new(tracks),
+            _capture: broadcast,
             clock: AtomicU64::new(0),
             _connected: connected,
             _origins: (capture_task, held_task),
@@ -393,7 +391,7 @@ impl Call {
     /// Devices the live session reads but has no room to read, as it last said.
     #[must_use]
     pub fn unheard(&self) -> usize {
-        self.shared.unheard.load(Ordering::Relaxed) as usize
+        self.shared.unheard.load(Ordering::Relaxed)
     }
 
     /// Why the live session could not open what it read, by reason and count.
@@ -430,10 +428,11 @@ impl Call {
         if self.ended() {
             return Err(LiveError::Ended);
         }
-        let mut tracks = self.tracks.lock_recover();
-        let track = tracks.get_mut(name).ok_or(LiveError::Unavailable)?;
         let at = self.now();
-        track
+        self.tracks
+            .lock_recover()
+            .get_mut(name)
+            .ok_or(LiveError::Unavailable)?
             .append_datagram(at, body)
             .map(|_| ())
             .map_err(|_| LiveError::Unavailable)
@@ -461,16 +460,15 @@ async fn read_held(handed: moq_net::origin::Consumer, shared: Arc<Shared>) {
         shared.finish();
         return;
     };
-    let mut readers = Vec::new();
-    for name in [HEARD, DEMAND, STATE] {
-        readers.push(Task::spawn(read_one(
+    let readers = [HEARD, DEMAND, STATE].map(|name| {
+        Task::spawn(read_one(
             broadcast.clone(),
             name.to_owned(),
             Arc::clone(&shared),
-        )));
-    }
+        ))
+    });
     let _ = broadcast.closed().await;
-    readers.clear();
+    drop(readers);
     shared.finish();
 }
 
@@ -518,10 +516,10 @@ async fn read_one(broadcast: moq_net::broadcast::Consumer, name: String, shared:
 
 impl Shared {
     fn finish(&self) {
-        if !self.ended.swap(true, Ordering::AcqRel) {
-            if let Some(ended) = self.ended_cb.get() {
-                ended();
-            }
+        if !self.ended.swap(true, Ordering::AcqRel)
+            && let Some(ended) = self.ended_cb.get()
+        {
+            ended();
         }
         if let Some(wake) = self.wake.get() {
             wake();
@@ -532,6 +530,7 @@ impl Shared {
         let Ok(wire) = postcard::from_bytes::<super::HeardWire>(body) else {
             return;
         };
+        let named = wire.track.clone();
         let Some(heard) = wire.into_heard() else {
             return;
         };
@@ -579,6 +578,7 @@ impl Shared {
                 new.insert(*window);
             }
             new.retain(|window| windows.contains(window));
+            drop(new);
             *seen = windows;
         }
         self.revision.store(demand.revision, Ordering::Release);
@@ -592,8 +592,7 @@ impl Shared {
         let Ok(state) = serde_json::from_slice::<super::State>(body) else {
             return;
         };
-        let unheard_moved =
-            self.unheard.swap(state.unheard as u64, Ordering::AcqRel) != state.unheard as u64;
+        let unheard_moved = self.unheard.swap(state.unheard, Ordering::AcqRel) != state.unheard;
         self.heard_total.store(state.heard, Ordering::Relaxed);
         *self.refused.lock_recover() = state.refused;
         *self.presence_from.lock_recover() = state

@@ -49,6 +49,9 @@ tilo_test_env::scenario! {
             for accessor in ["inner", "inner_mut"] {
                 assert!(own.remove(accessor), "Decorator::{accessor} missing");
             }
+            // A question only a decorator answers (`withholds_captures`) is no `Widget` method,
+            // so its blanket impl has nothing to write for it.
+            own.retain(|method| widget.contains(method));
             let blanket_own = block_methods(source, "    impl {");
             let mut forwarded = block_methods(source, "    ref {");
             forwarded.extend(block_methods(source, "    mut {"));

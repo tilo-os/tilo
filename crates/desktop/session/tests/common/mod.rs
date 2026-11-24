@@ -20,6 +20,7 @@ pub mod audio;
 pub mod dev_apps;
 pub mod directory;
 pub mod held;
+pub mod linked;
 pub mod people;
 pub mod probe;
 pub mod switcher;
@@ -713,6 +714,77 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
     .expect("session")
 }
 
+/// A home for a computer of the test's own, set up as one of a person's devices: the identity
+/// directory its daemon keeps the person's root in, and the file secret store beside it.
+///
+/// # Panics
+/// The home cannot be made.
+#[track_caller]
+pub fn device_home() -> tilo_test_env::TestHome {
+    let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
+    let identity = home.root().join("identity");
+    home.env()
+        .set("TILO_IDENTITY_ROOT", &identity)
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    home
+}
+
+/// A device of a person's, of the test's own: its daemon, started in this process over `home` and
+/// a profile of its own, serving the person founded on it. A daemon whose identity names no person
+/// stays up serving the device's own actions alone, waiting to be founded, so a test that only
+/// started it would wait forever for the person's services: `name` is founded here as a
+/// computer's first set-up founds its person. `None` takes the account's own name, as that set-up
+/// does.
+///
+/// # Panics
+/// The profile cannot be made private, the daemon does not start, or it does not serve its person.
+#[track_caller]
+pub fn device_daemon(home: tilo_test_env::TestHome, name: Option<&str>) -> Device {
+    use std::os::unix::fs::PermissionsExt as _;
+    let profile = tempfile::tempdir().expect("a profile for the daemon");
+    std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the profile is this user's");
+    let within = tilo_test_env::hang_bound();
+    let daemon =
+        tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
+    // This computer's person is founded by its daemon, as the first set-up on a machine founds
+    // them: their root stays with this account, their certificate names this device, and their
+    // services start once it does.
+    tilo_api::daemon::DaemonPlace::at(profile.path(), profile.path())
+        .found(tilo_api::daemon::Founding {
+            name: name.map(str::to_owned),
+            ..tilo_api::daemon::Founding::default()
+        })
+        .expect("this computer's person is founded");
+    let person = match daemon.person(within) {
+        Ok(person) => person,
+        Err(error) => {
+            // A daemon whose services could not start keeps why until it is stopped.
+            let stopped = daemon.stop();
+            panic!("the device's daemon serves its person: {error}; it stopped: {stopped:?}");
+        }
+    };
+    Device {
+        daemon,
+        person,
+        home,
+        profile,
+    }
+}
+
+/// A device of a person's, of the test's own: its daemon, the person it serves, and the home and
+/// profile the daemon reads while it runs.
+pub struct Device {
+    /// The daemon, as this process runs it.
+    pub daemon: tilo_runtime::daemon::Running,
+    /// The person's root, as the daemon and their workspaces name them.
+    pub person: String,
+    /// The home the daemon's identity lives in.
+    pub home: tilo_test_env::TestHome,
+    /// The profile the daemon serves, its sockets inside it.
+    pub profile: tempfile::TempDir,
+}
+
 /// A headless session as the shell of a device daemon of the test's own, started in this process
 /// over a profile and a home of its own: the session is the daemon's person's (`options.person`
 /// is theirs), on the link the daemon made for it, as a computer's session is on the daemon that
@@ -723,19 +795,13 @@ pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
 /// The home, the daemon or the session does not start.
 #[track_caller]
 pub fn on_its_daemon(outputs: &[OutputConfig], options: Options) -> Session {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
-    home.env()
-        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    // The person's services start only on a device whose account holds the identity naming it.
-    device_in(&mut home);
-    let profile = tempfile::tempdir().expect("a profile for the daemon");
-    std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the profile is this user's");
     let within = tilo_test_env::hang_bound();
-    let daemon =
-        tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
-    let person = daemon.person(within).expect("its person's services run");
+    let Device {
+        daemon,
+        person,
+        home,
+        profile,
+    } = device_daemon(device_home(), None);
     let shell_link = daemon
         .link_shell(within)
         .expect("the daemon makes the session's link");
@@ -750,6 +816,33 @@ pub fn on_its_daemon(outputs: &[OutputConfig], options: Options) -> Session {
         outputs,
     )
     .expect("session")
+}
+
+impl Device {
+    /// A headless session on this device, its own services keeping their files in `state`: the
+    /// device started again.
+    ///
+    /// # Panics
+    /// The daemon makes no link, or the session does not start.
+    #[track_caller]
+    pub fn session(&self, state: &Path) -> Session {
+        let link = self
+            .daemon
+            .link_shell(tilo_test_env::hang_bound())
+            .expect("the daemon makes the session's link");
+        Session::headless(
+            Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                person: self.person.clone(),
+                shell_link: Some(link),
+                collab: false,
+                state: Some(state.to_path_buf()),
+                ..Options::default()
+            },
+            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        )
+        .expect("a session")
+    }
 }
 
 /// Who made the last step of the workspace's layout, once the workspace has the change that made

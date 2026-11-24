@@ -407,15 +407,10 @@ pub fn seeded_id_gen(doc: &AutoCommit, c: &Containers) -> IdGen {
         .expect("tilo-doc id namespace exhausted; refusing to seed a colliding identifier")
 }
 
-/// The actor that writes every document's schema. Nobody edits as this actor; it is not a replica.
-/// It exists so the ops that create the container maps are the same ops on every machine — same
-/// actor, same counters, therefore the same `ObjId`s and change hash. Minting the schema per
-/// replica cannot work: `put_object(root, "blocks", Map)` on two replicas writes the same key
-/// concurrently with no ancestor between them, and after a merge automerge keeps one candidate (the
-/// greater `(counter, actor)`). With equal counters the winner comes down to comparing random actor
-/// ids, and the loser's block tree stays in the change graph, unreachable. Deriving the schema from
-/// one genesis removes the conflict rather than resolving it.
-const GENESIS_ACTOR: &[u8] = b"qdoc.schema.genesis.v1";
+/// The actor that writes every document's schema: one genesis under a pinned actor, so the ops
+/// creating the container maps are the same ops on every machine — same actor, same counters,
+/// therefore the same `ObjId`s and change hash.
+use tilo_resource::history::SCHEMA_GENESIS_ACTOR;
 
 /// Whether `doc` has no committed history beyond the schema [`init`] adopts: nothing written to it
 /// yet that anything could have seen or bracketed an undo step against.
@@ -439,7 +434,7 @@ fn genesis() -> &'static [u8] {
     static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     GENESIS.get_or_init(|| {
         let mut doc = AutoCommit::new();
-        doc.set_actor(automerge::ActorId::from(GENESIS_ACTOR));
+        doc.set_actor(automerge::ActorId::from(SCHEMA_GENESIS_ACTOR));
         write_schema(&mut doc, &ROOT);
         doc.commit();
         doc.save()
@@ -447,7 +442,7 @@ fn genesis() -> &'static [u8] {
 }
 
 /// Give `doc` the canonical schema under `root`, and resolve the containers. At the document root
-/// the schema is adopted from the shared `genesis` rather than minted (see `GENESIS_ACTOR`).
+/// the schema is adopted from the shared `genesis` rather than minted (see `SCHEMA_GENESIS_ACTOR`).
 /// Idempotent: a document that already carries the schema is returned as it stands. A nested root
 /// (the FS layer embeds a document inside a namespace node) cannot use the genesis, since its
 /// parent object id is minted per replica; such documents are created once and synced, so the
@@ -543,23 +538,11 @@ pub fn schema() -> automerge::hydrate::Value {
     automerge::hydrate::Value::Map(made.into())
 }
 
-/// Whether `actor` wrote the schema rather than the document's content: a change it authored is not
-/// a revision, and version history must not attribute one to a person.
-pub fn is_schema_genesis_actor(actor: &automerge::ActorId) -> bool {
-    actor.to_bytes() == GENESIS_ACTOR
-}
-
-/// Whether `version` is the schema genesis rather than something a person wrote (see
-/// [`is_schema_genesis_actor`]).
-pub fn is_schema_genesis(version: &tilo_resource::history::Version) -> bool {
-    version.actor == schema_genesis_actor_hex()
-}
-
-/// The schema genesis actor as hex, for comparing against a recorded
-/// actor. See [`is_schema_genesis_actor`].
-pub fn schema_genesis_actor_hex() -> String {
-    automerge::ActorId::from(GENESIS_ACTOR).to_hex_string()
-}
+/// Whether a change is the schema rather than the document's content, and the actor it is written
+/// under: the facts both a document and the store keeping it read.
+pub use tilo_resource::history::{
+    is_schema_genesis, is_schema_genesis_actor, schema_genesis_actor_hex,
+};
 
 /// The keys a document is expected to reach exactly one object through.
 const CONTAINER_KEYS: &[&str] = &[

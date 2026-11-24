@@ -87,7 +87,7 @@ impl<'a> Walk<'a> {
             if !widget.accessibility_represents_child(index) {
                 continue;
             }
-            let node = match widget.accessibility_child_path(index) {
+            let node = match widget.accessibility_child_node(index) {
                 Some(path) if !path.is_empty() => path
                     .iter()
                     .try_fold(access, |node, &at| node.children.get(at)),

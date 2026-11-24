@@ -126,7 +126,7 @@ impl MenuEntry {
         let members: Vec<MenuItem> = entries
             .into_iter()
             .map(|entry| {
-                let mut item = match entry.item {
+                let item = match entry.item {
                     MenuItem::Action {
                         label,
                         icon,
@@ -162,15 +162,7 @@ impl MenuEntry {
                     }
                     other => other,
                 };
-                if let (Some(run), MenuItem::Action { action, .. }) = (entry.run.clone(), &mut item)
-                {
-                    *action = run;
-                }
-                if entry.press.is_none() {
-                    item
-                } else {
-                    item.for_press(entry.press)
-                }
+                MenuEntry { item, ..entry }.into_item()
             })
             .collect();
         let mut row = MenuItem::submenu(label, members);
@@ -319,6 +311,21 @@ impl MenuEntry {
     /// The row as the menu shows it.
     pub fn item(&self) -> &MenuItem {
         &self.item
+    }
+
+    /// The row as a menu paints it, carrying what choosing it runs or presses: for a menu a
+    /// widget owns and paints itself rather than through an area.
+    #[must_use]
+    pub fn into_item(self) -> MenuItem {
+        let mut item = self.item;
+        if let (Some(run), MenuItem::Action { action, .. }) = (self.run, &mut item) {
+            *action = run;
+        }
+        if self.press.is_none() {
+            item
+        } else {
+            item.for_press(self.press)
+        }
     }
 
     /// What choosing the row runs, for a test that chooses it on a menu of its own.

@@ -40,7 +40,6 @@ pub fn register_all() {
         {
             crate::db_engine::register();
             crate::containers_engine::register();
-            crate::grayjay_engine::register();
         }
         #[cfg(all(
             feature = "app-launch",

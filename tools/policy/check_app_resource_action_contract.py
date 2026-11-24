@@ -1748,8 +1748,10 @@ def audit_search_provider_limits(
 # packages written in the app language). Its resources and actions come from the packages'
 # metadata through the platform crate it depends on, so its own source holds none of the
 # `Resource`/`ActionSpec` values this audit looks for. The dependency is checked, so the
-# exemption cannot outlive the crate that publishes them.
-DYNAMIC_RESOURCE_HOSTS = {"tilolang": "tilolang-tilo"}
+# exemption cannot outlive the crate that publishes them. The phone draws the tilolang shell
+# natively over its device daemon: what its windows publish is the platform's packages,
+# described from their metadata at run time.
+DYNAMIC_RESOURCE_HOSTS = {"phone": "tilolang-tilo"}
 
 
 def dynamic_resource_host(app_dir: Path) -> bool:

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shell@a3aa1e4e3655f6b1";
+export const SURFACE = "so.tilo.shell@b2d6fcd11eac3433";
 
 /** One part a person can put on the top bar, in their order. The case's icon is the glyph the settings and the drag ghost show for it. One of "menu", "workspace", "app_menu", "strip", "tasks", "clock", "people", "status", "power", "agent", "spacer". */
 export type BarPartKind = "menu" | "workspace" | "app_menu" | "strip" | "tasks" | "clock" | "people" | "status" | "power" | "agent" | "spacer";
@@ -299,8 +299,7 @@ export interface EqualWidthsArgs {
 export interface PlaceWidgetArgs {
   kind: WidgetKind;
   at: number[];
-  across: number;
-  down: number;
+  room: number[];
   display: number;
 }
 
@@ -1033,8 +1032,7 @@ export interface TiloShell extends tilo.Resource {
   place_widget(args: {
     kind: WidgetKind;
     at: number[];
-    across: number;
-    down: number;
+    room: number[];
     display: number;
   }): Promise<void>;
   /** Runs `place_widget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */

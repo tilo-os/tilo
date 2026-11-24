@@ -67,6 +67,10 @@ pub(crate) struct ThisDevice {
     founding: Arc<Founding>,
 }
 
+/// The calls this device took, and where each is: what a caller following one reads, whichever
+/// provider serves the device by then.
+pub(crate) type Calls = Arc<std::sync::Mutex<HashMap<InvocationId, InvocationState>>>;
+
 /// The tickets a person's founding asks for, issued as part of founding them: the founding call
 /// names what it needs, and is answered them once the person's own services run here, which is
 /// where a ticket can be served. A person is founded once, so their first tickets are the ones
@@ -77,9 +81,18 @@ pub(crate) struct Founding {
     serving: std::sync::Mutex<Option<([u8; 32], Arc<super::ticket::Tickets>)>>,
     /// Told when they do.
     announced: tokio::sync::Notify,
+    /// The calls the device took while it had no person: its services answer them too, so a
+    /// founding call followed after they start reads its state where it was kept.
+    calls: Calls,
 }
 
 impl Founding {
+    /// The calls the device took, and where each is: the person's services answer them too, so a
+    /// call followed after they start reads where it is.
+    pub(crate) fn calls(&self) -> Calls {
+        Arc::clone(&self.calls)
+    }
+
     /// Have the person's services, which serve `person`, issue the tickets a founder asks for
     /// from now on.
     pub(crate) fn serving(&self, person: [u8; 32], tickets: Arc<super::ticket::Tickets>) {
@@ -194,7 +207,6 @@ impl ThisDevice {
                 own: self.own,
                 entered: Arc::clone(&self.entered),
                 founding: Arc::clone(&self.founding),
-                calls: std::sync::Mutex::default(),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
                 records: Arc::new(super::records::DeviceRecords::at(
@@ -334,10 +346,9 @@ struct Answering {
     own: u32,
     /// Where the device a ticket made of this computer is kept for its person's services.
     entered: Entered,
-    /// What the person's services issue a founding's tickets through, once they run.
+    /// What the person's services issue a founding's tickets through, once they run, and the
+    /// calls the device took before it had a person, which they answer too.
     founding: Arc<Founding>,
-    /// Each invocation taken, and where it is.
-    calls: std::sync::Mutex<HashMap<InvocationId, InvocationState>>,
     runtime: tokio::runtime::Handle,
     /// The device's package cache, which it answers before a login as after it.
     packages: std::sync::OnceLock<Arc<dyn ActionProvider + Send + Sync>>,
@@ -376,7 +387,6 @@ impl DeviceOnly {
                 own,
                 entered: Entered::default(),
                 founding: Arc::default(),
-                calls: std::sync::Mutex::default(),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
                 records,
@@ -460,7 +470,7 @@ impl DeviceOnly {
     fn keep(&self, invocation: InvocationId, update: InvocationUpdate) -> InvocationReceipt {
         let state = InvocationState::new(invocation, update);
         let receipt = state.receipt();
-        self.0.calls.lock_recover().insert(invocation, state);
+        self.0.founding.calls().lock_recover().insert(invocation, state);
         receipt
     }
 
@@ -698,7 +708,7 @@ impl ActionProvider for DeviceOnly {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
-        if let Some(state) = self.0.calls.lock_recover().get(&invocation) {
+        if let Some(state) = self.0.founding.calls().lock_recover().get(&invocation) {
             return Pending::ready(Ok(state.receipt()));
         }
         if let Some(cache) = self.packages()
@@ -803,7 +813,8 @@ impl ActionProvider for DeviceOnly {
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         self.0
-            .calls
+            .founding
+            .calls()
             .lock_recover()
             .get(id)
             .cloned()
@@ -811,7 +822,7 @@ impl ActionProvider for DeviceOnly {
     }
 
     fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Err(match self.0.calls.lock_recover().get(id) {
+        Pending::ready(Err(match self.0.founding.calls().lock_recover().get(id) {
             Some(_) => ActionCallError::NotCancellable {
                 reason: "a login, once asked for, is the issuing device's to answer".into(),
             },

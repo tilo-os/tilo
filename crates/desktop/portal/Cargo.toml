@@ -18,6 +18,9 @@ tilo-service = { path = "../service" }
 # Portal notifications are the session's notifications daemon's.
 tilo-notifications-service = { path = "../notifications-service" }
 tilo-resource = { path = "../../core/tilo-resource" }
+# The privacy reading a view of another language reads names each kept answer by the consent
+# resource it is, whose declared type and verb live beside that reading.
+tilo-device-surfaces = { path = "../device-surfaces" }
 # Holds taken for an app are the session's own inhibitions.
 tilo-power-mgmt = { path = "../../os/power", default-features = false }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }

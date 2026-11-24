@@ -147,6 +147,7 @@ pub fn with_cx<T>(
         home,
         folders: &folders,
         open: &open,
+        held: std::cell::RefCell::new(None),
         secret: &secret,
     })
 }

@@ -39,3 +39,5 @@ mod direct_two_devices;
 mod renewed_enrollment;
 #[path = "renewed_membership.rs"]
 mod renewed_membership;
+#[path = "sealed_write_rate.rs"]
+mod sealed_write_rate;

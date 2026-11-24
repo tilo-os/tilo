@@ -102,7 +102,7 @@ impl App {
         let binding = self
             .focused_node
             .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root_widget.callback_binding());
+            .or_else(|| crate::bound_dispatch::callback_binding(&*self.root_widget));
         if let Some(binding) = binding {
             if self.move_bound_history(&binding, request) {
                 self.needs_sync = true;
@@ -178,7 +178,7 @@ impl App {
         let focused = self.focused_node;
         if let Some(binding) = focused
             .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root_widget.callback_binding())
+            .or_else(|| crate::bound_dispatch::callback_binding(&*self.root_widget))
         {
             return binding.undo_status(&mut self.state.doc).unwrap_or_default();
         }

@@ -30,6 +30,7 @@ pub mod overlays;
 pub mod people;
 pub mod privacy;
 pub mod quick_settings;
+pub mod room;
 pub mod shares;
 pub mod time;
 pub mod windows;
@@ -73,9 +74,13 @@ pub fn device_surfaces() -> Vec<Surface> {
         tilo_system_service::time_zone_surface(),
         displays::surface(),
         displays::screen_surface(),
+        displays::person_displays_surface(),
         inputs::surface(),
         keyboard::surface(),
         privacy::surface(),
+        // The answer a view reads is a resource of the session's portal: its address carries the
+        // `forget` that takes it back.
+        privacy::consent_surface(),
         notifications::surface(),
         osd::surface(),
         controls::night_light_surface(),
@@ -83,6 +88,8 @@ pub fn device_surfaces() -> Vec<Surface> {
         time::surface(),
         // Whether the person is typing, which what would cover their text steps aside for.
         input::surface(),
+        // The room the shell's own bar and dock leave a widget on a display.
+        room::surface(),
         clock::surface(),
         controls::apps_surface(),
         lists::windows_surface(),

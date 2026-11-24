@@ -1,6 +1,6 @@
 //! [`Chip`] as a described component: a tag, a filter or a token in a pill.
 
-use crate::component::{Component, Described, Event};
+use crate::component::{Component, Described, Event, Person};
 use crate::icons::Icon;
 
 use super::ChipStyle;
@@ -17,6 +17,9 @@ pub struct ChipProps {
     pub label: String,
     /// A glyph before the label, for a chip that names an action rather than a value.
     pub icon: Option<Icon>,
+    /// Who it names, as their face before the label: the member, so their face wears the picture
+    /// they set, as the bar's faces do. The first is the one shown.
+    pub faces: Vec<Person>,
     /// The tone the chip reads in: what it names is a status (a priority, a state of an item), and its pill
     /// is washed in that tone.
     pub tone: Tone,
@@ -41,6 +44,7 @@ impl Default for ChipProps {
         Self {
             label: String::new(),
             icon: None,
+            faces: Vec::new(),
             tone: Tone::default(),
             selected: None,
             enabled: true,
@@ -58,6 +62,7 @@ impl Described for Chip {
         let ChipProps {
             label,
             icon,
+            faces,
             tone,
             selected,
             enabled,
@@ -66,7 +71,9 @@ impl Described for Chip {
             remove,
         } = props;
         let mut chip = Self::new(label).with_id(key.to_owned());
-        if let Some(icon) = icon {
+        if let Some(who) = faces.into_iter().next() {
+            chip = chip.with_face_of(who);
+        } else if let Some(icon) = icon {
             chip = chip.with_lead(ChipLead::Glyph(icon));
         }
         if tone != Tone::Neutral {
@@ -92,6 +99,7 @@ impl Described for Chip {
         let ChipProps {
             label,
             icon,
+            faces,
             tone,
             selected,
             enabled,
@@ -103,7 +111,15 @@ impl Described for Chip {
             self.label.clone_from(&label);
             self.footprint = None;
         }
-        if icon.is_some() || !matches!(self.lead, ChipLead::Face(_)) {
+        if let Some(who) = faces.into_iter().next() {
+            self.face_hue = Some(who.hue);
+            self.lead = ChipLead::Face(crate::presence::presence_colour(
+                crate::presence::identity_rgb(who.hue),
+            ));
+            self.face = Some(who);
+        } else if icon.is_some() || !matches!(self.lead, ChipLead::Face(_)) {
+            self.face = None;
+            self.face_hue = None;
             self.lead = icon.map_or(ChipLead::None, ChipLead::Glyph);
         }
         self.style = if tone == Tone::Neutral {

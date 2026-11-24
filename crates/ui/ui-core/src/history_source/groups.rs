@@ -32,8 +32,8 @@ use automerge::{AutoCommit, ObjType, ReadDoc, Value};
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{GroupNameRequest, NamedRange};
+pub use collaboration::history::{GROUPS_KEY, is_group_marker};
 use tilo_automerge::read::int_at;
-pub use tilo_resource_store::history::{GROUPS_KEY, is_group_marker};
 
 /// A version name is a label, not a paragraph; past this it stops fitting
 /// anywhere it is rendered and starts being a way to make another user's

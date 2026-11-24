@@ -1292,6 +1292,41 @@ impl EffectDecl {
         }
     }
 
+    /// The tags the published contract carries: `base`'s, then what this effect declares of
+    /// itself (its device, its audience, what it opens and who may call it).
+    fn contract_tags(&self, base: &[String]) -> Vec<String> {
+        let mut tags = base.to_vec();
+        if self.own_device {
+            tags.push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
+        }
+        if self.attended {
+            tags.push(tilo_actions::ATTENDED_TAG.to_owned());
+        }
+        if let Some(tag) = self.audience.tag() {
+            tags.push(tag.to_owned());
+        }
+        if self.untrusted {
+            tags.push(tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned());
+        }
+        if let Some(extensions) = self.opens {
+            tags.push(tilo_actions::OPENS_PATH_TAG.to_owned());
+            tags.extend(extensions.iter().map(|extension| {
+                format!("{}{extension}", tilo_actions::OPENS_PATH_EXTENSION_PREFIX)
+            }));
+        }
+        if self.presence {
+            tags.push(tilo_actions::PRESENCE_VIEW_TAG.to_owned());
+        }
+        if self.edits {
+            tags.push(EDITS_TAG.to_owned());
+        }
+        if self.member {
+            tags.push(tilo_actions::MEMBER_OWN_TAG.to_owned());
+        }
+        tags.extend(self.tags.iter().map(|tag| (*tag).to_owned()));
+        tags
+    }
+
     /// The published action of this effect, taking `params` and encoding an
     /// invocation with `build`. The builder is passed boxed: boxing at the
     /// call site keeps this out of every app's vocabulary instance.
@@ -1364,38 +1399,7 @@ impl EffectDecl {
             } else {
                 base.retry
             },
-            tags: {
-                let mut tags = base.tags.clone();
-                if self.own_device {
-                    tags.push(tilo_actions::OWN_DEVICE_SCOPE.to_owned());
-                }
-                if self.attended {
-                    tags.push(tilo_actions::ATTENDED_TAG.to_owned());
-                }
-                if let Some(tag) = self.audience.tag() {
-                    tags.push(tag.to_owned());
-                }
-                if self.untrusted {
-                    tags.push(tilo_actions::UNTRUSTED_CONTENT_TAG.to_owned());
-                }
-                if let Some(extensions) = self.opens {
-                    tags.push(tilo_actions::OPENS_PATH_TAG.to_owned());
-                    tags.extend(extensions.iter().map(|extension| {
-                        format!("{}{extension}", tilo_actions::OPENS_PATH_EXTENSION_PREFIX)
-                    }));
-                }
-                if self.presence {
-                    tags.push(tilo_actions::PRESENCE_VIEW_TAG.to_owned());
-                }
-                if self.edits {
-                    tags.push(EDITS_TAG.to_owned());
-                }
-                if self.member {
-                    tags.push(tilo_actions::MEMBER_OWN_TAG.to_owned());
-                }
-                tags.extend(self.tags.iter().map(|tag| (*tag).to_owned()));
-                tags
-            },
+            tags: self.contract_tags(&base.tags),
             offload: self.offload.as_ref().map(EffectOffload::contract),
             ..base
         };

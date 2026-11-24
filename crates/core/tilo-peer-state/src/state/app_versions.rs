@@ -132,6 +132,14 @@ impl StatePeer {
         self.write_governance(doc, &before, key, now)
     }
 
+    /// The surface the version of `app` the workspace runs names, when it runs one: what a change
+    /// of the app's documents names, so it is merged rather than held for a version the workspace
+    /// does not run.
+    #[must_use]
+    pub fn running_surface(&self, app: &str) -> Option<[u8; 32]> {
+        self.workspace_surface(app)
+    }
+
     /// The surface the workspace runs `app` with, when it chose a version.
     pub(super) fn workspace_surface(&self, app: &str) -> Option<[u8; 32]> {
         self.governance().app_version(app)?.release.surface_hash()

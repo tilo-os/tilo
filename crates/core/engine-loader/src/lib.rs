@@ -112,6 +112,12 @@ impl Needs {
         network: true,
         app_state: false,
     };
+    /// A released secret, and the app's network.
+    pub const SECRET_AND_NETWORK: Self = Self {
+        secret: true,
+        network: true,
+        app_state: false,
+    };
     /// What the app's own process keeps.
     pub const APP_STATE: Self = Self {
         secret: false,
@@ -243,7 +249,39 @@ pub struct Device {
     read: fn(*mut c_void, &str) -> Result<Vec<u8>, String>,
 }
 
+/// A clock a device with nothing to give has.
+fn no_moment(_context: *mut c_void) -> Result<(String, i64), String> {
+    Err("this device has no clock".to_owned())
+}
+
+/// A content store a device with nothing to give keeps nothing in.
+fn no_keep_content(
+    _context: *mut c_void,
+    _name: &str,
+    _media: &str,
+    _bytes: &[u8],
+) -> Result<File, String> {
+    Err("this device keeps no content".to_owned())
+}
+
+/// A content store a device with nothing to give reads nothing from.
+fn no_read(_context: *mut c_void, _url: &str) -> Result<Vec<u8>, String> {
+    Err("this device reads no content".to_owned())
+}
+
 impl Device {
+    /// A device with nothing to give: every answer is a refusal. A check that
+    /// reads none of it stands on this.
+    #[must_use]
+    pub fn none() -> Self {
+        Self {
+            context: std::ptr::null_mut(),
+            moment: no_moment,
+            keep_content: no_keep_content,
+            read: no_read,
+        }
+    }
+
     /// A device answering with `context`'s own.
     #[must_use]
     pub fn new(

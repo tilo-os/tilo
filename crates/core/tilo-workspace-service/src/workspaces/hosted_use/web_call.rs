@@ -49,6 +49,7 @@ use std::time::Duration;
 
 use accounts::vault_items::{self, ItemId, KeyIn, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
+use tilo_actions::remote::InvokeRequest;
 use tilo_net::{HeaderMap, HeaderName, HeaderValue, Method, Url};
 
 use tilo_actions::remote::person_vault::ContentRef;
@@ -548,7 +549,7 @@ pub(super) async fn send(
     workspaces: &super::Workspaces,
     workspace: &str,
     call: WebCall,
-    (by, asker): (&str, &tilo_action_policy::Acting),
+    (by, asker, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
     caller_app: Option<&str>,
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
@@ -558,29 +559,39 @@ pub(super) async fn send(
     let content = |app: &str, hash: &str| workspaces.kept_record_bytes(workspace, app, hash);
     let ready = ready(reach, &mut items, call, by, caller_app, purpose, &content)?;
     workspaces
-        .write_vault(&opened, items.take_changes(), Some(asker))
+        .write_vault(&opened, items.take_changes(), Some(asker), Some(asked))
         .await?;
     deliver(reach, system_lookup(), ready).await
+}
+
+/// Who makes a web call, and what the vault records it for.
+#[cfg(test)]
+struct Calling<'a> {
+    by: &'a str,
+    app: Option<&'a str>,
+    purpose: UsedFor<'a>,
 }
 
 /// [`send`] with the vault's `items` in hand, looking a name up with `lookup`
 /// and reading the content a call carries with `content`.
 #[cfg(test)]
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a test names each part of the call it makes, in one chain"
-)]
 async fn send_through(
     reach: Destinations,
     lookup: Lookup,
     items: &mut VaultItems,
     call: WebCall,
-    by: &str,
-    caller_app: Option<&str>,
-    purpose: UsedFor<'_>,
+    calling: Calling<'_>,
     content: &dyn Fn(&str, &str) -> Option<Vec<u8>>,
 ) -> Result<Value, String> {
-    let ready = ready(reach, items, call, by, caller_app, purpose, content)?;
+    let ready = ready(
+        reach,
+        items,
+        call,
+        calling.by,
+        calling.app,
+        calling.purpose,
+        content,
+    )?;
     deliver(reach, lookup, ready).await
 }
 
@@ -1004,9 +1015,11 @@ mod tests {
             lookup,
             &mut items,
             call.clone(),
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &keeps,
         )
         .await
@@ -1063,9 +1076,11 @@ mod tests {
             lookup,
             &mut items,
             unkept,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &keeps,
         )
         .await;
@@ -1103,9 +1118,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &keeps,
         )
         .await
@@ -1132,9 +1149,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &|_, _| None,
         )
         .await;
@@ -1172,9 +1191,11 @@ mod tests {
                 lookup,
                 &mut items,
                 call.clone(),
-                "Scout",
-                None,
-                UsedFor::default(),
+                Calling {
+                    by: "Scout",
+                    app: None,
+                    purpose: UsedFor::default(),
+                },
                 &no_content,
             )
             .await;
@@ -1192,9 +1213,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &no_content,
         )
         .await;
@@ -1217,9 +1240,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            UsedFor::default(),
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose: UsedFor::default(),
+            },
             &no_content,
         )
         .await;
@@ -1260,9 +1285,11 @@ mod tests {
             lookup,
             &mut items,
             call,
-            "Scout",
-            None,
-            purpose,
+            Calling {
+                by: "Scout",
+                app: None,
+                purpose,
+            },
             &no_content,
         )
         .await;

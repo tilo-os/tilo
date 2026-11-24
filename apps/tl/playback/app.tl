@@ -90,18 +90,20 @@ type Playback (untitled: "Nothing playing") {
     }
 }
 
-/// What the shell shows of what plays: a card a bar-pill tall, its controls the session's own
-/// actions (play or pause, the item before and after, and the seek), so the media keys, the
-/// lock screen and the bar press exactly what a person reaches in the window. The card says
-/// which device plays it when a cast target or a speaker carries it.
+/// What the shell shows of what plays: a compact pill (the art and the title in one bar control's
+/// height) with its controls beside it, the session's own actions (play or pause, the item before
+/// and after, and the seek), so the media keys, the lock screen and the bar press exactly what a
+/// person reaches in the window. The card says which device plays it when a cast target or a
+/// speaker carries it. A narrow surface wraps the controls under the pill.
 view live(p: Playback) {
-    ui.MediaCard(
-        p,
-        title: if p.title == "" { "Nothing playing" } else { p.title },
-        picture: p.cover,
-        meta: [p.artist, first_output(p)],
-    )
-    row(gap: .tight, align: .center) {
+    row(gap: .related, align: .center, wrap: true) {
+        ui.MediaCard(
+            p,
+            compact: true,
+            title: if p.title == "" { "Nothing playing" } else { p.title },
+            picture: p.cover,
+            meta: [p.artist, first_output(p)],
+        )
         ui.Button("Previous", icon: .skip_back) {
             on press: previous(p)
         }

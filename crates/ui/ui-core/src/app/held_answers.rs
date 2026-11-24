@@ -16,8 +16,7 @@ impl App {
             .map(crate::wake::WakeScope::handle)
             .into_iter()
             .chain(
-                self.root_widget
-                    .callback_binding()
+                crate::bound_dispatch::callback_binding(&*self.root_widget)
                     .map(|binding| binding.lifetime.clone()),
             )
             .collect()

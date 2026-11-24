@@ -57,6 +57,22 @@ impl Device for Radios {
         }
         Ok(())
     }
+
+    fn scan_operators(&self, _modem: &str) -> Result<Vec<os_actions::Operator>, String> {
+        Err("this laptop has no modem".into())
+    }
+
+    fn send_code(&self, _modem: &str, _command: &str) -> Result<os_actions::CodeAnswer, String> {
+        Err("this laptop has no modem".into())
+    }
+
+    fn answer_code(&self, _modem: &str, _response: &str) -> Result<os_actions::CodeAnswer, String> {
+        Err("this laptop has no modem".into())
+    }
+
+    fn cancel_code(&self, _modem: &str) -> Result<(), String> {
+        Err("this laptop has no modem".into())
+    }
 }
 
 /// A device the card reports, as the audio service reads one.

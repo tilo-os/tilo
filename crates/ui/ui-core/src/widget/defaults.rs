@@ -15,19 +15,6 @@ pub(super) type EachChild<'a> = &'a dyn Fn(&mut dyn FnMut(&dyn Widget));
 /// A widget's children, mutably: [`Widget::children_mut`].
 pub(super) type ChildrenMut<'a> = Vec<&'a mut (dyn Widget + 'a)>;
 
-pub(super) fn visit_components(
-    children: ChildrenMut<'_>,
-    request: &mut crate::bound_dispatch::ComponentRequest<'_>,
-) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-    for child in children {
-        if request.target.is_some() && request.found {
-            break;
-        }
-        child.visit_components(request)?;
-    }
-    Ok(())
-}
-
 pub(super) fn mount_native_views(
     children: ChildrenMut<'_>,
     host: &crate::widget::native_view::NativeViewHost<'_>,

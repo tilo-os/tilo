@@ -51,7 +51,7 @@ use taffy::{NodeId, TaffyTree};
 use winit::event::WindowEvent;
 
 use super::{
-    DrawChild, EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
+    EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
     PrimaryScrollResult, Widget,
 };
 use crate::text_render::TextRenderer;
@@ -285,7 +285,7 @@ macro_rules! decorator_trait {
 decorator_trait! {
     $
     trait {
-        type Inner: Widget + AsDynWidget + DrawChild + ?Sized;
+        type Inner: Widget + AsDynWidget + ?Sized;
 
         fn inner(&self) -> &Self::Inner;
 
@@ -298,17 +298,16 @@ decorator_trait! {
             false
         }
 
-        /// [`Widget::draw`], drawing the inner widget under the decorator's own key.
+        /// [`Widget::draw`] of the inner widget, in the scene part its parent opened for the
+        /// decorator: a decorator is the widget it wraps, so it paints no part of its own. The
+        /// blanket [`Widget`] impl notes the paint as a secret's when [`Self::withholds_captures`]
+        /// says so.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
+        )]
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-            let (scene, transform, text_renderer, theme, env) = ctx.parts();
-            DrawChild::draw_child(
-                self.inner_mut(),
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &env,
-            );
+            self.inner_mut().draw(ctx);
         }
 
         #[doc(hidden)]
@@ -413,10 +412,6 @@ decorator_trait! {
 
         /// [`Widget::draw`], noting the paint as a secret's when
         /// [`Decorator::withholds_captures`] says so.
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
-        )]
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
             if Decorator::withholds_captures(self) {
                 crate::secret_paint::note_secret_painted();
@@ -494,6 +489,7 @@ decorator_trait! {
 
     ref {
         fn focus_reveal_context() -> Option<vello::kurbo::Rect>;
+        fn own_actions() -> Vec<crate::widget::OwnAction>;
         #[doc(hidden)]
         fn resets_binding_inheritance() -> bool;
         #[doc(hidden)]
@@ -501,10 +497,6 @@ decorator_trait! {
         #[doc(hidden)]
         fn inactive_bound_dispatch_boundary() -> Option<NodeId>;
         fn native_input_snapshot(state: &AppModel, path: &ModelPath) -> Option<serde_json::Value>;
-        fn callback_binding() -> Option<crate::bound_dispatch::CallbackBinding>;
-        fn has_separate_document_owner() -> bool;
-        fn history_owner() -> Option<crate::history_mode::HistoryOwner>;
-        fn resource_owners() -> Vec<crate::history_mode::HistoryOwner>;
         #[doc(hidden)]
         fn manual_layout_policy() -> Option<ManualPolicy>;
         fn layout_info() -> Option<LayoutInfo>;
@@ -543,6 +535,7 @@ decorator_trait! {
         fn synthetic_accessibility_rect(path: &[usize]) -> Option<vello::kurbo::Rect>;
         fn accessibility_child_parent(child_index: usize) -> Option<usize>;
         fn accessibility_child_path(child_index: usize) -> Option<Vec<usize>>;
+        fn accessibility_child_node(child_index: usize) -> Option<Vec<usize>>;
         fn accessibility_represents_child(child_index: usize) -> bool;
         fn lays_out_child(child_index: usize) -> bool;
         fn accessibility_child_description(child_index: usize) -> Option<String>;
@@ -587,16 +580,7 @@ decorator_trait! {
         #[doc(hidden)]
         fn relaid_layout_node() -> Option<NodeId>;
         fn is_default_keyboard_focus() -> bool;
-        fn keyboard_input_scope() -> Option<crate::application::InstanceId>;
         fn primary_vertical_scroll() -> Option<PrimaryScrollRegion>;
-        #[doc(hidden)]
-        #[allow(
-            private_interfaces,
-            reason = "finite toolkit resource ownership requests"
-        )]
-        fn visit_resource_owners(
-            request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
-        ) -> Result<(), tilo_actions::ApiError>;
     }
 
     mut {
@@ -606,18 +590,7 @@ decorator_trait! {
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
         fn note_placement(placement: crate::widget::Placement);
-        #[doc(hidden)]
-        #[allow(
-            private_interfaces,
-            reason = "opaque toolkit-only request prevents a public root/registry decoder loan"
-        )]
-        fn visit_components(
-            request: &mut crate::bound_dispatch::ComponentRequest<'_>,
-        ) -> Result<(), crate::bound_dispatch::BoundDispatchError>;
-        #[doc(hidden)]
-        fn visit_retained_components(
-            request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
-        ) -> Result<(), crate::bound_dispatch::BoundDispatchError>;
+        fn retained_children_mut() -> Vec<&mut (dyn Widget + '_)>;
         fn set_platform_conventions(conventions: crate::platform::PlatformConventions);
         fn set_interaction_environment(environment: crate::interaction::InteractionEnvironment);
         fn set_window_bar_control(in_bar: bool);

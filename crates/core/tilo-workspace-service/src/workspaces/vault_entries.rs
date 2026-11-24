@@ -161,6 +161,48 @@ mod tests {
     use super::*;
     use tilo_resource::Replica;
 
+    /// Every step the vault's actions declare they write is an action of this record, of its
+    /// kind in Passwords: what a device reading it takes the step as.
+    #[test]
+    fn the_vault_actions_declare_steps_this_record_takes() {
+        use tilo_actions::remote::person_vault;
+        use tilo_resource::Resource as _;
+        let verbs: Vec<_> = WorkspaceVaultEntries::declarations()
+            .into_iter()
+            .map(|declared| declared.id)
+            .collect();
+        let mut declared = 0;
+        for action in [
+            person_vault::ADD,
+            person_vault::REMOVE,
+            person_vault::KEEP_ENTRY,
+            person_vault::FORGET_ENTRY,
+            person_vault::ASK,
+            person_vault::FILL_PAGE,
+            person_vault::WEB_CALL,
+            person_vault::SIGN,
+            person_vault::RELEASE,
+        ] {
+            for effect in person_vault::effects(action) {
+                assert_eq!(effect.app, tilo_app_id::apps::PASSWORDS, "{action}");
+                assert_eq!(effect.kind, WorkspaceVaultEntries::KIND, "{action}");
+                assert!(verbs.contains(&effect.verb.as_str()), "{action}: {effect}");
+                declared += 1;
+            }
+        }
+        assert_eq!(declared, 9, "every action that writes declares its step");
+        for read in [
+            person_vault::LIST,
+            person_vault::ENTRIES,
+            person_vault::USES,
+        ] {
+            assert!(
+                person_vault::effects(read).is_empty(),
+                "{read} writes nothing"
+            );
+        }
+    }
+
     #[test]
     fn an_import_preserves_workspace_edits_and_deletions() {
         let key = "login".to_owned();

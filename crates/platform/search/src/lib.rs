@@ -43,7 +43,6 @@ mod list;
 mod query;
 mod tokenizer;
 mod typo;
-mod usage;
 mod weight;
 mod words;
 
@@ -58,7 +57,6 @@ pub use query::{MIN_ALIAS_SCALARS, MIN_INFIX_SCALARS, Matching, matches_inside_w
 /// The engine's error, for callers opening a [`DiskIndex`].
 pub use tantivy::TantivyError;
 pub use tokenizer::{GRAM_WIDTH, GramTokenizer, WordTokenizer};
-pub use usage::Frecency;
 pub use weight::{
     FUZZY_RANK, FieldWeight, INDEXED_WEIGHTS, KEYWORD_SLOT, MAX_FIELD_RANK, MatchTier, Ranks,
     SPANNING_RANK,

@@ -610,8 +610,8 @@ pub fn answering_person(caller: &super::Caller) -> Option<&str> {
 
 /// Whether `call` is the call `kept`: the same target and the same arguments, as they travel.
 /// Where `call` carries a person's approve that changed the arguments ([`Approval::arguments`]),
-/// it is the kept call with those in place of its own, and with the arguments no record keeps
-/// ([`super::person_vault::SEALED_ARGUMENTS`]) as `kept` carries them.
+/// it is the kept call with those in place of its own, and with the arguments its record kept
+/// none of ([`KeptAsk::sealed`]), which the approve never shows, as `kept` carries them.
 #[must_use]
 pub fn same_call(kept: &super::InvokeRequest, call: &super::InvokeRequest) -> bool {
     let value = |target: &super::RemoteActionTarget, argument: &super::InvokeArgument| {
@@ -621,7 +621,17 @@ pub fn same_call(kept: &super::InvokeRequest, call: &super::InvokeRequest) -> bo
         .approval()
         .and_then(|approval| approval.arguments.as_deref().cloned())
         .map(|mut edited| {
-            edited.extend(super::person_vault::without_sealed(kept).1);
+            if let (super::InvokeArgument::Json(kept), super::InvokeArgument::Json(sent)) =
+                (&kept.argument, &call.argument)
+            {
+                for name in sent.keys() {
+                    if !edited.contains_key(name)
+                        && let Some(value) = kept.get(name)
+                    {
+                        edited.insert(name.clone(), value.clone());
+                    }
+                }
+            }
             super::InvokeArgument::Json(edited)
         });
     let kept = value(&kept.target, edited.as_ref().unwrap_or(&kept.argument));
@@ -729,8 +739,8 @@ pub struct KeptAsk {
     /// stands over that window also after a restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pressed: Option<Pressed>,
-    /// The arguments [`Self::request`] carried that the record keeps none of
-    /// ([`super::person_vault::SEALED_ARGUMENTS`]), by name: their values are held in the memory
+    /// The arguments [`Self::request`] carried that the record keeps none of, those its action
+    /// declares secret ([`super::secret_arguments`]), by name: their values are held in the memory
     /// of the device that asked alone, and a call kept from before it started again cannot run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sealed: Vec<String>,

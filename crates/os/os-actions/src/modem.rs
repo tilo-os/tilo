@@ -69,6 +69,22 @@ trait Modem3gpp {
     fn registration_state(&self) -> zbus::Result<u32>;
     #[zbus(property)]
     fn enabled_facility_locks(&self) -> zbus::Result<u32>;
+    /// Stand on an operator's network, or on one this device chooses when `operator_id` is empty.
+    fn register(&self, operator_id: &str) -> zbus::Result<()>;
+    /// The operators in reach, each a set of values keyed by its MCC and MNC.
+    fn scan(&self) -> zbus::Result<HashMap<String, HashMap<String, OwnedValue>>>;
+}
+
+#[zbus::proxy(
+    interface = "org.freedesktop.ModemManager1.Modem.Modem3gpp.Ussd",
+    default_service = "org.freedesktop.ModemManager1"
+)]
+trait Modem3gppUssd {
+    #[zbus(property)]
+    fn state(&self) -> zbus::Result<u32>;
+    fn initiate(&self, command: &str) -> zbus::Result<String>;
+    fn respond(&self, response: &str) -> zbus::Result<String>;
+    fn cancel(&self) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(
@@ -318,6 +334,71 @@ impl Registration {
     }
 }
 
+/// An operator a scan found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Operator {
+    /// The network's MCC and MNC (`26201`), which `ModemChange::Register` names it by.
+    pub code: String,
+    pub name: String,
+    pub availability: Availability,
+}
+
+impl Operator {
+    /// What a scan found, strongest first: the one it stands on, then those it may use, then the
+    /// rest, each by name.
+    #[must_use]
+    pub fn ordered(mut found: Vec<Self>) -> Vec<Self> {
+        found.sort_by(|a, b| {
+            a.availability
+                .rank()
+                .cmp(&b.availability.rank())
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| a.code.cmp(&b.code))
+        });
+        found
+    }
+}
+
+/// Whether an operator may be chosen (`MMModem3gppNetworkAvailability`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Availability {
+    Unknown,
+    /// In reach and this device may use it.
+    Available,
+    /// The network the modem stands on now.
+    Current,
+    /// In reach, and this SIM may not use it.
+    Forbidden,
+}
+
+impl Availability {
+    fn from_mm(value: u32) -> Self {
+        match value {
+            2 => Self::Available,
+            3 => Self::Current,
+            4 => Self::Forbidden,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// The order a list of operators is shown in.
+    const fn rank(self) -> u8 {
+        match self {
+            Self::Current => 0,
+            Self::Available => 1,
+            Self::Unknown => 2,
+            Self::Forbidden => 3,
+        }
+    }
+}
+
+/// What the network answered a code, and whether it is waiting for the person's answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeAnswer {
+    pub text: String,
+    pub awaiting: bool,
+}
+
 /// Network types a modem may use, and the one it prefers (`MMModemMode` bits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NetworkModes {
@@ -477,6 +558,12 @@ pub enum ModemChange {
         modem: String,
         slot: u32,
     },
+    /// Stand on the network of the operator whose MCC and MNC `operator` holds, or on one the
+    /// modem chooses when it is `None`.
+    Register {
+        modem: String,
+        operator: Option<String>,
+    },
 }
 
 impl std::fmt::Debug for ModemChange {
@@ -491,6 +578,9 @@ impl std::fmt::Debug for ModemChange {
             Self::ChangePin { sim, .. } => write!(formatter, "ChangePin({sim})"),
             Self::SetModes { modem, modes } => write!(formatter, "SetModes({modem}, {modes:?})"),
             Self::UseSlot { modem, slot } => write!(formatter, "UseSlot({modem}, {slot})"),
+            Self::Register { modem, operator } => {
+                write!(formatter, "Register({modem}, {operator:?})")
+            }
         }
     }
 }
@@ -510,6 +600,27 @@ fn valid_puk(puk: &str) -> Result<(), ModemError> {
         Ok(())
     } else {
         Err(ModemError::Invalid("a PUK has 8 digits".into()))
+    }
+}
+
+/// An operator's MCC and MNC: five or six digits.
+fn valid_operator(code: &str) -> bool {
+    (5..=6).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A USSD code as a person types it: no spaces, at most 182 characters.
+fn valid_code(code: &str) -> Result<(), ModemError> {
+    let ok = !code.is_empty()
+        && code.len() <= 182
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'*' | b'#' | b'+' | b'-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(ModemError::Invalid(
+            "a code is up to 182 letters, digits and * # + -".into(),
+        ))
     }
 }
 
@@ -546,6 +657,17 @@ impl ModemChange {
                 valid_object(modem, MODEM_PREFIX)?;
                 if *slot == 0 {
                     return Err(ModemError::Invalid("SIM slots count from 1".into()));
+                }
+                Ok(())
+            }
+            Self::Register { modem, operator } => {
+                valid_object(modem, MODEM_PREFIX)?;
+                if let Some(operator) = operator
+                    && !valid_operator(operator)
+                {
+                    return Err(ModemError::Invalid(
+                        "an operator is its MCC and MNC, five or six digits".into(),
+                    ));
                 }
                 Ok(())
             }
@@ -790,6 +912,65 @@ impl ModemManager {
         traffic
     }
 
+    /// The operators the modem in `modem` reaches now, the one it stands on first.
+    pub async fn operators(&self, modem: &str) -> Result<Vec<Operator>, ModemError> {
+        valid_object(modem, MODEM_PREFIX)?;
+        let gpp: Modem3gppProxy<'static> = self.proxy(modem).await?;
+        let found = gpp.scan().await.map_err(|error| failed(&error))?;
+        let operators = found
+            .into_iter()
+            .filter_map(|(key, mut values)| {
+                let code = text_of(values.remove("operator-code"))
+                    .or_else(|| non_empty(&key))
+                    .filter(|code| valid_operator(code))?;
+                Some(Operator {
+                    code,
+                    name: text_of(values.remove("operator-name"))
+                        .unwrap_or_else(|| "An operator".into()),
+                    availability: Availability::from_mm(u32_of(values.get("status")).unwrap_or(0)),
+                })
+            })
+            .collect();
+        Ok(Operator::ordered(operators))
+    }
+
+    /// Send `command` to the network, as `*100#` asks, and read what it answers.
+    pub async fn code(&self, modem: &str, command: &str) -> Result<CodeAnswer, ModemError> {
+        valid_object(modem, MODEM_PREFIX)?;
+        valid_code(command)?;
+        let ussd: Modem3gppUssdProxy<'static> = self.proxy(modem).await?;
+        let text = ussd
+            .initiate(command)
+            .await
+            .map_err(|error| failed(&error))?;
+        Ok(CodeAnswer {
+            text,
+            awaiting: ussd_state(&ussd).await == USSDAWAITING,
+        })
+    }
+
+    /// Answer the question the network asked.
+    pub async fn answer_code(&self, modem: &str, response: &str) -> Result<CodeAnswer, ModemError> {
+        valid_object(modem, MODEM_PREFIX)?;
+        valid_code(response)?;
+        let ussd: Modem3gppUssdProxy<'static> = self.proxy(modem).await?;
+        let text = ussd
+            .respond(response)
+            .await
+            .map_err(|error| failed(&error))?;
+        Ok(CodeAnswer {
+            text,
+            awaiting: ussd_state(&ussd).await == USSDAWAITING,
+        })
+    }
+
+    /// End the code's session with the network.
+    pub async fn cancel_code(&self, modem: &str) -> Result<(), ModemError> {
+        valid_object(modem, MODEM_PREFIX)?;
+        let ussd: Modem3gppUssdProxy<'static> = self.proxy(modem).await?;
+        ussd.cancel().await.map_err(|error| failed(&error))
+    }
+
     pub async fn apply(&self, change: &ModemChange) -> Result<(), ModemError> {
         change.validate()?;
         let result = match change {
@@ -823,8 +1004,36 @@ impl ModemManager {
                 let modem: ModemProxy<'static> = self.proxy(modem).await?;
                 modem.set_primary_sim_slot(*slot).await
             }
+            ModemChange::Register { modem, operator } => {
+                let gpp: Modem3gppProxy<'static> = self.proxy(modem).await?;
+                gpp.register(operator.as_deref().unwrap_or_default()).await
+            }
         };
         result.map_err(|error| failed(&error))
+    }
+}
+
+/// The state `MMModem3gppUssdSessionState` gives a session that waits for the person.
+const USSDAWAITING: u32 = 4;
+
+async fn ussd_state(ussd: &Modem3gppUssdProxy<'_>) -> u32 {
+    ussd.state().await.unwrap_or_default()
+}
+
+/// A value the bus gave as text.
+fn text_of(value: Option<OwnedValue>) -> Option<String> {
+    match value.as_ref().map(|value| &**value) {
+        Some(Value::Str(text)) => non_empty(text),
+        _ => None,
+    }
+}
+
+/// A value the bus gave as a number.
+fn u32_of(value: Option<&OwnedValue>) -> Option<u32> {
+    match value.map(|value| &**value) {
+        Some(Value::U32(n)) => Some(*n),
+        Some(Value::I32(n)) => u32::try_from(*n).ok(),
+        _ => None,
     }
 }
 
@@ -867,6 +1076,31 @@ pub fn read_mobile() -> Result<MobileReading, ModemError> {
 pub fn apply_modem_change(change: &ModemChange) -> Result<(), ModemError> {
     change.validate()?;
     block(async { ModemManager::system().await?.apply(change).await })
+}
+
+/// The operators the modem at `modem` reaches now.
+pub fn scan_operators(modem: &str) -> Result<Vec<Operator>, ModemError> {
+    block(async { ModemManager::system().await?.operators(modem).await })
+}
+
+/// Send `command` to the network and read what it answers.
+pub fn send_code(modem: &str, command: &str) -> Result<CodeAnswer, ModemError> {
+    block(async { ModemManager::system().await?.code(modem, command).await })
+}
+
+/// Answer the question the network asked.
+pub fn answer_code(modem: &str, response: &str) -> Result<CodeAnswer, ModemError> {
+    block(async {
+        ModemManager::system()
+            .await?
+            .answer_code(modem, response)
+            .await
+    })
+}
+
+/// End the code's session with the network.
+pub fn cancel_code(modem: &str) -> Result<(), ModemError> {
+    block(async { ModemManager::system().await?.cancel_code(modem).await })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

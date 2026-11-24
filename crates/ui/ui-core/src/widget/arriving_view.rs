@@ -6,8 +6,7 @@ use std::rc::Rc;
 
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 
 use crate::arriving::{Arrival, ArrivalClock, Arriving, Progress, Source, Step};
 use crate::motion::CrossFade;
@@ -823,33 +822,6 @@ impl ArrivingView {
     }
 }
 
-/// Paint `paint` at `opacity`, in a layer only while it is part-way.
-fn layered(
-    scene: &mut Scene,
-    transform: Affine,
-    clip: Rect,
-    opacity: f32,
-    paint: impl FnOnce(&mut Scene),
-) {
-    if opacity <= 0.0 {
-        return;
-    }
-    let part = opacity < 1.0;
-    if part {
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            opacity,
-            transform,
-            &clip.inflate(2.0, 2.0),
-        );
-    }
-    paint(scene);
-    if part {
-        scene.pop_layer();
-    }
-}
-
 impl AwaitsContent for ArrivingView {
     fn awaits_content(&self) -> bool {
         self.holds_input && self.showing() == Showing::Placeholder
@@ -966,7 +938,7 @@ impl Widget for ArrivingView {
         if let Some((_, opacity)) = self.fade.outgoing(now) {
             let replaced = self.replaced;
             let rect = self.rect;
-            layered(scene, transform, rect, opacity, |scene| {
+            crate::widget::in_opacity_layer(scene, transform, rect, opacity, |scene| {
                 self.paint_step(
                     &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     replaced,
@@ -979,7 +951,7 @@ impl Widget for ArrivingView {
         let incoming = self.fade.incoming(now);
         let rect = self.rect;
         let inner = &mut self.inner;
-        layered(scene, transform, rect, incoming, |scene| {
+        crate::widget::in_opacity_layer(scene, transform, rect, incoming, |scene| {
             inner.draw_child(scene, transform, text_renderer, theme, &env);
         });
     }

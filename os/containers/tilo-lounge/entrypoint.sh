@@ -55,6 +55,9 @@ XDG_STATE_HOME=$state/state
 export TILO_IDENTITY_ROOT XDG_STATE_HOME HOME=$state TILO_RUNTIME_PROFILE=$state
 export TILO_SERVER_CONFIG=$config
 mkdir -p "$state/identity" "$state/state" "$state/secrets"
+# The volume is the daemon's runtime profile too, which it refuses to start from while others
+# may read it: a fresh volume is made with the mount's or the umask's mode.
+chmod 0700 "$state"
 
 # An empty volume is a machine joining an existing owner, and the one secret
 # that does it is the ticket `tilo device add` printed on an owner device, which

@@ -1456,6 +1456,418 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         .expect("the invite sheet opens");
 }
 
+// ---- the roster's rows and its header ------------------------------------------------------
+
+/// Someone here, as the peer network lists them: a person by their device's presence, or software
+/// by the member it is (an agent, or one of the workspace's bots) and the app it works in.
+fn someone_here(
+    at: usize,
+    name: &str,
+    member: Option<collab_types::MemberId>,
+    app: &str,
+) -> tilo_session_core::desktop::here::LiveMember {
+    tilo_session_core::desktop::here::LiveMember {
+        publisher: format!("{:064x}", at),
+        kind: if member.is_some() {
+            "agent".to_owned()
+        } else {
+            "person".to_owned()
+        },
+        label: name.to_owned(),
+        member,
+        focus: (!app.is_empty()).then(|| tilo_session_core::desktop::here::Focus {
+            app: app.to_owned(),
+            ..tilo_session_core::desktop::here::Focus::default()
+        }),
+        ..tilo_session_core::desktop::here::LiveMember::default()
+    }
+}
+
+/// Someone nobody named, here as the person `person` (their user root, hex), the workspace's policy
+/// having admitted them.
+fn someone_unnamed(person: &str) -> tilo_session_core::desktop::here::LiveMember {
+    tilo_session_core::desktop::here::LiveMember {
+        publisher: person.to_owned(),
+        kind: "person".to_owned(),
+        label: String::new(),
+        user: Some(person.to_owned()),
+        ..tilo_session_core::desktop::here::LiveMember::default()
+    }
+}
+
+/// Who is here, as the peer network lists them.
+fn set_the_people(session: &Session, people: Vec<tilo_session_core::desktop::here::LiveMember>) {
+    session
+        .sync()
+        .expect("the session takes part in the app wire")
+        .here()
+        .borrow_mut()
+        .set_members(None, Some(people));
+}
+
+/// Who is here, as the session publishes it (`session:people`).
+#[derive(serde::Deserialize)]
+struct PeopleReading {
+    #[serde(default)]
+    rows: Vec<SomeoneReading>,
+    #[serde(default)]
+    following: String,
+    #[serde(default)]
+    waved_to: String,
+}
+
+/// One row of the roster, as the session publishes it.
+#[derive(serde::Deserialize)]
+struct SomeoneReading {
+    #[serde(default)]
+    key: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    agent: bool,
+    #[serde(default)]
+    bot: bool,
+}
+
+fn people_reading(session: &Session) -> PeopleReading {
+    serde_json::from_value(
+        session
+            .read("session:people")
+            .expect("the session publishes who is here"),
+    )
+    .expect("who is here reads as the roster's reading")
+}
+
+/// Open the roster as its own action does, the way the bar's faces ask for it.
+fn open_who_is_here(session: &mut Session) {
+    session
+        .invoke("session:people", "show", &serde_json::Map::new())
+        .expect("the roster opens");
+}
+
+/// Every control the people list draws under `label`, by where it stands and what it says of
+/// itself: a row carries the lines under its name with the name ("Agent, Fieldwork, In Notes"), so
+/// a row answers to the name among them.
+fn people_nodes(session: &Session, label: &str) -> Vec<(f64, f64, f64, f64, Option<String>)> {
+    session
+        .a11y_windows()
+        .into_iter()
+        .flat_map(|(_, _, tree)| {
+            tree.nodes
+                .iter()
+                .filter(|(_, node)| node.label().is_some_and(|said| says_that(said, label)))
+                .filter_map(|(_, node)| {
+                    let rect = node.bounds()?;
+                    (rect.width() > 0.0 && rect.height() > 0.0).then(|| {
+                        (
+                            rect.x0,
+                            rect.y0,
+                            rect.x1,
+                            rect.y1,
+                            node.description().map(str::to_owned),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// What each control the people list draws under `label` says of itself whole: its name and the
+/// line under it, as a screen reader reads the two.
+fn people_labels(session: &Session, label: &str) -> Vec<String> {
+    session
+        .a11y_windows()
+        .into_iter()
+        .flat_map(|(_, _, tree)| {
+            tree.nodes
+                .iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .filter(|said| says_that(said, label))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Whether a control named `said` is the one named `label`: a row carries the lines it draws under
+/// the name with the name, so the name is one of the parts it reads as ("Agent, Fieldwork, In
+/// Notes" is Fieldwork's row).
+fn says_that(said: &str, label: &str) -> bool {
+    said == label || said.split(", ").any(|part| part == label)
+}
+
+/// Where the people list's single control labelled `label` stands, in the session's coordinates.
+fn people_place(session: &Session, label: &str) -> (f64, f64, f64, f64) {
+    let places = people_nodes(session, label);
+    assert_eq!(
+        places.len(),
+        1,
+        "the roster draws one {label:?}: {places:?}; it says {:?}",
+        session.accessible_labels()
+    );
+    let (x0, y0, x1, y1, _) = places[0];
+    (x0, y0, x1, y1)
+}
+
+/// The window the workspace in front shows: the active strip's first.
+fn the_window_in_front(session: &Session) -> Option<tilo_desktop_model::TabId> {
+    session.handle().read(|tree| {
+        let workspace = tree.active_workspace()?;
+        let strip = tree.active_strip_for(workspace)?;
+        workspace
+            .strips
+            .iter()
+            .find(|held| held.id == strip)?
+            .window_groups
+            .first()
+            .map(|group| group.active_tab)
+    })
+}
+
+/// The roster's header names the workspace in front and counts who is here besides this person,
+/// counting each row as the list counts it; its rows stand people first, software after, each group
+/// under its heading where both are here.
+#[test]
+fn the_people_list_header_says_the_workspace_and_groups_people_ahead_of_software() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    open_who_is_here(&mut session);
+    // Nobody else: the header counts this person alone, and names the workspace the roster is of.
+    until(&mut session, |session| says(session, "Just you"));
+    let workspace = shell(&session).workspace;
+    assert!(
+        !workspace.is_empty()
+            && people_nodes(&session, &workspace)
+                .iter()
+                .any(|(x0, _, _, _, _)| *x0 > f64::from(WIDTH) / 2.0),
+        "the header names the workspace in front ({workspace:?}), at the panel's side of the \
+         screen: {:?}",
+        people_nodes(&session, &workspace)
+    );
+    // One person here: counted, never named, where the count says who is here.
+    set_the_people(&session, vec![someone_here(1, "Mia Clayton", None, "")]);
+    until(&mut session, |session| says(session, "You and 1 other"));
+    assert!(
+        !says(&session, "Agents"),
+        "with only people here no group needs a heading: {:?}",
+        session.accessible_labels()
+    );
+    // People and software: each group under its own heading, people above software, and each kind
+    // of software tagged as what it is.
+    set_the_people(
+        &session,
+        vec![
+            someone_here(1, "Mia Clayton", None, ""),
+            someone_here(2, "Sam Okafor", None, ""),
+            someone_here(
+                3,
+                "Fieldwork",
+                Some(collab_types::MemberId::agent("fieldwork")),
+                "so.tilo.notes",
+            ),
+            someone_here(
+                4,
+                "Standup",
+                Some(collab_types::MemberId::bot(
+                    "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6",
+                )),
+                "",
+            ),
+        ],
+    );
+    until(&mut session, |session| says(session, "You and 4 others"));
+    let people_heading = people_place(&session, "People");
+    let agents_heading = people_place(&session, "Agents");
+    let mia = people_place(&session, "Mia Clayton");
+    let sam = people_place(&session, "Sam Okafor");
+    let fieldwork = people_place(&session, "Fieldwork");
+    assert!(
+        people_heading.1 < mia.1 && mia.1 < sam.1 && sam.3 <= agents_heading.1,
+        "people stand under their heading, before software's: {people_heading:?} {mia:?} {sam:?} {agents_heading:?}"
+    );
+    assert!(
+        agents_heading.1 < fieldwork.1,
+        "software stands under its own heading: {agents_heading:?} {fieldwork:?}"
+    );
+    assert!(
+        says(&session, "Agent") && says(&session, "Bot"),
+        "an agent and a bot are each tagged as what they are: {:?}",
+        session.accessible_labels()
+    );
+    // Software's row names where it works, with the way there; a person's offers none.
+    assert!(
+        says(&session, "In Notes") && session.shell_control("Go there").is_some(),
+        "the agent's row names its app and offers the way there: {:?}",
+        session.accessible_labels()
+    );
+    assert_eq!(
+        people_nodes(&session, "Go there").len(),
+        1,
+        "only software works in a window this roster can go to"
+    );
+    let reading = people_reading(&session);
+    let fieldwork = reading
+        .rows
+        .iter()
+        .find(|row| row.name == "Fieldwork")
+        .expect("the agent's row");
+    assert!(fieldwork.agent && !fieldwork.bot, "an agent is never a bot");
+    let standup = reading
+        .rows
+        .iter()
+        .find(|row| row.name == "Standup")
+        .expect("the bot's row");
+    assert!(standup.agent && standup.bot, "a bot is software, and a bot");
+    keep(&mut session, "shell-people-rows-and-headings");
+}
+
+/// The roster's rows do what the Rust roster's did without opening a card: follow and stop
+/// following, wave — the row says it went for a moment — where software works, and neither wave at
+/// software nor follow a row that is not there.
+#[test]
+fn a_people_row_follows_waves_and_goes_where_software_works() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    set_the_people(
+        &session,
+        vec![
+            someone_here(1, "Mia Clayton", None, ""),
+            someone_here(
+                2,
+                "Fieldwork",
+                Some(collab_types::MemberId::agent("fieldwork")),
+                "so.tilo.notes",
+            ),
+        ],
+    );
+    open_who_is_here(&mut session);
+    until(&mut session, |session| {
+        session.shell_control("Follow Mia Clayton").is_some()
+    });
+    let key = people_reading(&session)
+        .rows
+        .iter()
+        .find(|row| row.name == "Mia Clayton")
+        .expect("Mia's row")
+        .key
+        .clone();
+    // Follow stands on her row: her view is the one the bar keeps in front from then on.
+    press(&mut session, "Follow Mia Clayton");
+    until(&mut session, |session| {
+        people_reading(session).following == key
+    });
+    assert!(
+        session
+            .shell_control("Stop following Mia Clayton")
+            .is_some(),
+        "her row now offers the way to stop: {:?}",
+        session.accessible_labels()
+    );
+    press(&mut session, "Stop following Mia Clayton");
+    until(&mut session, |session| {
+        people_reading(session).following.is_empty()
+    });
+    // A wave sent says so on the row it went to, to the pointer's eye and to assistive technology
+    // alike, and goes when its moment is over.
+    press(&mut session, "Wave at Mia Clayton");
+    until(&mut session, |session| {
+        people_reading(session).waved_to == key
+    });
+    assert!(
+        says(&session, "You waved at Mia Clayton"),
+        "the row says the wave went: {:?}",
+        session.accessible_labels()
+    );
+    until(&mut session, |session| {
+        people_reading(session).waved_to.is_empty()
+    });
+    assert!(
+        !says(&session, "You waved at Mia Clayton"),
+        "the sent wave goes when its moment is over: {:?}",
+        session.accessible_labels()
+    );
+    // Nobody waves at software.
+    assert!(
+        session.shell_control("Wave at Fieldwork").is_none(),
+        "software's row offers no wave: {:?}",
+        session.accessible_labels()
+    );
+    // Where software works: pressing it brings that window forward, so what it is on stands in
+    // front of this person.
+    let notes = open_window(&mut session, "so.tilo.notes");
+    until(&mut session, |session| says(session, "Go there"));
+    assert_ne!(
+        the_window_in_front(&session),
+        Some(notes),
+        "the agent's window is not in front yet"
+    );
+    press(&mut session, "Go there");
+    until(&mut session, |session| {
+        the_window_in_front(session) == Some(notes)
+    });
+}
+
+/// Someone nobody named is told apart by when they joined, never a bare "Someone": two admitted
+/// within one second of each other say the millisecond, and a reader is told it too.
+#[test]
+fn a_row_nobody_named_says_when_they_joined() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    // The workspace admitted the two within one second of each other, so the clock alone would
+    // read alike.
+    let early = "ab".repeat(32);
+    let late = "cd".repeat(32);
+    let handle = session.handle().clone();
+    let mut tree = handle.read(Clone::clone);
+    let workspace = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id() == tree.active)
+        .expect("a workspace is in front");
+    for (person, at) in [
+        (early.as_str(), 1_765_000_000_000_u64),
+        (late.as_str(), 1_765_000_000_402),
+    ] {
+        workspace
+            .policy
+            .members
+            .insert(person.to_owned(), tilo_action_policy::Role::Editor);
+        workspace.policy.joined.insert(person.to_owned(), at);
+    }
+    handle.replace_tree(tree);
+    session.step(Duration::from_millis(1)).expect("step");
+    set_the_people(
+        &session,
+        vec![someone_unnamed(&early), someone_unnamed(&late)],
+    );
+    open_who_is_here(&mut session);
+    let said = crate::common::wait_for(
+        &mut session,
+        "both unnamed rows to say when they joined",
+        |session| {
+            let rows = people_labels(session, "Someone");
+            (rows.len() == 2).then_some(rows)
+        },
+    );
+    assert_eq!(
+        said.len(),
+        2,
+        "each row says something of its own: {said:?}"
+    );
+    assert!(
+        said.iter().all(|line| line.contains("Joined")),
+        "a row nobody named says when they joined, never a bare Someone: {said:?}"
+    );
+    assert_ne!(said[0], said[1], "the two rows read apart: {said:?}");
+    assert!(
+        said.iter().all(|line| line.contains('.')) && said.iter().all(|line| line.contains(':')),
+        "the clock carries seconds, and the millisecond where two came within one second: {said:?}"
+    );
+}
+
 /// Another of the person's devices, from their own card: the session's own sheet, whose link a
 /// new device's camera reads.
 #[test]

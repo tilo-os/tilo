@@ -124,7 +124,12 @@ view reader(d: Document) {
                                     page_column: true,
                                     reveal: at_page_row(d, page_at),
                                 ) {
-                                    on select(p: Page): set(page_at, d.pages.index_of(p) ?? 0)
+                                    // A page chosen here, or the page a search hit names, is
+                                    // where the reader is, as turning to it in the rail is.
+                                    on select(p: Page): remember_reading(d, p, 0.0, zoom)
+                                        .then(
+                                            set(page_at, d.pages.index_of(p) ?? 0),
+                                        )
                                     for p in d.pages {
                                         ui.ListItem(item: p) {
                                             page_sheet(

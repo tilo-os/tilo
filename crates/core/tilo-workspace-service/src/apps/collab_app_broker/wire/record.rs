@@ -23,7 +23,9 @@ impl AppConnection {
         } = record;
         let identity = self.identity.as_ref().ok_or_else(|| {
             BrokerError::failed(
-                "this connection was admitted as no app, and names no record".into(),
+                "this connection was admitted as no app, and names no record; start it with \
+                 `tilo-runtime --run-app <app>`, so this computer launches it"
+                    .into(),
             )
         })?;
         let route = CrdtRoute::from_channel_key(&channel_id);

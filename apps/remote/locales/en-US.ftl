@@ -69,9 +69,6 @@ remote-connect-confirm = Connect
 remote-trust-key-title = Trust the SSH key of { $connection }?
 remote-trust-key-detail = Check this key with the machine's owner before you trust it. Only this device remembers it.
 remote-trust-key-confirm = Trust key
-remote-forget-key-title = Forget the SSH key of { $connection }?
-remote-forget-key-detail = Only this device's saved key is removed. Reconnect to check and trust the new key.
-remote-forget-key-confirm = Forget key
 
 ## Why a connection cannot open
 remote-state-ready = Remote can connect to this machine.

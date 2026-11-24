@@ -142,11 +142,18 @@ fn runtime_bundles(root: &Path, data: &Path) -> Vec<(&'static str, OsString)> {
         &[],
         &[host.clone()],
     );
+    // The Tilo runtime carries the pinned font catalog the product's bundles carry, at the
+    // `lib/fonts` the launcher binds where a sandboxed app sets text. Without it every app a
+    // test's daemon starts draws in no font at all.
+    let mut libs = native_closure(&[&host, &launcher]);
+    if let Some(fonts) = carried_fonts(root) {
+        libs.push(fonts);
+    }
     bundle(
         data,
         version(package::DEFAULT_TILO_RUNTIME),
         &signer,
-        &native_closure(&[&host, &launcher]),
+        &libs,
         &[],
     );
     let trusted = root.join("trusted-publishers.txt");
@@ -158,6 +165,16 @@ fn runtime_bundles(root: &Path, data: &Path) -> Vec<(&'static str, OsString)> {
             trusted.into(),
         ),
     ]
+}
+
+/// This build's pinned font catalog under a directory named `fonts`, which is what a runtime
+/// bundle's include keeps as its `lib/fonts`.
+#[cfg(target_os = "linux")]
+fn carried_fonts(root: &Path) -> Option<PathBuf> {
+    let catalog = ui::font_catalog::catalog_root()?;
+    let fonts = root.join("fonts");
+    std::os::unix::fs::symlink(&catalog, &fonts).ok()?;
+    Some(fonts)
 }
 
 /// The tilolang runtime package the apps name, as Tilo.app carries it, installed into the app

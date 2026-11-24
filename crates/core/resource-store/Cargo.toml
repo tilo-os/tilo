@@ -26,8 +26,6 @@ serde_json.workspace = true
 base64.workspace = true
 # A document's history: its versions and the action each names, and how a step is grouped.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
-# Whether a version is the schema's genesis rather than anyone's step.
-tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 # What wrote a change, when a device recorded a writer beside it.
 fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../fs-protocol" }

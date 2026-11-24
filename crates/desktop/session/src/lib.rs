@@ -51,8 +51,6 @@ mod daemon_fixture;
 /// (`dev-overrides`), and only while `TILO_ALLOC_SITES` asks.
 #[cfg(all(target_os = "linux", feature = "dev-overrides"))]
 pub mod dev_alloc_sites;
-#[cfg(all(feature = "test-support", target_os = "linux"))]
-pub mod shell_session;
 /// The session's allocator: the allocation-site probe's in a development build, the system's
 /// otherwise (a release build carries no wrapper at all).
 #[cfg(all(target_os = "linux", feature = "dev-overrides"))]
@@ -134,6 +132,8 @@ mod bluetooth_handoff;
 mod boot_join;
 #[cfg(target_os = "linux")]
 mod broker_services;
+#[cfg(target_os = "linux")]
+mod call_card;
 #[cfg(target_os = "linux")]
 mod calls;
 #[cfg(target_os = "linux")]

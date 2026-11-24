@@ -14,6 +14,7 @@ use tilo.models as models
 use tilo.workspace as workspace
 use tilo.accounts as accounts
 use tilo.host-account as billing
+use tilo.mcp-server as mcp
 
 /// The window's root. Settings keeps nothing of its own here: every row below changes a
 /// resource the session publishes — the person's appearance, notification, accessibility and
@@ -393,6 +394,73 @@ template view read_pane<R>(of: R, what: Text, content: View) {
     }
 }
 
+/// The pictures Tilo ships, each a thumbnail with what it credits; choosing one makes it the
+/// picture the desktop stands on, through the setting the person's devices read.
+template view wallpaper_picker(a: settings.Appearance) {
+    read_pane(of: device.wallpaper, what: "Wallpaper") {
+        let wallpaper = device.wallpaper
+        if wallpaper.catalogue.is_empty() {
+            ui.Text(
+                "The pictures Tilo ships are not installed on this computer.",
+                role: .caption,
+                secondary: true,
+            )
+        } else {
+            ui.MediaGrid(size: .small) {
+                for picture in wallpaper.catalogue {
+                    ui.MediaCard(
+                        title: picture.title,
+                        picture: picture.thumbnail,
+                        meta: [picture.author, picture.license],
+                        aspect: .wide,
+                        selected: shown_wallpaper(wallpaper) == picture.id,
+                    ) {
+                        on activate: settings.set_wallpaper(a, picture.id)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The picture this workspace shows: the one the person chose, or the one the image ships while
+/// they have chosen none.
+fn shown_wallpaper(wallpaper: device.Wallpaper) -> Text {
+    if wallpaper.picture == "" { wallpaper.shipped } else { wallpaper.picture }
+}
+
+/// A small desktop drawn in `theme`, so a person sees what a theme looks like beside the one in
+/// use; an empty `theme` draws the theme this device uses now.
+template view theme_preview(caption: Text, theme: Text) {
+    stack(gap: .tight) {
+        ui.Text(caption, role: .caption, secondary: true)
+        ui.Drawing(
+            theme_preview_shapes(),
+            meaning: .picture,
+            label: .some(caption),
+            width: .some(150.0),
+            height: .some(94.0),
+            theme: if theme == "" { .none } else { .some(theme) },
+        )
+    }
+}
+
+/// The shapes of a small desktop: its surface, a window with its sidebar, a card, a heading, a
+/// line of words, a press, and what went well beside what failed.
+fn theme_preview_shapes() -> List<ui.Shape> {
+    [
+        ui.Shape.rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, fill: .some(.base)),
+        ui.Shape.rect(x: 0.06, y: 0.1, w: 0.88, h: 0.8, round: 0.05, fill: .some(.surface)),
+        ui.Shape.rect(x: 0.06, y: 0.1, w: 0.24, h: 0.8, round: 0.05, fill: .some(.sidebar)),
+        ui.Shape.text(x: 0.13, y: 0.2, text: "Aa", role: .title, ink: .ink, anchor: .start),
+        ui.Shape.rect(x: 0.38, y: 0.18, w: 0.48, h: 0.26, round: 0.04, fill: .some(.track)),
+        ui.Shape.text(x: 0.4, y: 0.56, text: "Text", role: .body, ink: .muted, anchor: .start),
+        ui.Shape.rect(x: 0.4, y: 0.66, w: 0.2, h: 0.1, round: 0.5, fill: .some(.accent)),
+        ui.Shape.ellipse(cx: 0.68, cy: 0.71, rx: 0.025, ry: 0.04, fill: .some(.success)),
+        ui.Shape.ellipse(cx: 0.76, cy: 0.71, rx: 0.025, ry: 0.04, fill: .some(.danger)),
+    ]
+}
+
 /// The look of the person's workspace and of this device: the theme they chose, the motion and
 /// contrast they want, and how large text and controls are.
 view appearance_pane() {
@@ -447,10 +515,20 @@ view appearance_pane() {
             ui.TextInput(bind: a.ui_face, placeholder: "Follow the theme")
         }
     }
-    ui.Section("Reading") {
-        setting("Wallpaper", "The picture the desktop stands on; empty follows the theme") {
-            ui.TextInput(bind: a.wallpaper, placeholder: "Follow the theme")
+    ui.Section("Preview") {
+        ui.Text(
+            "A desktop drawn in the themes your modes show, and in the one this device uses now, which follows every change as you make it.",
+            role: .caption,
+            secondary: true,
+        )
+        row(gap: .related, align: .start, wrap: true) {
+            theme_preview("Light mode", a.light_theme)
+            theme_preview("Dark mode", a.dark_theme)
+            theme_preview("In use now", "")
         }
+    }
+    ui.Section("Reading") {
+        wallpaper_picker(a)
         setting("Where it shows", "Behind the windows, at the lock screen, or both") {
             ui.ToggleGroup(
                 selected: wallpaper_target_index(a.wallpaper_target),
@@ -969,6 +1047,171 @@ fn colour_profile_index(display: device.Display) -> Int {
     } else { 0 }
 }
 
+/// The left of the leftmost screen of the person's layout, in pixels.
+fn shared_left(screens: List<device.SharedScreen>) -> Int {
+    screens.map(s -> s.x).sort_by(x -> x).first() ?? 0
+}
+
+/// The top of the highest screen of the person's layout, in pixels.
+fn shared_top(screens: List<device.SharedScreen>) -> Int {
+    screens.map(s -> s.y).sort_by(y -> y).first() ?? 0
+}
+
+/// The right of the rightmost screen of the person's layout, in pixels.
+fn shared_right(screens: List<device.SharedScreen>) -> Int {
+    screens.map(s -> s.x + s.width).sort_by(x -> x, desc).first() ?? 0
+}
+
+/// The bottom of the lowest screen of the person's layout, in pixels.
+fn shared_bottom(screens: List<device.SharedScreen>) -> Int {
+    screens.map(s -> s.y + s.height).sort_by(y -> y, desc).first() ?? 0
+}
+
+/// The shared space the person's screens stand in: its left and top, and how wide and tall it
+/// is — never nothing, so a single screen still fills the box.
+fn shared_bounds(screens: List<device.SharedScreen>) -> List<Float> {
+    [
+        shared_left(screens).to_float(),
+        shared_top(screens).to_float(),
+        (shared_right(screens) - shared_left(screens)).max(1).to_float(),
+        (shared_bottom(screens) - shared_top(screens)).max(1).to_float(),
+    ]
+}
+
+/// What a person calls one screen of their layout: a screen of this device by its own name, a
+/// screen of another by that name and the device it is on.
+fn shared_name(screen: device.SharedScreen) -> Text {
+    if screen.local { screen.name } else { "{screen.name} on {screen.device_label}" }
+}
+
+/// Another device's screen and how the pointer reaches it.
+fn shared_status(screen: device.SharedScreen) -> Text {
+    if not screen.online {
+        "Offline"
+    } else if not screen.reachable { "Online, away from your other screens" } else { "Online" }
+}
+
+/// The layout as assistive technology hears it: every screen, and where it stands.
+fn shared_label(screens: List<device.SharedScreen>) -> Text {
+    let places = screens.map(s -> shared_name(s))
+    "Your screens, left to right and top to bottom: {places.join("; ")}"
+}
+
+/// Where a screen stands on the shared canvas, as fractions of its box, moved by `across` and
+/// `down` while its device is dragged: `[x, y, w, h]`.
+fn shared_box(
+    screen: device.SharedScreen,
+    across: Float,
+    down: Float,
+    bounds: List<Float>,
+) -> List<Float> {
+    let x = (screen.x.to_float() - (bounds.at(0) ?? 0.0)) / (bounds.at(2) ?? 1.0)
+    let y = (screen.y.to_float() - (bounds.at(1) ?? 0.0)) / (bounds.at(3) ?? 1.0)
+    let w = screen.width.to_float() / (bounds.at(2) ?? 1.0)
+    let h = screen.height.to_float() / (bounds.at(3) ?? 1.0)
+    [
+        canvas_margin() + (x + across) * canvas_span(),
+        canvas_margin() + (y + down) * canvas_span(),
+        w * canvas_span(),
+        h * canvas_span(),
+    ]
+}
+
+/// One screen of the person's layout on the shared canvas: its rectangle and its name over it.
+/// The device being dragged moves all of its screens together.
+fn shared_tile(
+    screen: device.SharedScreen,
+    index: Int,
+    picked: Int,
+    moving: Text,
+    across: Float,
+    down: Float,
+    bounds: List<Float>,
+) -> List<ui.Shape> {
+    let shifted = screen.device == moving
+    let box = shared_box(
+        screen,
+        if shifted { across } else { 0.0 },
+        if shifted { down } else { 0.0 },
+        bounds,
+    )
+    let x = box.at(0) ?? canvas_margin()
+    let y = box.at(1) ?? canvas_margin()
+    let w = box.at(2) ?? canvas_span()
+    let h = box.at(3) ?? canvas_span()
+    [
+        ui.Shape.rect(
+            x: x,
+            y: y,
+            w: w,
+            h: h,
+            round: 0.02,
+            fill: .some(.track),
+            stroke: .some(if index == picked { .accent } else { .muted }),
+            weight: if index == picked { .strong } else { .hairline },
+        ),
+        ui.Shape.text(
+            x: x + w / 2.0,
+            y: y + h / 2.0,
+            text: shared_name(screen),
+            role: .caption,
+            ink: .ink,
+            anchor: .middle,
+        ),
+    ]
+}
+
+/// The shared canvas's shapes: every screen where it stands, the dragged device's screens where
+/// the pointer is.
+fn shared_shapes(
+    screens: List<device.SharedScreen>,
+    picked: Int,
+    start: List<Float>,
+    drag: List<Float>,
+) -> List<ui.Shape> {
+    let bounds = shared_bounds(screens)
+    let across = (drag.at(0) ?? 0.0) - (start.at(0) ?? 0.0)
+    let down = (drag.at(1) ?? 0.0) - (start.at(1) ?? 0.0)
+    let moving = screens.at(picked)?.device ?? ""
+    screens.flat_map((screen, i) -> shared_tile(screen, i, picked, moving, across, down, bounds))
+}
+
+/// Move the device whose screen was dragged so that screen stands where the pointer was let go,
+/// in the shared space's own pixels, snapped to a small grid. Every screen of that device moves
+/// with it; a drag too small to mean anything is not a change.
+action move_shared_screen(
+    night: settings.DisplayPerson,
+    screens: List<device.SharedScreen>,
+    picked: Int,
+    start: List<Float>,
+    let_go: List<Float>,
+) {
+    if let dragged = screens.at(picked) {
+        let across = (let_go.at(0) ?? 0.0) - (start.at(0) ?? 0.0)
+        let down = (let_go.at(1) ?? 0.0) - (start.at(1) ?? 0.0)
+        if across.abs() + down.abs() > 0.004 {
+            let bounds = shared_bounds(screens)
+            let span_x = (bounds.at(2) ?? 1.0) / canvas_span()
+            let span_y = (bounds.at(3) ?? 1.0) / canvas_span()
+            let dx = (across * span_x).round() / 8 * 8
+            let dy = (down * span_y).round() / 8 * 8
+            for screen in screens {
+                if screen.device == dragged.device {
+                    settings.place_display(
+                        night,
+                        screen.device,
+                        screen.output,
+                        screen.x + dx,
+                        screen.y + dy,
+                        .none,
+                        .some(true),
+                    )
+                }
+            }
+        }
+    }
+}
+
 /// What one screen says on the arrangement: its name, and the size it shows.
 fn screen_words(display: device.Display) -> Text {
     let primary = if display.primary { ", the primary screen" } else { "" }
@@ -1083,10 +1326,14 @@ view displays_pane() {
     let d = settings.display
     let night = settings.display_person
     let screens = device.displays
+    let person = device.person_displays
     let change = settings.display_change
     state picked: Int = 0
     state start: List<Float> = []
     state drag: List<Float> = []
+    state picked_shared: Int = 0
+    state start_shared: List<Float> = []
+    state drag_shared: List<Float> = []
     ui.Section("Arrangement") {
         ui.Text(
             "How this device shows what is on its screens. Drag a screen to where it stands; choose the way they show together here.",
@@ -1126,6 +1373,36 @@ view displays_pane() {
             }
             ui.Button("The display sheet", icon: .sliders_horizontal) {
                 on press: device.open_sheet(device.displays)
+            }
+        }
+    }
+    if person.screens.any(s -> not s.local) {
+        ui.Section("Your other screens") {
+            ui.Text(
+                "Your devices' screens as one desktop, where the pointer crosses between them. Drag a screen to move that device's screens.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.Drawing(
+                shared_shapes(person.screens, picked_shared, start_shared, drag_shared),
+                meaning: .picture,
+                label: shared_label(person.screens),
+                height: .some(240.0),
+            ) {
+                on press(at: Int): set(picked_shared, (at / 2).min(person.screens.len() - 1))
+                on drag_start(x: Float, y: Float): set(start_shared, [x, y])
+                    .then(set(drag_shared, [x, y]))
+                on drag_at(at: List<Float>): set(drag_shared, at)
+                on release_at(at: List<Float>): move_shared_screen(
+                    night,
+                    person.screens,
+                    picked_shared,
+                    start_shared,
+                    at,
+                )
+            }
+            if let screen = person.screens.at(picked_shared) {
+                ui.ListRow(shared_name(screen), secondary: shared_status(screen), icon: .monitor)
             }
         }
     }
@@ -1319,6 +1596,24 @@ view displays_pane() {
                             display.connector,
                             v,
                         )
+                    }
+                }
+            }
+        }
+    }
+    if not screens.trusted_tools.is_empty() {
+        ui.Section("Display tools") {
+            ui.Text(
+                "These programs can make risky display changes without asking you to keep them.",
+                role: .caption,
+                secondary: true,
+            )
+            for tool in screens.trusted_tools {
+                ui.ListRow(tool.name, icon: .shield) {
+                    trailing: {
+                        ui.Button("Ask again") {
+                            on press: device.forget_display_tool(device.displays, tool.executable)
+                        }
                     }
                 }
             }

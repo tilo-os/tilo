@@ -15,7 +15,7 @@ use super::AppBrokerState;
 use crate::workspaces::providers::Registered;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Admitted, Caller, InvocationReceipt, InvokeRequest, Outcome,
-    Pending, ReceiptStatus, Reservation,
+    Pending, PendingPoll, ReceiptStatus, Reservation,
 };
 
 /// How a call of a registered provider stands once admitted, before it is taken.
@@ -489,7 +489,7 @@ impl AppBrokerState {
                 .map_err(|reason| ActionCallError::Refused { reason })?;
             return Ok(self.receipt_for(request.invocation, id));
         }
-        let receipt = registered.answers.run(
+        let mut receipt = registered.answers.run(
             caller,
             request.clone(),
             Admitted {
@@ -497,6 +497,22 @@ impl AppBrokerState {
                 stop: Arc::clone(&stop),
             },
         );
+        // A call this provider runs on goes on after `Accepted`: its observation and
+        // cancellation reach the provider itself, not the record this dispatch keeps of it.
+        let receipt = match receipt.poll_ready() {
+            PendingPoll::Ready(receipt) => {
+                if receipt
+                    .as_ref()
+                    .is_ok_and(|receipt| matches!(&receipt.status, ReceiptStatus::Accepted))
+                    && let Some(providers) = &self.services.providers
+                {
+                    providers.took(request.invocation, &registered.provider);
+                }
+                Pending::ready(receipt)
+            }
+            PendingPoll::Waiting => receipt,
+            PendingPoll::Abandoned => Pending::ready(Err(ActionCallError::Unanswered)),
+        };
         let started = outcome_of(
             Arc::clone(&registered.answers),
             caller.clone(),
@@ -1087,6 +1103,7 @@ mod identity_admin_tests {
                     input: tilo_actions::InputSpec::None,
                     params: Vec::new(),
                     view: None,
+                    effects: Vec::new(),
                 })
                 .collect()
         }
@@ -1756,6 +1773,7 @@ mod settings_documents_tests {
                 input: tilo_actions::InputSpec::None,
                 params: Vec::new(),
                 view: None,
+                effects: Vec::new(),
             }
         }
     }

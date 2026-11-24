@@ -1,4 +1,10 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
+mod bound_widget;
+pub(crate) use bound_widget::{
+    BoundTraversal, has_separate_document_owner, history_owner, keyboard_input_scope,
+    visit_components, visit_resource_owners,
+};
+pub use bound_widget::{BoundWidget, callback_binding, resource_owners};
 pub(crate) mod local_target;
 
 mod published_target;
@@ -216,8 +222,7 @@ pub(crate) fn has_matching_broker_component(
     root: &dyn Widget,
     route: Option<&crate::collaboration::AcceptedRoute>,
 ) -> bool {
-    if root
-        .callback_binding()
+    if callback_binding(root)
         .is_some_and(|binding| binding.enter().is_ok() && binding.matches_broker_route(route))
     {
         return true;
@@ -260,11 +265,7 @@ pub(crate) fn refresh_bound_controls(
         crate::widget::controls::refresh_control_action_availability(widget, &allowed);
         None
     };
-    root.visit_components(&mut ComponentRequest {
-        target: None,
-        found: false,
-        visit: &mut visit,
-    })
+    visit_components(root, &mut ComponentRequest::new(None, &mut visit))
 }
 
 /// The addresses a component's controls may run: every available action of
@@ -490,7 +491,7 @@ pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot
         seen: &mut Vec<CallbackBinding>,
         output: &mut Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
     ) {
-        if let Some(binding) = widget.callback_binding()
+        if let Some(binding) = callback_binding(widget)
             && !seen.iter().any(|prior| prior.same_component(&binding))
         {
             seen.push(binding.clone());
@@ -570,13 +571,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
         }
         None
     };
-    let failure = root
-        .visit_components(&mut ComponentRequest {
-            target: None,
-            found: false,
-            visit: &mut visit,
-        })
-        .err();
+    let failure = visit_components(root, &mut ComponentRequest::new(None, &mut visit)).err();
     BoundControlBatch {
         visited,
         controls: invocations,
@@ -630,11 +625,10 @@ pub(crate) fn notify_control_invocation_result(
         );
         None
     };
-    root.visit_components(&mut ComponentRequest {
-        target: Some(&target.binding),
-        found: false,
-        visit: &mut visit,
-    })
+    visit_components(
+        root,
+        &mut ComponentRequest::new(Some(&target.binding), &mut visit),
+    )
 }
 
 pub(crate) fn poll_resource_operation(
@@ -659,11 +653,10 @@ pub(crate) fn poll_resource_operation(
             .filter(|update| update.is_terminal())
             .map(|_| (invocation, false))
     };
-    root.visit_components(&mut ComponentRequest {
-        target: Some(&target.binding),
-        found: false,
-        visit: &mut delivery,
-    })?;
+    visit_components(
+        root,
+        &mut ComponentRequest::new(Some(&target.binding), &mut delivery),
+    )?;
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
@@ -950,11 +943,7 @@ pub(crate) fn bound_contract_violations(
         ));
         None
     };
-    root.visit_components(&mut ComponentRequest {
-        target: Some(binding),
-        found: false,
-        visit: &mut visit,
-    })?;
+    visit_components(root, &mut ComponentRequest::new(Some(binding), &mut visit))?;
     Ok(violations)
 }
 
@@ -992,7 +981,7 @@ fn collect_search_sources<T>(
         seen: &mut std::collections::HashSet<uuid::Uuid>,
         found: &mut Vec<T>,
     ) {
-        let binding = widget.callback_binding();
+        let binding = callback_binding(widget);
         let Ok(_entry) = binding.as_ref().map(CallbackBinding::enter).transpose() else {
             return;
         };
@@ -1057,11 +1046,7 @@ pub(crate) fn resolve_component_resource(
         }));
         None
     };
-    root.visit_components(&mut ComponentRequest {
-        target: Some(binding),
-        found: false,
-        visit: &mut visit,
-    })?;
+    visit_components(root, &mut ComponentRequest::new(Some(binding), &mut visit))?;
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
@@ -1119,13 +1104,7 @@ pub(crate) fn component_awaits_resource(
             .unwrap_or(false);
         None
     };
-    root.visit_components(&mut ComponentRequest {
-        target: Some(binding),
-        found: false,
-        visit: &mut visit,
-    })
-    .is_ok()
-        && awaits
+    visit_components(root, &mut ComponentRequest::new(Some(binding), &mut visit)).is_ok() && awaits
 }
 
 /// Whether `resource` or one of its children is resource `id`.
@@ -1164,13 +1143,7 @@ pub(crate) fn component_resource_pending(
         pending = unbound_resource_pending(widget, resource);
         None
     };
-    root.visit_components(&mut ComponentRequest {
-        target: Some(binding),
-        found: false,
-        visit: &mut visit,
-    })
-    .is_ok()
-        && pending
+    visit_components(root, &mut ComponentRequest::new(Some(binding), &mut visit)).is_ok() && pending
 }
 
 pub(crate) fn publication_visibility(
@@ -1186,7 +1159,7 @@ pub(crate) fn publication_visibility(
         inherited: Option<CallbackBinding>,
         id: &str,
     ) -> Option<tilo_actions::ActionAddress> {
-        let boundary = widget.callback_binding();
+        let boundary = callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let _entry = binding
             .as_ref()
@@ -1239,7 +1212,7 @@ pub(crate) fn publication_visibilities(
         wanted: &[(Option<CallbackBinding>, String)],
         found: &mut [Option<tilo_actions::ActionAddress>],
     ) {
-        let boundary = widget.callback_binding();
+        let boundary = callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let Ok(_entry) = binding.as_ref().map(CallbackBinding::enter).transpose() else {
             return;
@@ -1324,11 +1297,7 @@ pub(crate) fn activate_bound_search(
         );
         None
     };
-    root.visit_components(&mut ComponentRequest {
-        target: Some(binding),
-        found: false,
-        visit: &mut visit,
-    })?;
+    visit_components(root, &mut ComponentRequest::new(Some(binding), &mut visit))?;
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
@@ -1368,7 +1337,7 @@ pub(crate) fn directory_observation(
         inherited: Option<CallbackBinding>,
         observations: &mut Vec<BoundDirectoryObservation>,
     ) -> Result<(), String> {
-        let boundary = widget.callback_binding();
+        let boundary = callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         if binding
             .as_ref()
@@ -1531,7 +1500,7 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit, inputs: bool) -> Vec<Bound
         inputs: bool,
         marks: &mut Vec<BoundOwnerMark>,
     ) {
-        if let Some(binding) = widget.callback_binding()
+        if let Some(binding) = callback_binding(widget)
             && !binding.closing.get()
             && binding.lifetime.is_active()
             && !marks
@@ -1663,7 +1632,7 @@ pub(crate) fn discover_cached_bound_resources(
         declarations: bool,
         taken: &mut crate::widget::resources::TakenResources,
     ) {
-        let boundary = widget.callback_binding();
+        let boundary = callback_binding(widget);
         if boundary
             .as_ref()
             .is_some_and(|binding| !binding.same_component(owner))
@@ -1697,7 +1666,7 @@ pub(crate) fn discover_cached_bound_resources(
         local_generation: u64,
         snapshots: &mut Vec<BoundResourceSnapshot>,
     ) -> Result<(), String> {
-        let binding = widget.callback_binding();
+        let binding = callback_binding(widget);
         if binding
             .as_ref()
             .is_some_and(|binding| binding.closing.get() || !binding.lifetime.is_active())
@@ -2039,7 +2008,7 @@ fn discover_bound_resources_with_filter(
         taken: &mut std::collections::HashMap<usize, crate::widget::resources::TakenResources>,
         filtered: bool,
     ) -> Result<(), BoundDispatchError> {
-        let boundary = widget.callback_binding();
+        let boundary = callback_binding(widget);
         let binding = boundary.as_ref().or(inherited);
         if let Some(binding) = binding {
             if binding.closing.get() || !binding.lifetime.is_active() {
@@ -3167,11 +3136,10 @@ fn perform_resource_action(
         // ownership for the component's existing CLOSED cancellation/cleanup path.
         accepted.then_some((invocation, true))
     };
-    root.visit_components(&mut ComponentRequest {
-        target: Some(&target.binding),
-        found: false,
-        visit: &mut delivery,
-    })?;
+    visit_components(
+        root,
+        &mut ComponentRequest::new(Some(&target.binding), &mut delivery),
+    )?;
     result.unwrap_or(Err(BoundActionError::Dispatch(
         BoundDispatchError::ClosedLifetime,
     )))
@@ -3198,7 +3166,7 @@ fn for_each_published(widget: &dyn Widget, walk: Walk, visit: &mut dyn FnMut(&dy
         walk: Walk,
         visit: &mut dyn FnMut(&dyn Widget, bool),
     ) {
-        if widget.has_separate_document_owner() {
+        if has_separate_document_owner(widget) {
             return;
         }
         visit(widget, root);
@@ -3289,7 +3257,7 @@ pub(crate) fn resolve_unbound_resource(
 /// Whether resource `id`, which `widget`'s subtree resolves to nothing now, may resolve once what it
 /// reads arrives ([`crate::widget::resources::PublishesResources::resource_pending`]).
 pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
-    if widget.has_separate_document_owner() {
+    if has_separate_document_owner(widget) {
         return false;
     }
     let mut pending = crate::widget::resources::resource_pending(widget, id);
@@ -3364,6 +3332,19 @@ pub(crate) struct ComponentRequest<'a> {
     pub(crate) found: bool,
     pub(crate) visit: &'a mut ComponentVisitor<'a>,
 }
+impl<'a> ComponentRequest<'a> {
+    /// A visit of the component `target` names, or of every component.
+    pub(crate) fn new(
+        target: Option<&'a CallbackBinding>,
+        visit: &'a mut ComponentVisitor<'a>,
+    ) -> Self {
+        Self {
+            target,
+            found: false,
+            visit,
+        }
+    }
+}
 
 /// One original ordinary model pass for the current retained owner.
 pub(crate) fn service_retained_owner_model(
@@ -3414,14 +3395,8 @@ pub(crate) fn service_retained_owner_model(
         }
         None
     };
-    let mut request = ComponentRequest {
-        target: Some(captured),
-        found: false,
-        visit: &mut visit,
-    };
-    root.visit_retained_components(&mut RetainedComponentRequest {
-        inner: &mut request,
-    })?;
+    let mut request = ComponentRequest::new(Some(captured), &mut visit);
+    visit_components(root, &mut request)?;
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
 }
 
@@ -3469,33 +3444,9 @@ pub(crate) fn service_owner_save_progress(
         }
         None
     };
-    let mut request = ComponentRequest {
-        target: Some(captured),
-        found: false,
-        visit: &mut visit,
-    };
-    root.visit_retained_components(&mut RetainedComponentRequest {
-        inner: &mut request,
-    })?;
+    let mut request = ComponentRequest::new(Some(captured), &mut visit);
+    visit_components(root, &mut request)?;
     result.unwrap_or(Err(BoundDispatchError::ClosedLifetime))
-}
-
-/// SDK-owned retained component traversal, separate from public callback reach.
-pub struct RetainedComponentRequest<'a, 'b> {
-    inner: &'a mut ComponentRequest<'b>,
-}
-impl<'b> RetainedComponentRequest<'_, 'b> {
-    pub(crate) fn inner(&mut self) -> &mut ComponentRequest<'b> {
-        self.inner
-    }
-    /// Forward only through actual retained storage. Unknown roots preserve their
-    /// original `visit_components` callback, including refusals and side effects.
-    pub fn visit(&mut self, child: &mut dyn Widget) -> Result<(), BoundDispatchError> {
-        if self.inner.found {
-            return Ok(());
-        }
-        child.visit_retained_components(self)
-    }
 }
 
 #[derive(Debug)]
@@ -3537,7 +3488,7 @@ struct ActiveMutation {
     deferred: bool,
 }
 struct ActionFrame {
-    history: tilo_resource_store::history::UndoLog,
+    history: collaboration::history::UndoLog,
     state: crate::resource::ResourceActions,
     mutation: Option<ActiveMutation>,
     operations: Vec<OperationSpan>,
@@ -3856,7 +3807,7 @@ impl Drop for BoundOperation<'_> {
 }
 
 struct RestoreFrame<'a> {
-    history: &'a mut tilo_resource_store::history::UndoLog,
+    history: &'a mut collaboration::history::UndoLog,
     state: &'a mut crate::resource::ResourceActions,
     frame: FrameHandle,
 }
@@ -4345,7 +4296,7 @@ impl CallbackBinding {
         widget: &mut dyn Widget,
         doc: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
-        if widget.callback_binding().is_some() {
+        if callback_binding(widget).is_some() {
             return Ok(false);
         }
         let mut changed = self.drain_widget_actions(widget, doc)?;

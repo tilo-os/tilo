@@ -228,6 +228,90 @@ fn message_of(workspace: WorkspaceId, write: &WorkspaceDocumentWrite) -> Neighbo
     }
 }
 
+/// How long a frame a link carried stays in the record at most once nothing else publishes it.
+pub(crate) const SENT_WITHIN: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A change to the frames this device keeps of a workspace, waiting for the publication that
+/// makes it durable.
+pub(crate) enum FrameChange {
+    /// A frame to keep until a link carried it; its keeper waits for the publication.
+    Keep(Arc<[u8]>),
+    /// A frame a link carried, which leaves with the next publication.
+    Sent(Arc<[u8]>),
+}
+
+/// The frame changes waiting for a publication, each workspace's in the order they were asked,
+/// and what the publications answered the frames kept.
+#[derive(Default)]
+pub(crate) struct DueFrames {
+    next: u64,
+    changes: std::collections::BTreeMap<WorkspaceId, Vec<(u64, FrameChange)>>,
+    published: std::collections::HashMap<u64, Result<(), String>>,
+    /// Whether a flush of the frames links carried is coming.
+    flushing: bool,
+    /// Each workspace's kept frames as of its last publication of them.
+    kept: std::collections::HashMap<WorkspaceId, KeptIndex>,
+}
+
+/// The frames a record keeps, found by their bytes: a frame is kept once however often it is
+/// asked, without reading every frame the record keeps. It indexes the record whose frames number
+/// `len` and end with `newest`, the same allocation, which it holds; a record whose frames changed
+/// otherwise is indexed again.
+pub(crate) struct KeptIndex {
+    len: usize,
+    newest: Option<Arc<[u8]>>,
+    frames: std::collections::HashSet<Arc<[u8]>>,
+}
+
+impl KeptIndex {
+    fn of(kept: &stored::Frames) -> Self {
+        stored::touched(kept.len());
+        let mut index = Self {
+            len: 0,
+            newest: None,
+            frames: kept.iter().map(|frame| Arc::clone(&frame.bytes)).collect(),
+        };
+        index.indexed(kept);
+        index
+    }
+
+    fn indexes(&self, kept: &stored::Frames) -> bool {
+        self.len == kept.len()
+            && match (&self.newest, kept.last()) {
+                (Some(newest), Some(last)) => Arc::ptr_eq(newest, &last.bytes),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
+    /// Index `kept`, which this index's frames are.
+    fn indexed(&mut self, kept: &stored::Frames) {
+        self.len = kept.len();
+        self.newest = kept.last().map(|frame| Arc::clone(&frame.bytes));
+    }
+}
+
+impl DueFrames {
+    /// Wait to keep `frame` in `workspace`'s record: the ticket its publication answers.
+    fn keep(&mut self, workspace: WorkspaceId, frame: Arc<[u8]>) -> u64 {
+        self.push(workspace, FrameChange::Keep(frame))
+    }
+
+    fn carried(&mut self, workspace: WorkspaceId, frame: Arc<[u8]>) {
+        self.push(workspace, FrameChange::Sent(frame));
+    }
+
+    fn push(&mut self, workspace: WorkspaceId, change: FrameChange) -> u64 {
+        let ticket = self.next;
+        self.next = self.next.wrapping_add(1);
+        self.changes
+            .entry(workspace)
+            .or_default()
+            .push((ticket, change));
+        ticket
+    }
+}
+
 impl NativeWorkspaceOwner {
     /// Keep this device's verdicts on the document writes `heard` names, each with what
     /// [`Self::receive`] answered for it, in its own slice of `workspace`, signed by `signer`: a
@@ -528,23 +612,106 @@ impl NativeWorkspaceOwner {
     /// Keep `message`, a frame of this device's own, in `workspace`'s record until a link carried
     /// it, and make the record durable.
     ///
+    /// Frames kept at once share one publication: each waits its turn, and the first to get it
+    /// publishes every frame waiting for the workspace, with the live replica that admitted them.
+    /// None returns before the publication that holds it was made durable, and each answers what
+    /// that publication did.
+    ///
     /// # Errors
     /// The workspace is not held here, or the record could not be made durable.
     pub fn keep_frame(&self, workspace: WorkspaceId, message: &NeighbourMsg) -> Result<(), String> {
         let bytes = postcard::to_stdvec(message).map_err(|error| error.to_string())?;
+        let ticket = self.0.due.lock().keep(workspace, bytes.into());
         let _turn = self.0.mutation.lock();
+        let published = self.0.due.lock().published.remove(&ticket);
+        if let Some(published) = published {
+            return published;
+        }
+        // Nobody published this frame yet, and the turn is this caller's: the frames waiting
+        // include it.
+        let published = self.publish_due(workspace);
+        self.0.due.lock().published.remove(&ticket);
+        published
+    }
+
+    /// Publish what waits of `workspace`'s frames, in the order it was asked, and tell each frame
+    /// kept what the publication did: what it did. The caller holds the turn.
+    fn publish_due(&self, workspace: WorkspaceId) -> Result<(), String> {
+        let changes = self
+            .0
+            .due
+            .lock()
+            .changes
+            .remove(&workspace)
+            .unwrap_or_default();
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let published = self.publish_frames(workspace, &changes);
+        if let Err(error) = &published
+            && !changes
+                .iter()
+                .any(|(_, change)| matches!(change, FrameChange::Keep(_)))
+        {
+            tracing::warn!(%workspace, %error, "frames a link carried stay in the record");
+        }
+        let mut due = self.0.due.lock();
+        for (ticket, change) in changes {
+            if matches!(change, FrameChange::Keep(_)) {
+                due.published.insert(ticket, published.clone());
+            }
+        }
+        published
+    }
+
+    fn publish_frames(
+        &self,
+        workspace: WorkspaceId,
+        changes: &[(u64, FrameChange)],
+    ) -> Result<(), String> {
         let candidate = self.view(workspace)?;
         let mut record = candidate.record.clone();
-        if !record.frames.iter().any(|frame| *frame.bytes == *bytes) {
-            record.frames.push(stored::FrameToSend {
-                bytes: bytes.into(),
-            });
+        let mut index = self
+            .0
+            .due
+            .lock()
+            .kept
+            .remove(&workspace)
+            .filter(|index| index.indexes(&record.frames))
+            .unwrap_or_else(|| KeptIndex::of(&record.frames));
+        let mut any_kept = false;
+        for (_, change) in changes {
+            match change {
+                // A kept frame publishes the replica that admitted its write, even one the record
+                // holds already.
+                FrameChange::Keep(bytes) => {
+                    any_kept = true;
+                    stored::touched(1);
+                    if index.frames.insert(Arc::clone(bytes)) {
+                        record.frames.push(stored::FrameToSend {
+                            bytes: Arc::clone(bytes),
+                        });
+                    }
+                }
+                FrameChange::Sent(bytes) => {
+                    stored::touched(1);
+                    if index.frames.remove(bytes) {
+                        record.frames.remove(bytes);
+                        any_kept = true;
+                    }
+                }
+            }
         }
-        record.generation = record
-            .generation
-            .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        self.publish_document(workspace, &candidate, record, None)
+        index.indexed(&record.frames);
+        if any_kept {
+            record.generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            self.publish_document(workspace, &candidate, record, None)?;
+        }
+        self.0.due.lock().kept.insert(workspace, index);
+        Ok(())
     }
 
     /// This device's own frames of `workspace` a peer was not sent yet, oldest first,
@@ -552,34 +719,96 @@ impl NativeWorkspaceOwner {
     #[must_use]
     pub fn frames(&self, workspace: WorkspaceId) -> Vec<Vec<u8>> {
         self.with_current(workspace, |view| {
-            Ok(view
-                .record
-                .frames
+            Ok(self
+                .unsent(workspace, &view.record.frames)
                 .iter()
-                .map(|frame| frame.bytes.to_vec())
+                .map(|frame| frame.to_vec())
                 .collect())
         })
         .unwrap_or_default()
     }
 
-    /// Drop `frame`, one of this device's own, once a link carried it to a peer.
+    /// The frames of `kept` no link carried: one a link carried leaves the record with its next
+    /// publication, and no reader sees it in between.
+    fn unsent(&self, workspace: WorkspaceId, kept: &stored::Frames) -> Vec<Arc<[u8]>> {
+        stored::touched(kept.len());
+        let sent: std::collections::HashSet<Arc<[u8]>> = {
+            let due = self.0.due.lock();
+            due.changes
+                .get(&workspace)
+                .map(|changes| {
+                    changes
+                        .iter()
+                        .filter_map(|(_, change)| match change {
+                            FrameChange::Sent(bytes) => Some(Arc::clone(bytes)),
+                            FrameChange::Keep(_) => None,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        kept.iter()
+            .filter(|frame| !sent.contains(&frame.bytes))
+            .map(|frame| Arc::clone(&frame.bytes))
+            .collect()
+    }
+
+    /// Drop `frame`, one of this device's own, once a link carried it to a peer. It leaves the
+    /// record with the record's next publication, and within [`SENT_WITHIN`] when nothing else
+    /// publishes it: a device that stops before then sends it again, which its peer takes as a
+    /// duplicate.
     ///
     /// # Errors
     /// The workspace is not held here, or the record could not be made durable.
     pub fn sent(&self, workspace: WorkspaceId, frame: &[u8]) -> Result<(), String> {
-        let _turn = self.0.mutation.lock();
-        let candidate = self.view(workspace)?;
-        let mut record = candidate.record.clone();
-        let before = record.frames.len();
-        record.frames.retain(|kept| *kept.bytes != *frame);
-        if record.frames.len() == before {
-            return Ok(());
+        self.view(workspace)?;
+        let flusher = {
+            let mut due = self.0.due.lock();
+            due.carried(workspace, frame.into());
+            !std::mem::replace(&mut due.flushing, true)
+        };
+        if flusher {
+            self.flush_sent_within()?;
         }
-        record.generation = record
-            .generation
-            .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        self.publish_document(workspace, &candidate, record, None)
+        Ok(())
+    }
+
+    /// Publish what waits within [`SENT_WITHIN`], or now where nothing runs beside this device's
+    /// caller (a page).
+    fn flush_sent_within(&self) -> Result<(), String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let owner = self.downgrade();
+            std::thread::Builder::new()
+                .name("sent-frames".into())
+                .spawn(move || {
+                    std::thread::sleep(SENT_WITHIN);
+                    if let Some(owner) = owner.upgrade() {
+                        owner.flush_sent();
+                    }
+                })
+                .map(drop)
+                .map_err(|error| error.to_string())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.flush_sent();
+            Ok(())
+        }
+    }
+
+    /// Publish every workspace's frames that wait.
+    fn flush_sent(&self) {
+        let _turn = self.0.mutation.lock();
+        let waiting: Vec<WorkspaceId> = {
+            let mut due = self.0.due.lock();
+            due.flushing = false;
+            due.changes.keys().copied().collect()
+        };
+        for workspace in waiting {
+            // A frame kept beside these is told; frames a link carried alone are logged.
+            let _ = self.publish_due(workspace);
+        }
     }
 
     /// This device's latest compaction of `record` of `app` in `workspace`, as the frame a link
@@ -593,24 +822,28 @@ impl NativeWorkspaceOwner {
         (app, record): (&str, &str),
     ) -> Result<Option<Vec<u8>>, String> {
         self.with_current(workspace, |view| {
-            Ok(view.record.frames.iter().rev().find_map(|frame| {
-                let message = NeighbourMsg::decode(&frame.bytes).ok()?;
-                match message {
-                    NeighbourMsg::AppDocument {
-                        app_id,
-                        document_id,
-                        envelope,
-                        ..
-                    } if app_id == app
-                        && document_id == record
-                        && envelope.kind == collab_types::OpKind::Compaction
-                        && !collab_types::is_compaction_segment(&envelope) =>
-                    {
-                        Some(frame.bytes.to_vec())
+            Ok(self
+                .unsent(workspace, &view.record.frames)
+                .iter()
+                .rev()
+                .find_map(|frame| {
+                    let message = NeighbourMsg::decode(frame).ok()?;
+                    match message {
+                        NeighbourMsg::AppDocument {
+                            app_id,
+                            document_id,
+                            envelope,
+                            ..
+                        } if app_id == app
+                            && document_id == record
+                            && envelope.kind == collab_types::OpKind::Compaction
+                            && !collab_types::is_compaction_segment(&envelope) =>
+                        {
+                            Some(frame.to_vec())
+                        }
+                        _ => None,
                     }
-                    _ => None,
-                }
-            }))
+                }))
         })
     }
 
@@ -623,10 +856,10 @@ impl NativeWorkspaceOwner {
         self.with_current(workspace, |view| {
             let mut writes: std::collections::BTreeMap<(String, String), DocumentWrites> =
                 std::collections::BTreeMap::new();
-            for frame in &view.record.frames {
+            for frame in self.unsent(workspace, &view.record.frames) {
                 let message = tilo_failure::ignored!(
                     "a frame this device encoded is one it decodes",
-                    NeighbourMsg::decode(&frame.bytes).ok()
+                    NeighbourMsg::decode(&frame).ok()
                 );
                 if let Some(NeighbourMsg::AppDocument {
                     app_id,

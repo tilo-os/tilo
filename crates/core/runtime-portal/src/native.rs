@@ -110,6 +110,16 @@ mod unix {
                 .ok_or_else(|| {
                     invalid("inherited runtime connections are incomplete or malformed")
                 })?;
+            // An ordinary child keeps the environment strings, not the transfer: the process
+            // that took those connections closed them before it started this one. A name whose
+            // descriptor is gone is a handoff this process did not receive, so it attaches
+            // itself rather than reading a stale name as a malformed handoff.
+            // SAFETY: fcntl only inspects a descriptor number here; it borrows nothing.
+            if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0
+                && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
+            {
+                return Ok(false);
+            }
             // SAFETY: getpeername only inspects an existing descriptor; it does
             // not borrow ownership or close descriptors belonging to SDK code.
             let connected = unsafe {
@@ -174,18 +184,9 @@ mod unix {
         }
         let executable = env::current_exe()?;
         let host = locate_host(&executable)?;
-        Err(Command::new(host)
-            .env("TILO_RUNTIME_RESUME_LIVE", app_id)
-            .env(
-                "TILO_RUNTIME_CONNECTION_OWNER_PID",
-                std::process::id().to_string(),
-            )
-            .arg("--run-app")
-            .arg(app_id)
-            .arg("--")
-            .arg(executable)
-            .args(env::args_os().skip(1))
-            .exec())
+        // The daemon this computer runs starts the app it has installed: this process names the
+        // app and nothing else, and the host's asking ends it.
+        Err(Command::new(host).arg("--run-app").arg(app_id).exec())
     }
 
     fn executable(path: &Path) -> bool {

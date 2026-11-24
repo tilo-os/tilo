@@ -2,9 +2,10 @@
 //! typed: folding that ignores case, compatibility forms and alphabetic
 //! diacritics, and the order a list's own ranks give.
 
+pub use tilo_resource::Frecency;
 pub use tilo_search::{
-    FieldWeight, Frecency, ListIndex, MAX_FIELD_RANK, Matching, fold as fold_search_text,
-    fold_char, initials, locate,
+    FieldWeight, ListIndex, MAX_FIELD_RANK, Matching, fold as fold_search_text, fold_char,
+    initials, locate,
 };
 
 /// Fold text the way every index does: case, compatibility forms and alphabetic

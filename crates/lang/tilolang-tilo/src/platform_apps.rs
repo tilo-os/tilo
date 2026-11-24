@@ -131,6 +131,11 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("battery_history", "BatteryHistory", "power:history"),
     ("power", "Power", "power"),
     ("displays", "Displays", "session:displays"),
+    (
+        "person_displays",
+        "PersonDisplays",
+        "session:person-displays",
+    ),
     ("screen", "Screen", "session:screen"),
     ("input_devices", "InputDevices", "session:input-devices"),
     ("keyboard", "Keyboard", "session:keyboard"),
@@ -142,6 +147,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("banners", "Banners", "session:banners"),
     ("time", "Time", "session:time"),
     ("input", "Input", "session:input"),
+    // The room the shell's bar and dock leave on the display the view draws, measured from what
+    // its style laid out, so a widget stands clear of both at any size they are.
+    ("room", "Room", "session:room"),
     ("clock", "Clock", "session:clock"),
     ("apps", "Apps", "session:apps"),
     ("windows", "Windows", "session:windows"),

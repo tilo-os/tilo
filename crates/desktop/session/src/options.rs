@@ -74,6 +74,14 @@ pub struct Options {
     /// once (the first use of this device, or the recovery of its identity), or the wait for the
     /// clock to admit this device's certificate.
     pub setup: Option<BeforeShell>,
+    /// The identity backup a desktop already in use opens, as setup shows it when a computer is
+    /// first used: the person writes their identity to a file they choose, sealed with a
+    /// passphrase. `host_desktop` is whether this session is Tilo installed on an existing Linux
+    /// host. A function returning `Err` says why this computer has nothing to back up.
+    #[cfg(target_os = "linux")]
+    pub identity_backup: fn(bool) -> Result<tilo_onboarding_session::view::OnboardingView, String>,
+    /// Whether this session is Tilo installed as a desktop session on an existing Linux host.
+    pub host_desktop: bool,
     /// The workspace's Browser this session holds, when a host started it for one: the device,
     /// workspace and record it was handed, and what it reports of the window it holds
     /// ([`crate::hosted_browser::HostedBrowser`]). A session a person starts has none, and does
@@ -381,6 +389,9 @@ impl Default for Options {
             apps: None,
             launch: None,
             setup: None,
+            #[cfg(target_os = "linux")]
+            identity_backup: crate::startup::portable_backup,
+            host_desktop: false,
             #[cfg(target_os = "linux")]
             hosted_browser: None,
             session_actions: no_session_actions,

@@ -47,6 +47,7 @@ fn descriptor(resource: &str, action: &str, kind: OperationKind) -> ActionDescri
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
+        effects: Vec::new(),
     }
 }
 

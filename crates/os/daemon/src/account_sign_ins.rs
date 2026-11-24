@@ -433,7 +433,7 @@ async fn answer(answering: &Answering, scope: &Scope, ask: Ask) -> Answer {
             match answering
                 .workspaces
                 .report_account_sync(
-                    (&workspace, by.acting()),
+                    (&workspace, by.acting(), None),
                     &account,
                     health,
                     signed_in,
@@ -462,7 +462,7 @@ async fn answer(answering: &Answering, scope: &Scope, ask: Ask) -> Answer {
             let by = answering.by.clone().in_workspace(workspace.clone());
             match answering
                 .workspaces
-                .forget_workspace_account(&workspace, &by, &account)
+                .forget_workspace_account(&workspace, (&by, None), &account)
                 .await
             {
                 Ok(_) => Answer::Reported,
@@ -542,7 +542,7 @@ async fn keep_model_hub(
         .workspaces
         .keep_account_password(
             &workspace,
-            &by,
+            (&by, None),
             item.as_ref(),
             AccountLogin {
                 title: sign_ins::MODEL_HUB_ACCOUNT.to_owned(),
@@ -555,7 +555,7 @@ async fn keep_model_hub(
     let account = sign_ins::model_hub_account(&kept.to_string(), Some(&username), name.as_deref());
     answering
         .workspaces
-        .keep_workspace_account((&workspace, by.acting()), &account)
+        .keep_workspace_account((&workspace, by.acting(), None), &account)
         .await?;
     Ok(Answer::Reported)
 }

@@ -664,6 +664,7 @@ pub(crate) fn descriptor(
         input: InputSpec::None,
         params: params.to_vec(),
         view: None,
+        effects: Vec::new(),
     };
     if SECRET_ANSWERS.contains(&action) {
         descriptor

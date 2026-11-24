@@ -197,6 +197,7 @@ struct HiddenOwners {
     refuse: Rc<Cell<bool>>,
 }
 impl Widget for HiddenOwners {
+    crate::provides!(dyn crate::bound_dispatch::BoundTraversal);
     crate::testing::inert_widget_methods!(leaf_layout, name = "hidden-owner-host");
     fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
     fn children(&self) -> Vec<&dyn Widget> {
@@ -208,6 +209,8 @@ impl Widget for HiddenOwners {
             .map(|o| o as &mut dyn Widget)
             .collect()
     }
+}
+impl crate::bound_dispatch::BoundTraversal for HiddenOwners {
     fn visit_components(
         &mut self,
         request: &mut ComponentRequest<'_>,
@@ -217,7 +220,7 @@ impl Widget for HiddenOwners {
             return Err(BoundDispatchError::CrossResourceReentry);
         }
         for owner in &mut self.owners {
-            owner.visit_components(request)?;
+            crate::bound_dispatch::visit_components(owner, request)?;
             if request.target.is_some() && request.found {
                 break;
             }

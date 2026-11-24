@@ -321,6 +321,12 @@ pub(crate) struct Checker<'a> {
     migrating: bool,
     /// The string literals the module shows as words, by span.
     shown: std::collections::HashSet<Span>,
+    /// The functions of this package whose result a view shows, by index: what their bodies return
+    /// is words the view shows too, each a message of that function's own declaration.
+    shown_fns: std::collections::HashSet<usize>,
+    /// Whether the function being checked is one whose result a view shows: what it returns is
+    /// words the view shows, so its literals are its own declaration's messages.
+    showing_result: bool,
     /// The views a capture or a stream leaves out, by id: those that declare `protect capture`,
     /// those a protected template expanded in, and those showing one of either
     /// ([`Self::view_edges`]).
@@ -382,8 +388,15 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
     // Which literals are words is known before they are lowered, so the pass that says it runs first,
     // its functions and diagnostics thrown away, and the pass that lowers writes them as messages.
     let mut quiet = Vec::new();
-    let shown = lower(env, module, &mut quiet, std::collections::HashSet::new()).1;
-    lower(env, module, diags, shown).0
+    let shown = lower(
+        env,
+        module,
+        &mut quiet,
+        std::collections::HashSet::new(),
+        true,
+    )
+    .1;
+    lower(env, module, diags, shown, false).0
 }
 
 fn lower(
@@ -391,6 +404,7 @@ fn lower(
     module: &ast::Module,
     diags: &mut Vec<Diagnostic>,
     shown: std::collections::HashSet<Span>,
+    collect: bool,
 ) -> (ir::Module, std::collections::HashSet<Span>) {
     let declared = env
         .callables
@@ -419,6 +433,8 @@ fn lower(
         outer_at: None,
         migrating: false,
         shown,
+        shown_fns: std::collections::HashSet::new(),
+        showing_result: false,
         protected: BTreeSet::new(),
         view_edges: Vec::new(),
         answers: answers(module),
@@ -436,6 +452,9 @@ fn lower(
     let mut action_funcs: std::collections::HashMap<ast::NodeId, usize> =
         std::collections::HashMap::new();
     let mut initials = Vec::new();
+    // The functions the pass that says which literals are words checked, by index: one whose result
+    // a view shows is checked again, with what it returns marked as shown ([`Self::mark_shown`]).
+    let mut fn_bodies: Vec<(usize, crate::resolve::Callable, ast::Block)> = Vec::new();
     for item in &module.items {
         let idx = funcs.len();
         let Some(callable) = env.callables.iter().find(|x| x.func == Some(idx)).cloned() else {
@@ -452,7 +471,12 @@ fn lower(
         );
         let f = match item {
             Item::Action(a) => c.run_action(&callable, &a.requires, &a.applies, &a.body),
-            Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
+            Item::Fn(f) => {
+                if collect {
+                    fn_bodies.push((idx, callable.clone(), f.body.clone()));
+                }
+                c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body)
+            }
             Item::Scenario(s) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &s.body),
             Item::View(v) if is_template(v) => continue,
             Item::View(v) => c.run_view(&callable, v),
@@ -488,6 +512,25 @@ fn lower(
         {
             let writes = std::mem::take(&mut c.last_writes);
             c.offers.push((a.name.name.clone(), a.name.span, writes));
+        }
+    }
+    // A `fn` whose result a view shows answers words the view shows: the literals its body returns
+    // are messages of that fn's own declaration. Which of them a view shows is known as each prop
+    // is read, so the fns it names are checked again once every body has been, until no fn newly
+    // shown calls another. What this pass makes is thrown away: the pass that lowers has it as the
+    // spans it marks.
+    if collect {
+        let mut marked: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        while let Some((idx, callable, body)) = fn_bodies
+            .iter()
+            .find(|(idx, _, _)| c.shown_fns.contains(idx) && !marked.contains(idx))
+            .cloned()
+        {
+            marked.insert(idx);
+            c.at = Some(body.span.start);
+            c.showing_result = true;
+            c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &body);
+            c.showing_result = false;
         }
     }
     // The presentation views of actions, in the order the resolver numbered them.
@@ -614,6 +657,7 @@ fn lower(
         }
     }
     let capture_protected = c.protected_closure();
+    let view_calls = c.view_edges;
     let module = ir::Module {
         funcs,
         views,
@@ -622,6 +666,7 @@ fn lower(
         shows,
         words: c.words,
         capture_protected,
+        view_calls,
     };
     let shown = c.shown;
     // Every prop a view gives a described component is one that component declares.
@@ -652,6 +697,8 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         outer_at: None,
         migrating: false,
         shown: std::collections::HashSet::new(),
+        shown_fns: std::collections::HashSet::new(),
+        showing_result: false,
         answers: std::collections::HashMap::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
@@ -681,6 +728,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             shows: Vec::new(),
             words: Vec::new(),
             capture_protected: Vec::new(),
+            view_calls: Vec::new(),
         },
         ty,
         suggested: proposal,
@@ -708,6 +756,8 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         outer_at: None,
         migrating: false,
         shown: std::collections::HashSet::new(),
+        shown_fns: std::collections::HashSet::new(),
+        showing_result: false,
         answers: std::collections::HashMap::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
@@ -722,6 +772,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             shows: Vec::new(),
             words: Vec::new(),
             capture_protected: Vec::new(),
+            view_calls: Vec::new(),
         },
         ty: Ty::View,
         suggested: false,
@@ -914,6 +965,10 @@ impl Checker<'_> {
                 self.push_sink();
                 for s in rest {
                     self.stmt(s);
+                }
+                // A fn whose result a view shows returns words the view shows.
+                if self.showing_result {
+                    self.mark_shown(last);
                 }
                 let v = self.expr_as(last, &c.result);
                 self.emit(Stmt::Return(Some(v)));
@@ -1429,9 +1484,7 @@ impl Checker<'_> {
         self.push_sink();
         for (i, s) in b.stmts.iter().enumerate() {
             let last = b.stmts.get(i + 1).is_none();
-            if last
-                && let ast::StmtKind::Expr(expr) = &s.kind
-            {
+            if last && let ast::StmtKind::Expr(expr) = &s.kind {
                 let act = self.expr_as(expr, &Ty::Action);
                 let stmts = self.pop_sink();
                 return Ex::new(Ek::Seq(stmts, Box::new(act)), Ty::Action);
@@ -1484,7 +1537,8 @@ impl Checker<'_> {
                 self.bind_written(&name.name, Ty::Error, answer, value);
                 continue;
             };
-            let (id, captures) = self.answer_steps(&name.name, &answer_ty, &b.stmts[i + 1..], s.span);
+            let (id, captures) =
+                self.answer_steps(&name.name, &answer_ty, &b.stmts[i + 1..], s.span);
             let act = Ex::host(
                 Imp::ActAnswer,
                 vec![answer, Ex::str(&id), captures],
@@ -1643,6 +1697,10 @@ impl Checker<'_> {
                     let _ = self.expr(e, None);
                     self.emit(Stmt::Return(None));
                 } else {
+                    // A fn whose result a view shows returns words the view shows.
+                    if self.showing_result {
+                        self.mark_shown(e);
+                    }
                     let ex = self.expr_as(e, &want);
                     self.emit(Stmt::Return(Some(ex)));
                 }

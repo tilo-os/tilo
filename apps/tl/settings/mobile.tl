@@ -9,6 +9,8 @@ view mobile_page() {
     state apn_open: Bool = false
     state apn: Text = ""
     state network_type: Text = ""
+    state code: Text = ""
+    state answer: Text = ""
     let net = device.network
     let mobile = net.mobile
     let modem = device.modem.modems.first()
@@ -164,6 +166,10 @@ view mobile_page() {
                 }
             }
         }
+        if let m = modem {
+            operator_section(m)
+            codes_section(m, code, answer)
+        }
         ui.Section("The connection") {
             if let profile = mobile.profile {
                 ui.ListRow(
@@ -304,4 +310,88 @@ fn registration_words(r: device.Registration) -> Text {
     } else if r == .emergency-only {
         "Emergency calls only"
     } else if r == .idle { "Not looking" } else { "Unknown" }
+}
+
+/// The operator this device stands on, the ones a scan found, and choosing one by hand.
+view operator_section(m: device.ModemUnit) {
+    ui.Section("The operator") {
+        ui.ListRow(
+            m.operator ?? "No operator yet",
+            secondary: if m.operator == .none {
+                "Look for the ones in reach"
+            } else { "The network this device stands on" },
+            icon: .signal,
+        )
+        if m.operators.is_empty() {
+            ui.Text(
+                "Look for the operators in reach, then choose the one this SIM uses.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+        for o in m.operators {
+            ui.ListRow(
+                o.name,
+                secondary: operator_words(o),
+                selected: o.state == .current,
+                icon: .signal,
+            ) {
+                // The modem is the root the action is called on, so its path and the
+                // operator are given in order: a named `modem` would name that root twice.
+                on activate: device.select_operator(device.modem, m.path, .some(o.code))
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Look for operators", icon: .refresh_ccw) {
+                on press: device.scan_operators(device.modem, m.path)
+            }
+            ui.Button("Choose automatically", size: .small) {
+                on press: device.select_operator(device.modem, m.path, .none)
+            }
+        }
+    }
+}
+
+/// The codes the operator takes, such as `*100#`: what the network answered, and the answer it
+/// waits for.
+view codes_section(m: device.ModemUnit, code: State<Text>, answer: State<Text>) {
+    ui.Section("Codes") {
+        if let said = m.code {
+            ui.Text(said.text, role: .caption)
+            if said.awaiting {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.TextInput(bind: answer, placeholder: "The answer it asks for", fill)
+                    ui.Button("Send the answer", role: .primary, size: .small) {
+                        on press: device
+                            .answer_code(device.modem, m.path, answer)
+                            .then(set(answer, ""))
+                    }
+                }
+            }
+            ui.Button("End the session", role: .plain, size: .small) {
+                on press: device.cancel_code(device.modem, m.path)
+            }
+        } else {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.TextInput(bind: code, placeholder: "A code, such as *100#", fill)
+                ui.Button("Send the code", role: .primary, size: .small) {
+                    on press: device.send_code(device.modem, m.path, code).then(set(code, ""))
+                }
+            }
+            ui.Text(
+                "The operator's own codes give its balance, its bundle or a menu it answers.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+    }
+}
+
+/// What one operator a scan found says in a row.
+fn operator_words(o: device.Operator) -> Text {
+    if o.state == .current {
+        "In use"
+    } else if o.state == .forbidden {
+        "Not for this SIM"
+    } else if o.state == .available { "In reach" } else { "Unknown" }
 }

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@aa9522275a0a0cb6";
+export const SURFACE = "so.tilo.settings.sections@33240f2a5b87fd6e";
 
 export interface Ink {
   primary: number;
@@ -366,15 +366,34 @@ export interface ActionShortcut {
   chord: string;
 }
 
-export interface MovedCommand {
+export interface AppCommand {
   app: string;
+  app_name: string;
   action: string;
+  label: string;
+  usual: string;
   chord: string;
+  moved: boolean;
 }
 
 export interface ShortcutChord {
   id: string;
   chord: string;
+}
+
+export interface Language {
+  tag: string;
+  name: string;
+}
+
+export interface TabletChoiceIds {
+  lower_button: string;
+  upper_button: string;
+  third_button: string;
+  eraser: string;
+  pad_buttons: Record<string, string>;
+  pad_rings: Record<string, string[]>;
+  pad_strips: Record<string, string[]>;
 }
 
 /** The arguments of `choose-theme`. */
@@ -385,6 +404,11 @@ export interface ChooseThemeArgs {
 /** The arguments of `set-dark-mode`. */
 export interface SetDarkModeArgs {
   on: boolean;
+}
+
+/** The arguments of `choose-language`. */
+export interface ChooseLanguageArgs {
+  language?: string;
 }
 
 /** The arguments of `use-theme`. */
@@ -636,6 +660,11 @@ export interface SetEchoCancellationArgs {
   on: boolean;
 }
 
+/** The arguments of `set-system-sound-theme`. */
+export interface SetSystemSoundThemeArgs {
+  theme?: string;
+}
+
 /** The arguments of `remember-output-device`. */
 export interface RememberOutputDeviceArgs {
   device: string;
@@ -841,6 +870,11 @@ export interface Appearance extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setDarkModeMany(items: SetDarkModeArgs[]): Promise<tilo.ActionAnswer[]>;
+  chooseLanguage(args?: {
+    language?: string;
+  }): Promise<void>;
+  /** Runs `choose-language` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  chooseLanguageMany(items: ChooseLanguageArgs[]): Promise<tilo.ActionAnswer[]>;
   useTheme(args: {
     theme: string;
   }): Promise<void>;
@@ -885,7 +919,7 @@ export interface Appearance extends tilo.Resource {
 
 /** The actions `Appearance` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const APPEARANCE_ACTIONS = ["chooseTheme", "chooseThemeMany", "setDarkMode", "setDarkModeMany", "useTheme", "useThemeMany", "newTheme", "newThemeMany", "importTheme", "importThemeMany", "resetTheme", "resetThemeMany", "deleteTheme", "deleteThemeMany", "switchPolarity", "switchPolarityMany", "reviewTheme", "reviewThemeMany"] as const;
+export const APPEARANCE_ACTIONS = ["chooseTheme", "chooseThemeMany", "setDarkMode", "setDarkModeMany", "chooseLanguage", "chooseLanguageMany", "useTheme", "useThemeMany", "newTheme", "newThemeMany", "importTheme", "importThemeMany", "resetTheme", "resetThemeMany", "deleteTheme", "deleteThemeMany", "switchPolarity", "switchPolarityMany", "reviewTheme", "reviewThemeMany"] as const;
 
 /** The `settings.appearance` kind at `path`. */
 export function appearance(ws: tilo.Workspace, path: string): Appearance {
@@ -1358,11 +1392,16 @@ export interface Audio extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-echo-cancellation` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setEchoCancellationMany(items: SetEchoCancellationArgs[]): Promise<tilo.ActionAnswer[]>;
+  setSystemSoundTheme(args?: {
+    theme?: string;
+  }): Promise<void>;
+  /** Runs `set-system-sound-theme` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setSystemSoundThemeMany(items: SetSystemSoundThemeArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Audio` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const AUDIO_ACTIONS = ["setMonoOutput", "setMonoOutputMany", "setEchoCancellation", "setEchoCancellationMany"] as const;
+export const AUDIO_ACTIONS = ["setMonoOutput", "setMonoOutputMany", "setEchoCancellation", "setEchoCancellationMany", "setSystemSoundTheme", "setSystemSoundThemeMany"] as const;
 
 /** The `settings.audio` kind at `path`. */
 export function audio(ws: tilo.Workspace, path: string): Audio {
@@ -1850,7 +1889,7 @@ export function agentModels(ws: tilo.Workspace, path: string): AgentModels {
 export interface ShortcutsTable extends tilo.Resource {
   readonly bindings: ShortcutChord[];
   readonly actions: ActionShortcut[];
-  readonly commands: MovedCommand[];
+  readonly commands: AppCommand[];
 }
 
 /** The actions `ShortcutsTable` reaches before it is read: `ws` calls them without a
@@ -1860,5 +1899,33 @@ export const SHORTCUTSTABLE_ACTIONS = [] as const;
 /** The `settings.shortcuts-table` kind at `path`. */
 export function shortcutsTable(ws: tilo.Workspace, path: string): ShortcutsTable {
   return resourceProxy(ws, path, SURFACE, SHORTCUTSTABLE_ACTIONS) as unknown as ShortcutsTable;
+}
+
+/** Languages — `settings.languages`. */
+export interface Languages extends tilo.Resource {
+  readonly languages: Language[];
+}
+
+/** The actions `Languages` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LANGUAGES_ACTIONS = [] as const;
+
+/** The `settings.languages` kind at `path`. */
+export function languages(ws: tilo.Workspace, path: string): Languages {
+  return resourceProxy(ws, path, SURFACE, LANGUAGES_ACTIONS) as unknown as Languages;
+}
+
+/** Tablet controls — `settings.tablet-choices`. */
+export interface TabletChoices extends tilo.Resource {
+  readonly tablets: Record<string, TabletChoiceIds>;
+}
+
+/** The actions `TabletChoices` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TABLETCHOICES_ACTIONS = [] as const;
+
+/** The `settings.tablet-choices` kind at `path`. */
+export function tabletChoices(ws: tilo.Workspace, path: string): TabletChoices {
+  return resourceProxy(ws, path, SURFACE, TABLETCHOICES_ACTIONS) as unknown as TabletChoices;
 }
 

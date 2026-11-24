@@ -304,7 +304,7 @@ const DAEMON_ANSWERING: std::time::Duration = std::time::Duration::from_secs(120
 pub fn found_by_daemon(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
     by_daemon(identity_dir, |daemon| {
         daemon
-            .found(tilo_api::daemon::Founding::default())
+            .found(&tilo_api::daemon::Founding::default())
             .map_err(tilo_api::daemon::DeviceRefusal::said)
             .map(drop)
     })

@@ -107,6 +107,7 @@ fn notebook(action: Option<&str>) -> CatalogueRow {
             input: tilo_actions::InputSpec::None,
             params: Vec::new(),
             view: None,
+            effects: Vec::new(),
         }),
         has_children: false,
         visibility: None,
@@ -214,7 +215,12 @@ impl Sessions for DeviceRuns {
             .then(|| self.workspace.clone())
     }
 
-    fn open(&self, workspace: &str, key: &DeviceCert) -> Result<(SessionHost, Caller), String> {
+    fn open(
+        &self,
+        workspace: &str,
+        key: &DeviceCert,
+        _whose: tilo_runtime::personal_devices::Whose,
+    ) -> Result<(SessionHost, Caller), String> {
         if workspace != self.workspace {
             return Err(format!("no workspace {workspace} here"));
         }

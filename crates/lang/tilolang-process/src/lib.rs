@@ -47,8 +47,6 @@ pub mod engines;
 ))]
 pub mod feed_engine;
 pub mod files;
-#[cfg(feature = "app-launch")]
-pub mod grayjay_engine;
 pub mod hosted;
 pub mod invocations;
 /// The engines this process opens from its runtime bundle the first time an app asks one.
@@ -1239,6 +1237,20 @@ impl TilolangProcess {
         if let Err(error) = running.hosted.run_media_command(command) {
             tracing::warn!(instance, %error, "a media control did not run");
         }
+    }
+
+    /// Show `anchor` in the window `instance`, as a search hit's `open` shows it: the place in
+    /// its document a hit inside it names.
+    pub fn reveal(&mut self, instance: u64, anchor: String) {
+        let Some(running) = self
+            .running
+            .iter_mut()
+            .find(|running| running.hosted.spec().instance == instance)
+        else {
+            tracing::warn!(instance, "a reveal reached no instance");
+            return;
+        };
+        running.hosted.reveal(anchor);
     }
 
     /// Whether the host runs no instance and opens none.

@@ -116,14 +116,15 @@ tilo_test_env::scenario! {
             std::thread::spawn(move || {
                 for _ in 0..2 {
                     let (stream, _) = listener.accept().unwrap();
+                    let server = std::sync::Arc::new(tilo_mcp::McpServer::for_person(
+                        host.clone(),
+                        "workspace".into(),
+                        "owner",
+                    ));
                     super::serve_connection(
                         &stream.try_clone().unwrap(),
                         stream,
-                        &std::sync::Arc::new(tilo_mcp::McpServer::for_person(
-                            host.clone(),
-                            "workspace".into(),
-                            "owner",
-                        )),
+                        &|| Ok::<_, std::io::Error>(std::sync::Arc::clone(&server)),
                         &super::Status {
                             version: 1,
                             pid: 1,
@@ -171,14 +172,15 @@ tilo_test_env::scenario! {
         let serving = {
             let host = host.clone();
             std::thread::spawn(move || {
+                let server = std::sync::Arc::new(tilo_mcp::McpServer::for_person(
+                    host,
+                    "workspace".into(),
+                    "owner",
+                ));
                 super::serve_connection(
                     &served.try_clone().unwrap(),
                     served,
-                    &std::sync::Arc::new(tilo_mcp::McpServer::for_person(
-                        host,
-                        "workspace".into(),
-                        "owner",
-                    )),
+                    &|| Ok::<_, std::io::Error>(std::sync::Arc::clone(&server)),
                     &super::Status {
                         version: 1,
                         pid: 1,
@@ -369,8 +371,6 @@ tilo_test_env::scenario! {
             "so.tilo.photos",
             "--workspace",
             workspace,
-            "--",
-            "/bin/true",
         ])
         .unwrap();
         let Mode::RunApp {
@@ -389,8 +389,6 @@ tilo_test_env::scenario! {
             "so.tilo.photos",
             "--workspace",
             workspace,
-            "--",
-            "/bin/true",
         ])
         .unwrap();
         assert_eq!(old.mode, named.mode);
@@ -403,6 +401,18 @@ tilo_test_env::scenario! {
                 "so.tilo.photos",
                 "--workspace",
                 "not-a-workspace",
+            ])
+            .is_err()
+        );
+
+        // A program named after the app is refused: what runs is the app this computer has
+        // installed, never one the command line names.
+        assert!(
+            args(&[
+                "--profile",
+                "/tmp/profile",
+                "--run-app",
+                "so.tilo.photos",
                 "--",
                 "/bin/true",
             ])
@@ -546,6 +556,7 @@ impl tilo_actions::remote::ActionProvider for PageHost {
                     input: tilo_actions::InputSpec::None,
                     params: Vec::new(),
                     view: None,
+                    effects: Vec::new(),
                 }),
                 has_children: false,
                 visibility: None,
@@ -948,7 +959,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     // The laptop's first command: through the place every client finds the daemon at.
     FOUNDING_PEER.store(OWN, Ordering::SeqCst);
     daemon
-        .found(tilo_api::daemon::Founding {
+        .found(&tilo_api::daemon::Founding {
             name: Some("Ada".to_owned()),
             ..tilo_api::daemon::Founding::default()
         })
@@ -999,7 +1010,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
         "{why}"
     );
     let again = daemon
-        .found(tilo_api::daemon::Founding {
+        .found(&tilo_api::daemon::Founding {
             name: Some("Someone else".to_owned()),
             tickets: vec![tilo_api::daemon::TicketKind::Server],
         })
@@ -2479,7 +2490,7 @@ fn a_client_in_the_persons_own_daemons_process_is_answered_at_once() {
     let running = super::Running::start(&profile).unwrap();
     tilo_api::daemon::this_computer()
         .unwrap()
-        .found(tilo_api::daemon::Founding::default())
+        .found(&tilo_api::daemon::Founding::default())
         .expect("the device starts its person");
     running.stop().unwrap();
     let running = super::Running::start(&profile).unwrap();
@@ -2498,8 +2509,7 @@ fn a_client_in_the_persons_own_daemons_process_is_answered_at_once() {
             .unwrap();
         runtime
             .block_on(async {
-                let calls =
-                    tilo_api::calls::Calls::open(tilo_api::calls::Reach::default()).await?;
+                let calls = tilo_api::calls::Calls::open(tilo_api::calls::Reach::default()).await?;
                 calls.workspaces().await
             })
             .expect("the person's account is answered")

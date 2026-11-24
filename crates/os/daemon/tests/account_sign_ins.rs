@@ -157,7 +157,7 @@ fn a_held_ask_is_answered_once_the_workspace_keeps_a_file_account() {
         // An account the cloud service does not mount is no news to it: the ask stays held.
         workspaces
             .keep_workspace_account(
-                (&workspace, person(&workspaces).acting()),
+                (&workspace, person(&workspaces).acting(), None),
                 &account("team@example.test", accounts::email::TYPE_ID, "Team"),
             )
             .await
@@ -171,7 +171,7 @@ fn a_held_ask_is_answered_once_the_workspace_keeps_a_file_account() {
 
         workspaces
             .keep_workspace_account(
-                (&workspace, person(&workspaces).acting()),
+                (&workspace, person(&workspaces).acting(), None),
                 &account("team-files", accounts::cloud_types::WEBDAV, "Team files"),
             )
             .await
@@ -219,7 +219,7 @@ fn a_connector_is_told_its_workspaces_accounts_and_asks_their_sign_ins_only() {
         let workspaces = host.daemon().workspaces().clone();
         workspaces
             .keep_workspace_account(
-                (&workspace, person(&workspaces).acting()),
+                (&workspace, person(&workspaces).acting(), None),
                 &account("team@example.test", accounts::email::TYPE_ID, "Team"),
             )
             .await
@@ -372,7 +372,7 @@ fn a_connector_is_told_an_account_added_while_it_waits() {
 
         workspaces
             .keep_workspace_account(
-                (&workspace, person(&workspaces).acting()),
+                (&workspace, person(&workspaces).acting(), None),
                 &account("lab@story.example", accounts::email::TYPE_ID, "Ada"),
             )
             .await
@@ -401,7 +401,7 @@ fn the_model_manager_is_told_the_hugging_face_account_alone() {
         let mut hub = account("hugging-face", sign_ins::MODEL_HUB_TYPE, "Hugging Face");
         hub.config = serde_json::json!({"server_url": sign_ins::MODEL_HUB_ORIGIN});
         workspaces
-            .keep_workspace_account((&workspace, person(&workspaces).acting()), &hub)
+            .keep_workspace_account((&workspace, person(&workspaces).acting(), None), &hub)
             .await
             .unwrap();
         let models = sign_ins::models_socket().expect("the test's runtime directory");

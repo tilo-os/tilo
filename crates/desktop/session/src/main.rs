@@ -734,6 +734,7 @@ fn start(
         wifi_sharing,
         ..device_options(machine, config)
     };
+    options.host_desktop = host_desktop;
     // The link this computer's service handed this session, which its reads and writes go over.
     options.shell_link = launch_link;
     // The person's files: the files daemon mounts them as the Files app's endpoint, so the

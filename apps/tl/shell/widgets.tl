@@ -8,6 +8,10 @@
 /// are the person's settings (`settings.widgets`), written through the settings' own actions, so
 /// Settings, the shell, a script and an agent keep the same record.
 ///
+/// The room is what the style's own chrome leaves, as the session measured the bar and the dock
+/// it laid out (`device.room`): a widget rests inside it, never under either, at whatever size
+/// the person's text scale and dock settings gave them and on whichever edge the dock rides.
+///
 /// One widget's card is open at a time, and only by a press: nothing opens on hover or on a timer.
 /// A widget shows only when it has something to say — music only while something plays, the people
 /// here only while someone is — as the Rust desktop did.
@@ -16,16 +20,15 @@ view widget_layer(a: Layout) {
     state open: Option<WidgetKind> = .none
     // The widget the person just removed: said with the Undo that keeps it again.
     state removed: Option<WidgetKind> = .none
-    // The room a widget can move in: the display's own size in logical pixels, which is what a
-    // drag reports and what its saved fractions are of.
-    let across = device.screen.width.to_float()
-    let down = device.screen.height.to_float()
+    // The room a widget can move in: what the bar and the dock leave of the display, in logical
+    // pixels, which is what a drag reports and what its saved fractions are of.
+    let room = widget_room()
     let display = device.screen.output
     layers(fill) {
-        widget(.music, a, across, down, display, open, removed)
-        widget(.team, a, across, down, display, open, removed)
-        widget(.calendar, a, across, down, display, open, removed)
-        widget(.system_monitor, a, across, down, display, open, removed)
+        widget(.music, a, room, display, open, removed)
+        widget(.team, a, room, display, open, removed)
+        widget(.calendar, a, room, display, open, removed)
+        widget(.system_monitor, a, room, display, open, removed)
         if let gone = removed {
             widget_removed(gone, removed)
         }
@@ -37,8 +40,7 @@ view widget_layer(a: Layout) {
 view widget(
     kind: WidgetKind,
     a: Layout,
-    across: Float,
-    down: Float,
+    room: List<Float>,
     display: Int,
     open: State<Option<WidgetKind>>,
     removed: State<Option<WidgetKind>>,
@@ -51,10 +53,10 @@ view widget(
         ui.FloatingPanel(
             width: width,
             label: widget_name(kind),
-            x: widget_left(across, place.at(0) ?? 0.5, width),
-            y: widget_top(down, place.at(1) ?? 0.5, widget_height(kind, unfolded)),
+            x: widget_left(room, place.at(0) ?? 0.5, width),
+            y: widget_top(room, place.at(1) ?? 0.5, widget_height(kind, unfolded)),
         ) {
-            on moved(at): place_widget(kind, at, across, down, display)
+            on moved(at): place_widget(kind, at, room, display)
             // The trailing edge draws the card wider or narrower, and the width stays with the
             // person's settings for the next time the card opens.
             on resized(w): settings.resize_widget(
@@ -188,13 +190,13 @@ view widget_removed(kind: WidgetKind, removed: State<Option<WidgetKind>>) {
 
 /// Puts the widget `kind` where a drag let go, at `at` on this display: the place the person
 /// left it at, as fractions of the room it can move in there.
-action place_widget(kind: WidgetKind, at: List<Int>, across: Float, down: Float, display: Int) (
+action place_widget(kind: WidgetKind, at: List<Int>, room: List<Float>, display: Int) (
     label: "Move a widget",
 ) {
-    let x = (at.at(0) ?? 0).to_float() - widget_margin()
-    let y = (at.at(1) ?? 0).to_float() - widget_margin() - widget_bar_room()
-    let aside = (across - 2.0 * widget_margin()).max(1.0)
-    let along = (down - widget_margin() - widget_bar_room() - widget_dock_room()).max(1.0)
+    let x = (at.at(0) ?? 0).to_float() - widget_margin() - (room.at(0) ?? 0.0)
+    let y = (at.at(1) ?? 0).to_float() - widget_margin() - (room.at(1) ?? 0.0)
+    let aside = ((room.at(2) ?? 0.0) - 2.0 * widget_margin()).max(1.0)
+    let along = ((room.at(3) ?? 0.0) - 2.0 * widget_margin()).max(1.0)
     settings.place_widget(
         settings.widgets,
         widget: widget_key(kind),
@@ -275,30 +277,30 @@ fn widget_margin() -> Float {
     16.0
 }
 
-/// The room the style's bar keeps at the top of the screen, in logical pixels: a widget rests
-/// under it, as the Rust desktop's widgets rested under the bar, and never covers it.
-fn widget_bar_room() -> Float {
-    44.0
-}
-
-/// The room a dock keeps at the bottom edge of the screen, in logical pixels: a widget rests
-/// above it, as the Rust desktop's widgets did, and never covers it.
-fn widget_dock_room() -> Float {
-    let s = shell
-    if s.dock_shown and s.dock_edge == .bottom { 72.0 } else { 0.0 }
+/// The room a widget can move in on this display, as `x, y, width, height` in logical pixels:
+/// what the shell's bar and dock leave, measured by the session from the chrome its style laid
+/// out (`device.room`), so a widget rests clear of both at any size they are and on any edge they
+/// ride. Before the first frame has measured it — a host that draws no shell chrome at all — the
+/// whole display is the room.
+fn widget_room() -> List<Float> {
+    let r = device.room
+    if r.width > 0.0 and r.height > 0.0 {
+        [r.x, r.y, r.width, r.height]
+    } else {
+        [0.0, 0.0, device.screen.width.to_float(), device.screen.height.to_float()]
+    }
 }
 
 /// Where a widget's left edge stands, from a fraction across the room it can move in.
-fn widget_left(room_px: Float, across: Float, width: Float) -> Float {
-    let room = (room_px - 2.0 * widget_margin() - width).max(0.0)
-    widget_margin() + room * across.clamp(0.0, 1.0)
+fn widget_left(room: List<Float>, across: Float, width: Float) -> Float {
+    let free = ((room.at(2) ?? 0.0) - 2.0 * widget_margin() - width).max(0.0)
+    (room.at(0) ?? 0.0) + widget_margin() + free * across.clamp(0.0, 1.0)
 }
 
 /// Where a widget's top edge stands, from a fraction down the room it can move in.
-fn widget_top(room_px: Float, down: Float, height: Float) -> Float {
-    let top = widget_margin() + widget_bar_room()
-    let room = (room_px - top - widget_margin() - widget_dock_room() - height).max(0.0)
-    top + room * down.clamp(0.0, 1.0)
+fn widget_top(room: List<Float>, down: Float, height: Float) -> Float {
+    let free = ((room.at(3) ?? 0.0) - 2.0 * widget_margin() - height).max(0.0)
+    (room.at(1) ?? 0.0) + widget_margin() + free * down.clamp(0.0, 1.0)
 }
 
 /// How wide a widget stands: its card's width as the person left it, or the quiet form's.

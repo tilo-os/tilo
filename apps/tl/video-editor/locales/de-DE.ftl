@@ -403,13 +403,8 @@ d-47vsdgaf = Standbild
 
 d-dppbe5en = Bild bei
 
-d-gkp4va33 = Vorschaufilm
-    .doc = Der Schnitt klein gerendert, zum Abspielen im Fenster.
-
 d-xa5fpldf = Auftrag
     .doc = Das Rendern, das dieser Schnitt laufen hat, und wie weit es ist.
-
-d-dkhcppi4 = Auftragsart
 
 d-myjdbgx2 = Auftrag fertig
 
@@ -1370,7 +1365,7 @@ d-e7mxkoe3 = Aufnehmen
 d-e7mxkoe3-file = Datei
 
 d-s34s56u6 = Gelesenes übernehmen
-    .doc = Schreibt, was das Gerät von einer Quelle gelesen hat, auf sie: was sie ist, wie lange sie läuft, ihre Größe und Rate, und ob sie Ton trägt.
+    .doc = Schreibt, was das Gerät von einer Quelle gelesen hat, auf sie, so wie die Engine es gesagt hat: was sie ist, wie lange sie läuft, ihre Größe und Rate, und ob sie Ton trägt. Eine Action bekommt die Worte der Engine statt des gelesenen `Probed`, eines Werts, den keine Ressource hält.
 
 d-s34s56u6-m = Quelle
 
@@ -1409,9 +1404,7 @@ d-blq35ymn = Bild zeichnen
 d-blq35ymn-at = Bei
 
 d-ozvvnp6f = Rendern beginnen
-    .doc = Startet ein Rendern: `preview` hält den Schnitt klein fürs Fenster, `export` schreibt die Datei, die eine Person sichert.
-
-d-ozvvnp6f-render_kind = Renderart
+    .doc = Startet das Rendern, das die Datei schreibt, die eine Person sichert.
 
 d-ozvvnp6f-resolution = Auflösung
 
@@ -1688,15 +1681,6 @@ d-m4ovyotr = Ton abtrennen
 
 d-m4ovyotr-c = C
 
-d-r7zfwmwy = Nebeneinander stellen
-    .doc = Stellt zwei Clips nebeneinander: jeder halb so breit wie das Bild, einer links und einer rechts.
-
-d-r7zfwmwy-left = Links
-
-d-r7zfwmwy-right = Rechts
-
-d-jp3ic5pr = Nebeneinander lösen
-
 d-iry5qrqv = Effekt hinzufügen
 
 d-iry5qrqv-form = Form
@@ -1714,11 +1698,9 @@ d-aqdtfj76-at = Bei
 
 
 
-d-dibp67ku = Schnitt vorschauen
-    .doc = Rendert den Schnitt klein, damit das Fenster ihn abspielt.
-
 d-mrqvrzq6 = Schnitt exportieren
-    .doc = Rendert den Schnitt in eine Datei.
+    .doc = Rendert den Schnitt in eine Datei und weigert sich, wenn eine Quelle, die dieses Gerät nicht lesen kann, im Film ihr Material fehlen ließe.
+    .w-cannot-export-is-not-on-this = Nicht exportierbar: { $join } ist nicht auf diesem Gerät, im Film fehlte dieses Material
 
 d-mrqvrzq6-resolution = Auflösung
 
@@ -1778,17 +1760,27 @@ d-kga7o3ur = Fenster
     .w-title = Titel
     .w-nothing-to-show-yet = Noch nichts zu sehen
     .w-add-a-source-and-the-frame = Füge eine Quelle hinzu, dann steht hier das Bild an der Abspielmarke
+    .w-play-backwards-faster-with-each-press = Rückwärts abspielen, mit jedem Druck schneller
+    .w-play-faster-with-each-press = Schneller abspielen, mit jedem Druck
+    .w-width-height-and-turning-go-around = Breite, Höhe und Drehen laufen um diesen Punkt des Bildes
+    .w-anchor = Anker
+    .w-top-left = Oben links
+    .w-top = Oben
+    .w-top-right = Oben rechts
+    .w-bottom-left = Unten links
+    .w-bottom = Unten
+    .w-bottom-right = Unten rechts
+    .w-this-film-needs-sources-this-device = Dieser Film braucht Quellen, die dieses Gerät nicht hat
+    .w-relink-it-in-the-bin-or = { $join }: verknüpfe sie im Korb neu oder exportiere auf dem Gerät, das sie hat
     .w-back-a-second = Eine Sekunde zurück
     .w-pause = Pause
     .w-play-the-cut = Schnitt abspielen
-    .w-render-and-play-the-cut = Schnitt rendern und abspielen
     .w-forward-a-second = Eine Sekunde vor
     .w-mark-in = Anfang markieren
     .w-mark-out = Ende markieren
     .w-clear = Marken löschen
     .w-frame = Einzelbild
     .w-what-the-cut-plays-through = Worüber der Schnitt läuft
-    .w-rendering-a-preview = Vorschau wird gerendert
     .w-rendering-the-film = Film wird gerendert
     .w-stop-the-render = Rendern stoppen
     .w-the-engine-could-not-do-that = Das konnte die Engine nicht
@@ -1890,7 +1882,6 @@ d-kga7o3ur = Fenster
     .w-mov = mov
     .w-format = Format
     .w-render-the-film = Film rendern
-    .w-the-cut-plays-in-the-window = Der Schnitt läuft im Fenster
     .w-save-the-film = Film sichern
     .w-no-cut-yet = Noch kein Schnitt
     .w-start-one-or-open-a-video = Starte einen oder öffne ein Video in der Bearbeitung
@@ -1933,44 +1924,6 @@ d-kga7o3ur = Fenster
     .w-delete-the-track = Spur löschen
     .w-backing-plate = Hinterlegung
 
-    .w-jump-to-the-start = Zum Anfang
-    .w-back-a-frame = Ein Bild zurück
-    .w-forward-a-frame = Ein Bild vor
-    .w-jump-to-the-end = Zum Ende
-    .w-open-a-project = Projekt öffnen
-    .w-save-the-project = Projekt speichern
-    .w-mask = Maske
-    .w-shape = Form
-    .w-off = Aus
-    .w-rectangle = Rechteck
-    .w-ellipse = Ellipse
-    .w-keep-the-outside = Das Äußere behalten
-    .w-centre-across = Mitte waagerecht
-    .w-centre-up-and-down = Mitte senkrecht
-    .w-mask-width = Maskenbreite
-    .w-mask-height = Maskenhöhe
-    .w-mask-turn-degrees = Maske drehen, Grad
-    .w-mask-feather = Weiche Maskenkante
-    .w-crop = Zuschneiden
-    .w-from-the-left = Von links
-    .w-from-the-right = Von rechts
-    .w-from-the-top = Von oben
-    .w-from-the-bottom = Von unten
-    .w-transition-seconds = Übergang, Sekunden
-    .w-amount = Stärke
-    .w-move-earlier = Nach oben
-    .w-move-later = Nach unten
-    .w-remove-every-effect = Alle Effekte entfernen
-    .w-delete-the-source = Quelle löschen
-    .w-tracks = Spuren
-    .w-mute = Stumm
-    .w-solo = Solo
-    .w-lock = Sperren
-    .w-level-db = Pegel, dB
-    .w-pan = Panorama
-    .w-reset-the-level-and-pan = Pegel und Panorama zurücksetzen
-    .w-delete-the-track = Spur löschen
-    .w-backing-plate = Hinterlegung
 d-bi2ut6h2 = Studio
     .w-open-in-the-editor = In der Bearbeitung öffnen
     .w-clips = { $clips } Clips
@@ -2109,26 +2062,44 @@ d-5oqtuzrw = Quelle löschen
 
 d-hw26iiy2 = Maske setzen
 
-
 d-25a3ji5l-words = Wörter
+
 d-2cricpxh-bold = Fett
+
 d-2cricpxh-italic = Kursiv
+
 d-32fpyxzd-solo = Solo
+
 d-5oqtuzrw-m = Quelle
+
 d-bjresjz2-shape = Form
+
 d-bwheqtmt-reverse = Rückwärts
+
 d-dseablg3-muted = Stumm
+
 d-j4nvruzm-pan = Panorama
+
 d-mikjlhmy-invert = Umkehren
+
 d-pmzyq3cp-look = Aussehen
+
 d-pmzyq3cp-value = Wert
+
 d-pugj26z7-look = Aussehen
+
 d-pugj26z7-value = Wert
+
 d-sjg7mrsa-locked = Gesperrt
+
 d-x23sha6o-amount = Stärke
+
 d-x23sha6o-e = Effekt
+
 d-xiuhdj77-e = Effekt
+
 d-xiuhdj77-up = Nach oben
+
 d-xluldt6f-db = Pegel in dB
 
 d-j47xlg5b-with = Mit
@@ -2239,3 +2210,153 @@ d-yl3a4tsd = Schlüssel Grün
 d-zwo6h7ka = Schlüssel Blau
 
 d-d6v4or6p = Palette
+
+d-mbctkint = Anker X
+    .doc = Der Punkt des Bildes, um den Skalieren und Drehen laufen und den eine Position verschiebt, als Anteil davon: 0,5, 0,5 ist seine Mitte, 0,0, 0,0 seine linke obere Ecke.
+
+d-iyrfpfiq = Anker Y
+
+d-aj2coyre-filter-anchor_x = Anker X
+
+d-aj2coyre-filter-anchor_y = Anker Y
+
+d-5drcv42q = Anker X
+
+d-4whekfjf = Anker Y
+
+d-kti7icrd = Live
+    .doc = Die laufende Wiedergabe im Fenster, über ihren Engine-Stream: das Gerät setzt den Schnitt während der Wiedergabe zusammen, und das Fenster zeigt jedes Bild über `tilo-live://{ $live }`.
+
+d-k4vs2hwv = Live-Geschwindigkeit
+    .doc = Wie schnell diese Wiedergabe läuft: 1 bei normalem Tempo, mehr zum Shutteln, negativ rückwärts.
+
+d-ulwqwedw = Live-Anfrage
+    .doc = Ein live abgespielter Schnitt: das Gerät setzt ihn ab dem Abspielkopf zusammen und mischt den Ton für denselben Moment, und das Fenster zeigt jedes Bild, sobald es ankommt.
+    .noun = { $count ->
+        [one] Live-Anfrage
+       *[other] Live-Anfragen
+    }
+
+d-ulwqwedw-filter-from = Von
+
+d-ulwqwedw-filter-rate = Geschwindigkeit
+
+d-d6da6bsq = Breite
+
+d-rydoez3z = Höhe
+
+d-ulwqwedw-filter-sound = Ton
+
+d-bgnkfxlo = Projekt
+    .doc = Der Schnitt, so wie `json.encode(shot(p))` ihn schreibt.
+
+d-appc64zf = Von
+    .doc = Wo der Abspielkopf startet, in Sekunden der Zeitleiste.
+
+d-xr7l6ray = Geschwindigkeit
+    .doc = Sekunden der Zeitleiste je Sekunde; 1 ist normales Tempo, und eine negative Geschwindigkeit spielt rückwärts.
+
+d-ulwqwedw-filter-width = Breite
+
+d-ulwqwedw-filter-height = Höhe
+
+d-cb3fxuvg = Ton
+    .doc = Ob das Gerät den Ton des Schnitts so gut wie sein Bild abspielt.
+
+d-ckkce4lq = Schnitt-Anfrage
+    .doc = Der Schnitt, wie er jetzt ist, für eine bereits laufende Wiedergabe: ein Schnitt wird gesehen, sobald er gemacht ist.
+    .noun = { $count ->
+        [one] Schnitt-Anfrage
+       *[other] Schnitt-Anfragen
+    }
+
+d-6drnl2tz = Auftrag
+
+d-7es5yzhp = Projekt
+
+d-ssl4374c = Scrub-Anfrage
+    .doc = Ein kurzes Stück des Tons des Schnitts dort, wohin der Abspielkopf gezogen wurde.
+    .noun = { $count ->
+        [one] Scrub-Anfrage
+       *[other] Scrub-Anfragen
+    }
+
+d-52qgffcz = Projekt
+
+d-2mvmk5yr = An
+
+d-ccewf5ft = Sekunden
+
+d-ssl4374c-filter-at = An
+
+d-ssl4374c-filter-seconds = Sekunden
+
+d-ik75ptfo = Anker setzen
+    .doc = Verschiebt den Punkt, um den ein Clip skaliert und gedreht wird: eine Ecke, eine Kante oder die Mitte; dort ist ein Bild festgemacht, wenn es halb so groß gemacht, gedreht oder vergrößert wird.
+
+d-ik75ptfo-x = X
+
+d-ik75ptfo-y = Y
+
+d-ghp2ji72 = Schnitt abspielen
+    .doc = Spielt den Schnitt ab `at` ab: das Gerät setzt jedes Bild zusammen, sobald der Abspielkopf es erreicht, und mischt den Ton für denselben Moment, sodass das Fenster den Schnitt selbst zeigt statt eines Renders davon.
+
+d-ghp2ji72-at = An
+
+d-ghp2ji72-rate = Geschwindigkeit
+
+d-tzdscmwx = Wiedergabe stoppen
+    .doc = Stoppt die laufende Wiedergabe: das Gerät hört auf, zusammenzusetzen, und der Ton endet mit dem Bild.
+
+d-7uqdfx3n = Wiedergabe anhalten
+    .doc = Hält die laufende Wiedergabe dort an, wo sie steht, und zeichnet dieses Bild: das ist Pause.
+
+d-jhutq7l5 = Shuttle
+    .doc = Ein Druck auf ein Shuttle-Bedienelement: dieselbe Richtung verdoppelt das Tempo bis auf das Sechzehnfache, die andere Richtung beginnt wieder mit normalem Tempo in ihre Richtung.
+
+d-jhutq7l5-at = An
+
+d-jhutq7l5-way = Richtung
+
+d-uawtpsaa = Springen nach
+    .doc = Stoppt die laufende Wiedergabe und zeichnet das Bild `at` an ihrer Stelle: das tun ein Sprung und ein Bildschritt.
+
+d-uawtpsaa-at = An
+
+d-orlci7a7 = Live bei
+    .doc = Wo die laufende Wiedergabe den Abspielkopf jetzt hat, oder -1, wenn nichts läuft.
+
+d-4kh3dg3r = Scrubben bis
+    .doc = Scrubbt zur Sekunde `at`: die laufende Wiedergabe stoppt, das Bild unter dem Abspielkopf wird gezeichnet, und ein kurzes Stück des Tons dort wird abgespielt.
+
+d-4kh3dg3r-at = An
+
+d-ensgtqhm = Wiedergabe läuft
+    .doc = Ob die laufende Wiedergabe noch läuft: ein Wort aus dem Nichts heißt, sie fängt gerade an, und ein Wort an einem der beiden Enden heißt, sie ist dort stehen geblieben.
+
+d-24wktakk = Live erneuern
+    .doc = Reicht dem Gerät den Schnitt, wie er jetzt ist: ein Schnitt während der Wiedergabe wird gesehen, sobald er gemacht ist, statt erst bei der nächsten Wiedergabe.
+
+d-es6mfprb = Scrub-Ton
+    .doc = Der Ton des Schnitts dort, wohin der Abspielkopf gezogen wurde: ein kurzer Ausschnitt, nicht der laufende Ton der Zeitleiste.
+
+d-es6mfprb-at = An
+
+d-mtkg2brb = Bewegungsangabe
+    .w-backwards = Rückwärts { $round }×
+    .w-forwards = Vorwärts { $round }×
+    .w-playing = Wiedergabe
+
+d-zdvk3o64 = Anker X
+
+d-j4zszdmt = Anker Y
+
+d-twd6225m-filter-anchor_x = X
+
+d-twd6225m-filter-anchor_y = Y
+
+d-werb5t7p-filter-anchor_x = X
+
+d-werb5t7p-filter-anchor_y = Y
+
+d-fkdizcdd-filter-live_rate = Live-Geschwindigkeit

@@ -119,6 +119,8 @@ struct Entry {
     /// Whether the microphone was muted when the person deafened: what
     /// undeafening puts back.
     muted_before_deafen: bool,
+    /// The person asked to be heard before the call was live: it is, once it is.
+    heard_when_live: bool,
 }
 
 /// What a watcher of a call sees change between ticks.
@@ -195,6 +197,8 @@ pub struct OwnCall {
     pub muted: bool,
     /// This device hears nothing of the call.
     pub deafened: bool,
+    /// Where the call stands: on its way in, live, or finding its way back.
+    pub state: State,
 }
 
 /// The session's calls, as the apps it runs reach them.
@@ -232,12 +236,7 @@ impl NativeMediaService {
         calls
             .entries
             .values()
-            .find(|entry| {
-                matches!(
-                    entry.snapshot.state,
-                    State::Joining | State::Live | State::Reconnecting
-                )
-            })
+            .find(|entry| Self::is_own(entry))
             .map(|entry| OwnCall {
                 workspace: entry.caller.workspace.clone(),
                 app: entry.caller.app.clone(),
@@ -247,17 +246,10 @@ impl NativeMediaService {
                 screen: entry.snapshot.screen,
                 muted: entry.snapshot.muted,
                 deafened: entry.snapshot.deafened,
+                state: entry.snapshot.state,
             })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered dispatcher: intent floor, local stops, then the per-command paths"
-    )]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "each block's `entry` borrows from the calls guard up to its return; there is no earlier point to drop it"
-    )]
     /// Run one command for `caller` and answer with the call as it stands:
     /// what the broker dispatches when the app's own connection sends one.
     pub fn command_for(&self, caller: Caller, request: Request) -> Result<Snapshot, String> {
@@ -293,18 +285,73 @@ impl NativeMediaService {
                     return Err("native media route capacity reached".into());
                 }
                 calls.floors.insert(key.clone(), intent);
-                if let Some(entry) = calls.entries.get_mut(&key) {
-                    if microphone {
-                        entry.intent = intent;
-                    }
-                    if entry.backend.is_none() && microphone {
-                        if let Some(worker) = entry.worker.take() {
-                            worker.abort();
-                        }
-                        entry.snapshot.state = State::Ended;
-                    }
+                // A microphone step on a call still on its way in waits for it: the call takes
+                // it once it is live, rather than ending.
+                if microphone && let Some(entry) = calls.entries.get_mut(&key) {
+                    entry.intent = intent;
                 }
             }
+        }
+        self.apply(caller, command, intent)
+    }
+
+    /// Run one command on this device's own call as the system, not as its app: what the
+    /// call card the shell stands over the windows presses (mute, deafen, leave). It carries no
+    /// intent and moves no route's floor, so the app's own next step is taken as it would have
+    /// been; the app reads the change from its watch.
+    ///
+    /// # Errors
+    /// No call is this device's, or the command is not one the card has.
+    pub fn command_own(&self, command: Command) -> Result<Snapshot, String> {
+        if !matches!(
+            command,
+            Command::SetMuted { .. } | Command::SetDeafened { .. } | Command::Leave
+        ) {
+            return Err("the call card mutes, deafens and leaves, nothing else".into());
+        }
+        let (caller, intent) = {
+            let calls = self
+                .0
+                .calls
+                .lock()
+                .map_err(|_| "native media unavailable")?;
+            let entry = calls
+                .entries
+                .values()
+                .find(|entry| Self::is_own(entry))
+                .ok_or("no call is this device's")?;
+            (entry.caller.clone(), entry.intent)
+        };
+        let result = self.apply(caller, command, intent);
+        self.0.changed.notify_waiters();
+        result
+    }
+
+    /// Whether `entry` is a call this device is in, or on its way into.
+    fn is_own(entry: &Entry) -> bool {
+        matches!(
+            entry.snapshot.state,
+            State::Joining | State::Live | State::Reconnecting
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered dispatcher: local stops, then the per-command paths"
+    )]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "each block's `entry` borrows from the calls guard up to its return; there is no earlier point to drop it"
+    )]
+    /// Carry out `command` on `caller`'s call, its intent `intent` already admitted.
+    fn apply(&self, caller: Caller, command: Command, intent: u64) -> Result<Snapshot, String> {
+        let key = caller.key();
+        {
+            let mut calls = self
+                .0
+                .calls
+                .lock()
+                .map_err(|_| "native media unavailable")?;
             if matches!(command, Command::Leave) {
                 if let Some(mut entry) = calls.entries.remove(&key) {
                     Shared::stop_entry(&mut entry);
@@ -476,13 +523,14 @@ impl NativeMediaService {
                 worker: None,
                 seen: None,
                 muted_before_deafen: true,
+                heard_when_live: false,
             },
         );
         let weak = Arc::downgrade(&self.0);
         let task_key = key.clone();
         let prepare: Prepare = factory.prepare(target);
         let worker = tokio::spawn(async move {
-            run_call(weak, task_key, generation, intent, prepare).await;
+            run_call(weak, task_key, generation, prepare).await;
         });
         if let Some(entry) = calls.entries.get_mut(&key) {
             entry.worker = Some(worker.abort_handle());
@@ -510,45 +558,14 @@ impl NativeMediaService {
             .ok_or("stale native media intent")?;
         (entry.caller.current)()?;
         if entry.snapshot.state != State::Live {
-            // Transport recovery is a call state, not an RPC failure. A
-            // refusal would make the client leave an otherwise current call.
-            // The person asks to be heard again once the call is live.
-            tracing::debug!(
-                state = ?entry.snapshot.state,
-                "native unmute requires a live call"
-            );
+            // A call still on its way in, or finding its way back, is not a
+            // refusal: the person is heard once it is live, as they asked.
+            entry.heard_when_live =
+                matches!(entry.snapshot.state, State::Joining | State::Reconnecting)
+                    && entry.snapshot.muted;
             return Ok(Shared::snapshot(entry));
         }
-        if !entry.snapshot.muted {
-            return Ok(Shared::snapshot(entry));
-        }
-        let Some(backend) = entry.backend.clone() else {
-            return Ok(Shared::snapshot(entry));
-        };
-        entry.snapshot.inputs = backend.lock_recover().inputs();
-        let Some(input) = entry
-            .snapshot
-            .input_id
-            .clone()
-            .or_else(|| entry.snapshot.inputs.first().map(|input| input.id.clone()))
-        else {
-            entry.snapshot.issue = Some(Issue::SourceLost);
-            return Ok(Shared::snapshot(entry));
-        };
-        entry.snapshot.input_id = Some(input.clone());
-        let captured = backend.lock_recover().start_capture(&input);
-        match captured {
-            Ok(()) => {
-                entry.snapshot.muted = false;
-                entry.snapshot.capture_active = true;
-                entry.snapshot.issue = None;
-            }
-            Err(issue) => {
-                entry.snapshot.muted = true;
-                entry.snapshot.capture_active = false;
-                entry.snapshot.issue = Some(issue);
-            }
-        }
+        Shared::hear(entry);
         Ok(Shared::snapshot(entry))
     }
 
@@ -951,6 +968,43 @@ impl Shared {
         }
         entry.snapshot.muted = true;
         entry.snapshot.capture_active = false;
+        entry.heard_when_live = false;
+    }
+
+    /// Send this person's microphone in the live call `entry`, from the
+    /// input they chose or the first there is.
+    fn hear(entry: &mut Entry) {
+        entry.heard_when_live = false;
+        if !entry.snapshot.muted {
+            return;
+        }
+        let Some(backend) = entry.backend.clone() else {
+            return;
+        };
+        entry.snapshot.inputs = backend.lock_recover().inputs();
+        let Some(input) = entry
+            .snapshot
+            .input_id
+            .clone()
+            .or_else(|| entry.snapshot.inputs.first().map(|input| input.id.clone()))
+        else {
+            entry.snapshot.issue = Some(Issue::SourceLost);
+            return;
+        };
+        entry.snapshot.input_id = Some(input.clone());
+        let captured = backend.lock_recover().start_capture(&input);
+        match captured {
+            Ok(()) => {
+                entry.snapshot.muted = false;
+                entry.snapshot.capture_active = true;
+                entry.snapshot.issue = None;
+            }
+            Err(issue) => {
+                entry.snapshot.muted = true;
+                entry.snapshot.capture_active = false;
+                entry.snapshot.issue = Some(issue);
+            }
+        }
     }
 
     /// What the person hears of the call: the carrier stops playing it while
@@ -997,9 +1051,14 @@ impl Shared {
         match result {
             Ok(state) => {
                 if state != State::Live && state != State::Reconnecting {
+                    let waiting = entry.heard_when_live;
                     Shared::stop_capture(entry);
+                    entry.heard_when_live = waiting && state == State::Joining;
                 }
                 entry.snapshot.state = state;
+                if state == State::Live && entry.heard_when_live {
+                    Shared::hear(entry);
+                }
                 let seen = Some(Seen::of(entry));
                 if entry.seen != seen {
                     entry.seen = seen;
@@ -1033,7 +1092,7 @@ impl Drop for Shared {
     }
 }
 
-async fn run_call(weak: WeakShared, key: Key, generation: u64, intent: u64, prepare: Prepare) {
+async fn run_call(weak: WeakShared, key: Key, generation: u64, prepare: Prepare) {
     let prepared = tokio::time::timeout(PREPARE_TIMEOUT, prepare)
         .await
         .unwrap_or(Err(Issue::TransportFailed));
@@ -1050,18 +1109,26 @@ async fn run_call(weak: WeakShared, key: Key, generation: u64, intent: u64, prep
             }
             return;
         };
-        let Some(entry) = calls.entries.get_mut(&key).filter(|entry| {
-            entry.generation == generation
-                && entry.intent == intent
-                && (entry.caller.current)().is_ok()
-        }) else {
+        // The join this call was prepared for, and no later one: a microphone step taken
+        // meanwhile is the call's to take once it is live.
+        let Some(entry) = calls
+            .entries
+            .get_mut(&key)
+            .filter(|entry| entry.generation == generation && (entry.caller.current)().is_ok())
+        else {
             if let Ok(mut backend) = prepared {
                 backend.close();
             }
             return;
         };
         match prepared {
-            Ok(backend) => entry.backend = Some(Arc::new(Mutex::new(backend))),
+            Ok(backend) => {
+                entry.backend = Some(Arc::new(Mutex::new(backend)));
+                // Deafened on the way in: the call is not heard from its first frame.
+                if entry.snapshot.deafened {
+                    Shared::set_deafened(entry, true);
+                }
+            }
             Err(issue) => {
                 entry.snapshot.state = State::Ended;
                 entry.snapshot.issue = Some(issue);

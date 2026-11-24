@@ -830,7 +830,7 @@ tilo_test_env::scenario! {
         assert!(h.root::<NavShell>().is_sidebar_open());
     }
 
-    phase the_toggle_names_what_it_does_for_the_palette_and_agents;
+    phase the_toggle_says_what_it_does_to_whoever_reads_the_window;
     {
         let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
@@ -844,14 +844,16 @@ tilo_test_env::scenario! {
         h.root_mut::<NavShell>().toggle_sidebar();
         settle(&mut h, 1280, 800);
         assert_eq!(name(&h).as_deref(), Some("Show sidebar"));
-        let doc = automerge::AutoCommit::new();
-        let resources = crate::widget::resources::resources(&*h.root::<NavShell>().toggle, &doc);
-        assert!(
-            resources
-                .iter()
-                .any(|resource| resource.label == "Show sidebar"),
-            "the toggle publishes its action"
-        );
+        // A reader or an agent shown the window presses the toggle through the same
+        // accessibility control, and it does what its name says.
+        let toggle = h
+            .a11y_node_named("Show sidebar")
+            .expect("the toggle stands to be pressed");
+        h.perform_a11y_action(toggle, &crate::a11y::Action::Activate)
+            .expect("the toggle answers");
+        settle(&mut h, 1280, 800);
+        assert!(h.root::<NavShell>().is_sidebar_open(), "the sidebar is open");
+        assert_eq!(name(&h).as_deref(), Some("Hide sidebar"));
     }
 
     phase an_open_drawer_keeps_the_contents_wake_deadline;

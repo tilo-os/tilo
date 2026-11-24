@@ -53,6 +53,29 @@ type ImportedVisit (title: title) {
     }
 }
 
+/// Where a row the address bar offers comes from.
+enum SuggestionKind {
+    /// A page the person saved.
+    bookmark
+    /// A page this browser opened.
+    visited
+    /// A page another browser's history brought over.
+    imported
+    /// The search engine, asked for what was typed.
+    search
+}
+
+/// One row the address bar offers for what was typed: a page the person saved or opened, or the
+/// search for the words.
+type Suggestion {
+    kind: SuggestionKind
+    title: Text
+    /// What choosing it opens: the page, or the search engine's answer to the words.
+    url: Text
+    /// What the row says under its title: the page's address, or the engine that is asked.
+    secondary: Text
+}
+
 /// A site's remembered form: what it asked and what it called each question, never an answer.
 type RememberedForm (title: label) {
     /// The site's origin (`https://example.org`), as tracker protection knows it too.
@@ -1017,11 +1040,13 @@ action capture_page(
     ask_page(p, request)
 }
 
-/// Open an address in the page's own window.
+/// Open an address in the page's own window: a site named without its scheme opens as one
+/// (`example.org`), and words that name no address open the search engine's answer to them.
 action navigate(p: Page, url: Text) -> Answer uses page (
     icon: .arrow_right,
     label: "Go to an address",
 ) {
+    let url = resolve(root Browser, url)
     let request = json.encode(Ask(op: "navigate", url: .some(url)))
     let answer = ask_page(p, request)
     p.url = url
@@ -1722,16 +1747,19 @@ action note_extension_updates(p: Page, checked: Int, updated: Text, failed: Text
     }
     if let first = news.at(0) {
         if news.len() == 1 {
-            b.extension_notice = "“{json_text(first, "name")}” updated to {json_text(first, "version")}"
+            let name = json_text(first, "name")
+            let version = json_text(first, "version")
+            b.extension_notice = std.say("“{name}” updated to {version}")
         } else {
-            b.extension_notice = "{news.len()} extensions were updated"
+            let count = news.len()
+            b.extension_notice = std.say("{count} extensions were updated")
         }
     } else if failed != "" {
-        b.extension_notice = "The Chrome Web Store could not be checked: {failed}"
+        b.extension_notice = std.say("The Chrome Web Store could not be checked: {failed}")
     } else if checked == 0 {
-        b.extension_notice = "No extension from the Chrome Web Store is installed"
+        b.extension_notice = std.say("No extension from the Chrome Web Store is installed")
     } else {
-        b.extension_notice = "The extensions are up to date"
+        b.extension_notice = std.say("The extensions are up to date")
     }
 }
 
@@ -2290,7 +2318,7 @@ action import_history(b: Browser, bundle: Text) (
             taken += 1
         }
     }
-    b.trouble = if taken == 0 { "This history holds no page" } else { "" }
+    b.trouble = if taken == 0 { std.say("This history holds no page") } else { "" }
 }
 
 /// Imports the bookmarks another browser holds, from the bundle this app's own import hands
@@ -2300,7 +2328,7 @@ action import_history(b: Browser, bundle: Text) (
 action import_bookmarks(b: Browser, bundle: Text) (icon: .file_plus, label: "Import bookmarks") {
     let found = bookmarks_of_json(bundle.trim())
     if found.is_empty() {
-        b.trouble = "This file holds no bookmark"
+        b.trouble = std.say("This file holds no bookmark")
         return
     }
     for made in found {
@@ -2319,16 +2347,19 @@ action import_bookmarks(b: Browser, bundle: Text) (icon: .file_plus, label: "Imp
 fn resolve(b: Browser, typed: Text) -> Text {
     let said = typed.trim()
     let lower = said.lower()
-    if lower.starts_with("http://") or lower.starts_with("https://") {
+    if said == "" or lower.contains("://") and not lower.contains(" ") {
         said
-    } else if looks_like_site(lower) {
-        "https://{said}"
-    } else {
-        let engine = if b.search_engine.contains("%s") {
-            b.search_engine
-        } else { "https://duckduckgo.com/?q=%s" }
-        engine.replace("%s", percent(said))
-    }
+    } else if looks_like_site(lower) { "https://{said}" } else { search_address(b, said) }
+}
+
+/// The search engine's answer to `words`: the address it is asked at.
+fn search_address(b: Browser, words: Text) -> Text {
+    engine(b).replace("%s", percent(words.trim()))
+}
+
+/// The search engine the person chose, as the address whose `%s` the words replace.
+fn engine(b: Browser) -> Text {
+    if b.search_engine.contains("%s") { b.search_engine } else { "https://duckduckgo.com/?q=%s" }
 }
 
 /// Whether what was typed names a site: a name with a dot and no space in it, such as
@@ -2579,26 +2610,30 @@ fn json_words(value: json.Value, key: Text, between: Text) -> Text {
 /// engine's kind of failure names what happened, and its own detail is for whoever asks.
 fn extension_trouble(kind: Text, said: Text) -> Text {
     if kind == "no-place" {
-        "This device keeps no extensions"
+        std.say("This device keeps no extensions")
     } else if kind == "too-large" {
-        "The package is over the size limit"
+        std.say("The package is over the size limit")
     } else if kind == "damaged" {
-        "The package is damaged, or signed for another extension"
+        std.say("The package is damaged, or signed for another extension")
     } else if kind == "broken" {
-        "The package holds no manifest an extension can use"
+        std.say("The package holds nothing an extension can use")
     } else if kind == "not-saved" {
-        "The package could not be read or saved"
+        std.say("The package could not be read or saved")
     } else if kind == "package" {
-        "That file is no extension package"
+        std.say("That file is no extension package")
     } else if kind == "item" {
-        "That is no Chrome Web Store extension"
+        std.say("That is no Chrome Web Store extension")
     } else if kind == "download" {
-        "The Chrome Web Store could not be reached"
+        std.say("The Chrome Web Store could not be reached")
     } else if kind == "no-package" {
-        "The Chrome Web Store has no package for this browser"
+        std.say("The Chrome Web Store has no package for this browser")
     } else if kind == "unknown" {
-        "No such extension is installed"
-    } else if said != "" { said } else { "The extension could not be changed" }
+        std.say("No such extension is installed")
+    } else if said != "" {
+        said
+    } else {
+        std.say("The extension could not be changed")
+    }
 }
 
 /// Whether the page at `url` is one of the Chrome Web Store's own items: such a page offers an
@@ -2615,7 +2650,9 @@ fn is_store_page(url: Text) -> Bool {
 fn button_label(b: Browser, button: PageButton) -> Text {
     let name = if button.label != "" {
         button.label
-    } else if let e = b.extensions.find(x -> x.key == button.ext) { e.name } else { "Extension" }
+    } else if let e = b.extensions.find(x -> x.key == button.ext) {
+        e.name
+    } else { std.say("Extension") }
     if button.badge != "" { "{name} · {button.badge}" } else { name }
 }
 
@@ -2761,7 +2798,7 @@ fn omnibox_rows(rows: Text) -> List<OmniboxRow> {
 /// What an extension is called, as the Browser's inventory lists it: an extension's own page is
 /// named by its identifier alone.
 fn extension_named(b: Browser, id: Text) -> Text {
-    if let e = b.extensions.find(x -> x.key == id) { e.name } else { "Extension" }
+    if let e = b.extensions.find(x -> x.key == id) { e.name } else { std.say("Extension") }
 }
 
 /// The site a sign-in page asks the person to sign in on, as its address names it: they type a
@@ -3078,6 +3115,8 @@ view page_menu(b: Browser, p: Page, level: State<Float>, reading: State<Bool>) {
 /// is paused, and what was done in it.
 view page_view(p: Page) {
     state address: Text = ""
+    // What the address bar's suggestions answer: what was typed, once the typing paused.
+    state settled: Text = ""
     state failed: Text = ""
     state zoom: Float = p.zoom_level
     state reading: Bool = false
@@ -3139,7 +3178,13 @@ view page_view(p: Page) {
                         ) {
                             on changed(typed: Text): typed_address(p, typed)
                             on blur: address_left(p)
-                            on submit(typed: Text): submit_address(p, typed)
+                            on submit(typed: Text): submit_address(p, typed).then(set(address, ""))
+                        }
+                        // What the bar offers follows the typing once it pauses, not every key.
+                        if settled != address {
+                            ui.Timer(after: 0.15, restart: address) {
+                                on tick: set(settled, address)
+                            }
                         }
                         ui.Button("Bookmark", icon: .star, role: .plain) {
                             on press: bookmark(b, p.url, .some(p.title))
@@ -3195,13 +3240,24 @@ view page_view(p: Page) {
                             }
                         }
                     }
-                    if address.trim() != "" and not looks_like_site(address) {
-                        let found = suggestions(b, address)
+                    if address.trim() != "" {
+                        let found = suggestions(b, settled)
                         if not found.is_empty() {
                             stack(padding: .related) {
-                                ui.Section("From your history") {
-                                    for v in found {
-                                        suggestion_row(p, v)
+                                ui.Section("Suggestions") {
+                                    // Choosing one opens what it names, and the bar empties.
+                                    for s in found {
+                                        ui.ListRow(
+                                            title: s.title,
+                                            secondary: s.secondary,
+                                            icon: if s.kind == .bookmark {
+                                                .star
+                                            } else if s.kind == .search {
+                                                .search
+                                            } else { .clock },
+                                        ) {
+                                            on activate: navigate(p, s.url).then(set(address, ""))
+                                        }
                                     }
                                 }
                             }
@@ -3561,13 +3617,6 @@ view page_presented(p: Page, failed: State<Text>) {
     }
 }
 
-/// One page this browser visited that answers what is typed in the address field.
-view suggestion_row(p: Page, v: Visit) {
-    ui.ListRow(title: v.title, secondary: v.url, icon: .clock) {
-        on activate: navigate(p, v.url)
-    }
-}
-
 /// One row the extension whose keyword the address addresses offers: what choosing it sends the
 /// extension.
 view omnibox_row(p: Page, r: OmniboxRow) {
@@ -3576,13 +3625,84 @@ view omnibox_row(p: Page, r: OmniboxRow) {
     }
 }
 
-/// The pages this browser visited that answer `typed`: its history, never a list of its own.
-fn suggestions(b: Browser, typed: Text) -> List<Visit> {
-    let q = typed.trim().lower()
+/// What the address bar offers for `typed`, as the person's own browsers answer it: the pages
+/// they saved, then the ones they open most often and most lately (this browser's history, as
+/// the system ranks it by their use, then the pages another browser's history brought over,
+/// newest first), each page once, and the search engine's row. Pages whose address begins with
+/// what was typed come before the ones that only mention it. The search leads, unless what was
+/// typed is an address or the start of one the person has been to.
+fn suggestions(b: Browser, typed: Text) -> List<Suggestion> {
+    let words = typed.trim()
+    let q = bare(words)
     if q == "" {
         return []
     }
-    b.visits.filter(v -> v.url.lower().contains(q) or v.title.lower().contains(q)).take(6)
+    let saved = b.bookmarks.filter(k -> answers(k.url, k.title, q))
+    let visited = ranked(b.visits.filter(v -> answers(v.url, v.title, q)))
+    let imported = b.imported_visits
+        .filter(v -> answers(v.url, v.title, q))
+        .sort_by(v -> v.last, desc)
+    let all = saved.map(k -> page_suggestion(.bookmark, k.title, k.url))
+        + visited.map(v -> page_suggestion(.visited, v.title, v.url))
+        + imported.map(v -> page_suggestion(.imported, v.title, v.url))
+    let once: List<Suggestion> = []
+    for s in all {
+        if not once.any(held -> bare(held.url) == bare(s.url)) {
+            once = once + [s]
+        }
+    }
+    let leading = once.filter(s -> bare(s.url).starts_with(q))
+    let pages = (leading + once.filter(s -> not bare(s.url).starts_with(q))).take(4)
+    let search = Suggestion(
+        kind: .search,
+        title: std.say("Search for “{words}”"),
+        url: search_address(b, words),
+        secondary: shown_url(origin_of(engine(b))),
+    )
+    if looks_like_site(words.lower()) or not leading.is_empty() {
+        pages + [search]
+    } else { [search] + pages }
+}
+
+/// A page the address bar offers, called by its title, or by its address when it has none.
+fn page_suggestion(kind: SuggestionKind, title: Text, url: Text) -> Suggestion {
+    let shown = shown_url(url)
+    Suggestion(
+        kind: kind,
+        title: if title.trim() == "" or title == url { shown } else { title },
+        url: url,
+        secondary: shown,
+    )
+}
+
+/// Whether a page answers the words `q` (lowercase, as [`bare`] leaves them): its address or
+/// its title holds each of them.
+fn answers(url: Text, title: Text, q: Text) -> Bool {
+    let key = bare(url)
+    let named = title.lower()
+    q.split(" ").filter(w -> w != "").all(w -> key.contains(w) or named.contains(w))
+}
+
+/// An address or what was typed, lowercase, without its scheme or `www.`: what the address bar
+/// compares.
+fn bare(url: Text) -> Text {
+    let lower = url.trim().lower()
+    let rest = match lower.find("://") {
+        .some(at) => lower.slice(at + 3, lower.len()),
+        .none => lower,
+    }
+    if rest.starts_with("www.") { rest.slice(4, rest.len()) } else { rest }
+}
+
+/// An address as the address bar shows it: without its scheme, `www.` or a closing slash.
+fn shown_url(url: Text) -> Text {
+    let said = url.trim()
+    let rest = match said.find("://") {
+        .some(at) => said.slice(at + 3, said.len()),
+        .none => said,
+    }
+    let host = if rest.lower().starts_with("www.") { rest.slice(4, rest.len()) } else { rest }
+    if host.ends_with("/") { host.slice(0, host.len() - 1) } else { host }
 }
 
 /// One step of what was done in a page: what it was, what it acted on and how it ended.
@@ -3925,16 +4045,18 @@ view download_row(p: Page, d: Download) {
 /// What a download says under its name: how far it has come, or how it ended.
 fn download_secondary(d: Download) -> Text {
     if d.state == "downloading" {
+        let received = size_text(d.received)
         if d.total > 0 {
-            "{size_text(d.received)} of {size_text(d.total)}"
-        } else { "{size_text(d.received)} downloaded" }
+            let total = size_text(d.total)
+            std.say("{received} of {total}")
+        } else { std.say("{received} downloaded") }
     } else if d.state == "awaiting" {
-        "Waiting for where to save it"
+        std.say("Waiting for where to save it")
     } else if d.state == "completed" {
-        if d.path == "" { "Download complete" } else { "Saved to {d.path}" }
+        if d.path == "" { std.say("Download complete") } else { std.say("Saved to {d.path}") }
     } else if d.state == "failed" {
-        if d.error == "" { "The download failed" } else { d.error }
-    } else if d.state == "cancelled" { "Cancelled" } else { d.state }
+        if d.error == "" { std.say("The download failed") } else { d.error }
+    } else if d.state == "cancelled" { std.say("Cancelled") } else { d.state }
 }
 
 /// The next size up: 1.2 times the page's font, kept between a quarter and five times its own.

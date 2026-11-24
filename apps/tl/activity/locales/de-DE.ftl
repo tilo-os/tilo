@@ -53,15 +53,12 @@ d-k5cpej2o = Aktivität
     .w-what-changed = Was sich geändert hat
     .w-compare = Vergleichen
     .w-no-content-differences-in-this-selection = Keine inhaltlichen Unterschiede in dieser Auswahl
-
-d-fc3c2i6x = Agent-Aufgabe
     .w-agent-task = Agent-Aufgabe
     .w-why-this-work = Warum diese Arbeit
     .w-decision = Entscheidung
     .w-no-reason-was-recorded = Es wurde kein Grund aufgezeichnet.
     .w-changes-still-in-effect = Änderungen, die noch gelten
     .w-this-session-leaves-nothing-in-place = Diese Sitzung lässt nichts zurück: jede ihrer Änderungen wurde rückgängig gemacht.
-    .w-show-more = Mehr anzeigen
 
 d-qlpt7vlt = Ausgeführt von
     .w-started-by-you = Von dir gestartet

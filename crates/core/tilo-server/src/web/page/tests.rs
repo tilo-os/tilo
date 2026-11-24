@@ -429,7 +429,7 @@ async fn a_pages_view_asks_the_browser_for_a_call_step_and_hears_its_answer() {
             &mut browser,
             &PageAsk::CallResult {
                 request_id: 7,
-                answer: CallAnswer::Answered(snapshot.clone()),
+                answer: CallAnswer::Answered(Box::new(snapshot.clone())),
             },
         )
         .await;
@@ -443,7 +443,7 @@ async fn a_pages_view_asks_the_browser_for_a_call_step_and_hears_its_answer() {
         assert!(
             matches!(
                 pages.answered.lock().unwrap().as_slice(),
-                [(1, 7, CallAnswer::Answered(got))] if *got == snapshot
+                [(1, 7, CallAnswer::Answered(got))] if **got == snapshot
             ),
             "the step's own answer, as the browser gave it"
         );

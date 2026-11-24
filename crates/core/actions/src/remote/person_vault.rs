@@ -80,6 +80,59 @@ pub const FILL_PAGE: &str = "fill-page";
 /// is read by everyone in it and by the agent's model, so neither is a way to one.
 pub const ASK: &str = "ask";
 
+/// The record kind the workspace keeps its vault in, in Passwords: where every action of the
+/// vault that writes takes its step ([`effects`]).
+pub const VAULT_KIND: &str = tilo_action_policy::roles::WORKSPACE_VAULT_KIND;
+/// The vault record's step that keeps an item, a new one or an edit of one.
+pub const KEEP_SEALED: &str = "keep-sealed";
+/// The vault record's step that forgets an item.
+pub const REMOVE_SEALED: &str = "remove-sealed";
+/// The vault record's step that writes down an item's uses.
+pub const KEEP_USES: &str = "keep-uses";
+
+/// What the vault's action `action` writes: the step the workspace's host takes in the record it
+/// keeps the vault in when it answers the call ([`VAULT_KIND`] in Passwords). It is the action's
+/// own declaration, so a device reading the step accepts it as the call's, and an agent listing
+/// the action reads what it writes. A read writes nothing.
+#[must_use]
+pub fn effects(action: &str) -> Vec<crate::ActionEffect> {
+    match action {
+        ADD | KEEP_ENTRY | ASK => vec![vault_step(KEEP_SEALED)],
+        REMOVE | FORGET_ENTRY => vec![vault_step(REMOVE_SEALED)],
+        FILL_PAGE | WEB_CALL | SIGN | RELEASE => vec![vault_step(KEEP_USES)],
+        _ => Vec::new(),
+    }
+}
+
+/// The step `verb` in the record the workspace keeps its vault in.
+/// The step `verb` ([`KEEP_SEALED`], [`REMOVE_SEALED`], [`KEEP_USES`]) of the record the
+/// workspace's vault is kept in: what an action that writes the vault declares.
+#[must_use]
+pub fn vault_step(verb: &str) -> crate::ActionEffect {
+    crate::ActionEffect::new(tilo_app_id::apps::PASSWORDS, VAULT_KIND, verb)
+}
+
+/// What the action `target` names writes in the workspace's vault, as it declares it: the
+/// vault's own actions ([`effects`]), whether asked of [`PROVIDER`] or of the workspace's tree
+/// (`workspace/vault`), and a use by reference of another app, which writes down the use
+/// ([`described_use`]).
+#[must_use]
+pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect> {
+    let in_workspace_tree = target.provider == super::WORKSPACE_GOVERNANCE_PROVIDER
+        && target
+            .address
+            .resource
+            .strip_prefix(super::WORKSPACE_GOVERNANCE_KIND)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .and_then(|rest| rest.strip_suffix(super::WORKSPACE_VAULT))
+            .and_then(|workspace| workspace.strip_suffix('/'))
+            .is_some_and(|workspace| !workspace.contains('/'));
+    if target.provider == PROVIDER || in_workspace_tree {
+        return effects(&target.address.action);
+    }
+    described_use(target).map_or_else(Vec::new, |action| action.effects)
+}
+
 /// The kind of resource a reference is the address of: what a parameter that
 /// takes a secret by reference names as its resource kind.
 pub const ITEM_KIND: &str = "vault.item";
@@ -469,48 +522,6 @@ impl Default for Generate {
     }
 }
 
-/// The arguments of [`ADD`] that carry a secret: the secret, the note and the fields' values.
-/// Whatever keeps a call of it (an invocation's record, a log line) keeps none of them.
-pub const SEALED_ARGUMENTS: [&str; 3] = ["secret", "notes", "fields"];
-
-/// Whether `target` is the vault's [`ADD`], whose [`SEALED_ARGUMENTS`] no record keeps: asked
-/// of the vault's provider, or of the vault in its workspace's own tree.
-#[must_use]
-pub fn seals_arguments(target: &RemoteActionTarget) -> bool {
-    target.address.action == ADD
-        && (target.provider == PROVIDER
-            || target.address.resource == RESOURCE
-            || target
-                .address
-                .resource
-                .strip_suffix(super::WORKSPACE_VAULT)
-                .is_some_and(|rest| rest.ends_with('/')))
-}
-
-/// `request` with its [`SEALED_ARGUMENTS`] taken out, where it seals them ([`seals_arguments`]),
-/// beside those it carried, by name: what a record of the call keeps, and what reaches the
-/// provider in the call alone.
-#[must_use]
-pub fn without_sealed(
-    request: &super::InvokeRequest,
-) -> (
-    super::InvokeRequest,
-    serde_json::Map<String, serde_json::Value>,
-) {
-    let mut kept = request.clone();
-    let mut sealed = serde_json::Map::new();
-    if seals_arguments(&request.target)
-        && let super::InvokeArgument::Json(arguments) = &mut kept.argument
-    {
-        for name in SEALED_ARGUMENTS {
-            if let Some(value) = arguments.remove(name) {
-                sealed.insert(name.to_owned(), value);
-            }
-        }
-    }
-    (kept, sealed)
-}
-
 /// A parameter that takes a secret by reference: the address of an item of
 /// the vault of the person the caller acts for ([`ItemRef`]), never the
 /// secret's text.
@@ -721,6 +732,13 @@ fn use_row(
             input: crate::InputSpec::None,
             params,
             view: None,
+            // A use of another app's writes the use down in the vault; the vault's own
+            // actions say what each writes.
+            effects: if provider == PROVIDER {
+                effects(action)
+            } else {
+                vec![vault_step(KEEP_USES)]
+            },
         },
     )
 }

@@ -239,6 +239,7 @@ impl ServiceSessions {
         let handler = ServerProtocol {
             workspaces: workspaces.clone(),
             trust_policy: handshake_trust.live_policy.clone(),
+            holders: Arc::clone(&handshake_trust.holders),
             blocked: Arc::default(),
             identity: live.clone(),
             metrics: metrics.clone(),
@@ -717,7 +718,8 @@ impl WorkspaceService {
     /// `None` when no thread could start, and the caller makes the write itself.
     #[must_use]
     pub fn writes_runtime(&self) -> Option<tokio::runtime::Handle> {
-        self.writes
+        let runtime = self
+            .writes
             .get_or_init(|| {
                 WritesThread::start()
                     .inspect_err(|error| {
@@ -726,7 +728,14 @@ impl WorkspaceService {
                     .ok()
             })
             .as_ref()
-            .map(|writes| writes.runtime.clone())
+            .map(|writes| writes.runtime.clone());
+        // The records this service serves carry their writes there too: a write waits on the key
+        // service or a link, and the thread that asked for it may be a record's reactor, which
+        // the write needs to run what it awaited.
+        if let Some(runtime) = &runtime {
+            self.workspaces.carry_record_writes_on(runtime.clone());
+        }
+        runtime
     }
 
     /// The ALPN handlers to register on the embedder's router: workspace join,
@@ -1091,6 +1100,10 @@ pub(crate) struct HandshakeTrust {
     /// every workspace, which at hundreds of workspaces would be most of the cost of
     /// admitting one more person.
     memberships: Arc<crate::workspaces::memberships::Memberships>,
+    /// The devices the workspaces here name among their holders: a holder is no
+    /// member and no trusted person, and the handshake admits the one device a
+    /// naming names, beside the people the policy admits.
+    holders: Arc<std::sync::RwLock<std::collections::HashSet<[u8; 32]>>>,
 }
 
 impl HandshakeTrust {
@@ -1105,6 +1118,7 @@ impl HandshakeTrust {
             })),
             allow_any,
             memberships: Arc::default(),
+            holders: Arc::default(),
         };
         trust.apply();
         trust
@@ -1125,6 +1139,7 @@ impl HandshakeTrust {
         let next = TrustPolicy::AllowList { users };
         let narrowed = narrows(&live, &next);
         *live = next;
+        *self.holders.write_recover() = self.memberships.holder_devices().into_iter().collect();
         drop(live);
         if narrowed {
             crate::authority_epoch::bump();
@@ -1226,6 +1241,9 @@ pub fn validate_service_device_identity(identity: &ServiceIdentity) -> Result<()
 pub struct ServerProtocol {
     pub workspaces: WorkspaceRegistry,
     pub trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    /// The devices the workspaces here name among their holders: admitted by the
+    /// handshake as the one device each naming names, and no person beside them.
+    pub holders: Arc<std::sync::RwLock<std::collections::HashSet<[u8; 32]>>>,
     /// The devices and people this host's operator blocks ([`crate::workspaces::blocked`]),
     /// shared with the workspaces it serves.
     pub blocked: Arc<std::sync::RwLock<crate::workspaces::blocked::BlockedKeys>>,
@@ -1318,7 +1336,7 @@ impl ServerProtocol {
     {
         self.identity
             .authenticate(
-                EndpointTrust::Live(&self.trust_policy),
+                EndpointTrust::LiveHolders(&self.trust_policy, &self.holders),
                 recv,
                 send,
                 MAX_FRAME_BYTES,
@@ -1341,6 +1359,37 @@ impl tilo_peer_state::owner::session::OwnHost for WorkspaceService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A holder device is admitted by the naming that names it alone: when the
+    /// naming goes, or the workspace does, the device is trusted no more.
+    #[test]
+    fn a_holder_device_whose_naming_is_gone_is_trusted_no_more() {
+        use tilo_lock::RwLockRecover as _;
+        let trust = HandshakeTrust::new(&TrustPolicy::AllowList { users: Vec::new() }, [1; 32]);
+        let device = [2; 32];
+        assert!(trust.holders.read_recover().is_empty());
+        trust.memberships.record_holders("w", [device]);
+        trust.apply();
+        assert!(
+            trust.holders.read_recover().contains(&device),
+            "the named device is admitted"
+        );
+        trust.memberships.record_holders("w", []);
+        trust.apply();
+        assert!(
+            !trust.holders.read_recover().contains(&device),
+            "a naming removed trusts its device no more"
+        );
+        trust.memberships.record_holders("w", [device]);
+        trust.apply();
+        assert!(trust.holders.read_recover().contains(&device));
+        trust.memberships.forget("w");
+        trust.apply();
+        assert!(
+            !trust.holders.read_recover().contains(&device),
+            "a workspace left trusts its holder no more"
+        );
+    }
 
     /// Only a trust policy that drops a root, or changes kind, narrows who
     /// may stay connected.

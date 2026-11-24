@@ -106,10 +106,12 @@ view people() {
         ui.FloatingPanel(width: if not space.compact { 400.0 }, fill: space.compact) {
             header: {
                 row(gap: .related, align: .center, wrap: true) {
-                    ui.Text(
-                        if board.showing != "" { "Who is here" } else { "People" },
-                        role: .heading,
-                    )
+                    stack(gap: .none) {
+                        ui.Text(people_title(board), role: .heading)
+                        // Who is here besides this person, counted as the list is: "2 here" over
+                        // one row reads as someone missing.
+                        ui.Text(here_line(board.rows.len()), role: .caption, secondary: true)
+                    }
                     spacer
                     ui.Button("Close", icon: .x, icon_only: true, size: .small, role: .plain) {
                         on press: device.close(device.people)
@@ -127,15 +129,41 @@ view people() {
     }
 }
 
+/// The roster's title: the workspace whose people these are, the one fact that says which
+/// workspace's roster a person is looking at. A card in the roster's place is about one person, so
+/// it says that instead.
+fn people_title(board: device.People) -> Text {
+    if board.showing != "" {
+        return std.say("Who is here")
+    }
+    if front_workspace_name() != "" {
+        return front_workspace_name()
+    }
+    return std.say("People")
+}
+
+/// Who is here besides this person, counted as the list counts them: never this person, who is the
+/// "you" of the words.
+fn here_line(others: Int) -> Text {
+    if others == 0 {
+        return std.say("Just you")
+    }
+    if others == 1 {
+        return std.say("You and 1 other")
+    }
+    return std.say("You and {others} others")
+}
+
 /// Everyone here, people first and software after: each row opening that person's card. Someone
-/// who follows this person says so on their row.
+/// who follows this person says so on their row. Where both people and software are here, each
+/// group stands under its own heading, so software is never read as someone who came in.
 view roster(board: device.People) {
     // The person at this device stands first in their own roster: their row opens their own
     // card, where what is theirs to change is.
     ui.ListRow(
         "You",
         secondary: availability_word(board.me),
-        mark: if board.me.following { .eye } else { .user },
+        mark: if board.following != "" { .eye } else { .user },
     ) {
         avatar: {
             ui.Avatar(
@@ -154,14 +182,29 @@ view roster(board: device.People) {
             inline: true,
         )
     } else {
+        let everyone = board.rows.filter(p -> not p.agent)
+        let software = board.rows.filter(p -> p.agent)
+        // A heading earns its line only where it tells one group from another: with one group the
+        // roster's title already says who is here.
+        let labelled = not everyone.is_empty() and not software.is_empty()
         scroll {
-            for p in board.rows {
-                person_row(p)
+            if labelled {
+                group_heading("People")
+            }
+            for p in everyone {
+                person_row(p, board)
+            }
+            if labelled {
+                group_heading("Agents")
+            }
+            for p in software {
+                person_row(p, board)
             }
         }
     }
     // The way into the workspace of whoever is not here yet: the session's own invite sheet,
-    // where the link is made.
+    // where the link is made. The sheet asks the workspace again, and says why where inviting is
+    // not this person's to do, so the offer stands whichever the reading answers.
     row(gap: .related, align: .center) {
         ui.Button("Invite someone", icon: .user_plus, size: .small) {
             on press: device.show_invite(device.invite)
@@ -169,46 +212,180 @@ view roster(board: device.People) {
     }
 }
 
+/// A group's heading: which of the two kinds of member the rows under it are.
+view group_heading(title: Text) {
+    ui.Text(title, role: .label, secondary: true)
+}
+
 /// One person's row: their face in the colour the workspace gives them, their name, and the one
 /// line that says where they are or what they are doing. An agent's row says the window it works
-/// in.
-view person_row(p: device.Person) {
-    let place = where_line(p)
-    let label = if p.name != "" { p.name } else { std.say("Someone") }
+/// in, with the way there; software is tagged as what it is, and nobody waves at it.
+view person_row(p: device.Person, board: device.People) {
+    let name = if p.name != "" { p.name } else { std.say("Someone") }
+    let doing = doing_line(p)
+    // Someone nobody named is told apart by when they joined: their name and face are every
+    // unnamed person's, and the line where they are says nothing about who they are.
+    let joined = if p.joined != "" { std.say("Joined {p.joined}") } else { "" }
+    // The person at this device follows them: the reading says so where their own word is, and
+    // the row's presence flag where the board has carried it.
+    let followed = p.following or board.following == p.key
+    let following = following_line(p, board)
+    let place = if following != "" { following } else { where_line(p) }
+    // The line under the name says where they are, or for someone nobody named when they joined;
+    // what they are doing is the row's own line under that, so the two are never the same words.
+    let secondary = if joined != "" { joined } else { place }
     ui.ListRow(
-        label,
-        secondary: if place != "" { place },
-        meta: if is_follower(p) { "Follows you" },
-        mark: if p.following {
+        name,
+        secondary: if secondary != "" { secondary },
+        note: if doing != "" { doing },
+        badge: if p.agent { software_tag(p) },
+        mark: if followed {
+            // Software says what kind it is before its name, as a reader and a painter both find it:
+            // an agent someone here runs, or one of the workspace's bots.
             .eye
         } else if p.agent { .bot } else if is_follower(p) { .users } else { .user },
     ) {
         avatar: {
-            ui.Avatar(name: p.name, colour: p.colour, status: presence_status(p))
+            if p.agent {
+                ui.Avatar(name: p.name, colour: p.colour, square: true, glyph: .bot)
+            } else {
+                ui.Avatar(name: p.name, colour: p.colour, status: presence_status(p))
+            }
         }
         trailing: {
             row(gap: .tight, align: .center) {
-                if p.call != "" {
-                    ui.Badge("In a call", tone: .info)
+                // Follow and Wave stand on the row itself, for any row, software included: an
+                // agent that has published no view yet is followed as it arrives.
+                if not p.agent {
+                    wave_button(p, board, name)
                 }
-                if p.availability == "away" or p.availability == "idle" {
-                    ui.Badge(availability_word(p), tone: .neutral)
-                }
+                follow_button(followed, p, name)
             }
         }
         on activate: device.show_person(device.people, person: p.key)
     }
-    if p.doing != "" {
-        ui.Text(p.doing, role: .caption, secondary: true)
+    if p.agent and goable(p) {
+        // Where software works: the window it is in, with the way there. Pressing it brings that
+        // window forward, so what it is on stands in front of this person.
+        row(gap: .related, align: .center) {
+            ui.Button("Go there", icon: .arrow_right, size: .small, role: .plain) {
+                on press: device.go_to(device.people, person: p.key)
+            }
+        }
     }
 }
 
-/// Where someone is, in the fewest words that place them: what they are doing if they said, the
-/// window they are in, the app, or the call.
-fn where_line(p: device.Person) -> Text {
-    if p.doing != "" {
+/// What kind of software a row is: one of the workspace's bots, or an agent someone here runs.
+fn software_tag(p: device.Person) -> Text {
+    if p.bot {
+        return std.say("Bot")
+    }
+    return std.say("Agent")
+}
+
+/// Whether where software works is known here: a window of this workspace, or the app it is in.
+fn goable(p: device.Person) -> Bool {
+    p.activity != "" or p.in_app != ""
+}
+
+/// The wave on a row: sent, so the waver knows it went, or the way to send one.
+view wave_button(p: device.Person, board: device.People, name: Text) {
+    if board.waved_to == p.key {
+        ui.Button(
+            "Waved",
+            icon: .check,
+            size: .small,
+            role: .plain,
+            accessible_name: std.say("You waved at {name}"),
+        ) {
+            on press: device.wave(device.people, person: p.key)
+        }
+    } else {
+        ui.Button(
+            "Wave",
+            icon: .hand,
+            size: .small,
+            role: .plain,
+            accessible_name: std.say("Wave at {name}"),
+        ) {
+            on press: device.wave(device.people, person: p.key)
+        }
+    }
+}
+
+/// The follow on a row: the way to mirror their view, or the way to stop.
+view follow_button(followed: Bool, p: device.Person, name: Text) {
+    if followed {
+        ui.Button(
+            "Stop",
+            icon: .x,
+            size: .small,
+            role: .plain,
+            accessible_name: std.say("Stop following {name}"),
+        ) {
+            on press: device.unfollow(device.people)
+        }
+    } else {
+        ui.Button(
+            "Follow",
+            icon: .eye,
+            size: .small,
+            role: .plain,
+            accessible_name: std.say("Follow {name}"),
+        ) {
+            on press: device.follow(device.people, person: p.key)
+        }
+    }
+}
+
+/// Whom a follower's row says they follow, after where they are: another person here, by their
+/// name, or "you" for the person at this device.
+fn following_line(p: device.Person, board: device.People) -> Text {
+    if p.follows == "" {
         return ""
     }
+    let place = where_line(p)
+    if p.follows == "self" {
+        if place != "" {
+            return std.say("{place}, following you")
+        }
+        return std.say("Following you")
+    }
+    let who = if let found = board.rows.find(r -> r.key == p.follows) { found.name } else { "" }
+    if who == "" {
+        return ""
+    }
+    if place != "" {
+        return std.say("{place}, following {who}")
+    }
+    return std.say("Following {who}")
+}
+
+/// What someone is doing, in the fewest words that say it: the call they are in, else what they
+/// said, else how available they are.
+fn doing_line(p: device.Person) -> Text {
+    if p.call != "" {
+        let call = p.call
+        return std.say("In {call}")
+    }
+    if p.doing != "" {
+        return p.doing
+    }
+    if p.availability == "focusing" {
+        return std.say("Focusing")
+    }
+    if p.availability == "away" {
+        return std.say("Away")
+    }
+    if p.availability == "idle" {
+        return std.say("Idle")
+    }
+    return ""
+}
+
+/// Where someone is, in the fewest words that place them: the window they are in, or the app when
+/// this shell shows no window of it.
+fn where_line(p: device.Person) -> Text {
     if p.activity != "" {
         let title = p.activity
         if p.agent {
@@ -219,10 +396,6 @@ fn where_line(p: device.Person) -> Text {
     if p.in_app != "" {
         let in_app = p.in_app
         return std.say("In {in_app}")
-    }
-    if p.call != "" {
-        let call = p.call
-        return std.say("In {call}")
     }
     return ""
 }
@@ -418,26 +591,62 @@ view back_to_everyone() {
 /// Whose view this is while this person follows someone: their face and "Following Ada" where the
 /// bar's glance value stands, with the way to stop. The person's own clock gives way to it, as
 /// their own view is not the one the bar is saying.
+///
+/// A bar too narrow for the words folds the chip into their face, with Stop beside it: their face
+/// and the way to stop stay on a phone, where the bar shows no other face of them.
 view follow_chip() {
     let board = device.people
+    // A bar too narrow for the words folds the chip into their face, with Stop's own mark beside it.
+    let folded = space.compact
     if board.following != "" {
         if let who = board.rows.find(p -> p.key == board.following) {
             let name = who.name
+            let label = std.say("Following {name}")
             row(gap: .tight, align: .center) {
-                if let face = face_of(who) {
-                    ui.Button(std.say("Following {name}"), faces: [face], role: .bar) {
-                        on press: device.show_person(device.people, person: who.key)
-                    }
-                } else {
-                    ui.Button(std.say("Following {name}"), icon: .eye, role: .bar) {
-                        on press: device.show_person(device.people, person: who.key)
-                    }
-                }
-                ui.Button("Stop", icon: .square, size: .small, role: .plain) {
+                following_face(who, label, words: not folded)
+                ui.Button("Stop", icon: .square, icon_only: folded, size: .small, role: .plain) {
                     on press: device.unfollow(device.people)
                 }
             }
         }
+    } else if board.stopped != "" {
+        // Their own input took their view back: the bar says so where it said whose view this was,
+        // and the moment passes. Someone who left takes the following with them, and says nothing.
+        if let who = board.rows.find(p -> p.key == board.stopped) {
+            if let face = face_of(who) {
+                ui.Chip(std.say("Stopped following"), faces: [face])
+            } else {
+                ui.Chip(std.say("Stopped following"), icon: .eye_off)
+            }
+        } else {
+            ui.Chip(std.say("Stopped following"), icon: .eye_off)
+        }
+    }
+}
+
+/// The face of the person followed, a press on which opens their card: with `label`, whose view
+/// this is, beside it where the bar has room, and alone where it has none.
+view following_face(who: device.Person, label: Text, words: Bool) {
+    if let face = face_of(who) {
+        ui.Button(label, faces: [face], icon_only: not words, role: .bar) {
+            on press: device.show_person(device.people, person: who.key)
+        }
+    } else {
+        ui.Button(label, icon: .eye, icon_only: not words, role: .bar) {
+            on press: device.show_person(device.people, person: who.key)
+        }
+    }
+}
+
+/// What stands where the bar's glance value does: the time, unless this person follows someone or
+/// their own input has just ended it — a view that is not their own is said where the clock
+/// stands, so the clock keeps out of its way ([`follow_chip`]).
+view clock_or_follow() {
+    let board = device.people
+    if board.following != "" or board.stopped != "" {
+        follow_chip()
+    } else {
+        clock()
     }
 }
 

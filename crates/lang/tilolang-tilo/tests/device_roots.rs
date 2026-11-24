@@ -17,14 +17,14 @@ type Place {
 }
 
 /// One thing this device read, and when it did.
-type Reading {
+type Sample {
     name: Text = ""
     fetched: Text = ""
 }
 
 /// What this device read of the places it follows.
 type Readings {
-    readings: Collection<Reading>
+    readings: Collection<Sample>
 }
 
 /// The places people follow together.
@@ -45,7 +45,8 @@ action follow(p: Places, name: Text) {
 action read_here(p: Places, at: Text) {
     let mine = readings
     for place in p.places {
-        mine.readings.insert(Reading(name: place.name, fetched: at))
+        let who = place.name
+        mine.readings.insert(Sample(name: who, fetched: at))
     }
 }
 
@@ -59,7 +60,7 @@ action read_names(p: Places) -> Text {
 }
 
 view places_window(p: Places) {
-    ui.Text("{p.places}")
+    ui.Text("Places")
 }
 "#,
     "",
@@ -109,10 +110,17 @@ fn each_device_keeps_its_own_readings_and_people_share_the_places() {
     let places = first.root(APP);
     second.root(APP);
     first.commit();
+    assert!(
+        first.host.store().contains(&readings_of("ada-1", &meta)),
+        "opening the app makes this device's readings"
+    );
     assert_eq!(
-        places.doc, "root-Places",
+        places.doc,
+        format!("root-{}", type_id(&meta, "Places")),
         "what people share stays one root of the workspace"
     );
+
+    // A place one device follows is the workspace's, once both have seen it.
     invoke(
         &first,
         &meta,
@@ -120,24 +128,8 @@ fn each_device_keeps_its_own_readings_and_people_share_the_places() {
         vec![Value::resource(&places), Value::text("Berlin")],
     );
     first.commit();
-    assert_eq!(
-        invoke(&second, &meta, "read_names", vec![Value::resource(&places)]),
-        Value::text(""),
-        "the second device read nothing, though it follows the same place"
-    );
 
-    let mine = readings_of("ada-1", &meta);
-    assert_eq!(
-        first.read(&mine, "readings").kind_name(),
-        "list",
-        "the device's readings are a document of their own, under the device"
-    );
-    assert_eq!(
-        second.host.store().contains(&mine),
-        false,
-        "the other device holds no readings of this one"
-    );
-
+    // What one device reads stays on that device.
     invoke(
         &first,
         &meta,
@@ -155,7 +147,20 @@ fn each_device_keeps_its_own_readings_and_people_share_the_places() {
         Value::text(""),
         "and the other device reads nothing of it"
     );
+    assert_eq!(
+        second.host.store().contains(&readings_of("ada-1", &meta)),
+        false,
+        "the other device holds no copy of this one's readings"
+    );
 
+    // Once it has seen the first device's, it reads the shared place itself, and each keeps its
+    // own answer.
+    first.sync_with(&second);
+    assert_eq!(
+        invoke(&second, &meta, "read_names", vec![Value::resource(&places)]),
+        Value::text(""),
+        "a copy of the other device's readings is not this device's"
+    );
     invoke(
         &second,
         &meta,
@@ -163,19 +168,38 @@ fn each_device_keeps_its_own_readings_and_people_share_the_places() {
         vec![Value::resource(&places), Value::text("four")],
     );
     second.commit();
-    first.sync_with(&second);
     assert_eq!(
         invoke(&second, &meta, "read_names", vec![Value::resource(&places)]),
         Value::text("Berlin,"),
-        "the second device's own reading, made of the plants, sits beside the first's"
+        "the second device reads its own reading"
     );
     assert_eq!(
-        invoke(&first, &meta, "read_names", vec![Value::resource(&places)]),
-        Value::text("Berlin,"),
-        "the first device still reads its own"
+        read_when(&first, "ada-1", &meta),
+        "nine",
+        "and the first device's reading is still the one it made"
+    );
+    assert_eq!(
+        read_when(&second, "ada-2", &meta),
+        "four",
+        "each device's reading says when that device read it"
     );
     assert_ne!(
         readings_of("ada-1", &meta).id_string(),
         readings_of("ada-2", &meta).id_string()
     );
+}
+
+/// When the device `device` read the place it follows, as its own reading says.
+fn read_when(replica: &Replica, device: &str, meta: &tilolang_runtime::meta::Meta) -> String {
+    let mine = readings_of(device, meta);
+    let Value::List(readings) = replica.read(&mine, "readings") else {
+        panic!("readings are a list")
+    };
+    let Some(Value::Ref(held)) = readings.first() else {
+        return String::new();
+    };
+    match replica.read(&held.target, "fetched") {
+        Value::Text(text) => text,
+        other => panic!("fetched is {other:?}"),
+    }
 }

@@ -455,7 +455,7 @@ mod tests {
             generation: 0,
             continuity: 0,
             publication: None,
-            frames: Vec::new(),
+            frames: crate::owner::stored::Frames::default(),
         };
         let mut record = NativeAuthorityStorage {
             revision,

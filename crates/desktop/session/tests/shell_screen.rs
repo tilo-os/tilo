@@ -1287,9 +1287,14 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
 #[test]
 fn a_german_shell_reads_its_own_words_in_german() {
     let _settled = ui::motion::testing::settled();
-    settings_store::appearance::LANGUAGE
-        .set(Some("de-DE".to_owned()))
-        .expect("the person's language is saved");
+    // Chosen on a device whose session is not running yet, as the CLI chooses it there: the
+    // session that follows reads it in the person's language.
+    settings_store::outside::set_on_this_device(
+        "settings/appearance",
+        &settings_store::workspace::verb("language"),
+        &json!("de-DE"),
+    )
+    .expect("the person's language is saved");
     assert_eq!(
         ui::i18n::preferred_language().as_deref(),
         Some("de-DE"),
@@ -1300,8 +1305,9 @@ fn a_german_shell_reads_its_own_words_in_german() {
     until(&mut session, "the shell's words in German", |session| {
         session.shell_says("Zeigt Strips")
     });
-    // The style switch and the strips' empty place: the shell package's own words.
-    for german in ["Zeigt Strips", "Fang etwas an"] {
+    // The style switch and the start surface an empty shell draws: the shell package's own
+    // words.
+    for german in ["Zeigt Strips", "Etwas anfangen"] {
         assert!(
             session.shell_says(german),
             "a German shell says `{german}`: {:?}",
@@ -1321,9 +1327,12 @@ fn a_german_shell_reads_its_own_words_in_german() {
         "the dock names the launcher: {:?}",
         session.accessible_labels()
     );
-    settings_store::appearance::LANGUAGE
-        .set(None)
-        .expect("the language is the system's again");
+    settings_store::outside::set_on_this_device(
+        "settings/appearance",
+        &settings_store::workspace::verb("language"),
+        &Value::Null,
+    )
+    .expect("the language is the system's again");
     ui::i18n::I18nManager::set_locale("en-US");
 }
 

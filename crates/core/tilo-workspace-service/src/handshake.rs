@@ -57,6 +57,13 @@ pub enum EndpointTrust<'a> {
     /// [`HandshakeTrust::Live`], read from the server's live policy when the
     /// hello is checked.
     Live(&'a RwLock<TrustPolicy>),
+    /// [`HandshakeTrust::LiveHolders`]: the live policy, and the devices the
+    /// workspaces here name among their holders, both read as the hello is
+    /// checked.
+    LiveHolders(
+        &'a RwLock<TrustPolicy>,
+        &'a RwLock<std::collections::HashSet<[u8; 32]>>,
+    ),
     /// A fixed, named requirement such as [`HandshakeTrust::OwnerDevicesOnly`].
     Fixed(HandshakeTrust<'static>),
 }
@@ -144,6 +151,18 @@ impl LiveIdentity {
                     server_nonce,
                 )
             }
+            EndpointTrust::LiveHolders(policy, holders) => {
+                let policy = policy.read_recover();
+                let holders = holders.read_recover();
+                auth::server_begin(
+                    &identity,
+                    HandshakeTrust::LiveHolders(&policy, &holders),
+                    &revocations,
+                    hello,
+                    now_ns,
+                    server_nonce,
+                )
+            }
             EndpointTrust::Fixed(trust) => {
                 auth::server_begin(&identity, trust, &revocations, hello, now_ns, server_nonce)
             }
@@ -170,6 +189,17 @@ impl LiveIdentity {
                 auth::server_refusal(
                     &identity,
                     HandshakeTrust::Live(&policy),
+                    &revocations,
+                    hello,
+                    error,
+                )
+            }
+            EndpointTrust::LiveHolders(policy, holders) => {
+                let policy = policy.read_recover();
+                let holders = holders.read_recover();
+                auth::server_refusal(
+                    &identity,
+                    HandshakeTrust::LiveHolders(&policy, &holders),
                     &revocations,
                     hello,
                     error,
@@ -965,6 +995,43 @@ mod tests {
     }
 
     use removed::{answered, device_of, refusal_in, removal, server_and_removed_device};
+
+    /// A device another person's workspace names among its holders passes the
+    /// handshake as that one device; one no naming names does not, whatever
+    /// person it is of.
+    #[test]
+    fn a_device_the_workspaces_name_is_admitted_and_one_they_name_not_is_refused() {
+        let server = identity("server").unwrap();
+        let (root, user) = UserIdentity::generate("Bob", 2);
+        let (_, device) = DeviceIdentity::generate("holder", 100);
+        let mut cert = DeviceCert {
+            user_public_key: user.public_key,
+            device_public_key: device.public_key,
+            device_label: device.label,
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 200,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let policy = RwLock::new(TrustPolicy::AllowList { users: Vec::new() });
+        let named = RwLock::new(std::collections::HashSet::from([cert.device_public_key]));
+        let hello = Hello::new(cert, [1; 32]);
+        assert!(
+            server
+                .begin(EndpointTrust::LiveHolders(&policy, &named), &hello)
+                .is_ok(),
+            "the device a workspace names among its holders is admitted"
+        );
+        named.write().unwrap().clear();
+        assert!(
+            server
+                .begin(EndpointTrust::LiveHolders(&policy, &named), &hello)
+                .is_err(),
+            "a device no workspace names is refused, of whatever person"
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_removed_device_is_told_so_before_its_hello_is_closed() {

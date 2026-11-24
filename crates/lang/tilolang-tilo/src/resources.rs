@@ -2468,6 +2468,19 @@ impl ResourceStore {
     }
 
     fn children(&self, at: &ResourceRef, field: &str) -> Result<Vec<(String, String)>, StoreError> {
+        self.children_where(at, field, &[])
+    }
+
+    /// The item ids of the collection `field` of `at` the store's index holds to `filters`, and
+    /// every item of it this store wrote and has not sent, as they read now, with each one's order
+    /// key. The index has not seen those writes, so a caller narrowing by `filters` checks them
+    /// again on what it is given.
+    fn children_where(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        filters: &[Filter],
+    ) -> Result<Vec<(String, String)>, StoreError> {
         let Some(item_types) = self.field(&at.ty, field).map(|entry| entry.items) else {
             return Err(StoreError::Invalid(format!("{field} is not a collection")));
         };
@@ -2491,9 +2504,10 @@ impl ResourceStore {
         for kind in &kinds {
             let mut after: Option<Cursor> = None;
             loop {
-                let query = Query::of(kind.clone(), PAGE)
+                let mut query = Query::of(kind.clone(), PAGE)
                     .filter(Filter::Is(PARENT.to_owned(), Value::Text(holder.clone())))
                     .after(after.take());
+                query.filters.extend_from_slice(filters);
                 let page = match self.command(Command::Query(query))? {
                     Reply::Page(page) => page,
                     other => return Err(backend(format!("a query answered {other:?}"))),
@@ -2687,6 +2701,11 @@ impl ResourceStore {
                 None,
             ));
         }
+        if let Some(index) = index
+            && let Some(key) = self.indexed_key(at, field, index, leaving)?
+        {
+            return Ok(key);
+        }
         let others: Vec<(String, String)> = self
             .children(at, field)?
             .into_iter()
@@ -2699,6 +2718,64 @@ impl ResourceStore {
             .map(|(key, _)| key.as_str());
         let high = others.get(index).map(|(key, _)| key.as_str());
         Ok(tilolang_runtime::place::key_between(low, high))
+    }
+
+    /// The order key of the place `index` among the items of the collection `field` of `at` other
+    /// than `leaving`, from the store's index: the two items the place falls between are read,
+    /// however many the collection holds. `None` where the index does not say where they stand
+    /// now: items of more than one kind, or writes not sent yet that place items there.
+    fn indexed_key(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        index: usize,
+        leaving: Option<&str>,
+    ) -> Result<Option<String>, StoreError> {
+        let Some(items) = self.field(&at.ty, field).map(|entry| entry.items) else {
+            return Ok(None);
+        };
+        let [item_ty] = items.as_slice() else {
+            return Ok(None);
+        };
+        let kinds = self.kinds_of_type(item_ty)?;
+        let [kind] = kinds.as_slice() else {
+            return Ok(None);
+        };
+        if self.places_written(kind, &id_of(at)) {
+            return Ok(None);
+        }
+        let listing = self.paged(at, field, kind, Vec::new(), Order::default());
+        let stands = match leaving {
+            Some(item) => match listing.position(item) {
+                Some(stands) => stands,
+                None => return Ok(None),
+            },
+            None => None,
+        };
+        let others = listing.len().saturating_sub(usize::from(stands.is_some()));
+        let index = index.min(others);
+        // Where the place `i` of the others stands in the listing, which still holds `leaving`.
+        let past = |i: usize| match stands {
+            Some(stands) if stands <= i => i.saturating_add(1),
+            _ => i,
+        };
+        let low = index.checked_sub(1).map(|before| listing.get(past(before)));
+        let high = (index < others).then(|| listing.get(past(index)));
+        // A place the listing could not read is told by reading every item.
+        if matches!(low, Some(None)) || matches!(high, Some(None)) {
+            return Ok(None);
+        }
+        let key = |id: Option<Option<Rc<str>>>| -> Result<Option<String>, StoreError> {
+            match id.flatten() {
+                Some(id) => Ok(self.held_at(&at.item(&id, item_ty.clone()))?.order),
+                None => Ok(None),
+            }
+        };
+        let (low, high) = (key(low)?, key(high)?);
+        Ok(Some(tilolang_runtime::place::key_between(
+            low.as_deref(),
+            high.as_deref(),
+        )))
     }
 
     /// The order key of the last item of the collection `field` of `at`: one item read, however
@@ -3909,6 +3986,30 @@ impl ResourceStore {
         })
     }
 
+    /// Whether this store holds writes not sent yet that add, remove or move resources of `kind`
+    /// in `holder`: where they stand in the store's index is then not where they stand now. A
+    /// write of their other fields leaves the index's order and membership as they are.
+    fn places_written(&self, kind: &str, holder: &str) -> bool {
+        let local = self.inner.local.borrow();
+        if local.is_empty() {
+            return false;
+        }
+        let cache = self.inner.cache.borrow();
+        let here = |held: &Held| held.kind == kind && held.parent.as_deref() == Some(holder);
+        local.iter().any(
+            |(id, now)| match (now.as_ref(), cache.get(id).and_then(Option::as_ref)) {
+                (Some(now), Some(was)) => {
+                    (here(now) || here(was))
+                        && (now.parent != was.parent
+                            || now.order != was.order
+                            || now.fields.get(STANDS_IN) != was.fields.get(STANDS_IN))
+                }
+                (Some(held), None) | (None, Some(held)) => here(held),
+                (None, None) => true,
+            },
+        )
+    }
+
     /// The filters `pred` is, over the fields of `entry`; `None` where the store cannot say it.
     fn filters_of(&self, pred: &Pred, entry: &TypeEntry) -> Option<Vec<Filter>> {
         let filter = self.filter_of(pred, entry)?;
@@ -4901,7 +5002,9 @@ impl Store for ResourceStore {
                 field.id
             )));
         };
-        if item_types.len() > 1 || renamed || self.writes_of(&kind) {
+        // Writes not sent yet that place items here are read over the store's index; a write of
+        // their other fields leaves the listing as the index has it.
+        if item_types.len() > 1 || renamed || self.places_written(&kind, &id_of(at)) {
             let ids = self
                 .children(at, &field.id)?
                 .into_iter()
@@ -4996,10 +5099,7 @@ impl Store for ResourceStore {
     ) -> Result<Rc<Listing>, StoreError> {
         let at = &*self.typed(at);
         let kind = self.kind_of_type(item)?;
-        let entry = self.entry_of_kind(&kind);
-        if !self.writes_of(&kind)
-            && let Some(entry) = entry
-        {
+        if let Some(entry) = self.entry_of_kind(&kind) {
             let filters = match pred {
                 Some(pred) => self.filters_of(pred, &entry),
                 None => Some(Vec::new()),
@@ -5009,7 +5109,24 @@ impl Store for ResourceStore {
                 None => Some(Order::default()),
             };
             if let (Some(filters), Some(sort)) = (filters, sort) {
-                return Ok(self.paged(at, &field.id, &kind, filters, sort));
+                if !self.writes_of(&kind) {
+                    return Ok(self.paged(at, &field.id, &kind, filters, sort));
+                }
+                // Writes this store has not sent yet, as an action's own: the index still narrows
+                // what is read to the items it holds to the filters, and those this store wrote,
+                // and the filters are checked again on what they read now.
+                let single = self.field(&at.ty, &field.id).is_some_and(|held| {
+                    held.items.len() == 1
+                        && self.kinds_of_type(item).is_ok_and(|kinds| kinds.len() == 1)
+                });
+                if single {
+                    let ids = self
+                        .children_where(at, &field.id, &filters)?
+                        .into_iter()
+                        .map(|(_, id)| Rc::from(item_of(&id)))
+                        .collect();
+                    return self.evaluated(at, ids, item, pred, order);
+                }
             }
         }
         let all = self.listing(at, field)?;

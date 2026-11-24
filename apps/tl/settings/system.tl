@@ -114,25 +114,167 @@ view updates_pane() {
     }
 }
 
-/// The person's own devices, which of them is this one, and the colour they show as.
+/// Everything that can act as the person — their computers, the agents they let in and the keys
+/// they made for their own programs — with which of them reach this device and how; and the
+/// colour they show as.
 view devices_pane() {
+    state renaming: Text = ""
+    state name_draft: Text = ""
     let listed = device.devices
+    let server = mcp.server
     let me = settings.identity
-    ui.Section("Your devices") {
-        if listed.devices.is_empty() {
+    if listed.refused != "" {
+        ui.StatusLine(listed.refused, status: .error)
+    }
+    if not listed.signed_in {
+        ui.Section("Add this device") {
             ui.Text(
-                "This is the only device this workspace knows yet.",
-                role: .caption,
-                secondary: true,
+                "This device is not one of yours yet, so nothing here acts as you. Add it to your own with a code from another of your devices.",
+                role: .body,
             )
+            ui.Button("Add a device", icon: .monitor_smartphone, role: .primary) {
+                on press: device.show_pair_device(device.invite)
+            }
         }
-        for one in listed.devices {
-            ui.ListRow(
-                one.label,
-                secondary: device_words(one),
-                selected: one.local,
-                icon: if one.display { .monitor } else { .laptop },
-            )
+    } else {
+        ui.Section("Everything that can act as you") {
+            ui.Text("Remove anything you don't recognize.", role: .caption, secondary: true)
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Button("Add a device", icon: .monitor_smartphone, role: .primary) {
+                    on press: device.show_pair_device(device.invite)
+                }
+                ui.Button("Connect an agent or computer", icon: .plus) {
+                    on press: device.show_connect(device.invite)
+                }
+            }
+        }
+        let agents = listed.access.filter(
+            one -> one.kind == .agent or one.agent != "" or one.kind == .script,
+        )
+        ui.Section("Agents") {
+            if agents.is_empty() {
+                ui.Text("No agent acts as you yet.", role: .caption, secondary: true)
+            }
+            for one in agents {
+                let grant = server.grants.find(g -> g.id == one.id)
+                ui.ListRow(
+                    one.label,
+                    secondary: if one.revoked {
+                        "Removed; every device of yours refuses it"
+                    } else { agent_reach(grant) },
+                    note: if one.revoked {
+                        ""
+                    } else if let g = grant { agent_working(g) } else { "" },
+                    icon: if one.kind == .script { .key } else { .bot },
+                ) {
+                    trailing: {
+                        row(gap: .tight, align: .center) {
+                            if let g = grant {
+                                if g.stopped {
+                                    ui.Button("Let it go on", size: .small) {
+                                        on press: mcp.go_on(
+                                            mcp.server,
+                                            session: mcp.AgentSessionRef(
+                                                grant: g.id,
+                                                session: g.agent,
+                                            ),
+                                        )
+                                    }
+                                }
+                                for running in g.sessions {
+                                    ui.Button(
+                                        "Stop {running.name}",
+                                        size: .small,
+                                        role: .destructive,
+                                    ) {
+                                        on press: mcp.stop(
+                                            mcp.server,
+                                            session: mcp.AgentSessionRef(
+                                                grant: g.id,
+                                                session: running.name,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
+                            if not one.revoked {
+                                manage_menu(one, renaming, name_draft, removable: true)
+                            }
+                        }
+                    }
+                }
+                if not one.revoked {
+                    agent_facts(one, grant)
+                }
+                if renaming == one.id {
+                    name_field(one, renaming, name_draft)
+                }
+            }
+        }
+        let computers = listed.access.filter(one -> one.kind == .device and one.agent == "")
+        ui.Section("Browsers and computers") {
+            if computers.is_empty() {
+                ui.Text(
+                    "No browser or computer acts as you yet, beside this one.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for one in computers {
+                ui.ListRow(
+                    if one.current { "This computer" } else { one.label },
+                    secondary: if one.current and not one.revoked {
+                        "This computer; your other devices reach it"
+                    } else { access_words(one) },
+                    note: one.fingerprint,
+                    selected: one.current,
+                    icon: .monitor,
+                ) {
+                    trailing: {
+                        row(gap: .tight, align: .center) {
+                            if let when = one.last_active_ms {
+                                if not one.current {
+                                    ui.Time(
+                                        instant(when),
+                                        role: .caption,
+                                        past: true,
+                                        secondary: true,
+                                    )
+                                }
+                            }
+                            if not one.revoked {
+                                manage_menu(one, renaming, name_draft, removable: not one.current)
+                            }
+                        }
+                    }
+                }
+                if not one.revoked {
+                    computer_facts(one)
+                }
+                if renaming == one.id {
+                    name_field(one, renaming, name_draft)
+                }
+            }
+        }
+        ui.Section("How your devices reach each other") {
+            let others = listed.devices.filter(one -> not one.local)
+            if others.is_empty() {
+                ui.Text(
+                    "No other device of yours is in reach now.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            for one in others {
+                ui.ListRow(one.label, secondary: path_words(one), icon: .monitor)
+            }
+            if not listed.workspaces.is_empty() {
+                ui.Text(
+                    "A device is reached directly when it is on your network, and otherwise through the workspace this device syncs with.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
         }
     }
     ui.Section("You") {
@@ -145,13 +287,155 @@ view devices_pane() {
     }
 }
 
-/// How one of the person's devices stands, in a few words.
-fn device_words(one: device.PersonalDeviceView) -> Text {
-    if one.local {
-        "This device"
+/// The row's own menu: give it another name, and — when the person may take it back here — the
+/// four reasons a key's access ends, each its own item, since what a list of keys keeps is why it
+/// ended.
+template view manage_menu(
+    one: device.AccessKey,
+    renaming: State<Text>,
+    draft: State<Text>,
+    removable: Bool,
+) {
+    ui.MenuButton("Manage {one.label}", icon: .ellipsis) {
+        ui.MenuItem("Name {one.label}…") {
+            on choose: set(renaming, one.id).then(set(draft, one.label))
+        }
+        if removable {
+            ui.MenuSeparator()
+            ui.MenuItem("Remove {one.label} — no longer used", destructive: true, icon: .trash) {
+                on choose: device.revoke(device.devices, device: one.id, reason: "retired")
+            }
+            ui.MenuItem("Remove {one.label} — it was lost", destructive: true, icon: .trash) {
+                on choose: device.revoke(device.devices, device: one.id, reason: "lost")
+            }
+            ui.MenuItem("Remove {one.label} — it was stolen", destructive: true, icon: .trash) {
+                on choose: device.revoke(device.devices, device: one.id, reason: "stolen")
+            }
+            ui.MenuItem(
+                "Remove {one.label} — someone knows its key",
+                destructive: true,
+                icon: .trash,
+            ) {
+                on choose: device.revoke(device.devices, device: one.id, reason: "compromised")
+            }
+        }
+    }
+}
+
+/// The field that names `one`, open after the row's own menu asked for it: what it reads by is in
+/// the field, and Save hands the new name to the record of the person's devices.
+template view name_field(one: device.AccessKey, renaming: State<Text>, draft: State<Text>) {
+    row(gap: .related, align: .center, wrap: true) {
+        ui.TextInput(bind: draft, placeholder: "The name {one.label} should read by", fill)
+        ui.Button("Save name", role: .primary, size: .small) {
+            on press: device
+                .rename(device.devices, device: one.id, name: draft)
+                .then(set(renaming, ""))
+                .then(set(draft, ""))
+        }
+        ui.Button("Cancel", size: .small) {
+            on press: set(renaming, "").then(set(draft, ""))
+        }
+    }
+}
+
+/// What an agent's grant lets it reach, as its row says it.
+fn agent_reach(grant: Option<mcp.Grant>) -> Text {
+    if let g = grant {
+        if g.reach.kind == "workspace" {
+            if let name = g.reach.name {
+                std.say("Only in {name}")
+            } else { std.say("Only in one workspace") }
+        } else { std.say("In all your workspaces") }
+    } else { std.say("Acts as you") }
+}
+
+/// How an agent's grant stands now: what it works in, when it last acted, or when it was let in.
+fn agent_working(g: mcp.Grant) -> Text {
+    let working = g.sessions.len()
+    if g.stopped {
+        std.say("Stopped; it can't act until you let it go on")
+    } else if working == 1 {
+        std.say("Working now")
+    } else if working > 1 {
+        std.say("{working} sessions working now")
+    } else if let last = g.last_ms {
+        std.say("Last active {day(last)}")
+    } else { std.say("Let in {day(g.granted_ms)}") }
+}
+
+/// What a device key's row says under its name: whether it reaches this device, and when it last
+/// did.
+fn access_words(one: device.AccessKey) -> Text {
+    if one.revoked {
+        std.say("Removed; every device of yours refuses it")
+    } else if one.current {
+        std.say("This computer")
     } else if one.online and one.nearby {
-        "Here beside you"
-    } else if one.online { "Online" } else { "Asleep" }
+        std.say("Online, on your network")
+    } else if one.online {
+        std.say("Online, through your workspace")
+    } else if let when = one.last_active_ms {
+        std.say("Offline, last seen {day(when)}")
+    } else { std.say("Offline") }
+}
+
+/// How this device reaches another, if it does.
+fn path_words(one: device.PersonalDeviceView) -> Text {
+    if one.online and one.nearby {
+        std.say("Directly, on your network")
+    } else if one.online { std.say("Through your workspace") } else { std.say("Out of reach now") }
+}
+
+/// The facts a key holds that a person reads once, under its row: when it was added and when it
+/// stops being good.
+view agent_facts(one: device.AccessKey, grant: Option<mcp.Grant>) {
+    row(gap: .tight, wrap: true) {
+        if let when = one.issued_ms {
+            ui.Text("Added {day(when)}", role: .caption, secondary: true)
+        }
+        if let when = one.expires_ms {
+            ui.Text("Ends {day(when)}", role: .caption, secondary: true)
+        }
+        ui.Text(one.fingerprint, role: .caption, secondary: true)
+        if let g = grant {
+            if g.browser_pages {
+                ui.Text("Operates web pages in Browser", role: .caption, secondary: true)
+            } else {
+                ui.Text(
+                    "Asks before operating web pages in Browser",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+        }
+    }
+}
+
+/// The facts a computer's key holds: when it was added and when it stops being good.
+view computer_facts(one: device.AccessKey) {
+    row(gap: .tight, wrap: true) {
+        if let when = one.issued_ms {
+            ui.Text("Added {day(when)}", role: .caption, secondary: true)
+        }
+        if let when = one.expires_ms {
+            ui.Text("Ends {day(when)}", role: .caption, secondary: true)
+        }
+        if one.current {
+            ui.Text("To remove it, use another of your devices.", role: .caption, secondary: true)
+        }
+    }
+}
+
+/// The day and clock time `at_ms` names, as the person reads it.
+fn day(at_ms: Int) -> Text {
+    let at = instant(at_ms)
+    std.say("{at.day()}, {at.clock()}")
+}
+
+/// The instant a count of milliseconds names.
+fn instant(at_ms: Int) -> Time {
+    Time("1970-01-01T00:00:00Z") + Duration(at_ms / 1000)
 }
 
 /// What this person lets their devices hand to each other: the clipboard, what they were told,
@@ -240,6 +524,20 @@ view about_pane() {
         let u = device.update
         let apps = device.apps
         let host = device.host_info
+        let mine = device.devices
+        ui.Section("Your identity") {
+            ui.ListRow(
+                "Back up your identity",
+                secondary: "Carry it to another computer, sealed with a passphrase you choose",
+                icon: .key,
+            ) {
+                trailing: {
+                    ui.Button("Back up", size: .small) {
+                        on press: device.back_up_identity(mine)
+                    }
+                }
+            }
+        }
         ui.Section("Tilo") {
             ui.Text(
                 "Tilo is your workspace: one set of things, shared by the people and agents you work with, on the devices you signed in on.",

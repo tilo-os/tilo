@@ -25,6 +25,10 @@ pub(crate) struct Memberships {
     /// The people each workspace lists now, by workspace: what a settle
     /// replaces, so nobody stays a member of one they left.
     by_workspace: std::sync::RwLock<HashMap<String, BTreeSet<[u8; 32]>>>,
+    /// The devices each workspace here names among its holders, by workspace: a
+    /// holder is no member and no trusted person, and the handshake admits the
+    /// one device a naming names, to keep and carry the workspace.
+    holders_by_workspace: std::sync::RwLock<HashMap<String, BTreeSet<[u8; 32]>>>,
 }
 
 impl Memberships {
@@ -63,9 +67,34 @@ impl Memberships {
         }
     }
 
+    /// Record that `workspace` names exactly the devices `devices` among its
+    /// holders now.
+    pub(crate) fn record_holders(
+        &self,
+        workspace: &str,
+        devices: impl IntoIterator<Item = [u8; 32]>,
+    ) {
+        self.holders_by_workspace
+            .write_recover()
+            .insert(workspace.to_owned(), devices.into_iter().collect());
+    }
+
+    /// Every device a workspace here names among its holders now.
+    pub(crate) fn holder_devices(&self) -> Vec<[u8; 32]> {
+        self.holders_by_workspace
+            .read_recover()
+            .values()
+            .flatten()
+            .copied()
+            .collect()
+    }
+
     /// Forget `workspace`: this host serves it no more, so it is in no one's
     /// listing.
     pub(crate) fn forget(&self, workspace: &str) {
+        self.holders_by_workspace
+            .write_recover()
+            .remove(workspace);
         let Some(people) = self.by_workspace.write_recover().remove(workspace) else {
             return;
         };

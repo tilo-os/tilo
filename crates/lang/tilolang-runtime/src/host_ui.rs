@@ -38,6 +38,17 @@ pub const ANSWER_ACTION: &str = "$answer";
 /// arguments are the resource and the app whose resource it is.
 pub const COPY_LINK_ACTION: &str = "$copy-link";
 
+/// The system verb `id`, an action of a resource's type, names (`AgentCard/share-link`,
+/// `so.tilo.notes#Note/share-link`): one the system answers on every resource, never an app's own
+/// action. `None` for an app's action, whose id names no system verb.
+#[must_use]
+pub fn system_verb(id: &str) -> Option<&str> {
+    let (_, verb) = id.rsplit_once('/')?;
+    [tilo_actions::remote::SHARE_LINK_ACTION]
+        .contains(&verb)
+        .then_some(verb)
+}
+
 /// The action of a row's keys (`shortcut` on a `ui.ListItem`): run the action of the row's item
 /// the key pressed names, where it applies. Its arguments are the keys, each with what it runs,
 /// and the key pressed.

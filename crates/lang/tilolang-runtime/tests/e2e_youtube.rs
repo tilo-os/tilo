@@ -337,7 +337,9 @@ mod cases {
             handlers: &JobHandlers,
         ) -> Result<String, String> {
             assert_eq!(app, "so.tilo.tube", "only YouTube asks this bridge");
-            let job = self.engine.start(op, input)?;
+            // The host names each job, as the device does.
+            let job = format!("grayjay-{}", self.handlers.borrow().len() + 1);
+            self.engine.start(&job, op, input)?;
             self.handlers
                 .borrow_mut()
                 .insert(job.clone(), handlers.clone());

@@ -186,3 +186,54 @@ fn three_fingers_carry_the_strip_and_it_glides_on() {
         "the row glides past where the fingers lifted: {held} then {rested}"
     );
 }
+
+/// The strip in front presents its pan beside the tree, and the published `pan` verb moves it:
+/// the fingers pan the shell's own view, and a host or an agent that pans by the action moves
+/// what the desktop presents.
+#[test]
+fn the_strip_in_front_presents_its_pan_and_the_pan_verb_moves_it() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, notes) = session();
+    open(&mut session, &notes, 6);
+    settle(&mut session);
+    let strip = strips(&session).1.expect("a strip in front");
+    let presented = session
+        .handle()
+        .presentation()
+        .pan
+        .expect("the strip in front presents its pan");
+    assert_eq!(
+        presented.strip,
+        strip.0.to_string(),
+        "the pan presented is the strip in front's"
+    );
+    assert!(
+        session
+            .handle()
+            .snapshot("check", vec![])
+            .desktop_pan
+            .is_some(),
+        "the navigation snapshot presents the pan too"
+    );
+
+    session
+        .invoke(
+            CHROME,
+            "pan",
+            json!({ "strip": strip.0.to_string(), "offset": 120.0 })
+                .as_object()
+                .expect("an object"),
+        )
+        .expect("the strip pans");
+    settle(&mut session);
+    let panned = session
+        .handle()
+        .presentation()
+        .pan
+        .expect("the strip still presents its pan");
+    assert_eq!(
+        panned.offset,
+        120.0_f64.min(presented.max),
+        "the pan went where the action asked, as far as the strip scrolls"
+    );
+}

@@ -83,11 +83,72 @@ impl Core {
             Imp::RichPart => self.rich_part(a),
             Imp::RichEmpty => ret_i32(i32::from(self.rich_arg(a.h(0)?)?.is_empty())),
             Imp::RichAppended => self.rich_appended(a),
+            Imp::RichRelinked => self.rich_relinked(a),
+            Imp::RichFromMarkdown | Imp::RichFromHtml => self.rich_from_text(imp, a),
+            Imp::RichMarked | Imp::RichTableEdited | Imp::RichCellWritten | Imp::RichReplaced => {
+                self.rich_edit(imp, a)
+            }
+            Imp::RichStyleNames
+            | Imp::RichStyleLook
+            | Imp::RichStyleSet
+            | Imp::RichStyleCopied
+            | Imp::RichStyleRemoved => self.rich_style(imp, a),
+            // `r.markdown(links: pages, from: folder)`: the document as Markdown, each reference
+            // to a page of the bundle written as the link to that page — the path from the
+            // folder this one is written in, so a reader of the file follows it to the note.
+            Imp::RichMarkdown => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let pages = self.text_map(a.h(1)?)?;
+                let from = self.text(a.h(2)?)?;
+                let linked = pages_written(&r.blocks, &pages, &from);
+                self.ret_h(Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(
+                    &linked,
+                )))
+            }
+            // `RichText.embed(r)`: the text whose one paragraph projects `r`, which is what a
+            // card of it shows where the text is drawn.
+            Imp::RichEmbed => {
+                let referred = match self.val(a.h(0)?)? {
+                    Value::Ref(referred) => referred,
+                    other => {
+                        return trap(format!(
+                            "rich_embed: expected a resource, got {}",
+                            other.kind_name()
+                        ));
+                    }
+                };
+                let (title, reference) = self.reference_of(&referred)?;
+                let mut out = RichValue::default();
+                out.push_projection(&title, &reference);
+                self.ret_h(Value::Rich(out))
+            }
+            Imp::RichTime => {
+                let at = match self.val(a.h(0)?)? {
+                    Value::Text(at) => at,
+                    other => {
+                        return trap(format!(
+                            "rich_time: expected a time, got {}",
+                            other.kind_name()
+                        ));
+                    }
+                };
+                let mut out = RichValue::default();
+                out.push_time(&at);
+                self.ret_h(Value::Rich(out))
+            }
+            _ => trap("not a rich text import"),
+        }
+    }
+
+    /// `RichText.from_markdown(text, links: pages, from: folder)` and `RichText.from_html(text)`:
+    /// the document a text says, read the one way every app reads one
+    /// (`tilo_doc_codecs::rich`).
+    fn rich_from_text(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             // `RichText.from_markdown(text, links: pages, from: folder)`: the document a
-            // Markdown text says, read the one way every app reads one (`tilo_doc_codecs::rich`),
-            // a picture kept as the Markdown it is written as, and a link to a page of the
-            // bundle the reference to that page — a note whose file the export wrote, which a
-            // reader opens by the reference and what links to it lists.
+            // Markdown text says, a picture kept as the Markdown it is written as, and a link to
+            // a page of the bundle the reference to that page — a note whose file the export
+            // wrote, which a reader opens by the reference and what links to it lists.
             Imp::RichFromMarkdown => {
                 let markdown = self.text(a.h(0)?)?;
                 let pages = self.text_map(a.h(1)?)?;
@@ -105,9 +166,8 @@ impl Core {
                 }
             }
             // `RichText.from_html(text)`: the document an HTML text says — a message its sender
-            // formatted says one — read the one way every app reads one
-            // (`tilo_doc_codecs::rich`). Scripts and styles are not part of it, and a picture
-            // keeps the address it names, so the read reaches nothing outside the text.
+            // formatted says one. Scripts and styles are not part of it, and a picture keeps the
+            // address it names, so the read reaches nothing outside the text.
             Imp::RichFromHtml => {
                 let html = self.text(a.h(0)?)?;
                 match tilo_doc_codecs::rich::blocks_of_html(&html) {
@@ -118,7 +178,14 @@ impl Core {
                     Err(why) => trap(format!("this text is not an HTML document: {why}")),
                 }
             }
-            Imp::RichRelinked => self.rich_relinked(a),
+            _ => trap("not a rich text import"),
+        }
+    }
+
+    /// The members that change the document: `r.marked`, `r.table_edited`, `r.cell_written` and
+    /// `r.replaced` answer the document with the change.
+    fn rich_edit(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             // `r.marked(name, value, at: anchor, start, end)`: the document with the mark over
             // the words it is about — a comment anchored where the person selected, written in
             // the same change that makes it.
@@ -167,7 +234,13 @@ impl Core {
                 let all = a.h(3)? != 0;
                 self.ret_h(Value::Rich(r.replaced(&find, &with, all).0))
             }
-            // The document's style table: read, and changed as a new value of the document.
+            _ => trap("not a rich text import"),
+        }
+    }
+
+    /// The document's style table: read, and changed as a new value of the document.
+    fn rich_style(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             Imp::RichStyleNames => {
                 let r = self.rich_arg(a.h(0)?)?;
                 self.ret_h(Value::List(
@@ -206,49 +279,6 @@ impl Core {
                     Ok(removed) => self.ret_h(Value::Rich(removed)),
                     Err(why) => trap(why),
                 }
-            }
-            // `r.markdown(links: pages, from: folder)`: the document as Markdown, each reference
-            // to a page of the bundle written as the link to that page — the path from the
-            // folder this one is written in, so a reader of the file follows it to the note.
-            Imp::RichMarkdown => {
-                let r = self.rich_arg(a.h(0)?)?;
-                let pages = self.text_map(a.h(1)?)?;
-                let from = self.text(a.h(2)?)?;
-                let linked = pages_written(&r.blocks, &pages, &from);
-                self.ret_h(Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(
-                    &linked,
-                )))
-            }
-            // `RichText.embed(r)`: the text whose one paragraph projects `r`, which is what a
-            // card of it shows where the text is drawn.
-            Imp::RichEmbed => {
-                let referred = match self.val(a.h(0)?)? {
-                    Value::Ref(referred) => referred,
-                    other => {
-                        return trap(format!(
-                            "rich_embed: expected a resource, got {}",
-                            other.kind_name()
-                        ));
-                    }
-                };
-                let (title, reference) = self.reference_of(&referred)?;
-                let mut out = RichValue::default();
-                out.push_projection(&title, &reference);
-                self.ret_h(Value::Rich(out))
-            }
-            Imp::RichTime => {
-                let at = match self.val(a.h(0)?)? {
-                    Value::Text(at) => at,
-                    other => {
-                        return trap(format!(
-                            "rich_time: expected a time, got {}",
-                            other.kind_name()
-                        ));
-                    }
-                };
-                let mut out = RichValue::default();
-                out.push_time(&at);
-                self.ret_h(Value::Rich(out))
             }
             _ => trap("not a rich text import"),
         }

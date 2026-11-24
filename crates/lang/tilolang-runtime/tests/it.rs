@@ -50,8 +50,6 @@ mod e2e_chip_design;
 mod e2e_cleanup;
 #[path = "e2e_clocks.rs"]
 mod e2e_clocks;
-#[path = "e2e_handler_answer.rs"]
-mod e2e_handler_answer;
 #[path = "e2e_code_editor.rs"]
 mod e2e_code_editor;
 #[path = "e2e_console.rs"]
@@ -74,6 +72,8 @@ mod e2e_feeds;
 mod e2e_file_picker;
 #[path = "e2e_git_client.rs"]
 mod e2e_git_client;
+#[path = "e2e_handler_answer.rs"]
+mod e2e_handler_answer;
 #[path = "e2e_hex_editor.rs"]
 mod e2e_hex_editor;
 #[path = "e2e_layout.rs"]
@@ -179,6 +179,8 @@ mod published_actions;
 mod queries;
 #[path = "random.rs"]
 mod random;
+#[path = "ranked.rs"]
+mod ranked;
 #[path = "reaches.rs"]
 mod reaches;
 #[path = "record_lists.rs"]

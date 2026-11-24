@@ -49,8 +49,16 @@ impl ResourceServices for ServiceResources {
     fn command(&self, context: &ResourceRequestContext, command: Command) -> ResourceAnswer {
         let context = context.clone();
         let workspaces = self.workspaces.clone();
+        // A read answers where it is asked: it takes no lock a write holds, so the one thread
+        // that makes the service's writes must not be the queue every read of every app waits
+        // in.
+        if !command.writes() {
+            return Box::pin(async move {
+                Box::pin(workspaces.resource_command(&context, command)).await
+            });
+        }
         Box::pin(on_the_service(self.runtime.clone(), async move {
-            workspaces.resource_command(&context, command).await
+            Box::pin(workspaces.resource_command(&context, command)).await
         }))
     }
 
@@ -61,8 +69,6 @@ impl ResourceServices for ServiceResources {
     ) -> ResourcePages {
         let context = context.clone();
         let workspaces = self.workspaces.clone();
-        Box::pin(on_the_service(self.runtime.clone(), async move {
-            workspaces.open_resources(&context, query).await
-        }))
+        Box::pin(async move { Box::pin(workspaces.open_resources(&context, query)).await })
     }
 }

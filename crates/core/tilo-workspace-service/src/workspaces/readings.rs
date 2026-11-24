@@ -29,6 +29,9 @@ pub(super) struct Reading {
     pub(super) invitations: Invitations,
     /// Whether the workspace is a member copy, read as this device's member.
     pub(super) member: bool,
+    /// The workspace's one store, read a command at a time: what a record's reads answer from
+    /// while the workspace's lock is held by a write waiting on a key or a link.
+    pub(super) store: std::sync::Arc<std::sync::Mutex<tilo_resource_store::Store>>,
     /// Whether this device has read the workspace's legacy Chat reports and decisions into its
     /// moderation record yet ([`super::moderation_history`]).
     pub(super) moderation_history_checked: Arc<std::sync::atomic::AtomicBool>,
@@ -243,6 +246,7 @@ impl GovernedWorkspace {
             opened: std::sync::Arc::default(),
             invitations: self.invitations.clone(),
             member: self.member.is_some(),
+            store: self.resources.shared(),
             moderation_history_checked: self.moderation_history_checked.clone(),
         }
     }
@@ -273,6 +277,12 @@ impl Workspaces {
             .into_iter()
             .map(|(workspace, reading)| (workspace, HeldCopy::of(&reading)))
             .collect()
+    }
+
+    /// What the workspace `workspace` is read through, by its id spelled out: [`Self::reading`]
+    /// for the callers that hold the id as the command names it.
+    pub(super) async fn reading_of(&self, workspace: &str) -> Option<Reading> {
+        self.reading(WorkspaceId::parse(workspace)?).await
     }
 
     pub(super) async fn reading(&self, workspace: WorkspaceId) -> Option<Reading> {

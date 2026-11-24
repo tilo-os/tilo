@@ -439,7 +439,7 @@ impl HostSignIns {
                     // Nobody asked: the device carries what it kept before, for its person.
                     workspaces
                         .keep_workspace_account(
-                            (workspace, &workspaces.acting_or_own(None)),
+                            (workspace, &workspaces.acting_or_own(None), None),
                             &account,
                         )
                         .await?;

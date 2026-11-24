@@ -1950,7 +1950,7 @@ impl FrameHarness {
         let done = if let Some(binding) = self
             .focused
             .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root.callback_binding())
+            .or_else(|| crate::bound_dispatch::callback_binding(&*self.root))
         {
             self.history_through_component(&binding, request)
         } else {
@@ -1975,7 +1975,7 @@ impl FrameHarness {
         if let Some(binding) = self
             .focused
             .and_then(|node| self.bindings.binding_for(node))
-            .or_else(|| self.root.callback_binding())
+            .or_else(|| crate::bound_dispatch::callback_binding(&*self.root))
         {
             binding.undo_status(&mut self.state.doc).unwrap_or_default()
         } else {
@@ -4668,7 +4668,7 @@ impl FrameHarness {
                     .is_none_or(|binding| binding.instance_id == instance)
                     && self
                         .inspect_node(node, |widget| {
-                            widget.keyboard_input_scope() == Some(instance)
+                            crate::bound_dispatch::keyboard_input_scope(widget) == Some(instance)
                                 && widget.is_enabled()
                                 && widget.get_rect().width() > 0.0
                                 && widget.get_rect().height() > 0.0
@@ -8238,9 +8238,7 @@ impl FrameHarness {
     /// The instance id of the hosted application component, the `instance_id` its bound actions are
     /// addressed by.
     pub fn component_instance_id(&self) -> Option<crate::application::InstanceId> {
-        self.root
-            .callback_binding()
-            .map(|binding| binding.instance_id)
+        crate::bound_dispatch::callback_binding(&*self.root).map(|binding| binding.instance_id)
     }
 
     /// The scene the last laid-out frame encoded: what [`Self::render_rgba`] rasterises.
@@ -8276,7 +8274,7 @@ impl FrameHarness {
             &mut dyn Widget,
             Option<crate::bound_dispatch::CallbackBinding>,
         )> {
-            let owner = widget.callback_binding().or(owner);
+            let owner = crate::bound_dispatch::callback_binding(widget).or(owner);
             if widget
                 .as_any_mut()
                 .is_some_and(|any| (*any).type_id() == ty)

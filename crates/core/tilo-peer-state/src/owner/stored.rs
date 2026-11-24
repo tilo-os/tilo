@@ -110,8 +110,161 @@ pub(crate) struct StoredWorkspace {
     /// second copy. This list goes once this device's writes are kept in the
     /// device's frame store ([`crate::store::Store`]), whose `holds` and whose
     /// link answers say what each peer has.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub frames: Vec<FrameToSend>,
+    #[serde(default, skip_serializing_if = "Frames::is_empty")]
+    pub frames: Frames,
+}
+
+/// The frames a record keeps, oldest first, in runs each copy of the record shares: a device
+/// offline keeps every write it made, and a copy, or one frame more, costs the same however many
+/// that is. Stored as one list.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Frames {
+    runs: Vec<std::sync::Arc<Vec<FrameToSend>>>,
+    len: usize,
+}
+
+impl Frames {
+    /// The frames a run holds at most.
+    const RUN: usize = 64;
+
+    pub(crate) const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &FrameToSend> {
+        self.runs.iter().flat_map(|run| run.iter())
+    }
+
+    /// The frames from the one at `from` on, reached run by run.
+    pub(crate) fn iter_from(&self, from: usize) -> impl Iterator<Item = &FrameToSend> + Clone {
+        let mut before = 0usize;
+        let mut first = self.runs.len();
+        for (at, run) in self.runs.iter().enumerate() {
+            let after = before.saturating_add(run.len());
+            if after > from {
+                first = at;
+                break;
+            }
+            before = after;
+        }
+        self.runs
+            .get(first..)
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|run| run.iter())
+            .skip(from.saturating_sub(before))
+    }
+
+    pub(crate) fn last(&self) -> Option<&FrameToSend> {
+        self.runs.last().and_then(|run| run.last())
+    }
+
+    /// The runs, oldest first.
+    pub(crate) fn runs(&self) -> &[std::sync::Arc<Vec<FrameToSend>>] {
+        &self.runs
+    }
+
+    pub(crate) fn push(&mut self, frame: FrameToSend) {
+        match self.runs.last_mut() {
+            Some(run) if run.len() < Self::RUN => {
+                if std::sync::Arc::get_mut(run).is_none() {
+                    touched(run.len());
+                }
+                std::sync::Arc::make_mut(run).push(frame);
+            }
+            _ => self.runs.push(std::sync::Arc::new(vec![frame])),
+        }
+        self.len = self.len.saturating_add(1);
+    }
+
+    /// Take out the frame whose bytes are `bytes`, looking from the oldest, where a link takes
+    /// them from: `false` when none is kept. The runs it does not hold stay shared.
+    pub(crate) fn remove(&mut self, bytes: &[u8]) -> bool {
+        for (at, run) in self.runs.iter_mut().enumerate() {
+            let Some(found) = run.iter().position(|frame| *frame.bytes == *bytes) else {
+                touched(run.len());
+                continue;
+            };
+            touched(found.saturating_add(1).saturating_add(run.len()));
+            std::sync::Arc::make_mut(run).remove(found);
+            if run.is_empty() {
+                self.runs.remove(at);
+            }
+            self.len = self.len.saturating_sub(1);
+            return true;
+        }
+        false
+    }
+}
+
+// Frames this thread copied or compared to keep them: what a test reads to see that a write's
+// work on its record's frames stays the same however many the record keeps. Built for tests
+// alone.
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static TOUCHED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count `frames` copied or compared.
+#[cfg_attr(
+    not(any(test, feature = "test-support")),
+    allow(
+        clippy::missing_const_for_fn,
+        reason = "counts in a test build, and does nothing in any other"
+    )
+)]
+pub(crate) fn touched(frames: usize) {
+    #[cfg(any(test, feature = "test-support"))]
+    TOUCHED.with(|touched| {
+        touched.set(
+            touched
+                .get()
+                .saturating_add(u64::try_from(frames).unwrap_or(u64::MAX)),
+        );
+    });
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = frames;
+}
+
+/// The frames this thread copied or compared to keep them so far ([`touched`]).
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn frames_touched() -> u64 {
+    TOUCHED.with(std::cell::Cell::get)
+}
+
+impl PartialEq for Frames {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.iter().eq(other.iter())
+    }
+}
+impl Eq for Frames {}
+
+impl FromIterator<FrameToSend> for Frames {
+    fn from_iter<T: IntoIterator<Item = FrameToSend>>(frames: T) -> Self {
+        let mut list = Self::default();
+        for frame in frames {
+            list.push(frame);
+        }
+        list
+    }
+}
+
+impl Serialize for Frames {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter())
+    }
+}
+
+impl<'de> Deserialize<'de> for Frames {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Vec::<FrameToSend>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
+    }
 }
 
 /// One frame of this device's own, kept until a link carried it.

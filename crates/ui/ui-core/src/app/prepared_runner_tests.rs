@@ -1013,7 +1013,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
             "the window shows another record"
         );
         assert!(!app.swap_requested_component(), "once");
-        let shown = app.root_widget.callback_binding().unwrap();
+        let shown = crate::bound_dispatch::callback_binding(&*app.root_widget).unwrap();
         assert_eq!(shown.checkout.id, wanted);
         assert!(
             !first.lifetime.is_active(),
@@ -1047,7 +1047,10 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
             "the window keeps its record"
         );
         assert_eq!(
-            app.root_widget.callback_binding().unwrap().checkout.id,
+            crate::bound_dispatch::callback_binding(&*app.root_widget)
+                .unwrap()
+                .checkout
+                .id,
             first.checkout.id
         );
         assert!(first.lifetime.is_active());
@@ -1083,7 +1086,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
             Some(crate::widget::ResourceOperationStart::Accepted)
         ));
         tile.sync(&state.doc, &state.root);
-        let shown = tile.callback_binding().unwrap();
+        let shown = crate::bound_dispatch::callback_binding(&tile).unwrap();
         assert_eq!(shown.checkout.id, wanted);
         assert!(!first.lifetime.is_active());
         let answer = crate::widget::poll_resource_operation(
@@ -1120,7 +1123,7 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
     app.wake_scope.as_ref().unwrap().handle().wake();
     assert!(app.accept_wake(&rx.recv().unwrap()));
     app.service_native_idle_model();
-    let shown = app.root_widget.callback_binding().unwrap();
+    let shown = crate::bound_dispatch::callback_binding(&*app.root_widget).unwrap();
     assert_eq!(
         shown.checkout.id, wanted,
         "idle must adopt the checked replacement before syncing its owner"
@@ -1150,7 +1153,10 @@ fn native_idle_model_wake_adopts_requested_component_before_draining() {
     );
     assert!(!app.service_native_idle_model().changed);
     assert_eq!(
-        app.root_widget.callback_binding().unwrap().checkout.id,
+        crate::bound_dispatch::callback_binding(&*app.root_widget)
+            .unwrap()
+            .checkout
+            .id,
         wanted
     );
     app.close_components();

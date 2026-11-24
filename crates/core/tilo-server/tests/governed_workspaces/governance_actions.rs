@@ -63,8 +63,8 @@ pub(super) async fn try_ask(
         actions.ask_message(message),
     )
     .await
-    .flatten()
-    .ok_or_else(|| "the server did not answer".to_owned())
+    .ok_or_else(|| "the server that answers the action was dropped".to_owned())?
+    .map_err(|error| error.to_string())
 }
 
 /// What the server answers `message`, sent over `actions`.

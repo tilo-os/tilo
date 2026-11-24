@@ -83,6 +83,10 @@ pub fn surface() -> (Vec<ui::tilo_resource::Surface>, Vec<Root>) {
         service::languages::RESOURCE.to_owned(),
         service::languages::surface(),
     ));
+    places.push((
+        service::tablet_choices::RESOURCE.to_owned(),
+        service::tablet_choices::surface(),
+    ));
     places
         .into_iter()
         .map(|(published, place)| {

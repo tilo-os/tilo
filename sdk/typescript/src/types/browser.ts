@@ -22,7 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@a85c1e83f1c420ff";
+export const SURFACE = "so.tilo.browser@a477f41188dd8c52";
+
+/** Where a row the address bar offers comes from. One of "bookmark", "visited", "imported", "search". */
+export type SuggestionKind = "bookmark" | "visited" | "imported" | "search";
 
 /** The arguments of `remove_bookmark`. */
 export interface RemoveBookmarkArgs {
@@ -331,6 +334,23 @@ export function importedVisit(ws: tilo.Workspace, path: string): ImportedVisit {
   return resourceProxy(ws, path, SURFACE, IMPORTEDVISIT_ACTIONS) as unknown as ImportedVisit;
 }
 
+/** Suggestion — `tl.so.tilo.browser.Suggestion`. */
+export interface Suggestion extends tilo.Resource {
+  zl6ois7x: SuggestionKind;  // kind
+  iwoez6ar: string;  // title
+  np2bxhf4: string;  // url
+  dermimxj: string;  // secondary
+}
+
+/** The actions `Suggestion` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SUGGESTION_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.browser.Suggestion` kind at `path`. */
+export function suggestion(ws: tilo.Workspace, path: string): Suggestion {
+  return resourceProxy(ws, path, SURFACE, SUGGESTION_ACTIONS) as unknown as Suggestion;
+}
+
 /** RememberedForm — `tl.so.tilo.browser.RememberedForm`. */
 export interface RememberedForm extends tilo.Resource {
   "3wdvc5zt": string;  // origin
@@ -606,7 +626,7 @@ export interface Page extends tilo.Resource {
     max_width?: number;
     frame?: string;
   }): Promise<Answer>;
-  /** Open an address in the page's own window. */
+  /** Open an address in the page's own window: a site named without its scheme opens as one (`example.org`), and words that name no address open the search engine's answer to them. */
   navigate(args: {
     url: string;
   }): Promise<Answer>;
@@ -728,27 +748,27 @@ export interface Page extends tilo.Resource {
   block_site_permissions(): Promise<Answer>;
   /** Lets the site ask again for what it was refused. */
   ask_site_permissions_again(): Promise<Answer>;
-  /** Reads the login forms this page asks for, through the engine's own credential store. */
+  /** Reads the login forms this page asks for. */
   discover_logins(): Promise<Answer>;
-  /** Lists the logins the engine keeps for this site. */
+  /** Lists the logins the workspace's vault keeps for this site, by name. */
   list_saved_logins(): Promise<Answer>;
-  /** Takes what the person typed into a login form, so it can be saved for this site. The password stays in the engine's credential store and never crosses to the app. */
+  /** Takes what the person typed into a login form, so it can be saved for this site. The password stays in the engine until saving hands it to the vault, and never crosses to the app. */
   capture_login(args: {
     f: LoginForm;
   }): Promise<Answer>;
-  /** Saves the capture the engine took for this site. */
+  /** Saves the capture the engine took in the workspace's vault, as a login of this site the Browser keeps. */
   save_login(): Promise<Answer>;
-  /** Fills a form of this page with a login the engine keeps. */
+  /** Fills a form of this page with a login the vault keeps for this site. A login the Browser saved itself fills at once; any other is filled once its person allowed the Browser that one login. */
   fill_saved_login(args: {
     f: LoginForm;
     a: LoginAccount;
   }): Promise<Answer>;
-  /** Replaces a saved login with the capture the engine took. */
+  /** Replaces a login the vault keeps with the capture the engine took. */
   update_saved_login(args: {
     f: LoginForm;
     a: LoginAccount;
   }): Promise<Answer>;
-  /** Forgets a login the engine keeps for this site. */
+  /** Forgets a login of this site from the vault: one the Browser saved, or one it may fill. */
   delete_saved_login(args: {
     a: LoginAccount;
   }): Promise<Answer>;
@@ -854,7 +874,7 @@ export interface Page extends tilo.Resource {
   }): Promise<void>;
   /** Runs `note_extension_updates` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   note_extension_updatesMany(items: NoteExtensionUpdatesArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Writes what the engine's credential store answered into the page's record: the forms and accounts it listed, the capture it took, and its own words. The window raises it; a person, agent or script never does. */
+  /** Writes what a login action came to into the page's record: the forms the engine found, the vault's logins for the site, the capture the engine took, and their own words. The window raises it; a person, agent or script never does. */
   remember_credential(args: {
     did: string;
     success: boolean;
@@ -1229,6 +1249,8 @@ export function loginForm(ws: tilo.Workspace, path: string): LoginForm {
 export interface LoginAccount extends tilo.Resource {
   "53raewop": string;  // account
   "5oqresy2": string;  // username
+  qpgkf2v5: string;  // title
+  ultqehya: boolean;  // own
 }
 
 /** The actions `LoginAccount` reaches before it is read: `ws` calls them without a

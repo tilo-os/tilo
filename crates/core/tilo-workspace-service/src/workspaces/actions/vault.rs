@@ -101,6 +101,11 @@ fn add_params() -> Vec<ActionParam> {
         ),
         ActionParam::optional("username", ParamType::Text, "The name it signs in with."),
         ActionParam::optional(
+            "title",
+            ParamType::Text,
+            "What it is called: what a person picks it by.",
+        ),
+        ActionParam::optional(
             "sentIn",
             ParamType::Text,
             "For a key, how its service takes it when not as a bearer token: `basic`, \
@@ -117,7 +122,35 @@ fn add_params() -> Vec<ActionParam> {
             ParamType::Secret,
             "The secret: sealed in the workspace's vault, never answered back.",
         ),
+        ActionParam::optional(
+            "notes",
+            ParamType::Secret,
+            "A note kept with it: sealed as its secret is, never answered back.",
+        ),
+        ActionParam::optional(
+            "fields",
+            ParamType::Secret,
+            "The fields kept with it, such as a PIN, each `{label, value}`: each value sealed as \
+             its secret is, only the labels ever answered back.",
+        )
+        .with_schema(serde_json::json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"label": {"type": "string"}, "value": {"type": "string"}},
+                "required": ["label", "value"],
+            },
+        })),
     ]
+}
+
+/// The parameters the vault's action `action` (a `tilo.vault` action, or a verb of the vault in
+/// a workspace's governance tree) is published with.
+pub(super) fn params_of(action: &str) -> Option<Vec<ActionParam>> {
+    VAULT_VERBS
+        .iter()
+        .find(|(verb, named)| verb.id == action || *named == action)
+        .map(|(verb, _)| (verb.params)())
 }
 
 fn item_params() -> Vec<ActionParam> {
@@ -194,6 +227,9 @@ impl crate::workspaces::Workspaces {
             {
                 let mut row = verb.row(super::GOVERNANCE, &resource, "Vault");
                 row.parent_resource.clone_from(&root);
+                if let Some(descriptor) = row.action.as_mut() {
+                    descriptor.effects = person_vault::effects(action);
+                }
                 rows.push(row);
             }
         }

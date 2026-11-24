@@ -416,10 +416,7 @@ pub(crate) trait ControlCore: AppCore {
                 continue;
             }
             if on_behalf_of.is_none()
-                && self
-                    .tree()
-                    .root
-                    .callback_binding()
+                && crate::bound_dispatch::callback_binding(self.tree().root)
                     .is_some_and(|binding| binding.instance_id == target.binding.instance_id)
                 && self.take_history_invocation(&intent, None)
             {

@@ -56,44 +56,6 @@ impl Store {
         }
     }
 
-    pub(super) fn request_trust_ssh_host_key(&mut self, id: ConnectionId) {
-        let Some(connection) = self.workspace.get(id) else {
-            return;
-        };
-        let target = Self::confirmation_target(connection);
-        let Some(crate::ssh::HostKeyIssue::FirstContact { observed }) = self.ssh_host_key_issue(id)
-        else {
-            Self::notify(
-                "No new SSH host key is waiting for trust. Forget a changed key before you review it again.",
-            );
-            return;
-        };
-        self.pending_confirmation = Some(PendingConfirmation::TrustSshHostKey {
-            id,
-            target,
-            observed,
-        });
-        self.show_confirmation();
-    }
-
-    pub(super) fn request_forget_ssh_host_key(&mut self, id: ConnectionId) {
-        let Some(connection) = self.workspace.get(id) else {
-            return;
-        };
-        let target = Self::confirmation_target(connection);
-        if !matches!(
-            self.ssh_host_key_issue(id),
-            Some(crate::ssh::HostKeyIssue::Changed { .. })
-        ) {
-            Self::notify(
-                "Only a changed SSH host key can be forgotten. Reconnect to check this machine again.",
-            );
-            return;
-        }
-        self.pending_confirmation = Some(PendingConfirmation::ForgetSshHostKey { id, target });
-        self.show_confirmation();
-    }
-
     /// Ask the pending confirmation, in the dialog the window builds when
     pub(super) fn show_confirmation(&mut self) {
         self.asking = true;
@@ -142,12 +104,6 @@ impl Store {
                     false,
                 )
             }
-            PendingConfirmation::ForgetSshHostKey { .. } => (
-                named("remote-forget-key-title"),
-                crate::resource::CATALOG.t("remote-forget-key-detail"),
-                crate::resource::CATALOG.t("remote-forget-key-confirm"),
-                true,
-            ),
         };
         let mut body = Column::new()
             .with_no_padding()
@@ -221,31 +177,6 @@ impl Store {
                 ) {
                     Ok(()) => self.open_session(id),
                     Err(error) => Self::notify(format!("Couldn't save the SSH key: {error}")),
-                }
-            }
-            PendingConfirmation::ForgetSshHostKey { .. } => {
-                if !matches!(
-                    self.ssh_host_key_issue(id),
-                    Some(crate::ssh::HostKeyIssue::Changed { .. })
-                ) {
-                    Self::notify(
-                        "The SSH host key is no longer the one you chose to forget. Reconnect to review it again.",
-                    );
-                    return;
-                }
-                match crate::ssh::forget_host_key(
-                    &self.known_hosts,
-                    &connection.host.0,
-                    connection.port,
-                ) {
-                    Ok(true) => {
-                        Self::notify(
-                            "Forgot the saved SSH key. Reconnect to check the new one before you trust it.",
-                        );
-                        self.disconnect_session();
-                    }
-                    Ok(false) => Self::notify("This device had no saved SSH key for the machine."),
-                    Err(error) => Self::notify(format!("Couldn't forget the SSH key: {error}")),
                 }
             }
         }

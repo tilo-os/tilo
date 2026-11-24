@@ -344,6 +344,19 @@ pub enum NetworkAction {
         #[param(secret, "The network's password")]
         password: String,
     },
+    /// Ask before joining an open Wi-Fi network this device keeps, or let the ones it keeps join
+    /// by themselves.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "wifi",
+        keywords = "open network, ask first, join by itself, auto connect"
+    )]
+    SetAskBeforeOpenNetworks {
+        #[param("Whether this device asks before it joins an open network")]
+        on: bool,
+    },
 }
 
 /// The `bluetooth` resource's actions.
@@ -602,5 +615,59 @@ pub enum ModemAction {
         modem: Option<String>,
         #[param("One of the keys the modem lists: 5g-4g-3g, 4g-3g-2g, …")]
         network: String,
+    },
+    /// Look for the operators the modem can reach, and list them.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "search",
+        keywords = "operators, scan, manual network selection"
+    )]
+    ScanOperators {
+        #[param("The modem, as listed; the first when omitted")]
+        modem: Option<String>,
+    },
+    /// Stand on an operator's network, or choose the one this device uses automatically.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        icon = "signal",
+        keywords = "operator, network selection, automatic"
+    )]
+    SelectOperator {
+        #[param("The modem, as listed; the first when omitted")]
+        modem: Option<String>,
+        #[param("The operator's MCC and MNC, as a scan lists it; nothing chooses automatically")]
+        operator: Option<String>,
+    },
+    /// Send a code the operator answers, such as `*100#` for a balance.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        icon = "menu",
+        keywords = "ussd, code, balance, top up, prepaid"
+    )]
+    SendCode {
+        #[param("The modem, as listed; the first when omitted")]
+        modem: Option<String>,
+        #[param("The code, such as *100#")]
+        code: String,
+    },
+    /// Answer the question the operator's code asked.
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "menu", keywords = "ussd, answer, menu")]
+    AnswerCode {
+        #[param("The modem, as listed; the first when omitted")]
+        modem: Option<String>,
+        #[param("The answer it asks for")]
+        answer: String,
+    },
+    /// End the code's session with the operator.
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "menu", keywords = "ussd, end, cancel")]
+    CancelCode {
+        #[param("The modem, as listed; the first when omitted")]
+        modem: Option<String>,
     },
 }

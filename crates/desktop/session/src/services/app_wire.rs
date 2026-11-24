@@ -416,6 +416,7 @@ pub(crate) fn start_app_wire(
     );
     Ok(Some(AppWire {
         call_lane: std::sync::Mutex::new(None),
+        call_card: std::sync::Mutex::default(),
         dispatch,
         hosts,
         seat,

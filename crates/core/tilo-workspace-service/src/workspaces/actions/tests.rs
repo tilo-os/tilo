@@ -88,12 +88,13 @@ impl Answering {
 
 /// `first`, the answer to `request` by `caller` on the connection `certificate` certified (to
 /// the workspace `workspace_id`, or to the host), as the person it waits for answers it, where
-/// it waits for one and a person answers ([`Answering`]): approved, what the call answers once
-/// their approve carried it out; declined, it is admitted no more.
+/// it waits for one ([`Answering`]): approved, what the call answers once the person's approve
+/// of its asked record carried it out; declined, or answered by nobody ([``None`]), it is
+/// admitted no more and the caller hears what they were shown.
 ///
 /// A call this host governs runs as its job: `Accepted` while it runs, and `Completed` once it
 /// ends without asking. One that waits is kept as its asked record, which the person answers
-/// there, and ends after their approve.
+/// there through `tilo.invocations#resolve`, and the call is followed to its end.
 pub(crate) async fn answered(
     workspaces: &Workspaces,
     (workspace_id, certificate): (Option<WorkspaceId>, Option<&DeviceCert>),
@@ -101,10 +102,11 @@ pub(crate) async fn answered(
     request: &InvokeRequest,
     first: Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
 ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
-    let Some(answering) = ANSWERING.with_borrow(Clone::clone) else {
-        return first;
-    };
+    let answering = ANSWERING.with_borrow(Clone::clone);
     if let Err(ActionCallError::ConfirmationRequired(facts)) = &first {
+        let Some(answering) = &answering else {
+            return first;
+        };
         answering.asked.lock().unwrap().push((**facts).clone());
         if !answering.approves {
             return first;
@@ -165,6 +167,13 @@ pub(crate) async fn answered(
     .await;
     let Some(waiting) = kept else {
         return ended_as(&here, caller, request.invocation).await;
+    };
+    // It waits in its asked record: nobody answering here leaves it there, and the caller hears
+    // what its person is shown.
+    let Some(answering) = &answering else {
+        return Err(ActionCallError::ConfirmationRequired(Box::new(
+            waiting.asked.facts.clone(),
+        )));
     };
     answering
         .asked
@@ -299,7 +308,133 @@ pub(super) async fn admit_device(
         )
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+    ADMITTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((cert.clone(), key.clone()));
     (key, cert)
+}
+
+/// Every device [`admit_device`] admitted, with its key: what a member's device signs its calls
+/// with.
+static ADMITTED: std::sync::Mutex<Vec<(DeviceCert, ed25519_dalek::SigningKey)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The key of `device`, when [`admit_device`] admitted it.
+pub(super) fn admitted_key(device: &DeviceCert) -> Option<ed25519_dalek::SigningKey> {
+    ADMITTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(cert, _)| cert.device_public_key == device.device_public_key)
+        .map(|(_, key)| key.clone())
+}
+
+/// A device of `person` (their root key, as hex) that [`admit_device`] admitted, with its key.
+pub(super) fn admitted_device_of(person: &str) -> Option<(DeviceCert, ed25519_dalek::SigningKey)> {
+    ADMITTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(cert, _)| hex::encode(cert.user_public_key) == person)
+        .cloned()
+}
+
+/// `request` as `caller` sends it from `device` in `workspace`: signed with the device's key when
+/// the caller is its own person, or an agent that device handed its session to, and
+/// [`admit_device`] admitted it, as a person's device signs every call it sends. An agent with a
+/// key of its own signs under that key, never its person's device's.
+pub(super) fn signed_from(
+    request: &InvokeRequest,
+    workspace: &str,
+    (device, caller): (&DeviceCert, &Caller),
+) -> InvokeRequest {
+    let person = hex::encode(device.user_public_key);
+    let acting = caller.acting();
+    let mut request = request.clone();
+    if let Some(key) = admitted_key(device)
+        && (!acting.is_agent() || acting.handed)
+        && acting.people() == [person.as_str()]
+    {
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                workspace,
+                &request,
+                device,
+                &key,
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("a member's device signs its call"),
+        ));
+    }
+    request
+}
+
+impl ServiceWorkspaceActions {
+    /// This host for requests about workspace `workspace_id` from the device `certificate`,
+    /// each call its own person sends signed with that device's key, as a member's device signs
+    /// every call it sends ([`signed_from`]).
+    pub(crate) fn device_page(
+        &self,
+        workspace_id: WorkspaceId,
+        certificate: &DeviceCert,
+    ) -> impl ActionProvider + Clone + Send + 'static {
+        SignedBy {
+            page: self.in_workspace_as(workspace_id, certificate),
+            device: certificate.clone(),
+            workspace: workspace_id.to_string(),
+        }
+    }
+}
+
+/// `page`, each call its device's person sends signed by `device` ([`signed_from`]).
+#[derive(Clone)]
+struct SignedBy<P> {
+    page: P,
+    device: DeviceCert,
+    workspace: String,
+}
+
+impl<P: ActionProvider> ActionProvider for SignedBy<P> {
+    fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
+        self.page.installed_surface(app_id)
+    }
+
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>> {
+        self.page.query(caller, query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<tilo_actions::remote::InvocationReceipt, ActionCallError>> {
+        // The device signs each call it sends, an answer sent again included.
+        let mut request = request;
+        request.signed = None;
+        let request = signed_from(&request, &self.workspace, (&self.device, caller));
+        self.page.invoke(caller, request)
+    }
+
+    fn observe(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        self.page.observe(caller, id)
+    }
+
+    fn next_change(&self, caller: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        self.page.next_change(caller, id)
+    }
+
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        self.page.cancel(caller, id)
+    }
 }
 
 async fn grant(
@@ -383,7 +518,11 @@ pub(crate) async fn governed(
     workspaces: &Workspaces,
 ) -> (String, WorkspaceId, ServiceWorkspaceActions) {
     let summary = workspaces.create("Team").await.unwrap();
-    (summary.workspace, summary.workspace_id, host_dispatch(workspaces))
+    (
+        summary.workspace,
+        summary.workspace_id,
+        host_dispatch(workspaces),
+    )
 }
 
 /// The one dispatch that governs `workspaces`: the host's own where it has one, else one
@@ -688,7 +827,7 @@ async fn the_persons_vault_models_and_mail_are_paths_of_the_workspace() {
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, host) = governed(workspaces).await;
-    let provider = host.in_workspace_as(workspace_id, &owner);
+    let provider = host.device_page(workspace_id, &owner);
     let owner_caller = caller(&owner);
     let query = CatalogueQuery {
         provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
@@ -1797,7 +1936,7 @@ pub(super) async fn ask_own(
 ) -> Result<Value, ActionCallError> {
     let mut request = request("", "", argument);
     request.target = tilo_actions::remote::model_providers::target(verb);
-    let provider = host.in_workspace_as(workspace_id, device);
+    let provider = host.device_page(workspace_id, device);
     let asking = caller(device);
     let invocation = request.invocation;
     let mut receipt = settled(provider.invoke(&asking, request)).await?;
@@ -2074,12 +2213,9 @@ async fn no_agent_with_no_device_behind_it_reaches_the_model_providers() {
         for (verb, argument) in asks {
             let mut asking = request("", "", argument);
             asking.target = model_providers::target(verb);
-            let refused = settled(
-                host.in_workspace_as(workspace_id, &ada)
-                    .invoke(agent, asking),
-            )
-            .await
-            .map(|_| ());
+            let refused = settled(host.device_page(workspace_id, &ada).invoke(agent, asking))
+                .await
+                .map(|_| ());
             assert!(
                 matches!(refused, Err(ActionCallError::UnknownAction)),
                 "{verb}: {refused:?}"

@@ -201,9 +201,10 @@ impl SessionConfig {
         let assists = tilo_accessibility_settings::AccessibilitySettings::load();
         let sources = Sources::from_settings(input);
         let power = tilo_power_mgmt::PowerPolicy::default();
+        let preferences = input_config(input, &shortcuts);
         Self {
             shortcuts,
-            input: input_config(input),
+            input: preferences,
             gestures,
             keyboard: sources.compiled(),
             keyboard_layouts: sources.ids.clone(),
@@ -337,10 +338,16 @@ impl Sources {
     }
 }
 
-/// The compositor's input preferences from the stored ones.
-fn input_config(input: &RichInputConfig) -> InputConfig {
+/// The compositor's input preferences from the stored ones: `shortcuts` says which chord each of
+/// a tablet's remapped buttons presses now.
+fn input_config(input: &RichInputConfig, shortcuts: &ShortcutConfig) -> InputConfig {
     use settings_store::hardware::{TouchpadClickMethod as Click, TouchpadScrollMethod as Scroll};
     InputConfig {
+        tablets: input
+            .tablets
+            .iter()
+            .map(|(device, config)| (device.clone(), tablet(config, shortcuts)))
+            .collect(),
         touchpad_natural_scroll: input.touchpad_natural_scroll,
         mouse_natural_scroll: input.mouse_natural_scroll,
         tap_to_click: input.tap_to_click,
@@ -368,6 +375,82 @@ fn input_config(input: &RichInputConfig) -> InputConfig {
         },
         scroll_speed: input.scroll_speed,
         ..InputConfig::default()
+    }
+}
+
+/// One tablet's stored settings as the compositor shapes its events by them: a button mapped to a
+/// desktop shortcut presses the chord that shortcut is on now, and each ring and strip keeps what
+/// it does in every mode its group has.
+fn tablet(
+    stored: &settings_store::hardware::TabletConfig,
+    shortcuts: &ShortcutConfig,
+) -> tilo_compositor::TabletConfig {
+    use settings_store::hardware::{
+        EraserAction as StoredEraser, StylusButtonAction as StoredStylus,
+    };
+    use tilo_compositor::backend::drm::tablet::{
+        EraserAction as Eraser, KeyChord as Pressed, StylusButtonAction as Stylus,
+    };
+
+    // A shortcut the person's table does not list is on the chord the desktop binds it by.
+    let defaults = ShortcutConfig::default();
+    let chord = |action: settings_store::hardware::ShortcutAction| {
+        shortcuts
+            .bindings
+            .get(&action)
+            .or_else(|| defaults.bindings.get(&action))
+            .cloned()
+    };
+    let stylus = |action: StoredStylus| match action {
+        StoredStylus::Shortcut(shortcut) => {
+            chord(shortcut).map_or(Stylus::Default, |chord| Stylus::Shortcut(pressed(&chord)))
+        }
+        StoredStylus::Default => Stylus::Default,
+        StoredStylus::Left => Stylus::Left,
+        StoredStylus::Middle => Stylus::Middle,
+        StoredStylus::Right => Stylus::Right,
+        StoredStylus::Back => Stylus::Back,
+        StoredStylus::Forward => Stylus::Forward,
+        StoredStylus::Disabled => Stylus::Disabled,
+    };
+    tilo_compositor::TabletConfig {
+        output: stored.output.clone(),
+        keep_aspect: stored.keep_aspect,
+        left_handed: stored.left_handed,
+        pressure_curve: stored.pressure_curve,
+        lower_button: stylus(stored.lower_button),
+        upper_button: stylus(stored.upper_button),
+        third_button: stylus(stored.third_button),
+        eraser: match stored.eraser {
+            StoredEraser::Native => Eraser::Native,
+            StoredEraser::Left => Eraser::Left,
+            StoredEraser::Middle => Eraser::Middle,
+            StoredEraser::Right => Eraser::Right,
+            StoredEraser::Back => Eraser::Back,
+            StoredEraser::Forward => Eraser::Forward,
+            StoredEraser::Shortcut(shortcut) => {
+                chord(shortcut).map_or(Eraser::Native, |chord| Eraser::Shortcut(pressed(&chord)))
+            }
+        },
+        pad_buttons: stored
+            .pad_buttons
+            .iter()
+            .filter_map(|(button, shortcut)| {
+                chord(*shortcut).map(|chord| (*button, pressed(&chord)))
+            })
+            .collect(),
+        pad_rings: stored.pad_rings.clone(),
+        pad_strips: stored.pad_strips.clone(),
+    }
+}
+
+/// A stored chord as the compositor presses it.
+fn pressed(
+    stored: &settings_store::hardware::KeyChord,
+) -> tilo_compositor::backend::drm::tablet::KeyChord {
+    tilo_compositor::backend::drm::tablet::KeyChord {
+        modifiers: stored.modifiers.clone(),
+        key: stored.key.clone(),
     }
 }
 
@@ -402,6 +485,77 @@ mod tests {
         assert_eq!(
             SessionConfig::from_settings(&off, ShortcutConfig::default()).gestures,
             None
+        );
+    }
+
+    #[test]
+    fn a_tablets_buttons_press_their_shortcuts_and_its_dials_keep_every_mode() {
+        use settings_store::hardware::{
+            PadDialAction, ShortcutAction, StylusButtonAction, TabletConfig,
+        };
+        use tilo_compositor::backend::drm::tablet::StylusButtonAction as Pressed;
+
+        let mut stored = TabletConfig::default();
+        stored.upper_button = StylusButtonAction::Shortcut(ShortcutAction::Search);
+        stored.pad_buttons.insert(2, ShortcutAction::Lock);
+        stored.pad_rings.insert(
+            0,
+            vec![
+                PadDialAction::Zoom,
+                PadDialAction::Nothing,
+                PadDialAction::Volume,
+            ],
+        );
+        stored
+            .pad_strips
+            .insert(0, vec![PadDialAction::Nothing, PadDialAction::Brightness]);
+        let mut shortcuts = ShortcutConfig::default();
+        shortcuts.bindings.insert(
+            ShortcutAction::Lock,
+            settings_store::hardware::KeyChord {
+                modifiers: std::collections::BTreeSet::from(["Ctrl".to_owned()]),
+                key: "j".into(),
+            },
+        );
+
+        let config = SessionConfig::from_settings(
+            &RichInputConfig {
+                tablets: [("056a:0374:Wacom".to_owned(), stored)].into(),
+                ..RichInputConfig::default()
+            },
+            shortcuts,
+        );
+        let tablet = config
+            .input
+            .tablets
+            .get("056a:0374:Wacom")
+            .expect("the tablet");
+        assert_eq!(
+            tablet.upper_button,
+            Pressed::Shortcut(tilo_compositor::backend::drm::tablet::KeyChord {
+                modifiers: std::collections::BTreeSet::from(["Super".to_owned()]),
+                key: "space".into(),
+            }),
+            "a pen button presses the chord its shortcut is on"
+        );
+        assert_eq!(
+            tablet.pad_buttons.get(&2).map(|chord| chord.key.as_str()),
+            Some("j"),
+            "a pad button presses the person's own chord for its shortcut"
+        );
+        assert_eq!(
+            tablet.dial_action(settings_store::hardware::PadDial::Ring(0), 2),
+            PadDialAction::Volume,
+            "mode 2 of the first ring keeps what the pane set for it"
+        );
+        assert_eq!(
+            tablet.dial_action(settings_store::hardware::PadDial::Ring(0), 7),
+            PadDialAction::Scroll,
+            "a mode the ring does not have scrolls"
+        );
+        assert_eq!(
+            tablet.dial_action(settings_store::hardware::PadDial::Strip(0), 1),
+            PadDialAction::Brightness
         );
     }
 

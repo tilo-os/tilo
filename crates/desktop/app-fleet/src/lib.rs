@@ -99,6 +99,8 @@ pub struct FleetApp {
     /// The actions it offers while closed, one line each ([`Self::actions`]): one string, so
     /// the hundreds the fleet offers cost the program what their text does.
     offers: &'static str,
+    /// The actions its windows run on keys, one line each ([`Self::commands`]).
+    commands: &'static str,
 }
 
 impl FleetApp {
@@ -106,6 +108,29 @@ impl FleetApp {
     pub fn actions(&self) -> impl Iterator<Item = FleetAction> {
         self.offers.lines().filter_map(FleetAction::read)
     }
+
+    /// The actions its windows run on keys, with the keys it gives each, in the order it declares
+    /// them: what a person picks from to move one to other keys.
+    pub fn commands(&self) -> impl Iterator<Item = FleetCommand> {
+        self.commands.lines().filter_map(|line| {
+            let mut fields = line.split('\t');
+            Some(FleetCommand {
+                action: fields.next()?,
+                label: fields.next()?,
+                key: fields.next()?,
+            })
+        })
+    }
+}
+
+/// One action an app's windows run on keys (`key: "Ctrl+Enter"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FleetCommand {
+    /// The action's id, as it is published.
+    pub action: &'static str,
+    pub label: &'static str,
+    /// The keys the app gives it.
+    pub key: &'static str,
 }
 
 mod default_apps;

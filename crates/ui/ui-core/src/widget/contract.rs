@@ -60,59 +60,11 @@ pub trait Widget {
         PrimaryScrollResult::Unsupported
     }
 
-    /// Runtime binding inherited by descendants in a matching layout topology.
-    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
-        None
-    }
-
-    /// Whether this widget introduces a document owner distinct from the runner's outer State.
-    fn has_separate_document_owner(&self) -> bool {
-        self.callback_binding().is_some()
-    }
-
-    /// Opaque actual ownership for framework History source registration.
-    fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
-        self.callback_binding()
-            .map(crate::history_mode::HistoryOwner::component)
-    }
-
-    /// Records this widget keeps open beside the document it shows, each synced on its own route: a
-    /// framework app's records in the person's own workspace ([`crate::resource::person`]).
-    fn resource_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
-        Vec::new()
-    }
-
-    #[doc(hidden)]
-    #[allow(
-        private_interfaces,
-        reason = "opaque toolkit-only request prevents a public root/registry decoder loan"
-    )]
-    fn visit_components(
-        &mut self,
-        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
-    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        defaults::visit_components(self.children_mut(), request)
-    }
-
-    /// SDK model service visits retained owners independently of visible children.
-    #[doc(hidden)]
-    fn visit_retained_components(
-        &mut self,
-        request: &mut crate::bound_dispatch::RetainedComponentRequest<'_, '_>,
-    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        self.visit_components(request.inner())
-    }
-
-    #[doc(hidden)]
-    #[allow(
-        private_interfaces,
-        reason = "finite toolkit resource ownership requests"
-    )]
-    fn visit_resource_owners(
-        &self,
-        request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
-    ) -> Result<(), tilo_actions::ApiError> {
-        request.visit(self)
+    /// The children a traversal of the records and components this widget
+    /// holds reaches, which may differ from the children it draws and gives
+    /// input to: a hidden window still owns its records.
+    fn retained_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.children_mut()
     }
 
     /// Answer a request for a capability this widget takes part in (see [`capability`]).
@@ -473,12 +425,6 @@ pub trait Widget {
         false
     }
 
-    /// Exact app instance whose non-text shortcuts this subtree owns when activation has no control
-    /// target.
-    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
-        self.callback_binding().map(|binding| binding.instance_id)
-    }
-
     fn set_focus(&mut self, _focused: bool) {}
 
     /// The window holding this content fills its display (a maximized window): it has nothing beside it
@@ -617,6 +563,16 @@ pub trait Widget {
     /// export it a second time.
     fn accessibility_represents_child(&self, _child_index: usize) -> bool {
         false
+    }
+
+    /// The path of the node this widget publishes for one retained [`children`](Widget::children)
+    /// entry, where a page puts what the child composes under it: the node
+    /// [`accessibility`](Widget::accessibility) hangs the child's own controls off, or the node
+    /// that stands for the child itself. A widget whose node covers more than the child it speaks
+    /// for names it here, since the node does not stand where the child's own box does: a list's
+    /// row covers its lift, the row widget only the content between its gutters.
+    fn accessibility_child_node(&self, child_index: usize) -> Option<Vec<usize>> {
+        self.accessibility_child_path(child_index)
     }
 
     /// Whether this widget lays one retained [`children`](Widget::children) entry out itself (an

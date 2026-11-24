@@ -416,3 +416,131 @@ fn made(value: &Value) -> ResourceRef {
         other => panic!("an action answered {other:?}, not what it made"),
     }
 }
+
+/// A list whose action finishes an item and puts it first among the finished ones: what it asks
+/// for is filtered by the field it just wrote.
+const TICKS: &str = r#"app so.tilo.ticks "Ticks"
+
+type Tick {
+    title: Text
+    done: Bool = false
+}
+
+type Ticks {
+    items: Collection<Tick>
+}
+
+action add(list: Ticks, title: Text) -> Tick {
+    return list.items.insert(Tick(title: title))
+}
+
+action finish(list: Ticks, item: Tick) {
+    item.done = true
+    list.items.move(item, to: 0, among: list.items.filter(x -> x.done))
+}
+
+view ticks(list: Ticks) {
+    stack {
+        for item in list.items {
+            checkbox(item.title, bind: item.done)
+        }
+    }
+}
+"#;
+
+/// A store held in this process that counts the resources its pages answered with.
+struct Counted {
+    port: tilo_resource_store::LocalPort,
+    rows: std::cell::Cell<usize>,
+}
+
+impl tilo_resource_store::Port for Counted {
+    fn command(
+        &self,
+        command: tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        let reply = tilo_resource_store::Port::command(&self.port, command)?;
+        if let tilo_resource_store::wire::Reply::Page(page) = &reply {
+            self.rows.set(self.rows.get() + page.resources.len());
+        }
+        Ok(reply)
+    }
+
+    fn declare(&self, schema: tilo_resource_store::Schema) {
+        tilo_resource_store::Port::declare(&self.port, schema);
+    }
+
+    fn set_record_reader(&self, reader: std::sync::Arc<dyn tilo_resource_store::RecordReader>) {
+        tilo_resource_store::Port::set_record_reader(&self.port, reader);
+    }
+}
+
+/// An action that writes a field, asks for its collection's items filtered by it and moves the
+/// item among them reads the items the store's index holds to the filter, the ones it wrote and
+/// the page where the item goes, never every item the collection holds, and still finds the one
+/// it just wrote.
+#[test]
+fn a_filter_after_an_actions_own_write_reads_what_the_index_narrows_it_to() {
+    let compiled = tilolang::compile_package(TICKS, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|errors| panic!("{errors:#?}"));
+    let port = std::rc::Rc::new(Counted {
+        port: tilo_resource_store::LocalPort::in_memory(),
+        rows: std::cell::Cell::new(0),
+    });
+    let store = ResourceStore::new(port.clone());
+    store.declare(&compiled.meta);
+    let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
+    rt.load_compiled(&compiled).unwrap();
+    let list = rt.create("Ticks").unwrap();
+    let call = |action: &str, args: Vec<Value>| {
+        let id = &compiled
+            .meta
+            .actions
+            .iter()
+            .find(|held| held.name == action)
+            .unwrap()
+            .id;
+        match rt.invoke_action(&me(), (id.as_str(), args)).unwrap() {
+            InvokeOutcome::Done(value) => value,
+            other => panic!("{action} answered {other:?}"),
+        }
+    };
+    let items: Vec<ResourceRef> = (0..2000)
+        .map(|at| {
+            made(&call(
+                "add",
+                vec![Value::resource(&list), Value::text(format!("item {at}"))],
+            ))
+        })
+        .collect();
+    call(
+        "finish",
+        vec![Value::resource(&list), Value::resource(&items[10])],
+    );
+    let before = port.rows.get();
+    call(
+        "finish",
+        vec![Value::resource(&list), Value::resource(&items[20])],
+    );
+    let read = port.rows.get() - before;
+    assert!(
+        read <= 2000 / 4,
+        "finishing an item among 2000 read {read} of them from the store: the finished ones, the \
+         one it wrote and a page where it goes"
+    );
+    let id = &compiled
+        .meta
+        .views
+        .iter()
+        .find(|held| held.name == "ticks")
+        .unwrap()
+        .id;
+    let view = rt
+        .open_view(&me(), id, vec![Value::resource(&list)])
+        .unwrap();
+    assert_eq!(
+        titles(view.tree())[9..12],
+        ["item 9", "item 20", "item 10"],
+        "the item finished last stands first among the finished ones"
+    );
+}

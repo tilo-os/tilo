@@ -161,7 +161,14 @@ struct WindowProbe {
 }
 
 impl Widget for WindowProbe {
+    crate::provides!(dyn crate::bound_dispatch::BoundTraversal);
     crate::testing::inert_widget_methods!(unregistered_leaf_layout);
+    fn name(&self) -> &'static str {
+        "WindowProbe"
+    }
+}
+
+impl crate::bound_dispatch::BoundTraversal for WindowProbe {
     fn visit_components(
         &mut self,
         _: &mut crate::bound_dispatch::ComponentRequest<'_>,
@@ -170,9 +177,6 @@ impl Widget for WindowProbe {
             .borrow_mut()
             .push(crate::window_toolbar::window().map(|window| window.identity()));
         Ok(())
-    }
-    fn name(&self) -> &'static str {
-        "WindowProbe"
     }
 }
 
@@ -204,11 +208,10 @@ fn a_wake_or_callback_runs_in_the_apps_own_window() {
     let mut visit = |_: &crate::bound_dispatch::CallbackBinding,
                      _: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| None;
-    host.visit_components(&mut crate::bound_dispatch::ComponentRequest {
-        target: None,
-        found: false,
-        visit: &mut visit,
-    })
+    crate::bound_dispatch::visit_components(
+        &mut host,
+        &mut crate::bound_dispatch::ComponentRequest::new(None, &mut visit),
+    )
     .unwrap();
     assert_eq!(*reached_in.borrow(), [Some(window.identity())]);
     assert_eq!(

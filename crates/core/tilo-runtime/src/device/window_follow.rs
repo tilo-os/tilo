@@ -54,6 +54,7 @@ fn descriptor(action: &str, label: &str, detail: &str) -> tilo_actions::ActionDe
         input: tilo_actions::InputSpec::None,
         params: Vec::new(),
         view: None,
+        effects: Vec::new(),
     }
 }
 

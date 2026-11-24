@@ -962,7 +962,9 @@ mod component_adapter {
             dyn crate::component_lifecycle::HearsElsewhere,
             dyn crate::widget::WindowHistory,
             dyn crate::undo::UndoPoints,
-            dyn crate::widget::ResourceOperations
+            dyn crate::widget::ResourceOperations,
+            dyn crate::bound_dispatch::BoundWidget,
+            dyn crate::bound_dispatch::BoundTraversal
         );
         fn as_any(&self) -> Option<&dyn std::any::Any> {
             Some(self)
@@ -1019,50 +1021,6 @@ mod component_adapter {
                 .stamp(binding.lifetime_id)
         }
 
-        fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
-            Some(self.component.callback_binding())
-        }
-        // Local feedback belongs to the emitting component. The host delivers
-        // bound results through with_live_component; generic tree recursion
-        // must neither cross into another record nor revive a closed owner.
-        fn visit_components(
-            &mut self,
-            request: &mut crate::bound_dispatch::ComponentRequest<'_>,
-        ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-            let binding = self.component.callback_binding();
-            if binding.closing.get() {
-                return Ok(());
-            }
-            let Ok(_entry) = binding.lifetime.enter_if_open() else {
-                return Ok(());
-            };
-            if request
-                .target
-                .is_none_or(|target| target.same_component(&binding))
-            {
-                let target = request.target.unwrap_or(&binding);
-                if let Some((invocation, accepted)) = self
-                    .component
-                    .with_live_component(target, &mut *request.visit)?
-                {
-                    if accepted {
-                        if !self.component.invocations.contains(&invocation) {
-                            self.component.invocations.push(invocation);
-                        }
-                    } else {
-                        self.component.invocations.retain(|id| *id != invocation);
-                    }
-                }
-                request.found = true;
-                if request.target.is_some() {
-                    return Ok(());
-                }
-            }
-            if let Some(root) = self.component.root.as_deref_mut() {
-                root.visit_components(request)?;
-            }
-            Ok(())
-        }
         fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
             self.in_root_mut(|root| root.mount_native_views(host));
         }
@@ -1361,6 +1319,10 @@ mod component_adapter {
             self.in_root(|root| root.accessibility_child_path(child_index))
                 .flatten()
         }
+        fn accessibility_child_node(&self, child_index: usize) -> Option<Vec<usize>> {
+            self.in_root(|root| root.accessibility_child_node(child_index))
+                .flatten()
+        }
         fn accessibility_represents_child(&self, child_index: usize) -> bool {
             self.in_root(|root| root.accessibility_represents_child(child_index))
                 .unwrap_or_default()
@@ -1637,6 +1599,56 @@ mod component_adapter {
                     env,
                 ))
             });
+        }
+    }
+
+    impl crate::bound_dispatch::BoundWidget for BoundAppWidget {
+        fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+            Some(self.component.callback_binding())
+        }
+    }
+
+    impl crate::bound_dispatch::BoundTraversal for BoundAppWidget {
+        // Local feedback belongs to the emitting component. The host delivers
+        // bound results through with_live_component; generic tree recursion
+        // must neither cross into another record nor revive a closed owner.
+        fn visit_components(
+            &mut self,
+            request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+        ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+            let binding = self.component.callback_binding();
+            if binding.closing.get() {
+                return Ok(());
+            }
+            let Ok(_entry) = binding.lifetime.enter_if_open() else {
+                return Ok(());
+            };
+            if request
+                .target
+                .is_none_or(|target| target.same_component(&binding))
+            {
+                let target = request.target.unwrap_or(&binding);
+                if let Some((invocation, accepted)) = self
+                    .component
+                    .with_live_component(target, &mut *request.visit)?
+                {
+                    if accepted {
+                        if !self.component.invocations.contains(&invocation) {
+                            self.component.invocations.push(invocation);
+                        }
+                    } else {
+                        self.component.invocations.retain(|id| *id != invocation);
+                    }
+                }
+                request.found = true;
+                if request.target.is_some() {
+                    return Ok(());
+                }
+            }
+            if let Some(root) = self.component.root.as_deref_mut() {
+                crate::bound_dispatch::visit_components(root, request)?;
+            }
+            Ok(())
         }
     }
 

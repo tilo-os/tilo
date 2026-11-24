@@ -505,6 +505,18 @@ pub struct Session {
     /// Setup, while it runs: it withholds the desktop's actions.
     #[cfg(target_os = "linux")]
     pub(crate) setup: Option<Rc<RefCell<crate::setup::Setup>>>,
+    /// The identity backup a desktop already in use opens, as setup shows it when a computer is
+    /// first used ([`crate::Options::identity_backup`]): a layer raised over the desktop.
+    #[cfg(target_os = "linux")]
+    pub(crate) identity_backup:
+        fn(bool) -> Result<tilo_onboarding_session::view::OnboardingView, String>,
+    /// Whether this session is Tilo installed as a desktop session on an existing Linux host.
+    #[cfg(target_os = "linux")]
+    pub(crate) host_desktop: bool,
+    /// Physical pixels per logical pixel the desktop draws at, for a layer the session raises
+    /// after its first frame.
+    #[cfg(target_os = "linux")]
+    pub(crate) scale: f64,
     /// The login screens' comforts, kept equal to the person's own.
     #[cfg(target_os = "linux")]
     pub(crate) comforts: Option<crate::comforts::Mirror>,

@@ -452,7 +452,7 @@ fn a_ranges_agent_work_lists_the_changes_it_still_leaves_in_place_and_undoes_one
     );
     assert_eq!(
         app.sent.arg("undo-record", "step"),
-        Some(Value::text("e020")),
+        Some(Value::Opt(Some(Box::new(Value::text("aa11"))))),
         "and the one change it takes back"
     );
     press(&mut window, "Plan");

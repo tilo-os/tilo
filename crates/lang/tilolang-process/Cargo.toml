@@ -27,7 +27,6 @@ app-launch = [
     "dep:tilo-app-module",
     "dep:tilolang-music",
     "dep:tilolang-youtube",
-    "dep:tilolang-grayjay",
     "tilolang-mail/engine",
     "dep:tilo-backups-engine",
     "dep:tilolang-calendar",
@@ -157,7 +156,6 @@ tilo-app-module = { version = "0.1.0", path = "../tilo-app-module", optional = t
 tilolang-youtube = { path = "../../integrations/tilolang-youtube", optional = true }
 # YouTube's Grayjay link: the Noise handshake and exchanges with a Grayjay device, whose key is
 # the app's own secret in the platform's store.
-tilolang-grayjay = { path = "../../integrations/tilolang-grayjay", optional = true }
 # A music catalogue as an outside origin: its connector, and a window without a session keeping
 # a package's songs in step with it, in native code with the network.
 tilolang-music = { path = "../../integrations/tilolang-music", optional = true }

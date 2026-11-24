@@ -9,10 +9,13 @@
     reason = "test assertions"
 )]
 
+use std::cell::RefCell;
 use std::path::Path;
+use std::rc::Rc;
 
+use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::host::Host;
-use tilolang_tilo::runtime::{Actor, ViewInstance};
+use tilolang_tilo::runtime::{Actor, Value, ViewInstance};
 
 const APP: &str = "so.tilo.settings";
 
@@ -48,8 +51,8 @@ fn serve(host: &Host, id: &str, ty: &str, reading: &str) {
         .expect("the reading is served");
 }
 
-/// The lines the Permissions pane shows, its text as written.
-fn line(host: &Host) -> Vec<String> {
+/// The Permissions pane opened as its own view.
+fn pane(host: &Host) -> ViewInstance {
     let id = host
         .package(APP)
         .expect("the app is loaded")
@@ -69,8 +72,36 @@ fn line(host: &Host) -> Vec<String> {
         )
         .expect("the pane opens");
     view.poll_patches().expect("the pane draws");
-    texts(&view)
+    view
 }
+
+/// The lines the Permissions pane shows, its text as written.
+fn line(host: &Host) -> Vec<String> {
+    texts(&pane(host))
+}
+
+/// The key of the control of `kind` whose label `label` reads, as the pane lays it out.
+fn labelled(tree: &tilolang_runtime::UiNode, kind: &str, label: &str) -> String {
+    tree.of_kind(kind)
+        .into_iter()
+        .find(|node| node.props.get("label") == Some(&Value::text(label)))
+        .unwrap_or_else(|| panic!("a {kind} labelled {label}"))
+        .key
+        .clone()
+}
+
+/// One invocation as it was sent, with its arguments by name.
+struct Sent(Rc<RefCell<Vec<Invocation>>>);
+
+impl Invoker for Sent {
+    fn invoke(&self, invocation: &Invocation) -> Invoked {
+        self.0.borrow_mut().push(invocation.clone());
+        Invoked::Done(Value::Unit)
+    }
+}
+
+/// The form an answer's address takes: the portal's consent resource for it.
+const RECORDER_CONSENT: &str = "portal:consent:Laptop\u{1f}so.tilo.recorder\u{1f}camera";
 
 /// The texts a view shows: its text as written, and its rich text flattened.
 fn texts(view: &ViewInstance) -> Vec<String> {
@@ -101,12 +132,21 @@ const PRIVACY: &str = r#"{
          "mute_known": false, "watched": false, "in_use": []}
     ],
     "answers": [
-        {"app": "so.tilo.recorder", "name": "Recorder", "capability": "camera", "allowed": true,
+        {"$address": "portal:consent:Laptop\u001fso.tilo.recorder\u001fcamera",
+         "app": "so.tilo.recorder", "name": "Recorder", "capability": "camera", "allowed": true,
          "standing": "until-revoked", "until_unix_ms": 0, "device": "Laptop",
          "this_device": true},
-        {"app": "so.tilo.meet", "name": "Meet", "capability": "microphone", "allowed": false,
+        {"$address": "portal:consent:Phone\u001fso.tilo.meet\u001fmicrophone",
+         "app": "so.tilo.meet", "name": "Meet", "capability": "microphone", "allowed": false,
          "standing": "session", "until_unix_ms": 0, "device": "Phone", "this_device": false}
-    ]
+    ],
+    "secrets": {"apps": [
+        {"id": "binary:/usr/bin/chromium", "name": "Chromium", "allowed": true, "uses": 42,
+         "items": 3},
+        {"id": "sandbox:so.tilo.mail", "name": "Mail", "allowed": false, "uses": 7, "items": 1}
+    ], "read_error": null},
+    "security": {"disk_encryption": "on", "secure_boot": "off", "firewall": "firewalld",
+                 "firewall_error": null}
 }"#;
 
 /// Each device says what blocks it and what uses it, in its own words, and each answer names the
@@ -238,6 +278,16 @@ fn a_device_read_nothing_of_is_unknown_rather_than_unused() {
         !said.contains("No application is using it now"),
         "nothing read is not nothing used: {said}"
     );
+    for expected in [
+        "The applications that use saved passwords and keys can't be read here.",
+        "What protects this device itself can't be read here.",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+    assert!(
+        !said.contains("No application has used saved passwords or keys yet."),
+        "saved secrets nobody read are not none used: {said}"
+    );
 }
 
 /// Neither root was ever published: the pane still draws, and each half says what it cannot say
@@ -311,5 +361,188 @@ fn the_window_says_a_root_nothing_published_could_not_be_read() {
     assert!(
         !said.contains("could not be read"),
         "the row gives way to the pane: {said}"
+    );
+}
+
+/// The session publishes the workspaces' grants beside this device's privacy in every test here.
+fn serve_access(host: &Host) {
+    serve(
+        host,
+        "workspace/access",
+        "tilo.workspace#Access",
+        r#"{"known": true, "workspaces": []}"#,
+    );
+}
+
+/// Each answer is a resource of the session's portal, and taking it back runs the consent
+/// resource's own `forget`: the app that answered, on the address the answer carries.
+#[test]
+fn the_pane_takes_back_an_answer_on_its_own_resource() {
+    let host = settings();
+    serve(&host, "session:privacy", "so.tilo.device#Privacy", PRIVACY);
+    serve_access(&host);
+    let view = pane(&host);
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+
+    view.press(&labelled(view.tree(), "ui.Button", "Take back"))
+        .expect("the answer is taken back");
+
+    let sent = sent.borrow();
+    let [
+        Invocation::Action {
+            app,
+            name,
+            target,
+            args,
+            ..
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one answer's own verb: {sent:?}");
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("so.tilo.device", "forget"),
+        "the consent's own verb, as the device surface publishes it"
+    );
+    assert!(
+        args.iter().all(|(_, value)| match value {
+            Value::Ref(held) => held.target.id_string() == RECORDER_CONSENT,
+            _ => false,
+        }),
+        "the consent itself is the only argument, the call's address: {args:?}"
+    );
+    assert_eq!(
+        target
+            .as_ref()
+            .map(tilolang_tilo::runtime::ResourceRef::id_string),
+        Some(RECORDER_CONSENT.to_owned()),
+        "the first answer the pane lists"
+    );
+}
+
+/// One argument of a sent call.
+fn arg<'a>(args: &'a [(String, Value)], wanted: &str) -> Option<&'a Value> {
+    args.iter()
+        .find(|(named, _)| named == wanted)
+        .map(|(_, value)| value)
+}
+
+/// The applications that use the saved passwords and keys are listed with what they keep, and
+/// the pane stops one, lets it use the store again, or forgets it, each through the reading's
+/// own verb with the application's identity.
+#[test]
+fn the_pane_lists_and_changes_the_saved_secrets() {
+    let host = settings();
+    serve(&host, "session:privacy", "so.tilo.device#Privacy", PRIVACY);
+    serve_access(&host);
+    let view = pane(&host);
+    let said = texts(&view).join(" | ");
+    for expected in [
+        "Saved passwords and keys",
+        "Chromium",
+        "3 saved, used 42 times",
+        "Mail",
+        "1 saved, used 7 times",
+        "Allowed",
+        "Refused",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    // The first application may use the store: the pane offers stopping it, and forgetting it.
+    view.press(&labelled(view.tree(), "ui.Button", "Stop"))
+        .expect("the application is stopped");
+    let sent = sent.borrow();
+    let [
+        Invocation::Action {
+            app, name, args, ..
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one verb of the reading: {sent:?}");
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("so.tilo.device", "set-secrets-access"),
+        "the reading's own verb, as its surface publishes it"
+    );
+    assert_eq!(
+        arg(args, "app"),
+        Some(&Value::text("binary:/usr/bin/chromium"))
+    );
+    assert_eq!(arg(args, "allowed"), Some(&Value::Bool(false)));
+    drop(sent);
+
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    host.runtime().set_invoker(Sent(Rc::clone(&sent)));
+    view.press(&labelled(view.tree(), "ui.Button", "Forget"))
+        .expect("the application is forgotten");
+    let sent = sent.borrow();
+    let [
+        Invocation::Action {
+            app, name, args, ..
+        },
+    ] = sent.as_slice()
+    else {
+        panic!("one verb of the reading: {sent:?}");
+    };
+    assert_eq!(
+        (app.as_str(), name.as_str()),
+        ("so.tilo.device", "forget-secrets")
+    );
+    assert_eq!(
+        arg(args, "app"),
+        Some(&Value::text("binary:/usr/bin/chromium"))
+    );
+}
+
+/// The device's own protection is said in the row's words: whether its disk is encrypted, its
+/// firmware verifies what it boots and a firewall is in force, and when one cannot be read the
+/// pane says so rather than showing it off.
+#[test]
+fn the_pane_says_what_protects_this_device() {
+    let host = settings();
+    serve(&host, "session:privacy", "so.tilo.device#Privacy", PRIVACY);
+    serve_access(&host);
+    let said = line(&host).join(" | ");
+    for expected in [
+        "Device protection",
+        "Encrypted",
+        "Disabled",
+        "Active, firewalld",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+
+    // Read, and nothing protects it: each row says its own off, and a firewall that could not be
+    // read says so with why rather than as off.
+    let host = settings();
+    serve(
+        &host,
+        "session:privacy",
+        "so.tilo.device#Privacy",
+        r#"{"capabilities": [], "answers": [],
+            "secrets": {"apps": [], "read_error": "the store is locked"},
+            "security": {"disk_encryption": "off", "secure_boot": "on",
+                         "firewall": "unknown",
+                         "firewall_error": "firewalld is not running"}}"#,
+    );
+    serve_access(&host);
+    let said = line(&host).join(" | ");
+    for expected in [
+        "Not encrypted",
+        "Enabled",
+        "Can't read the firewall state: firewalld is not running",
+        "The saved-secrets service can't be reached, so its applications can't be listed.",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+    assert!(
+        !said.contains("Not active"),
+        "a firewall nobody could read is not said to be off: {said}"
     );
 }

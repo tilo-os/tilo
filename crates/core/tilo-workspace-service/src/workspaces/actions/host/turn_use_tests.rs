@@ -56,8 +56,9 @@ pub(super) fn turn() -> tilo_action_policy::turn::Turn {
 /// `request`, asked by `turn`'s caller of the device's dispatch, as a turn's tools ask it: what
 /// it answered, or its refusal. An agent on a turn in the turn's workspace is listed there
 /// first, and where the turn names a policy, its person's answers in it replace whatever the
-/// workspace held for the agent, as setting them anew does. The test's device lets in no agent
-/// another of the person's devices hands its session to, as a device's settings start.
+/// workspace held for the agent, as setting them anew does. An agent another of the person's
+/// devices hands its session to is no turn this device carries out, and is answered as the
+/// device answers that call for any caller.
 pub(super) async fn dispatched(
     workspaces: &Workspaces,
     turn: &HostedTurn<'_>,
@@ -152,32 +153,39 @@ pub(super) async fn listed(
     agent: &str,
     bound: &[Rule],
 ) {
-    use tilo_resource::{Id, NonBlank, Replica};
-    use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
-    workspaces
-        .author_agents(workspace, |doc| {
-            let mut agents = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                .as_author(person)
-                .in_app(tilo_workspace_agent::OWNER, "Chat");
-            let kept = agents.state().map_err(|error| error.to_string())?;
-            if kept.agents.find(&Id::from_raw(agent)).is_none() {
-                agents
-                    .apply(
-                        WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                            avatar: None,
-                            name: NonBlank::parse("Scout").unwrap(),
-                            id: Some(agent.into()),
-                            model: None,
-                            mcp_client: None,
-                        }),
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            std::mem::swap(doc, agents.doc_mut());
-            Ok(())
-        })
+    use tilo_resource::{Id, Replica};
+    use tilo_workspace_agent::WorkspaceAgents;
+    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let kept = workspaces
+        .resource_document(workspace, tilo_workspace_agent::OWNER, &record)
         .await
-        .unwrap();
+        .unwrap()
+        .is_some_and(|bytes| {
+            Replica::<WorkspaceAgents>::load(&bytes)
+                .and_then(|record| record.state())
+                .unwrap()
+                .agents
+                .find(&Id::from_raw(agent))
+                .is_some()
+        });
+    if !kept {
+        // The person makes the agent as anyone does, by the workspace's action, signed on a
+        // device of theirs; the host's own person asks on the host's own device.
+        let device = super::super::tests::admitted_device_of(person)
+            .map_or_else(|| workspaces.device_cert().clone(), |(device, _)| device);
+        let asking = super::super::tests::caller(&device);
+        let mut creating = super::super::tests::request(
+            workspace,
+            tilo_actions::remote::WORKSPACE_AGENT_CREATE,
+            serde_json::json!({"name": "Scout", "id": agent}),
+        );
+        creating = super::super::tests::signed_from(&creating, workspace, (&device, &asking));
+        let workspace_id = collab_types::WorkspaceId::parse(workspace).unwrap();
+        workspaces
+            .agents_invoke(workspace_id, &asking, &creating)
+            .await
+            .expect("the person makes their agent");
+    }
     let grants: Vec<_> = bound
         .iter()
         .enumerate()
@@ -198,14 +206,18 @@ pub(super) async fn listed(
 }
 
 /// The refusal the device's dispatch answers `who`, one of [`not_hosted_turns`], with: none
-/// knows the call, except an agent another of the person's devices hands its session to, which
-/// this device lets in only where its settings say so ([`dispatched`]) and so refuses first.
+/// knows the call. An agent another of the person's devices hands its session to is answered as
+/// any caller is: as unknown where this device offers no such action, and as refused where it
+/// offers it and the agent's grants do not reach.
 pub(super) fn not_a_turn<T: std::fmt::Debug + PartialEq>(
     who: &str,
     refused: Result<T, ActionCallError>,
 ) {
     if who == HANDED {
-        assert!(matches!(refused, Err(Refused { .. })), "{who}: {refused:?}");
+        assert!(
+            matches!(refused, Err(UnknownAction | Refused { .. })),
+            "{who}: {refused:?}"
+        );
     } else {
         assert_eq!(refused, Err(UnknownAction), "{who}");
     }
@@ -591,6 +603,13 @@ async fn after_always_the_agent_uses_the_item_there_alone_until_it_is_taken_back
         assert_eq!(used["using"], MAIL_USE, "{remembers}");
         assert_eq!(used["allowed"], "always", "{remembers}");
     }
+
+    // The leave names that one use of that one item: another item of hers is still put to her,
+    // never refused for what the leave does not name.
+    let another = a_mail_login(&service, workspace_id, hers).await;
+    let wanted = add_mail("other@example.test", IMAP, &another);
+    asks(dispatched(workspaces, &turn, &wanted).await);
+    assert_eq!(proved.lock().unwrap().len(), 2, "nothing more signed in");
 
     // Another agent of hers is still asked: the leave names one agent.
     let other = on_turn(&ada, &workspace, "other");
@@ -1040,23 +1059,28 @@ async fn a_providers_key_is_asked_for_first_and_then_kept_alone() {
     server.shutdown().await;
 }
 
-/// A workspace policy whose grants on the agent `caller` acts as are `rules`.
-fn narrowing(
+/// A workspace policy whose answers on the agent `caller` acts as are `rules`, set by the
+/// person who gave them: each kind of a rule is its own answer, as setting answers anew does.
+pub(super) fn narrowing(
     workspace: &str,
     caller: &Caller,
     rules: &[Rule],
 ) -> tilo_action_policy::WorkspacePolicy {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
     let mut policy = tilo_action_policy::WorkspacePolicy::new(workspace, "owner");
     let agent = caller.acting().agent_id().unwrap_or_default();
-    for (index, rule) in rules.iter().enumerate() {
-        policy.grants.push(tilo_action_policy::Grant::new(
-            format!("test-narrowing:{index}"),
-            tilo_action_policy::Grantee::agent(agent.to_owned()),
-            rule.node.clone(),
-            rule.kinds,
-            rule.answer,
-            tilo_action_policy::Grantee::person("owner"),
-        ));
+    for rule in rules {
+        let scope = AnswerScope::of_node(&rule.node)
+            .expect("a rule of a bound stands at a node an answer names");
+        for kind in rule.kinds.iter() {
+            policy.grants.push(agent_answers::grant(
+                workspace,
+                &agent,
+                (&scope, kind),
+                rule.answer,
+                tilo_action_policy::Grantee::person("owner"),
+            ));
+        }
     }
     policy
 }

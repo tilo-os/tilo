@@ -407,6 +407,10 @@ pub enum HandshakeTrust<'a> {
     /// currently admits (the main server ALPN, content-endpoint discovery,
     /// compute and browser sessions).
     Live(&'a TrustPolicy),
+    /// [`Self::Live`], and the devices the server's workspaces name among their
+    /// holders: a holder is no member and no trusted person, and only the one
+    /// device a naming names is admitted, to keep and carry the workspace.
+    LiveHolders(&'a TrustPolicy, &'a std::collections::HashSet<[u8; 32]>),
     /// Only devices of the server's own user (home-peer management).
     OwnerDevicesOnly,
     /// Only devices of the server's own user that may admit devices
@@ -424,6 +428,10 @@ impl HandshakeTrust<'_> {
         let owner = || TrustPolicy::AllowMatchingUser.admits(cert, own_user_public_key);
         match self {
             Self::Live(policy) => policy.admits(cert, own_user_public_key),
+            Self::LiveHolders(policy, holders) => {
+                policy.admits(cert, own_user_public_key)
+                    || holders.contains(&cert.device_public_key)
+            }
             Self::OwnerDevicesOnly => owner(),
             Self::OwnerDeviceAdmitters => owner() && cert.capabilities.can_admit_devices,
             Self::AnyCertifiedDevice => true,

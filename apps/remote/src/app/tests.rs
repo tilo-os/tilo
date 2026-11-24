@@ -95,6 +95,13 @@ fn pending_confirmation_is(app: &RemoteApp, id: ConnectionId) -> bool {
         .is_some_and(|pending| pending.id() == id)
 }
 
+/// Ask to open `id`, as a row's connect press does once the resource action has
+/// handed it on: the confirmation the window shows for it.
+fn request_connect(app: &mut RemoteApp, id: ConnectionId) {
+    app.state().request_connect(id);
+    app.follow_store();
+}
+
 tilo_test_env::scenario! {
     fn the_live_app_starts_empty_and_the_samples_are_complete;
 
@@ -478,7 +485,7 @@ tilo_test_env::scenario! {
     {
         let mut app = demo();
         let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
-        app.apply(Action::RequestConnect(id));
+        request_connect(&mut app, id);
         assert!(pending_confirmation_is(&app, id));
         assert!(app.session.borrow().live.is_none());
         assert!(app.session.borrow().collab_outbox.is_empty());
@@ -488,7 +495,7 @@ tilo_test_env::scenario! {
     {
         let mut app = demo();
         let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
-        app.apply(Action::RequestConnect(id));
+        request_connect(&mut app, id);
         app.state().workspace.get_mut(id).unwrap().host =
             Atom(SecretKey::generate().public().to_string());
         app.apply(Action::ConfirmPending);
@@ -505,7 +512,7 @@ tilo_test_env::scenario! {
         let mut app = demo();
         let ssh = app.state().first_of_kind(ConnectionKind::Ssh).unwrap();
         if !crate::session::live_sessions_enabled() {
-            app.apply(Action::RequestConnect(ssh));
+            request_connect(&mut app, ssh);
             assert!(
                 app.state().pending_confirmation.is_none(),
                 "nothing to confirm"
@@ -528,7 +535,7 @@ tilo_test_env::scenario! {
             );
         }
         let rdp = app.state().first_of_kind(ConnectionKind::Rdp).unwrap();
-        app.apply(Action::RequestConnect(rdp));
+        request_connect(&mut app, rdp);
         assert_eq!(app.state().screen, Screen::Session { id: rdp });
         assert_eq!(
             app.state().status_model(rdp).action,
@@ -1127,6 +1134,6 @@ fn the_window_bar_names_the_screen_and_holds_its_actions() {
 
     let rdp = app.state().first_of_kind(ConnectionKind::Rdp).unwrap();
     let name = app.state().workspace.get(rdp).unwrap().name.clone();
-    app.apply(Action::RequestConnect(rdp));
+    request_connect(&mut app, rdp);
     assert_eq!(label(&app.window_toolbar()), Some(name));
 }

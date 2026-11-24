@@ -1222,6 +1222,7 @@ fn descriptor(offered: Offered) -> ActionDescriptor {
         input: InputSpec::None,
         params: offered.params,
         view: None,
+        effects: Vec::new(),
     }
 }
 

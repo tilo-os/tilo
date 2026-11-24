@@ -1,6 +1,7 @@
-//! Frequency and recency of what a person chose, for breaking ties between
-//! equally good matches: the app opened daily outranks the one opened once
-//! last spring, while a better textual match is never overtaken.
+//! Frequency and recency of what a person chose: the app opened daily
+//! outranks the one opened once last spring. Desktop search breaks ties
+//! between equally good matches with it ([`Frecency`]), and a program ranks
+//! its records by the choices their history holds with it ([`frecency`]).
 
 use std::collections::HashMap;
 
@@ -133,13 +134,21 @@ impl Frecency {
     }
 }
 
+fn weight(entry: Entry, now: u64) -> f64 {
+    frecency(entry.count, entry.last, now)
+}
+
+/// How strongly something chosen `count` times, the last at `last`, pulls at
+/// `now` (both seconds since the epoch): more choices pull harder, and the pull
+/// halves every two weeks after the last. Zero for something never chosen.
+#[must_use]
 #[allow(
     clippy::cast_precision_loss,
     reason = "counts and ages are far below 2^52"
 )]
-fn weight(entry: Entry, now: u64) -> f64 {
-    let age_days = now.saturating_sub(entry.last) as f64 / SECONDS_PER_DAY;
-    (1.0 + f64::from(entry.count)).ln() * 0.5_f64.powf(age_days / HALF_LIFE_DAYS)
+pub fn frecency(count: u32, last: u64, now: u64) -> f64 {
+    let age_days = now.saturating_sub(last) as f64 / SECONDS_PER_DAY;
+    (1.0 + f64::from(count)).ln() * 0.5_f64.powf(age_days / HALF_LIFE_DAYS)
 }
 
 #[cfg(test)]

@@ -1491,7 +1491,9 @@ impl RootModel for ResourceRoot {
                 .as_ref()
                 .and_then(super::record_index::RecordIndex::owner),
         );
-        owners.extend(self.content.resource_owners());
+        owners.extend(ui_core::bound_dispatch::resource_owners(
+            self.content.as_ref(),
+        ));
         owners
     }
 

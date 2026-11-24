@@ -20,9 +20,17 @@ pub const OVERLAYS: &str = "desktop:overlays";
 pub const PEEK_SURFACE: &str = "peek";
 /// The resource the session publishes of its displays.
 pub const DISPLAYS_RESOURCE: &str = "session:displays";
+/// The resource the session publishes of the person's screens across their devices. It is read
+/// only: a screen's place is written through the display-placement section's own action.
+pub const PERSON_DISPLAYS_RESOURCE: &str = "session:person-displays";
 /// The resource the session publishes per part: the display that part draws on. Each part's own
 /// reading (its view runs on that part's runtime), so what a shell draws is its display's.
 pub const SCREEN_RESOURCE: &str = "session:screen";
+
+/// The room the shell's own chrome leaves on each part: the display less the band the bar and
+/// the dock hug, measured from the frame the part's style laid out (`device.room`). Each part's
+/// own reading, like its display.
+pub const ROOM_RESOURCE: &str = "session:room";
 
 /// The shell's own record: the package's named root `shell` (`root shell: Shell`), reached in
 /// its views as `shell`.
@@ -35,7 +43,8 @@ pub const SHELL_APP: &str = "so.tilo.shell";
 pub use crate::layout::{
     LayoutDisplayReading, LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading,
     LayoutReading, LayoutRecentReading, LayoutRefReading, LayoutRowReading, LayoutStripReading,
-    LayoutWorkspaceReading,};
+    LayoutWorkspaceReading,
+};
 
 /// What a shell asked of the session: an invocation on the action API, its arguments as any caller's
 /// reach it (a list as a list, a map as an object).

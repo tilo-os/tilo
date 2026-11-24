@@ -19,6 +19,13 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 pub mod workspace;
 
+/// The frames this thread copied or compared to keep this device's frames so far: a write's
+/// share of it stays the same however many frames the record keeps.
+#[must_use]
+pub fn frames_touched() -> u64 {
+    crate::owner::stored::frames_touched()
+}
+
 /// The record at `path` as the disk holds it: the index and one file per
 /// workspace, sorted by path.
 #[cfg(all(test, not(target_arch = "wasm32")))]

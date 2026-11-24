@@ -377,7 +377,7 @@
   },
   "so.tilo.tasks tasks.issues#share-link": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#share-link",
-    "test": "crates/lang/tilolang-service/tests/share.rs:82"
+    "test": "crates/lang/tilolang-service/tests/share.rs:235"
   },
   "so.tilo.tasks tasks.issues#show-board": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open-board",
@@ -505,7 +505,7 @@
   },
   "so.tilo.tasks tasks.tracker#share-link": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#share-link",
-    "test": "crates/lang/tilolang-service/tests/share.rs:82"
+    "test": "crates/lang/tilolang-service/tests/share.rs:235"
   },
   "so.tilo.tasks tasks.tracker#show-board": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Tasks#open-board",

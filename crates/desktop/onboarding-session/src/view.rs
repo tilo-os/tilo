@@ -813,10 +813,51 @@ impl OnboardingView {
         self.tour_page.is_some()
     }
 
+    /// The identity backup a desktop already in use opens: the export, the file it is written to
+    /// and the proof it opens that first use offers, and nothing that creates or restores an
+    /// identity. It ends back at the desktop the person came from.
+    ///
+    /// # Errors
+    /// This computer keeps no identity to back up.
+    pub fn portable_backup(identity_dir: PathBuf) -> Result<Self, String> {
+        Self::portable_backup_in(identity_dir, OnboardingContext::FullSystem)
+    }
+
+    /// [`portable_backup`] on Tilo installed as a desktop session on an existing Linux host.
+    ///
+    /// # Errors
+    /// This computer keeps no identity to back up.
+    pub fn portable_backup_for_host_desktop(identity_dir: PathBuf) -> Result<Self, String> {
+        Self::portable_backup_in(identity_dir, OnboardingContext::HostDesktop)
+    }
+
+    fn portable_backup_in(
+        identity_dir: PathBuf,
+        context: OnboardingContext,
+    ) -> Result<Self, String> {
+        let record = tilo_identity::store::resolve_active_identity(&identity_dir)
+            .ok_or_else(|| "this computer keeps no identity to back up".to_owned())?;
+        let identity = crate::identity::existing_identity_at(&record)?;
+        match daemon_backup_capability(&identity.path) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(
+                    "this computer entered another computer's identity: the computer that keeps \
+                     it writes the backup"
+                        .to_owned(),
+                );
+            }
+            Err(why) => return Err(why),
+        }
+        let mut view = Self::new_in_context(identity_dir, context, false);
+        view.begin_portable_backup(identity);
+        Ok(view)
+    }
+
     /// Reset this trusted view to the existing-identity backup step, the same
-    /// export, picker, and verification flow as first-login onboarding.
-    #[cfg(test)]
-    fn begin_portable_backup_for(&mut self, identity: MintedIdentity) {
+    /// export, picker, and verification flow as first-login onboarding, with nothing before or
+    /// after it.
+    fn begin_portable_backup(&mut self, identity: MintedIdentity) {
         self.flow = Onboarding::new();
         self.flow.resume_created(identity);
         self.error = None;
@@ -835,6 +876,12 @@ impl OnboardingView {
         self.tour_only = false;
         self.finished.set(false);
         self.invalidation.both();
+    }
+
+    /// The backup step alone, for an identity a test already holds.
+    #[cfg(test)]
+    fn begin_portable_backup_for(&mut self, identity: MintedIdentity) {
+        self.begin_portable_backup(identity);
     }
 
     /// Open setup again at the step the person's settings hold for this device, when a restart

@@ -1054,4 +1054,28 @@ mod tests {
         assert_ne!(claude, device_agent_id(&[2; 32], "Claude Code"));
         assert!(device_agent_id(&ada, "…").starts_with("agent-"));
     }
+
+    /// The person's own connection is made only where the daemon admits them from its own
+    /// socket: no kept call and no frame carries it. A call admitted again from its asked record
+    /// asks as any other, and a frame that names the flag is refused rather than read.
+    #[test]
+    fn a_kept_caller_is_never_the_persons_own_connection() {
+        let person = "a".repeat(64);
+        let own = Caller::own_person(person);
+        assert!(own.is_own_connection());
+        let kept = own.kept();
+        assert!(!kept.clone().restored().is_own_connection());
+        assert!(!kept.clone().carried().is_own_connection());
+        let carried = serde_json::to_value(&kept).expect("a kept caller is written");
+        assert!(
+            carried.get("own_connection").is_none(),
+            "nothing kept says it: {carried}"
+        );
+        let mut named = carried;
+        named["own_connection"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<super::KeptCaller>(named).is_err(),
+            "a frame that names the flag is refused"
+        );
+    }
 }

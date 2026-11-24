@@ -128,6 +128,89 @@ pub const ARRIVED: &str = "arrived";
 /// decided at that app's node, as every read of the person's accounts is.
 pub const MESSAGE: &str = "tl.tilo.accounts.Message";
 
+/// The person's calendar accounts: another resource of [`PROVIDER`].
+pub mod calendars {
+    /// The resource of [`super::PROVIDER`] a person's calendars are asked under.
+    pub const RESOURCE: &str = "calendars";
+    /// The calendar accounts the person keeps here, without their sign-ins.
+    pub const LIST: &str = "list";
+    /// Add an account with the password its person types. Theirs alone.
+    pub const ADD: &str = "add";
+    /// Add an account with the password a vault item keeps.
+    pub const ADD_WITH_ITEM: &str = "add-with-item";
+    /// Remove an account, its sign-in and what was kept of it. Theirs alone.
+    pub const REMOVE: &str = "remove";
+    /// Ask the servers now.
+    pub const SYNC: &str = "sync";
+    /// Every occurrence between two times.
+    pub const ENTRIES: &str = "entries";
+    /// The free time between two times.
+    pub const FREE: &str = "free";
+    /// Put the event an invitation describes into a calendar, once.
+    pub const ADD_INVITATION: &str = "add-invitation";
+    /// File an entry under categories, in its server's own field.
+    pub const SET_CATEGORIES: &str = "set-categories";
+    /// Connect an account by a turn's telling, for reading only.
+    pub const CONNECT: &str = "connect";
+}
+
+/// The kind of the record Settings keeps the workspace's accounts in, without their secrets.
+pub const ACCOUNTS_RECORD_KIND: &str = "tilo.accounts";
+/// The accounts record's step that keeps an account, added or changed.
+pub const SAVE_ACCOUNT: &str = "save-account";
+/// The accounts record's step that removes an account.
+pub const REMOVE_ACCOUNT: &str = "remove-account";
+/// The accounts record's step that says how an account's sign-in or sync went.
+pub const REPORT_SYNC: &str = "report-sync";
+
+/// The step `verb` of the record Settings keeps the workspace's accounts in.
+fn accounts_step(verb: &str) -> crate::ActionEffect {
+    crate::ActionEffect::new(tilo_app_id::apps::SETTINGS, ACCOUNTS_RECORD_KIND, verb)
+}
+
+/// What the action `action` of `resource` ([`RESOURCE`] or [`calendars::RESOURCE`]) writes
+/// besides its own resource, as the host answering it takes it. In the workspace's vault: a
+/// password typed in is kept, a removed account's sign-in goes, and every sign-in to a server
+/// with what the vault keeps writes down that use, the first one included. In the accounts record: an account added or
+/// changed is kept, a removed one goes, and a sign-in says how it went. The action's own
+/// declaration, read wherever the action is listed and wherever a device reads those records.
+#[must_use]
+pub fn effects(resource: &str, action: &str) -> Vec<crate::ActionEffect> {
+    use super::person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED, vault_step};
+    let (vault, accounts): (&[&str], &[&str]) = match (resource, action) {
+        (RESOURCE, ADD_MAIL | BEGIN_SIGN_IN) | (calendars::RESOURCE, calendars::ADD) => {
+            (&[KEEP_SEALED, KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
+        }
+        (RESOURCE, REPLACE_PASSWORD) => (&[KEEP_SEALED], &[]),
+        (RESOURCE, REMOVE) | (calendars::RESOURCE, calendars::REMOVE) => {
+            (&[REMOVE_SEALED], &[REMOVE_ACCOUNT])
+        }
+        (RESOURCE, ADD_MAIL_WITH_ITEM | DISCOVER_CALENDARS)
+        | (calendars::RESOURCE, calendars::ADD_WITH_ITEM | calendars::CONNECT) => {
+            (&[KEEP_USES, REMOVE_SEALED], &[SAVE_ACCOUNT])
+        }
+        (RESOURCE, RECONNECT | CHECK) => (&[KEEP_USES], &[REPORT_SYNC]),
+        (RESOURCE, SET_SERVICES | SET_CALENDARS) => {
+            (&[REMOVE_SEALED], &[SAVE_ACCOUNT, REMOVE_ACCOUNT])
+        }
+        (RESOURCE, FETCH | READ | SEARCH | SEND | MARK | SAVE_DRAFT | ARRIVED)
+        | (
+            calendars::RESOURCE,
+            calendars::SYNC
+            | calendars::ENTRIES
+            | calendars::FREE
+            | calendars::ADD_INVITATION
+            | calendars::SET_CATEGORIES,
+        ) => (&[KEEP_USES], &[]),
+        _ => (&[], &[]),
+    };
+    vault
+        .iter()
+        .map(|verb| vault_step(verb))
+        .chain(accounts.iter().map(|verb| accounts_step(verb)))
+        .collect()
+}
+
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
 pub fn target(action: &str) -> RemoteActionTarget {
@@ -215,7 +298,7 @@ impl Provider {
 pub enum CloudKind {
     /// Google Drive.
     GoogleDrive,
-    /// OneDrive.
+    /// Microsoft's cloud storage.
     OneDrive,
     /// Dropbox.
     Dropbox,

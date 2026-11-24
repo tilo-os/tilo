@@ -437,31 +437,14 @@ struct Daemon {
 /// A device of this test's own, its daemon running in this process over a home and a profile of
 /// its own: what a computer's daemon is, as the person's own service starts it.
 fn daemon() -> Daemon {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mut home = TestHome::new().expect("a home of this test's own");
-    let identity = home.root().join("identity");
-    home.env()
-        .set("TILO_IDENTITY_ROOT", &identity)
-        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    // The person this account holds the root of, and this device certified by them: what a
-    // computer its person has set up holds, which the daemon serves as theirs.
-    tilo_identity::sources::test_trust::install();
-    tilo_identity::provisioning::ensure_collaboration_identity(
-        &tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity")),
-        &tilo_device_identity::IdentityPaths::under(&identity),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("this device's person");
-    let profile = tempfile::tempdir().expect("a profile for the daemon");
-    std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the profile is this user's");
-    let running =
-        tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
-    let person = running
-        .person(tilo_test_env::hang_bound())
-        .expect("its person's services run");
+    let crate::common::Device {
+        daemon,
+        person,
+        home,
+        profile,
+    } = crate::common::device_daemon(crate::common::device_home(), None);
     Daemon {
-        running,
+        running: daemon,
         person,
         _profile: profile,
         _home: home,

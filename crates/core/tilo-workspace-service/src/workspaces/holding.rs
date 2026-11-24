@@ -376,8 +376,7 @@ impl Workspaces {
             .holder_role(&self.inner.host.cert.device_public_key)
             != Some(CopyRole::Store);
         drop(governed);
-        self.list_for_person_at_hand_over(&workspace, holds_keys)
-            .await;
+        self.list_for_person_at_hand_over(&workspace, holds_keys);
         Ok(hint)
     }
 
@@ -485,32 +484,47 @@ impl Workspaces {
     /// so the server writes what it knows of theirs as the holder it is, from
     /// the hand-over and not after a later sync. A store holds the workspace's
     /// ciphertext alone and writes nothing of it.
-    async fn list_for_person_at_hand_over(&self, workspace: &str, holds_keys: bool) {
+    ///
+    /// The records are sealed, so the write waits for the group's keys, which
+    /// come from the other holders over the workspace's link. It does so beside
+    /// the hand-over's answer rather than before it: a server on its person's
+    /// login must answer, and the list a login reads is waited for where it is
+    /// read.
+    fn list_for_person_at_hand_over(&self, workspace: &str, holds_keys: bool) {
         let person = self.inner.host.cert.user_public_key;
         if !holds_keys || workspace != tilo_server_protocol::servers::person_workspace_id(&person) {
             return;
         }
-        // The records are sealed: the group's keys come from the other holders
-        // over the workspace's link. They are waited for here, before the write
-        // takes the workspace's lock, because the key service publishes what it
-        // settles through that same lock: a write waiting for the keys while it
-        // holds the lock waits for itself.
-        let Some(device) = self.device_keys() else {
-            // This host keeps no group keys: what it writes is in the clear.
-            self.list_known_for(&person).await;
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let keys_here = tokio::time::timeout(
-            crate::own_device::OPEN_WAIT,
-            super::sealed_documents::wait_for_group_keys(&device, workspace),
-        )
-        .await
-        .unwrap_or(false);
-        if keys_here {
-            self.list_known_for(&person).await;
-        } else {
-            tracing::warn!(%workspace, "the person's list of workspaces was not written: the workspace's group has not admitted this server");
-        }
+        let workspace = workspace.to_owned();
+        // A host that keeps no group keys writes in the clear.
+        let device = self.device_keys();
+        let workspaces = self.downgrade();
+        runtime.spawn(async move {
+            // A build without the device keys keeps no group keys to wait for: the keys and the
+            // deadline they are waited on come from that module, so it writes in the clear.
+            #[cfg(not(all(feature = "device-keys", not(target_arch = "wasm32"))))]
+            let _ = (device, &workspace);
+            #[cfg(all(feature = "device-keys", not(target_arch = "wasm32")))]
+            if let Some(device) = device {
+                let keys_here = tokio::time::timeout(
+                    super::sealed_documents::OPEN_WAIT,
+                    super::sealed_documents::wait_for_group_keys(&device, &workspace),
+                )
+                .await
+                .unwrap_or(false);
+                if !keys_here {
+                    tracing::warn!(%workspace, "the person's list of workspaces was not written: the workspace's group has not admitted this server");
+                    return;
+                }
+            }
+            let Some(workspaces) = workspaces.upgrade() else {
+                return;
+            };
+            workspaces.list_known_for(&person).await;
+        });
     }
 
     /// Let `workspace` go, `caller`'s request: another device of this one's own

@@ -8,24 +8,24 @@
 //! failed is never asked again. Those live here, once, so a host names its own limits and keeps
 //! only its own interface.
 //!
-//! The engine is wasmi, which every host has and the browser build's only engine. wasmtime is
-//! behind the `wasmtime` feature, for the compiled tier a native runtime executes beside the
-//! interpreter, and never in a wasm32 build.
+//! The engine is wasmi, which every host has and the browser build's only engine. The compiled
+//! tier a native runtime executes beside it, wasmtime, lives with that runtime
+//! (`tilolang-runtime`) and builds on these limits, failures and texts; it is never a feature
+//! here, where any one build turning it on would put a compiler in every engine library that
+//! links this layer.
 //!
 //! Fuel bounds a guest by the work it does, so it stops a loop; it does not bound a call that
 //! waits inside a host function, nor one that executes on a runtime whose instructions are not
 //! counted the way the interpreter counts them. [`Limits::deadline`] bounds a call by the clock
 //! instead, where the engine can interrupt guest code: wasmtime's epoch interruption, driven by
-//! a ticker of this layer's own that advances only while a call is in flight. wasmi has no interruption, so
+//! a ticker that advances only while a call is in flight. wasmi has no interruption, so
 //! on it the deadline is unenforced and fuel is the only bound; a host that needs both executes
 //! on wasmtime.
 
 mod failure;
 pub mod wasmi;
-#[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
-pub mod wasmtime;
 
-pub use failure::{DEADLINE_EXCEEDED, Deadline, Failure, GROWTH_LIMITED, OUT_OF_FUEL};
+pub use failure::{DEADLINE_EXCEEDED, Deadline, Failure, GROWTH_LIMITED, OUT_OF_FUEL, trap_text};
 
 /// Per-call and per-instance limits.
 ///
@@ -70,5 +70,3 @@ pub fn reusable<T, E>(outcome: &Result<T, E>) -> bool {
 
 #[cfg(test)]
 mod tests;
-#[cfg(all(test, all(feature = "wasmtime", not(target_arch = "wasm32"))))]
-mod wasmtime_tests;

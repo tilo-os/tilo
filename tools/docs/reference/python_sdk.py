@@ -42,7 +42,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "Hit", "made")),
     ("Invocations", (
         "Invocation", "InvocationGroup", "InvocationOpening", "InvocationList", "InvocationInfo",
-        "ProgramAnswer", "Event",
+        "ProgramAnswer", "Event", "ChangeEvent", "EventWhat",
     )),
     ("Files", ("Files",)),
     ("Vault", ("Vault",)),
@@ -52,6 +52,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Errors", (
         "Refused", "AskPending", "ProtocolError",
         "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "Unreachable",
+        "NOT_OFFERED", "UNKNOWN_ACTION",
     )),
 )
 
@@ -75,9 +76,11 @@ class Item:
     """One public name and where the SDK defines it."""
 
     name: str
-    kind: str  # "class" or "function"
-    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    kind: str  # "class", "function" or "constant"
+    node: ast.AST
     source: str
+    # A constant has no docstring; the comment above it says what it is.
+    comment: str = ""
 
 
 def generate(arguments: argparse.Namespace) -> str:
@@ -156,20 +159,47 @@ def string_list(value: ast.AST, source: Path) -> list[str]:
 
 
 def definitions(package: Path, root: Path) -> dict[str, list[Item]]:
-    """Every top-level class and function, by the name it is defined under."""
+    """Every top-level class, function and constant, by the name it is defined under."""
     found: dict[str, list[Item]] = {}
     for source in sorted(package.glob("*.py")):
-        module = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        text = source.read_text(encoding="utf-8")
+        module = ast.parse(text, filename=str(source))
+        lines = text.splitlines()
         for node in module.body:
             if isinstance(node, ast.ClassDef):
-                kind = "class"
+                kind, name = "class", node.name
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                kind = "function"
+                kind, name = "function", node.name
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+            ):
+                kind, name = "constant", node.targets[0].id
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                kind, name = "constant", node.target.id
             else:
                 continue
-            item = Item(node.name, kind, node, source.relative_to(root).as_posix())
-            found.setdefault(node.name, []).append(item)
+            comment = leading_comment(lines, node) if kind == "constant" else ""
+            item = Item(
+                name,
+                kind,
+                node,
+                source.relative_to(root).as_posix(),
+                comment,
+            )
+            found.setdefault(name, []).append(item)
     return found
+
+
+def leading_comment(lines: list[str], node: ast.AST) -> str:
+    """The comment block directly above `node`, as one line of prose."""
+    block: list[str] = []
+    index = node.lineno - 2
+    while index >= 0 and lines[index].lstrip().startswith("#"):
+        block.append(lines[index].lstrip().lstrip("#").strip())
+        index -= 1
+    return " ".join(reversed([line for line in block if line])).strip()
 
 
 def resolve(exported: list[str], defined: dict[str, list[Item]]) -> dict[str, Item]:
@@ -229,6 +259,10 @@ def undocumented(items: dict[str, Item]) -> None:
     missing: list[str] = []
     for name in sorted(items):
         item = items[name]
+        if item.kind == "constant":
+            if not item.comment:
+                missing.append(f"{name} ({item.source})")
+            continue
         if not ast.get_docstring(item.node):
             missing.append(f"{name} ({item.source})")
             continue
@@ -264,10 +298,17 @@ def is_internal(owner: str, node: ast.FunctionDef | ast.AsyncFunctionDef) -> boo
 
 
 def render(item: Item) -> str:
+    name = item.name
+    if item.kind == "constant":
+        value = item.node.value
+        return "\n\n".join([
+            page.heading(3, name),
+            page.code("python", f"{name} = {ast.unparse(value)}"),
+            page.prose(item.comment),
+        ])
     doc = ast.get_docstring(item.node)
     if not doc:
         raise page.ReferenceError(f"{item.source}: {item.name} is exported and has no docstring")
-    name = item.name
     if item.kind == "function":
         return "\n\n".join([
             page.heading(3, name),

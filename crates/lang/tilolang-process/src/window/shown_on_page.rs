@@ -73,6 +73,14 @@ impl ShownOnPage {
     /// something the view shows (an item of its list). An address that names nothing it shows
     /// opens the view as it stands.
     pub fn open(&mut self, frame: &mut FrameHarness, show: Option<&str>) -> Shown {
+        // The page opens on the first view its instance sends, not on the window waiting for it:
+        // a page answered before would show an empty window and no title.
+        while let Some(window) = frame.widget_mut::<HostedWindow>()
+            && ui::widget::AwaitsContent::awaits_content(window)
+            && window.wait_for_app()
+        {
+            frame.woken();
+        }
         if let Some(show) = show {
             let composition = composition(frame);
             let opened = widget_of_target(&composition, show)

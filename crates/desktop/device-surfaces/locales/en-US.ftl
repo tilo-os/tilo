@@ -33,15 +33,18 @@ so-tilo-session-clipboard-paste = Paste a copy
 so-tilo-session-clipboard-paste-files = Paste files
 so-tilo-session-clipboard-pin = Pin the copy
 so-tilo-session-clipboard-remove = Remove a copy from the history
+so-tilo-session-devices-back-up-identity = Back up this computer's identity
 so-tilo-session-devices-found = Start a new person on this device
 so-tilo-session-devices-hand-off = Hand off an accessory
 so-tilo-session-devices-log-in = Log in with a ticket
 so-tilo-session-devices-press = Press one of the person's devices
+so-tilo-session-devices-rename = Name one of the person's keys
 so-tilo-session-devices-revoke = Take another of the person's devices back
 so-tilo-session-displays-arrange-displays = Move a display
 so-tilo-session-displays-brightness-down = Dimmer
 so-tilo-session-displays-brightness-up = Brighter
 so-tilo-session-displays-close-sheet = Close the display sheet
+so-tilo-session-displays-forget-display-tool = Let a display tool ask again
 so-tilo-session-displays-identify-displays = Number the screens
 so-tilo-session-displays-keep-display-change = Keep the display change being tried
 so-tilo-session-displays-make-display-primary = Make a display the primary one
@@ -108,3 +111,9 @@ so-tilo-session-invite-show-connect = Connect an agent or computer
 so-tilo-session-invite-show-pair-device = Add a device
 so-tilo-session-invite-open-link = Open a link
 so-tilo-session-invite-cancel-invitation = Cancel invitation
+
+## The privacy reading's actions, and the consent each answer is
+
+so-tilo-session-privacy-set-secrets-access = Let an application use saved secrets, or stop it
+so-tilo-session-privacy-forget-secrets = Forget an application's saved secrets
+so-tilo-portal-consent-forget = Forget what the app was allowed

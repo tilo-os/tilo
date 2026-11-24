@@ -415,7 +415,7 @@ impl Workspaces {
             .mail_with_item(
                 (&using.workspace, &root),
                 adding,
-                (&using.name, &using.acting()),
+                (&using.name, &using.acting(), Some(request)),
                 UsedFor::default(),
             )
             .await

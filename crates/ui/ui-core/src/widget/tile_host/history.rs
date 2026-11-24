@@ -1,6 +1,6 @@
 //! The History a tile hosts for its component: installing it, and the window bar's control for it.
 use super::TileHost;
-use crate::widget::Widget as _;
+use crate::bound_dispatch::BoundWidget as _;
 use automerge::AutoCommit;
 
 impl TileHost {

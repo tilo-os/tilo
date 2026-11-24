@@ -96,16 +96,15 @@ impl Account {
             on_behalf_of: None,
             read,
         };
-        match Arc::clone(&self.server)
-            .ask_message(message)
-            .await
-            .flatten()
-        {
-            Some(RemoteActionMessage::ResourceReading { result, .. }) => {
+        match Arc::clone(&self.server).ask_message(message).await {
+            Some(Ok(RemoteActionMessage::ResourceReading { result, .. })) => {
                 let text = result.map_err(|error| error.to_string())?;
                 serde_json::from_str(&text).map_err(|error| error.to_string())
             }
-            Some(_) => Err("the server answered no reading".to_owned()),
+            Some(Ok(_)) => Err("the server answered no reading".to_owned()),
+            // What the server did not answer says why: a link that closed, or one that did not
+            // answer in time.
+            Some(Err(error)) => Err(error.to_string()),
             None => Err(tilo_api::daemon::enter::UNREACHED.to_owned()),
         }
     }

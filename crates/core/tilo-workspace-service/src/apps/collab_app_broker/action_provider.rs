@@ -398,6 +398,7 @@ pub(super) fn app_open_descriptor(
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
+        effects: Vec::new(),
     }
 }
 
@@ -476,6 +477,7 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
+        effects: Vec::new(),
     }
 }
 

@@ -116,7 +116,7 @@ view dock_tile(item: DockItem) {
     text(item.title)
 }
 
-/// Changes the item it is given: an action's record parameter is a resource.
+/// Changes the item it is given: an action's record parameter is a resource it writes.
 action unpin(item: DockItem) {
     item.pinned = false
 }
@@ -342,9 +342,9 @@ action unpin(item: DockItem) {
             assert_eq!(texts(&view), ["the frames"]);
         }
 
-        phase an_action_refuses_a_record_a_view_built;
-        // A record a view builds names no resource, so an action, whose changes must land in one,
-        // refuses it rather than change a copy that is dropped.
+        phase an_action_reads_a_record_a_view_built_and_cannot_change_it;
+        // A record a view builds names no resource. An action it is handed reads it, and a change
+        // to it says so rather than landing in a copy the invocation drops.
         {
             let shell = Shell::new();
             let built = Value::Rec(tilolang_runtime::RecordInit {
@@ -353,9 +353,10 @@ action unpin(item: DockItem) {
             });
             let unpin = shell.app.action("unpin");
             let refused = shell.rt.invoke_action(&me(), (unpin.as_str(), vec![built]));
+            let said = format!("{:?}", refused.expect_err("a value names no resource to change"));
             assert!(
-                refused.is_err(),
-                "an action took a record no resource holds: {refused:?}"
+                said.contains("names no resource to change"),
+                "the refusal says what the value is: {said}"
             );
         }
     }

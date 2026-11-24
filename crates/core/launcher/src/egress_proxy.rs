@@ -209,7 +209,7 @@ pub struct ProxyStats {
     pub allowed: AtomicU64,
     pub denied: AtomicU64,
     pub failed: AtomicU64,
-    /// Datagrams a live call carried, and datagrams dropped by the calls rule or its rate limit.
+    /// Datagrams a live call carried, and datagrams dropped by the calls rule.
     pub udp_allowed: AtomicU64,
     pub udp_denied: AtomicU64,
     /// Destinations a live call opened a flow to.
@@ -386,7 +386,6 @@ impl EgressProxy {
                 next_association: AtomicU64::new(1),
                 cut,
                 flows: std::sync::Mutex::new(std::collections::HashMap::new()),
-                rate: std::sync::Mutex::new(UdpRate::new()),
                 stats: Arc::clone(&stats),
                 test_loopback,
                 ingress: Arc::new(ingress),
@@ -583,51 +582,8 @@ pub fn control_socket_path(socket_path: &Path) -> PathBuf {
 /// new client, and the relay forgets the last one.
 const UDP_RELAY_RESET: &[u8] = &[0xff];
 
-/// One person's audio and video call: how many datagrams a second, and how many bytes, the proxy
-/// carries before it starts dropping. A call's Opus audio is about 50 datagrams a second at
-/// ~1.2 KB, and a shared screen or camera a further ~60 at the same size; 500 datagrams and
-/// 4 MiB a second carry several bridged speakers and a video stream with headroom, and bound what
-/// a misbehaving app can make the proxy relay.
-const UDP_PACKETS_PER_SECOND: f64 = 500.0;
-const UDP_BYTES_PER_SECOND: f64 = 4.0 * 1024.0 * 1024.0;
-const UDP_BURST_PACKETS: f64 = 250.0;
-const UDP_BURST_BYTES: f64 = 2.0 * 1024.0 * 1024.0;
-
-/// What a call's datagrams are allowed and dropped by, refilled as time passes.
-#[derive(Debug)]
-struct UdpRate {
-    packets: f64,
-    bytes: f64,
-    at: std::time::Instant,
-}
-
-impl UdpRate {
-    fn new() -> Self {
-        Self {
-            packets: UDP_BURST_PACKETS,
-            bytes: UDP_BURST_BYTES,
-            at: std::time::Instant::now(),
-        }
-    }
-
-    fn allow(&mut self, len: usize) -> bool {
-        let now = std::time::Instant::now();
-        let elapsed = now.saturating_duration_since(self.at).as_secs_f64();
-        self.at = now;
-        self.packets = (self.packets + elapsed * UDP_PACKETS_PER_SECOND).min(UDP_BURST_PACKETS);
-        self.bytes = (self.bytes + elapsed * UDP_BYTES_PER_SECOND).min(UDP_BURST_BYTES);
-        let len = len as f64;
-        if self.packets < 1.0 || self.bytes < len {
-            return false;
-        }
-        self.packets -= 1.0;
-        self.bytes -= len;
-        true
-    }
-}
-
 /// The calls lane of one launch: whether the daemon says a call of this app is live, the one UDP
-/// association open on it, and what each destination it carries is audited and rate-limited by.
+/// association open on it, and each destination it carries, as one audited flow.
 #[derive(Debug)]
 struct CallsState {
     app: String,
@@ -641,7 +597,6 @@ struct CallsState {
     /// Cuts every UDP flow open when the call or the association ends.
     cut: tokio::sync::broadcast::Sender<()>,
     flows: std::sync::Mutex<std::collections::HashMap<SocketAddr, Arc<UdpFlow>>>,
-    rate: std::sync::Mutex<UdpRate>,
     stats: Arc<ProxyStats>,
     /// A test's own setup may carry to loopback, where its echo server lives. Production never
     /// sets it: Discord's voice servers are public addresses.
@@ -1016,15 +971,6 @@ async fn handle_udp(state: &Arc<CallsState>, frame: &[u8]) {
     }
     // The relay drops a datagram from a source other than the association's client, so what
     // reaches here is that client's alone.
-    if !state
-        .rate
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .allow(frame.len())
-    {
-        state.deny("rate limit", &target.ip().to_string());
-        return;
-    }
     let existing = state
         .flows
         .lock()
@@ -2874,28 +2820,32 @@ mod tests {
         }
 
         #[test]
-        fn a_datagram_beyond_the_rate_is_dropped_and_recorded() {
+        fn a_share_sized_flow_arrives_whole() {
             let dir = tempfile::tempdir().unwrap();
             let (proxy, socket) = proxy(dir.path(), true);
             let control_socket = proxy.control_path().unwrap().to_path_buf();
             control(&control_socket, "so.tilo.discord", true);
             let (_stream, code) = associate(&socket);
             assert_eq!(code, reply::SUCCESS);
-            let sink = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-            let target = sink.local_addr().unwrap();
             let client = proxy.udp_client.as_ref().unwrap();
-            // The burst is 250 datagrams; a call's audio plus video is far below it.
-            for _ in 0..400 {
-                let _ = client.send(&frame(target, b"x"));
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reset = [0u8; 1];
+            client.recv(&mut reset).expect("the association's reset");
+            let port = echo();
+            let target: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            // A 1080p share's worth: 900 RTP-sized datagrams, several Mbit/s at hundreds a
+            // second. The grant and the live call are the bound, so every one comes back whole.
+            let payload = [0x5au8; 1200];
+            let mut reply_buf = [0u8; 2048];
+            for _ in 0..900 {
+                client.send(&frame(target, &payload)).expect("a datagram out");
+                let n = client.recv(&mut reply_buf).expect("every datagram comes back");
+                assert_eq!(&reply_buf[10..n], &payload[..], "the share's bytes, whole");
             }
-            wait_for("the rate limit to drop the excess", || {
-                proxy.stats().udp_denied() > 0
-            });
-            assert!(
-                proxy.stats().udp_allowed() <= 300,
-                "a burst is bounded: {} carried",
-                proxy.stats().udp_allowed()
-            );
+            assert_eq!(proxy.stats().udp_allowed(), 900);
+            assert_eq!(proxy.stats().udp_denied(), 0, "nothing was dropped");
         }
 
         #[test]

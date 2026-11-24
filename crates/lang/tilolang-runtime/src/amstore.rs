@@ -1188,7 +1188,7 @@ impl Store for AmStore {
             return Ok(FieldValue::Items(
                 resolve_doc(&at_version)
                     .children
-                    .get(&(at.item.clone(), field.id.to_string()))
+                    .get(&(at.item.clone(), field.id.clone()))
                     .map(|members| members.iter().map(|(_, id)| id.clone()).collect())
                     .unwrap_or_default(),
             ));

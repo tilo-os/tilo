@@ -164,8 +164,7 @@ pub trait ResourceApp: 'static {
     /// ([`Self::OPENS_BEFORE_RESOURCE`]); `None` waits for the record. What it
     /// returns is handed to [`Self::view`] once the record is had, as a
     /// service lent to the window ([`ResourceEnv::take_lent`](super::ResourceEnv::take_lent)):
-    /// the view keeps showing it rather than building it again. A write it
-    /// makes before then waits for the record ([`OpeningCx::record`]).
+    /// the view keeps showing it rather than building it again.
     fn opening(cx: &OpeningCx<'_>) -> Option<Box<dyn OpeningView>> {
         let _ = cx;
         None
@@ -442,10 +441,8 @@ impl OtherWindow {
 /// on its way.
 pub struct OpeningCx<'a> {
     pub(crate) me: &'a MemberId,
-    pub(crate) device: &'a str,
     pub(crate) workspace: String,
     pub(crate) files: ui_core::storage::AppFiles,
-    pub(crate) record: ui_core::resource::ResourceOpening,
 }
 
 impl OpeningCx<'_> {
@@ -453,12 +450,6 @@ impl OpeningCx<'_> {
     #[must_use]
     pub fn me(&self) -> &MemberId {
         self.me
-    }
-
-    /// This device's id.
-    #[must_use]
-    pub fn device(&self) -> &str {
-        self.device
     }
 
     /// The workspace the window shows, as [`ResourceEnv::workspace`](super::ResourceEnv::workspace) names it.
@@ -472,13 +463,6 @@ impl OpeningCx<'_> {
     #[must_use]
     pub fn files(&self) -> ui_core::storage::AppFiles {
         self.files.clone()
-    }
-
-    /// The workspace's record, being read off the frame: what a write before it is had waits for
-    /// ([`ResourceOpening::document`](ui_core::resource::ResourceOpening::document)).
-    #[must_use]
-    pub fn record(&self) -> &ui_core::resource::ResourceOpening {
-        &self.record
     }
 }
 
@@ -1472,24 +1456,17 @@ fn create_component(
     if let Some(record) = context.resource_opening() {
         let opening = OpeningCx {
             me: context.author(),
-            device: context.device_id(),
             workspace: context.records().home(),
             files: context.files(),
-            record: record.clone(),
         };
         if let Some(view) = (app.opening)(&opening) {
             return Ok(opening_component(app, context, view, record, restore));
         }
         // An app that shows nothing before its record waits for it to be decoded; while the
         // workspace has not answered for it, the window shows the shape of the page on its way.
-        // One the workspace answered it holds none of is made as the window's first frame
+        // One the workspace answers it holds none of is made as the window's first frame
         // builds over it.
-        let here = match record.take_in(true) {
-            Ok(here) => here,
-            Err(ui_core::resource::ResourceOpenError::MissingResource) => false,
-            Err(error) => return Err(LaunchError::Record(error)),
-        };
-        if !here {
+        if !record.take_in(true).map_err(LaunchError::Record)? {
             let arriving = Box::new(ui_core::widget::Skeleton::new(
                 ui_core::widget::SkeletonShape::Page,
             ));

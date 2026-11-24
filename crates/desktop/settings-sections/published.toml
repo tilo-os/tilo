@@ -1778,7 +1778,7 @@ version = 1
 fields = [
   { path = "bindings", type = { list = { named = "ShortcutChord" } }, readonly = true },
   { path = "actions", type = { list = { named = "ActionShortcut" } }, readonly = true },
-  { path = "commands", type = { list = { named = "MovedCommand" } }, readonly = true },
+  { path = "commands", type = { list = { named = "AppCommand" } }, readonly = true },
 ]
 
 [[resources.types]]
@@ -1789,11 +1789,15 @@ fields = [
 ]
 
 [[resources.types]]
-name = "MovedCommand"
+name = "AppCommand"
 fields = [
   { name = "app", type = "text" },
+  { name = "app_name", type = "text" },
   { name = "action", type = "text" },
+  { name = "label", type = "text" },
+  { name = "usual", type = "text" },
   { name = "chord", type = "text" },
+  { name = "moved", type = "bool" },
 ]
 
 [[resources.types]]
@@ -1816,6 +1820,26 @@ name = "Language"
 fields = [
   { name = "tag", type = "text" },
   { name = "name", type = "text" },
+]
+
+[[resources]]
+kind = "settings.tablet-choices"
+label = "Tablet controls"
+version = 1
+fields = [
+  { path = "tablets", type = { map = { named = "TabletChoiceIds" } }, readonly = true },
+]
+
+[[resources.types]]
+name = "TabletChoiceIds"
+fields = [
+  { name = "lower_button", type = "text" },
+  { name = "upper_button", type = "text" },
+  { name = "third_button", type = "text" },
+  { name = "eraser", type = "text" },
+  { name = "pad_buttons", type = { map = "text" } },
+  { name = "pad_rings", type = { map = { list = "text" } } },
+  { name = "pad_strips", type = { map = { list = "text" } } },
 ]
 
 [[roots]]
@@ -1992,4 +2016,9 @@ published = "settings/shortcuts-table"
 name = "languages"
 kind = "settings.languages"
 published = "settings/languages"
+
+[[roots]]
+name = "tablet_choices"
+kind = "settings.tablet-choices"
+published = "settings/tablet-choices"
 

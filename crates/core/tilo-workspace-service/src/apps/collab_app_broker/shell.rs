@@ -840,7 +840,7 @@ async fn vault(
             let kept = workspaces
                 .keep_account_password(
                     &workspace,
-                    &by,
+                    (&by, None),
                     item.as_ref(),
                     crate::workspaces::account_logins::AccountLogin {
                         title,
@@ -880,7 +880,7 @@ async fn vault(
             let by = Caller::authenticated(person, device).in_workspace(workspace.clone());
             workspaces
                 .report_account_sync(
-                    (&workspace, by.acting()),
+                    (&workspace, by.acting(), None),
                     &account,
                     health,
                     signed_in,

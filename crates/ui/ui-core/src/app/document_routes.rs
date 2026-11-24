@@ -39,10 +39,10 @@ struct LiveOwners {
     /// Every record a widget holds: those its views show, and those kept
     /// beside them.
     all: Vec<crate::history_mode::HistoryOwner>,
-    /// The records its views show ([`Widget::history_owner`]).
+    /// The records its views show ([`crate::bound_dispatch::BoundWidget::history_owner`]).
     shown: Vec<crate::history_mode::HistoryOwner>,
     /// The records kept beside what the views show
-    /// ([`Widget::resource_owners`]: the person's, the workspace's emoji).
+    /// ([`crate::bound_dispatch::BoundWidget::resource_owners`]: the person's, the workspace's emoji).
     beside: Vec<crate::history_mode::HistoryOwner>,
 }
 
@@ -57,8 +57,8 @@ impl LiveOwners {
             }
         }
         fn collect(root: &dyn Widget, owners: &mut LiveOwners) {
-            let shown = root.history_owner();
-            let beside = root.resource_owners();
+            let shown = crate::bound_dispatch::history_owner(root);
+            let beside = crate::bound_dispatch::resource_owners(root);
             if let Some(owner) = &shown {
                 push(&mut owners.shown, owner);
             }

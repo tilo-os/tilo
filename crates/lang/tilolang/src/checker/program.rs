@@ -56,6 +56,8 @@ pub fn check_program(
         outer_at: None,
         migrating: false,
         shown: std::collections::HashSet::new(),
+        shown_fns: std::collections::HashSet::new(),
+        showing_result: false,
         answers: std::collections::HashMap::new(),
     };
     c.begin(Ctx::Program, params, Ty::Unit, export);
@@ -104,6 +106,7 @@ pub fn check_program(
             shows: Vec::new(),
             words: Vec::new(),
             capture_protected: Vec::new(),
+            view_calls: Vec::new(),
         },
         lets,
     }
@@ -307,8 +310,10 @@ impl Checker<'_> {
         )
     }
 
-    /// The type a query's first word names (`Note`, `notes.Note`), when it names one. A first word written like
-    /// a type's name that names none is an error that lists the types.
+    /// The type a query's first word names (`Note`, `notes.Note`), when it names one. A bare name
+    /// is this package's own type where it has one, then one of a package it names with `use`; a
+    /// name that stays several apps' is an error that lists them, and the writer names one. A first
+    /// word written like a type's name that names none is an error that lists the types.
     pub(super) fn query_type(&mut self, text: &str, span: Span) -> Result<Option<TypeInfo>, ()> {
         let Some(first) = text.split_whitespace().next() else {
             return Ok(None);
@@ -326,12 +331,22 @@ impl Checker<'_> {
         let app = alias
             .and_then(|a| env.find_import(a))
             .map(|i| i.app.clone());
-        let found: Vec<&TypeInfo> = env
-            .types
-            .iter()
-            .filter(|t| t.key.app != crate::host::HOST_APP && t.key.name == name)
-            .filter(|t| app.as_ref().is_none_or(|app| t.key.app == *app))
-            .collect();
+        // An alias names one package, whatever else declares the name; a bare name means the
+        // module's own type first, then a package's it names.
+        let found: Vec<&TypeInfo> = match &app {
+            Some(app) => env
+                .types
+                .iter()
+                .filter(|t| {
+                    t.key.app == *app && t.key.app != crate::host::HOST_APP && t.key.name == name
+                })
+                .collect(),
+            None => env
+                .types_named(name)
+                .into_iter()
+                .filter(|t| t.key.app != crate::host::HOST_APP)
+                .collect(),
+        };
         match found.as_slice() {
             [one] => Ok(Some((*one).clone())),
             [] => {
@@ -407,13 +422,16 @@ impl Checker<'_> {
                 let ExprKind::Ident(name) = &a.value.kind else {
                     return None;
                 };
-                let mut found = self
+                let found: Vec<&TypeInfo> = self
                     .env
-                    .types
-                    .iter()
-                    .filter(|t| t.key.app != crate::host::HOST_APP && t.key.name == *name);
-                let one = found.next()?;
-                found.next().is_none().then(|| Ty::Record(one.key.clone()))
+                    .types_named(name)
+                    .into_iter()
+                    .filter(|t| t.key.app != crate::host::HOST_APP)
+                    .collect();
+                let [one] = found.as_slice() else {
+                    return None;
+                };
+                Some(Ty::Record(one.key.clone()))
             }),
             _ => None,
         };

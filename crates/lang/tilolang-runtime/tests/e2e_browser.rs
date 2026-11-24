@@ -1996,12 +1996,12 @@ mod cases {
         );
         assert_eq!(b.page.last()["text"].as_str(), Some("cats"));
 
-        // Anything else is an address to go to, and leaving the address tells the extension.
+        // Anything else is an address to go to (a bare site opens over https), and leaving the address tells the extension.
         let view = b.page_view();
         view.fire_with(&address, "submit", Some(&Value::text("example.org")))
             .unwrap();
         assert_eq!(b.page.ops().last().map(String::as_str), Some("navigate"));
-        assert_eq!(b.page.last()["url"].as_str(), Some("example.org"));
+        assert_eq!(b.page.last()["url"].as_str(), Some("https://example.org"));
         let view = b.page_view();
         view.fire(&address, "blur").unwrap();
         assert_eq!(
@@ -2048,5 +2048,245 @@ mod cases {
         let close = button_key(&view, "Close");
         view.fire(&close, "press").unwrap();
         assert_eq!(b.page.ops().last().map(String::as_str), Some("panel_close"));
+    }
+
+    /// The address field of a page's window: the one that asks for an address or a search.
+    fn address_field(view: &ViewInstance) -> String {
+        of_kind(view.tree(), "ui.TextInput")
+            .into_iter()
+            .find(|f| f.props.get("key") == Some(&Value::text("l")))
+            .unwrap_or_else(|| panic!("no address field in\n{}", dump(view.tree())))
+            .key
+            .clone()
+    }
+
+    /// The rows the address bar offers, top to bottom: each one's title and what it says under it.
+    fn offered(view: &ViewInstance) -> Vec<(String, String)> {
+        let Some(section) = of_kind(view.tree(), "ui.Section")
+            .into_iter()
+            .find(|s| text_prop(s, "title") == "Suggestions")
+        else {
+            return Vec::new();
+        };
+        of_kind(section, "ui.ListRow")
+            .into_iter()
+            .map(|r| (text_prop(r, "title"), text_prop(r, "secondary")))
+            .collect()
+    }
+
+    /// Types `typed` into the address field and lets the typing pause: the bar offers nothing
+    /// for it until the pause's timer, counting from what was typed, ticks.
+    fn type_address(view: &mut ViewInstance, typed: &str) {
+        let field = address_field(view);
+        view.edit(&field, &Value::text(typed)).unwrap();
+        view.poll_patches().unwrap();
+        let timer = of_kind(view.tree(), "ui.Timer")
+            .into_iter()
+            .find(|t| t.props.get("restart") == Some(&Value::text(typed)))
+            .unwrap_or_else(|| panic!("no pause counted from {typed:?} in\n{}", dump(view.tree())))
+            .key
+            .clone();
+        view.fire(&timer, "tick").unwrap();
+        view.poll_patches().unwrap();
+    }
+
+    fn visit_at(b: &Browser, clock: &Rc<RefCell<String>>, at: &str, url: &str, title: &str) {
+        *clock.borrow_mut() = at.to_owned();
+        b.run(
+            "visit",
+            &[
+                ("b", Value::resource(&b.root)),
+                ("url", Value::text(url)),
+                ("title", Value::text(title)),
+                ("at", Value::text(at)),
+            ],
+        );
+    }
+
+    /// The pages the address bar offers come in the order the person opens them, most often and
+    /// most lately first, as the system ranks their history; and what it offers follows the
+    /// typing only once the typing pauses.
+    #[test]
+    fn the_address_bar_offers_the_pages_opened_most_often_and_lately_once_the_typing_pauses() {
+        let b = Browser::new();
+        let clock = Rc::new(RefCell::new(String::new()));
+        let reading = Rc::clone(&clock);
+        b.rt.set_clock(move || reading.borrow().clone());
+        // Opened once two months ago, first in the history; opened six times ten days ago; and
+        // opened once this morning.
+        visit_at(
+            &b,
+            &clock,
+            "2026-09-25T09:00:00Z",
+            "https://example.org/old",
+            "Old notes",
+        );
+        for _ in 0..6 {
+            visit_at(
+                &b,
+                &clock,
+                "2026-11-14T09:00:00Z",
+                "https://example.org/daily",
+                "Daily",
+            );
+        }
+        visit_at(
+            &b,
+            &clock,
+            "2026-11-24T08:00:00Z",
+            "https://example.org/today",
+            "Today",
+        );
+        *clock.borrow_mut() = "2026-11-24T09:00:00Z".to_owned();
+
+        let mut view = b.page_view();
+        let field = address_field(&view);
+        view.edit(&field, &Value::text("exam")).unwrap();
+        view.poll_patches().unwrap();
+        assert!(
+            offered(&view).is_empty(),
+            "nothing is offered for a key while the typing goes on: {:?}",
+            offered(&view)
+        );
+        type_address(&mut view, "example.org/");
+        assert_eq!(
+            offered(&view),
+            [
+                ("Daily".to_owned(), "example.org/daily".to_owned()),
+                ("Today".to_owned(), "example.org/today".to_owned()),
+                ("Old notes".to_owned(), "example.org/old".to_owned()),
+                (
+                    "Search for “example.org/”".to_owned(),
+                    "duckduckgo.com".to_owned()
+                ),
+            ],
+            "the pages lead an address being typed, and the search follows"
+        );
+    }
+
+    /// The address bar offers the person's bookmarks, the pages this browser opened and the ones
+    /// another browser's history brought over, each page once, with the search engine's row
+    /// first for words that name no address; choosing a row opens it and empties the bar.
+    #[test]
+    fn the_address_bar_offers_bookmarks_imported_pages_and_the_search_and_each_row_opens() {
+        let b = Browser::new();
+        b.run(
+            "bookmark",
+            &[
+                ("b", Value::resource(&b.root)),
+                ("url", Value::text("https://cooking.example.com/kitchen")),
+                ("title", Value::some(Value::text("Kitchen tools"))),
+            ],
+        );
+        for (url, title) in [
+            ("https://www.example.org/kitchen-diary", "Kitchen diary"),
+            ("https://cooking.example.com/kitchen", "Kitchen tools page"),
+        ] {
+            b.run(
+                "visit",
+                &[
+                    ("b", Value::resource(&b.root)),
+                    ("url", Value::text(url)),
+                    ("title", Value::text(title)),
+                    ("at", Value::text("2026-11-24T09:00:00Z")),
+                ],
+            );
+        }
+        b.run(
+            "import_history",
+            &[
+                ("b", Value::resource(&b.root)),
+                (
+                    "bundle",
+                    Value::text(
+                        r#"{"browser":"firefox","visits":[
+                            {"url":"https://imported.example.net/kitchen","title":"Imported kitchen","last":1760000000,"count":4},
+                            {"url":"https://imported.example.net/garden","title":"Garden","last":1760000000,"count":9}
+                        ]}"#,
+                    ),
+                ),
+            ],
+        );
+
+        let mut view = b.page_view();
+        type_address(&mut view, "kitchen");
+        assert_eq!(
+            offered(&view),
+            [
+                (
+                    "Search for “kitchen”".to_owned(),
+                    "duckduckgo.com".to_owned()
+                ),
+                (
+                    "Kitchen tools".to_owned(),
+                    "cooking.example.com/kitchen".to_owned()
+                ),
+                (
+                    "Kitchen diary".to_owned(),
+                    "example.org/kitchen-diary".to_owned()
+                ),
+                (
+                    "Imported kitchen".to_owned(),
+                    "imported.example.net/kitchen".to_owned()
+                ),
+            ],
+            "words lead with the search; a bookmarked page is offered once, as the bookmark"
+        );
+
+        // A page another browser's history holds is opened like any other.
+        let row = |view: &ViewInstance, title: &str| {
+            of_kind(view.tree(), "ui.ListRow")
+                .into_iter()
+                .find(|r| r.props.get("title") == Some(&Value::text(title)))
+                .unwrap_or_else(|| panic!("no row {title} in\n{}", dump(view.tree())))
+                .key
+                .clone()
+        };
+        view.fire(&row(&view, "Imported kitchen"), "activate")
+            .unwrap();
+        assert_eq!(b.page.last()["op"], "navigate");
+        assert_eq!(b.page.last()["url"], "https://imported.example.net/kitchen");
+        assert_eq!(
+            b.text(&b.opened, "url"),
+            "https://imported.example.net/kitchen"
+        );
+        view.poll_patches().unwrap();
+        assert!(offered(&view).is_empty(), "choosing a row empties the bar");
+
+        // The search row asks the person's search engine for the words.
+        type_address(&mut view, "kitchen scales");
+        view.fire(&row(&view, "Search for “kitchen scales”"), "activate")
+            .unwrap();
+        assert_eq!(
+            b.page.last()["url"],
+            "https://duckduckgo.com/?q=kitchen+scales"
+        );
+
+        // An address being typed leads with the pages it names, and offers the search after them.
+        type_address(&mut view, "imported.example.net/g");
+        assert_eq!(
+            offered(&view),
+            [
+                (
+                    "Garden".to_owned(),
+                    "imported.example.net/garden".to_owned()
+                ),
+                (
+                    "Search for “imported.example.net/g”".to_owned(),
+                    "duckduckgo.com".to_owned()
+                ),
+            ]
+        );
+
+        // Enter opens what was typed: words as the search engine's answer to them.
+        let field = address_field(&view);
+        view.edit(&field, &Value::text("best knives")).unwrap();
+        view.poll_patches().unwrap();
+        view.fire_with(&field, "submit", Some(&Value::text("best knives")))
+            .unwrap();
+        assert_eq!(
+            b.page.last()["url"],
+            "https://duckduckgo.com/?q=best+knives"
+        );
     }
 }

@@ -47,6 +47,9 @@ pub fn inherited_link(
     Ok(ShellClient::open(link).0)
 }
 
+/// How long a blocking ask may wait before it says where it waited from.
+const SLOW_ASK: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The shell's connection to the device's daemon.
 #[derive(Clone)]
 pub struct DaemonShell {
@@ -108,9 +111,22 @@ impl DaemonShell {
         self.inner.runtime.spawn(async move {
             let _ = answered.send(inner.ask(call).await);
         });
-        answer
+        let asked = tilo_clock::now();
+        let answered = answer
             .recv()
-            .map_err(|_| "the daemon's connection stopped before it answered".to_owned())?
+            .map_err(|_| "the daemon's connection stopped before it answered".to_owned())?;
+        // A thread that waits here waits on the daemon's store: one that waited long says where
+        // it waited from, so a wait on the desktop's own loop is found and moved off it.
+        let waited = tilo_clock::now().saturating_duration_since(asked);
+        if waited > SLOW_ASK {
+            tracing::warn!(
+                waited_ms = u64::try_from(waited.as_millis()).unwrap_or(u64::MAX),
+                thread = std::thread::current().name().unwrap_or("unnamed"),
+                from = %std::backtrace::Backtrace::force_capture(),
+                "a blocking ask of the device's daemon waited long"
+            );
+        }
+        answered
     }
 
     /// What carries the connection's frames: where a follower of a read waits.

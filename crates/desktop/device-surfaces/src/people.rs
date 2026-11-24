@@ -27,6 +27,9 @@ pub struct People {
     pub showing: String,
     /// Whom this person follows, by their presence key; empty for nobody.
     pub following: String,
+    /// The person whose view this was: the person's own input just ended following them, and the
+    /// bar says "Stopped following" while this holds. Empty otherwise.
+    pub stopped: String,
     /// Who waved at this person just now: their name here, while the bar still says it.
     pub waved: String,
     /// Whom this person waved at just now, by that person's presence key, while their row still
@@ -36,8 +39,8 @@ pub struct People {
     pub arrived: Vec<String>,
     /// The first time in a public workspace, what its people see of the person; empty otherwise.
     pub arrived_seen: String,
-    /// This person may invite someone into the workspace in front: its owner's grant decides, and
-    /// where it is not theirs the roster offers no invite at all.
+    /// This person may invite someone into the workspace in front, as the loop last answered it:
+    /// its owner's grant decides.
     pub may_invite: bool,
 }
 

@@ -45,6 +45,11 @@ pub struct Replica<R: Resource> {
     name: Option<String>,
     /// The work unit later actions belong to (id, label, kind).
     group: Option<(String, String, String)>,
+    /// The call later actions are made for, as its caller signed it ([`Self::serving`]).
+    serving: Option<(
+        tilo_actions::InvocationId,
+        Box<tilo_actions::remote::SignedCall>,
+    )>,
     now_ms: i64,
     /// The incrementally maintained state views would see, once asked for.
     reader: Option<Reader<R>>,
@@ -94,6 +99,7 @@ impl<R: Resource> Replica<R> {
             appearance: None,
             name: None,
             group: None,
+            serving: None,
             now_ms: 1_700_000_000_000,
             reader: None,
             marker: std::marker::PhantomData,
@@ -221,6 +227,19 @@ impl<R: Resource> Replica<R> {
         self
     }
 
+    /// Keep `call`, the invocation `invocation` as its caller signed it, with later actions: what
+    /// a host writes for a caller who asked under their own key, so every device reading them checks that
+    /// they asked, and for what.
+    #[must_use]
+    pub fn serving(
+        mut self,
+        invocation: tilo_actions::InvocationId,
+        call: tilo_actions::remote::SignedCall,
+    ) -> Self {
+        self.serving = Some((invocation, Box::new(call)));
+        self
+    }
+
     /// Set the origin clock later actions are stamped with.
     pub fn set_now_ms(&mut self, now_ms: i64) {
         self.now_ms = now_ms;
@@ -307,6 +326,15 @@ impl<R: Resource> Replica<R> {
         let ambient = match &self.group {
             Some((id, label, kind)) => {
                 Some(ambient.unwrap_or_default().with_group(id, label, kind))
+            }
+            None => ambient,
+        };
+        let ambient = match &self.serving {
+            Some((invocation, call)) => {
+                let mut ambient = ambient.unwrap_or_default();
+                ambient.source_invocation = Some(*invocation);
+                ambient.signed = Some(call.clone());
+                Some(ambient)
             }
             None => ambient,
         };

@@ -12,7 +12,7 @@ use crate::model::{
     ModemUnit, Nearby, Network, SavedKind, SavedNetwork, Tethering, Vpn, VpnProfile, Wifi,
     WifiNetwork, Wired,
 };
-use crate::{BLUETOOTH, Connectivity, MODEM, NETWORK, TETHERING, VPN};
+use crate::{BLUETOOTH, Connectivity, MODEM, NETWORK, Preferences, TETHERING, VPN};
 
 /// A device in memory: changes recorded and applied to what it reads.
 #[derive(Default)]
@@ -20,6 +20,11 @@ struct Fake {
     readings: Mutex<Readings>,
     changes: Mutex<Vec<Change>>,
     refuse: Mutex<Option<String>>,
+    /// The operators a scan finds.
+    operators: Mutex<Vec<os_actions::Operator>>,
+    /// What the network answers the next code, and what it was asked, in order.
+    answers: Mutex<Vec<os_actions::CodeAnswer>>,
+    asked: Mutex<Vec<String>>,
 }
 
 impl Fake {
@@ -143,6 +148,24 @@ impl Fake {
     fn changes(&self) -> Vec<Change> {
         self.changes.lock().expect("changes").clone()
     }
+
+    /// What the network answers next: the next one queued, else a plain confirmation.
+    fn answer(&self) -> os_actions::CodeAnswer {
+        let mut answers = self.answers.lock().expect("answers");
+        if answers.is_empty() {
+            os_actions::CodeAnswer {
+                text: "Done".into(),
+                awaiting: false,
+            }
+        } else {
+            answers.remove(0)
+        }
+    }
+
+    /// The codes and answers the network was given, in order.
+    fn asked(&self) -> Vec<String> {
+        self.asked.lock().expect("asked").clone()
+    }
 }
 
 fn network(name: &str, known: bool, secure: bool, connected: bool) -> WifiNetwork {
@@ -170,6 +193,36 @@ fn saved(name: &str, id: &str, autoconnect: bool) -> SavedNetwork {
 impl Device for Fake {
     fn read(&self) -> Readings {
         self.readings.lock().expect("readings").clone()
+    }
+
+    fn scan_operators(&self, modem: &str) -> Result<Vec<os_actions::Operator>, String> {
+        let readings = self.readings.lock().expect("readings");
+        assert!(
+            readings.modem.modems.iter().any(|held| held.path == modem),
+            "a modem of this device: {modem}"
+        );
+        Ok(self.operators.lock().expect("operators").clone())
+    }
+
+    fn send_code(&self, _modem: &str, command: &str) -> Result<os_actions::CodeAnswer, String> {
+        self.asked.lock().expect("asked").push(command.to_owned());
+        if let Some(refusal) = self.refuse.lock().expect("refuse").clone() {
+            return Err(refusal);
+        }
+        Ok(self.answer())
+    }
+
+    fn answer_code(&self, _modem: &str, response: &str) -> Result<os_actions::CodeAnswer, String> {
+        self.asked
+            .lock()
+            .expect("asked")
+            .push(format!("answer {response}"));
+        Ok(self.answer())
+    }
+
+    fn cancel_code(&self, _modem: &str) -> Result<(), String> {
+        self.asked.lock().expect("asked").push("cancel".into());
+        Ok(())
     }
 
     fn change(&self, change: &Change) -> Result<(), String> {
@@ -225,6 +278,13 @@ fn apply_network(network: &mut Network, change: &Change) {
             for saved in &mut network.saved {
                 if saved.id == *profile {
                     saved.autoconnect = *on;
+                }
+            }
+        }
+        Change::OpenNetworks { ask } => {
+            for saved in &mut network.saved {
+                if saved.open {
+                    saved.autoconnect = !*ask;
                 }
             }
         }
@@ -420,6 +480,31 @@ fn service(fake: &Arc<Fake>) -> Connectivity {
     let mut service = Connectivity::new(device, None).expect("service");
     service.settle();
     service
+}
+
+/// This device's policy as a test keeps it, in memory.
+#[derive(Default)]
+struct Policy(Mutex<bool>);
+
+impl Preferences for Policy {
+    fn ask_before_open_networks(&self) -> bool {
+        *self.0.lock().expect("policy")
+    }
+
+    fn set_ask_before_open_networks(&self, on: bool) -> Result<(), String> {
+        *self.0.lock().expect("policy") = on;
+        Ok(())
+    }
+}
+
+/// [`service`] over a policy of `ask`, which the test keeps.
+fn service_asking(fake: &Arc<Fake>, ask: bool) -> (Connectivity, Arc<Policy>) {
+    let policy = Arc::new(Policy(Mutex::new(ask)));
+    let device: Arc<dyn Device> = Arc::clone(fake) as Arc<dyn Device>;
+    let held: Arc<dyn Preferences> = Arc::clone(&policy) as Arc<dyn Preferences>;
+    let mut service = Connectivity::over(device, None, held).expect("service");
+    service.settle();
+    (service, policy)
 }
 
 fn arguments(value: Value) -> Map<String, Value> {
@@ -1252,4 +1337,260 @@ fn a_saved_network_wakes_the_device_and_its_password_is_shared_by_the_device() {
         }],
         "the device is asked to share it"
     );
+}
+
+/// A laptop whose Wi-Fi keeps a network that asks for no password, which `NetworkManager` would
+/// join by itself.
+fn laptop_with_open_network() -> Arc<Fake> {
+    let fake = Fake::default();
+    {
+        let mut readings = fake.readings.lock().expect("readings");
+        readings.network = Network {
+            wifi: Wifi {
+                available: true,
+                on: true,
+                hardware_blocked: false,
+                networks: vec![network("Cafe", false, false, false)],
+            },
+            saved: vec![SavedNetwork {
+                name: "Cafe".into(),
+                id: "uuid-cafe".into(),
+                kind: SavedKind::Wifi,
+                autoconnect: true,
+                open: true,
+                ..SavedNetwork::default()
+            }],
+            ..Network::default()
+        };
+    }
+    Arc::new(fake)
+}
+
+/// An open network this device keeps does not join by itself while it asks first: the policy is
+/// kept, the device's profile follows it, and a network saved later is kept too.
+#[test]
+fn an_open_network_waits_for_the_person_while_the_device_asks() {
+    let fake = laptop_with_open_network();
+    let (mut service, policy) = service_asking(&fake, false);
+    service.settle();
+    assert!(
+        fake.changes().is_empty(),
+        "the device keeps joining it by itself until the person asks first: {:?}",
+        fake.changes()
+    );
+    assert_eq!(
+        read(&service, NETWORK)["saved"][0]["open"],
+        json!(true),
+        "the pane knows which networks ask for no password"
+    );
+    assert_eq!(
+        read(&service, NETWORK)["ask-before-open-networks"],
+        json!(false)
+    );
+
+    service
+        .invoke(
+            NETWORK,
+            "set-ask-before-open-networks",
+            &self::arguments(json!({"on": true})),
+        )
+        .expect("taken");
+    service.settle();
+    assert!(policy.ask_before_open_networks(), "the policy is kept");
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::OpenNetworks { ask: true }),
+        "the open profile follows the policy"
+    );
+    let network = read(&service, NETWORK);
+    assert_eq!(network["ask-before-open-networks"], json!(true));
+    assert_eq!(network["saved"][0]["autoconnect"], json!(false));
+
+    // A network saved after the policy was set, as a join saves one, waits too.
+    {
+        let mut readings = fake.readings.lock().expect("readings");
+        readings.network.saved.push(SavedNetwork {
+            name: "Hotel".into(),
+            id: "uuid-hotel".into(),
+            kind: SavedKind::Wifi,
+            autoconnect: true,
+            open: true,
+            ..SavedNetwork::default()
+        });
+    }
+    service.refresh();
+    service.settle();
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::OpenNetworks { ask: true }),
+        "the network saved later is put in step"
+    );
+    let network = read(&service, NETWORK);
+    assert_eq!(network["saved"][1]["name"], json!("Hotel"));
+    assert_eq!(network["saved"][1]["autoconnect"], json!(false));
+
+    // The person lets them join by themselves again: each follows its own setting.
+    service
+        .invoke(
+            NETWORK,
+            "set-ask-before-open-networks",
+            &self::arguments(json!({"on": false})),
+        )
+        .expect("taken");
+    service.settle();
+    assert!(!policy.ask_before_open_networks());
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::OpenNetworks { ask: false })
+    );
+    let network = read(&service, NETWORK);
+    assert_eq!(network["ask-before-open-networks"], json!(false));
+    assert_eq!(network["saved"][0]["autoconnect"], json!(true));
+}
+
+/// A modem lists the operators it reaches, stands on the one chosen, and the network answers the
+/// codes the person sends, asking on when it wants a reply.
+#[test]
+fn a_modem_lists_its_operators_and_the_network_answers_a_code() {
+    let fake = Fake::phone();
+    *fake.operators.lock().expect("operators") = vec![
+        os_actions::Operator {
+            code: "26202".into(),
+            name: "Feldnetz".into(),
+            availability: os_actions::Availability::Available,
+        },
+        os_actions::Operator {
+            code: "26201".into(),
+            name: "Stadtnetz".into(),
+            availability: os_actions::Availability::Current,
+        },
+    ];
+    let mut service = service(&fake);
+    assert_eq!(read(&service, MODEM)["modems"][0]["operators"], json!([]));
+
+    service
+        .invoke(MODEM, "scan-operators", &Map::new())
+        .expect("taken");
+    assert_eq!(
+        read(&service, MODEM)["pending"],
+        json!(["scan-operators"]),
+        "the scan is pending until the modem answers"
+    );
+    service.settle();
+    let modem = &read(&service, MODEM)["modems"][0];
+    let operators: Vec<(&str, &str)> = modem["operators"]
+        .as_array()
+        .expect("operators")
+        .iter()
+        .map(|operator| {
+            (
+                operator["name"].as_str().expect("a name"),
+                operator["state"].as_str().expect("a state"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        operators,
+        [("Stadtnetz", "current"), ("Feldnetz", "available")],
+        "the operator it stands on first"
+    );
+    assert_eq!(read(&service, MODEM)["pending"], json!([]));
+
+    // Choosing one by hand, and letting the modem choose.
+    service
+        .invoke(
+            MODEM,
+            "select-operator",
+            &arguments(json!({"operator": "26202"})),
+        )
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::ModemRegister {
+            modem: "/mm/modem0".into(),
+            operator: Some("26202".into()),
+        })
+    );
+    service
+        .invoke(MODEM, "select-operator", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        fake.changes().last(),
+        Some(&Change::ModemRegister {
+            modem: "/mm/modem0".into(),
+            operator: None,
+        })
+    );
+
+    // A code the network answers outright.
+    *fake.answers.lock().expect("answers") = vec![os_actions::CodeAnswer {
+        text: "Balance: 10.00".into(),
+        awaiting: false,
+    }];
+    service
+        .invoke(MODEM, "send-code", &arguments(json!({"code": "*100#"})))
+        .expect("taken");
+    service.settle();
+    let modem = &read(&service, MODEM)["modems"][0];
+    assert_eq!(modem["code"]["text"], json!("Balance: 10.00"));
+    assert_eq!(modem["code"]["awaiting"], json!(false));
+
+    // A menu, which waits for the person's answer and then ends.
+    *fake.answers.lock().expect("answers") = vec![
+        os_actions::CodeAnswer {
+            text: "1 balance, 2 bundle".into(),
+            awaiting: true,
+        },
+        os_actions::CodeAnswer {
+            text: "Bundle: 5 GB".into(),
+            awaiting: false,
+        },
+    ];
+    service
+        .invoke(MODEM, "send-code", &arguments(json!({"code": "*101#"})))
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        read(&service, MODEM)["modems"][0]["code"]["awaiting"],
+        json!(true)
+    );
+    service
+        .invoke(MODEM, "answer-code", &arguments(json!({"answer": "2"})))
+        .expect("taken");
+    service.settle();
+    let modem = &read(&service, MODEM)["modems"][0];
+    assert_eq!(modem["code"]["text"], json!("Bundle: 5 GB"));
+    assert_eq!(modem["code"]["awaiting"], json!(false));
+    assert_eq!(
+        fake.asked(),
+        ["*100#", "*101#", "answer 2"],
+        "the network was given what the person sent"
+    );
+
+    service
+        .invoke(MODEM, "cancel-code", &Map::new())
+        .expect("taken");
+    service.settle();
+    assert_eq!(read(&service, MODEM)["modems"][0]["code"], Value::Null);
+    assert_eq!(fake.asked().last().map(String::as_str), Some("cancel"));
+}
+
+/// A code the network refuses is the modem resource's problem, and leaves nothing behind.
+#[test]
+fn a_code_the_network_refuses_says_why() {
+    let fake = Fake::phone();
+    let mut service = service(&fake);
+    *fake.refuse.lock().expect("refuse") = Some("a SIM lock holds the modem".into());
+    service
+        .invoke(MODEM, "send-code", &arguments(json!({"code": "*100#"})))
+        .expect("taken");
+    service.settle();
+    assert_eq!(
+        read(&service, MODEM)["problem"],
+        json!("a SIM lock holds the modem")
+    );
+    assert_eq!(read(&service, MODEM)["modems"][0]["code"], Value::Null);
 }

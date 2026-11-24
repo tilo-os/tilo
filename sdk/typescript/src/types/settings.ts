@@ -22,11 +22,20 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@3adcc0e7d181e2cf";
+export const SURFACE = "so.tilo.settings@4968411ed7e719ce";
 
 /** The arguments of `import_theme`. */
 export interface ImportThemeArgs {
   file: unknown;
+}
+
+/** The arguments of `move_shared_screen`. */
+export interface MoveSharedScreenArgs {
+  night: unknown;
+  screens: unknown[];
+  picked: number;
+  start: number[];
+  let_go: number[];
 }
 
 /** The arguments of `open_pane`. */
@@ -80,7 +89,7 @@ export function notice(ws: tilo.Workspace, path: string): Notice {
 
 /** Settings — `tl.so.tilo.settings.Settings`. */
 export interface Settings extends tilo.Resource {
-  m2ye55z2: string;  // pane
+  vfi4twig: string;  // pane
   /** Takes in a theme saved with Export, from this workspace or another: every role, tuned value and glass shader, once it is admitted and keeps every contrast floor. Importing names it by its own name, so what a person exported under a name comes back under one. */
   import_theme(args: {
     file: unknown;
@@ -100,7 +109,7 @@ export function settings(ws: tilo.Workspace, path: string): Settings {
 
 /** ProblemReport — `tl.so.tilo.settings.ProblemReport`. */
 export interface ProblemReport extends tilo.Resource {
-  kopqq6j4: string;  // body
+  kb2c7b7e: string;  // body
 }
 
 /** The actions `ProblemReport` reaches before it is read: `ws` calls them without a
@@ -114,6 +123,16 @@ export function problemReport(ws: tilo.Workspace, path: string): ProblemReport {
 
 /** Settings — `tl.so.tilo.settings`. */
 export interface TiloSettings extends tilo.Resource {
+  /** Move the device whose screen was dragged so that screen stands where the pointer was let go, in the shared space's own pixels, snapped to a small grid. Every screen of that device moves with it; a drag too small to mean anything is not a change. */
+  move_shared_screen(args: {
+    night: unknown;
+    screens: unknown[];
+    picked: number;
+    start: number[];
+    let_go: number[];
+  }): Promise<void>;
+  /** Runs `move_shared_screen` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_shared_screenMany(items: MoveSharedScreenArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Move the screen picked to where the pointer was let go, in the desktop's own pixels, snapped to a small grid: a drag too small to mean anything is not a change. */
   move_screen(args: {
     screens: unknown;
@@ -190,7 +209,7 @@ export interface TiloSettings extends tilo.Resource {
 
 /** The actions `TiloSettings` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TILOSETTINGS_ACTIONS = ["move_screen", "set_sdr_brightness", "open_pane", "open_paneMany", "show_setting", "show_settingMany", "open_manage_page", "open_invoice", "set_processors_room", "set_memory_room", "send_problem_report", "review_contrast", "review_contrastMany", "review_contrast_on", "review_contrast_onMany", "review_contrast_now", "review_contrast_nowMany", "export_theme"] as const;
+export const TILOSETTINGS_ACTIONS = ["move_shared_screen", "move_shared_screenMany", "move_screen", "set_sdr_brightness", "open_pane", "open_paneMany", "show_setting", "show_settingMany", "open_manage_page", "open_invoice", "set_processors_room", "set_memory_room", "send_problem_report", "review_contrast", "review_contrastMany", "review_contrast_on", "review_contrast_onMany", "review_contrast_now", "review_contrast_nowMany", "export_theme"] as const;
 
 /** The `tl.so.tilo.settings` kind at `path`. */
 export function tiloSettings(ws: tilo.Workspace, path: string): TiloSettings {

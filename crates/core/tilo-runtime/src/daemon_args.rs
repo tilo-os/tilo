@@ -18,8 +18,6 @@ pub enum Mode {
         app_id: String,
         /// A workspace this profile joined; the profile's own workspace when `None`.
         workspace: Option<String>,
-        executable: OsString,
-        args: Vec<OsString>,
     },
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -183,8 +181,8 @@ fn workspace_named(argument: Option<OsString>) -> io::Result<String> {
         .ok_or_else(|| invalid("--workspace requires a workspace id"))
 }
 
-/// `--run-app APP_ID [--workspace WORKSPACE] -- EXECUTABLE ARGS...`, after `--run-app`:
-/// the rest of the command line is the app's.
+/// `--run-app APP_ID [--workspace WORKSPACE]`, after `--run-app`: the app this computer has
+/// installed, and no program of the caller's.
 fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<Mode> {
     let app_id = arguments
         .next()
@@ -205,18 +203,11 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
         );
         next = arguments.next();
     }
-    if next.as_deref() != Some(std::ffi::OsStr::new("--")) {
+    if next.is_some() {
         return Err(invalid(
-            "--run-app APP_ID [--workspace WORKSPACE] requires -- EXECUTABLE ARGS...",
+            "--run-app APP_ID [--workspace WORKSPACE] starts an app this computer has installed; \
+             it takes no program",
         ));
     }
-    let executable = arguments
-        .next()
-        .ok_or_else(|| invalid("missing app executable"))?;
-    Ok(Mode::RunApp {
-        app_id,
-        workspace,
-        executable,
-        args: arguments.collect(),
-    })
+    Ok(Mode::RunApp { app_id, workspace })
 }

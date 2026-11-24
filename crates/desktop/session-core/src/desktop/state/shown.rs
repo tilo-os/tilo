@@ -229,6 +229,12 @@ pub struct StripPan {
     pub scroll: f64,
     /// The window last brought into view.
     pub revealed: Option<GroupId>,
+    /// How much of the strip the display shows, and how wide its windows stand: what a pan
+    /// moves within, and what the navigation snapshot presents.
+    pub viewport: f64,
+    pub content: f64,
+    /// The furthest the strip scrolls: `content` less `viewport`, never below zero.
+    pub max: f64,
 }
 
 /// One strip as one display shows it: the windows it lays out there, in order, over `area`.
@@ -465,6 +471,46 @@ fn lay_out_section(
     }
 }
 
+/// Present the pan of the strip the person works on beside the tree: how far it is scrolled, the
+/// view its windows are seen through and how far it may scroll. The navigation snapshot and the
+/// `pan` verb read it, and a host that pans a strip by a swipe presents it here.
+pub fn present_pan(shared: &mut Shared) {
+    // A canvas has no strip to pan: its places stand where the person put them.
+    let pans = shared
+        .tree
+        .active_workspace()
+        .is_some_and(|workspace| workspace.layout.kind != LayoutKind::Canvas);
+    let Some(strip) = shared.tree.active_strip_id().filter(|_| pans) else {
+        let mut next = shared.presentation.clone();
+        next.pan = None;
+        shared.present(next);
+        return;
+    };
+    let focused = shared.tree.outputs.focused_display();
+    let pan = focused
+        .and_then(|display| shared.pans.get(&(strip, Some(display))).copied())
+        .or_else(|| shared.pans.get(&(strip, None)).copied())
+        .or_else(|| {
+            shared
+                .pans
+                .iter()
+                .find_map(|((shown, _), pan)| (*shown == strip).then_some(*pan))
+        });
+    let mut next = shared.presentation.clone();
+    next.pan = pan.map(|pan| crate::desktop::navigation::DesktopPan {
+        workspace: shared.tree.active.to_string(),
+        strip: strip.0.to_string(),
+        offset: pan.scroll,
+        viewport: pan.viewport,
+        content: pan.content,
+        max: pan.max,
+        // The strip's motion is the shell's own drawing now: the desktop has no frame to coast it
+        // into, so it presents where the pan stands, never a motion in flight.
+        moving: false,
+    });
+    shared.present(next);
+}
+
 /// `at`, a place on the canvas of the work area `area`, in the surface's coordinates.
 fn on_area(at: Rect, area: Rect) -> Rect {
     Rect::new(
@@ -511,9 +557,10 @@ fn pan_section(
     if active.is_some() {
         pan.revealed = active;
     }
-    pan.scroll = pan
-        .scroll
-        .clamp(0.0, (end + STRIP_EDGE_GUTTER_PX - width).max(0.0));
+    pan.max = (end + STRIP_EDGE_GUTTER_PX - width).max(0.0);
+    pan.viewport = width;
+    pan.content = width + pan.max;
+    pan.scroll = pan.scroll.clamp(0.0, pan.max);
     pan
 }
 

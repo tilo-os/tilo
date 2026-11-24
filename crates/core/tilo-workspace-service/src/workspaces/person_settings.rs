@@ -165,7 +165,7 @@ impl Workspaces {
             )
             .await?;
         accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
-        self.keep_workspace_account((workspace, &asker), &account)
+        self.keep_workspace_account((workspace, &asker, None), &account)
             .await?;
         self.person_settings_changed();
         Ok(())
@@ -371,7 +371,7 @@ impl Workspaces {
         let root = self.workspace_root(&here);
         let by = reach.by();
         let signing = Signing {
-            vault: self.vault_for(&here, &reach.acting),
+            vault: self.vault_for(&here, &reach.acting).serving(request),
             root: &root,
             by: &by,
         };

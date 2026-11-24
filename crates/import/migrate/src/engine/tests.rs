@@ -552,6 +552,41 @@ fn starting_without_a_review_reviews_the_source_and_takes_everything() {
     assert_eq!(place.review(thunderbird::SOURCE).unwrap().unwrap(), review);
 }
 
+/// The sources step reaches the workspace once, however many sources read its accounts.
+#[test]
+fn listing_sources_opens_the_workspace_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let place = Place::at(&dir.path().join("state"));
+    let home = dir.path().join("home");
+    let opened = std::cell::Cell::new(0);
+    let open = || {
+        opened.set(opened.get() + 1);
+        Ok(Box::new(Recorded::default()) as Box<dyn Workspace>)
+    };
+    let running = |_: &str| false;
+    let scratch = std::env::temp_dir();
+    let folders = std::collections::BTreeMap::new();
+    let secret = |_: &str, _: Option<&Path>| -> Result<zeroize::Zeroizing<String>> {
+        anyhow::bail!("nobody types a secret here")
+    };
+    let cx = super::Cx {
+        place: &place,
+        running: &running,
+        scratch: &scratch,
+        home: &home,
+        folders: &folders,
+        open: &open,
+        held: std::cell::RefCell::new(None),
+        secret: &secret,
+    };
+    let _ = super::sources(&cx);
+    assert_eq!(
+        opened.get(),
+        1,
+        "every source reads one workspace, opened once"
+    );
+}
+
 /// A profile copied in from another Thunderbird location reviews; a folder
 /// that cannot be read is named in the answer.
 #[cfg(unix)]

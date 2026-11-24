@@ -38,6 +38,40 @@ d-siihm6ib = Übernommener Besuch
        *[other] übernommene Besuche
     }
 
+d-76xowg2w = Vorschlag
+    .doc = Eine Zeile, die die Adressleiste für das Getippte anbietet: eine Seite, die die Person gespeichert oder geöffnet hat, oder die Suche nach den Wörtern.
+    .noun = { $count ->
+        [one] Vorschlag
+       *[other] Vorschläge
+    }
+
+d-zl6ois7x = Art
+
+d-76xowg2w-filter-kind = Art
+
+d-iwoez6ar = Titel
+
+d-np2bxhf4 = Adresse
+    .doc = Was die Wahl öffnet: die Seite oder die Antwort der Suchmaschine auf die Wörter.
+
+d-dermimxj = Unterzeile
+    .doc = Was die Zeile unter ihrem Titel sagt: die Adresse der Seite oder die Suchmaschine, die gefragt wird.
+
+d-4cfgjljd = Vorschlagsart
+    .doc = Woher eine Zeile kommt, die die Adressleiste anbietet.
+
+d-o2azokbu = Lesezeichen
+    .doc = Eine Seite, die die Person gespeichert hat.
+
+d-7kmprotk = Besucht
+    .doc = Eine Seite, die dieser Browser geöffnet hat.
+
+d-o5i6hm3g = Übernommen
+    .doc = Eine Seite, die der Verlauf eines anderen Browsers mitgebracht hat.
+
+d-vb6ajdgd = Suche
+    .doc = Die Suchmaschine, gefragt nach dem Getippten.
+
 d-my4dhx2s = Adresse
 
 d-43vnrbh6 = Titel
@@ -348,11 +382,13 @@ d-xuyixcsy-file = Datei
 
 d-ix3ng2as = Browserverlauf importieren
     .doc = Importiert die Seiten aus dem Verlauf eines anderen Browsers aus dem Paket, das der eigene Import dieser App und `tilo migrate` übergeben: ein JSON-Text von `{"{"}"browser": "...", "visits": [{"{"}"url": "...", "title": "...", "last": 1760000000, "count": 1{"}"}]{"}"}`.
+    .w-this-history-holds-no-page = Dieser Verlauf enthält keine Seite
 
 d-ix3ng2as-bundle = Paket
 
 d-y3y3upgg = Lesezeichen importieren
     .doc = Importiert die Lesezeichen eines anderen Browsers aus dem Paket, das der eigene Import dieser App übergibt: das `ImportBundle`-JSON mit Lesezeichen-Teilen (`{"{"}"bookmarks": [{"{"}"url": "...", "title": "...", "folder": "Work"{"}"}]{"}"}`).
+    .w-this-file-holds-no-bookmark = Diese Datei enthält keine Lesezeichen
 
 d-y3y3upgg-bundle = Paket
 
@@ -394,7 +430,9 @@ d-vsaswu4a = Seitenansicht
     .w-turn-tracker-protection-on-for-this = Trackingschutz für diese Seite einschalten
     .w-turn-tracker-protection-off-for-this = Trackingschutz für diese Seite ausschalten
     .w-forget-this-site-s-forms = Formulare dieser Seite vergessen
-    .w-from-your-history = Aus deinem Verlauf
+    .w-open-s-side-panel = Seitenleiste von { $name } öffnen
+    .w-from-the-address = Aus der Adresse
+    .w-suggestions = Vorschläge
     .w-of = { $find_at } von { $find_count }
     .w-previous-match = Vorheriger Treffer
     .w-next-match = Nächster Treffer
@@ -448,6 +486,8 @@ d-vsaswu4a = Seitenansicht
     .w-add-to-browser = Zum Browser hinzufügen
     .w-notification = Mitteilung
     .w-dismiss = Wegnehmen
+    .w-close = Schließen
+    .w-panel = panel
     .w-private-window = Privates Fenster
     .w-this-window-keeps-nothing-when-it = Dieses Fenster behält nichts, wenn es schließt: kein Verlauf, keine Anmeldungen und keine Cookies außer denen der Seite.
 
@@ -994,7 +1034,7 @@ d-g7tvdtci-max_width = Größte Breite
 d-g7tvdtci-frame = Frame
 
 d-ckclpobv = Zu einer Adresse gehen
-    .doc = Öffne eine Adresse im eigenen Fenster der Seite.
+    .doc = Öffne eine Adresse im eigenen Fenster der Seite: eine Website ohne Schema öffnet sich als solche (`example.org`), und Wörter, die keine Adresse nennen, öffnen die Antwort der Suchmaschine darauf.
 
 d-ckclpobv-url = Adresse
 
@@ -1063,8 +1103,6 @@ d-og3g2nds = Die Seite fragen
     .doc = Die Seite `p` tut, was `request` (JSON, wie das Fenster der Seite es liest) sagt, und antwortet mit dem Bericht der Seite.
 
 d-og3g2nds-request = Anfrage
-
-d-23a4az4u = Vorschlag
 
 d-o2occ235 = Downloads
     .doc = Die Dateien, die die Seite herunterlädt, wie das Fenster sie zuletzt gelesen hat: Zustand des Motors, nie der eigene Eintrag der Seite.
@@ -1560,6 +1598,11 @@ d-goygbsaa = Die Erweiterungen auf Aktualisierungen prüfen
 
 d-pipb6lni = Erweiterungsaktualisierungen vermerken
     .doc = Schreibt, was die Frage nach neueren Versionen im Chrome Web Store ergeben hat, in den Eintrag des Browsers.
+    .w-updated-to = „{ $name }“ auf { $version } aktualisiert
+    .w-extensions-were-updated = { $count } Erweiterungen wurden aktualisiert
+    .w-the-chrome-web-store-could-not = Der Chrome Web Store konnte nicht geprüft werden: { $failed }
+    .w-no-extension-from-the-chrome-web = Keine Erweiterung aus dem Chrome Web Store ist installiert
+    .w-the-extensions-are-up-to-date = Die Erweiterungen sind aktuell
 
 d-pipb6lni-checked = Geprüft
 
@@ -1735,3 +1778,174 @@ d-s57t5cky = Vollbild merken
     .doc = Schreibt in den Datensatz der Seite, ob sie im Vollbild ist, wie ihr Fenster es übergibt: Ein Video oder eine Präsentation, die den Bildschirm gefüllt hat, oder ihn verlassen hat.
 
 d-s57t5cky-fullscreen = Vollbild
+
+d-m2ajq6vo = Vorschläge
+    .w-search-for = Nach „{ $words }“ suchen
+
+d-okhvftzj = Schwierigkeit mit der Erweiterung
+    .w-this-device-keeps-no-extensions = Dieses Gerät hat keinen Platz für Erweiterungen
+    .w-the-package-is-over-the-size = Das Paket überschreitet die Größengrenze
+    .w-the-package-is-damaged-or-signed = Das Paket ist beschädigt oder für eine andere Erweiterung signiert
+    .w-the-package-holds-nothing-an-extension = Das Paket enthält nichts, was eine Erweiterung nutzen kann
+    .w-the-package-could-not-be-read = Das Paket konnte nicht gelesen oder gespeichert werden
+    .w-that-file-is-no-extension-package = Diese Datei ist kein Erweiterungspaket
+    .w-that-is-no-chrome-web-store = Das ist keine Chrome-Web-Store-Erweiterung
+    .w-the-chrome-web-store-could-not = Der Chrome Web Store war nicht erreichbar
+    .w-the-chrome-web-store-has-no = Der Chrome Web Store hat kein Paket für diesen Browser
+    .w-no-such-extension-is-installed = Eine solche Erweiterung ist nicht installiert
+    .w-the-extension-could-not-be-changed = Die Erweiterung konnte nicht geändert werden
+
+d-tnhrrhz2 = Beschriftung der Schaltfläche
+    .w-extension = Erweiterung
+
+d-wzylglss = Benannte Erweiterung
+    .w-extension = Erweiterung
+
+d-cyhcwuuf = Downloadzeile
+    .w-of = { $received } von { $total }
+    .w-downloaded = { $received } heruntergeladen
+    .w-waiting-for-where-to-save-it = Wartet darauf, wohin es gespeichert wird
+    .w-download-complete = Download abgeschlossen
+    .w-saved-to = Gespeichert in { $path }
+    .w-the-download-failed = Der Download ist fehlgeschlagen
+    .w-cancelled = Abgebrochen
+
+d-mbgqkffs = Adressangebot
+    .doc = Die Erweiterungsseite, die das Fenster der Seite neben dieser zeigt, wie es sie zuletzt meldete: die Seitenleiste der Erweiterung oder die Seite, auf der sie die Person anmelden wollte.
+
+d-osrvi5lh = Adressangebot
+    .doc = Die Erweiterung, die die Adresse adressiert, und was sie für das anbietet, was auf ihr Stichwort folgt.
+
+d-c6qztmpv = Seitenleiste
+    .doc = Eine eigene Seite einer Erweiterung, neben der Seite gezeigt, die die Person browsierte: ihre Seitenleiste oder die Seite, auf der sie die Person anmelden wollte.
+    .noun = { $count ->
+        [one] Seitenleiste
+       *[other] Seitenleisten
+    }
+
+d-52ms3sap = Art
+    .doc = `side` für die Seitenleiste einer Erweiterung, `sign-in` für die Seite, auf der sie die Person anmelden wollte.
+
+d-sgn42dz6 = Erweiterung
+    .doc = Die Kennung des Motors für die Erweiterung, deren Seite es ist.
+
+d-uzhylkwp = Adresse
+    .doc = Die Adresse, die die Seite zeigt.
+
+d-6vgotm2u = Interaktiv
+    .doc = Ob die Person sie zu sehen bekommt: eine Anmeldung, nach der sie vielleicht nicht gefragt wird, lädt außer Sicht.
+
+d-c6qztmpv-filter-interactive = Interaktiv
+
+d-3yjpvxdh = Adressangebot
+    .doc = Was die Adresse der Erweiterung anbietet, deren Stichwort sie adressiert: was auf das Stichwort folgt und die Zeilen, zu denen die Erweiterung führt.
+    .noun = { $count ->
+        [one] Adressangebot
+       *[other] Adressangebote
+    }
+
+d-yf5tqm24 = Erweiterung
+    .doc = Die Kennung des Motors für die Erweiterung, die die Adresse adressiert.
+
+d-h6pi6u6y = Name
+    .doc = Wie diese Erweiterung heißt.
+
+d-tzxibbua = Text
+    .doc = Was auf ihr Stichwort folgt.
+
+d-oaxzyzwj = Zeilen
+    .doc = Was die Adresse anbietet: die erste Zeile ist, was Enter tut, dann die Vorschläge der Erweiterung.
+
+d-ez74rpgj = Adressvorschlag
+    .doc = Eine Zeile, die die Adresse für das Stichwort einer Erweiterung anbietet: was sie sagt und was die Wahl an die Erweiterung sendet.
+    .noun = { $count ->
+        [one] Adressvorschlag
+       *[other] Adressvorschläge
+    }
+
+d-wdpe6rh5 = Titel
+
+d-d662kmwa = Inhalt
+
+d-cua3peed = Adressierte Erweiterung
+    .doc = Eine Erweiterung, die ein Stichwort in der Adresse adressiert: welche es ist, wie sie heißt und was auf ihr Stichwort folgt.
+    .noun = { $count ->
+        [one] adressierte Erweiterung
+       *[other] adressierte Erweiterungen
+    }
+
+d-mkrajvka = Erweiterung
+
+d-7sy22uee = Name
+
+d-mcydjsg5 = Text
+
+d-pqaac6ny = Stichwort
+    .doc = Ihr Stichwort in der Adresse (`omnibox.keyword`), wo ihr Manifest eines gibt: mit einem Leerzeichen dahinter getippt, gehört das Folgende der Erweiterung.
+
+d-amvgds6o = Seitenleiste
+    .doc = Ob sie eine Seite neben der Seite zeigen kann, die die Person browsert (`sidePanel`).
+
+d-d7deek3g = Rest
+    .doc = Was auf das Stichwort einer Erweiterung in der Adresse folgt, wovon die Erweiterung hört.
+
+d-6n7d6qnz = Adresse absenden
+    .doc = Was Enter in der Adresse tut: was auf das Stichwort einer Erweiterung folgt, geht an die Erweiterung, die davon hört und die Seite dorthin schickt, wo sie will; alles andere ist eine Adresse, zu der es geht.
+
+d-6n7d6qnz-typed = Eingabe
+
+d-nql77bvg = Adressvorschlag wählen
+    .doc = Die Person wählte eine der Zeilen unter der Adresse: die Erweiterung hört, wofür sie steht.
+
+d-nql77bvg-content = Inhalt
+
+d-2wbdw2yd = Seitenleiste der Erweiterung öffnen
+    .doc = Fragt die Erweiterung nach ihrer Seitenleiste neben der Seite: ihre eigene Seite sagt, was die Leiste zeigt, und das Fenster der Seite zeigt sie dort.
+    .w-the-extension-is-off = Die Erweiterung ist aus
+    .w-the-extension-has-no-side-panel = Die Erweiterung hat keine Seitenleiste
+
+d-2wbdw2yd-e = E
+
+d-64aoinoc = Seite der Erweiterung schließen
+    .doc = Schließt die Seite der Erweiterung, die das Fenster der Seite neben oder über dieser zeigte: ihre Seitenleiste oder die Seite, auf der sie die Person anmelden wollte, die als abgelehnt endet.
+
+d-j3frffti = Seitenleiste vermerken
+    .doc = Schreibt die Seite der Erweiterung, die das Fenster der Seite neben dieser zeigt, in ihren Datensatz oder nimmt sie weg.
+
+d-j3frffti-open = Offen
+
+d-j3frffti-kind = Art
+
+d-j3frffti-id = Id
+
+d-j3frffti-url = URL
+
+d-j3frffti-interactive = Interaktiv
+
+d-ysguyk4y = Adressangebot vermerken
+    .doc = Schreibt die Erweiterung, die die Adresse adressiert, und die Zeilen, die sie anbietet, in den Datensatz der Seite; eine leere Kennung nimmt sie weg, da die Adresse keine mehr adressiert.
+
+d-ysguyk4y-id = Id
+
+d-ysguyk4y-name = Name
+
+d-ysguyk4y-text = Text
+
+d-ysguyk4y-rows = Zeilen
+
+d-uczjtrju = Getippte Adresse
+    .doc = Was die Person in der Adresse der Seite tippte: wenn es mit dem Stichwort einer Erweiterung und einem Leerzeichen beginnt, gehört das Folgende der Erweiterung, die von jeder Änderung hört.
+
+d-uczjtrju-typed = Eingabe
+
+d-oeqq7l45 = Adresse verlassen
+    .doc = Die Person verließ die Adresse ohne Enter: die Erweiterung hört davon.
+
+d-2i3y5ghv = Adresse bestätigen
+    .doc = Die Person drückte Enter oder wählte eine der Zeilen: die Erweiterung hört, was ihr gegeben wurde.
+
+d-2i3y5ghv-text = Text
+
+d-w6ddwf3p = Seitenleiste öffnen
+
+d-d4fifkih = Adressvorschlag

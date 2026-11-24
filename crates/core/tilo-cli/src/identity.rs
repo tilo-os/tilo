@@ -173,8 +173,7 @@ pub fn ensure(
                 if answer.is_some() || held().is_ok_and(|person| person.is_some()) {
                     Ok(answer)
                 } else {
-                    tilo_api::daemon::this_computer()
-                        .and_then(|place| place.found(founding.clone()))
+                    tilo_api::daemon::this_computer().and_then(|place| place.found(&founding))
                 }
             }
             Err(why) if held()?.is_none() => return Err(anyhow::Error::msg(why)),

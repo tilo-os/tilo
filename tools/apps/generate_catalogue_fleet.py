@@ -153,8 +153,8 @@ def window_documents(app_dir: pathlib.Path) -> bool:
 def asks(offer: dict) -> str:
     """The values an offer asks for, as one field of its line: name, type and words per value,
     values separated by the record separator and a value's fields by the group separator. A
-    manifest written before offers carried several keeps its one name, read as text. A tilolang
-    app's offers name each value's type `ty`; a manifest's name it `type`."""
+    manifest written before offers carried several keeps its one name, read as text. Both a
+    manifest's `[[offers]]` and `tilolang describe --fleet` name a value's type `type`."""
     asked = offer.get("asks", "")
     if isinstance(asked, str):
         return asked
@@ -162,7 +162,7 @@ def asks(offer: dict) -> str:
         "\x1d".join(
             [
                 p["name"],
-                p.get("ty") or p.get("type") or "text",
+                p.get("type") or "text",
                 p.get("description") or "",
             ]
         )
@@ -227,6 +227,7 @@ def native_apps(root: pathlib.Path) -> list[dict]:
                 keywords=search_keywords(app_dir),
                 resource_types=resource_types(app_dir, manifest, package),
                 actions=offers(manifest),
+                commands=[],
                 window_kind=window_kind(app_dir),
                 windows_personal=windows_are_personal(app_dir),
                 window_documents=window_documents(app_dir),
@@ -399,6 +400,11 @@ def render(apps: list[dict], surfaced: list[dict]) -> str:
             for action in app["actions"]
         )
         lines.append(f"        offers: {blob(offers)},")
+        commands = "".join(
+            "\t".join([command["action"], command["label"], command["key"]]) + "\n"
+            for command in app["commands"]
+        )
+        lines.append(f"        commands: {blob(commands)},")
         lines.append("    },")
     lines.append("];")
     return "\n".join(lines) + "\n"

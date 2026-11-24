@@ -472,9 +472,9 @@ pub(super) async fn authenticate_launcher_handoff(
     let error = if services.launcher.is_none() {
         "collaboration launch cannot be attested: this broker has no launcher service"
     } else {
-        "collaboration launch is not an authenticated shell-managed process: the \
-         shell holds no launch record for this live process, app and workspace (an app \
-         started by hand through tilo-launcher, or a process that has exited)"
+        "collaboration launch is not one this computer made: this computer recorded no launch \
+         of this live process, app or workspace; start it with `tilo-runtime --run-app <app>`, \
+         so this computer launches it"
     };
     Err(LaunchRefusal {
         error: BrokerError::failed(error.into()),

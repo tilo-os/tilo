@@ -353,6 +353,9 @@ imports! {
     SeenBy = "seen_by" ([H, H] -> [H]);
     Mentions = "mentions" ([H, H, H] -> [I64]);
     Steps = "steps" ([H] -> [H]);
+    // `ranked(items)`: the resources of a list, the ones the person looking chose most often and
+    // most lately first, as their histories say.
+    Ranked = "ranked" ([H] -> [H]);
     CollOrdered = "coll_ordered" ([H, H] -> [H]);
     CollWhereWith = "coll_where_with" ([H, H, H] -> [H]);
     CollMoveTo = "coll_move_to" ([H, H, H, I64] -> []);

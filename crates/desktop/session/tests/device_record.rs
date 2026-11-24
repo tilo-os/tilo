@@ -165,4 +165,34 @@ fn a_paired_device_reaches_the_record_without_the_workspace_list_moving() {
         desktop.join_flow(),
         laptop.join_flow(),
     );
+
+    assert!(
+        lists(&listed(&laptop), "Ada's phone"),
+        "the laptop knows the phone through the person's record"
+    );
+    // One record, no per-device copy: both devices read the same list, each naming the device it
+    // is reading from as the current one and nothing else differently.
+    let without_current = |listed: Vec<Value>| -> std::collections::BTreeMap<String, Value> {
+        listed
+            .into_iter()
+            .map(|mut device| {
+                device
+                    .as_object_mut()
+                    .expect("a listed device is an object")
+                    .remove("current");
+                (
+                    device["key_hex"]
+                        .as_str()
+                        .expect("a listed device names its key")
+                        .to_owned(),
+                    device,
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        without_current(listed(&desktop)),
+        without_current(listed(&laptop)),
+        "both devices read the person's one devices record; neither keeps a list of its own"
+    );
 }

@@ -35,7 +35,7 @@ pub mod testing;
 pub mod transport;
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -355,20 +355,14 @@ impl Engine {
         }
     }
 
-    /// One `engine.start`: `pair` or `sync`, answered with the job's id.
-    pub fn start(&self, op: &str, input: &str) -> Result<String, String> {
-        self.start_told(op, input, None)
-    }
-
-    /// [`Self::start`], telling `told` how the job ended (its state and the fields
-    /// [`Self::status`] reads) the moment it does, so its host need not ask.
-    pub fn start_told(&self, op: &str, input: &str, told: Option<Told>) -> Result<String, String> {
+    /// One `engine.start`: `pair` or `sync`, run as the job the host names.
+    pub fn start(&self, job: &str, op: &str, input: &str) -> Result<(), String> {
         match op {
             "pair" => {
                 let ask: PairAsk = serde_json::from_str(input)
                     .map_err(|error| format!("the invite does not read: {error}"))?;
                 let engine = self.clone();
-                spawn_job(told, move |job: &Job| {
+                spawn_job(job, move |job: &Job| {
                     if job.cancelled() {
                         return Ok(JobEnd::Cancelled);
                     }
@@ -384,7 +378,7 @@ impl Engine {
                 let ask: SyncAsk = serde_json::from_str(input)
                     .map_err(|error| format!("the sync ask does not read: {error}"))?;
                 let engine = self.clone();
-                spawn_job(told, move |job: &Job| {
+                spawn_job(job, move |job: &Job| {
                     let mut answer = SyncAnswer::default();
                     let client = engine.client().map_err(|error| error.to_string())?;
                     for peer in &ask.peers {
@@ -544,13 +538,12 @@ impl Drop for Finish {
     }
 }
 
-/// Start `work` on a thread of its own, telling `told` how it ended, and answer the job's id.
+/// Run `work` on a thread of its own as the job `job`.
 fn spawn_job(
-    told: Option<Told>,
+    job: &str,
     work: impl FnOnce(&Job) -> Result<JobEnd, String> + Send + 'static,
-) -> Result<String, String> {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    let id = format!("grayjay-{}", NEXT.fetch_add(1, Ordering::Relaxed));
+) -> Result<(), String> {
+    let id = job.to_owned();
     let cancel = Arc::new(AtomicBool::new(false));
     {
         let mut jobs = jobs();
@@ -612,5 +605,5 @@ fn spawn_job(
         drop(jobs);
         return Err(format!("the sync worker could not start: {error}"));
     }
-    Ok(id)
+    Ok(())
 }

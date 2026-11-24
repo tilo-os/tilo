@@ -1472,6 +1472,13 @@
           }
         },
         {
+          "name": "faces",
+          "doc": "Who it names, as their face before the label: the member, so their face wears the picture they set, as the bar's faces do. The first is the one shown.",
+          "type": {
+            "list": "actor"
+          }
+        },
+        {
           "name": "tone",
           "doc": "The tone the chip reads in: what it names is a status (a priority, a state of an item), and its pill is washed in that tone.",
           "type": {
@@ -2814,6 +2821,14 @@
           "type": {
             "list": "text"
           }
+        },
+        {
+          "name": "values",
+          "doc": "What each option stands for, in order, when it is not the text shown: the list offers the words, and a choice reaches the bound value as its id. Empty makes each option its own value.",
+          "type": {
+            "list": "text"
+          },
+          "data": true
         },
         {
           "name": "placeholder",
@@ -4330,15 +4345,14 @@
     },
     {
       "name": "MediaCard",
-      "doc": "One card: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it. A view gives it as a grid's item or on its own.",
+      "doc": "One card: the art (a cover, a thumbnail, a photo) with its title and up to two meta lines under it. A view gives it as a grid's item, on its own, or compact in a band (a pill with the art and the title in one row, `compact`).",
       "props": [
         {
           "name": "item",
-          "doc": "The resource the card stands for: what a press opens.",
+          "doc": "The resource the card stands for: what a press opens. A card a press runs its own event for stands for nothing.",
           "type": {
             "option": "resource"
           },
-          "required": true,
           "positional": true
         },
         {
@@ -4385,6 +4399,11 @@
               }
             }
           }
+        },
+        {
+          "name": "compact",
+          "doc": "It stands in a band as a pill rather than as a card: a bar control high, its art at the leading edge and its title beside it. A media session's live view gives this so the shell's bar shows what plays in the bar's own band.",
+          "type": "bool"
         },
         {
           "name": "selected",
@@ -7096,6 +7115,38 @@
           "name": "still",
           "doc": "The stage stands the page where the view puts it and takes nothing of its own: the wheel and a pinch do not zoom it, no pan moves it, the keys that walk and move its places do not reach it, and a dragged place does not line up with the page's margins. A stage laid over a page another view draws sets this, so the page under it keeps its own zoom and its own keys and its places move only where the hand puts them.",
           "type": "bool"
+        },
+        {
+          "name": "transition",
+          "doc": "How the stage plays another page swapped for the one it shows: `.cross_fade` keeps the page that was shown laid out while it fades out and fades the new one in over it, for a stage that presents one page at a time. A change of the same page (a moved place, a zoom) is reconciled in place and never swaps.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Transition",
+                "cases": [
+                  "none",
+                  "cross_fade"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "motion",
+          "doc": "The pace a page swap plays at: `.standard` (the theme's, and what the stage does anyway), `.brisk`, `.calm`, or `.still`, whose swaps land at once.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Motion",
+                "cases": [
+                  "standard",
+                  "brisk",
+                  "calm",
+                  "still"
+                ]
+              }
+            }
+          }
         }
       ],
       "parts": [
@@ -7843,6 +7894,11 @@
           "name": "after",
           "doc": "How many seconds until its one tick: it ticks once and then rests; 0 for one that ticks again and again.",
           "type": "float"
+        },
+        {
+          "name": "restart",
+          "doc": "What it counts from: whenever this changes, it counts again from now. A field's text here makes a timer `after` a short while tick once the person stops typing, not at every key.",
+          "type": "text"
         }
       ],
       "events": [

@@ -890,6 +890,10 @@ pub struct ViewMeta {
     pub doc: String,
     pub params: Vec<ParamMeta>,
     pub anchors: Vec<AnchorMeta>,
+    /// The ids of the views this view calls, in the order it calls them: the views whose nodes
+    /// stand in its frame, and so the anchors a test reaches through it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<String>,
     pub reaches: Vec<Reach>,
     #[serde(default)]
     pub state: Vec<StateMeta>,

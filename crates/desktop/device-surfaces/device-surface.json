@@ -1254,6 +1254,22 @@
               "type": "text"
             }
           ]
+        },
+        {
+          "id": "set-ask-before-open-networks",
+          "label": "Ask before joining an open network, or join the ones this device keeps by itself",
+          "description": "Ask before joining an open Wi-Fi network this device keeps, or let the ones it keeps join by themselves.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
         }
       ],
       "fields": [
@@ -1315,6 +1331,12 @@
               "named": "SavedNetwork"
             }
           },
+          "readonly": true
+        },
+        {
+          "path": "ask-before-open-networks",
+          "stored": "value",
+          "type": "bool",
           "readonly": true
         },
         {
@@ -1476,6 +1498,40 @@
           ]
         },
         {
+          "name": "NetworkWake",
+          "doc": "Whether a saved network wakes this device from sleep, as the device reports it.",
+          "fields": [
+            {
+              "name": "on",
+              "type": "bool"
+            },
+            {
+              "name": "interface",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "supported",
+              "type": {
+                "option": "bool"
+              }
+            },
+            {
+              "name": "applied",
+              "type": {
+                "option": "bool"
+              }
+            },
+            {
+              "name": "problem",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
           "name": "SavedIpv4",
           "doc": "How a saved network's addresses are set.",
           "fields": [
@@ -1580,10 +1636,22 @@
               "type": "bool"
             },
             {
+              "name": "open",
+              "type": "bool"
+            },
+            {
               "name": "ipv4",
               "type": {
                 "option": {
                   "named": "SavedIpv4"
+                }
+              }
+            },
+            {
+              "name": "wake",
+              "type": {
+                "option": {
+                  "named": "NetworkWake"
                 }
               }
             }
@@ -1755,6 +1823,29 @@
               }
             }
           ]
+        },
+        {
+          "id": "set-wake",
+          "label": "Wake this device over the network",
+          "description": "Wake this device from sleep when a wake packet arrives over the network, or stop.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "share-with-devices",
+          "label": "Share with your devices",
+          "description": "Share the Wi-Fi network's password with your other devices, so they join it too.",
+          "kind": "outside",
+          "params": []
         }
       ],
       "fields": []
@@ -2190,6 +2281,140 @@
               "type": "text"
             }
           ]
+        },
+        {
+          "id": "scan-operators",
+          "label": "Look for the operators the modem can reach",
+          "description": "Look for the operators the modem can reach, and list them.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "select-operator",
+          "label": "Stand on an operator's network, or choose one automatically",
+          "description": "Stand on an operator's network, or choose the one this device uses automatically.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "operator",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "send-code",
+          "label": "Send a code the operator answers, such as *100#",
+          "description": "Send a code the operator answers, such as `*100#` for a balance.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "code",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "answer-code",
+          "label": "Answer the question the operator's code asked",
+          "description": "Answer the question the operator's code asked.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "answer",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "cancel-code",
+          "label": "End the code's session with the operator",
+          "description": "End the code's session with the operator.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "modem",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
         }
       ],
       "fields": [
@@ -2227,6 +2452,20 @@
         }
       ],
       "types": [
+        {
+          "name": "Code",
+          "doc": "What the network answered a code, and whether it waits for the person's answer.",
+          "fields": [
+            {
+              "name": "text",
+              "type": "text"
+            },
+            {
+              "name": "awaiting",
+              "type": "bool"
+            }
+          ]
+        },
         {
           "name": "ModemFailure",
           "doc": "Why a modem cannot be used.",
@@ -2400,6 +2639,22 @@
               }
             },
             {
+              "name": "operators",
+              "type": {
+                "list": {
+                  "named": "Operator"
+                }
+              }
+            },
+            {
+              "name": "code",
+              "type": {
+                "option": {
+                  "named": "Code"
+                }
+              }
+            },
+            {
               "name": "registration",
               "type": {
                 "named": "Registration"
@@ -2442,6 +2697,48 @@
               "type": {
                 "option": "int"
               }
+            }
+          ]
+        },
+        {
+          "name": "Operator",
+          "doc": "An operator the modem can reach.",
+          "fields": [
+            {
+              "name": "code",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "state",
+              "type": {
+                "named": "OperatorState"
+              }
+            }
+          ]
+        },
+        {
+          "name": "OperatorState",
+          "doc": "Whether a modem may use an operator it reaches.",
+          "cases": [
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "available",
+              "label": "Available"
+            },
+            {
+              "name": "current",
+              "label": "Current"
+            },
+            {
+              "name": "forbidden",
+              "label": "Forbidden"
             }
           ]
         },
@@ -9130,6 +9427,22 @@
               "type": "int"
             }
           ]
+        },
+        {
+          "id": "forget-display-tool",
+          "label": "Let a display tool ask again",
+          "description": "Let a display tool ask again Its risky display changes will wait to be kept, as any other program's do.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "tool",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
         }
       ],
       "fields": [
@@ -9201,6 +9514,16 @@
           "path": "dock_covered",
           "stored": "value",
           "type": "bool",
+          "readonly": true
+        },
+        {
+          "path": "trusted_tools",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "TrustedTool"
+            }
+          },
           "readonly": true
         }
       ],
@@ -9386,6 +9709,20 @@
               "type": "int"
             }
           ]
+        },
+        {
+          "name": "TrustedTool",
+          "doc": "A program this device trusts with its displays: one whose risky display changes apply without asking.",
+          "fields": [
+            {
+              "name": "executable",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            }
+          ]
         }
       ]
     },
@@ -9466,6 +9803,82 @@
           "stored": "value",
           "type": "text",
           "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "person-displays",
+      "label": "Your screens",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "local",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "screens",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SharedScreen"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "SharedScreen",
+          "doc": "One screen of the person's shared layout.",
+          "fields": [
+            {
+              "name": "device",
+              "type": "text"
+            },
+            {
+              "name": "output",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "device_label",
+              "type": "text"
+            },
+            {
+              "name": "local",
+              "type": "bool"
+            },
+            {
+              "name": "online",
+              "type": "bool"
+            },
+            {
+              "name": "x",
+              "type": "int"
+            },
+            {
+              "name": "y",
+              "type": "int"
+            },
+            {
+              "name": "width",
+              "type": "int"
+            },
+            {
+              "name": "height",
+              "type": "int"
+            },
+            {
+              "name": "reachable",
+              "type": "bool"
+            }
+          ]
         }
       ]
     },
@@ -9713,7 +10126,48 @@
       "kind": "privacy",
       "label": "Privacy",
       "version": 1,
-      "verbs": [],
+      "verbs": [
+        {
+          "id": "set-secrets-access",
+          "label": "Let an application use saved secrets, or stop it",
+          "description": "Let an application use the saved passwords and keys again, or stop it. What it saved stays until it is forgotten.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "app",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "allowed",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "forget-secrets",
+          "label": "Forget an application's saved secrets",
+          "description": "Remove an application's saved secrets and its record.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "app",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            }
+          ]
+        }
+      ],
       "fields": [
         {
           "path": "capabilities",
@@ -9734,6 +10188,26 @@
             }
           },
           "readonly": true
+        },
+        {
+          "path": "secrets",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "SavedSecrets"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "security",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "Security"
+            }
+          },
+          "readonly": true
         }
       ],
       "types": [
@@ -9741,6 +10215,12 @@
           "name": "Answer",
           "doc": "One answer the person gave about a device of theirs, and how long it stands.",
           "fields": [
+            {
+              "name": "$address",
+              "type": {
+                "resource": "portal.consent"
+              }
+            },
             {
               "name": "app",
               "type": "text"
@@ -9810,6 +10290,28 @@
           ]
         },
         {
+          "name": "FirewallInForce",
+          "doc": "The firewall in force on this device.",
+          "cases": [
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "firewalld",
+              "label": "Firewalld"
+            },
+            {
+              "name": "nftables",
+              "label": "Nftables"
+            },
+            {
+              "name": "off",
+              "label": "Off"
+            }
+          ]
+        },
+        {
           "name": "InUse",
           "doc": "One application using a device of this machine now.",
           "fields": [
@@ -9866,6 +10368,100 @@
           ]
         },
         {
+          "name": "Protection",
+          "doc": "Whether a protection of this device is on, off, or cannot be read here.",
+          "cases": [
+            {
+              "name": "unknown",
+              "label": "Unknown"
+            },
+            {
+              "name": "on",
+              "label": "On"
+            },
+            {
+              "name": "off",
+              "label": "Off"
+            }
+          ]
+        },
+        {
+          "name": "SavedSecrets",
+          "doc": "The applications that use this device's saved passwords and keys.",
+          "fields": [
+            {
+              "name": "apps",
+              "type": {
+                "list": {
+                  "named": "SecretApp"
+                }
+              }
+            },
+            {
+              "name": "read_error",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "SecretApp",
+          "doc": "One application that stored or read the person's saved passwords and keys.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "allowed",
+              "type": "bool"
+            },
+            {
+              "name": "uses",
+              "type": "int"
+            },
+            {
+              "name": "items",
+              "type": "int"
+            }
+          ]
+        },
+        {
+          "name": "Security",
+          "doc": "What protects this device itself, apart from any workspace: its disk, its firmware and its firewall.",
+          "fields": [
+            {
+              "name": "disk_encryption",
+              "type": {
+                "named": "Protection"
+              }
+            },
+            {
+              "name": "secure_boot",
+              "type": {
+                "named": "Protection"
+              }
+            },
+            {
+              "name": "firewall",
+              "type": {
+                "named": "FirewallInForce"
+              }
+            },
+            {
+              "name": "firewall_error",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
           "name": "Standing",
           "doc": "How long an answer the person gave stands.",
           "cases": [
@@ -9910,6 +10506,21 @@
           ]
         }
       ]
+    },
+    {
+      "kind": "portal.consent",
+      "label": "Consent",
+      "version": 1,
+      "verbs": [
+        {
+          "id": "forget",
+          "label": "Forget what the app was allowed",
+          "description": "Take back what the application was allowed or refused",
+          "kind": "outside",
+          "params": []
+        }
+      ],
+      "fields": []
     },
     {
       "kind": "notifications",
@@ -10756,6 +11367,38 @@
           "path": "typing",
           "stored": "value",
           "type": "bool",
+          "readonly": true
+        }
+      ]
+    },
+    {
+      "kind": "room",
+      "label": "Room",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "x",
+          "stored": "value",
+          "type": "float",
+          "readonly": true
+        },
+        {
+          "path": "y",
+          "stored": "value",
+          "type": "float",
+          "readonly": true
+        },
+        {
+          "path": "width",
+          "stored": "value",
+          "type": "float",
+          "readonly": true
+        },
+        {
+          "path": "height",
+          "stored": "value",
+          "type": "float",
           "readonly": true
         }
       ]
@@ -12920,6 +13563,43 @@
                 "type": "string"
               },
               "type": "text"
+            },
+            {
+              "name": "reason",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
+          "id": "rename",
+          "label": "Name one of the person's keys",
+          "description": "Name one of the person's keys: what every list of them, on every device of theirs, reads it by from then on. Two computers set up the same way enrol under one name, so the person tells them apart here.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "device",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              },
+              "type": "text"
             }
           ]
         },
@@ -12927,6 +13607,13 @@
           "id": "found",
           "label": "Start a new person on this device",
           "description": "Start a new person on this device, when no person's certificate names it yet",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "back-up-identity",
+          "label": "Back up this computer's identity",
+          "description": "Write a backup of this computer's identity, to carry it to another computer: the person seals it with a passphrase they choose, and the file goes where they choose",
           "kind": "outside",
           "params": []
         }
@@ -12938,6 +13625,16 @@
           "type": {
             "list": {
               "named": "PersonalDeviceView"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "access",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "AccessKey"
             }
           },
           "readonly": true
@@ -13012,6 +13709,90 @@
         }
       ],
       "types": [
+        {
+          "name": "AccessKey",
+          "doc": "One key that may act as the person, as the record of their own workspace keeps it: one of their computers, an agent's grant, or a key they made for their own script or backend.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": {
+                "named": "AccessKind"
+              }
+            },
+            {
+              "name": "agent",
+              "type": "text"
+            },
+            {
+              "name": "current",
+              "type": "bool"
+            },
+            {
+              "name": "revoked",
+              "type": "bool"
+            },
+            {
+              "name": "online",
+              "type": "bool"
+            },
+            {
+              "name": "nearby",
+              "type": "bool"
+            },
+            {
+              "name": "fingerprint",
+              "type": "text"
+            },
+            {
+              "name": "issued_ms",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "expires_ms",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "last_active_ms",
+              "type": {
+                "option": "int"
+              }
+            },
+            {
+              "name": "workspace",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "AccessKind",
+          "doc": "What a key that may act as the person is.",
+          "cases": [
+            {
+              "name": "device",
+              "label": "Device"
+            },
+            {
+              "name": "agent",
+              "label": "Agent"
+            },
+            {
+              "name": "script",
+              "label": "Script"
+            }
+          ]
+        },
         {
           "name": "DeviceWorkspace",
           "doc": "A workspace this device's shell lists, as a view of the devices reads it: the same `key` and `name` the layout's workspaces go by.",
@@ -14930,6 +15711,12 @@
         },
         {
           "path": "following",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "stopped",
           "stored": "value",
           "type": "text",
           "readonly": true

@@ -13,6 +13,8 @@ serde_json.workspace = true
 tilo-actions = { path = "../../core/actions" }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-service = { path = "../../desktop/service" }
+# This device's network policy that Tilo keeps itself, beside what NetworkManager holds.
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tracing.workspace = true
 zeroize.workspace = true
 

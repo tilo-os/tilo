@@ -50,6 +50,7 @@ impl WorkspaceGovernanceServices for Governance {
             input: tilo_actions::InputSpec::None,
             params: Vec::new(),
             view: None,
+            effects: Vec::new(),
         }]
     }
     fn invoke(&self, request: &WorkspaceGovernanceRequest<'_>) -> Result<(), String> {

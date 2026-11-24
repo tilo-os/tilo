@@ -6,6 +6,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use settings_store::hardware::{PadDial, PadDialAction};
+
 /// Linux button codes (`linux/input-event-codes.h`) a pen reports, or that its buttons are remapped
 /// to in a tablet's settings.
 pub const BTN_LEFT: u32 = 0x110;
@@ -83,6 +85,11 @@ pub struct TabletConfig {
     pub eraser: EraserAction,
     /// Pad button number (libinput's, from zero) to the chord it presses.
     pub pad_buttons: BTreeMap<u32, KeyChord>,
+    /// Pad ring number to what it does in each mode of its mode group, indexed by mode. A mode
+    /// past the end scrolls.
+    pub pad_rings: BTreeMap<u32, Vec<PadDialAction>>,
+    /// Pad strip number to what it does in each mode, like [`Self::pad_rings`].
+    pub pad_strips: BTreeMap<u32, Vec<PadDialAction>>,
 }
 
 impl Default for TabletConfig {
@@ -97,7 +104,25 @@ impl Default for TabletConfig {
             third_button: StylusButtonAction::Default,
             eraser: EraserAction::Native,
             pad_buttons: BTreeMap::new(),
+            pad_rings: BTreeMap::new(),
+            pad_strips: BTreeMap::new(),
         }
+    }
+}
+
+impl TabletConfig {
+    /// What ring or strip `dial` does while its mode group is in `mode`.
+    #[must_use]
+    pub fn dial_action(&self, dial: PadDial, mode: u32) -> PadDialAction {
+        let (dials, index) = match dial {
+            PadDial::Ring(index) => (&self.pad_rings, index),
+            PadDial::Strip(index) => (&self.pad_strips, index),
+        };
+        dials
+            .get(&index)
+            .and_then(|modes| modes.get(usize::try_from(mode).ok()?))
+            .copied()
+            .unwrap_or_default()
     }
 }
 
@@ -286,6 +311,26 @@ pub fn pad_button(config: &TabletConfig, button: u32) -> Option<&KeyChord> {
     config.pad_buttons.get(&button)
 }
 
+/// The chord one step of a ring or strip presses when it is mapped to `action`: `up` for a
+/// clockwise turn or a slide towards the end with the larger position. `None` for the actions
+/// that become something else than a key ([`PadDialAction::Nothing`], [`PadDialAction::Scroll`]).
+#[must_use]
+pub fn dial_chord(action: PadDialAction, up: bool) -> Option<KeyChord> {
+    let (key, modifier) = match action {
+        PadDialAction::Nothing | PadDialAction::Scroll => return None,
+        PadDialAction::Zoom => (if up { "=" } else { "-" }, Some("Ctrl")),
+        PadDialAction::BrushSize => (if up { "]" } else { "[" }, None),
+        PadDialAction::Volume => (if up { "volumeup" } else { "volumedown" }, None),
+        PadDialAction::Brightness => (if up { "brightnessup" } else { "brightnessdown" }, None),
+    };
+    Some(KeyChord {
+        modifiers: modifier
+            .map(|held| BTreeSet::from([held.to_string()]))
+            .unwrap_or_default(),
+        key: key.to_string(),
+    })
+}
+
 /// evdev keycodes that press `chord` : its modifiers first, then the key. A pen or pad button
 /// mapped to a shortcut presses exactly the chord the user bound to it, so the one shortcut
 /// resolver decides what it does. `char_keycode` finds a printable key on the active layout.
@@ -325,6 +370,12 @@ pub fn chord_keycodes(
         "printscreen" => 99,
         "f11" => 87,
         "f12" => 88,
+        // The media keys a pad's dial may step: the session takes them as the keyboard's own
+        // volume and brightness keys.
+        "volumedown" => 114,
+        "volumeup" => 115,
+        "brightnessdown" => 224,
+        "brightnessup" => 225,
         name => {
             if let Some(n) = name.strip_prefix('f').and_then(|n| n.parse::<u32>().ok())
                 && (1..=10).contains(&n)
@@ -504,6 +555,98 @@ mod tests {
             config.pad_buttons.insert(2, search());
             assert_eq!(pad_button(&config, 2), Some(&search()));
             assert_eq!(pad_button(&config, 0), None);
+        }
+
+        phase a_dial_does_what_its_own_mode_says;
+        {
+            let mut config = TabletConfig::default();
+            config.pad_rings.insert(
+                0,
+                vec![
+                    PadDialAction::Zoom,
+                    PadDialAction::Nothing,
+                    PadDialAction::Volume,
+                ],
+            );
+            config
+                .pad_strips
+                .insert(0, vec![PadDialAction::Brightness]);
+            assert_eq!(config.dial_action(PadDial::Ring(0), 0), PadDialAction::Zoom);
+            assert_eq!(
+                config.dial_action(PadDial::Ring(0), 1),
+                PadDialAction::Nothing,
+                "the second mode is set on its own"
+            );
+            assert_eq!(
+                config.dial_action(PadDial::Ring(0), 2),
+                PadDialAction::Volume
+            );
+            assert_eq!(
+                config.dial_action(PadDial::Ring(0), 9),
+                PadDialAction::Scroll,
+                "a mode the ring does not have scrolls, as an unmapped control does"
+            );
+            assert_eq!(
+                config.dial_action(PadDial::Strip(0), 0),
+                PadDialAction::Brightness
+            );
+            assert_eq!(config.dial_action(PadDial::Strip(1), 0), PadDialAction::Scroll);
+
+            // Each action presses what it is for: Ctrl+= zooms, ] grows the brush, and the
+            // volume and brightness keys step those.
+            let chord = |modifiers: &[&str], key: &str| KeyChord {
+                modifiers: modifiers
+                    .iter()
+                    .map(|m| (*m).to_string())
+                    .collect::<BTreeSet<_>>(),
+                key: key.into(),
+            };
+            assert_eq!(
+                dial_chord(PadDialAction::Zoom, true),
+                Some(chord(&["Ctrl"], "="))
+            );
+            assert_eq!(
+                dial_chord(PadDialAction::Zoom, false),
+                Some(chord(&["Ctrl"], "-"))
+            );
+            assert_eq!(
+                dial_chord(PadDialAction::BrushSize, true),
+                Some(chord(&[], "]"))
+            );
+            assert_eq!(
+                dial_chord(PadDialAction::BrushSize, false),
+                Some(chord(&[], "["))
+            );
+            assert_eq!(dial_chord(PadDialAction::Nothing, true), None);
+            assert_eq!(dial_chord(PadDialAction::Scroll, true), None);
+            let us = |ch: char| match ch {
+                '=' => Some(21),
+                '[' => Some(26),
+                ']' => Some(27),
+                _ => None,
+            };
+            assert_eq!(
+                chord_keycodes(&dial_chord(PadDialAction::Zoom, true).expect("a chord"), us),
+                Some(vec![29, 21]),
+                "Ctrl and the equals key"
+            );
+            assert_eq!(
+                chord_keycodes(&dial_chord(PadDialAction::BrushSize, false).expect("a chord"), us),
+                Some(vec![26])
+            );
+            for (action, up, code) in [
+                (PadDialAction::Volume, true, 115),
+                (PadDialAction::Volume, false, 114),
+                (PadDialAction::Brightness, true, 225),
+                (PadDialAction::Brightness, false, 224),
+            ] {
+                let chord = dial_chord(action, up).expect("a chord");
+                assert_eq!(
+                    chord_keycodes(&chord, |_| None),
+                    Some(vec![code]),
+                    "{action:?} {up}"
+                );
+            }
         }
 
         phase a_chord_becomes_modifiers_then_its_key;

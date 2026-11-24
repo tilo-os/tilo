@@ -122,6 +122,8 @@ pub enum ToProcess {
     /// Run one engine job: said to the device's engine host, which runs every app's shared
     /// engine work under each call's grants.
     Engine(Box<EngineJob>),
+    /// Show `anchor` in the window `instance`, as a search hit's `open` shows it.
+    Reveal { instance: u64, anchor: String },
 }
 
 impl Packet for ToProcess {
@@ -136,9 +138,10 @@ impl Packet for ToProcess {
             | Self::Access(_)
             | Self::MediaCommand { .. }
             | Self::CancelJob { .. }
-            | Self::Finish
             | Self::JobsUnder(_)
-            | Self::Engine(_) => false,
+            | Self::Engine(_)
+            | Self::Reveal { .. }
+            | Self::Finish => false,
         };
         if over {
             Err("a module over the link's limit")
@@ -868,9 +871,7 @@ pub fn spawn(mut command: std::process::Command) -> io::Result<(Descriptor, Chil
     let (ours, theirs) = pair()?;
     command
         .env(FD_ENV, "0")
-        .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(
-            theirs,
-        )));
+        .stdin(std::process::Stdio::from(theirs));
     let child = command.spawn()?;
     Ok((ours, child))
 }

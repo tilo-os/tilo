@@ -12,6 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use super::secret_arguments::{SecretParameters, without_secrets};
 use super::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
 use super::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, InvocationReceipt, InvocationState,
@@ -40,13 +41,6 @@ fn given(mut state: InvocationState) -> InvocationState {
         };
     }
     state
-}
-
-/// `request` as its record keeps it: without the arguments that carry a secret
-/// ([`super::person_vault::SEALED_ARGUMENTS`] of the vault's add), which reach the provider in
-/// the call alone. Run again from its record, such a call is refused for want of its secret.
-fn journaled(request: &InvokeRequest) -> InvokeRequest {
-    super::person_vault::without_sealed(request).0
 }
 
 /// Where an invocation runs: the provider, and the caller it runs as there.
@@ -93,7 +87,12 @@ pub struct Recorded {
 
 /// The invocations one device was asked for.
 #[derive(Default)]
-pub struct Invocations(Mutex<Kept>);
+pub struct Invocations {
+    kept: Mutex<Kept>,
+    /// What each call's action declares secret, as the device's dispatch reads it from its
+    /// registry of actions ([`Self::keep_no_secrets`]): no record here keeps those arguments.
+    secrets: std::sync::OnceLock<SecretParameters>,
+}
 
 #[derive(Default)]
 struct Kept {
@@ -106,7 +105,24 @@ struct Kept {
 
 impl Invocations {
     fn kept(&self) -> std::sync::MutexGuard<'_, Kept> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.kept.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keep none of the arguments `secrets` names for a call's action, from now on: they reach
+    /// the provider in the call alone, and one run again from its record is refused for want
+    /// of them. Named once, by the device's dispatch.
+    pub fn keep_no_secrets(&self, secrets: SecretParameters) {
+        let _ = self.secrets.set(secrets);
+    }
+
+    /// `request` as its record keeps it: without the arguments its action declares secret.
+    fn journaled(&self, request: &InvokeRequest) -> InvokeRequest {
+        let names = self
+            .secrets
+            .get()
+            .map(|secrets| secrets(&request.target))
+            .unwrap_or_default();
+        without_secrets(request, &names).0
     }
 
     /// Record that `caller` asked for `request` in `workspace`, running at `route`, as `asked`
@@ -138,7 +154,7 @@ impl Invocations {
         let recorded = Recorded {
             caller: caller.clone(),
             asked: asked.clone(),
-            request: journaled(request),
+            request: self.journaled(request),
             workspace: workspace.map(str::to_owned),
             started_ms: tilo_clock::unix_now_ms(),
             ended_ms: None,
@@ -781,6 +797,7 @@ mod tests {
                             "The invocation whose changes are taken back.",
                         )],
                         view: None,
+                        effects: Vec::new(),
                     },
                 ));
             }
@@ -896,15 +913,31 @@ mod tests {
         }
     }
 
-    /// A call of the vault's add is recorded as every call is, and its record keeps none of
-    /// what it sealed: not the secret, not the note, not a field's value. What is safe to say
-    /// of it stays.
+    /// A call is recorded as every call is, and its record keeps none of the arguments its
+    /// action declares secret: not the secret, not the note, not a field's value. What is safe
+    /// to say of it stays.
     #[test]
-    fn a_vault_add_is_recorded_without_its_secrets() {
+    fn a_call_is_recorded_without_what_its_action_declares_secret() {
         let invocations = Arc::new(Invocations::default());
+        let params = [
+            crate::ActionParam::required("kind", crate::ParamType::Text, "kind"),
+            crate::ActionParam::required("title", crate::ParamType::Text, "title"),
+            crate::ActionParam::required("secret", crate::ParamType::Secret, "secret"),
+            crate::ActionParam::optional("notes", crate::ParamType::Secret, "notes"),
+            crate::ActionParam::optional("fields", crate::ParamType::Secret, "fields"),
+        ];
+        let target = super::super::person_vault::target(super::super::person_vault::ADD);
+        let described = target.clone();
+        invocations.keep_no_secrets(Arc::new(move |asked: &RemoteActionTarget| {
+            if *asked == described {
+                super::super::secret_arguments::secret_parameters(&params)
+            } else {
+                Vec::new()
+            }
+        }));
         let asked = Caller::local_person("ada").in_new_execution();
         let mut request = request();
-        request.target = super::super::person_vault::target(super::super::person_vault::ADD);
+        request.target = target;
         let serde_json::Value::Object(arguments) = serde_json::json!({
             "kind": "login",
             "belongsTo": ["https://bank.example"],

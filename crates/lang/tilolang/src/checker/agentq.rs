@@ -431,16 +431,16 @@ impl Checker<'_> {
     }
 
     fn unique_type(&self, name: &str) -> Option<(TypeKey, String)> {
-        let mut found = self
+        let found: Vec<&crate::resolve::TypeInfo> = self
             .env
-            .types
-            .iter()
-            .filter(|t| t.key.app != crate::host::HOST_APP && t.key.name == name);
-        let one = found.next()?;
-        found
-            .next()
-            .is_none()
-            .then(|| (one.key.clone(), one.id.clone()))
+            .types_named(name)
+            .into_iter()
+            .filter(|t| t.key.app != crate::host::HOST_APP)
+            .collect();
+        let [one] = found.as_slice() else {
+            return None;
+        };
+        Some((one.key.clone(), one.id.clone()))
     }
 
     fn type_names(&self) -> Vec<String> {

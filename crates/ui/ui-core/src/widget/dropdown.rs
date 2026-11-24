@@ -467,6 +467,13 @@ impl Dropdown {
         &self.options
     }
 
+    /// What each option stands for, in order: the option's own text unless it was given values
+    /// of its own ([`Self::set_value_options`]).
+    #[must_use]
+    pub fn values(&self) -> &[String] {
+        &self.values
+    }
+
     /// Set stable values with separate presentation labels. This keeps a
     /// duplicate label selectable and searchable without exposing ids in UI.
     pub fn set_value_options(&mut self, options: Vec<(String, String)>) {

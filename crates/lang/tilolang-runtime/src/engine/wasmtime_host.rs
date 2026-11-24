@@ -1,5 +1,9 @@
-//! wasmtime behind the shared layer: the compiled tier a native runtime executes beside the
-//! interpreter, and Winch to compare engines with. Never built for wasm32.
+//! wasmtime behind the shared layer (`tilo_wasm_host`): the compiled tier a native runtime
+//! executes beside the interpreter, and Winch to compare engines with. Never built for wasm32.
+//!
+//! It lives with the runtime, its only host, rather than behind a feature of the shared layer:
+//! there a feature one build turns on reaches every engine library that build links, and the
+//! interpreter-only ones would carry a compiler they never run.
 //!
 //! It is also the engine that can stop a call by the clock: while a call is inside the guest
 //! its engine's epoch advances every [`TICK`], and the store is given the call's number of ticks
@@ -16,8 +20,10 @@ use std::time::Duration;
 
 use wasmtime::{Config, Module, ResourceLimiter, Store, Strategy as Compiler};
 
-use crate::failure::{DEADLINE_EXCEEDED, Deadline, trap_text};
-use crate::{Failure, GROWTH_LIMITED, ImportPolicy, Limits, OUT_OF_FUEL};
+use tilo_wasm_host::{
+    DEADLINE_EXCEEDED, Deadline, Failure, GROWTH_LIMITED, ImportPolicy, Limits, OUT_OF_FUEL,
+    trap_text,
+};
 
 /// How often an engine's epoch advances while a call is in flight, and so how much later than
 /// its deadline a call can stop: a call stops within one tick of running past it.
@@ -382,3 +388,7 @@ pub fn classify(error: &wasmtime::Error) -> Failure {
         None => Failure::Trap(error.to_string()),
     }
 }
+
+#[cfg(test)]
+#[path = "wasmtime_host_tests.rs"]
+mod tests;

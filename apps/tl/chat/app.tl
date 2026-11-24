@@ -813,13 +813,27 @@ fn without_hex(key: Text) -> Text {
 ///
 /// The people who read the reports there answer, react and start a thread under one as under any
 /// message. The channel is made under one key on every device, so reports filed apart open one.
-action report_problem(all: Conversations, body: RichText) -> Message (
-    icon: .flag,
-    label: "Report a problem",
-    did: "reported a problem",
-) {
+///
+/// A report carries a recording of what happened where one was kept (Capture's last half minute,
+/// or any recording the person chose): it rides on the message as its file, and the report's row
+/// offers to replay it.
+action report_problem(
+    all: Conversations,
+    body: RichText,
+    recording: Option<File> = .none,
+) -> Message (icon: .flag, label: "Report a problem", did: "reported a problem") {
     require not body.is_empty() "Say what went wrong first"
-    send(all.channels.insert(TextChannel(name: "feedback"), key: "feedback"), body)
+    require recording_shown(recording) "A recording is a video"
+    send(
+        all.channels.insert(TextChannel(name: "feedback"), key: "feedback"),
+        body,
+        attachments: if let r = recording { [r] } else { [] },
+    )
+}
+
+/// Whether a report's recording is one, a video, or the report carries none.
+fn recording_shown(recording: Option<File>) -> Bool {
+    if let r = recording { r.media.starts_with("video/") } else { true }
 }
 
 /// Opens the direct message between the invoker and `who`, in the sidebar, or the one already
@@ -1531,6 +1545,39 @@ action report(to: TextChannel | Thread | Direct, m: Message, reason: Text = "") 
 /// Copies what a message says, as plain words, to the clipboard.
 action copy_text(m: Message) uses clipboard (icon: .copy, label: "Copy text") {
     clipboard.copy(m.body.text)
+}
+
+/// A conversation as a file to keep or hand on: every message in order, as Markdown, each under
+/// the name it shows with and the time it was written.
+action export(conversation: TextChannel | Thread | Direct) -> Text (
+    icon: .download,
+    label: "Export conversation",
+) {
+    match conversation {
+        ch: TextChannel => std.transcript_markdown("#{ch.name}", ch.messages.map(m -> entry(m))),
+        t: Thread => std.transcript_markdown(t.name, t.messages.map(m -> entry(m))),
+        d: Direct => std.transcript_markdown(d.name, d.messages.map(m -> entry(m))),
+    }
+}
+
+/// One message as an exported conversation says it.
+fn entry(m: Message) -> Text {
+    std.transcript_entry(shown_name(m), created(m)?.at, m.body.markdown)
+}
+
+/// The name a message shows under: the account it was written by elsewhere, else the persona it
+/// carries, else whoever wrote it here.
+fn shown_name(m: Message) -> Text {
+    if let o = m.outside {
+        return o.name
+    }
+    if m.by != "" {
+        return m.by
+    }
+    if let made = created(m) {
+        return made.who.name()
+    }
+    ""
 }
 
 /// Reports a person to the workspace's moderators, for how they behave here rather than for one
@@ -2325,6 +2372,9 @@ view channel(c: TextChannel) {
                     ui.MenuItem("Members", icon: .users) {
                         on choose: open(c, view: channel_members)
                     }
+                    ui.MenuItem("Export conversation…", icon: .download) {
+                        on choose: file.save(export(c), name: "{c.name}.md")
+                    }
                     if moderates(invoker) {
                         ui.MenuSeparator
                         ui.MenuItem("Move up", icon: .arrow_up) {
@@ -2467,6 +2517,26 @@ view channel_members(c: TextChannel) {
     }
 }
 
+/// Someone of the workspace, chosen where they show (a message's author, a row of the people):
+/// the system's card of them, with what Chat does with someone: writing to them, reporting them,
+/// and, for a moderator, banning them. A card of the person at the window offers none of these.
+view about_person(who: Actor) {
+    let all = root Conversations
+    ui.PopoverButton("About {who.name()}", icon: .user, icon_only: true) {
+        std.person_card(who) {
+            if who != invoker {
+                ui.Button("Message", icon: .message_circle, size: .small) {
+                    on press: message_person(all, who)
+                }
+                button(report_person(all, who))
+                if moderates(invoker) {
+                    button(ban(all, who))
+                }
+            }
+        }
+    }
+}
+
 /// Everyone in the workspace, each with their face, and the way to the conversation with them: a
 /// workspace's people are its membership's, never a list Chat keeps, and one with many members
 /// reaches any of them here rather than from a sidebar that would hold them all.
@@ -2484,13 +2554,10 @@ view people(all: Conversations) {
                                     text("Agent", role: .caption, secondary: true)
                                 }
                             }
+                            about_person(p)
                             if p != invoker {
                                 ui.Button("Message", icon: .message_circle, size: .small) {
                                     on press: message_person(all, p)
-                                }
-                                button(report_person(all, p), icon_only: true)
-                                if moderates(invoker) {
-                                    button(ban(all, p), icon_only: true)
                                 }
                             }
                         }
@@ -2740,6 +2807,9 @@ view direct_message(
         button(copy_text(m), icon_only: true)
         button(pin(m), icon_only: true)
         button(report(d, m), icon_only: true)
+        if let w = writer_of(m) {
+            about_person(w)
+        }
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -2770,6 +2840,9 @@ view channel_message(
         button(copy_text(m), icon_only: true)
         button(pin(m), icon_only: true)
         button(report(c, m), icon_only: true)
+        if let w = writer_of(m) {
+            about_person(w)
+        }
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -2835,6 +2908,9 @@ view thread_message(
         button(copy_text(m), icon_only: true)
         button(pin(m), icon_only: true)
         button(report(t, m), icon_only: true)
+        if let w = writer_of(m) {
+            about_person(w)
+        }
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -3084,6 +3160,12 @@ view message(
                 for f in m.attachments {
                     if let _ = refusal_of(f) {
                         ui.Chip(f.name, icon: .triangle_alert, tone: .warning) {
+                            on press: open_attachment(f)
+                        }
+                    } else if f.media.starts_with("video/") {
+                        // A recording, a problem report's above all: what the row offers is
+                        // watching what happened again.
+                        ui.Button("Replay {f.name}", icon: .play, size: .small) {
                             on press: open_attachment(f)
                         }
                     } else {

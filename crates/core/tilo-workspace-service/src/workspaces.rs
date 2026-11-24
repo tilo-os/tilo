@@ -1188,6 +1188,11 @@ struct WorkspacesInner {
     /// The work this host runs for its workspaces' devices: none until an
     /// embedder says what content it keeps ([`Workspaces::run_jobs`]).
     jobs: Arc<device_actions::DeviceWork>,
+    /// The runtime an embedder's own writes of a record are carried by: the service's writes
+    /// thread ([`crate::service::WorkspaceService::writes_runtime`]), whose thread nothing else
+    /// uses, so a write that waits on the key service or a link never waits on the thread that
+    /// asked for it — nor on the reactor a record's read was made on.
+    record_writes: std::sync::OnceLock<Option<tokio::runtime::Handle>>,
     /// Who waits for whom while workspaces are created ([`Creating`]).
     creating: creating::Creating,
     /// The workspace UUID after each settled governance decision.
@@ -1618,6 +1623,7 @@ impl Workspaces {
                 dir: dir.clone(),
                 action_service,
                 jobs,
+                record_writes: std::sync::OnceLock::new(),
                 applications: host.apps.clone(),
                 workspaces,
                 readings: readings::Readings::default(),
@@ -2414,6 +2420,25 @@ impl Workspaces {
                 (person, mark)
             })
             .collect()
+    }
+
+    /// Carry this device's writes of a record on `runtime` from now on
+    /// ([`WorkspacesInner::record_writes`]): the runtime of the service's writes thread, which
+    /// nothing else drives. The first embedder to name one decides it.
+    pub(crate) fn carry_record_writes_on(&self, runtime: tokio::runtime::Handle) {
+        let _ = self.inner.record_writes.set(Some(runtime));
+    }
+
+    /// The runtime a record's writes are carried on: the one the embedder named, else the
+    /// reactor that asks.
+    #[must_use]
+    pub(crate) fn record_writes_runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.inner
+            .record_writes
+            .get()
+            .cloned()
+            .flatten()
+            .or_else(|| tokio::runtime::Handle::try_current().ok())
     }
 
     async fn workspace(
@@ -3236,6 +3261,23 @@ impl Workspaces {
             workspace.workspace(),
             access.member_user_roots.iter().copied(),
         );
+        // A holder is no member and no trusted person, and keeps what it is
+        // named to keep: the peers that dial it, and that it dials, admit the
+        // one device each naming names.
+        let now_ns = tilo_clock::unix_now_ns();
+        let holders: Vec<[u8; 32]> = workspace
+            .peer()
+            .governance()
+            .keeping_devices()
+            .into_iter()
+            .filter(|hint| {
+                tilo_user_identity::verify_device_cert_at(&hint.host, now_ns).is_ok()
+            })
+            .map(|hint| hint.host.device_public_key)
+            .collect();
+        self.inner
+            .memberships
+            .record_holders(workspace.workspace(), holders);
         // What the workspace keeps as keys its person revoked: refused with how to approve another,
         // and dropped from its access, so every caller is told what to do.
         let revoked = collaboration::revoked_keys(workspace);

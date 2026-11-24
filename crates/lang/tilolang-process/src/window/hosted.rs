@@ -18,7 +18,6 @@ use std::cell::RefCell;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::TilolangProcess;
@@ -80,8 +79,8 @@ pub fn window_instance() -> Option<u64> {
 /// would show what its instance sent only when something else woke it. Every pass of the
 /// window points the watch at the component running it ([`Watch::follow`]).
 struct Watch {
-    /// Set by the thread when it woke the window; the window resumes it after reading.
-    woke: Arc<AtomicBool>,
+    /// Marked by the thread when it woke the window; the window resumes it after reading.
+    woke: Arc<Woken>,
     resume: std::sync::mpsc::Sender<()>,
     /// What the thread wakes: the component running the window.
     wake: Arc<Mutex<ui::wake::WakeHandle>>,
@@ -101,7 +100,7 @@ struct Watch {
 impl Watch {
     #[cfg(unix)]
     fn start(fd: OwnedFd, wake: Arc<Mutex<ui::wake::WakeHandle>>) -> Option<Self> {
-        let signalled = Arc::new(AtomicBool::new(false));
+        let signalled = Arc::new(Woken::default());
         let (resume, resumed) = std::sync::mpsc::channel::<()>();
         let flag = Arc::clone(&signalled);
         let waking = Arc::clone(&wake);
@@ -135,7 +134,7 @@ impl Watch {
                     if poll[0].revents != 0 {
                         return;
                     }
-                    flag.store(true, Ordering::Release);
+                    flag.mark();
                     waking
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -169,7 +168,7 @@ impl Watch {
     #[cfg(windows)]
     fn start(pipe: tilo_socket::Stream, wake: Arc<Mutex<ui::wake::WakeHandle>>) -> Option<Self> {
         use std::os::windows::io::{AsHandle as _, FromRawHandle as _};
-        let signalled = Arc::new(AtomicBool::new(false));
+        let signalled = Arc::new(Woken::default());
         let (resume, resumed) = std::sync::mpsc::channel::<()>();
         let flag = Arc::clone(&signalled);
         let waking = Arc::clone(&wake);
@@ -203,7 +202,7 @@ impl Watch {
                     if crate::wait::signalled(stopped.as_handle()) {
                         return;
                     }
-                    flag.store(true, Ordering::Release);
+                    flag.mark();
                     waking
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -253,7 +252,7 @@ impl Watch {
 
     /// The window took what arrived: wait for more.
     fn took(&self) {
-        if self.woke.swap(false, Ordering::AcqRel) {
+        if self.woke.take() {
             let _ = self.resume.send(());
         }
     }
@@ -321,15 +320,19 @@ impl Woken {
         )
     }
 
-    /// Wait until the host is woken, `timeout` at most.
-    pub fn wait(&self, timeout: std::time::Duration) {
-        let _ = self.signal.wait_timeout_while(
-            self.woken
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            timeout,
-            |woken| !*woken,
-        );
+    /// Wait until the host is woken, `timeout` at most; without one, until it is.
+    pub fn wait(&self, timeout: Option<std::time::Duration>) {
+        let woken = self
+            .woken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match timeout {
+            Some(timeout) => drop(
+                self.signal
+                    .wait_timeout_while(woken, timeout, |woken| !*woken),
+            ),
+            None => drop(self.signal.wait_while(woken, |woken| !*woken)),
+        }
     }
 }
 
@@ -454,7 +457,8 @@ impl InProcess {
             if !self.host.owes_work() {
                 return;
             }
-            self.woken.wait(STAGE_WAIT.saturating_sub(began.elapsed()));
+            self.woken
+                .wait(Some(STAGE_WAIT.saturating_sub(began.elapsed())));
         }
         tracing::error!(owed = ?self.host.owed(), "the instance did not settle for the capture");
     }
@@ -467,7 +471,7 @@ impl InProcess {
         while !self.host.is_empty() && began.elapsed() < STAGE_WAIT {
             if !self.host.turn() {
                 let _waiting = ui::tilo_resource::profiling::Phase::start("instance.close_wait");
-                self.woken.wait(std::time::Duration::from_millis(50));
+                self.woken.wait(Some(std::time::Duration::from_millis(50)));
             }
         }
     }
@@ -718,6 +722,17 @@ impl HostedWindow {
     #[must_use]
     pub fn view(&self) -> Option<&AppWindow> {
         self.connected.as_ref().map(|connected| &connected.view)
+    }
+
+    /// Wait until its instance sends something the window has not shown, or hangs up: whether
+    /// anything watches its connection.
+    #[must_use]
+    pub fn wait_for_app(&self) -> bool {
+        let watch = self
+            .connected
+            .as_ref()
+            .and_then(|connected| connected.watch.as_ref());
+        watch.inspect(|watch| watch.woke.wait(None)).is_some()
     }
 
     /// What the person does from now on serves `call`, the invocation they signed for it as its

@@ -72,13 +72,94 @@ view permissions_pane() {
                 } else if answered.capability == .location { .map_pin } else { .keyboard },
             ) {
                 trailing: {
-                    if answered.allowed {
-                        ui.Chip("Allowed", tone: .neutral)
-                    } else {
-                        ui.Chip("Refused", tone: .warning)
+                    row(gap: .tight, align: .center, wrap: true) {
+                        if answered.allowed {
+                            ui.Chip("Allowed", tone: .neutral)
+                        } else {
+                            ui.Chip("Refused", tone: .warning)
+                        }
+                        ui.Button("Take back", size: .small, role: .plain) {
+                            on press: answered.forget()
+                        }
                     }
                 }
             }
+        }
+    }
+    ui.Section("Saved passwords and keys") {
+        if let saved = p.secrets {
+            ui.Text(
+                "Applications that stored or read saved passwords and keys on this device. Stopping one denies it all saved secrets; its own items stay until you forget it.",
+                role: .caption,
+                secondary: true,
+            )
+            if saved.read_error != .none {
+                ui.Text(
+                    "The saved-secrets service can't be reached, so its applications can't be listed.",
+                    role: .caption,
+                    secondary: true,
+                )
+            } else if saved.apps.is_empty() {
+                ui.Text("No application has used saved passwords or keys yet.", role: .caption)
+            }
+            for stored in saved.apps {
+                ui.ListRow(stored.name, secondary: secret_words(stored), icon: .key) {
+                    trailing: {
+                        row(gap: .tight, align: .center, wrap: true) {
+                            if stored.allowed {
+                                ui.Chip("Allowed", tone: .neutral)
+                            } else {
+                                ui.Chip("Refused", tone: .warning)
+                            }
+                            ui.Button(
+                                if stored.allowed { "Stop" } else { "Allow" },
+                                size: .small,
+                                role: .plain,
+                            ) {
+                                on press: p.set_secrets_access(
+                                    app: stored.id,
+                                    allowed: not stored.allowed,
+                                )
+                            }
+                            ui.Button("Forget", size: .small, role: .destructive) {
+                                on press: p.forget_secrets(app: stored.id)
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            ui.Text(
+                "The applications that use saved passwords and keys can't be read here.",
+                role: .caption,
+                secondary: true,
+            )
+        }
+    }
+    ui.Section("Device protection") {
+        if let protected = p.security {
+            ui.Text(
+                "What protects this device itself. These belong to the machine, and not to any workspace.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.ListRow(
+                "Disk encryption",
+                secondary: protection_words(protected.disk_encryption, true),
+                icon: .hard_drive,
+            )
+            ui.ListRow(
+                "Secure Boot",
+                secondary: protection_words(protected.secure_boot, false),
+                icon: .shield,
+            )
+            ui.ListRow("Firewall", secondary: firewall_words(protected), icon: .shield)
+        } else {
+            ui.Text(
+                "What protects this device itself can't be read here.",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
     ui.Section("Workspace access") {
@@ -204,4 +285,32 @@ fn grant_words(grant: workspace.AccessEntry) -> Text {
     } else {
         "{grant.allows} · {grant.expiry} · given by {grant.granted_by}"
     }
+}
+
+/// What an application of the saved secrets keeps and how often it used them.
+fn secret_words(stored: device.SecretApp) -> Text {
+    "{stored.items} saved, used {stored.uses} times"
+}
+
+/// Whether a protection of this device is on, in the words the row reads it by: a disk is
+/// encrypted or not, and firmware verifies what it boots or not.
+fn protection_words(state: device.Protection, disk: Bool) -> Text {
+    if state == .on {
+        if disk { "Encrypted" } else { "Enabled" }
+    } else if state == .off {
+        if disk { "Not encrypted" } else { "Disabled" }
+    } else { "This device can't say" }
+}
+
+/// The firewall in force on this device, or why it could not be read.
+fn firewall_words(security: device.Security) -> Text {
+    if security.firewall == .firewalld {
+        "Active, firewalld"
+    } else if security.firewall == .nftables {
+        "Active, nftables"
+    } else if security.firewall == .off {
+        "Not active"
+    } else if let why = security.firewall_error {
+        "Can't read the firewall state: {why}"
+    } else { "Can't read the firewall state" }
 }

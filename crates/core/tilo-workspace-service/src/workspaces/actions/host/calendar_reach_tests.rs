@@ -75,7 +75,7 @@ async fn a_calendar_server_whose_name_answers_inside_is_connected_to_by_nobody()
     let workspaces = server.workspaces();
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 1).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let caller = caller(&device);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
     listener
@@ -130,7 +130,7 @@ async fn a_kept_calendar_is_read_from_nobody_once_the_operator_shuts_its_own_net
     let workspaces = server.workspaces();
     let (workspace, workspace_id, actions) = governed(workspaces).await;
     let device = admit(workspaces, &workspace, &owner, 2).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let caller = caller(&device);
     let calendars = fake_caldav::Server::start("ada", PASSWORD);
     calendars.add_calendar("work", "Work");

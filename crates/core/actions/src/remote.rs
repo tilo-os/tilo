@@ -75,6 +75,7 @@ pub mod person_vault;
 mod providers;
 mod resource_read;
 pub mod search;
+pub mod secret_arguments;
 pub mod server_account;
 pub mod session_actions;
 mod session_state;
@@ -301,6 +302,49 @@ pub const WORKSPACE_AGENT_UPDATE: &str = "agent.update";
 /// Retire one of the workspace's agents (`workspace/agents#delete`): `{agent}`, its id. What it
 /// did stays readable under its name.
 pub const WORKSPACE_AGENT_DELETE: &str = "agent.delete";
+/// The app that keeps a workspace's record of its agents: the workspace's own service.
+pub const WORKSPACE_AGENTS_APP: &str = "so.tilo.workspace";
+/// The kind of the workspace's record of its agents: what [`WORKSPACE_AGENT_CREATE`],
+/// [`WORKSPACE_AGENT_UPDATE`] and [`WORKSPACE_AGENT_DELETE`] write.
+pub const WORKSPACE_AGENTS_KIND: &str = "tilo.workspace.agent";
+/// The steps of the record of agents [`WORKSPACE_AGENT_UPDATE`] takes: every one but making and
+/// retiring an agent, and where an agent waits or runs, which the device that runs it writes.
+pub const WORKSPACE_AGENT_CHANGES: [&str; 15] = [
+    "set-agent-spend-limit",
+    "record-agent-spend",
+    "rename-agent",
+    "set-agent-avatar",
+    "set-agent-model",
+    "set-agent-instruction",
+    "pause-agent",
+    "resume-agent",
+    "start-sub-agent",
+    "note-sub-agent",
+    "stop-sub-agent",
+    "sub-agent-stands",
+    "sub-agent-produced",
+    "sub-agent-coding",
+    "set-sub-agent-limits",
+];
+
+/// What the agents' action `operation` (one of [`WORKSPACE_AGENT_CREATE`],
+/// [`WORKSPACE_AGENT_UPDATE`] and [`WORKSPACE_AGENT_DELETE`]) writes: the steps the workspace's
+/// host takes in its record of its agents when it answers the call. Nothing for any other
+/// operation.
+#[must_use]
+pub fn workspace_agent_effects(operation: &str) -> Vec<crate::ActionEffect> {
+    let step =
+        |verb: &str| crate::ActionEffect::new(WORKSPACE_AGENTS_APP, WORKSPACE_AGENTS_KIND, verb);
+    match operation {
+        WORKSPACE_AGENT_CREATE => vec![step("create-agent")],
+        WORKSPACE_AGENT_UPDATE => WORKSPACE_AGENT_CHANGES
+            .iter()
+            .map(|verb| step(verb))
+            .collect(),
+        WORKSPACE_AGENT_DELETE => vec![step("retire-agent")],
+        _ => Vec::new(),
+    }
+}
 /// Where a workspace's governance tree publishes the actions it grants by
 /// another name: the operation a grant and a policy name it by, the resource
 /// under the root it is on (none for the root itself) and its id there, as a
@@ -376,6 +420,46 @@ pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
     (WORKSPACE_AGENT_UPDATE, Some(WORKSPACE_AGENTS), "update"),
     (WORKSPACE_AGENT_DELETE, Some(WORKSPACE_AGENTS), "delete"),
 ];
+
+/// What the action `target` names declares it writes besides its own resource
+/// ([`crate::ActionDescriptor::effects`]), from its declaration: a device reading a record checks
+/// here whether a step a call's change takes there is one the called action takes. Every action
+/// that writes another record declares it, and nothing a call carries adds to it.
+#[must_use]
+pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect> {
+    // An operation is asked either at its own resource (`workspace/agents#create`) or by its
+    // name at the workspace's root (`workspace#agent.create`).
+    let operation = workspace_governance_operation(&target.address)
+        .map(|(_, operation)| operation)
+        .or_else(|| {
+            let root = target
+                .address
+                .resource
+                .strip_prefix(workspace_governance_resource("").as_str())?;
+            (!root.is_empty() && !root.contains('/')).then_some(target.address.action.as_str())
+        });
+    if target.provider == WORKSPACE_GOVERNANCE_PROVIDER
+        && let Some(operation) = operation
+    {
+        let agents = workspace_agent_effects(operation);
+        if !agents.is_empty() {
+            return agents;
+        }
+    }
+    let address = &target.address;
+    let mut effects = match target.provider.as_str() {
+        person_accounts::PROVIDER => person_accounts::effects(&address.resource, &address.action),
+        model_providers::PROVIDER => model_providers::effects(&address.action),
+        person_connections::PROVIDER => person_connections::effects(&address.action),
+        _ => Vec::new(),
+    };
+    for effect in person_vault::declared_effects(target) {
+        if !effects.contains(&effect) {
+            effects.push(effect);
+        }
+    }
+    effects
+}
 
 /// The resource `child` of `workspace`'s governance tree: the root for `None`.
 #[must_use]
@@ -597,6 +681,7 @@ pub mod device_tickets {
             input: crate::InputSpec::None,
             params,
             view: None,
+            effects: Vec::new(),
         })
     }
 
@@ -3058,6 +3143,7 @@ mod tests {
             input: InputSpec::None,
             params: Vec::new(),
             view: None,
+            effects: Vec::new(),
         }
     }
 

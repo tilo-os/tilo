@@ -27,6 +27,8 @@ mod agent_tools;
 /// The project checks this device approved: its work, kept as its jobs.
 #[cfg(unix)]
 pub(crate) mod approved_checks;
+#[cfg(test)]
+mod app_listing_tests;
 mod asked;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;

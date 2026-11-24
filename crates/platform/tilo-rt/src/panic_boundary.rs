@@ -10,6 +10,12 @@
 //! boundary and the helper's owner decides what happens next — the compositor
 //! isolates its helpers this way. Debug and test builds keep unwinding everywhere;
 //! under `panic = "abort"` [`isolate`] only runs its body.
+//!
+//! The abort writes its own backtrace, captured at the panic, rather than leaving
+//! it to std's hook: that one prints only what `RUST_BACKTRACE` asks for, and its
+//! short form prints no frames at all in a build without a symbol table (every
+//! development build is stripped). A process that ends says where it ended,
+//! whatever the environment and the symbol table are.
 
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -27,11 +33,17 @@ pub fn abort_outside_boundaries() {
             if !is_isolated() {
                 // The earlier hooks may have written to a capture the abort
                 // discards, as a test harness's is: say on the process's own
-                // stderr what ended it, so no abort goes unexplained.
+                // stderr what ended it, and where, so no abort goes unexplained.
+                // The backtrace is captured here and printed in full: std's hook
+                // answers to `RUST_BACKTRACE`, and its short form names no frame
+                // at all when the symbol table is stripped, which is every
+                // development build's.
+                let backtrace = std::backtrace::Backtrace::force_capture();
                 let _ = std::io::Write::write_fmt(
                     &mut std::io::stderr().lock(),
                     format_args!(
-                        "{info}\naborting: the panic above happened outside a panic boundary\n"
+                        "{info}\nbacktrace:\n{backtrace:#}\n\
+                         aborting: the panic above happened outside a panic boundary\n"
                     ),
                 );
                 std::process::abort();
@@ -116,6 +128,13 @@ mod tests {
 
     const FIXTURE: &str = "TILO_RT_PANIC_BOUNDARY_FIXTURE";
 
+    /// The step the child panics in: a function of its own, so the frame the abort prints is
+    /// named with a word this test wrote rather than a closure's mangled one.
+    #[inline(never)]
+    fn a_step_that_ends_the_process() {
+        panic!("worker failed");
+    }
+
     #[test]
     fn panic_boundary_fixture() {
         let Ok(scenario) = std::env::var(FIXTURE) else {
@@ -142,7 +161,7 @@ mod tests {
                     .expect("helper thread");
             assert!(helper.join().expect("the helper thread returned"));
         } else {
-            let _ = crate::spawn_thread("worker", || panic!("worker failed"))
+            let _ = crate::spawn_thread("worker", a_step_that_ends_the_process)
                 .expect("worker thread")
                 .join();
         }
@@ -160,6 +179,11 @@ mod tests {
                     "--test-threads=1",
                 ])
                 .env(FIXTURE, scenario)
+                // The hook prints the backtrace whether or not a variable asks
+                // for one: without either, std's own hook prints no frames, so
+                // every frame the child says is the abort's own.
+                .env_remove("RUST_BACKTRACE")
+                .env_remove("RUST_LIB_BACKTRACE")
                 .output_locked()
                 .expect("fixture child")
         };
@@ -170,6 +194,11 @@ mod tests {
         let outside = run("outside");
         assert!(!outside.status.success(), "{outside:?}");
         assert!(!String::from_utf8_lossy(&outside.stdout).contains("process survived"));
+        // A process that ends says where: the backtrace the hook captured names
+        // the step that panicked.
+        let said = String::from_utf8_lossy(&outside.stderr);
+        assert!(said.contains("backtrace:"), "{said}");
+        assert!(said.contains("a_step_that_ends_the_process"), "{said}");
         #[cfg(unix)]
         {
             use std::os::unix::process::ExitStatusExt as _;

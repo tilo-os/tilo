@@ -721,7 +721,10 @@ impl Key {
                     "this" => wire::Scope::ThisWorkspace,
                     _ => return None,
                 };
-                let changes = parts.next().and_then(|page| page.parse().ok()).unwrap_or(0);
+                let changes = match parts.next() {
+                    Some(page) => page.parse().ok()?,
+                    None => 0,
+                };
                 if parts.next().is_some() {
                     return None;
                 }
@@ -1194,6 +1197,12 @@ pub enum ActivityAction {
         /// The record's own id.
         #[param("The record's own id")]
         id: String,
+        /// The one change inside that record to take back, as the record's own history names
+        /// it; absent takes back the session's whole share of the record.
+        #[param(
+            "The one change inside that record to take back, as the record's own history names it"
+        )]
+        step: Option<String>,
     },
     /// Open what a change touched in its app.
     #[effect(kind = "undoable")]

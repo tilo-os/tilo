@@ -11,10 +11,6 @@ use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 
 use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
-#[cfg(test)]
-use vello::Scene;
-#[cfg(test)]
-use vello::kurbo::Affine;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{Blob, ImageData as PenikoImage};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
@@ -23,9 +19,6 @@ use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use ui::LocalState;
 use ui::framework::{EffectStatus, Live, Publishes, ViewCx};
 use ui::icons::Icon;
-
-#[cfg(test)]
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Invoke;
 use ui::widget::{
@@ -268,14 +261,8 @@ pub(crate) enum Action {
     NewConnection,
     /// Open the form to edit an existing connection.
     EditConnection(ConnectionId),
-    /// Ask before opening a live session. Resource actions receive the same
-    RequestConnect(ConnectionId),
     /// Ask before removing a shared saved profile.
     RequestDelete(ConnectionId),
-    /// Ask before adding the freshly observed SSH host key to device-private trust.
-    RequestTrustSshHostKey(ConnectionId),
-    /// Ask before forgetting a device-private SSH host-key pin.
-    RequestForgetSshHostKey(ConnectionId),
     /// Execute the open, revalidated confirmation.
     ConfirmPending,
     /// Dismiss the open confirmation without doing anything.
@@ -326,10 +313,6 @@ enum PendingConfirmation {
         target: String,
         observed: crate::ssh::HostKeyIdentity,
     },
-    ForgetSshHostKey {
-        id: ConnectionId,
-        target: String,
-    },
 }
 
 impl PendingConfirmation {
@@ -338,8 +321,7 @@ impl PendingConfirmation {
             Self::Connect { id, .. }
             | Self::Disconnect { id, .. }
             | Self::Delete { id, .. }
-            | Self::TrustSshHostKey { id, .. }
-            | Self::ForgetSshHostKey { id, .. } => *id,
+            | Self::TrustSshHostKey { id, .. } => *id,
         }
     }
 
@@ -348,8 +330,7 @@ impl PendingConfirmation {
             Self::Connect { target, .. }
             | Self::Disconnect { target, .. }
             | Self::Delete { target, .. }
-            | Self::TrustSshHostKey { target, .. }
-            | Self::ForgetSshHostKey { target, .. } => target,
+            | Self::TrustSshHostKey { target, .. } => target,
         }
     }
 }
@@ -1111,10 +1092,7 @@ impl Store {
                     self.fields.secret.set(String::new());
                 }
             }
-            Action::RequestConnect(id) => self.request_connect(id),
             Action::RequestDelete(id) => self.request_delete(id),
-            Action::RequestTrustSshHostKey(id) => self.request_trust_ssh_host_key(id),
-            Action::RequestForgetSshHostKey(id) => self.request_forget_ssh_host_key(id),
             Action::ConfirmPending => self.confirm_pending(),
             Action::CancelPending => self.pending_confirmation = None,
             Action::SetKind(k) => {

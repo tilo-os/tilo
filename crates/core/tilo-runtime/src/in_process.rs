@@ -1,15 +1,22 @@
 //! A device whose daemon runs on an app's own threads, as a phone's does (an Android or iOS app
 //! runs no daemon process of its own): the daemon every Tilo computer runs, and what the app's
-//! views read of it and ask it, through the API `tilo` itself calls (`tilo login`, `tilo ls`).
+//! views read of it and ask it, through the API `tilo` itself calls (`tilo login`) and, for the
+//! apps a workspace runs, through the daemon's own copy of that workspace: the record its host
+//! installed them into and the packages this device fetched from it.
 //! Nothing here holds state of its own: the daemon keeps the login, the workspaces and their apps.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::daemon::Running;
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 use tilo_api::calls::{Calls, Reach};
 use tilo_device_identity::login::Place;
+
+/// How long a view waits for the person's services to start in the daemon before their apps read
+/// as none: the daemon starts them on its own thread, and the view asks again.
+const SERVICES_STARTING: Duration = Duration::from_secs(2);
 
 /// What an app's view reads of the device: whether a person's identity has it, and their
 /// workspaces, by id and name.
@@ -105,35 +112,49 @@ impl Device {
         })
     }
 
-    /// The apps of `workspace`, as `tilo ls` lists them.
+    /// The apps of `workspace`: the packages its host installed into it, which this device's
+    /// follower reads too. Each is named by the manifest of the device's own copy when it holds
+    /// one, and otherwise by the name its package id makes, as the catalogue names an app whose
+    /// manifest gives none.
     ///
     /// # Errors
-    /// The daemon answered with a refusal.
+    /// The daemon answered with a refusal, or the workspace's record of its apps could not be
+    /// read.
     pub fn apps(&self, workspace: &str) -> Result<Vec<App>> {
-        let listed = self
+        let Some(running) = self.running.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let services = match running.services(SERVICES_STARTING) {
+            Ok(services) => services,
+            // The person's services still start, and this device follows nothing yet.
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let installed = self
             .runtime
-            .block_on(async { Self::calls().await?.list(Some(workspace), None, None).await })?;
-        Ok(listed
-            .get("rows")
-            .and_then(Value::as_array)
+            .block_on(services.workspaces().app_versions(workspace))
+            .context("the apps the workspace runs")?;
+        let catalog = app_catalogue::apps::read_from_env().unwrap_or_default();
+        let mut apps: Vec<App> = installed
             .into_iter()
-            .flatten()
-            .filter(|row| row.get("kind").and_then(Value::as_str) == Some("app"))
-            .filter_map(|row| {
-                let key = row.get("name")?.as_str()?.to_owned();
-                let name = row
-                    .get("label")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&key)
-                    .to_owned();
-                Some(App {
-                    key,
-                    name,
+            .map(|installed| {
+                let id = installed.release.app;
+                let found = catalog.iter().find(|app| app.app_id == id.as_str());
+                App {
+                    key: id.rsplit('.').next().unwrap_or(&id).to_owned(),
+                    name: found.map_or_else(
+                        || package_store::display_name_for_package_id(&id),
+                        |app| app.display_name.clone(),
+                    ),
                     icon: String::new(),
-                    category: String::new(),
-                })
+                    category: found
+                        .and_then(|app| app.category.clone())
+                        .unwrap_or_default(),
+                }
             })
-            .collect())
+            .collect();
+        apps.sort_by(|left, right| left.key.cmp(&right.key));
+        Ok(apps)
     }
 
     /// Sign this device in with `ticket`, as `tilo login` does: its daemon logs in
@@ -162,7 +183,7 @@ impl Device {
             return Ok(());
         }
         tilo_api::daemon::this_computer()
-            .and_then(|daemon| daemon.found(tilo_api::daemon::Founding::default()))
+            .and_then(|daemon| daemon.found(&tilo_api::daemon::Founding::default()))
             .map(drop)
             .map_err(anyhow::Error::msg)?;
         self.restart()

@@ -40,6 +40,8 @@ use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
 };
 
+use crate::common::linked::{Builder, DEFAULT_APP};
+
 /// A home of its own with `body` as the desktop entry `desktop_id` starts,
 /// the entry declaring `lines` besides its name and command, and the path
 /// that body was written to.
@@ -527,6 +529,64 @@ fn a_second_launch_raises_the_window_the_app_already_has() {
         session.desktop().with_policy(|policy| policy.focused()),
         Some(11),
         "the window the app already has came to the front"
+    );
+}
+
+/// The person's own action that takes them somewhere in an app with a window here (Message on a
+/// person opening the conversation in Chat) brings that window forward, as the app's `open` does;
+/// an action that takes them nowhere leaves the window in front where it is.
+#[test]
+fn an_action_that_takes_the_person_into_an_app_brings_its_window_forward() {
+    let mut fixture = Builder::of(DEFAULT_APP).start();
+    // A conversation in Chat, made by Chat's own Message action, for the action that opens it.
+    let conversations = fixture
+        .published(DEFAULT_APP)
+        .into_iter()
+        .find(|descriptor| descriptor.resource_kind.ends_with(".Conversations"))
+        .unwrap_or_else(|| {
+            panic!(
+                "{DEFAULT_APP} publishes its conversations: {:?}",
+                fixture.published(DEFAULT_APP)
+            )
+        })
+        .address
+        .resource;
+    let person = fixture.person_id.clone();
+    fixture
+        .invoke_with(
+            DEFAULT_APP,
+            &conversations,
+            "message_person",
+            serde_json::json!({"who": {"person": person}})
+                .as_object()
+                .cloned()
+                .expect("an object"),
+        )
+        .expect("the person opens a conversation with themself");
+    // The conversation's own view opens it: an action of the `View` kind the app publishes on the
+    // resource it shows, which is what takes the person somewhere.
+    let direct = fixture.until_publishing(DEFAULT_APP, "Direct", "open");
+    // A second app in front, so the app the action takes them into stands behind.
+    fixture.open("so.tilo.notes");
+    fixture.until_in_front("so.tilo.notes");
+    fixture
+        .invoke(DEFAULT_APP, &direct, "open")
+        .expect("the person's own action runs");
+    fixture.until_in_front(DEFAULT_APP);
+    // Something that takes them nowhere leaves the window in front where it is.
+    fixture.open("so.tilo.notes");
+    fixture.until_in_front("so.tilo.notes");
+    fixture
+        .invoke(DEFAULT_APP, &direct, "unread_count")
+        .expect("the person's own read runs");
+    fixture
+        .session
+        .step(std::time::Duration::from_millis(1))
+        .expect("step");
+    assert_eq!(
+        fixture.in_front().as_deref(),
+        Some("so.tilo.notes"),
+        "an action that takes the person nowhere leaves the window in front where it is"
     );
 }
 

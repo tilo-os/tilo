@@ -62,7 +62,7 @@ pub(crate) fn with_mutation<T>(
 
 /// Apply what the host has already committed to `candidate`: changes whole or not at all, a whole
 /// document by merging only what it adds. Bytes from peers reach an app only after the host admitted
-/// them through `tilo_automerge_isolate`, so this applies in the app's own process.
+/// them in its sandboxed parser, so this applies in the app's own process.
 pub(crate) fn merge_committed(
     candidate: &mut AutoCommit,
     incoming: Incoming<'_>,
@@ -219,8 +219,9 @@ pub(crate) struct OwnerRoute {
     pub(crate) pending: PendingRemote,
     /// Why local changes on this route are not reaching peers.
     pub(crate) outbound_failure: Option<String>,
-    /// A record kept beside the shown document ([`Widget::resource_owners`]): no host replays its route,
-    /// so a snapshot that leaves this replica ahead of its sender is answered with this replica's own.
+    /// A record kept beside the shown document
+    /// ([`crate::bound_dispatch::BoundWidget::resource_owners`]): no host replays its route, so a
+    /// snapshot that leaves this replica ahead of its sender is answered with this replica's own.
     pub(crate) answers_snapshots: bool,
     /// Joined, and not yet open for documents: its first publication waits for the route instead of
     /// failing.
@@ -332,9 +333,8 @@ impl OwnerDocumentRoutes {
         outer: &AutoCommit,
     ) -> Vec<RouteJoin> {
         fn collect(root: &dyn Widget, owners: &mut Vec<(HistoryOwner, bool)>) {
-            let held = root.history_owner().map(|owner| (owner, false));
-            let beside = root
-                .resource_owners()
+            let held = crate::bound_dispatch::history_owner(root).map(|owner| (owner, false));
+            let beside = crate::bound_dispatch::resource_owners(root)
                 .into_iter()
                 .map(|owner| (owner, true));
             for (owner, answers) in held.into_iter().chain(beside) {

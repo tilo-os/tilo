@@ -249,6 +249,7 @@ impl PublishedAction {
             input: (&self.input).into(),
             params: self.params.clone(),
             view: self.view.clone(),
+            effects: Vec::new(),
         }
     }
 }

@@ -325,8 +325,12 @@ impl DeviceAsked {
             runtime: tokio::runtime::Handle::current(),
         });
         let dispatch: Weak<dyn AskedDispatch> = Arc::downgrade(&at_root) as Weak<dyn AskedDispatch>;
+        // A device that already serves them keeps the dispatch that runs: registering a second
+        // one would leave the records pointing at a dispatch this call drops.
+        if self.serving_at_root.set(at_root).is_err() {
+            return;
+        }
         let _ = self.store.for_dispatch(asked::AT_ROOT, dispatch);
-        let _ = self.serving_at_root.set(at_root);
     }
 
     /// `asks`, the calls the workspaces here keep for a device that keeps the person's root, as

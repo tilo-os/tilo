@@ -35,7 +35,12 @@ pub(super) fn browsed_row_json(row: &CatalogueRow) -> Value {
 }
 pub(super) fn row_json(row: &CatalogueRow) -> Value {
     let descriptor = row.action.as_ref().map(|action| {
-        json!({"resource":action.address.resource,"action":action.address.action,"resource_kind":action.resource_kind,"resource_label":action.resource_label,"action_label":action.action_label,"description":action.description,"operation_kind":action.kind,"params":action.params,"contract":action.contract})
+        let mut descriptor = json!({"resource":action.address.resource,"action":action.address.action,"resource_kind":action.resource_kind,"resource_label":action.resource_label,"action_label":action.action_label,"description":action.description,"operation_kind":action.kind,"params":action.params,"contract":action.contract});
+        // What it writes besides its resource, where it declares any.
+        if let Some(writes) = action.writes() {
+            descriptor["writes"] = json!(writes);
+        }
+        descriptor
     });
     json!({
         "parent_resource":row.parent_resource,

@@ -128,6 +128,27 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_stage_names_the_transition_its_page_swaps_with;
+    // `transition: .cross_fade` says what a container shows is swapped whole; a name the toolkit
+    // does not have is refused, as a motion is.
+    {
+        let c = compile_body(
+            "view v() {\n    layers(transition: .cross_fade) {\n        spacer\n    }\n}",
+        );
+        validate(&c.wasm);
+        for want in ["transition", "cross_fade"] {
+            assert!(
+                contains(&c.wasm, want),
+                "{want} is not in the module's strings"
+            );
+        }
+        assert_eq!(
+            codes("view v() {\n    layers(transition: .slide) {\n        spacer\n    }\n}"),
+            vec!["E036"],
+            "a transition the toolkit does not name is refused"
+        );
+    }
+
     phase a_chosen_option_reaches_the_host_as_its_name;
     // A text's role reaches the host as the toolkit's `Text` role it names, and `numeric` sets it
     // in tabular figures.

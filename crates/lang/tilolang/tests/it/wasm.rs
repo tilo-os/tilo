@@ -316,3 +316,14 @@ tilo_test_env::scenario! {
         assert_eq!(put.params.get(1).map(|p| p.ty.as_str()), Some("File"));
     }
 }
+
+/// A template's type parameter that no argument binds (a defaulted `Option<M>` the call leaves
+/// `.none`) still yields a module that validates: the branch reading it never runs, but the host
+/// refuses a module whose dead code has the wrong type.
+#[test]
+fn a_type_parameter_a_call_leaves_unbound_still_validates() {
+    let c = crate::common::compile_body(
+        "type Note {\n    body: Text\n}\ntype Book {\n    notes: Collection<Note>\n}\nroot book: Book\ndefault view book for Book\nview latest<M>(count: Int, last: Option<M> = .none) {\n    text(\"{count}\")\n    if let m = last, made = created(m) {\n        ui.Avatar(who: made.who)\n        text(meta(m).title)\n        ui.Time(made.at)\n    }\n}\nview book(b: Book) {\n    latest(b.notes.len())\n    latest(b.notes.len(), last: b.notes.last())\n}\n",
+    );
+    validate(&c.wasm);
+}

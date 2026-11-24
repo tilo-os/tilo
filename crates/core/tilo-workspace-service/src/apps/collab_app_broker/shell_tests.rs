@@ -558,7 +558,7 @@ async fn a_launch_the_shell_never_recorded_is_refused() {
     let ((), joined) = tokio::join!(taken, app.open(&device.workspace));
     let refused = joined.unwrap_err();
     assert!(
-        refused.contains("not an authenticated shell-managed process"),
+        refused.contains("is not one this computer made"),
         "{refused}"
     );
 }

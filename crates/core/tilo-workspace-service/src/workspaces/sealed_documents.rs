@@ -724,6 +724,13 @@ impl Workspaces {
     }
 }
 
+/// How long the service waits for the device's key service to open a group: far more than the
+/// wait before the device founds the group itself (`tilo_workspace_keys::founding_wait`) and the work a first write does beside it, so a
+/// fresh workspace's first write is not refused for keys that are about to arrive.
+pub const OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(feature = "device-keys")]
+const _: () = assert!(OPEN_WAIT.as_secs() > tilo_workspace_keys::founding_wait().as_secs());
+
 /// Ask the key holders of `workspace`'s own group to admit this host's device, and wait until it
 /// holds the group's keys: `true` once it does, `false` when the device takes part in no group of
 /// the workspace or nothing will ever say its keys changed. Reading a sealed record never asks

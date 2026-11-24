@@ -285,6 +285,12 @@ impl ShellSurface for ShellPart {
                 drew = true;
             }
         }
+        // The frame laid the style's own chrome out: the room it leaves the person's widgets is
+        // measured from it and the views run once more with it, so a widget never stands under
+        // the bar or the dock — not on a first frame, and not while either changes size.
+        if self.measure_room() && self.turn() {
+            drew |= self.draw();
+        }
         drew
     }
 }

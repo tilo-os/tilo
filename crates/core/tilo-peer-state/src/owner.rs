@@ -219,6 +219,8 @@ pub(crate) struct SharedOwner {
     /// The channel keys that keep this device's sealed record histories within
     /// their bound ([`NativeWorkspaceOwner::keep_sealed_histories`]).
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
+    /// This device's frame changes waiting for the publication that makes them durable.
+    pub(crate) due: Mutex<write::DueFrames>,
 }
 #[derive(Default)]
 pub(crate) struct Current {
@@ -538,6 +540,7 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
+            due: Mutex::default(),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -569,6 +572,7 @@ impl NativeWorkspaceOwner {
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
+            due: Mutex::default(),
         })))
     }
     #[must_use]

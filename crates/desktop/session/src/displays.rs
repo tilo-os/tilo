@@ -62,7 +62,8 @@ pub const MODES: [DisplayMode; 4] = [
 ];
 
 pub use tilo_device_surfaces::displays::{
-    ColourProfile, Display, DisplaysAction, Mode, NAMES, Reading, Screen, TRANSFORMS,
+    ColourProfile, Display, DisplaysAction, Mode, NAMES, PersonDisplays, Reading, Screen,
+    SharedScreen, TRANSFORMS, TrustedTool,
 };
 
 /// How bright ordinary content is in HDR unless the person chose another: the ITU BT.2408
@@ -166,6 +167,91 @@ fn vrr_reason(reason: settings_store::hardware::AdaptiveSyncUnavailable) -> Stri
         AdaptiveSyncUnavailable::DriverRejected => "driver-rejected",
     }
     .to_owned()
+}
+
+/// The person's screens across their devices, in the shared layout the display-placement section
+/// keeps: every screen each device shows, where it stands and whether the pointer reaches it.
+fn person_displays() -> Value {
+    use settings_store::person_displays as person;
+
+    let Some(view) = person::PersonDisplays::published() else {
+        return serde_json::to_value(PersonDisplays::default()).unwrap_or(Value::Null);
+    };
+    let layout = person::Layout::resolve(&view.devices, &placement());
+    let screens: Vec<SharedScreen> = layout
+        .displays
+        .iter()
+        .map(|display| SharedScreen {
+            device: display.device.clone(),
+            output: display.output.clone(),
+            name: display.name.clone(),
+            device_label: display.device_label.clone(),
+            local: display.local,
+            online: display.online,
+            x: i64::from(display.rect.x),
+            y: i64::from(display.rect.y),
+            width: i64::from(display.rect.width),
+            height: i64::from(display.rect.height),
+            reachable: layout
+                .displays
+                .iter()
+                .any(|other| other.device != display.device && meets(display.rect, other.rect)),
+        })
+        .collect();
+    serde_json::to_value(PersonDisplays {
+        local: view.local_device.clone(),
+        screens,
+    })
+    .unwrap_or(Value::Null)
+}
+
+/// The person's display placement, as their settings keep it: one entry per device and output.
+fn placement() -> Vec<settings_store::person_displays::PlacedDisplay> {
+    use settings_store::person_displays as person;
+
+    let section = settings_store::load_section(person::PLACEMENTS_SECTION);
+    let Some(Value::Object(entries)) = section.get(person::PLACEMENTS_LEAF) else {
+        return Vec::new();
+    };
+    let mut placed: Vec<person::PlacedDisplay> = entries
+        .values()
+        .filter_map(|entry| match serde_json::from_value(entry.clone()) {
+            Ok(placed) => Some(placed),
+            Err(error) => {
+                tracing::warn!(%error, "a stored display placement does not read");
+                None
+            }
+        })
+        .filter(person::PlacedDisplay::valid)
+        .collect();
+    placed.sort_by(|one, other| {
+        (one.order, &one.device, &one.output).cmp(&(other.order, &other.device, &other.output))
+    });
+    placed
+}
+
+/// Whether `one` meets `other` along an edge: the pointer crosses only there.
+fn meets(
+    one: settings_store::person_displays::Rect,
+    other: settings_store::person_displays::Rect,
+) -> bool {
+    let along = |a0: i32, a1: i32, b0: i32, b1: i32| a0 < b1 && b0 < a1;
+    ((one.right() == other.x || other.right() == one.x)
+        && along(one.y, one.bottom(), other.y, other.bottom()))
+        || ((one.bottom() == other.y || other.bottom() == one.y)
+            && along(one.x, one.right(), other.x, other.right()))
+}
+
+/// The display tools this device lets make risky changes without asking.
+fn trusted_display_tools() -> Vec<TrustedTool> {
+    settings_store::display_tools::TrustedDisplayTools::load()
+        .tools
+        .into_iter()
+        .map(|tool| TrustedTool {
+            name: tool.name().to_owned(),
+            executable: tool.executable,
+        })
+        .collect()
 }
 
 /// A display the compositor's outputs put somewhere: its connector, whether it is on, where it
@@ -303,12 +389,19 @@ pub fn arrange(mode: DisplayMode, outputs: &[OutputInfo]) -> Vec<OutputChange> {
 
 /// The resource the session publishes of its displays.
 pub use tilo_session_core::shell::DISPLAYS_RESOURCE as RESOURCE;
+/// The resource the session publishes of the person's screens across their devices.
+pub use tilo_session_core::shell::PERSON_DISPLAYS_RESOURCE;
 
 /// The displays as the session publishes them: its declared type, what a brightness key and the
 /// displays sheet change.
 #[derive(tilo_resource::Row)]
 #[row(kind = "session.displays", label = "Displays")]
 pub struct DisplaysRoot;
+
+/// The person's screens across their devices, as the session publishes them.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.person-displays", label = "Your screens")]
+pub struct PersonDisplaysRoot;
 
 /// What kind of resource [`RESOURCE`] is.
 pub const KIND: &str = <DisplaysRoot as tilo_resource::words::RowType>::KIND;
@@ -422,6 +515,10 @@ struct Inner {
     /// Whether what the person's settings say of the displays changed since the last pass: a
     /// change made anywhere, not only through this service's own actions.
     settings_moved: bool,
+    /// The person's published screens' generation, and the settings revision, last seen: their
+    /// layout changes on either.
+    person_generation: u64,
+    person_revision: Option<Option<settings_store::SettingsStamp>>,
     /// How the outputs put the displays together on the last pass.
     arrangement: DisplayMode,
     /// The change being tried, as its id and when it goes back, and the settings revision it was
@@ -431,9 +528,12 @@ struct Inner {
     /// The configuration the displays run with, as the person's settings keep it: each one's HDR,
     /// variable refresh rate, SDR brightness and colour profile.
     config: settings_store::hardware::DisplayConfig,
-    /// The settings revision and monitor set `config` was read at, so an
+    /// The display tools this device trusts with risky changes.
+    tools: Vec<TrustedTool>,
+    /// The settings revision `tools` were read at, and the monitor set `config` was, so an
     /// unchanged document is not read again.
-    followed: Option<(Option<settings_store::SettingsStamp>, String)>,
+    followed_stamp: Option<Option<settings_store::SettingsStamp>>,
+    followed_set: Option<String>,
     /// Where this person's display settings are kept, which a change tried from a view is
     /// written to; `None` in a session with no settings document.
     source: Option<Arc<dyn settings_store::SettingsSource>>,
@@ -478,6 +578,15 @@ impl Inner {
         &mut self,
         snapshot: Option<&settings_store::hardware::DisplayHardwareSnapshot>,
     ) {
+        let stamp = settings_store::stamp();
+        if self.followed_stamp != Some(stamp) {
+            self.followed_stamp = Some(stamp);
+            // The display tools the person trusts, read at the same revision.
+            let tools = trusted_display_tools();
+            self.settings_moved |= self.tools != tools;
+            self.tools = tools;
+            self.followed_set = None;
+        }
         let Some(snapshot) = snapshot else {
             return;
         };
@@ -487,14 +596,13 @@ impl Inner {
             .map(|output| output.descriptor.clone())
             .collect();
         let set = settings_store::hardware::DisplaySet::of_descriptors(&descriptors);
-        let followed = (settings_store::stamp(), set.key.clone());
-        if self.followed.as_ref() == Some(&followed) {
+        if self.followed_set.as_deref() == Some(set.key.as_str()) {
             return;
         }
         let config = settings_store::hardware::DisplayConfig::load_effective_remembering(&set).0;
         self.settings_moved |= self.config != config;
         self.config = config;
-        self.followed = Some(followed);
+        self.followed_set = Some(set.key);
     }
 
     /// The reading as it stands now: every display shown, with how bright it is when this machine
@@ -553,6 +661,7 @@ impl Inner {
             bar_covered: self.edges.bar_covered,
             dock_reached: self.edges.dock_reached,
             dock_covered: self.edges.dock_covered,
+            trusted_tools: self.tools.clone(),
         };
         reading.level = reading.brightness();
         reading
@@ -1021,7 +1130,13 @@ impl Service for Displays {
         let mut inner = self.inner.borrow_mut();
         let edges = std::mem::take(&mut inner.edges_moved);
         let settings = std::mem::take(&mut inner.settings_moved);
-        edges || settings
+        let generation = settings_store::person_displays::PersonDisplays::published_generation();
+        let revision = settings_store::stamp();
+        let person =
+            inner.person_generation != generation || inner.person_revision != Some(revision);
+        inner.person_generation = generation;
+        inner.person_revision = Some(revision);
+        edges || settings || person
     }
 
     fn resources(&self) -> Vec<ResourceSpec> {
@@ -1040,10 +1155,20 @@ impl Service for Displays {
             };
             spec.type_mut().label = label;
         }
-        vec![resource]
+        let person = offer::<tilo_resource::NoEffect>(
+            tilo_resource::LiveRow::typed::<PersonDisplaysRoot>(
+                PERSON_DISPLAYS_RESOURCE,
+                t("session-person-displays"),
+            )
+            .into_resource(),
+        );
+        vec![resource, person]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
+        if resource == PERSON_DISPLAYS_RESOURCE {
+            return Some(person_displays());
+        }
         (resource == RESOURCE).then(|| reading(&self.inner.borrow().reading()))
     }
 
@@ -1264,6 +1389,17 @@ impl Service for Displays {
             DisplaysAction::KeepDisplayChange { transaction } => self.decide(transaction, true)?,
             DisplaysAction::RevertDisplayChange { transaction } => {
                 self.decide(transaction, false)?;
+            }
+            DisplaysAction::ForgetDisplayTool { tool } => {
+                settings_store::display_tools::TrustedDisplayTools::forget(&tool).map_err(
+                    |error| {
+                        ApiError::Failed(format!(
+                            "The display tool could not be forgotten: {error}"
+                        ))
+                    },
+                )?;
+                let mut inner = self.inner.borrow_mut();
+                inner.tools = trusted_display_tools();
             }
         }
         Ok(Started::Done(ActionOutput::default()))
@@ -2089,6 +2225,145 @@ mod tests {
     }
 
     #[test]
+    fn a_trusted_display_tool_is_published_until_it_is_forgotten() {
+        use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
+
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let _settings = settings_store::in_memory::installed();
+        TrustedDisplayTools::trust(DisplayTool::new("/usr/bin/kanshi"))
+            .expect("the tool is trusted");
+        let mut displays = Displays::new(
+            None,
+            Rc::new(RefCell::new(Vec::new())),
+            settings_store::source(),
+        );
+        displays.land(None, &[on("DP-1", 0)], None);
+        assert_eq!(
+            reading(&displays).trusted_tools,
+            [TrustedTool {
+                executable: "/usr/bin/kanshi".into(),
+                name: "kanshi".into(),
+            }],
+            "the reading names the program a person recognises"
+        );
+
+        invoke(
+            &mut displays,
+            "forget-display-tool",
+            &Map::from_iter([("tool".to_owned(), Value::from("/usr/bin/kanshi"))]),
+        )
+        .expect("the tool is forgotten");
+        assert!(reading(&displays).trusted_tools.is_empty());
+        assert!(
+            !TrustedDisplayTools::load().contains(&DisplayTool::new("/usr/bin/kanshi")),
+            "the next risky change it makes is asked about again"
+        );
+    }
+
+    #[test]
+    fn the_person_s_screens_are_published_where_their_placement_puts_them() {
+        use settings_store::person_displays as person;
+
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let _settings = settings_store::in_memory::installed();
+        let (pid, start_ticks) = settings_store::hardware::publisher_identity()
+            .expect("this process publishes displays");
+        let screen = |id: &str, name: &str, builtin: bool| person::DeviceOutput {
+            id: id.into(),
+            name: name.into(),
+            builtin,
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            mode_width: 1920,
+            mode_height: 1080,
+            refresh_mhz: 60_000,
+            scale_milli: 1000,
+            connected: true,
+            enabled: true,
+        };
+        person::PersonDisplays {
+            schema_version: person::SCHEMA_VERSION,
+            publisher_pid: pid,
+            publisher_start_ticks: start_ticks,
+            local_device: "laptop".into(),
+            devices: vec![
+                person::PersonDevice {
+                    device: "laptop".into(),
+                    label: "Laptop".into(),
+                    local: true,
+                    online: true,
+                    outputs: vec![screen("edid:panel", "Built-in display", true)],
+                },
+                person::PersonDevice {
+                    device: "tower".into(),
+                    label: "Tower computer".into(),
+                    local: false,
+                    online: true,
+                    outputs: vec![screen("edid:tower", "Tower monitor", false)],
+                },
+            ],
+        }
+        .save()
+        .expect("the person's screens are published");
+        let displays = Displays::new(
+            None,
+            Rc::new(RefCell::new(Vec::new())),
+            settings_store::source(),
+        );
+        let shown = |displays: &Displays| {
+            serde_json::from_value::<PersonDisplays>(
+                displays
+                    .read(PERSON_DISPLAYS_RESOURCE)
+                    .expect("the screens publish"),
+            )
+            .expect("the reading reads back")
+        };
+        let before = shown(&displays);
+        assert_eq!(before.local, "laptop");
+        assert_eq!(before.screens.len(), 2);
+        let tower = before
+            .screens
+            .iter()
+            .find(|screen| screen.device == "tower")
+            .expect("the tower's screen");
+        assert_eq!(tower.device_label, "Tower computer");
+        assert_eq!(
+            (tower.x, tower.y),
+            (1920, 0),
+            "a device nobody placed stands right of the others"
+        );
+        assert!(tower.reachable, "the two meet along an edge");
+
+        settings_store::update_section(
+            person::PLACEMENTS_SECTION,
+            Map::from_iter([(
+                person::PLACEMENTS_LEAF.to_owned(),
+                serde_json::json!({
+                    "tower/edid:tower": {
+                        "device": "tower",
+                        "output": "edid:tower",
+                        "order": 0,
+                        "placed": true,
+                        "x": 0,
+                        "y": 1080,
+                    }
+                }),
+            )]),
+        )
+        .expect("the placement is kept");
+        let after = shown(&displays);
+        let tower = after
+            .screens
+            .iter()
+            .find(|screen| screen.device == "tower")
+            .expect("the tower's screen");
+        assert_eq!((tower.x, tower.y), (0, 1080), "it stands under the laptop");
+        assert!(tower.reachable);
+    }
+
+    #[test]
     fn every_display_action_names_its_own_label() {
         let published = Displays::new(None, Rc::new(RefCell::new(Vec::new())), None).resources();
         let spec = published
@@ -2106,6 +2381,7 @@ mod tests {
                 "set-display-colour-profile",
                 "Choose a display's colour profile",
             ),
+            ("forget-display-tool", "Let a display tool ask again"),
         ] {
             let action = spec
                 .actions

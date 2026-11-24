@@ -75,6 +75,23 @@ pub const FINISH_SIGN_IN: &str = "finish-sign-in";
 /// answers the [`Connection`] their yes added.
 pub const PROPOSE: &str = "propose";
 
+/// What the action `action` writes in the workspace's vault, as the host answering it takes it:
+/// what a service hands out at sign-in is kept, a removed connection's goes, and a call made
+/// with what the vault keeps writes down that use and keeps what the service renewed. The
+/// action's own declaration, read wherever it is listed and wherever a device reads the vault's
+/// record.
+#[must_use]
+pub fn effects(action: &str) -> Vec<crate::ActionEffect> {
+    use super::person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED, vault_step};
+    let steps: &[&str] = match action {
+        ADD | PROPOSE | FINISH_SIGN_IN => &[KEEP_SEALED],
+        REMOVE => &[REMOVE_SEALED],
+        REFRESH | CALL => &[KEEP_USES, KEEP_SEALED],
+        _ => &[],
+    };
+    steps.iter().map(|verb| vault_step(verb)).collect()
+}
+
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
 pub fn target(action: &str) -> RemoteActionTarget {

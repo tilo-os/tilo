@@ -249,15 +249,16 @@ impl super::App {
     /// Returns true when policy meaning changed since the previous hosted pump
     /// or cannot be sampled (fail closed: refresh on every such pass).
     fn refresh_hosted_authority(&mut self) -> bool {
-        let owner = if let Some(binding) = self.root_widget.callback_binding() {
-            let Ok(observation) = binding.permissions.borrow().directory_observation() else {
-                self.actions.hosted.authority = None;
-                return true;
+        let owner =
+            if let Some(binding) = crate::bound_dispatch::callback_binding(&*self.root_widget) {
+                let Ok(observation) = binding.permissions.borrow().directory_observation() else {
+                    self.actions.hosted.authority = None;
+                    return true;
+                };
+                Some(observation)
+            } else {
+                None
             };
-            Some(observation)
-        } else {
-            None
-        };
         let Ok(app) = self.permission_ctx.directory_observation() else {
             self.actions.hosted.authority = None;
             return true;

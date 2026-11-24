@@ -9,11 +9,16 @@
 //! is what [`KeySessions`] puts behind the host
 //! ([`ServiceConfig::apps`](tilo_workspace_service::service::ServiceConfig::apps)).
 //!
-//! Each key works in a run of its own, which the device's broker admits as it
-//! admits an agent at the device's MCP server ([`Sessions::open`]). Before every
-//! message the key is checked against the person's devices, as their own workspace
-//! lists them ([`PersonalDevices::admit`]: theirs, current, not revoked), and its grant's
-//! scope against the workspace; a key that no longer holds loses its run.
+//! Each key works in a run of its own ([`Sessions::open`]). Before every message the key is
+//! checked against the person's devices, as their own workspace lists them
+//! ([`PersonalDevices::admit`]: theirs, current, not revoked), and its grant's scope against
+//! the workspace; a key that no longer holds loses its run. A key of the person's runs as an
+//! agent of theirs, which the device's broker admits as it admits one at its MCP server.
+//!
+//! A device of another member of the workspace, which the workspace's roster admitted on the
+//! link, runs as that member: what it asks is decided by the workspace's grants for them, and a
+//! search answers what they may read, never what this device's person may. What is this
+//! device's own ([`crate::personal_devices::own_devices_only`]) stays its person's.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -23,7 +28,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::app_serving::AppActionServer;
 
-use crate::personal_devices::{PersonalDevices, Refusal};
+use crate::personal_devices::{PersonalDevices, Refusal, Whose};
 use collab_types::WorkspaceId;
 
 mod pages;
@@ -42,13 +47,19 @@ pub trait Sessions: Send + Sync {
     /// this device answers its actions.
     fn workspace(&self, workspace_id: WorkspaceId) -> Option<String>;
 
-    /// A session for `key` in `workspace`: the host its calls go through and the
-    /// caller they go as. The broker admits it as it admits an agent at this
-    /// device's MCP server; a refusal says why.
+    /// A session for `key`, `whose` it is, in `workspace`: the host its calls go through and
+    /// the caller they go as. A key of the person's is admitted as the broker admits an agent
+    /// at this device's MCP server; a member's device as that member, its calls decided by
+    /// the workspace's grants for them. A refusal says why.
     ///
     /// # Errors
-    /// The broker does not admit a session for the key.
-    fn open(&self, workspace: &str, key: &DeviceCert) -> Result<(SessionHost, Caller), String>;
+    /// The workspace does not admit a session for the key.
+    fn open(
+        &self,
+        workspace: &str,
+        key: &DeviceCert,
+        whose: Whose,
+    ) -> Result<(SessionHost, Caller), String>;
 
     /// `workspace`'s dispatch, which admits each call as the caller it carries: what a web page
     /// of the workspace asks as its person ([`Pages`]). `None` when this device answers no
@@ -106,12 +117,15 @@ impl KeySessions {
         &self.pages
     }
 
-    /// The session `key` works in on `workspace_id`, opened now if it has none,
-    /// once the key is the person's and its scope reaches the workspace.
+    /// The session `key` works in on `workspace_id` to answer `message`, opened now if it has
+    /// none, once its scope reaches the workspace and the key is the person's, or a member's
+    /// asking for what is the workspace's: `caller` is who the workspace's roster admitted it
+    /// as on the link.
     fn run(
         &self,
         workspace_id: WorkspaceId,
-        key: &DeviceCert,
+        (caller, key): (&Caller, &DeviceCert),
+        message: &RemoteActionMessage,
     ) -> Result<(SessionHost, Caller), ActionCallError> {
         let Serving { devices, sessions } =
             self.serving
@@ -122,11 +136,34 @@ impl KeySessions {
         let workspace = sessions
             .workspace(workspace_id)
             .ok_or(ActionCallError::UnknownAction)?;
-        if let Err(refusal) = devices.admit(key.device_public_key, key) {
-            self.end(workspace_id, &key.device_public_key);
-            return Err(ActionCallError::Refused {
-                reason: refusal.reason(),
-            });
+        let whose = match devices.admit(key.device_public_key, key) {
+            Ok(whose) => whose,
+            Err(refusal) => {
+                self.end(workspace_id, &key.device_public_key);
+                return Err(ActionCallError::Refused {
+                    reason: refusal.reason(),
+                });
+            }
+        };
+        if whose == Whose::Member {
+            if crate::personal_devices::own_devices_only(message) {
+                return Err(ActionCallError::Refused {
+                    reason: Refusal::OtherPerson.reason(),
+                });
+            }
+            // The member as the roster admitted their device: their person, on that device, and
+            // never an agent or an app of theirs taken for them.
+            let person = hex::encode(key.user_public_key);
+            if !caller.acting().is_person()
+                || caller.acting().app().is_some()
+                || caller.acting().person_id() != Some(person.as_str())
+                || caller.device_public_key() != Some(&key.device_public_key)
+            {
+                return Err(ActionCallError::Refused {
+                    reason: "another person's agent or app acts on their own devices, not here"
+                        .into(),
+                });
+            }
         }
         if key
             .capabilities
@@ -156,7 +193,7 @@ impl KeySessions {
             });
         }
         let (host, caller) = sessions
-            .open(&workspace, key)
+            .open(&workspace, key, whose)
             .map_err(|reason| ActionCallError::Refused { reason })?;
         open.insert(
             (workspace_id, key.device_public_key),
@@ -198,11 +235,11 @@ impl AppActionServer for KeySessions {
     fn serve_certified(
         &self,
         workspace_id: WorkspaceId,
-        _caller: &Caller,
+        caller: &Caller,
         certificate: &DeviceCert,
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
-        match self.run(workspace_id, certificate) {
+        match self.run(workspace_id, (caller, certificate), &message) {
             Ok((host, caller)) => tilo_actions::remote::serve(&host, &caller, message),
             Err(refusal) => tilo_actions::remote::refuse(&message, refusal).map(Pending::ready),
         }

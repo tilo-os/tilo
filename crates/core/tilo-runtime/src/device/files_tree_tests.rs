@@ -157,6 +157,8 @@ async fn daemon(
 /// every open decided by the mount's own check.
 struct Mount {
     tree: tilo_fs::tree_sync::TreeSync,
+    /// The store the files daemon keeps the mount's file bytes in.
+    content: Arc<tilo_fs::ContentStore>,
     _service: tilo_fs::tree_sync::remote::Service,
     fs: tilo_fs::QuickFS,
     /// The list in force, as the files daemon keeps it.
@@ -202,12 +204,13 @@ async fn mount(laptop: &Laptop, dir: &Path, workspace: &str) -> Mount {
             }
         })
     };
-    let hydrator = Arc::new(tilo_fs::Hydrator::new(content));
+    let hydrator = Arc::new(tilo_fs::Hydrator::new(Arc::clone(&content)));
     let heuristics = Arc::new(tilo_fs::Heuristics::new(Arc::clone(&hydrator)));
     let fs = tilo_fs::QuickFS::new(Arc::clone(&tree.namespace), hydrator, heuristics)
         .with_acl(caps.handle(), laptop.person);
     Mount {
         tree,
+        content,
         _service: service,
         fs,
         caps,
@@ -218,6 +221,12 @@ async fn mount(laptop: &Laptop, dir: &Path, workspace: &str) -> Mount {
 impl Mount {
     /// The file at `path` (folders by `/`), made with the folders it is in.
     fn file(&self, path: &str) -> u64 {
+        self.file_holding(path, None)
+    }
+
+    /// The file at `path` holding the bytes the mount keeps under `content` (their address and
+    /// length), made with the folders it is in.
+    fn file_holding(&self, path: &str, content: Option<(iroh_blobs::Hash, u64)>) -> u64 {
         let mut namespace = self.tree.namespace.lock().unwrap();
         let (folders, name) = path.rsplit_once('/').unwrap_or(("", path));
         let mut parent = tilo_fs::ROOT_INO;
@@ -234,8 +243,9 @@ impl Mount {
                     .expect("a folder"),
             };
         }
+        let (hash, len) = content.map_or((None, 0), |(hash, len)| (Some(hash), len));
         namespace
-            .create_file(parent, name, None, 0, 1_000)
+            .create_file(parent, name, hash.as_ref(), len, 1_000)
             .expect("a file")
     }
 
@@ -790,4 +800,74 @@ fn released_under(dir: &Path) -> bool {
         path.extension()
             .is_some_and(|extension| extension == "released")
     })
+}
+
+/// A file whose bytes only a mount keeps reaches the workspace's server: the server asks the
+/// mount's daemon for them, and the daemon reads them from the mount, whose files daemon answers
+/// over the trees' socket. The test runs on one thread, as a device's daemon does, so a read that
+/// waited on that thread for the mount's answer would never hear it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_file_only_a_mount_keeps_reaches_the_workspaces_server() {
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (server_key, server_cert) = enrol(&ada, "home-server", DeviceCapabilities::member());
+    let (ada_key, ada_cert) = enrol(&ada, "Ada's laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: ada.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server has workspaces")
+        .clone();
+    let workspace = hosted.create("Studio").await.unwrap().workspace;
+    hosted
+        .enter(&workspace, &ada_cert)
+        .await
+        .expect("Ada's laptop enters the workspace");
+    let site = Site {
+        server,
+        cert: server_cert.clone(),
+        workspace: workspace.clone(),
+    };
+    let laptop = laptop(&state.path().join("ada"), (&ada_key, &ada_cert), &site).await;
+    let mount = mount(&laptop, &state.path().join("ada-mount"), &workspace).await;
+
+    let bytes: Vec<u8> = b"the plan, kept on Ada's laptop alone. "
+        .iter()
+        .copied()
+        .cycle()
+        .take(300_000)
+        .collect();
+    let hash = mount
+        .content
+        .write_content(&bytes)
+        .await
+        .expect("the mount keeps the file")
+        .expect("a file with bytes has content");
+    let address = hash.to_hex().to_string();
+    mount.file_holding(
+        &format!("{}/plan.md", tree_of(&workspace)),
+        Some((hash, bytes.len() as u64)),
+    );
+
+    let kept = site
+        .server
+        .content()
+        .get(&workspace)
+        .expect("the server keeps the workspace's content");
+    tilo_test_env::within("the server keeps the file's bytes", async {
+        while !kept.has(&address) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
 }

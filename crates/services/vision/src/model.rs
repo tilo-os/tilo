@@ -151,7 +151,10 @@ impl LocalVision {
             workspace_id: None,
         };
         match launcher::services::resolve_service_binds_for_launch(&wanted, false, context) {
-            Ok(resolved) => resolved.into_iter().next().map(|service| service.host),
+            Ok(resolved) => resolved
+                .into_iter()
+                .next()
+                .map(|service| service.host.into()),
             Err(error) => {
                 tracing::debug!(%error, "no model gateway for image analysis");
                 None

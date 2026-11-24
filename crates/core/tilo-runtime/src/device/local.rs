@@ -79,6 +79,20 @@ impl Frames {
         })
     }
 
+    /// The person's workspaces and account, as a program of this device reaches them
+    /// ([`Daemon::program_tree`]): acting as the person, but never as a plain connection's own
+    /// act, so what a workspace asks of them is put to them. An agent's connection answers action
+    /// frames this way.
+    pub(crate) fn of_a_persons_program(daemon: &Arc<Daemon>) -> Self {
+        let daemon = Arc::downgrade(daemon);
+        Self::new(move |workspace| {
+            let daemon = daemon
+                .upgrade()
+                .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
+            daemon.program_tree(workspace)
+        })
+    }
+
     /// An app the daemon started, in `workspace`: the workspace's broker decides its calls with
     /// the app's grants, never the person's own rights ([`Daemon::app_tree`]). The app acts in
     /// that workspace alone; a frame naming another is refused. A release, a find or a web call

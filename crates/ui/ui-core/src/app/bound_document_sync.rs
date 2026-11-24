@@ -28,7 +28,7 @@ impl App {
             found: &mut Option<CallbackBinding>,
             has_components: &mut bool,
         ) -> Result<(), String> {
-            if let Some(binding) = widget.callback_binding() {
+            if let Some(binding) = crate::bound_dispatch::callback_binding(widget) {
                 *has_components = true;
                 if binding.matches_broker_route(route) && binding.enter().is_ok() {
                     if let Some(previous) = found.as_ref()

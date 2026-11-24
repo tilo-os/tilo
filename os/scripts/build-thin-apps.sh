@@ -147,9 +147,14 @@ done
 # A crate the runtime or an engine also links keeps the runtime's setting,
 # whatever version: a second setting would build it twice and change the
 # runtime. The set reads every app in the graph, not the selected ones, so a
-# tapp's bytes do not depend on which apps a run builds.
+# tapp's bytes do not depend on which apps a run builds. The graph is resolved
+# with the build's own features: an engine's crates are optional behind its
+# `thin` feature, and without it the contact directory and the resource model
+# looked like app-only libraries, were built for size, and the engine that
+# links them exported every generic instance shared generics made of them.
 if [ "$optimize" = size ]; then
     app_only=$(cd "$REPO" && "${CARGO:-cargo}" metadata --format-version 1 --offline --locked \
+        --features "$(IFS=,; echo "${features[*]}")" \
         | APPS="${app_packages[*]}" ENGINES="${engines[*]}" python3 -c '
 import json, os, sys
 meta = json.load(sys.stdin)

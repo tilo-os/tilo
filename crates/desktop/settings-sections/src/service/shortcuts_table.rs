@@ -37,18 +37,27 @@ pub struct ActionShortcut {
     pub chord: String,
 }
 
-/// One app command the person moved, and the keys it is on now.
+/// One app command a window runs on keys: the keys its app gives it, and the keys it is on now.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
 #[serde(default, rename_all = "kebab-case")]
-pub struct MovedCommand {
+pub struct AppCommand {
     /// The app, by its package id, as `rebind-command` and `reset-command` name it.
     pub app: String,
+    /// The app's name, as people call it; named as a view reads it.
+    #[serde(rename = "app_name")]
+    pub app_name: String,
     /// The command, by the id of the action the app publishes.
     pub action: String,
+    /// What the command is called.
+    pub label: String,
+    /// The keys its app gives it; empty when the app gives it none.
+    pub usual: String,
     /// Its keys now, as a person writes them; empty for a command on no keys.
     pub chord: String,
+    /// Whether the person moved it off the keys its app gives it.
+    pub moved: bool,
 }
 
 /// The shortcuts table as a view reads it.
@@ -61,8 +70,8 @@ pub struct ShortcutsTable {
     pub bindings: Vec<ShortcutChord>,
     /// Every chord that runs an action.
     pub actions: Vec<ActionShortcut>,
-    /// Every app command the person moved off the keys its app gives it.
-    pub commands: Vec<MovedCommand>,
+    /// Every app command a window runs on keys, app by app, and every one the person moved.
+    pub commands: Vec<AppCommand>,
 }
 
 impl ShortcutsTable {
@@ -87,25 +96,63 @@ impl ShortcutsTable {
                 chord: action.chord.display(),
             })
             .collect();
-        let commands = config
-            .commands
-            .iter()
-            .map(|moved| MovedCommand {
-                app: moved.app.clone(),
-                action: moved.action.clone(),
-                chord: moved
-                    .chord
-                    .as_ref()
-                    .map(|chord| chord.display())
-                    .unwrap_or_default(),
-            })
-            .collect();
+        let commands = commands(&config, app_fleet::apps());
         Self {
             bindings,
             actions,
             commands,
         }
     }
+}
+
+/// Every command of `apps` a window runs on keys, with the keys it is on as `config` moves it,
+/// then each command `config` moved that no app of `apps` declares (an app being developed).
+fn commands(
+    config: &settings_store::hardware::ShortcutConfig,
+    apps: &[app_fleet::FleetApp],
+) -> Vec<AppCommand> {
+    let keys = |chord: Option<&settings_store::hardware::KeyChord>| {
+        chord.map(|chord| chord.display()).unwrap_or_default()
+    };
+    let mut listed: Vec<AppCommand> = apps
+        .iter()
+        .flat_map(|app| {
+            app.commands().map(move |command| {
+                let moved = config
+                    .commands_of(app.id)
+                    .find(|moved| moved.action == command.action);
+                AppCommand {
+                    app: app.id.to_owned(),
+                    app_name: app.name.to_owned(),
+                    action: command.action.to_owned(),
+                    label: command.label.to_owned(),
+                    usual: command.key.to_owned(),
+                    chord: moved.map_or_else(
+                        || command.key.to_owned(),
+                        |moved| keys(moved.chord.as_ref()),
+                    ),
+                    moved: moved.is_some(),
+                }
+            })
+        })
+        .collect();
+    for moved in &config.commands {
+        if !listed
+            .iter()
+            .any(|listed| listed.app == moved.app && listed.action == moved.action)
+        {
+            listed.push(AppCommand {
+                app: moved.app.clone(),
+                app_name: moved.app.clone(),
+                action: moved.action.clone(),
+                label: moved.action.clone(),
+                usual: String::new(),
+                chord: keys(moved.chord.as_ref()),
+                moved: true,
+            });
+        }
+    }
+    listed
 }
 
 /// The shortcuts table as a declared type.
@@ -159,5 +206,39 @@ mod tests {
             .find(|binding| binding.id == "search")
             .expect("the search shortcut is listed");
         assert_eq!(search.chord, "Ctrl+k");
+    }
+
+    #[test]
+    fn every_app_command_on_keys_is_listed_and_a_moved_one_shows_where_it_went() {
+        let (app, command) = app_fleet::apps()
+            .iter()
+            .find_map(|app| app.commands().next().map(|command| (app, command)))
+            .expect("an app of the fleet runs a command on keys");
+        let listed = |table: &ShortcutsTable| {
+            table
+                .commands
+                .iter()
+                .find(|listed| listed.app == app.id && listed.action == command.action)
+                .cloned()
+                .expect("the command is listed")
+        };
+        let usual = listed(&ShortcutsTable::of(&serde_json::json!({})));
+        assert_eq!(
+            (usual.app_name.as_str(), usual.label.as_str()),
+            (app.name, command.label),
+            "the command is named by its app and its own label"
+        );
+        assert_eq!(usual.chord, command.key, "on the keys its app gives it");
+        assert!(!usual.moved);
+
+        let mut config = settings_store::hardware::ShortcutConfig::default();
+        config
+            .set_command(app.id, command.action, None)
+            .expect("a command can be put on no keys");
+        let stored = serde_json::to_value(config.stored()).expect("the table is stored as JSON");
+        let moved = listed(&ShortcutsTable::of(&stored));
+        assert!(moved.moved, "it reads as moved");
+        assert_eq!(moved.chord, "", "on no keys");
+        assert_eq!(moved.usual, command.key, "with the keys it is usually on");
     }
 }

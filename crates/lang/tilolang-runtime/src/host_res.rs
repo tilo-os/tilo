@@ -1381,7 +1381,7 @@ impl Core {
             return self.rec_edit(imp, a);
         }
         match imp {
-            Imp::RecordAt => return self.record_at(a.h(0)?, a.h(1)?),
+            Imp::RecordAt => self.record_at(a.h(0)?, a.h(1)?),
             // A change the code makes is one write of the run, answered whole by its journal when
             // the run is run again after a call: what it checks of the store and what it decides
             // from it (the item a removal takes, the place a move goes to) were checked and
@@ -1651,9 +1651,20 @@ impl Core {
             .borrow()
             .listing(&ctx.target, &spec(&ctx.field))
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-        let others: Vec<Rc<str>> = listing.iter().filter(|id| **id != *item).collect();
-        let Some(at) = others.iter().position(|id| **id == *neighbour) else {
-            return trap("the item to go beside is not in this collection");
+        // Where the neighbour stands among the others: a listing the store pages says where it
+        // and the item stand from its index, without reading every item before them.
+        let at = match (listing.position(neighbour), listing.position(item)) {
+            (Some(None), _) => return trap("the item to go beside is not in this collection"),
+            (Some(Some(next)), Some(stands)) => {
+                next.saturating_sub(usize::from(stands.is_some_and(|stands| stands < next)))
+            }
+            _ => {
+                let others: Vec<Rc<str>> = listing.iter().filter(|id| **id != *item).collect();
+                let Some(at) = others.iter().position(|id| **id == *neighbour) else {
+                    return trap("the item to go beside is not in this collection");
+                };
+                at
+            }
         };
         let index = if after { at.saturating_add(1) } else { at };
         let field = ctx.field.id.clone();
@@ -2266,6 +2277,13 @@ impl Core {
     /// name for the value sees the change.
     fn rec_edit(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let rec_h = a.h(0)?;
+        // A record value an action was handed is one it reads: a change to it would land in the
+        // copy the invocation drops, so the write says what the value is instead.
+        if self.frames.borrow().handed(rec_h) {
+            return trap(
+                "a record value an action is handed names no resource to change: insert it first, and change what the insert made".to_owned(),
+            );
+        }
         let field = self.text(a.h(1)?)?;
         let ty = self.with_val(rec_h, |r| match r {
             Value::Rec(rec) => Ok(rec.ty.clone()),

@@ -406,29 +406,8 @@ impl Core {
             Imp::EventValue => self.ret_h(Value::Event),
             Imp::EventPart => self.ret_h(Value::EventPart(usize::try_from(a.h(0)?).unwrap_or(0))),
             Imp::EventPress => self.ret_h(Value::EventPress),
-            Imp::Actions => {
-                let target = self.ref_arg(a.h(0)?)?;
-                // Where the view shows the item: the item just above it in its group, which
-                // the actions offered get as their place, never one read in storage order.
-                let above = self.val(a.h(1)?)?;
-                let offered = self.actions_on(&target, &above)?;
-                self.ret_h(Value::List(offered))
-            }
-            Imp::Delivery => {
-                let target = self.ref_arg(a.h(0)?)?;
-                let value = self.delivery_of(&target.target.doc);
-                self.ret_h(value)
-            }
-            Imp::Reach => {
-                let target = self.ref_arg(a.h(0)?)?;
-                let value = self.reach_of(&target.target)?;
-                self.ret_h(value)
-            }
-            Imp::Lenses => {
-                let target = self.ref_arg(a.h(0)?)?;
-                let value = self.host_list(lens_key(&target.target.id_string()));
-                self.ret_h(value)
-            }
+            Imp::Actions => self.actions_import(a),
+            Imp::Delivery | Imp::Reach | Imp::Lenses => self.relation_import(imp, a),
             Imp::Invoked => self.invoked_import(a),
             Imp::LinesRun => {
                 let target = self.ref_arg(a.h(0)?)?;
@@ -464,6 +443,10 @@ impl Core {
             | Imp::Unseen
             | Imp::Steps => {
                 let value = self.versions_import(imp, a)?;
+                self.ret_h(value)
+            }
+            Imp::Ranked => {
+                let value = self.ranked_import(a)?;
                 self.ret_h(value)
             }
             Imp::Links => {
@@ -505,6 +488,39 @@ impl Core {
                 };
                 let text = self.word_args(&id, &args, &source);
                 self.ret_h(Value::Text(text))
+            }
+            _ => trap("not a platform import"),
+        }
+    }
+
+    /// `actions(on, above:)`: the actions offered on an item, as the view shows it.
+    fn actions_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let target = self.ref_arg(a.h(0)?)?;
+        // Where the view shows the item: the item just above it in its group, which the actions
+        // offered get as their place, never one read in storage order.
+        let above = self.val(a.h(1)?)?;
+        let offered = self.actions_on(&target, &above)?;
+        self.ret_h(Value::List(offered))
+    }
+
+    /// `delivery`, `reach` and `lenses`: what the device knows of an item, kept by the host.
+    fn relation_import(&self, imp: crate::abi::Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        use crate::abi::Imp;
+        match imp {
+            Imp::Delivery => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.delivery_of(&target.target.doc);
+                self.ret_h(value)
+            }
+            Imp::Reach => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.reach_of(&target.target)?;
+                self.ret_h(value)
+            }
+            Imp::Lenses => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.host_list(lens_key(&target.target.id_string()));
+                self.ret_h(value)
             }
             _ => trap("not a platform import"),
         }
@@ -1324,6 +1340,51 @@ impl Core {
                 )
             }
         })
+    }
+
+    /// `ranked(items)`: the resources of the list held at `h`, the ones the person looking chose
+    /// most often and most lately first. Each change they made to one is a choice of it, read
+    /// from its history and weighed as every ranking by use weighs it ([`tilo_resource::frecency`]):
+    /// a record of what the person did, never a count an app keeps. What was never chosen stays
+    /// behind, and equals keep the order they came in. A view that ranks reads each history, so
+    /// it ranks again when one changes.
+    fn ranked_import(&self, a: &Args<'_>) -> HResult<Value> {
+        let trapped = |e: crate::store::StoreError| crate::engine::HostFail::Trap(e.to_string());
+        let items = self.items_of(self.val(a.h(0)?)?, "ranked")?;
+        let now = seconds_of(&self.now_text()?);
+        let looking = self.looking_now();
+        let mut weighed = Vec::with_capacity(items.len());
+        for item in items {
+            let weight = match &item {
+                Value::Ref(r) if !crate::foreign::is_foreign(&r.target) => {
+                    let at = &r.target;
+                    let versions = self.store.borrow().versions(at).map_err(trapped)?;
+                    self.read_versions_of(at);
+                    // A choice of any record of the list can move every other: the order is
+                    // read again on any change in its document.
+                    self.read_versions_of(&ResourceRef::root(at.doc.clone(), String::new()));
+                    let chosen: Vec<u64> = versions
+                        .iter()
+                        .filter(|v| looking.as_ref().is_none_or(|me| self.made_by(v, at) == *me))
+                        .map(|v| seconds_of(&v.at))
+                        .collect();
+                    let count = u32::try_from(chosen.len()).unwrap_or(u32::MAX);
+                    let last = chosen.iter().copied().max().unwrap_or_default();
+                    if count == 0 {
+                        0.0
+                    } else {
+                        tilo_resource::frecency(count, last, now)
+                    }
+                }
+                _ => 0.0,
+            };
+            weighed.push((weight, item));
+        }
+        // Stable: equals keep the order they came in.
+        weighed.sort_by(|one, other| other.0.total_cmp(&one.0));
+        Ok(Value::List(
+            weighed.into_iter().map(|(_, item)| item).collect(),
+        ))
     }
 
     /// `steps(at)`: the changes made to a resource, newest first, each with the versions one
@@ -3233,6 +3294,13 @@ fn said_value(value: &Value) -> String {
         Value::Actor(who) => who.id().to_owned(),
         _ => String::new(),
     }
+}
+
+/// A moment the log or the clock writes (`2026-11-24T09:00:00Z`), in seconds since the epoch;
+/// the epoch itself for one that does not read as a moment.
+fn seconds_of(at: &str) -> u64 {
+    at.parse::<jiff::Timestamp>()
+        .map_or(0, |t| u64::try_from(t.as_second()).unwrap_or(0))
 }
 
 #[cfg(test)]

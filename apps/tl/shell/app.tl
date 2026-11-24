@@ -212,7 +212,7 @@ view bar_part(part: BarPart) {
     if part.kind == .spacer {
         spacer
     } else if part.kind == .clock {
-        clock()
+        clock_or_follow()
     } else if part.kind == .menu {
         row(gap: .related, align: .center) {
             ui.MenuButton("Tilo", icon: .tilo, icon_only: true, role: .bar) {
@@ -259,11 +259,6 @@ view bar_part(part: BarPart) {
                         on press: session.launchpad(card: "invite")
                     }
                 }
-            }
-            // Whose view this is while the person follows someone: their face and name where the
-            // bar's glance value stands, with the way to stop.
-            if not space.compact {
-                follow_chip()
             }
             wave_notice()
             arrival_notice()

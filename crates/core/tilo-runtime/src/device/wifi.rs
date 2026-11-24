@@ -180,6 +180,7 @@ fn descriptors() -> Vec<ActionDescriptor> {
         input: InputSpec::None,
         params,
         view: None,
+        effects: Vec::new(),
     };
     vec![
         descriptor(

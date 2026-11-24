@@ -10,6 +10,7 @@ use tilolang_service::ResourceService;
 use tilolang_tilo::share::LinkHome;
 
 const NOTES_APP: &str = "so.tilo.notes";
+const TASKS_APP: &str = "so.tilo.tasks";
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 const SITE: &str = "https://tilo.so/";
 const ORIGIN: &str = "https://ada.tilo.cloud";
@@ -53,6 +54,44 @@ fn new_note(service: &mut ResourceService) -> String {
     };
     service.settle();
     output.resources.first().cloned().expect("the note it made")
+}
+
+/// Ada's tasks, published by the session's service, with the workspace's page to mint links
+/// under.
+fn tasks_service() -> ResourceService {
+    let (ada, _) = Replica::new("ada", Workspace::new(), crate::fixtures::TASKS_SET);
+    ada.host.root_of(TASKS_APP).unwrap();
+    ada.commit();
+    let mut service = ada.into_service("ada");
+    service.set_link_home(Some(LinkHome {
+        origin: ORIGIN.to_owned(),
+        workspace: WORKSPACE.to_owned(),
+        host_device: "ab".repeat(32),
+        web_entry: SITE.to_owned(),
+    }));
+    service
+}
+
+/// A new task, made through the app's own action on the published tasks.
+fn new_task(service: &mut ResourceService, title: &str) -> String {
+    let tasks = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.kind == format!("tl.{TASKS_APP}.Tasks"))
+        .expect("the tasks are published");
+    let mut args = Map::new();
+    args.insert(
+        "title".to_owned(),
+        serde_json::Value::String(title.to_owned()),
+    );
+    let Started::Done(output) = service
+        .invoke(tasks.id.as_str(), "new_task", &args)
+        .unwrap()
+    else {
+        panic!("a tilolang action is done once committed");
+    };
+    service.settle();
+    output.resources.first().cloned().expect("the task it made")
 }
 
 /// The link `url` names, read back with the entry the workspace serves its page under.
@@ -191,5 +230,34 @@ tilo_test_env::scenario! {
             refused.to_string().contains("serves no web page"),
             "the system's own words: {refused}"
         );
+    }
+
+    phase a_task_offers_the_systems_copy_link_and_the_host_mints_it;
+    {
+        let mut service = tasks_service();
+        let task = new_task(&mut service, "Book a haircut");
+        let Started::Done(output) = service
+            .invoke(&task, "share-link", &Map::new())
+            .expect("the host mints the link")
+        else {
+            panic!("the link is answered at once");
+        };
+        let url = output
+            .value
+            .as_ref()
+            .and_then(|value| value.get("url"))
+            .and_then(serde_json::Value::as_str)
+            .expect("an answer carries its link")
+            .to_owned();
+        let read = link(&url);
+        assert_eq!(
+            read.target.app.as_ref().map(tilo_reference::link::AppId::as_str),
+            Some(TASKS_APP),
+            "the link opens the app the task is of"
+        );
+        let names = read.target.resource.expect("the link names the task");
+        assert_eq!(names.kind, format!("tl.{TASKS_APP}.Task"));
+        assert_eq!(names.id, task);
+        assert_eq!(names.span, None, "a whole task, not a range of it");
     }
 }

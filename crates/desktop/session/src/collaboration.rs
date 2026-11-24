@@ -22,13 +22,15 @@ impl Session {
         // theirs as this session's apps show them: a join or leave reaches a
         // channel's roster on the pass it happened on.
         if let Some(app_wire) = &self.app_wire {
-            app_wire.follow_calls(sync, || {
+            let name = app_wire.follow_calls(sync, || {
                 self.shared
                     .launch
                     .as_ref()
                     .map(|apps| apps.published_rows())
                     .unwrap_or_default()
             });
+            // The card of that call, over the windows while the person looks elsewhere.
+            self.follow_call_card(app_wire, &name);
             // Where everyone else here types, in this device's windows on the same record.
             let workspaces = self.shared.handle.read(|tree| {
                 tree.workspaces

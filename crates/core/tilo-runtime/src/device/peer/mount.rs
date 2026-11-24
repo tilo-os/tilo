@@ -100,24 +100,47 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
         .with_admission(Arc::clone(&parts.admission))
         .with_pinned_hydration()
         .with_change_journal(parts.replica.journal());
-    fs.resume_pending_evictions();
-    let fs = match tilo_fs::unsaved::UnsavedStore::open(parts.state.join("unsaved-writes")) {
-        Ok(unsaved) => {
-            let fs = fs.with_unsaved_store(unsaved);
-            fs.recover_unsaved_writes();
-            fs
+    // Both recoveries block on this device's store to finish. A task of the app's
+    // current-thread runtime cannot block that runtime's one thread, so they run on a thread of
+    // theirs while the caller waits, as a FUSE worker or the daemon's own start would run them.
+    let state = parts.state;
+    let fs = off_the_worker(move || {
+        fs.resume_pending_evictions();
+        match tilo_fs::unsaved::UnsavedStore::open(state.join("unsaved-writes")) {
+            Ok(unsaved) => {
+                let fs = fs.with_unsaved_store(unsaved);
+                fs.recover_unsaved_writes();
+                fs
+            }
+            Err(error) => {
+                tracing::warn!(%error, "unsaved writes are not staged on disk");
+                fs
+            }
         }
-        Err(error) => {
-            tracing::warn!(%error, "unsaved writes are not staged on disk");
-            fs
-        }
-    };
+    });
     let fs = fs.with_write_stage_dir(parts.state.join("write-stage"));
     // A closed file is kept the moment `close` answers, whatever ends this process next, and
     // reaches the disk with the journal naming it on a short window: a checkout of thousands of
     // files waits for the disk once a window, not once a file.
     fs.sync_on_window(Arc::clone(&parts.store), Some(parts.replica.sync_journal()));
     Ok(fs)
+}
+
+/// Run `step`, which blocks its thread, where blocking is allowed: a task's thread is the
+/// runtime's, not the step's, so the step runs on a thread of its own and the task waits. A
+/// founding call starts the person's workspace, and mounts its files, from a task of the app's
+/// current-thread runtime, whose one thread its store's blocking bridge cannot take.
+fn off_the_worker<T: Send>(step: impl FnOnce() -> T + Send) -> T {
+    if tokio::task::try_id().is_none() {
+        return step();
+    }
+    std::thread::scope(|scope| {
+        let done = scope.spawn(step);
+        match done.join() {
+            Ok(output) => output,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })
 }
 
 /// Show the filesystem `make` makes at `at` through FUSE.

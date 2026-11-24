@@ -3695,7 +3695,7 @@ impl crate::widget::controls::ActionControls for NavShell {
         result: &Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         self.for_each_owned_mut(|child| {
-            if !child.has_separate_document_owner() {
+            if !crate::bound_dispatch::has_separate_document_owner(child) {
                 crate::widget::controls::on_control_invocation_result(child, address, result);
             }
         });

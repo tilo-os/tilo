@@ -535,6 +535,38 @@ fn with_part_container<R>(
     None
 }
 
+/// Whether the view says what it shows is swapped whole when another page comes (`transition:
+/// .cross_fade` on a stage): the old page keeps its place while it fades out and the new one fades
+/// in over it.
+fn swapping(node: &UiNode) -> bool {
+    token(node, "transition") == Some("cross_fade")
+}
+
+/// Whether `new` shows the same content `old` did, by the identity of the whole tree it holds:
+/// the same nodes, by key and kind, wherever they are. A stage's page swapped for another names
+/// its own places, so the tree's keys change somewhere; a place moved or a zoom asked for changes
+/// only what those same nodes hold, never which they are.
+fn content_kept(old: &UiNode, new: &UiNode) -> bool {
+    old.children.len() == new.children.len()
+        && old
+            .children
+            .iter()
+            .zip(&new.children)
+            .all(|(old, new)| old.key == new.key && old.kind == new.kind && content_kept(old, new))
+}
+
+/// The pace a stage's swap plays at (its `motion:`, the theme's own otherwise) and the room it
+/// fills, read from the stage's node.
+fn pace_swap(swapped: &mut ui::widget::Swapped, node: &UiNode) {
+    swapped.set_feel(feel(node).unwrap_or_default());
+    let fill = if flag(node, "fill") {
+        number(node, "fill").unwrap_or(1.0)
+    } else {
+        0.0
+    };
+    swapped.set_fill(fill);
+}
+
 impl Reconciler {
     #[must_use]
     pub fn new(sink: EventSink) -> Self {
@@ -1764,6 +1796,20 @@ impl Reconciler {
         if old_node.kind != new_node.kind || old_node.key != new_node.key {
             return Some(self.build(new_node));
         }
+        // A stage shows one page at a time and says its content is swapped whole
+        // (`transition: .cross_fade`): the page it showed stays laid out and fades out while the
+        // new one fades in. Met again while it swaps, it swaps again, or changes the page it
+        // shows in place without a new swap.
+        if let Some(swapped) = widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<ui::widget::Swapped>())
+        {
+            return self.swapped_in(swapped, old_node, new_node);
+        }
+        if swapping(new_node) && !content_kept(old_node, new_node) {
+            let previous = std::mem::replace(widget, Box::new(Spacer::fixed(0.0)));
+            return Some(self.swap(previous, new_node));
+        }
         if let Some(description) = crate::adapter::description_of(new_node) {
             return self.update_component(widget, old_node, new_node, description);
         }
@@ -1827,6 +1873,40 @@ impl Reconciler {
             kind if is_container(kind) => Some(self.rebuild_shell(widget, old_node, new_node)),
             _ => Some(self.build(new_node)),
         }
+    }
+
+    /// The view `previous`, built for the page a stage showed, swapped for what `new_node` shows:
+    /// the old one stays laid out while it fades out and the new one fades in over it
+    /// ([`ui::widget::Swapped`]), at the pace the stage's `motion:` names.
+    fn swap(&mut self, previous: Element, new_node: &UiNode) -> Element {
+        let current = self.build(new_node);
+        let mut swapped = ui::widget::Swapped::new(previous, current).with_id(new_node.key.clone());
+        pace_swap(&mut swapped, new_node);
+        Box::new(swapped)
+    }
+
+    /// A stage met again while it swaps: a page swapped for another swaps again, from the page it
+    /// shows; a change of the same page changes the view it shows in place; a swap that has
+    /// played leaves the view it showed standing on its own.
+    fn swapped_in(
+        &mut self,
+        swapped: &mut ui::widget::Swapped,
+        old_node: &UiNode,
+        new_node: &UiNode,
+    ) -> Option<Element> {
+        pace_swap(swapped, new_node);
+        if swapping(new_node) && !content_kept(old_node, new_node) {
+            swapped.swap(self.build(new_node));
+            return None;
+        }
+        if !swapped.is_swapping() {
+            return Some(std::mem::replace(
+                swapped.current_mut(),
+                Box::new(Spacer::fixed(0.0)),
+            ));
+        }
+        *swapped.current_mut() = self.build(new_node);
+        None
     }
 
     /// Reconcile the children of `container`, built for `old_node`, with `new_node`'s by key,

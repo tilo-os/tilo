@@ -1008,4 +1008,173 @@ mod tests {
         show(&board, "so.tilo.maps", Kind::Navigation, "Home", true, None);
         assert_eq!(cards(&live), ["Home"]);
     }
+
+    /// The card of this device's call, which the system stands over the windows for any app's
+    /// call while the person looks elsewhere.
+    #[cfg(target_os = "linux")]
+    mod call_card {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        use runtime_collab::native_media::{Command, Input, Issue, Request, Snapshot, State};
+        use tilo_native_media::{
+            CallTarget, Caller, MediaFactory, MediaSession, NativeMediaService, Prepare,
+        };
+
+        use super::sources;
+        use crate::call_card::{CallCard, Open};
+
+        const APP: &str = "so.tilo.chat";
+        const PLACE: &str = "voice/lounge";
+
+        /// A carrier that puts this device into any channel at once, with one microphone.
+        struct Carrier;
+
+        impl MediaFactory for Carrier {
+            fn prepare(&self, _target: CallTarget) -> Prepare {
+                Box::pin(async { Ok(Box::new(Call) as Box<dyn MediaSession>) })
+            }
+        }
+
+        struct Call;
+
+        impl MediaSession for Call {
+            fn tick(&mut self, _now: Instant) -> Result<State, Issue> {
+                Ok(State::Live)
+            }
+
+            fn inputs(&self) -> Vec<Input> {
+                vec![Input {
+                    id: "mic".to_owned(),
+                    label: "Microphone".to_owned(),
+                }]
+            }
+
+            fn start_capture(&mut self, _input: &str) -> Result<(), Issue> {
+                Ok(())
+            }
+        }
+
+        /// What the app's own connection is to the call service.
+        fn chat() -> Caller {
+            Caller::connected(7, APP, "the-workspace", "chat-record", Arc::new(|| Ok(())))
+        }
+
+        /// One step the app takes, with the intent its own counter gives it.
+        fn step(media: &NativeMediaService, intent: u64, command: Command) -> Snapshot {
+            media
+                .command_for(
+                    chat(),
+                    Request {
+                        version: 1,
+                        intent,
+                        command,
+                    },
+                )
+                .expect("the app's own step is taken")
+        }
+
+        async fn until_live(media: &NativeMediaService) {
+            for _ in 0..400 {
+                if media
+                    .own_call()
+                    .is_some_and(|call| call.state == State::Live)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("the call never became live");
+        }
+
+        /// The call's row, and the ids of its controls.
+        fn row(live: &super::Sources) -> Option<(super::LiveItem, Vec<String>)> {
+            live.read()
+                .rows
+                .into_iter()
+                .find(|row| row.kind == "call")
+                .map(|row| {
+                    let controls = row.controls.iter().map(|c| c.id.clone()).collect();
+                    (row, controls)
+                })
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_card_mutes_leaves_and_opens_a_call_without_breaking_the_apps_own_steps() {
+            let board = Arc::new(runtime_collab::LiveActivities::default());
+            let live = sources(&board);
+            let media = NativeMediaService::new();
+            assert!(media.install_factory(Arc::new(Carrier)));
+            let mut card = CallCard::default();
+
+            // Chat joins and unmutes at once: the call is not ended for it, and the person is
+            // heard once it is live.
+            step(
+                &media,
+                1,
+                Command::Join {
+                    channel_id: PLACE.to_owned(),
+                },
+            );
+            let asked = step(&media, 2, Command::SetMuted { muted: false });
+            assert_eq!(
+                asked.state,
+                State::Joining,
+                "unmuting on the way in keeps the call"
+            );
+            until_live(&media).await;
+            assert!(
+                !media.own_call().expect("in the call").muted,
+                "the unmute asked on the way in is carried out once the call is live"
+            );
+
+            // While the person looks at Chat, no card stands over it.
+            assert_eq!(card.pass(&board, &media, "Lounge", |_| true), None);
+            assert!(row(&live).is_none(), "no card over the call's own window");
+
+            // Looking elsewhere, the call's card stands over the windows with its controls.
+            card.pass(&board, &media, "Lounge", |_| false);
+            let (shown, controls) = row(&live).expect("the call's card");
+            assert_eq!(shown.title, "Lounge");
+            assert_eq!(shown.source, "Chat");
+            assert!(shown.floats && shown.card, "it stands over the windows");
+            assert_eq!(controls, ["mute", "deafen", "leave", "open"]);
+
+            // Mute on the card mutes the call, and says so.
+            live.press(&shown.key, "mute").expect("the card's mute");
+            card.pass(&board, &media, "Lounge", |_| false);
+            assert!(media.own_call().expect("in the call").muted);
+            let (_, controls) = row(&live).expect("the call's card");
+            assert_eq!(controls[0], "unmute", "the card offers to unmute");
+
+            // The app's own next step is taken: the card did not move its count.
+            let heard = step(&media, 3, Command::SetMuted { muted: false });
+            assert!(
+                !heard.muted && heard.capture_active,
+                "the app unmutes as it asked"
+            );
+            let muted = step(&media, 4, Command::SetMuted { muted: true });
+            assert!(muted.muted);
+
+            // Open names the call's place, in the app that holds it.
+            live.press(&shown.key, "open").expect("the card's open");
+            assert_eq!(
+                card.pass(&board, &media, "Lounge", |_| false),
+                Some(Open {
+                    workspace: "the-workspace".to_owned(),
+                    app: APP.to_owned(),
+                    record: "chat-record".to_owned(),
+                    resource: format!("tl:{APP}:{PLACE}"),
+                })
+            );
+
+            // Leave ends the call, and the card goes with it.
+            card.pass(&board, &media, "Lounge", |_| false);
+            let (shown, _) = row(&live).expect("the call's card");
+            live.press(&shown.key, "leave").expect("the card's leave");
+            card.pass(&board, &media, "Lounge", |_| false);
+            assert!(media.own_call().is_none(), "the call is over");
+            assert!(row(&live).is_none(), "and its card is gone");
+        }
+    }
 }

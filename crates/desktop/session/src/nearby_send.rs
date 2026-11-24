@@ -21,6 +21,7 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteA
 use tilo_actions::{ActionAddress, ApiError, InvocationId, ResourceSpec};
 use tilo_broker_core::services::WorkspaceAuthority;
 use tilo_capture_studio::{Refusal, Sent};
+use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started, Wake, reading};
 use tilo_session_client::daemon_documents::{DaemonShell, whole};
@@ -62,7 +63,29 @@ struct Inner {
     published: RefCell<Option<Value>>,
     /// The last reading, as the studio's picker and a send read the devices from.
     last: RefCell<Reading>,
+    /// The daemon's reading of the workspace in front, followed off the loop: what a pass reads,
+    /// never waiting on the daemon.
+    followed: RefCell<Option<Followed>>,
 }
+
+/// The daemon's Nearby Send reading of one workspace, followed by a task of the daemon link's
+/// runtime: each answer waits for the next change.
+struct Followed {
+    workspace: String,
+    latest: Arc<Mutex<Result<Reading, String>>>,
+    follow: tokio::task::AbortHandle,
+}
+
+impl Drop for Followed {
+    fn drop(&mut self) {
+        self.follow.abort();
+    }
+}
+
+/// How long a follow of the daemon's reading waits for a change before it asks again.
+const FOLLOW_WAIT_MS: u32 = 25_000;
+/// How long a follow waits before it asks a daemon that did not answer again.
+const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Served {
     /// The session's Nearby Send, reading and invoking the daemon's over `daemon`.
@@ -134,6 +157,7 @@ impl Inner {
             wake,
             published: RefCell::new(None),
             last: RefCell::new(Reading::default()),
+            followed: RefCell::new(None),
         }
     }
 
@@ -231,17 +255,55 @@ impl Inner {
     }
 
     /// The daemon's reading of Nearby Send in `workspace`, as the shell link carries it.
+    /// The daemon's reading of `workspace` as its follow last heard it: the follow starts on the
+    /// first ask, and a pass never waits for the daemon.
     fn read_daemon(&self, workspace: &str) -> Result<Reading, String> {
-        let read = whole(workspace, "session", wire::RESOURCE);
-        let answered = self.daemon.read_blocking(read)?;
-        let value = answered["records"]
-            .as_array()
-            .and_then(|records| records.first())
-            .map_or(Value::Null, |record| record["value"].clone());
-        if value.is_null() {
-            return Ok(Reading::default());
+        let mut followed = self.followed.borrow_mut();
+        if followed
+            .as_ref()
+            .is_none_or(|followed| followed.workspace != workspace)
+        {
+            *followed = Some(self.follow(workspace));
         }
-        serde_json::from_value(value).map_err(|error| format!("the reading does not read: {error}"))
+        followed.as_ref().map_or_else(
+            || Ok(Reading::default()),
+            |followed| followed.latest.lock_recover().clone(),
+        )
+    }
+
+    /// Follow the daemon's reading of `workspace`, waking the session each time it moved.
+    fn follow(&self, workspace: &str) -> Followed {
+        let latest = Arc::new(Mutex::new(Ok(Reading::default())));
+        let (daemon, wake, kept) = (
+            self.daemon.clone(),
+            Arc::clone(&self.wake),
+            Arc::clone(&latest),
+        );
+        let at = workspace.to_owned();
+        let follow = self.daemon.runtime().spawn(async move {
+            let mut after: Option<String> = None;
+            loop {
+                let mut read = whole(&at, "session", wire::RESOURCE);
+                read.wait_ms = after.is_some().then_some(FOLLOW_WAIT_MS);
+                read.after.clone_from(&after);
+                match daemon.read(read).await {
+                    Ok(answered) => {
+                        after = answered["revision"].as_str().map(str::to_owned);
+                        *kept.lock_recover() = reading_of(&answered);
+                        wake();
+                    }
+                    Err(error) => {
+                        *kept.lock_recover() = Err(error);
+                        tokio::time::sleep(ASK_AGAIN).await;
+                    }
+                }
+            }
+        });
+        Followed {
+            workspace: workspace.to_owned(),
+            latest,
+            follow: follow.abort_handle(),
+        }
     }
 
     /// Ask the daemon for one of the resource's actions, and answer what it said: a call that
@@ -439,6 +501,18 @@ impl Inner {
         *published = Some(now);
         true
     }
+}
+
+/// The reading `answered` carries: none while the daemon publishes nothing.
+fn reading_of(answered: &Value) -> Result<Reading, String> {
+    let value = answered["records"]
+        .as_array()
+        .and_then(|records| records.first())
+        .map_or(Value::Null, |record| record["value"].clone());
+    if value.is_null() {
+        return Ok(Reading::default());
+    }
+    serde_json::from_value(value).map_err(|error| format!("the reading does not read: {error}"))
 }
 
 /// The daemon's `action` of Nearby Send with `arguments`, as the person's own call.

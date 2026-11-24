@@ -1,5 +1,5 @@
 //! Seeing and driving undo from inside a widget. Undo itself lives on
-//! [`State`](crate::state::State) / [`UndoLog`](tilo_resource_store::history::UndoLog), and the host
+//! [`State`](crate::state::State) / [`UndoLog`](collaboration::history::UndoLog), and the host
 //! ([`App`](crate::app::App)) drives it from Ctrl+Z.
 
 pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";
@@ -736,7 +736,7 @@ pub fn state_status(
 /// live edit.
 pub(crate) fn status_snapshot(
     doc: &automerge::AutoCommit,
-    history: &tilo_resource_store::history::UndoLog,
+    history: &collaboration::history::UndoLog,
     author: Option<&crate::permissions::MemberId>,
 ) -> UndoStatus {
     let undo = history.next_undo_as(doc, author);

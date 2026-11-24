@@ -84,23 +84,95 @@ enum Landed {
         result: Result<(), String>,
         readings: Box<Readings>,
     },
+    /// A change the service made itself, with no action behind it: keeping the device to a
+    /// policy of the person's.
+    Kept {
+        part: Part,
+        result: Result<(), String>,
+        readings: Box<Readings>,
+    },
+    /// What a modem answered an action that asks it something, which its reading then shows.
+    Answered {
+        action: String,
+        modem: String,
+        result: Result<Answer, String>,
+        readings: Box<Readings>,
+    },
+}
+
+/// What an action that asks the modem answered, kept in its reading.
+enum Answer {
+    /// The operators a scan found.
+    Operators(Vec<model::Operator>),
+    /// What the network said to a code; `None` when the session was ended.
+    Code(Option<model::Code>),
+}
+
+/// Where this device's own network policy is kept: the leaves Tilo holds itself, beside what
+/// `NetworkManager` holds per connection.
+pub trait Preferences: Send + Sync {
+    /// Whether this device asks before it joins an open Wi-Fi network it keeps.
+    fn ask_before_open_networks(&self) -> bool;
+
+    /// Keep whether it asks, or say why it could not be written.
+    ///
+    /// # Errors
+    /// The settings could not be written.
+    fn set_ask_before_open_networks(&self, on: bool) -> Result<(), String>;
+}
+
+/// The settings store this device keeps its policy in.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SettingsPreferences;
+
+impl Preferences for SettingsPreferences {
+    fn ask_before_open_networks(&self) -> bool {
+        settings_store::network::ASK_BEFORE_OPEN_NETWORKS.get()
+    }
+
+    fn set_ask_before_open_networks(&self, on: bool) -> Result<(), String> {
+        settings_store::network::ASK_BEFORE_OPEN_NETWORKS
+            .set(on)
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// The connectivity service.
 pub struct Connectivity {
     readings: Readings,
+    preferences: Arc<dyn Preferences>,
+    /// Whether this device asks before it joins an open network, as its settings last said: the
+    /// service is the one that changes it, so the settings are read once, where the loop never
+    /// waits for them.
+    asking: bool,
     worker: Worker<dyn Device, Landed>,
 }
 
 impl Connectivity {
     /// The service over `device`, reading it once at the start; `wake` is
-    /// called whenever something landed for the session to take in.
+    /// called whenever something landed for the session to take in. This
+    /// device's own policy is read from its settings.
     ///
     /// # Errors
     /// The worker's thread did not start.
     pub fn new(device: Arc<dyn Device>, wake: Option<Wake>) -> std::io::Result<Self> {
+        Self::over(device, wake, Arc::new(SettingsPreferences))
+    }
+
+    /// [`Connectivity::new`] over the policy `preferences` holds, as a test
+    /// lends its own.
+    ///
+    /// # Errors
+    /// The worker's thread did not start.
+    pub fn over(
+        device: Arc<dyn Device>,
+        wake: Option<Wake>,
+        preferences: Arc<dyn Preferences>,
+    ) -> std::io::Result<Self> {
         let service = Self {
             readings: Readings::default(),
+            asking: preferences.ask_before_open_networks(),
+            preferences,
             worker: Worker::spawn("tilo-connectivity", device, wake)?,
         };
         service.refresh();
@@ -141,6 +213,7 @@ impl Connectivity {
     }
 
     fn land(&mut self, landed: Landed) {
+        let joining = self.open_networks_joining_by_themselves();
         match landed {
             Landed::Read(readings) => self.take(*readings),
             Landed::Changed {
@@ -156,11 +229,91 @@ impl Connectivity {
                 }
                 *problem = result.err();
             }
+            Landed::Kept {
+                part,
+                result,
+                readings,
+            } => {
+                self.take(*readings);
+                let (_, problem) = self.status(part);
+                *problem = result.err();
+            }
+            Landed::Answered {
+                action,
+                modem,
+                result,
+                readings,
+            } => {
+                self.take(*readings);
+                {
+                    let (pending, problem) = self.status(Part::Modem);
+                    if let Some(at) = pending.iter().position(|id| *id == action) {
+                        pending.remove(at);
+                    }
+                    *problem = result.as_ref().err().cloned();
+                }
+                if let Ok(answer) = result {
+                    self.show_answer(&modem, answer);
+                }
+            }
+        }
+        // An open network this device keeps that joined by itself while it asks first is put
+        // back in step once, when it starts doing so: a change that fails leaves the reading as
+        // it was, so nothing loops.
+        let out_of_step = self.open_networks_joining_by_themselves();
+        if !out_of_step.is_empty() && out_of_step != joining {
+            self.keep_open_networks_asked();
+        }
+    }
+
+    /// The open Wi-Fi networks this device keeps that join by themselves, while it asks before
+    /// joining one.
+    fn open_networks_joining_by_themselves(&self) -> Vec<String> {
+        let network = &self.readings.network;
+        if !network.ask_before_open_networks {
+            return Vec::new();
+        }
+        network
+            .saved
+            .iter()
+            .filter(|saved| saved.open && saved.autoconnect)
+            .map(|saved| saved.id.clone())
+            .collect()
+    }
+
+    /// Keep the open networks this device keeps from joining by themselves: the person asks
+    /// first, as the policy says.
+    fn keep_open_networks_asked(&mut self) {
+        self.worker.run(move |device| {
+            let result = device.change(&Change::OpenNetworks { ask: true });
+            Landed::Kept {
+                part: Part::Network,
+                result,
+                readings: Box::new(device.read()),
+            }
+        });
+    }
+
+    /// Show what a modem answered in its reading: the operators a scan found, or the code's
+    /// answer.
+    fn show_answer(&mut self, modem: &str, answer: Answer) {
+        let Some(unit) = self
+            .readings
+            .modem
+            .modems
+            .iter_mut()
+            .find(|unit| unit.path == modem)
+        else {
+            return;
+        };
+        match answer {
+            Answer::Operators(operators) => unit.operators = operators,
+            Answer::Code(code) => unit.code = code,
         }
     }
 
     /// Take a fresh reading, keeping what is the service's own: the actions
-    /// pending and the last problem.
+    /// pending, the last problem and the person's network policy.
     fn take(&mut self, mut readings: Readings) {
         let old = &mut self.readings;
         readings.network.pending = std::mem::take(&mut old.network.pending);
@@ -173,6 +326,15 @@ impl Connectivity {
         readings.vpn.problem = old.vpn.problem.take();
         readings.tethering.pending = std::mem::take(&mut old.tethering.pending);
         readings.tethering.problem = old.tethering.problem.take();
+        readings.network.ask_before_open_networks = self.asking;
+        // What the service itself asked a modem: the operators a scan found and the code the
+        // network answered stay across the readings the device publishes.
+        for unit in &mut readings.modem.modems {
+            if let Some(held) = old.modem.modems.iter().find(|held| held.path == unit.path) {
+                unit.operators.clone_from(&held.operators);
+                unit.code.clone_from(&held.code);
+            }
+        }
         address_rows(&mut readings);
         self.readings = readings;
     }
@@ -350,6 +512,14 @@ impl Connectivity {
                     ca_certificate,
                 },
             },
+            NetworkAction::SetAskBeforeOpenNetworks { on } => {
+                self.preferences
+                    .set_ask_before_open_networks(on)
+                    .map_err(ApiError::Failed)?;
+                self.asking = on;
+                self.readings.network.ask_before_open_networks = on;
+                Change::OpenNetworks { ask: on }
+            }
             NetworkAction::SetWifiPassword { profile, password } => {
                 Change::WifiPassword { profile, password }
             }
@@ -857,6 +1027,7 @@ fn mark_what_the_device_lacks(resource: &mut ResourceSpec, network: &Network) {
             "connect-wifi",
             "connect-hidden-wifi",
             "connect-enterprise-wifi",
+            "set-ask-before-open-networks",
         ] {
             unavailable(resource, action, "no_wifi", "This device has no Wi-Fi");
         }
@@ -1194,6 +1365,11 @@ pub fn modem_resource(modem: &Modem) -> ResourceSpec {
             "change-sim-pin",
             "use-sim",
             "set-preferred-network",
+            "scan-operators",
+            "select-operator",
+            "send-code",
+            "answer-code",
+            "cancel-code",
         ] {
             unavailable(
                 &mut resource,
@@ -1270,6 +1446,44 @@ fn network_modes(key: &str) -> Result<os_actions::NetworkModes, String> {
 impl Connectivity {
     fn modem(&mut self, action: ModemAction) -> Result<Started, ApiError> {
         let id = action.id();
+        // What the modem answers is the reading's to show, not a change's.
+        match &action {
+            ModemAction::ScanOperators { modem } => {
+                let path = self.modem_at(modem.as_deref())?;
+                return Ok(self.answer_from_modem(id, path, |device, path| {
+                    device.scan_operators(path).map(|found| {
+                        Answer::Operators(model::ordered_operators(
+                            found.iter().map(model::Operator::from).collect(),
+                        ))
+                    })
+                }));
+            }
+            ModemAction::SendCode { modem, code } => {
+                let path = self.modem_at(modem.as_deref())?;
+                let code = code.clone();
+                return Ok(self.answer_from_modem(id, path, move |device, path| {
+                    device
+                        .send_code(path, &code)
+                        .map(|answer| Answer::Code(Some(model::Code::from(&answer))))
+                }));
+            }
+            ModemAction::AnswerCode { modem, answer } => {
+                let path = self.modem_at(modem.as_deref())?;
+                let answer = answer.clone();
+                return Ok(self.answer_from_modem(id, path, move |device, path| {
+                    device
+                        .answer_code(path, &answer)
+                        .map(|answer| Answer::Code(Some(model::Code::from(&answer))))
+                }));
+            }
+            ModemAction::CancelCode { modem } => {
+                let path = self.modem_at(modem.as_deref())?;
+                return Ok(self.answer_from_modem(id, path, |device, path| {
+                    device.cancel_code(path).map(|()| Answer::Code(None))
+                }));
+            }
+            _ => {}
+        }
         let change = match action {
             ModemAction::RefreshModems => {
                 refresh(&self.worker.jobs());
@@ -1316,8 +1530,70 @@ impl Connectivity {
                 let path = self.modem_path(modem.as_deref(), &network)?;
                 Change::ModemModes { modem: path, modes }
             }
+            ModemAction::SelectOperator { modem, operator } => {
+                let path = self.modem_at(modem.as_deref())?;
+                Change::ModemRegister {
+                    modem: path,
+                    operator,
+                }
+            }
+            ModemAction::ScanOperators { .. }
+            | ModemAction::SendCode { .. }
+            | ModemAction::AnswerCode { .. }
+            | ModemAction::CancelCode { .. } => {
+                unreachable!("answered above, before the change")
+            }
         };
         Ok(self.start(Part::Modem, id, change))
+    }
+
+    /// Run `work` on the worker: what the modem at `path` answered, which its reading then shows
+    /// when it lands.
+    fn answer_from_modem(
+        &mut self,
+        action: &str,
+        path: String,
+        work: impl FnOnce(&dyn Device, &str) -> Result<Answer, String> + Send + 'static,
+    ) -> Started {
+        let action = action.to_owned();
+        self.status(Part::Modem).0.push(action.clone());
+        let (answer, answered) = tilo_actions::remote::pending();
+        let modem = path;
+        let asked = modem.clone();
+        self.worker.run(move |device| {
+            let result = work(device, &asked);
+            let readings = Box::new(device.read());
+            answer.complete(
+                result
+                    .as_ref()
+                    .map(|_| ActionOutput::default())
+                    .map_err(|why| ApiError::Failed(why.clone())),
+            );
+            Landed::Answered {
+                action,
+                modem,
+                result,
+                readings,
+            }
+        });
+        Started::Later(answered)
+    }
+
+    /// The modem the person names, by its path or name, or the first one this device has.
+    fn modem_at(&self, wanted: Option<&str>) -> Result<String, ApiError> {
+        self.readings
+            .modem
+            .modems
+            .iter()
+            .find(|modem| wanted.is_none_or(|wanted| modem.path == wanted || modem.name == wanted))
+            .map(|modem| modem.path.clone())
+            .ok_or_else(|| ApiError::Unavailable {
+                code: "no_such_modem".into(),
+                reason: match wanted {
+                    Some(wanted) => format!("{wanted} is not a modem of this device"),
+                    None => "this device has no modem".into(),
+                },
+            })
     }
 
     fn sim_path(

@@ -193,6 +193,7 @@ session-magnifier-toggle = Lupe ein- oder ausschalten
 session-magnifier-zoom-in = Stärker vergrößern
 session-magnifier-zoom-out = Weniger vergrößern
 session-displays = Bildschirme
+session-person-displays = Ihre Bildschirme
 session-input-devices = Eingabegeräte
 session-privacy = Privatsphäre
 session-workspace-access = Zugriff im Arbeitsbereich
@@ -244,7 +245,6 @@ session-bluetooth-timed-out = Der Umzug hat zu lange gedauert.
 session-bluetooth-unknown = Das ist keine Bluetooth-Adresse.
 session-notifications = Benachrichtigungszentrum
 session-time = Uhrzeit
-session-keyboard = Tastatur
 session-clock = Uhr
 
 session-nearby-send = In der Nähe senden
@@ -483,6 +483,17 @@ call-microphone-reason = um im Anruf gehört zu werden
 call-camera-reason = um im Anruf gesehen zu werden
 call-camera-test-picture = Testbild
 call-screen-reason = um diesen Bildschirm im Anruf zu teilen
+call-card-mute = Stummschalten
+call-card-unmute = Stummschaltung aufheben
+call-card-deafen = Ton aus
+call-card-undeafen = Ton an
+call-card-leave = Verlassen
+call-card-open = Öffnen
+call-card-joining = Beitreten
+call-card-reconnecting = Verbindung wird wiederhergestellt
+call-card-muted = Stumm
+call-card-deafened = Ton aus
+call-card-connected = Verbunden
 
 ## What the window names
 session-resource-keyboard = Bildschirmtastatur

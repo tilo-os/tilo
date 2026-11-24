@@ -81,11 +81,11 @@ impl Workspaces {
             .fields
             .insert(ACCOUNT_FIELD.to_owned(), account.id.0.clone());
         let item = ItemRef::from_id(&entry.id.0).ok_or("the vault made an entry with no id")?;
-        self.write_vault(&opened, vec![VaultChange::Keep(entry)], None)
+        self.write_vault(&opened, vec![VaultChange::Keep(entry)], None, None)
             .await?;
         let mut account = account.clone();
         accounts::email::set_password_item(&mut account.config, Some(&item.to_string()));
-        self.keep_workspace_account((workspace, &self.acting_or_own(None)), &account)
+        self.keep_workspace_account((workspace, &self.acting_or_own(None), None), &account)
             .await
     }
 
@@ -150,6 +150,7 @@ impl Workspaces {
             &opened,
             vec![VaultChange::Uses(entry.id.clone(), uses)],
             None,
+            None,
         )
         .await
     }
@@ -168,11 +169,19 @@ impl Workspaces {
     ) -> Result<(), String> {
         let opened = self.open_vault(workspace).await?;
         if let Some((entry, _)) = entry_of(opened.entries(), account) {
-            self.write_vault(&opened, vec![VaultChange::Forget(entry.id.clone())], None)
-                .await?;
+            self.write_vault(
+                &opened,
+                vec![VaultChange::Forget(entry.id.clone())],
+                None,
+                None,
+            )
+            .await?;
         }
-        self.remove_workspace_account((workspace, &self.acting_or_own(None)), account.id.as_str())
-            .await
-            .map(drop)
+        self.remove_workspace_account(
+            (workspace, &self.acting_or_own(None), None),
+            account.id.as_str(),
+        )
+        .await
+        .map(drop)
     }
 }

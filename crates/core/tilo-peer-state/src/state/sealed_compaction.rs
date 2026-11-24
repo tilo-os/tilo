@@ -1506,22 +1506,16 @@ pub(super) fn open_sealed_after(
         }
         match opened.and_then(|plain| transfers.take(*write.author.as_bytes(), &plain)) {
             Ok(Some(mutation)) if write.kind == OpKind::Compaction => {
-                let read = super::checkpoints::read_checkpoint(
+                let mutation = checkpoint_write(
                     document,
-                    &mutation,
+                    mutation,
                     &mut *open,
                     &mut *check,
                     settled,
-                )
-                .map_err(|refusal| match refusal {
-                    super::checkpoints::CheckpointRefusal::Waits => OpenSealedError::Incomplete,
-                    super::checkpoints::CheckpointRefusal::CannotDecide(why) => {
-                        OpenSealedError::Failed(why)
-                    }
-                })?;
-                read.refuse_in(&mut refused);
-                beside.extend(read.named().iter().cloned());
-                writes.push((index, read.instead.unwrap_or(mutation)));
+                    &mut refused,
+                    &mut beside,
+                )?;
+                writes.push((index, mutation));
             }
             Ok(Some(mutation)) => match check(write, &mutation) {
                 Ok(()) => writes.push((index, mutation)),
@@ -1584,6 +1578,29 @@ pub(super) fn open_sealed_after(
             .collect(),
     };
     Ok((opened, next))
+}
+
+/// The write a checkpoint stands in for, its refusals taken: [`OpenSealedError`] where the
+/// checkpoint waits on a write or cannot be decided.
+fn checkpoint_write(
+    document: &super::Document,
+    mutation: DocumentMutation,
+    open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+    check: &mut CheckOpened<'_>,
+    settled: &dyn Fn(&SignedOp) -> bool,
+    refused: &mut RefusedChanges,
+    beside: &mut Vec<UnmergedWrite>,
+) -> Result<DocumentMutation, OpenSealedError> {
+    let read = super::checkpoints::read_checkpoint(document, &mutation, open, check, settled)
+        .map_err(|refusal| match refusal {
+            super::checkpoints::CheckpointRefusal::Waits => OpenSealedError::Incomplete,
+            super::checkpoints::CheckpointRefusal::CannotDecide(why) => {
+                OpenSealedError::Failed(why)
+            }
+        })?;
+    read.refuse_in(refused);
+    beside.extend(read.named().iter().cloned());
+    Ok(read.instead.unwrap_or(mutation))
 }
 
 /// A sealed document as an opening of it left it, every write of its history merged

@@ -138,6 +138,9 @@ pub(super) fn action_page(path: &str, action: &ActionDescriptor, called: Option<
     {
         let _ = write!(page, "\n{}", first_sentence(description));
     }
+    if let Some(writes) = action.writes() {
+        let _ = write!(page, "\n{writes}");
+    }
     if action.params.is_empty() {
         page.push_str("\nno parameters");
     }

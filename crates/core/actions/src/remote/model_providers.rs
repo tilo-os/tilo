@@ -99,6 +99,23 @@ pub const WAIT_SIGN_IN: &str = "wait-sign-in";
 /// Stop waiting for a sign-in begun with [`BEGIN_SIGN_IN`] ([`WaitSignIn`]).
 pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
 
+/// What the action `action` writes in the workspace's vault, as the host answering it takes it:
+/// a key typed in is kept, a removed key goes (as does the one a vault item's key replaces), and
+/// a provider asked with a key the vault keeps writes down that use, a key just kept included. The action's own
+/// declaration, read wherever it is listed and wherever a device reads the vault's record.
+#[must_use]
+pub fn effects(action: &str) -> Vec<crate::ActionEffect> {
+    use super::person_vault::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED, vault_step};
+    let steps: &[&str] = match action {
+        ADD_PROVIDER | ADD_PRESET | SET_KEY => &[KEEP_SEALED, REMOVE_SEALED, KEEP_USES],
+        SET_KEY_FROM_ITEM => &[KEEP_USES, REMOVE_SEALED],
+        REMOVE_KEY | REMOVE_PROVIDER => &[REMOVE_SEALED],
+        REFRESH_MODELS => &[KEEP_USES],
+        _ => &[],
+    };
+    steps.iter().map(|verb| vault_step(verb)).collect()
+}
+
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
 pub fn target(action: &str) -> RemoteActionTarget {

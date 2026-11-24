@@ -875,7 +875,7 @@ pub(crate) mod testing {
             .unwrap();
         accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
         workspaces
-            .keep_workspace_account((workspace, &asker), &account)
+            .keep_workspace_account((workspace, &asker, None), &account)
             .await
             .unwrap();
     }
@@ -1127,7 +1127,7 @@ mod tests {
         assert!(
             workspaces
                 .remove_workspace_account(
-                    (&ada, &workspaces.acting_or_own(None)),
+                    (&ada, &workspaces.acting_or_own(None), None),
                     "ada@work.example.test"
                 )
                 .await

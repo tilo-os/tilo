@@ -120,6 +120,9 @@ pub struct Apps {
     link_home: RefCell<Option<LinkHomeOf>>,
     /// What the person is asked about an app's network before it first starts ([`reach`]).
     reach: reach::Reach,
+    /// The files and search hits under way for the apps whose windows each show one item of
+    /// their library ([`items`]).
+    items: items::Items,
     /// What the apps publish on the device's dispatch, as last read ([`AppActions::published`]).
     published: Arc<std::sync::Mutex<PublishedRows>>,
 }
@@ -398,6 +401,7 @@ impl Apps {
             admission: RefCell::new(None),
             link_home: RefCell::new(None),
             reach: reach::Reach::default(),
+            items: items::Items::default(),
             published: Arc::default(),
             state: RefCell::new(State {
                 environment,
@@ -1061,6 +1065,7 @@ impl Apps {
     /// service, an app or an agent asked for: called once per pass of the session's loop.
     pub fn follow(&self) {
         self.start_asked_now();
+        self.follow_items();
         self.follow_ended();
         self.follow_policy();
         #[cfg(target_os = "linux")]
@@ -1643,6 +1648,11 @@ impl Apps {
         place: Option<&LaunchPlace>,
     ) -> Result<bool, ApiError> {
         self.admitted(&workspace.id)?;
+        // A file of an app whose windows each show one item of its library is that item: its
+        // window opens once the app's action for the file says which, and no tab waits for it.
+        if let Some(opened) = self.opens_file_item(launch, workspace) {
+            return opened.map(|()| false);
+        }
         match self.starting(launch, workspace, instance, place) {
             Beginning::Raised => Ok(false),
             Beginning::Start { new_window } => {
@@ -1700,16 +1710,7 @@ impl Apps {
                 .into_iter()
                 .filter(|(tab, _)| Some(*tab) != instance),
         );
-        let answer = match launch {
-            // A file an app whose windows each show one item of its library opens is an item of
-            // its own: the app's action for the file finds the item those bytes already are or
-            // makes one, and it shows in a window of its own, never in place of the item another
-            // window shows.
-            Launch::Content { .. } if items::windows_show_items(&app.id) => Answer::Start {
-                new_window: shown.of(&app).is_some(),
-            },
-            _ => app.answer(launch, &shown),
-        };
+        let answer = app.answer(launch, &shown);
         if let Answer::Raise { tab } = answer
             && desktop.with_policy(|policy| policy.focus_tab(tab))
         {
@@ -2032,7 +2033,9 @@ impl Apps {
         let launch = handed(launch, workspace, documents.as_ref())
             .map_err(|error| failed(error.to_string()))?;
         let launch = launch.as_ref();
-        let opens = window_opens(launch, reveal, hosted).map_err(failed)?;
+        // The window opens on its item, at the place inside it a search hit named.
+        let first = self.shown_first(reveal);
+        let opens = window_opens(launch, first.as_deref(), hosted).map_err(failed)?;
         let planned_launch = &process_launch(launch, hosted);
         // A window of a hosted app whose tab this session named itself, which happens only in a
         // session with no shell behind it: the tab is the window's instance, and it is the only
@@ -2044,7 +2047,7 @@ impl Apps {
         let mut planned =
             self.planned_or_failed(planned_launch, workspace, new_window, instance, timed)?;
         tilo_startup_metrics::launch_phase(app, "planned");
-        self.told_what_to_show(&mut planned, reveal, hosted);
+        self.told_what_to_show(&mut planned, first.as_deref(), hosted);
         let asked = launch.id();
         let Some(links) = links else {
             return self

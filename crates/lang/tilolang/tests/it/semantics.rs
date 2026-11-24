@@ -62,27 +62,24 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_record_value_is_no_resource_an_action_takes;
+    phase a_record_value_of_its_type_is_handed_to_an_action;
     // A record a decode answered, one built with its fields, or one taken out of a list of values
-    // is a value with no id: an action's record parameter is a resource, and an invocation given a
-    // value is refused at run time, so the checker refuses it where it is written.
+    // is a value of its declared type with no id. An action's parameter of that type takes it,
+    // and the action reads it; a write to its fields fails there, since it names no resource.
     {
         let types = "type P {\n    name: Text\n}\ntype Box {\n    ps: Collection<P>\n}\n";
         let action = "action adopt(b: Box, p: P) {\n    b.ps.insert(p)\n}\n";
         let decoded = "action keep(b: Box, t: Text) {\n    match json.decode<P>(t) {\n        .ok(p) => adopt(b, p),\n        .err(_) => {}\n    }\n}\n";
-        assert_eq!(codes(&format!("{types}{action}{decoded}")), vec!["E020"]);
-        // A record built here is one too.
-        let built = "action keep(b: Box) {\n    adopt(b, P(name: \"x\"))\n}\n";
-        assert_eq!(codes(&format!("{types}{action}{built}")), vec!["E020"]);
-        // So is an item taken out of a list of values.
-        let listed = "action keep(b: Box, t: Text) {\n    let ps = [P(name: t)]\n    if let p = ps.first() {\n        adopt(b, p)\n    }\n}\n";
-        assert_eq!(codes(&format!("{types}{action}{listed}")), vec!["E020"]);
-        // A list handed to the code may hold resources, so what its items are is not known there.
-        let looped = "action keep(b: Box, ps: List<P>) {\n    for p in ps {\n        adopt(b, p)\n    }\n}\n";
         assert_eq!(
-            codes(&format!("{types}{action}{looped}")),
+            codes(&format!("{types}{action}{decoded}")),
             Vec::<String>::new()
         );
+        // A record built here is one too.
+        let built = "action keep(b: Box) {\n    adopt(b, P(name: \"x\"))\n}\n";
+        assert_eq!(codes(&format!("{types}{action}{built}")), Vec::<String>::new());
+        // So is an item taken out of a list of values.
+        let listed = "action keep(b: Box, t: Text) {\n    let ps = [P(name: t)]\n    if let p = ps.first() {\n        adopt(b, p)\n    }\n}\n";
+        assert_eq!(codes(&format!("{types}{action}{listed}")), Vec::<String>::new());
         // What the store holds passes: a parameter, what an insert made, and what it finds.
         let held = "action keep(b: Box, p: P) {\n    let made = b.ps.insert(P(name: \"x\"))\n    adopt(b, made)\n    adopt(b, p)\n    if let f = b.ps.find(x -> x.name == \"x\") {\n        adopt(b, f)\n    }\n}\n";
         assert_eq!(codes(&format!("{types}{action}{held}")), Vec::<String>::new());
@@ -546,6 +543,45 @@ tilo_test_env::scenario! {
         assert!(
             under > source.find(&heading).expect("the view's message"),
             "the row's words are the view's attributes: {source}"
+        );
+    }
+
+    phase a_helper_fns_words_are_messages_of_its_own_declaration;
+    // A `fn` that hands words back is part of what a view shows: the literals its body returns are
+    // messages, under the fn's own declaration, so a window reading another language translates the
+    // sentence a row is built from and not only the sentence a view writes directly.
+    {
+        let c = compile(
+            "type Answer {\n    name: Text\n    allowed: Bool\n}\ntype Book {\n    answers: List<Answer>\n}\nroot Book\ndefault view book for Book\nfn standing(a: Answer) -> Text {\n    if a.allowed { \"Allowed\" } else { \"Refused\" }\n}\nfn words(a: Answer) -> Text {\n    if a.allowed { \"Yes for {a.name}\" } else { \"No, {a.name}: {standing(a)}\" }\n}\nview book(b: Book) {\n    for a in b.answers {\n        text(words(a))\n    }\n}",
+        );
+        crate::common::validate(&c.wasm);
+        let source = tilolang::messages::source_catalogue(&c.meta);
+        let words = tilolang::messages::key_of(c.ids.get("words").expect("the fn"));
+        let standing = tilolang::messages::key_of(c.ids.get("standing").expect("the fn"));
+        for line in [
+            format!("{words} = Words"),
+            "    .w-yes-for = Yes for { $name }".to_owned(),
+            "    .w-no = No, { $name }: { $standing }".to_owned(),
+            format!("{standing} = Standing"),
+            "    .w-allowed = Allowed".to_owned(),
+            "    .w-refused = Refused".to_owned(),
+        ] {
+            assert!(source.contains(&line), "{line:?} in {source}");
+        }
+    }
+
+    phase a_helper_fns_words_are_no_message_where_no_view_shows_them;
+    // A fn no view shows hands back data: its literal is a tag, a query or a key, and stays text.
+    {
+        let c = compile(
+            "type Note {\n    tag: Text\n}\ntype Book {\n    notes: List<Note>\n}\nroot Book\ndefault view book for Book\nfn tag_of(n: Note) -> Text {\n    \"private\"\n}\nview book(b: Book) {\n    for n in b.notes {\n        text(n.tag)\n    }\n}",
+        );
+        crate::common::validate(&c.wasm);
+        let source = tilolang::messages::source_catalogue(&c.meta);
+        let tag = tilolang::messages::key_of(c.ids.get("tag_of").expect("the fn"));
+        assert!(
+            !source.contains(&format!("{tag}.w-private")),
+            "a fn no view shows writes no message: {source}"
         );
     }
 

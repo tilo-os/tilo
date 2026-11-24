@@ -397,6 +397,35 @@ pub fn draw_child(
     draw_child_at(child, None, scene, transform, text_renderer, theme, env);
 }
 
+/// Draw `paint` at `opacity`, in a layer only while it is part-way, and draw nothing at all once
+/// it is gone: the one way a view drawn translucent (one fading in or out over another) reaches
+/// the scene.
+pub(crate) fn in_opacity_layer(
+    scene: &mut Scene,
+    transform: Affine,
+    clip: vello::kurbo::Rect,
+    opacity: f32,
+    paint: impl FnOnce(&mut Scene),
+) {
+    if opacity <= 0.0 {
+        return;
+    }
+    let part = opacity < 1.0;
+    if part {
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            opacity,
+            transform,
+            &clip.inflate(2.0, 2.0),
+        );
+    }
+    paint(scene);
+    if part {
+        scene.pop_layer();
+    }
+}
+
 /// [`draw_child`] for a container that knows `child`'s place among its
 /// children (`index`), so a host that keys widgets
 /// ([`crate::scene_parts::key_widgets`]) keys it by that place even when the
@@ -614,10 +643,12 @@ pub(crate) fn collect_widget_resources(
         resources: &mut Vec<tilo_actions::ResourceSpec>,
         taken: &mut crate::widget::resources::TakenResources,
     ) {
-        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+        if crate::bound_dispatch::has_separate_document_owner(widget)
+            && crate::bound_dispatch::callback_binding(widget).is_none()
+        {
             return;
         }
-        let boundary = widget.callback_binding();
+        let boundary = crate::bound_dispatch::callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let Ok(_entry) = binding
             .as_ref()
@@ -684,10 +715,12 @@ pub fn find_resource(
         root: bool,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
-        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+        if crate::bound_dispatch::has_separate_document_owner(widget)
+            && crate::bound_dispatch::callback_binding(widget).is_none()
+        {
             return None;
         }
-        let boundary = widget.callback_binding();
+        let boundary = crate::bound_dispatch::callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let Ok(_entry) = binding
             .as_ref()
@@ -740,10 +773,12 @@ pub fn resources_past_page(
         doc: &AutoCommit,
         inherited: Option<crate::bound_dispatch::CallbackBinding>,
     ) -> Vec<tilo_actions::ResourceSpec> {
-        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+        if crate::bound_dispatch::has_separate_document_owner(widget)
+            && crate::bound_dispatch::callback_binding(widget).is_none()
+        {
             return Vec::new();
         }
-        let boundary = widget.callback_binding();
+        let boundary = crate::bound_dispatch::callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let Ok(_entry) = binding
             .as_ref()
@@ -824,10 +859,12 @@ fn visit_past_page<T>(
     inherited: Option<crate::bound_dispatch::CallbackBinding>,
     ask: &mut dyn FnMut(&dyn Widget, &AutoCommit) -> Option<T>,
 ) -> Option<T> {
-    if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+    if crate::bound_dispatch::has_separate_document_owner(widget)
+        && crate::bound_dispatch::callback_binding(widget).is_none()
+    {
         return None;
     }
-    let boundary = widget.callback_binding();
+    let boundary = crate::bound_dispatch::callback_binding(widget);
     let binding = boundary.clone().or(inherited);
     let _entry = binding
         .as_ref()
@@ -915,7 +952,7 @@ fn resolve_bound_resource<R>(
     inherited: Option<crate::bound_dispatch::CallbackBinding>,
     lookup: &mut dyn FnMut(&dyn Widget, &AutoCommit) -> Option<R>,
 ) -> Option<R> {
-    let boundary = widget.callback_binding();
+    let boundary = crate::bound_dispatch::callback_binding(widget);
     let binding = boundary.clone().or(inherited);
     let _entry = binding
         .as_ref()
@@ -982,7 +1019,7 @@ pub(crate) fn action_directory_page_at(
             Option<crate::bound_dispatch::CallbackBinding>,
         )>,
     > {
-        let boundary = widget.callback_binding();
+        let boundary = crate::bound_dispatch::callback_binding(widget);
         let binding = boundary.clone().or(inherited);
         let _entry = binding
             .as_ref()
@@ -2202,8 +2239,7 @@ fn first_window_answer<W: Widget + ?Sized, T>(
     own: impl FnOnce(&W) -> Option<T>,
     ask: &dyn Fn(&dyn Widget) -> Option<T>,
 ) -> Option<T> {
-    let _entry = root
-        .callback_binding()
+    let _entry = crate::bound_dispatch::callback_binding(root)
         .map(|binding| binding.enter())
         .transpose()
         .ok()?;
@@ -2746,6 +2782,8 @@ pub mod arriving_rows;
 pub mod arriving_view;
 pub use arriving_rows::{ArrivingRows, RowFade};
 pub use arriving_view::{ArrivalFace, ArrivingView, AwaitsContent, ReservedShape, Showing};
+pub mod swapped;
+pub use swapped::Swapped;
 pub mod stepper;
 pub use stepper::{Stepper, StepperFace, StepperProps};
 pub mod property_list;

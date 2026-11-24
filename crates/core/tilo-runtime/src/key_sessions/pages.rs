@@ -442,7 +442,7 @@ impl Inner {
             .remove(&(page, request_id));
         if let Some(done) = done {
             done.complete(match answer {
-                CallAnswer::Answered(snapshot) => Ok(snapshot),
+                CallAnswer::Answered(snapshot) => Ok(*snapshot),
                 CallAnswer::Refused(why) => Err(why),
             });
         }

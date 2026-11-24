@@ -153,6 +153,9 @@ struct MediaMetrics {
     mark: f64,
     mark_gap: f64,
     creator_side: f64,
+    /// A compact card's height: the bar's own control height, so a pill stands in a bar's
+    /// band beside the controls there.
+    compact: f64,
 }
 
 impl MediaMetrics {
@@ -173,6 +176,7 @@ impl MediaMetrics {
             mark: f64::from(metrics.icon_sm),
             mark_gap: f64::from(spacing.s1),
             creator_side: crate::widget::AvatarSize::Small.side(theme),
+            compact: f64::from(metrics.bar_control_height),
         }
     }
 
@@ -196,6 +200,8 @@ pub struct MediaCardFace<'a> {
     hover_action: Option<Icon>,
     selected: bool,
     interaction: Interaction,
+    /// It stands in a band as a pill: its art at the leading edge, its title beside it.
+    compact: bool,
 }
 
 impl<'a> MediaCardFace<'a> {
@@ -213,7 +219,17 @@ impl<'a> MediaCardFace<'a> {
             hover_action: None,
             selected: false,
             interaction: Interaction::default(),
+            compact: false,
         }
+    }
+
+    /// It stands in a band as a pill rather than as a card: the art at the leading edge, a bar
+    /// control high, and its title beside it on one line. A media session's live view asks for
+    /// this so the bar shows what plays in its own band.
+    #[must_use]
+    pub fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
     }
 
     /// The name an art-only card's placeholder takes its initials from (a
@@ -328,22 +344,38 @@ impl<'a> MediaCardFace<'a> {
         width / self.aspect.ratio() + self.text_block(text, &m, Some(width)).0
     }
 
-    /// The art's rect inside a card at `rect`.
+    /// The art's rect inside a card at `rect`: the whole width at the top, or, on a compact
+    /// card, a square at the leading edge as tall as the pill.
     #[must_use]
     pub fn art_rect(&self, rect: Rect) -> Rect {
+        if self.compact {
+            let side = rect.height().min(rect.width());
+            return Rect::new(rect.x0, rect.y0, rect.x0 + side, rect.y0 + side);
+        }
         let h = (rect.width() / self.aspect.ratio()).min(rect.height());
         Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + h)
     }
 
-    /// Where the hover action sits, when the card shows one.
+    /// Where the hover action sits, when the card shows one: over the art of a card, and at the
+    /// pill's trailing end on a compact card.
     pub fn hover_action_rect(&self, rect: Rect, theme: &Theme) -> Option<Rect> {
         self.hover_action.map(|_| {
             let m = MediaMetrics::new(theme);
-            Rect::from_center_size(self.art_rect(rect).center(), (m.action, m.action))
+            if self.compact {
+                let side = m.action.min(rect.height());
+                let inset = m.text_gap;
+                Rect::from_center_size(
+                    Point::new(rect.x1 - inset - side / 2.0, rect.center().y),
+                    (side, side),
+                )
+            } else {
+                Rect::from_center_size(self.art_rect(rect).center(), (m.action, m.action))
+            }
         })
     }
 
-    /// Paint the card into `rect`: the art at the top, the text under it.
+    /// Paint the card into `rect`: the art at the top, the text under it; or, on a compact
+    /// card, the art at the leading edge with the title beside it, one line high.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -375,8 +407,11 @@ impl<'a> MediaCardFace<'a> {
         let name = self.title.or(self.seed).unwrap_or_default();
         paint_art(ctx, &m, art, radius, self.art, name);
         inner_hairline(ctx, art, radius);
-        for badge in self.badges {
-            paint_badge(ctx, &m, art, *badge);
+        if !self.compact {
+            // Badges take the room a grid column's art has; a pill's art is a control high.
+            for badge in self.badges {
+                paint_badge(ctx, &m, art, *badge);
+            }
         }
         if let Some(icon) = self.hover_action
             && (self.interaction.hovered || self.interaction.focused)
@@ -394,7 +429,34 @@ impl<'a> MediaCardFace<'a> {
             icon.draw(ctx.scene, ctx.transform, glyph, theme.text_primary);
         }
         if self.interaction.focused && !self.interaction.disabled {
-            crate::widget::paint_focus_ring(ctx.scene, ctx.transform, art, radius, theme);
+            if self.compact {
+                crate::widget::paint_focus_ring(ctx.scene, ctx.transform, rect, m.radius, theme);
+            } else {
+                crate::widget::paint_focus_ring(ctx.scene, ctx.transform, art, radius, theme);
+            }
+        }
+
+        if self.compact {
+            // A pill: its title on one line beside its art, centred on the pill's height. The
+            // meta lines stay what assistive technology reads of it; there is no room to draw
+            // them in a bar's band.
+            if let Some(title) = self.title {
+                let text_x = art.x1 + m.text_gap;
+                let room = (rect.x1 - text_x).max(1.0);
+                let line =
+                    ctx.text
+                        .elide_to_width_style(title, crate::num::f32_of_f64(room), &m.title);
+                let title_line = MediaMetrics::line(ctx.text, &m.title);
+                let y = rect.y0 + ((rect.height() - title_line) / 2.0).max(0.0);
+                ctx.text(
+                    &line,
+                    &m.title,
+                    theme.text_primary,
+                    Point::new(text_x, y),
+                    None,
+                );
+            }
+            return;
         }
 
         if let Some(title) = self.title {
@@ -913,6 +975,9 @@ pub struct MediaCard {
     /// The width of a card on its own, as its grid lays a column: what the whole room it is put
     /// in never widens it past.
     bound: Option<f64>,
+    /// It stands in a band as a pill: a bar control high, its art at the leading edge and its
+    /// title beside it, rather than the card a grid lays.
+    compact: bool,
     pressed_action: crate::pointer_replay::HeldPress,
     selected: bool,
     activation: Activation,
@@ -950,6 +1015,7 @@ impl MediaCard {
             slot: None,
             alone: false,
             bound: None,
+            compact: false,
             pressed_action: crate::pointer_replay::HeldPress::default(),
             selected: false,
             activation: Activation::new(id),
@@ -1099,6 +1165,15 @@ impl MediaCard {
         self
     }
 
+    /// It stands in a band as a pill: a bar control high, its art at the leading edge and its
+    /// title beside it, rather than the card a grid lays. What a live media view gives so the
+    /// shell's bar shows what plays in the bar's own band.
+    #[must_use]
+    pub fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+
     fn with_face<R>(&self, f: impl FnOnce(&MediaCardFace<'_>) -> R) -> R {
         let badges: Vec<MediaBadge<'_>> = self.badges.iter().map(OwnedBadge::borrowed).collect();
         let art = match (&self.loaded, &self.source) {
@@ -1113,6 +1188,7 @@ impl MediaCard {
             .aspect(self.aspect)
             .badges(&badges)
             .selected(self.selected)
+            .compact(self.compact)
             .interaction(self.activation.state);
         if let Some(title) = &self.title {
             face = face.title(title);
@@ -1216,10 +1292,21 @@ impl Widget for MediaCard {
     ) -> NodeId {
         self.metrics = Some(MediaMetrics::new(theme));
         self.bound = self.alone.then(|| MediaSize::Regular.extent(theme));
+        let compact_height = f64::from(theme.tokens.metrics.bar_control_height);
         let style = Style {
+            // A pill sizes to what it holds, a bar control high; a card fills its column and is
+            // as tall as its art and text at that width.
             size: taffy::Size {
-                width: percent(1.0_f32),
-                height: auto(),
+                width: if self.compact {
+                    auto()
+                } else {
+                    percent(1.0_f32)
+                },
+                height: if self.compact {
+                    length(crate::num::f32_of_f64(compact_height))
+                } else {
+                    auto()
+                },
             },
             min_size: taffy::Size {
                 width: length(0.0_f32),
@@ -1253,6 +1340,23 @@ impl Widget for MediaCard {
         // The card's height is the height at the width taffy gives it, which a card of its own
         // is bounded at: measure is asked before the bound is applied.
         let width = self.bound.map_or(width, |bound| width.min(bound));
+        if self.compact {
+            let Some(m) = &self.metrics else {
+                return taffy::Size {
+                    width: 0.0,
+                    height: 0.0,
+                };
+            };
+            let height = m.compact;
+            let text = self.title.as_deref().map_or(0.0, |title| {
+                f64::from(text_renderer.measure_style(title, None, &m.title).0) + m.text_gap
+            });
+            let width = (height + text).min(width);
+            return taffy::Size {
+                width: crate::num::f32_of_f64(width),
+                height: crate::num::f32_of_f64(height),
+            };
+        }
         let text = self.shared_text_height.unwrap_or_else(|| {
             self.own_text_height(text_renderer, (!self.text_estimated).then_some(width))
         });
