@@ -79,7 +79,8 @@ impl EgressDecision {
         image_shipped: bool,
     ) -> Self {
         let declared = match net_mode {
-            "allowlist" => EgressPolicy::from_grants(manifest_hosts.iter().map(String::as_str)),
+            // A manifest's `*.domain` is every name under it, not the domain.
+            "allowlist" => EgressPolicy::from_declared(manifest_hosts.iter().map(String::as_str)),
             "host" => EgressPolicy::Any,
             "off" | "dns-only" => return EgressDecision::Blocked,
             // A spelling this launcher does not know is not a policy it can enforce.
@@ -1391,6 +1392,45 @@ mod tests {
             assert!(decision.policy().is_some_and(|p| p.permits("example.com")));
         }
 
+        phase a_declared_star_dot_domain_covers_only_names_under_it;
+        {
+            // Discord's voice servers are regional names under one domain. The manifest declares
+            // `*.discord.media`; the proxy must reach every name under it and nothing that merely
+            // looks like one.
+            let declared = v(&["*.discord.media"]);
+            let decision = EgressDecision::resolve("allowlist", &declared, &[], true);
+            let policy = decision
+                .policy()
+                .unwrap_or_else(|| panic!("a declared domain must be filtered, got {decision:?}"));
+            for host in [
+                "rotterdam1234.discord.media",
+                "a.b.discord.media",
+                "EU.Discord.Media.",
+            ] {
+                assert!(policy.permits(host), "{host} is under the domain");
+            }
+            for host in ["discord.media", "discord.media.evil", "xdiscord.media"] {
+                assert!(!policy.permits(host), "{host} is not under the domain");
+            }
+            // An installed app still needs the person's grant; the declaration bounds it.
+            assert_eq!(
+                EgressDecision::resolve("allowlist", &declared, &[], false),
+                EgressDecision::Blocked
+            );
+            let granted =
+                EgressDecision::resolve("allowlist", &declared, &v(&["*.discord.media"]), false);
+            let policy = granted
+                .policy()
+                .unwrap_or_else(|| panic!("a granted domain must be filtered, got {granted:?}"));
+            assert!(policy.permits("rotterdam1234.discord.media"));
+            for host in ["discord.media", "discord.media.evil", "xdiscord.media"] {
+                assert!(
+                    !policy.permits(host),
+                    "a grant must not widen the declared domain past it: {host}"
+                );
+            }
+        }
+
         phase an_address_grant_is_refused_for_apps;
         {
             // Hosts are granted by name: an IP literal grant is ignored with a warning, so it narrows.
@@ -1723,6 +1763,36 @@ mod tests {
             let refused = connect(&format!("127.0.0.1:{port}"));
             assert!(refused.starts_with("HTTP/1.1 502"), "{refused}");
             assert_eq!((proxy.stats().allowed(), proxy.stats().denied()), (1, 1));
+        }
+
+        phase the_http_proxy_check_refuses_what_is_not_under_a_declared_domain;
+        {
+            // The same check SOCKS5 and HTTP CONNECT run (`open_http`), over the wire: a
+            // declaration of `*.discord.media` refuses the bare domain and the lookalikes before
+            // any name is resolved.
+            let proxy = LoopbackProxy::start(EgressPolicy::from_declared(["*.discord.media"]))
+                .unwrap();
+            let connect = |target: &str| {
+                let mut client = TcpStream::connect(proxy.local_addr()).unwrap();
+                client
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
+                    .unwrap();
+                client
+                    .write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
+                    .unwrap();
+                let mut answer = Vec::new();
+                let _ = client.read_to_end(&mut answer);
+                String::from_utf8_lossy(&answer).into_owned()
+            };
+            for host in ["discord.media", "discord.media.evil", "xdiscord.media"] {
+                let refused = connect(&format!("{host}:443"));
+                assert!(
+                    refused.starts_with("HTTP/1.1 502"),
+                    "{host} must not pass the egress check: {refused}"
+                );
+            }
+            assert_eq!(proxy.stats().denied(), 3);
+            assert_eq!(proxy.stats().allowed(), 0);
         }
 
         phase at_the_limit_the_accept_loop_waits_for_a_free_slot;

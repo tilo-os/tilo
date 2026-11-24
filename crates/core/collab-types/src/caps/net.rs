@@ -11,6 +11,11 @@
 //!   is accepted as a spelling of `.example.com`; it is normalised on the
 //!   way in, never matched as a glob.
 //!
+//! A package manifest's `[sandbox.net].hosts` is a declaration, not a grant:
+//! there `*.example.com` is every name under `example.com` and **not**
+//! `example.com` itself, which needs its own entry. [`EgressPolicy::from_declared`]
+//! reads that spelling; the launcher narrows it by the person's grants.
+//!
 //! Names compare lower-case and without a trailing dot, so `Example.COM.`
 //! is `example.com`. An **IP literal is not a host**: egress is decided by
 //! name, and an address literal would bypass the resolver that decides. A
@@ -51,7 +56,11 @@ pub enum NetHostError {
 pub struct HostPattern {
     /// Lower-case, no trailing dot, no `*.`/`.` prefix.
     name: String,
+    /// The names strictly under `name` are covered.
     subdomains: bool,
+    /// `name` itself is covered. A grant's `.name`/`*.name` covers the apex;
+    /// a package manifest's `*.name` covers only what is under it.
+    apex: bool,
 }
 
 impl HostPattern {
@@ -71,17 +80,29 @@ impl HostPattern {
         } else {
             (false, trimmed)
         };
-        let name = name.to_ascii_lowercase();
-        if name.is_empty() || name == "*" {
-            return Err(NetHostError::NotAHost(raw.to_owned()));
-        }
-        if name.parse::<IpAddr>().is_ok() || name.starts_with('[') {
-            return Err(NetHostError::Address(raw.to_owned()));
-        }
-        if name.len() > 253 || !name.split('.').all(is_label) {
-            return Err(NetHostError::Invalid(raw.to_owned()));
-        }
-        Ok(Self { name, subdomains })
+        let name = validated_name(raw, name)?;
+        Ok(Self {
+            name,
+            subdomains,
+            apex: true,
+        })
+    }
+
+    /// A package manifest's `*.name`: every name under `name`, never `name`
+    /// itself. A grant's `*.name` is a spelling of `.name` and covers the
+    /// apex ([`Self::parse`]); this is the declared meaning, so no grant
+    /// spelling produces it.
+    ///
+    /// # Errors
+    /// As [`Self::parse`], for the domain part.
+    pub fn subdomains_only(raw: &str) -> Result<Self, NetHostError> {
+        let trimmed = raw.trim().trim_end_matches('.');
+        let name = validated_name(raw, trimmed)?;
+        Ok(Self {
+            name,
+            subdomains: true,
+            apex: false,
+        })
     }
 
     /// The name, without any `*.`/`.` prefix.
@@ -93,12 +114,9 @@ impl HostPattern {
     /// [`NetHostPattern::covers`] for one that normalises)?
     pub fn covers(&self, host: &str) -> bool {
         if host == self.name {
-            return true;
+            return self.apex;
         }
-        self.subdomains
-            && host
-                .strip_suffix(self.name.as_str())
-                .is_some_and(|head| head.ends_with('.') && head.len() > 1)
+        self.subdomains && is_strictly_under(host, &self.name)
     }
 
     /// Does this pattern name `host` **exactly** (lower-case, no trailing
@@ -110,19 +128,56 @@ impl HostPattern {
     /// Does this pattern allow every name `other` allows? A domain pattern
     /// covering the other's name covers everything under it too.
     fn includes(&self, other: &Self) -> bool {
-        self == other || (self.subdomains && self.covers(&other.name))
+        if self == other {
+            return true;
+        }
+        if other.subdomains {
+            // Everything strictly under `other.name` is under `self.name`
+            // too, and the apex needs covering by itself.
+            self.subdomains
+                && (self.name == other.name || is_strictly_under(&other.name, &self.name))
+                && (!other.apex || self.covers(&other.name))
+        } else {
+            self.covers(&other.name)
+        }
     }
 }
 
 impl fmt::Display for HostPattern {
-    /// The record's spelling: `example.com` or `.example.com`.
+    /// The record's spelling: `example.com`, `.example.com` or a manifest's
+    /// `*.example.com`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.subdomains {
-            write!(f, ".{}", self.name)
+            if self.apex {
+                write!(f, ".{}", self.name)
+            } else {
+                write!(f, "*.{}", self.name)
+            }
         } else {
             f.write_str(&self.name)
         }
     }
+}
+
+/// Is `host` a name strictly under `domain`, with a label of its own?
+fn is_strictly_under(host: &str, domain: &str) -> bool {
+    host.strip_suffix(domain)
+        .is_some_and(|head| head.ends_with('.') && head.len() > 1)
+}
+
+/// The normalised name a pattern holds, or the reason `raw` is not one.
+fn validated_name(raw: &str, name: &str) -> Result<String, NetHostError> {
+    let name = name.to_ascii_lowercase();
+    if name.is_empty() || name == "*" {
+        return Err(NetHostError::NotAHost(raw.to_owned()));
+    }
+    if name.parse::<IpAddr>().is_ok() || name.starts_with('[') {
+        return Err(NetHostError::Address(raw.to_owned()));
+    }
+    if name.len() > 253 || !name.split('.').all(is_label) {
+        return Err(NetHostError::Invalid(raw.to_owned()));
+    }
+    Ok(name)
 }
 
 fn is_label(label: &str) -> bool {
@@ -255,6 +310,35 @@ impl EgressPolicy {
         Self::hosts(hosts)
     }
 
+    /// A policy from a package manifest's declared `[sandbox.net].hosts`:
+    /// `example.com` is that host, and `*.example.com` is every name under
+    /// it — never `example.com` itself. `*` is [`Self::Any`], which an older
+    /// manifest may carry. A spelling that is not a host is skipped with a
+    /// warning, so a bad declaration narrows rather than widens.
+    pub fn from_declared<'a>(hosts: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut patterns = Vec::new();
+        for raw in hosts {
+            let trimmed = raw.trim();
+            if trimmed == "*" {
+                return Self::Any;
+            }
+            let parsed = match trimmed
+                .strip_prefix("*.")
+                .or_else(|| trimmed.strip_prefix('.'))
+            {
+                // The manifest spells the wildcard `*.`; a leading dot is
+                // still the names under the domain, so it only narrows.
+                Some(domain) => HostPattern::subdomains_only(domain),
+                None => HostPattern::parse(trimmed),
+            };
+            match parsed {
+                Ok(pattern) => patterns.push(pattern),
+                Err(reason) => tracing::warn!(%reason, "ignoring a declared network host"),
+            }
+        }
+        Self::hosts(patterns)
+    }
+
     /// A policy allowing exactly `hosts`, deduplicated and sorted.
     pub fn hosts(mut hosts: Vec<HostPattern>) -> Self {
         hosts.sort();
@@ -377,6 +461,7 @@ mod tests {
             Ok(NetHostPattern::Named(HostPattern {
                 name: name.to_owned(),
                 subdomains,
+                apex: true,
             }))
         };
         {
@@ -480,6 +565,48 @@ mod tests {
             assert!(EgressPolicy::Any.permits_device_local("localhost"));
             assert!(!EgressPolicy::Any.names_exactly("localhost"));
         }
+    }
+
+    /// A package's declaration: `*.domain` is every name under the domain,
+    /// never the domain itself. Grants keep the `.domain` meaning.
+    #[test]
+    fn a_declared_wildcard_covers_names_under_the_domain_and_not_the_domain() {
+        let policy = EgressPolicy::from_declared(["*.discord.media"]);
+        for host in [
+            "rotterdam1234.discord.media",
+            "a.b.discord.media",
+            "EU.Discord.Media.",
+        ] {
+            assert!(policy.permits(host), "{host} is under the domain");
+        }
+        for host in ["discord.media", "discord.media.evil", "xdiscord.media"] {
+            assert!(!policy.permits(host), "{host} is not under the domain");
+        }
+        assert_eq!(policy.describe(), ["*.discord.media"]);
+        // The apex needs its own entry.
+        let with_apex = EgressPolicy::from_declared(["*.discord.media", "discord.media"]);
+        assert!(with_apex.permits("discord.media"));
+        assert!(with_apex.permits("rotterdam1234.discord.media"));
+        // Exact declarations stay exact.
+        let exact = EgressPolicy::from_declared(["discord.com"]);
+        assert!(exact.permits("discord.com"));
+        assert!(!exact.permits("a.discord.com"));
+        // A declaration narrows a wider grant: the manifest's `*.` wins.
+        let narrowed = EgressPolicy::from_declared(["*.discord.media"])
+            .intersect(&EgressPolicy::from_grants([".discord.media"]));
+        assert!(narrowed.permits("rotterdam1234.discord.media"));
+        assert!(!narrowed.permits("discord.media"));
+        // A wildcard anywhere but the leftmost label is not a host here.
+        for junk in ["a.*.discord.media", "discord.*", "*.*.discord.media"] {
+            assert_eq!(
+                EgressPolicy::from_declared([junk]),
+                EgressPolicy::none(),
+                "{junk:?} declares nothing"
+            );
+        }
+        // A manifest read refuses a bare `*`; an older one that carries it
+        // still means every host, as it did.
+        assert_eq!(EgressPolicy::from_declared(["*"]), EgressPolicy::Any);
     }
 
     /// `(grant, host, covered)` rows of the shared vector file.

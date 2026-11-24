@@ -95,6 +95,11 @@ impl TryFrom<Manifest> for ManifestView {
 
     fn try_from(manifest: Manifest) -> Result<Self, Self::Error> {
         let manifest = manifest.normalized();
+        // The network a package declares is enforced by the launcher, so a
+        // declaration it cannot read is refused here rather than narrowed
+        // silently at the check.
+        crate::validate::validate_net_hosts(&manifest.sandbox.net)
+            .map_err(|e| ManifestReadError::Parse(e.to_string()))?;
         let runtime = if manifest.target.is_some() {
             // A desktop build names the host it runs on and the toolkit it
             // links; refuse one for another host rather than start it.
@@ -592,5 +597,65 @@ mod tests {
                 .expect("decodes");
             assert!(none.keywords.is_empty());
         }
+    }
+
+    /// A package's `[sandbox.net].hosts` is a host, or `*.domain` for every
+    /// name under a domain; anything the egress check could not enforce is
+    /// refused at the read.
+    #[test]
+    fn declared_network_hosts_are_hosts_or_domains_and_nothing_else() {
+        let with_hosts = |hosts: &str| {
+            ManifestView::from_toml_str(&source(
+                "id = \"so.tilo.discord\"\nversion = \"0.1.0\"\nkind = \"app\"",
+                &format!(
+                    "[entrypoint]\nbin = \"bin/discord\"\n[sandbox.net]\n\
+                     mode = \"allowlist\"\nhosts = [{hosts}]"
+                ),
+            ))
+        };
+        // Every name under a domain is one entry; the domain itself would
+        // need its own.
+        let view = with_hosts("\"discord.com\", \"*.discord.media\"").expect("decodes");
+        assert_eq!(view.sandbox.net.hosts, ["discord.com", "*.discord.media"]);
+        for accepted in [
+            "\"*.eu.discord.media\"",
+            "\"*.discord.media.\"",
+            "\"Example.COM.\"",
+            "\"localhost\"",
+        ] {
+            assert!(with_hosts(accepted).is_ok(), "{accepted} is a declaration");
+        }
+        for refused in [
+            // A bare star is `mode = "host"`, never an allowlist entry.
+            "\"*\"",
+            // The wildcard stands only as the leftmost label.
+            "\"a.*.discord.media\"",
+            "\"discord.*\"",
+            "\"*.*.discord.media\"",
+            "\"foo*bar.discord.media\"",
+            // A public suffix names no host to run under.
+            "\"*.com\"",
+            "\"*.io\"",
+            "\"*.\"",
+            // Address literals are not hosts.
+            "\"10.0.0.5\"",
+            "\"::1\"",
+            "\"[::1]\"",
+            // Junk is refused at the read, not dropped silently later.
+            "\"exa$mple.com\"",
+            "\"\"",
+        ] {
+            assert!(
+                with_hosts(refused).is_err(),
+                "{refused} is not a declaration"
+            );
+        }
+        // The declaration is read only for an allowlist.
+        let any = ManifestView::from_toml_str(&source(
+            "id = \"so.tilo.mail\"\nversion = \"0.1.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/mail\"\n[sandbox.net]\nmode = \"host\"\nhosts = [\"*\"]",
+        ))
+        .expect("a host-mode package reads");
+        assert_eq!(any.sandbox.net.mode, "host");
     }
 }

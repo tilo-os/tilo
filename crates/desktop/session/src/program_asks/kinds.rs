@@ -500,9 +500,15 @@ fn reach(who: &str, details: Value) -> Kind {
     );
     if !any {
         let site = word("portal-network-site");
-        facts
-            .facts
-            .extend(asked.hosts.into_iter().map(|host| fact(site.clone(), host)));
+        facts.facts.extend(asked.hosts.into_iter().map(|host| {
+            // `*.domain` is every name under it, shown as the reach it is rather than as a glob
+            // a person has to decode.
+            let shown = match host.strip_prefix("*.") {
+                Some(domain) => words("portal-network-site-domain", &[("domain", domain)]),
+                None => host,
+            };
+            fact(site.clone(), shown)
+        }));
     }
     Some((facts, Reply::Confirm))
 }
@@ -1196,4 +1202,41 @@ fn code_on_show(details: Value) -> Option<Shown> {
         body: body.join("\n"),
         stop: word("bluetooth-prompt-cancel"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_declared_domain_is_shown_as_the_reach_it_is() {
+        let (facts, reply) = reach(
+            "Discord",
+            serde_json::json!({"hosts": ["*.discord.media", "discord.com"]}),
+        )
+        .expect("the question is shown");
+        assert!(matches!(reply, Reply::Confirm));
+        assert_eq!(
+            facts.facts,
+            vec![
+                fact(
+                    word("portal-network-site"),
+                    words("portal-network-site-domain", &[("domain", "discord.media")]),
+                ),
+                fact(word("portal-network-site"), "discord.com".to_owned()),
+            ]
+        );
+
+        // `*` is said as any site and lists none.
+        let (any, _) =
+            reach("Mail", serde_json::json!({"hosts": ["*"]})).expect("the question is shown");
+        assert!(any.facts.is_empty());
+        assert_eq!(
+            any.words,
+            words(
+                "portal-access-title",
+                &[("app", "Mail"), ("what", &word("portal-access-network"))]
+            )
+        );
+    }
 }

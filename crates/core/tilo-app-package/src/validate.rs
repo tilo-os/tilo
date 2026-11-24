@@ -3,7 +3,9 @@
 use semver::Version;
 
 use crate::id::Kind;
-use crate::manifest::{ContinuityFacet, DEFAULT_PLATFORMS, EntrypointType, Manifest};
+use crate::manifest::{
+    ContinuityFacet, DEFAULT_PLATFORMS, EntrypointType, Manifest, NetMode, SandboxNet,
+};
 
 /// File a `kind = "format-provider"` payload must ship: the provider's core
 /// WebAssembly module, which the format host checks against its provider ABI
@@ -122,6 +124,8 @@ pub enum ManifestError {
     BadService(String),
     #[error("sandbox.portals names {0:?}, which is not a portal")]
     UnknownPortal(String),
+    #[error("sandbox.net.hosts {entry:?} is not a declaration: {reason}")]
+    BadNetHost { entry: String, reason: &'static str },
     #[error("publisher.identity: {0}")]
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
@@ -184,6 +188,7 @@ pub enum ManifestError {
 /// declarations, publisher identity and signature, then target compatibility.
 pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     validate_platforms(m).and_then(|()| validate_capabilities(m))?;
+    validate_net_hosts(&m.sandbox.net)?;
 
     validate_store_listing(m)?;
     validate_icon(m)?;
@@ -233,6 +238,75 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         .signature_bytes()
         .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
     validate_target(m)
+}
+
+/// `[sandbox.net].hosts`: a host name, or `*.domain` for every name under a
+/// domain. The wildcard stands only as the leftmost label, covers only names
+/// under the domain (the domain itself needs its own entry), and cannot name
+/// a public suffix or an address literal. Only an `allowlist` reads them.
+pub fn validate_net_hosts(net: &SandboxNet) -> Result<(), ManifestError> {
+    use collab_types::caps::{HostPattern, NetHostError};
+
+    if !matches!(net.mode, NetMode::Allowlist) {
+        return Ok(());
+    }
+    for entry in &net.hosts {
+        let refuse = |reason| ManifestError::BadNetHost {
+            entry: entry.clone(),
+            reason,
+        };
+        let host = entry.trim().trim_end_matches('.');
+        if host.is_empty() {
+            return Err(refuse("the entry is empty"));
+        }
+        if host == "*" {
+            return Err(refuse(
+                "a bare * names every host; declare `mode = \"host\"` instead",
+            ));
+        }
+        if let Some(domain) = host.strip_prefix("*.") {
+            if domain.contains('*') {
+                return Err(refuse(
+                    "a wildcard may stand only as the leftmost label (*.example.com)",
+                ));
+            }
+            if domain.is_empty() {
+                return Err(refuse("*. names no domain"));
+            }
+            // Without a public suffix list in the tree, a one-label domain
+            // is the suffix case that can be recognised: `*.com` names no
+            // host of its own to run under.
+            if domain.split('.').count() < 2 {
+                return Err(refuse(
+                    "*.{a single label} is a public suffix; name the hosts under it",
+                ));
+            }
+            if HostPattern::subdomains_only(domain).is_err() {
+                return Err(refuse("the domain after *. is not a valid host name"));
+            }
+        } else {
+            if host.contains('*') {
+                return Err(refuse(
+                    "a wildcard may stand only as the leftmost label (*.example.com)",
+                ));
+            }
+            if host.starts_with('.') {
+                return Err(refuse(
+                    "a domain with everything under it is written *.example.com",
+                ));
+            }
+            match HostPattern::parse(host) {
+                Ok(_) => {}
+                Err(NetHostError::Address(_)) => {
+                    return Err(refuse(
+                        "an address literal is not a host; network is granted by name",
+                    ));
+                }
+                Err(_) => return Err(refuse("it is not a valid host name")),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The ids an app was published under before are other ids, each named once.
