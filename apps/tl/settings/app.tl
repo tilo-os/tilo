@@ -1384,7 +1384,50 @@ view sound_pane() {
                 selected: output.chosen,
                 icon: .speaker,
             ) {
-                on activate: device.route_output(device.sound, node: output.node)
+                on activate: device
+                    .route_output(device.sound, node: output.node)
+                    .then(
+                        settings.remember_output_device(
+                            settings.audio_device,
+                            device: output.label,
+                        ),
+                    )
+                trailing: {
+                    ui.Button(
+                        "Play a test sound on {output.label}",
+                        icon: .volume_2,
+                        icon_only: true,
+                        size: .small,
+                        role: .plain,
+                    ) {
+                        on press: device.test_output(device.sound, node: output.node)
+                    }
+                }
+            }
+        }
+        if let output = sound.outputs.find(x -> x.chosen) {
+            if output.channels >= 2 {
+                setting(
+                    "Speaker test",
+                    "A short, quiet tone in one ear, so you can hear which side it is",
+                ) {
+                    row(gap: .related, align: .center, wrap: true) {
+                        ui.Button("Left", size: .small) {
+                            on press: device.test_output(
+                                device.sound,
+                                node: output.node,
+                                channel: "left",
+                            )
+                        }
+                        ui.Button("Right", size: .small) {
+                            on press: device.test_output(
+                                device.sound,
+                                node: output.node,
+                                channel: "right",
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -1414,7 +1457,11 @@ view sound_pane() {
                 selected: input.chosen,
                 icon: .mic,
             ) {
-                on activate: device.select_input(device.sound, node: input.node)
+                on activate: device
+                    .select_input(device.sound, node: input.node)
+                    .then(
+                        settings.remember_input_device(settings.audio_device, device: input.label),
+                    )
             }
         }
     }
@@ -1467,17 +1514,61 @@ view sound_pane() {
         setting("Play them", "A sound for a message, a screenshot, a connection") {
             ui.Toggle(bind: prefs.enabled)
         }
-        setting("Their volume", "How loud the system's own sounds are") {
-            ui.Slider(
-                bind: prefs.volume,
-                label: "System sound volume",
-                min: 0.0,
-                max: 1.0,
-                step: 0.05,
-                shows_value: true,
-            )
+        if prefs.enabled {
+            setting("Their volume", "How loud the system's own sounds are") {
+                ui.Slider(
+                    bind: prefs.volume,
+                    label: "System sound volume",
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.05,
+                    shows_value: true,
+                )
+            }
+            if not sound.themes.is_empty() {
+                setting("Theme", "Which set of sounds they come from") {
+                    ui.Dropdown(
+                        value: sound_theme_name(prefs.theme, sound.themes),
+                        options: sound.themes.map(t -> t.name),
+                        caption: "Sound theme",
+                    ) {
+                        on change(name): settings.set_system_sound_theme(audio, theme: name)
+                    }
+                }
+            }
+            setting("Notifications", "A sound when a notification arrives") {
+                ui.Toggle(bind: prefs.events.notification)
+            }
+            setting("New messages", "A sound when a message arrives") {
+                ui.Toggle(bind: prefs.events.message)
+            }
+            setting("Volume change feedback", "A tick as the volume changes") {
+                ui.Toggle(bind: prefs.events.volume_change)
+            }
+            setting("Screenshot shutter", "A shutter sound when a screenshot is taken") {
+                ui.Toggle(bind: prefs.events.screenshot)
+            }
+            setting("Device connected", "A sound when a device is plugged in") {
+                ui.Toggle(bind: prefs.events.device_connected)
+            }
+            setting("Device disconnected", "A sound when a device is unplugged") {
+                ui.Toggle(bind: prefs.events.device_disconnected)
+            }
+            setting("Low battery", "A warning sound when the battery runs low") {
+                ui.Toggle(bind: prefs.events.low_battery)
+            }
+            setting("Errors", "A sound when something fails") {
+                ui.Toggle(bind: prefs.events.error)
+            }
         }
     }
+}
+
+/// The sound theme system sounds come from, as the theme picker shows it: the installed theme's
+/// own name, or the freedesktop theme's while nothing is chosen.
+fn sound_theme_name(chosen: Option<Text>, themes: List<device.SoundTheme>) -> Text {
+    let held = chosen ?? "freedesktop"
+    if let known = themes.find(t -> t.name == held or t.id == held) { known.name } else { held }
 }
 
 /// How this device uses its battery: the power mode it runs in, what it charges to and when it

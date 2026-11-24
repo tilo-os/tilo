@@ -72,6 +72,7 @@ settings-appearance-delete-theme = Design löschen
 settings-appearance-switch-polarity = Dunkles oder helles Design
 settings-audio-set-mono-output = Mono-Ton
 settings-audio-set-echo-cancellation = Echounterdrückung
+settings-audio-set-system-sound-theme = Klangthema
 settings-audio-device-remember-output-device = Ausgabegerät
 settings-audio-device-remember-input-device = Eingabegerät
 settings-display-set-automatic-brightness = Automatische Helligkeit

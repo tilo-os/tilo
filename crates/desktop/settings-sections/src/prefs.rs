@@ -2376,6 +2376,38 @@ impl AudioPrefs {
         self.echo_cancellation = on;
         Ok(())
     }
+
+    /// Choose the sound theme system sounds come from, by the name a person
+    /// reads for it: the name a theme installed on this device gives itself,
+    /// or its directory. Nothing follows the freedesktop.org theme, which
+    /// every other theme inherits from.
+    #[action(id = "set-system-sound-theme")]
+    pub fn set_system_sound_theme(
+        &mut self,
+        #[param("The theme's name, or none for the freedesktop one")] theme: Option<String>,
+    ) -> Result<(), tilo_resource::Refusal> {
+        self.choose_sound_theme(theme)
+    }
+}
+
+impl AudioPrefs {
+    /// [`Self::set_system_sound_theme`], as the section keeps the choice: a
+    /// theme is one name in the sound directories, never a path.
+    fn choose_sound_theme(&mut self, theme: Option<String>) -> Result<(), tilo_resource::Refusal> {
+        self.system_sounds.theme = match theme.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(theme) if theme == settings_store::system_sounds::DEFAULT_THEME => None,
+            Some(theme) => {
+                if !settings_store::system_sounds::is_valid_theme_name(theme) {
+                    return Err(tilo_resource::Refusal::new(
+                        "a sound theme is named by one path component",
+                    ));
+                }
+                Some(theme.to_owned())
+            }
+        };
+        Ok(())
+    }
 }
 
 impl settings_model::SettingsSchema for AudioDevicePrefs {
@@ -2754,5 +2786,34 @@ mod notification_app_id_tests {
             .apply(Invoke::edit(&NotificationPrefs::paths().per_app.remove("foo.")).unwrap())
             .unwrap();
         assert!(!replica.state().unwrap().per_app.contains_key("foo."));
+    }
+}
+
+#[cfg(test)]
+mod audio_theme_tests {
+    use super::AudioPrefs;
+    use settings_store::system_sounds::DEFAULT_THEME;
+
+    #[test]
+    fn a_sound_theme_is_chosen_by_one_name_or_left_to_the_system() {
+        let mut audio = AudioPrefs::default();
+        assert!(audio.system_sounds.theme.is_none());
+
+        audio.choose_sound_theme(Some("ocean".into())).unwrap();
+        assert_eq!(audio.system_sounds.theme.as_deref(), Some("ocean"));
+        // Following the freedesktop theme is no choice of its own, and an
+        // empty one is no name at all.
+        audio
+            .choose_sound_theme(Some(DEFAULT_THEME.into()))
+            .unwrap();
+        assert!(audio.system_sounds.theme.is_none());
+        audio.choose_sound_theme(Some(" ".into())).unwrap();
+        assert!(audio.system_sounds.theme.is_none());
+        audio.choose_sound_theme(None).unwrap();
+        assert!(audio.system_sounds.theme.is_none());
+
+        // A theme is one name in the sound directories, never a path.
+        assert!(audio.choose_sound_theme(Some("../../etc".into())).is_err());
+        assert!(audio.system_sounds.theme.is_none());
     }
 }

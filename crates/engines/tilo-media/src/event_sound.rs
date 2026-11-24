@@ -158,14 +158,30 @@ fn installed_themes_in(roots: &[PathBuf]) -> Vec<SoundTheme> {
     themes
 }
 
+/// The directory of an installed theme named `theme`, by its directory or
+/// by the name its own index gives it. A name that is neither is returned as
+/// it came, so a theme this machine does not have changes nothing.
+fn theme_directory(roots: &[PathBuf], theme: &str) -> String {
+    if theme_index(roots, theme).is_some() {
+        return theme.to_owned();
+    }
+    installed_themes_in(roots)
+        .into_iter()
+        .find(|installed| installed.name == theme)
+        .map_or_else(|| theme.to_owned(), |installed| installed.id)
+}
+
 pub fn resolve_sound_file(theme: &str, ids: &[&str]) -> Option<PathBuf> {
     resolve_sound_file_in(&sound_roots(), theme, ids)
 }
 
 fn resolve_sound_file_in(roots: &[PathBuf], theme: &str, ids: &[&str]) -> Option<PathBuf> {
+    // A theme is named by its directory or by the name it gives itself: the
+    // one a person reads in Settings and picks by.
+    let theme = theme_directory(roots, theme);
     // Breadth-first over the inheritance chain, bounded so a cycle between
     // two themes cannot spin forever.
-    let mut chain = vec![theme.to_string()];
+    let mut chain = vec![theme];
     let mut next = 0_usize;
     while let Some(name) = chain.get(next).cloned()
         && chain.len() <= 16
@@ -375,6 +391,11 @@ mod tests {
             resolve_sound_file_in(&roots, "ocean", &["device-added"]),
             Some(root.join("beach/stereo/device-added.wav")),
             "inherited, and the ocean ↔ beach cycle terminates"
+        );
+        assert_eq!(
+            resolve_sound_file_in(&roots, "Ocean", &["message-new-instant"]),
+            Some(root.join("ocean/stereo/message-new-instant.ogg")),
+            "a theme is named by the name it gives itself"
         );
         assert_eq!(
             resolve_sound_file_in(&roots, "beach", &["message"]),

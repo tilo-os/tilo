@@ -100,6 +100,7 @@ mod settings_input;
 mod settings_panes;
 mod settings_permissions;
 mod settings_shell;
+mod settings_sound;
 mod settings_windows;
 mod shell_media;
 mod spaces;

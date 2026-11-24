@@ -72,6 +72,7 @@ settings-appearance-delete-theme = Delete theme
 settings-appearance-switch-polarity = Dark or light theme
 settings-audio-set-mono-output = Mono audio
 settings-audio-set-echo-cancellation = Echo cancellation
+settings-audio-set-system-sound-theme = Sound theme
 settings-audio-device-remember-output-device = Output device
 settings-audio-device-remember-input-device = Input device
 settings-display-set-automatic-brightness = Automatic brightness

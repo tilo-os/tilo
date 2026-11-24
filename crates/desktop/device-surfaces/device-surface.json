@@ -245,6 +245,37 @@
               "type": "int"
             }
           ]
+        },
+        {
+          "id": "test-output",
+          "label": "Play a test tone",
+          "description": "Play a short, quiet tone through an output and nowhere else, so a person can tell which device it is: both ears, or one of them.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "node",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "type": "int"
+            },
+            {
+              "name": "channel",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
         }
       ],
       "fields": [
@@ -338,6 +369,16 @@
           "type": {
             "list": {
               "named": "Card"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "themes",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SoundTheme"
             }
           },
           "readonly": true
@@ -457,6 +498,20 @@
             {
               "name": "available",
               "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "SoundTheme",
+          "doc": "One sound theme installed here: what system sounds are looked up in.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
             }
           ]
         },

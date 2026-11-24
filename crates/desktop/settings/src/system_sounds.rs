@@ -270,10 +270,13 @@ pub struct SystemSoundPrefs {
     /// How loud system sounds play, `0..=1` of the output volume.
     #[cfg_attr(feature = "model", model(range = 0.0..=1.0, title = "How loud system sounds play, `0..=1` of the output volume"))]
     pub volume: f64,
-    /// freedesktop sound theme name; `None` follows [`DEFAULT_THEME`].
+    /// The sound theme to play from, by the name a person reads for it or
+    /// its directory; `None` follows [`DEFAULT_THEME`].
     #[cfg_attr(
         feature = "model",
-        model(title = "freedesktop sound theme name; `None` follows [`DEFAULT_THEME`]")
+        model(
+            title = "The sound theme to play from, by the name a person reads for it or its directory; `None` follows [`DEFAULT_THEME`]"
+        )
     )]
     pub theme: Option<String>,
     /// Which events make a sound.

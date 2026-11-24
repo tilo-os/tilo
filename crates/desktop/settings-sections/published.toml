@@ -1023,6 +1023,13 @@ params = [
   { name = "on", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
+[[resources.verbs]]
+id = "set-system-sound-theme"
+kind = "undoable"
+params = [
+  { name = "theme", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
 [[resources.types]]
 name = "SystemSoundEvents"
 fields = [
