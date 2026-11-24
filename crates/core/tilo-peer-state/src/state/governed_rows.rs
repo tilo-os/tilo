@@ -71,17 +71,53 @@ pub(crate) struct GovernedIdentity {
     /// authorization basis computed over them, are a digest a stored policy
     /// still names. Written back as they were read, never added to.
     pub(crate) workspace_delegations: Vec<WorkspaceDelegation>,
+    /// The workspace took this device off its member list without deleting the
+    /// row: the admission, delegation and revocation it carries stay, for the
+    /// history that names them and for verification, and the row is no longer
+    /// one of the workspace's devices. Only
+    /// [`PeerGovernance::removed_from_member_list`](super::PeerGovernance::removed_from_member_list)
+    /// reads it, and a deliberate admission of the device writes it false
+    /// again.
+    pub(crate) removed: bool,
 }
 
 impl GovernedIdentity {
     /// The identity row `bytes` hold, as stored.
+    ///
+    /// A row written before rows carried a removal's mark ends where its last
+    /// field did: it is the same field sequence without the mark, and the
+    /// device it names is one the workspace holds.
     ///
     /// # Errors
     ///
     /// The bytes are not an identity row.
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, RowError> {
         crate::work::identity_decoded();
-        let stored: StoredIdentity = postcard::from_bytes(bytes).map_err(RowError::Postcard)?;
+        let stored: StoredIdentity = match postcard::from_bytes(bytes) {
+            Ok(stored) => stored,
+            Err(postcard::Error::DeserializeUnexpectedEnd) => {
+                let (device_cert, revocations, admission, admissions, delegate, workspace_delegations) =
+                    postcard::from_bytes::<(
+                        DeviceCert,
+                        Vec<tilo_user_identity::RevocationEntry>,
+                        Option<RedemptionReceipt>,
+                        Vec<RedemptionReceipt>,
+                        Option<Vec<u8>>,
+                        Vec<WorkspaceDelegation>,
+                    )>(bytes)
+                    .map_err(RowError::Postcard)?;
+                StoredIdentity {
+                    device_cert,
+                    revocations,
+                    admission,
+                    admissions,
+                    delegate,
+                    workspace_delegations,
+                    removed: false,
+                }
+            }
+            Err(error) => return Err(RowError::Postcard(error)),
+        };
         Ok(Self {
             device_cert: stored.device_cert,
             revocations: stored.revocations,
@@ -93,6 +129,7 @@ impl GovernedIdentity {
                 .transpose()
                 .map_err(RowError::Delegate)?,
             workspace_delegations: stored.workspace_delegations,
+            removed: stored.removed,
         })
     }
 
@@ -115,6 +152,7 @@ impl GovernedIdentity {
             admissions: &self.admissions,
             delegate: delegate.as_deref(),
             workspace_delegations: &self.workspace_delegations,
+            removed: self.removed,
         })
         .map_err(RowError::Postcard)
     }
@@ -145,6 +183,7 @@ struct StoredIdentity {
     admissions: Vec<RedemptionReceipt>,
     delegate: Option<Vec<u8>>,
     workspace_delegations: Vec<WorkspaceDelegation>,
+    removed: bool,
 }
 /// [`StoredIdentity`], borrowed to be written.
 #[derive(Serialize)]
@@ -155,6 +194,7 @@ struct StoredIdentityRef<'a> {
     admissions: &'a [RedemptionReceipt],
     delegate: Option<&'a [u8]>,
     workspace_delegations: &'a [WorkspaceDelegation],
+    removed: bool,
 }
 
 /// A workspace delegation as older builds wrote it, read for the media
@@ -203,6 +243,7 @@ impl Default for GovernedIdentity {
             admissions: Vec::new(),
             delegate: None,
             workspace_delegations: Vec::new(),
+            removed: false,
         }
     }
 }
@@ -221,4 +262,44 @@ pub(crate) struct RedemptionReceipt {
     pub(crate) device_public_key: [u8; 32],
     pub(crate) request_id: [u8; 32],
     pub(crate) role: crate::join::Role,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_row_written_before_the_mark_reads_as_one_the_workspace_holds() {
+        let identity = GovernedIdentity::default();
+        // The bytes a build wrote before rows carried a removal's mark: the
+        // same field sequence, ending after its last field.
+        let before = postcard::to_stdvec(&(
+            &identity.device_cert,
+            &identity.revocations,
+            identity.admission.as_ref(),
+            &identity.admissions,
+            None::<&[u8]>,
+            &identity.workspace_delegations,
+        ))
+        .expect("the layout before the mark writes");
+        let read = GovernedIdentity::decode(&before).expect("a row before the mark reads");
+        assert!(!read.removed, "a row that names no mark holds its device");
+        assert_eq!(
+            read.device_cert.device_public_key,
+            identity.device_cert.device_public_key
+        );
+        let mut marked = identity;
+        marked.removed = true;
+        let bytes = marked.encode().expect("a marked row writes");
+        assert_eq!(
+            bytes.len(),
+            before.len().saturating_add(1),
+            "the mark is one byte"
+        );
+        assert!(
+            GovernedIdentity::decode(&bytes)
+                .expect("a marked row reads")
+                .removed
+        );
+    }
 }

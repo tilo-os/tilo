@@ -174,6 +174,64 @@ async fn daemon(
     }
 }
 
+/// Admit the device `(key, cert)` to `workspace` on `hosted` through a fresh invitation, as a
+/// machine's entry does: the invitation the host issues, the challenge it answers, and the
+/// Complete that admits it. The row the admission writes carries the invitation's receipt.
+async fn admit_by_invitation(
+    hosted: &tilo_workspace_service::workspaces::Workspaces,
+    workspace: &str,
+    host: &DeviceCert,
+    (key, cert): (&SigningKey, &DeviceCert),
+    seed: u8,
+) {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::join::{
+        JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
+        sign_join_proof,
+    };
+    let issued = hosted
+        .issue(
+            workspace,
+            host,
+            tilo_server_protocol::workspaces::IssueInvitationRequest {
+                request_id: [seed; 32],
+                role: tilo_server_protocol::workspaces::Role::Editor,
+                recipient_user_public_key: Some(cert.user_public_key),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .expect("the host invites the machine");
+    let service = hosted.join_service();
+    let device = cert.device_public_key;
+    let JoinTransportResponse::Challenge(answer) = service
+        .handle(
+            device,
+            JoinTransportRequest::Challenge(JoinChallengeRequest {
+                signed_invitation: issued.signed_invitation,
+                device_cert: cert.clone(),
+                request_id: [seed.wrapping_add(100); 32],
+            }),
+        )
+        .await
+    else {
+        panic!("the invitation is challenged");
+    };
+    let proof = sign_join_proof(answer.challenge, key).expect("the machine signs the challenge");
+    let admitted = service
+        .handle(
+            device,
+            JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
+        )
+        .await;
+    assert!(
+        matches!(admitted, JoinTransportResponse::Complete(_)),
+        "the invitation admits the machine: {admitted:?}"
+    );
+}
+
 /// Every device manages every other: from the phone, the laptop and the server are listed,
 /// renamed and updated, and the laptop carries out its own update.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1357,3 +1415,230 @@ async fn a_removed_server_is_told_it_was_removed_and_servers_add_brings_it_back(
     laptop.entered.close();
     server.shutdown().await;
 }
+
+/// A server the workspace admitted by invitation, and then removed, leaves its roster no more:
+/// its row stays for the admission it carries, its writes are refused, and its cached
+/// certificate gets it no way back in. `servers add`, or a fresh invitation, admits it afresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_admission() {
+    use tilo_delivery_protocol::workspace_join::WorkspaceJoinService as _;
+    use tilo_peer_state::TransportOrigin;
+    use tilo_peer_state::join::{
+        JoinTransportRequest, JoinTransportResponse, MembershipChallengeRequest, WorkspaceId,
+    };
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (server_key, server_cert) = enrol(&root, "the-server", DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let (_, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server has workspaces")
+        .clone();
+    let person = person_workspace_id(&root.verifying_key().to_bytes());
+    if hosted.summary(&person).await.is_err() {
+        hosted
+            .create_workspace("Servers", Some(&person))
+            .await
+            .unwrap();
+    }
+    hosted
+        .enter(&person, &laptop_cert)
+        .await
+        .expect("a device of the person enters their own workspace");
+    let studio = hosted.create("Studio").await.unwrap().workspace;
+    let laptop = daemon(
+        &state.path().join("laptop"),
+        (&laptop_key, &laptop_cert),
+        (&server, &server_cert),
+        &person,
+        true,
+    )
+    .await;
+    let line = serde_json::to_string(&tilo_server_protocol::web::PageHost {
+        server_cert: laptop_cert.clone(),
+        address: Some(tilo_server_protocol::web::PageHostAddress {
+            endpoint_addr: laptop.own.endpoint().addr(),
+            relay_url: None,
+            web: None,
+        }),
+        origin: None,
+    })
+    .expect("a host line writes as JSON");
+    let device = laptop_cert.device_public_key;
+    let now = std::time::SystemTime::now;
+    // The machine comes in through an invitation, so its row carries the admission the removal
+    // must keep.
+    admit_by_invitation(&hosted, &studio, &server_cert, (&laptop_key, &laptop_cert), 21).await;
+    hosted
+        .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
+        .await
+        .expect("the server hands the studio to the laptop, which keeps the row it was admitted by");
+    let mut away = laptop
+        .own
+        .peer(tilo_desktop_model::WorkspaceId::parse(&studio).expect("the studio's id"))
+        .expect("the laptop keeps the studio");
+
+    let removed = hosted
+        .remove_server(&studio, &hex::encode(device))
+        .await
+        .expect("the server stops serving the studio");
+    assert!(removed, "the laptop said it let the studio go");
+    // The row stays for the admission it carries, and is no longer one of the studio's devices.
+    assert!(
+        hosted
+            .state(&studio)
+            .await
+            .expect("the studio is governed here")
+            .permissions(device, now())
+            .is_ok(),
+        "the removed machine's row stays for the history it carries"
+    );
+
+    // Its write, from the copy it kept, is refused.
+    let later = tilo_peer_state::HeldCopy {
+        catching_up_from: [[7; 32]].into(),
+        ..tilo_peer_state::HeldCopy::default()
+    };
+    assert!(
+        away.workspace_mut()
+            .report_copy(&laptop_cert, &later, now())
+            .is_ok(),
+        "the copy the removed server kept still takes its write"
+    );
+    let refused = hosted
+        .state(&studio)
+        .await
+        .expect("the studio is governed here")
+        .receive_from(
+            TransportOrigin::ServerDelta(device),
+            away.workspace_message(),
+            now(),
+        )
+        .expect_err("the studio refuses the removed machine's write, marked row and all");
+    assert!(
+        refused.to_string().contains("absent from governed roster"),
+        "the marked row is no membership: {refused}"
+    );
+
+    // The certificate the studio still holds gets it no way back in, through its own entry or the
+    // join exchange.
+    let refused = hosted
+        .enter(&studio, &laptop_cert)
+        .await
+        .expect_err("a removed machine enters the studio no more by asking");
+    assert!(
+        refused.to_string().contains("removed from the workspace"),
+        "the machine is told it was removed: {refused}"
+    );
+    let answer = hosted
+        .join_service()
+        .handle(
+            device,
+            JoinTransportRequest::MembershipChallenge(MembershipChallengeRequest {
+                workspace_id: WorkspaceId::parse(&studio).expect("the studio's id"),
+                device_cert: laptop_cert.clone(),
+                request_id: fresh_id(),
+            }),
+        )
+        .await;
+    let JoinTransportResponse::Error { message, .. } = answer else {
+        panic!("a removed machine is refused, not challenged: {answer:?}");
+    };
+    assert!(
+        message.contains("removed from the workspace"),
+        "the join answers the removal in words: {message}"
+    );
+
+    // The device that held the invited machine's admission, and the owner's other devices, still
+    // write.
+    let held = |seed: u8| tilo_peer_state::HeldCopy {
+        catching_up_from: [[seed; 32]].into(),
+        ..tilo_peer_state::HeldCopy::default()
+    };
+    assert!(
+        hosted
+            .state(&studio)
+            .await
+            .expect("the studio is governed here")
+            .workspace_mut()
+            .report_copy(&server_cert, &held(3), now())
+            .is_ok(),
+        "the host that admitted the machine still writes"
+    );
+    hosted
+        .enter(&studio, &phone_cert)
+        .await
+        .expect("a device of the owner enters the studio");
+    assert!(
+        hosted
+            .state(&studio)
+            .await
+            .expect("the studio is governed here")
+            .workspace_mut()
+            .report_copy(&phone_cert, &held(9), now())
+            .is_ok(),
+        "the owner's other device still writes"
+    );
+
+    // `servers add` is a deliberate admission: it clears the mark and the machine writes again.
+    hosted
+        .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
+        .await
+        .expect("servers add brings the removed machine back");
+    assert!(
+        hosted
+            .state(&studio)
+            .await
+            .expect("the studio is governed here")
+            .permissions(device, now())
+            .is_ok(),
+        "the machine is one of the studio's devices again"
+    );
+    assert!(
+        hosted
+            .state(&studio)
+            .await
+            .expect("the studio is governed here")
+            .workspace_mut()
+            .report_copy(&laptop_cert, &held(4), now())
+            .is_ok(),
+        "the studio takes the machine's write again"
+    );
+
+    // A fresh invitation is the other way back: removed again, it is admitted anew by invitation.
+    let removed = hosted
+        .remove_server(&studio, &hex::encode(device))
+        .await
+        .expect("the server stops serving the studio");
+    assert!(removed, "the laptop said it let the studio go");
+    admit_by_invitation(&hosted, &studio, &server_cert, (&laptop_key, &laptop_cert), 22).await;
+    assert!(
+        hosted
+            .state(&studio)
+            .await
+            .expect("the studio is governed here")
+            .workspace_mut()
+            .report_copy(&laptop_cert, &held(5), now())
+            .is_ok(),
+        "a fresh invitation admits the machine, and the studio takes its write"
+    );
+
+    let _ = laptop.router.shutdown().await;
+    laptop.entered.close();
+    server.shutdown().await;
+}
+

@@ -204,6 +204,7 @@ pub(crate) fn admit_invited_member(
         admissions,
         delegate,
         workspace_delegations: Vec::new(),
+        removed: false,
     };
     candidate
         .put(

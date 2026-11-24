@@ -758,6 +758,12 @@ impl StatePeer {
                 if self.core.workspace_doc.is_some() || person != self.core.owner {
                     self.role(&source, now).map_err(|error| error.to_string())?;
                 }
+                // A device the workspace took off its member list writes nothing
+                // here, whether its row was deleted or kept with the mark that
+                // removed it ([`crate::PeerGovernance::removed_from_member_list`]).
+                if self.governance().removed_from_member_list(cert) {
+                    return Err(crate::state::MembershipError::Absent.to_string());
+                }
                 Ok(workspace::SenderAccess::Member { person, foreign })
             });
         match member {

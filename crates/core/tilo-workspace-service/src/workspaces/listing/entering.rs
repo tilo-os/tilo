@@ -28,6 +28,22 @@ impl Admit for Workspaces {
                 entering, access, ..
             } = entry;
             let device = cert.device_public_key;
+            // A device the workspace met and took off its member list comes back
+            // by a deliberate admission — the workspace handed to it again, a
+            // ticket or an invitation — never by presenting the certificate
+            // the workspace still holds. An invitation is that deliberate
+            // admission, so the entry it comes through decides for itself.
+            let removed = entering.through == Through::Entry
+                && match self.workspace(&entering.workspace).await {
+                    Ok(governed) => {
+                        let governed = governed.lock().await;
+                        governed.peer().governance().removed_from_member_list(cert)
+                    }
+                    Err(_) => false,
+                };
+            if removed {
+                return Entered::Refused(refused(tilo_peer_state::REMOVED_DEVICE_REFUSED.to_owned()));
+            }
             // A device asking again under an entry the workspace already
             // admitted (its answer was lost with its connection) is in.
             if let Ok(governed) = self.workspace(&entering.workspace).await {
@@ -287,7 +303,7 @@ impl Workspaces {
             {
                 return None;
             }
-            // A device the workspace met and took out of its roster comes back
+            // A device the workspace met and took off its member list comes back
             // by a deliberate admission, never by presenting the certificate
             // the workspace still holds: it is told so in words.
             if governed.peer().governance().removed_from_member_list(cert) {
