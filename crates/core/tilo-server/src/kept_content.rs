@@ -139,6 +139,11 @@ struct State {
     /// records that name some it lacks: what the workspace's copy status says
     /// this host lacks, kept as each record is read again.
     lacking: BTreeMap<Route, usize>,
+    /// The addresses each workspace's host keeps all of: an address names the
+    /// same bytes forever, so content kept whole is never looked over again.
+    /// Without this, every blob that arrives reads the whole Files tree's
+    /// manifests and checks every chunk they list.
+    whole: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Default for State {
@@ -152,6 +157,7 @@ impl Default for State {
             crowded: BTreeSet::new(),
             read: BTreeSet::new(),
             lacking: BTreeMap::new(),
+            whole: BTreeMap::new(),
         }
     }
 }
@@ -613,12 +619,25 @@ impl KeptContent {
         let Ok(store) = self.store.get(workspace) else {
             return 0;
         };
+        let known = self
+            .state
+            .lock_recover()
+            .whole
+            .get(workspace)
+            .cloned()
+            .unwrap_or_default();
+        let (now_whole, lacking) = still_missing(&store, &known, addresses);
         let (asks, missing) = {
             let mut state = self.state.lock_recover();
+            state
+                .whole
+                .entry(workspace.clone())
+                .or_default()
+                .extend(now_whole);
             let mut asks = Vec::new();
             let mut missing = 0_usize;
-            for address in addresses {
-                for hash in missing_pieces(&store, &address) {
+            for hashes in lacking {
+                for hash in hashes {
                     missing = missing.saturating_add(1);
                     if !state.wants.has_room() {
                         // Asked for once answers make room: asking now would
@@ -830,6 +849,29 @@ fn files_content(
     Ok(())
 }
 
+/// Of `addresses`, those `store` now keeps all of, and for each other one the
+/// blobs it lacks; an address in `whole` was kept whole before and is not read.
+fn still_missing(
+    store: &ContentStore,
+    whole: &BTreeSet<String>,
+    addresses: Vec<String>,
+) -> (Vec<String>, Vec<Vec<String>>) {
+    let mut now_whole = Vec::new();
+    let mut lacking = Vec::new();
+    for address in addresses {
+        if whole.contains(&address) {
+            continue;
+        }
+        let missing = missing_pieces(store, &address);
+        if missing.is_empty() {
+            now_whole.push(address);
+        } else {
+            lacking.push(missing);
+        }
+    }
+    (now_whole, lacking)
+}
+
 /// The blobs of the content `address` names that `store` lacks: the content
 /// itself, or, when it keeps a file's manifest, the chunks the manifest lists.
 pub(crate) fn missing_pieces(store: &ContentStore, address: &str) -> Vec<String> {
@@ -1030,5 +1072,37 @@ mod tests {
         }
         assert_eq!(missing_pieces(&store, &"9d".repeat(32)), ["9d".repeat(32)]);
         assert!(missing_pieces(&store, &here).is_empty());
+    }
+
+    /// Content the host kept whole once is not read again: a pass after a blob
+    /// arrives looks only at what is still missing, not at every file's
+    /// manifest and chunk.
+    #[test]
+    fn content_kept_whole_is_not_looked_over_again() {
+        use fs_content::{ChunkRef, ChunkTier};
+        let store = ContentStore::memory();
+        let chunk = store.put(b"every byte of a small file").unwrap();
+        let mut chunk_hash = [0_u8; 32];
+        hex::decode_to_slice(&chunk, &mut chunk_hash).unwrap();
+        let manifest = Manifest::new(
+            ChunkTier::Small,
+            vec![ChunkRef {
+                hash: chunk_hash,
+                len: 26,
+            }],
+        );
+        let file = store.put(&manifest.encode()).unwrap();
+        let absent = "9d".repeat(32);
+
+        let (whole, lacking) =
+            still_missing(&store, &BTreeSet::new(), vec![file.clone(), absent.clone()]);
+        assert_eq!(whole, [file.clone()]);
+        assert_eq!(lacking, [vec![absent.clone()]]);
+
+        // Remembered as whole, it is skipped without opening the store.
+        let known: BTreeSet<String> = [file.clone(), absent.clone()].into();
+        let (whole, lacking) = still_missing(&store, &known, vec![file, absent]);
+        assert!(whole.is_empty());
+        assert!(lacking.is_empty());
     }
 }
