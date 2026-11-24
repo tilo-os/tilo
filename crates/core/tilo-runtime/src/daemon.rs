@@ -324,6 +324,16 @@ impl Running {
         &self.native
     }
 
+    /// The person's services once they run, waiting up to `within` for them to start: the
+    /// workspaces this daemon holds and the packages it installed from them, which a view of the
+    /// device in this process reads.
+    pub(crate) fn services(
+        &self,
+        within: Duration,
+    ) -> io::Result<Arc<crate::device::services::Daemon>> {
+        self.person.within(within)
+    }
+
     /// Wait up to `within` for the person's services to run: a test's proof that the daemon
     /// serves them, and did not end.
     #[cfg(test)]

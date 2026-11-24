@@ -114,6 +114,8 @@ pub fn certified(
 struct Running {
     runtime: tokio::runtime::Handle,
     relays: EndpointRelays,
+    /// Where the host answers, as its devices are told to dial it.
+    addr: iroh::EndpointAddr,
     workspaces: tilo_server::workspaces::Workspaces,
     workspace: Option<String>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -197,9 +199,10 @@ impl Running {
                             ),
                             None => None,
                         };
+                        let addr = server.node_addr();
                         let (stop, stopped) = tokio::sync::oneshot::channel();
                         ready
-                            .send((handle, relays, workspaces, workspace, stop))
+                            .send((handle, relays, addr, workspaces, workspace, stop))
                             .expect("the host is awaited");
                         let _ = stopped.await;
                         server.shutdown().await;
@@ -207,11 +210,12 @@ impl Running {
                 }
             })
             .expect("the host's thread starts");
-        let (runtime, relays, workspaces, workspace, stop) =
+        let (runtime, relays, addr, workspaces, workspace, stop) =
             started.recv().expect("the host starts");
         Self {
             runtime,
             relays,
+            addr,
             workspaces,
             workspace,
             stop: Some(stop),
@@ -395,6 +399,19 @@ impl Host {
     #[must_use]
     pub fn relays(&self) -> EndpointRelays {
         self.0.relays()
+    }
+
+    /// Where this host answers, for a device told to dial it.
+    #[must_use]
+    pub fn addr(&self) -> iroh::EndpointAddr {
+        self.0.addr.clone()
+    }
+
+    /// The workspaces this host governs through, for a test that hands one of them a package as
+    /// a developer does, without a device's session.
+    #[must_use]
+    pub fn workspaces(&self) -> &tilo_server::workspaces::Workspaces {
+        &self.0.workspaces
     }
 
     /// The workspace this host governs.
