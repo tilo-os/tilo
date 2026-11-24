@@ -147,7 +147,11 @@ pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
             }
         }
         let out = out.trim_matches('-').to_owned();
-        if out.is_empty() { "layer".to_owned() } else { out }
+        if out.is_empty() {
+            "layer".to_owned()
+        } else {
+            out
+        }
     }
     fn order_key(index: usize) -> String {
         format!("{index:08}")
@@ -207,13 +211,16 @@ pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
             brush: crate::brushes::stored(&mark.brush),
             ..Style::default()
         };
+        let colour = if mark.colour.is_empty() {
+            "#1d1b19".to_owned()
+        } else {
+            mark.colour.clone()
+        };
         let shape = if mark.kind == "stroke" {
+            // The ink the hand paints in is the stroke's colour; a shape is filled with it.
+            style.stroke = Some(colour);
             Shape::Stroke {
-                points: mark
-                    .points
-                    .chunks_exact(3)
-                    .map(<[f64]>::to_vec)
-                    .collect(),
+                points: mark.points.chunks_exact(3).map(<[f64]>::to_vec).collect(),
                 size: mark.size,
                 forks: None,
                 spread: None,
@@ -223,14 +230,8 @@ pub fn artwork_of_records(json: &str) -> Result<Artwork, String> {
                 hatch: None,
             }
         } else {
-            style.fill = Some(if mark.colour.is_empty() {
-                "#1d1b19".to_owned()
-            } else {
-                mark.colour.clone()
-            });
-            Shape::Path {
-                d: mark.d.clone(),
-            }
+            style.fill = Some(colour);
+            Shape::Path { d: mark.d.clone() }
         };
         art.put_mark(Mark {
             id: format!("mark-{index}"),
@@ -293,12 +294,13 @@ pub fn grade(picture: &[u8], adjust: &str) -> Result<Vec<u8>, String> {
     use tilo_ui::image_codec::{Encoding, decode_now, encode_now};
     let adjust: crate::model::Adjust = serde_json::from_str(adjust)
         .map_err(|error| format!("a grade's fields cannot be read: {error}"))?;
-    let mut image =
-        decode_now(picture, None).map_err(|error| format!("the picture cannot be read: {error}"))?;
+    let mut image = decode_now(picture, None)
+        .map_err(|error| format!("the picture cannot be read: {error}"))?;
     if let Some(grade) = adjust.grade() {
         crate::adjust::grade_pixels(&mut image.rgba, &[grade]);
     }
-    encode_now(&image, Encoding::Png).map_err(|error| format!("the graded picture cannot be written: {error}"))
+    encode_now(&image, Encoding::Png)
+        .map_err(|error| format!("the graded picture cannot be written: {error}"))
 }
 
 /// The area of `picture` like `request` names it, as SVG path data: the magic wand over one
@@ -325,8 +327,8 @@ pub fn wand(picture: &[u8], request: &str) -> Result<String, String> {
     if find.at.is_none() && find.colour.is_none() {
         return Err("give at (a point) or colour: what to find".to_owned());
     }
-    let image =
-        decode_now(picture, None).map_err(|error| format!("the picture cannot be read: {error}"))?;
+    let image = decode_now(picture, None)
+        .map_err(|error| format!("the picture cannot be read: {error}"))?;
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -335,13 +337,19 @@ pub fn wand(picture: &[u8], request: &str) -> Result<String, String> {
     let seed = find.at.map(|at| {
         (
             at[0].max(0.0).min(f64::from(image.width.saturating_sub(1))) as usize,
-            at[1].max(0.0).min(f64::from(image.height.saturating_sub(1))) as usize,
+            at[1]
+                .max(0.0)
+                .min(f64::from(image.height.saturating_sub(1))) as usize,
         )
     });
-    let colour = find.colour.as_deref().and_then(tilo_ui::color::parse_hex).map(|colour| {
-        let rgba = colour.to_rgba8();
-        [rgba.r, rgba.g, rgba.b]
-    });
+    let colour = find
+        .colour
+        .as_deref()
+        .and_then(tilo_ui::color::parse_hex)
+        .map(|colour| {
+            let rgba = colour.to_rgba8();
+            [rgba.r, rgba.g, rgba.b]
+        });
     let field = crate::wand::coverage(
         &crate::wand::Picture {
             rgba: &image.rgba,
@@ -497,4 +505,74 @@ pub fn open(archive: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> 
     let json = serde_json::to_string(&ArtworkFile::of(&art))
         .map_err(|error| format!("the artwork cannot be written: {error}"))?;
     Ok((json, pictures))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The records a package keeps, as its JSON writes them.
+    fn records() -> String {
+        serde_json::json!({
+            "title": "A study",
+            "width": 800.0,
+            "height": 600.0,
+            "ground_texture": "linen",
+            "ground_colour": "#ffffff",
+            "layers": [{
+                "name": "Ink",
+                "medium": "",
+                "opacity": 0.5,
+                "visible": true,
+                "locked": true,
+                "texture": 0.25,
+            }],
+            "marks": [
+                {
+                    "layer": { "name": "Ink" },
+                    "kind": "stroke",
+                    "points": [1.0, 2.0, 0.5, 3.0, 4.0, 0.6],
+                    "size": 6.0,
+                    "colour": "#d24b3a",
+                    "brush": "pen",
+                    "opacity": 0.8,
+                },
+                {
+                    "layer": { "name": "Ink" },
+                    "kind": "path",
+                    "d": "M 0 0 L 10 10 Z",
+                    "colour": "#2f7fb8",
+                },
+            ],
+            "selection": { "d": "M 0 0 L 5 5 Z", "feather": 2.0 },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_records_a_package_keeps_carry_its_paint_and_its_layers() {
+        let art = artwork_of_records(&records()).expect("the records are an artwork");
+        assert_eq!(art.ground.texture, "linen");
+        let layer = art.layers.iter().next().expect("one layer");
+        assert_eq!(layer.name, "Ink");
+        assert!((layer.opacity - 0.5).abs() < f64::EPSILON);
+        assert!((layer.texture - 0.25).abs() < f64::EPSILON);
+        assert!(layer.locked, "a held-still layer stays held still");
+
+        let mut marks = art.marks.iter();
+        let stroke = marks.next().expect("the stroke");
+        assert_eq!(&stroke.layer, &layer.id, "the mark lands on its layer");
+        assert_eq!(stroke.style.brush.as_deref(), Some("pen"));
+        assert_eq!(
+            stroke.style.stroke.as_deref(),
+            Some("#d24b3a"),
+            "a stroke paints in the ink the person chose"
+        );
+        assert_eq!(stroke.style.opacity, Some(0.8));
+        let path = marks.next().expect("the shape");
+        assert_eq!(path.style.fill.as_deref(), Some("#2f7fb8"));
+
+        let selection = art.selection.expect("the selection is kept");
+        assert_eq!(selection.d, "M 0 0 L 5 5 Z");
+    }
 }
