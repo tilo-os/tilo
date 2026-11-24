@@ -836,7 +836,6 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_calculator.rs",
   "crates/lang/tilolang-runtime/tests/e2e_cleanup.rs",
   "crates/lang/tilolang-runtime/tests/e2e_counter.rs",
-  "crates/lang/tilolang-runtime/tests/e2e_mail_files.rs",
   "crates/lang/tilolang-runtime/tests/e2e_ebook.rs",
   "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
@@ -844,7 +843,6 @@ readers = [
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
   "crates/lang/tilolang-runtime/tests/window_bar.rs",
   "crates/lang/tilolang-runtime/tests/common/mod.rs",
-  "crates/lang/tilolang-runtime/tests/calendar.rs",
   "crates/lang/tilolang-runtime/tests/e2e_canvas.rs",
   "crates/lang/tilolang-runtime/tests/e2e_video_editor.rs",
   "crates/lang/tilolang-runtime/tests/e2e_api_tester.rs",
@@ -875,6 +873,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_weather.rs",
   "crates/lang/tilolang-runtime/tests/e2e_word_processor.rs",
   "crates/lang/tilolang-runtime/tests/e2e_youtube.rs",
+  "crates/lang/tilolang-runtime/tests/words.rs",
 ]
 
 [[cargo]]
@@ -912,6 +911,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/chat.rs",
   "crates/lang/tilolang-tilo/tests/chat_persona_shot.rs",
   "crates/lang/tilolang-tilo/tests/containers.rs",
+  "crates/lang/tilolang-tilo/tests/discord.rs",
   "crates/lang/tilolang-tilo/tests/discord_migration.rs",
   "crates/lang/tilolang-tilo/tests/disks.rs",
   "crates/lang/tilolang-tilo/tests/files.rs",
@@ -928,6 +928,7 @@ readers = [
   "crates/lang/tilolang-tilo/tests/naming.rs",
   "crates/lang/tilolang-tilo/tests/native_chat.rs",
   "crates/lang/tilolang-tilo/tests/native_notes.rs",
+  "crates/lang/tilolang-tilo/tests/native_tube.rs",
   "crates/lang/tilolang-tilo/tests/note_import.rs",
   "crates/lang/tilolang-tilo/tests/settings_panes.rs",
   "crates/lang/tilolang-tilo/tests/notebook_order.rs",
@@ -971,8 +972,9 @@ readers = ["crates/lang/tilolang-web/tests/apps.rs"]
 
 [[cargo]]
 package = "tilolang-youtube"
-# The origin's tests compile tube's package from its source and ids lock.
-inputs = ["apps/tl/tube/"]
+# The origin's tests compile tube's package, and the playback session it uses, from their
+# sources and ids locks.
+inputs = ["apps/tl/tube/", "apps/tl/playback/"]
 readers = [
   "crates/integrations/tilolang-youtube/tests/native_tube.rs",
   "crates/integrations/tilolang-youtube/tests/origin.rs",
