@@ -24,12 +24,18 @@ mod cases {
 
     /// What the geocoder answers for Munich.
     const MUNICH: &str = r#"[
-        {"lat":"48.1374","lon":"11.5755","display_name":"Marienplatz, München, Bayern","name":"Marienplatz","osm_type":"node","osm_id":11,"class":"tourism","type":"attraction","address":{"road":"Marienplatz"}},
+        {"lat":"48.1374","lon":"11.5755","display_name":"Marienplatz, München, Bayern","name":"Marienplatz","osm_type":"node","osm_id":11,"class":"tourism","type":"attraction","address":{"road":"Marienplatz"},"extratags":{"phone":"+49 89 23300","website":"https://www.muenchen.de/marienplatz"}},
         {"lat":"48.1351","lon":"11.5820","display_name":"Café Glockenspiel, München","name":"Café Glockenspiel","osm_type":"node","osm_id":12,"class":"amenity","type":"cafe","address":{"road":"Marienplatz","house_number":"1"}}
     ]"#;
 
     /// What the geocoder answers for a place the tests name but it does not know.
     const UNKNOWN: &str = "[]";
+
+    /// What the geocoder answers when two records describe one place, a dozen metres apart.
+    const TWINS: &str = r#"[
+        {"lat":"48.1374","lon":"11.5755","display_name":"Marienplatz, München","name":"Marienplatz","osm_type":"node","osm_id":11,"class":"tourism","type":"attraction"},
+        {"lat":"48.1375","lon":"11.5756","display_name":"Marienplatz, München","name":"Marienplatz","osm_type":"way","osm_id":12,"class":"tourism","type":"attraction"}
+    ]"#;
 
     /// What the routing service answers for two places in Munich: two routes, so the map can offer
     /// another one.
@@ -50,7 +56,8 @@ mod cases {
          "legs":[{"mode":"BUS","routeShortName":"58","headsign":"Hauptbahnhof",
                   "from":{"name":"Marienplatz"},"to":{"name":"Hauptbahnhof"},
                   "startTime":"2026-11-24T10:05:00Z","endTime":"2026-11-24T10:20:00Z","duration":900.0,
-                  "intermediateStops":[{},{}],"routeColor":"#0066cc","agencyName":"MVG","realTime":true}]},
+                  "intermediateStops":[{},{}],"routeColor":"#0066cc","agencyName":"MVG","realTime":true,
+                  "legGeometry":{"points":"_p~iF~ps|U_ulLnnqC_mqNvxq`@","precision":5}}]},
         {"startTime":"2026-11-24T10:10:00Z","endTime":"2026-11-24T10:50:00Z","duration":2400.0,"transfers":1,
          "legs":[{"mode":"WALK","from":{"name":"Marienplatz"},"to":{"name":"Sendlinger Tor"},
                   "startTime":"2026-11-24T10:10:00Z","endTime":"2026-11-24T10:15:00Z","duration":300.0}]}
@@ -71,6 +78,8 @@ mod cases {
         asked: Rc<RefCell<Vec<String>>>,
         /// Whether the next request fails as unreachable.
         offline: Rc<RefCell<bool>>,
+        /// Whether the geocoder answers two records for one place.
+        twin: Rc<RefCell<bool>>,
     }
 
     impl Web {
@@ -88,6 +97,8 @@ mod cases {
             let body = if request.url.contains("nominatim") {
                 if request.url.contains("q=Nowhere") {
                     UNKNOWN
+                } else if *self.twin.borrow() {
+                    TWINS
                 } else {
                     MUNICH
                 }
@@ -607,6 +618,16 @@ mod cases {
         assert_eq!(m.text_of(&legs[0], "from_name"), "Marienplatz");
         assert_eq!(m.text_of(&legs[0], "colour"), "0066cc");
         assert!(m.flag_of(&legs[0], "realtime"), "the bus reports live times");
+        // The leg's own line is what the map draws it along, decoded from the service's polyline.
+        match m.of(&legs[0], "geometry") {
+            Value::List(points) => {
+                assert_eq!(points.len(), 6, "three points, latitude then longitude: {points:?}");
+                assert!(matches!(points[0], Value::Float(n) if (n - 38.5).abs() < 1e-6), "{points:?}");
+                assert!(matches!(points[1], Value::Float(n) if (n + 120.2).abs() < 1e-6), "{points:?}");
+                assert!(matches!(points[4], Value::Float(n) if (n - 43.252).abs() < 1e-6), "{points:?}");
+            }
+            other => panic!("a leg's line reads {other:?}"),
+        }
         assert!(
             m.web.asked().iter().any(|url| url.contains("transitous")),
             "the transit service was asked"
@@ -916,15 +937,20 @@ mod cases {
                 < 0.4,
             "about 0.8 metres of the route stand for a screen pixel: {zoom}"
         );
-        // The directions name both ends, offer a swap, and carry the map's keys.
-        let mut panel = m
-            .rt
-            .open_view(
-                &me(),
-                &m.app.view("directions_panel"),
-                vec![Value::resource(&m.root)],
-            )
-            .unwrap();
+        // The directions name both ends, offer a swap, and carry the map's keys. They stand in
+        // the window's places column, which `2` opens.
+        let mut panel = m.window();
+        panel.poll_patches().unwrap();
+        let directions = of_kind(panel.tree(), "ui.Button")
+            .into_iter()
+            .find(|button| match button.props.get("keys") {
+                Some(Value::List(keys)) => keys.contains(&Value::text("2")),
+                _ => false,
+            })
+            .expect("a control answers `2`")
+            .key
+            .clone();
+        panel.fire(&directions, "press").unwrap();
         panel.poll_patches().unwrap();
         let placeholders: Vec<String> = of_kind(panel.tree(), "ui.TextInput")
             .iter()
@@ -1048,17 +1074,295 @@ mod cases {
         );
     }
 
-    phase the_traffic_layer_toggles;
+    phase the_traffic_layer_is_the_person_s_own_and_shows_its_legend;
     {
         let m = Maps::new();
-        assert!(!m.flag(&m.root, "traffic"));
-        m.call("toggle_traffic", vec![Value::resource(&m.root)]);
-        assert!(m.flag(&m.root, "traffic"));
-        m.call(
-            "toggle_traffic",
-            vec![Value::resource(&m.root), Value::Bool(false)],
+        let mut window = m.window();
+        window.poll_patches().unwrap();
+        let legend = |window: &ViewInstance| {
+            of_kind(window.tree(), "ui.Chip")
+                .into_iter()
+                .filter_map(|chip| match chip.props.get("label") {
+                    Some(Value::Text(label)) => Some(label.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<String>>()
+        };
+        assert!(
+            legend(&window).is_empty(),
+            "the traffic layer starts off: {:?}",
+            legend(&window)
         );
-        assert!(!m.flag(&m.root, "traffic"));
+        let traffic = of_kind(window.tree(), "ui.Button")
+            .into_iter()
+            .find(|button| props_text(button, "label") == "Show traffic")
+            .expect("the map offers the traffic layer")
+            .key
+            .clone();
+        window.fire(&traffic, "press").unwrap();
+        window.poll_patches().unwrap();
+        let shown = legend(&window);
+        for wanted in ["Flowing", "Slow", "Heavy", "Standstill"] {
+            assert!(
+                shown.iter().any(|label| label == wanted),
+                "the traffic layer names `{wanted}`: {shown:?}"
+            );
+        }
+        // The layer is the person's own state, not the workspace's: the shared map carries no
+        // traffic flag for everyone to see.
+        assert!(
+            m.rt.read(&m.root, "traffic").is_err(),
+            "the layer is not a field of the workspace's map"
+        );
+    }
+
+    phase the_places_beside_the_map_are_ranked_and_say_how_far_they_are;
+    {
+        let m = Maps::new();
+        *m.web.twin.borrow_mut() = true;
+        m.search("Marienplatz");
+        assert_eq!(
+            m.found().len(),
+            1,
+            "one place is one place, however many records name it: {:?}",
+            m.found().iter().map(|p| m.text(p, "name")).collect::<Vec<_>>()
+        );
+        let m = Maps::new();
+        m.search("Marienplatz");
+        let found = m.found();
+        assert_eq!(m.text(&found[0], "name"), "Marienplatz");
+        assert_eq!(
+            m.text(&found[1], "name"),
+            "Café Glockenspiel",
+            "the name that answers the search stands first: {found:?}"
+        );
+        // A row says how far its place lies from where the camera looks.
+        let mut window = m.window();
+        window.poll_patches().unwrap();
+        let map = of_kind(window.tree(), "ui.Map")
+            .into_iter()
+            .next()
+            .expect("the window shows the map")
+            .key
+            .clone();
+        window
+            .fire_with(
+                &map,
+                "rest",
+                Some(&Value::List(vec![
+                    Value::Float(48.1374),
+                    Value::Float(11.5755),
+                    Value::Float(4.0),
+                    Value::Float(48.16),
+                    Value::Float(48.11),
+                    Value::Float(11.61),
+                    Value::Float(11.54),
+                ])),
+            )
+            .expect("the camera rests");
+        window.poll_patches().unwrap();
+        let row = of_kind(window.tree(), "ui.ListRow")
+            .into_iter()
+            .find(|row| props_text(row, "title") == "Marienplatz")
+            .expect("the place stands in the results");
+        assert!(
+            props_text(row, "secondary").ends_with("0 m"),
+            "the row says the place is where the camera looks: {:?}",
+            props_text(row, "secondary")
+        );
+    }
+
+    phase the_map_s_controls_carry_the_one_and_two_keys;
+    {
+        let m = Maps::new();
+        let mut window = m.window();
+        window.poll_patches().unwrap();
+        let keyed = |window: &ViewInstance, key: &str| {
+            of_kind(window.tree(), "ui.Button")
+                .into_iter()
+                .find(|button| match button.props.get("keys") {
+                    Some(Value::List(keys)) => keys.contains(&Value::text(key)),
+                    _ => false,
+                })
+                .cloned()
+        };
+        let directions = keyed(&window, "2").expect("a control answers `2`");
+        assert_eq!(
+            props_text(&directions, "label"),
+            "Directions",
+            "`2` opens the directions"
+        );
+        assert!(keyed(&window, "1").is_some(), "a control answers `1`");
+        window.fire(&directions.key, "press").unwrap();
+        window.poll_patches().unwrap();
+        let expanded = of_kind(window.tree(), "ui.DisclosureRow")
+            .into_iter()
+            .find(|node| props_text(node, "title") == "Directions")
+            .and_then(|node| node.props.get("expanded").cloned())
+            .unwrap_or(Value::none());
+        assert_eq!(expanded, Value::Int(1), "`2` opened the directions");
+    }
+
+    phase a_geo_link_reads_its_escapes_and_its_uncertainty;
+    {
+        let m = Maps::new();
+        m.call(
+            "open_link",
+            vec![
+                Value::resource(&m.root),
+                Value::text("geo:0,0?q=Caf%C3%A9%20Glockenspiel"),
+            ],
+        );
+        assert_eq!(
+            m.text(&m.root, "query"),
+            "Café Glockenspiel",
+            "the percent escapes are the words the link says"
+        );
+        // An uncertainty is how far the point may lie from the coordinates: the map opens close
+        // enough to see that much ground, and says what it shows.
+        let m = Maps::new();
+        m.call(
+            "open_link",
+            vec![
+                Value::resource(&m.root),
+                Value::text("geo:48.1374,11.5755;u=250"),
+            ],
+        );
+        assert!((m.float(&m.root, "centre_latitude") - 48.1374).abs() < 1e-6);
+        let near = m.float(&m.root, "centre_zoom");
+        assert!(near > 10.0, "250 m of uncertainty opens a street's view: {near}");
+        let m = Maps::new();
+        m.call(
+            "open_link",
+            vec![
+                Value::resource(&m.root),
+                Value::text("geo:48.1374,11.5755;u=5000"),
+            ],
+        );
+        let far = m.float(&m.root, "centre_zoom");
+        assert!(far < near, "five kilometres of uncertainty opens a town's view: {far} for {near}");
+        let m = Maps::new();
+        m.call(
+            "open_link",
+            vec![
+                Value::resource(&m.root),
+                Value::text("geo:48.1374,11.5755;u=250"),
+            ],
+        );
+        assert!(
+            m.text(&m.root, "status").contains("250 m"),
+            "it says how far the point may be: {}",
+            m.text(&m.root, "status")
+        );
+    }
+
+    phase a_place_s_card_says_its_phone_and_website_and_opens_them;
+    {
+        let m = Maps::new();
+        m.search("Marienplatz");
+        let place = m.found()[0].clone();
+        assert_eq!(m.text(&place, "phone"), "+49 89 23300");
+        assert_eq!(m.text(&place, "website"), "https://www.muenchen.de/marienplatz");
+        let mut window = m.window();
+        window.poll_patches().unwrap();
+        let map = of_kind(window.tree(), "ui.Map")
+            .into_iter()
+            .next()
+            .expect("the window shows the map")
+            .key
+            .clone();
+        window
+            .fire_with(&map, "marker", Some(&Value::text("Marienplatz")))
+            .expect("the marker opens the place");
+        window.poll_patches().unwrap();
+        let rows: Vec<(String, String)> = of_kind(window.tree(), "ui.ListRow")
+            .into_iter()
+            .map(|row| (props_text(row, "title"), props_text(row, "meta")))
+            .collect();
+        assert!(
+            rows.iter().any(|(title, meta)| title == "+49 89 23300" && meta == "Call"),
+            "the card names the phone number: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|(title, meta)| title == "https://www.muenchen.de/marienplatz"
+                && meta == "Website"),
+            "the card names the website: {rows:?}"
+        );
+        // A place with neither offers neither.
+        window
+            .fire_with(&map, "marker", Some(&Value::text("Café Glockenspiel")))
+            .expect("the marker opens the place");
+        window.poll_patches().unwrap();
+        let offered: Vec<(String, String)> = of_kind(window.tree(), "ui.ListRow")
+            .into_iter()
+            .map(|row| (props_text(row, "title"), props_text(row, "meta")))
+            .collect();
+        assert!(
+            !offered.iter().any(|(_, meta)| meta == "Call" || meta == "Website"),
+            "a place with no phone or website offers neither: {offered:?}"
+        );
+    }
+
+    phase the_window_says_when_the_imagery_is_not_arriving;
+    {
+        let m = Maps::new();
+        let mut window = m.window();
+        window.poll_patches().unwrap();
+        let map = of_kind(window.tree(), "ui.Map")
+            .into_iter()
+            .next()
+            .expect("the window shows the map")
+            .key
+            .clone();
+        let hint = |window: &ViewInstance| {
+            of_kind(window.tree(), "ui.Banner")
+                .into_iter()
+                .any(|banner| props_text(banner, "title").contains("Map imagery"))
+        };
+        assert!(!hint(&window), "imagery arriving says nothing");
+        window
+            .fire_with(&map, "fault", Some(&Value::List(vec![Value::Int(6), Value::Int(6)])))
+            .expect("the map reports its tiles");
+        window.poll_patches().unwrap();
+        assert!(hint(&window), "every tile failing says so quietly");
+        window
+            .fire_with(&map, "fault", Some(&Value::List(vec![Value::Int(0), Value::Int(6)])))
+            .expect("the map reports its tiles");
+        window.poll_patches().unwrap();
+        assert!(!hint(&window), "imagery that arrives takes the hint away");
+    }
+
+    phase a_journey_is_drawn_along_each_leg_s_own_line;
+    {
+        let m = Maps::new();
+        m.search("Marienplatz");
+        m.call(
+            "set_mode",
+            vec![
+                Value::resource(&m.root),
+                m.case("TravelMode", "TravelMode.transit"),
+            ],
+        );
+        m.call(
+            "directions",
+            vec![
+                Value::resource(&m.root),
+                Value::Text("Marienplatz".to_owned()),
+                Value::Text("Café Glockenspiel".to_owned()),
+            ],
+        );
+        let window = m.window();
+        let tracks = of_kind(window.tree(), "ui.MapTrack");
+        assert_eq!(tracks.len(), 1, "the journey's one leg is drawn: {tracks:?}");
+        assert_eq!(
+            props_text(tracks[0], "tone"),
+            "transit",
+            "the leg's line carries its mode's ink"
+        );
+        match tracks[0].props.get("points") {
+            Some(Value::List(points)) => assert_eq!(points.len(), 6, "the leg's own line: {points:?}"),
+            other => panic!("the line is drawn through its points: {other:?}"),
+        }
     }
 
     phase navigation_follows_the_route_and_ends;
@@ -1134,6 +1438,14 @@ mod cases {
         assert!(props_text(map, "name") == "Map");
         // The places it knows stand on it as markers, and the route as a line.
         let markers = of_kind(window.tree(), "ui.MapMarker");
+        for marker in &markers {
+            assert_eq!(
+                marker.props.get("label"),
+                Some(&Value::Int(1)),
+                "a place's marker names it: {:?}",
+                marker.props.get("name")
+            );
+        }
         assert_eq!(
             markers.len(),
             2,
@@ -1170,6 +1482,8 @@ mod cases {
             "Offline maps",
             "Attribution",
             "Show traffic",
+            "Hide places",
+            "Directions",
         ] {
             assert!(
                 buttons.iter().any(|label| label == wanted),
@@ -1213,6 +1527,20 @@ mod cases {
                 .any(|node| props_text(node, "value") == "500 m"),
             "the footer reads the scale where the camera rests"
         );
+        // And draws it: a rule as long as that distance covers on the ground.
+        let rule = of_kind(window.tree(), "ui.Rule")
+            .into_iter()
+            .next()
+            .expect("the footer draws the scale");
+        match rule.props.get("length") {
+            Some(Value::Float(length)) => {
+                assert!(
+                    *length > 60.0 && *length < 95.0,
+                    "the bar is as long as 500 m covers at this zoom: {length}"
+                );
+            }
+            other => panic!("the scale bar is a length: {other:?}"),
+        }
         // Opening the offline maps and saving the view asks for exactly that box.
         let offline = of_kind(window.tree(), "ui.Button")
             .into_iter()

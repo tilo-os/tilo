@@ -112,6 +112,15 @@ view feedback(g: Gallery) {
                 ui.Fact("3 comments")
             }
         }
+        part(
+            "Scale rule",
+            "A rule as long as what it measures, its ends ticked: a map's scale bar.",
+        ) {
+            row(gap: .related, align: .center) {
+                ui.Text("1 km", role: .caption, secondary: true, numeric: true)
+                ui.Rule(length: 96.0, ticks: true, label: "Scale")
+            }
+        }
         part("Progress", "How far a task is, or that it runs when nobody knows how long.") {
             ui.ProgressBar(0.62, label: "Uploading")
             ui.ProgressBar(label: "Preparing")

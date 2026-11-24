@@ -2,6 +2,7 @@
 //! and the app manifests. Do not edit; change the collection or the manifests and run the
 //! generator.
 
+
 /// The default collection's package ids, sorted: the apps a workspace is created with.
 pub(super) const DEFAULT: &[&str] = &[
     "so.tilo.activity",

@@ -27,6 +27,7 @@ __all__ = [
     "Person",
     "Suggestion",
     "Library",
+    "AlbumDraft",
     "Unread",
     "ChosenPicture",
     "ImportAsk",
@@ -314,7 +315,7 @@ RemovePersonResourceArgs = TypedDict("RemovePersonResourceArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -375,7 +376,7 @@ class Notice(Resource):
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.photos.Photo`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     rv4vs7su: str  # name
     r55t3rg3: str  # picture
     vwrtdas3: str  # thumb
@@ -574,7 +575,7 @@ class Photo(Resource):
 
 class Album(Resource):
     """Album — `tl.so.tilo.photos.Album`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     unujaudz: str  # name
     k7fl2y27: list[str]  # photos
 
@@ -609,14 +610,14 @@ class Album(Resource):
 
 class Person(Resource):
     """Person — `tl.so.tilo.photos.Person`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     segahwtp: str  # name
     vbzsnqg5: list[str]  # photos
 
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.photos.Suggestion`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     qracadw6: str  # name
     ehc6rrhm: list[str]  # photos
     @property
@@ -631,7 +632,7 @@ class Suggestion(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.photos.Library`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     moeuycny: list[Entry[Photo]]  # photos
     tqa4lyow: list[Entry[Album]]  # albums
     xr5mtp2m: list[Entry[Person]]  # people
@@ -658,17 +659,7 @@ class Library(Resource):
     xkkw7d65: list[Entry[Unread]]  # unread
     fypuuz3p: list[Entry[FaceScan]]  # face_scans
     jcilt5zf: str  # notice
-    kg3gc2rb: bool  # album_draft_open
-    xjkjqqf5: str  # album_draft_id
-    @property
-    def _2ql3qzqp(self) -> str:
-        """album_draft_name (`2ql3qzqp` on the wire)."""
-        return self.fields["2ql3qzqp"]
-
-    @_2ql3qzqp.setter
-    def _2ql3qzqp(self, value: str) -> None:
-        self.edit("2ql3qzqp", value=value)
-    myrcknu3: list[str]  # album_draft_photos
+    nyozkafm: list[Entry[AlbumDraft]]  # album_drafts
 
     def import_photo(self, *, file: Any) -> Photo:
         """Imports a photograph the person picks: the library keeps the address of its bytes, the name it came in with, what its own container says of it (when and where it was taken) and a small preview the grid draws. A picture whose bytes the window already holds reads at once."""
@@ -1063,9 +1054,24 @@ class Library(Resource):
     __actions__ = frozenset({"import_photo", "absorb_picture", "import_photo_meta", "import_folder", "import_folder_many", "start_import", "start_import_many", "imported", "imported_many", "stop_import", "retry_import", "retry_import_many", "reindex", "reindex_many", "dismiss_import", "dismiss_import_many", "favorite_selected", "favorite_selected_many", "remove_selected", "remove_selected_many", "edit_selected", "edit_selected_many", "new_album", "remove_album", "remove_album_many", "start_album_draft", "start_album_draft_many", "album_draft_toggle", "album_draft_toggle_many", "cancel_album_draft", "cancel_album_draft_many", "save_album", "save_album_many", "delete_album_draft", "delete_album_draft_many", "dismiss_notice", "dismiss_notice_many", "add_person", "add_person_many", "remove_person", "remove_person_many", "rename_person", "rename_person_many", "face_scan", "set_recognition", "set_recognition_many", "scan_faces", "scan_step", "read_batch", "pause_scan", "pause_scan_many", "delete_face_data", "delete_face_data_many", "approve_suggestion", "approve_suggestion_many", "merge_suggestion", "merge_suggestion_many", "dismiss_suggestion", "dismiss_suggestion_many", "person_named", "new_person", "merge_people", "merge_people_many", "split_photo", "split_photo_many", "remove_person_resource", "remove_person_resource_many"})
 
 
+class AlbumDraft(Resource):
+    """AlbumDraft — `tl.so.tilo.photos.AlbumDraft`."""
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
+    @property
+    def _53utp7nd(self) -> str:
+        """album (`53utp7nd` on the wire)."""
+        return self.fields["53utp7nd"]
+
+    @_53utp7nd.setter
+    def _53utp7nd(self, value: str) -> None:
+        self.edit("53utp7nd", value=value)
+    jaabesu7: str  # name
+    l4infwly: list[str]  # photos
+
+
 class Unread(Resource):
     """Unread — `tl.so.tilo.photos.Unread`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     @property
     def _6iu5enh3(self) -> str:
         """name (`6iu5enh3` on the wire)."""
@@ -1089,7 +1095,7 @@ class Unread(Resource):
 
 class ChosenPicture(Resource):
     """ChosenPicture — `tl.so.tilo.photos.ChosenPicture`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     wjvddrc5: str  # name
     @property
     def _6agrr5bt(self) -> str:
@@ -1104,13 +1110,13 @@ class ChosenPicture(Resource):
 
 class ImportAsk(Resource):
     """ImportAsk — `tl.so.tilo.photos.ImportAsk`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     pgrmuslm: list[ChosenPicture]  # files
 
 
 class ReadPicture(Resource):
     """ReadPicture — `tl.so.tilo.photos.ReadPicture`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     z7dxm5rp: str  # name
     bedul3kq: str  # picture
     v72wrl73: str  # thumb
@@ -1122,7 +1128,7 @@ class ReadPicture(Resource):
 
 class ImportRecord(Resource):
     """ImportRecord — `tl.so.tilo.photos.ImportRecord`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     k33gw4xu: str  # job
     hbuvlsle: str  # state
     l5ism53v: int  # found
@@ -1133,13 +1139,13 @@ class ImportRecord(Resource):
 
 class JobStarted(Resource):
     """JobStarted — `tl.so.tilo.photos.JobStarted`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     cgbfeocd: str  # job
 
 
 class FaceScan(Resource):
     """FaceScan — `tl.so.tilo.photos.FaceScan`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
     dejwr76b: bool  # on
     dcarwzkc: str  # state
     quetfngb: list[str]  # scanned
@@ -1147,5 +1153,5 @@ class FaceScan(Resource):
 
 class Photos(Resource):
     """Photos — `tl.so.tilo.photos`."""
-    __surface__ = "so.tilo.photos@217d98cb8a458042"
+    __surface__ = "so.tilo.photos@6619e9e267c54f4a"
 

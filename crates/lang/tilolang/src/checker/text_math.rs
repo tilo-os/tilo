@@ -190,6 +190,14 @@ impl Checker<'_> {
                 }
                 Ex::host(Imp::StrUrlEncode, vec![r], Ty::Text)
             }
+            // The text a URL's query says, its percent escapes read back: a link's words as the
+            // person who wrote it meant them.
+            "url_decode" => {
+                if !self.arity(name, args, 0, span) {
+                    return None;
+                }
+                Ex::host(Imp::StrUrlDecode, vec![r], Ty::Text)
+            }
             // The number a text writes: an id another app gave as text, passed where its action takes the
             // number.
             "to_int" => Ex::host(Imp::StrToInt, vec![r], Ty::Option(Box::new(Ty::Int))),

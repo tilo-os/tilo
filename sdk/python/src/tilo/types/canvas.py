@@ -414,7 +414,7 @@ SetDynamicsArgs = TypedDict("SetDynamicsArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -475,7 +475,7 @@ class Notice(Resource):
 
 class Artwork(Resource):
     """Artwork — `tl.so.tilo.canvas.Artwork`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     zp2ztcwq: str  # title
     izpefh4x: float  # width
     @property
@@ -935,6 +935,10 @@ class Artwork(Resource):
         """Compares the artwork with the version history names, overlaid on the surface: what changed between the two, and the changed region as it now stands where it stands."""
         return self.action("compare_versions", change=change)
 
+    def compare_at(self, *, place: float) -> str | None:
+        """Compares the artwork with its version at `place` on the timeline, the oldest at `0.0`. At the newest the comparison is taken away, as the artwork stands as it is."""
+        return self.action("compare_at", place=place)
+
     def clear_comparison(self) -> None:
         """Takes the version comparison away from the surface."""
         return self.action("clear_comparison")
@@ -1242,12 +1246,12 @@ class Artwork(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"add_layer", "rename_layer", "rename_layer_many", "lock_layer", "lock_layer_many", "clip_layer", "clip_layer_many", "add_mask", "set_mask", "set_mask_many", "add_text", "set_medium", "set_medium_many", "save_medium", "remove_medium", "remove_medium_many", "move_layer_up", "move_layer_up_many", "move_layer_down", "move_layer_down_many", "duplicate_layer", "merge_layer_down", "merge_layer_down_many", "show_layer", "show_layer_many", "remove_layer", "remove_layer_many", "set_artwork", "set_artwork_many", "add_stroke", "extend_stroke", "extend_stroke_many", "top_layer", "add_shape", "remove_mark", "remove_mark_many", "recolour", "recolour_many", "resize_mark", "resize_mark_many", "place_picture", "select_like", "select_subject", "refine_selection", "combine_marks", "measure_marks", "set_reference", "set_reference_many", "clear_reference", "clear_reference_many", "compare_reference", "compare_versions", "clear_comparison", "clear_comparison_many", "ask_selection", "select_shape", "select_lasso", "select_outline", "grow_selection", "invert_selection", "select_marks", "pick_mark", "pick_mark_many", "pick_marks", "pick_marks_many", "clear_picked", "clear_picked_many", "remove_along", "inspect_artwork", "select_area", "select_area_many", "clear_selection", "clear_selection_many", "fill_selection", "draw_look", "draw_look_many", "export_picture", "export_svg", "save_artwork", "import_svg", "clear_notice", "clear_notice_many", "start_paint", "start_paint_many", "continue_paint", "finish_paint"})
+    __actions__ = frozenset({"add_layer", "rename_layer", "rename_layer_many", "lock_layer", "lock_layer_many", "clip_layer", "clip_layer_many", "add_mask", "set_mask", "set_mask_many", "add_text", "set_medium", "set_medium_many", "save_medium", "remove_medium", "remove_medium_many", "move_layer_up", "move_layer_up_many", "move_layer_down", "move_layer_down_many", "duplicate_layer", "merge_layer_down", "merge_layer_down_many", "show_layer", "show_layer_many", "remove_layer", "remove_layer_many", "set_artwork", "set_artwork_many", "add_stroke", "extend_stroke", "extend_stroke_many", "top_layer", "add_shape", "remove_mark", "remove_mark_many", "recolour", "recolour_many", "resize_mark", "resize_mark_many", "place_picture", "select_like", "select_subject", "refine_selection", "combine_marks", "measure_marks", "set_reference", "set_reference_many", "clear_reference", "clear_reference_many", "compare_reference", "compare_versions", "compare_at", "clear_comparison", "clear_comparison_many", "ask_selection", "select_shape", "select_lasso", "select_outline", "grow_selection", "invert_selection", "select_marks", "pick_mark", "pick_mark_many", "pick_marks", "pick_marks_many", "clear_picked", "clear_picked_many", "remove_along", "inspect_artwork", "select_area", "select_area_many", "clear_selection", "clear_selection_many", "fill_selection", "draw_look", "draw_look_many", "export_picture", "export_svg", "save_artwork", "import_svg", "clear_notice", "clear_notice_many", "start_paint", "start_paint_many", "continue_paint", "finish_paint"})
 
 
 class Layer(Resource):
     """Layer — `tl.so.tilo.canvas.Layer`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     bplq2q5j: str  # name
     ilxjjxxz: str  # medium
     smoxtxmk: float  # opacity
@@ -1379,7 +1383,7 @@ class Layer(Resource):
 
 class Mark(Resource):
     """Mark — `tl.so.tilo.canvas.Mark`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _3mgqcu4c(self) -> str:
         """name (`3mgqcu4c` on the wire)."""
@@ -1912,7 +1916,7 @@ class Mark(Resource):
 
 class Area(Resource):
     """Area — `tl.so.tilo.canvas.Area`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     k26xq4t7: str  # d
     enongrrr: float  # feather
     j7jomf5b: str  # matte_src
@@ -1924,7 +1928,7 @@ class Area(Resource):
 
 class Picture(Resource):
     """Picture — `tl.so.tilo.canvas.Picture`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     di5h6qir: str  # name
     @property
     def _4be6ojwm(self) -> str:
@@ -1947,7 +1951,7 @@ class Picture(Resource):
 
 class Medium(Resource):
     """Medium — `tl.so.tilo.canvas.Medium`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     bevph2qk: str  # key
     cgytyo4j: str  # label
     @property
@@ -1973,7 +1977,7 @@ class Medium(Resource):
 
 class Pigment(Resource):
     """Pigment — `tl.so.tilo.canvas.Pigment`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     ph4qfvlv: str  # name
     @property
     def _6heumgwe(self) -> str:
@@ -1989,7 +1993,7 @@ class Pigment(Resource):
 
 class Reference(Resource):
     """Reference — `tl.so.tilo.canvas.Reference`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _3ze3qk7e(self) -> str:
         """image (`3ze3qk7e` on the wire)."""
@@ -2008,7 +2012,7 @@ class Reference(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.canvas.Library`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _5gxbqk6v(self) -> list[Entry[Artwork]]:
         """artworks (`5gxbqk6v` on the wire)."""
@@ -2042,14 +2046,14 @@ class Library(Resource):
 
 class LookRequest(Resource):
     """LookRequest — `tl.so.tilo.canvas.LookRequest`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     hhu6bz5c: int  # size
     ubid4c7s: str  # format
 
 
 class ExportRequest(Resource):
     """ExportRequest — `tl.so.tilo.canvas.ExportRequest`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     ottkj6jd: str  # format
     @property
     def _5mutx32x(self) -> float:
@@ -2063,14 +2067,14 @@ class ExportRequest(Resource):
 
 class SvgRequest(Resource):
     """SvgRequest — `tl.so.tilo.canvas.SvgRequest`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     c35hmrf6: list[str] | None  # ids
     gqfdwswn: bool | None  # outline_text
 
 
 class PlaceRequest(Resource):
     """PlaceRequest — `tl.so.tilo.canvas.PlaceRequest`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _2w4n3dr2(self) -> str | None:
         """layer (`2w4n3dr2` on the wire)."""
@@ -2085,7 +2089,7 @@ class PlaceRequest(Resource):
 
 class ArtworkJson(Resource):
     """ArtworkJson — `tl.so.tilo.canvas.ArtworkJson`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     j3bzgr3f: str  # title
     dowdfhi2: float  # width
     vlrgzghe: float  # height
@@ -2107,7 +2111,7 @@ class ArtworkJson(Resource):
 
 class LayerJson(Resource):
     """LayerJson — `tl.so.tilo.canvas.LayerJson`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     xunw6qmv: str  # name
     sxka2uxh: str  # medium
     aka7ql3b: float  # opacity
@@ -2188,7 +2192,7 @@ class LayerJson(Resource):
 
 class MediumJson(Resource):
     """MediumJson — `tl.so.tilo.canvas.MediumJson`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     iztu5hbq: str  # id
     shen6puc: str  # label
     pcwg6twm: str  # engine
@@ -2207,7 +2211,7 @@ class MediumJson(Resource):
 
 class PigmentJson(Resource):
     """PigmentJson — `tl.so.tilo.canvas.PigmentJson`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     dgwlsywk: str  # name
     b74p3dso: str  # colour
     rfus746j: float  # granulation
@@ -2216,7 +2220,7 @@ class PigmentJson(Resource):
 
 class ReferenceJson(Resource):
     """ReferenceJson — `tl.so.tilo.canvas.ReferenceJson`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     go76fdwt: str  # image
     ax3jntcc: list[float] | None  # frame
     urv4gnep: float  # opacity
@@ -2225,7 +2229,7 @@ class ReferenceJson(Resource):
 
 class MarkJson(Resource):
     """MarkJson — `tl.so.tilo.canvas.MarkJson`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _67wvmkkq(self) -> str:
         """name (`67wvmkkq` on the wire)."""
@@ -2375,7 +2379,7 @@ class MarkJson(Resource):
 
 class AreaJson(Resource):
     """AreaJson — `tl.so.tilo.canvas.AreaJson`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     nxcluiyf: str  # d
     jxpwvxya: float  # feather
     algnlk7t: MatteJson | None  # matte
@@ -2383,7 +2387,7 @@ class AreaJson(Resource):
 
 class MatteJson(Resource):
     """MatteJson — `tl.so.tilo.canvas.MatteJson`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _7s7g6rha(self) -> str:
         """src (`7s7g6rha` on the wire)."""
@@ -2397,7 +2401,7 @@ class MatteJson(Resource):
 
 class GradeAsk(Resource):
     """GradeAsk — `tl.so.tilo.canvas.GradeAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     fy7u7ntb: float  # exposure
     h7ykiuc5: float  # contrast
     akjbo2e5: float  # highlights
@@ -2430,7 +2434,7 @@ class GradeAsk(Resource):
 
 class WandAsk(Resource):
     """WandAsk — `tl.so.tilo.canvas.WandAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     yyqmyjfc: list[float] | None  # at
     etjvwbve: str | None  # colour
     giesycja: float | None  # tolerance
@@ -2440,7 +2444,7 @@ class WandAsk(Resource):
 
 class FindAsk(Resource):
     """FindAsk — `tl.so.tilo.canvas.FindAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _3ug7cc6p(self) -> bool | None:
         """subject (`3ug7cc6p` on the wire)."""
@@ -2466,7 +2470,7 @@ class FindAsk(Resource):
 
 class CombineAsk(Resource):
     """CombineAsk — `tl.so.tilo.canvas.CombineAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     bp3zj5os: list[str]  # ids
     @property
     def _4kf2vu7l(self) -> str:
@@ -2480,7 +2484,7 @@ class CombineAsk(Resource):
 
 class MeasureAsk(Resource):
     """MeasureAsk — `tl.so.tilo.canvas.MeasureAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _2tk6phpq(self) -> list[str]:
         """ids (`2tk6phpq` on the wire)."""
@@ -2493,7 +2497,7 @@ class MeasureAsk(Resource):
 
 class SelectAsk(Resource):
     """SelectAsk — `tl.so.tilo.canvas.SelectAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _7omk45ql(self) -> list[float] | None:
         """rect (`7omk45ql` on the wire)."""
@@ -2528,7 +2532,7 @@ class SelectAsk(Resource):
 
 class InspectAsk(Resource):
     """InspectAsk — `tl.so.tilo.canvas.InspectAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     @property
     def _3uypu22a(self) -> bool | None:
         """palette (`3uypu22a` on the wire)."""
@@ -2551,14 +2555,14 @@ class InspectAsk(Resource):
 
 class RemoveAsk(Resource):
     """RemoveAsk — `tl.so.tilo.canvas.RemoveAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     js4zslbp: list[list[float]]  # along
     besel4qy: str | None  # layer
 
 
 class DiffAsk(Resource):
     """DiffAsk — `tl.so.tilo.canvas.DiffAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     eubkyqqd: str  # from
     mit27xah: str | None  # to
     eiocv26o: bool | None  # look
@@ -2567,7 +2571,7 @@ class DiffAsk(Resource):
 
 class CompareAsk(Resource):
     """CompareAsk — `tl.so.tilo.canvas.CompareAsk`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     mztro4wb: list[float] | None  # region
     @property
     def _67462gfa(self) -> str | None:
@@ -2582,7 +2586,7 @@ class CompareAsk(Resource):
 
 class Canvas(Resource):
     """Canvas — `tl.so.tilo.canvas`."""
-    __surface__ = "so.tilo.canvas@59ab3d6f91f4513c"
+    __surface__ = "so.tilo.canvas@3e14d8d6498284f3"
     def grade_picture(self,
         *,
         file: Any,

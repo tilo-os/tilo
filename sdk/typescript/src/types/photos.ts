@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.photos@217d98cb8a458042";
+export const SURFACE = "so.tilo.photos@6619e9e267c54f4a";
 
 /** What an edit does to one field of every selected photo: keeps what each photo has, takes it off all of them, gives them all one value, or adds or takes off names (tags, people). One of "keep", "clear", "set", "add", "remove". */
 export type Change = "keep" | "clear" | "set" | "add" | "remove";
@@ -462,10 +462,7 @@ export interface Library extends tilo.Resource {
   xkkw7d65: Array<tilo.Entry<Unread>>;  // unread
   fypuuz3p: Array<tilo.Entry<FaceScan>>;  // face_scans
   jcilt5zf: string;  // notice
-  kg3gc2rb: boolean;  // album_draft_open
-  xjkjqqf5: string;  // album_draft_id
-  "2ql3qzqp": string;  // album_draft_name
-  myrcknu3: string[];  // album_draft_photos
+  nyozkafm: Array<tilo.Entry<AlbumDraft>>;  // album_drafts
   /** Imports a photograph the person picks: the library keeps the address of its bytes, the name it came in with, what its own container says of it (when and where it was taken) and a small preview the grid draws. A picture whose bytes the window already holds reads at once. */
   import_photo(args: {
     file: unknown;
@@ -691,6 +688,22 @@ export const LIBRARY_ACTIONS = ["import_photo", "absorb_picture", "import_photo_
 /** The `tl.so.tilo.photos.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
   return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
+}
+
+/** AlbumDraft — `tl.so.tilo.photos.AlbumDraft`. */
+export interface AlbumDraft extends tilo.Resource {
+  "53utp7nd": string;  // album
+  jaabesu7: string;  // name
+  l4infwly: string[];  // photos
+}
+
+/** The actions `AlbumDraft` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ALBUMDRAFT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.photos.AlbumDraft` kind at `path`. */
+export function albumDraft(ws: tilo.Workspace, path: string): AlbumDraft {
+  return resourceProxy(ws, path, SURFACE, ALBUMDRAFT_ACTIONS) as unknown as AlbumDraft;
 }
 
 /** Unread — `tl.so.tilo.photos.Unread`. */

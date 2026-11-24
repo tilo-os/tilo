@@ -273,13 +273,8 @@ d-zwui54r7 = Mittelpunkt-Längengrad
 d-4azkiaic = Mittelpunkt-Stufe
     .doc = Wie nah die Karte aufgeht: die Stufe der Kamera, wobei 1 ein Weltpixel als ein Bildschirmpixel zeichnet. `tile_zoom` liest sie als die Stufe der Bilder, die sie zeigt.
 
-d-qobzxkm4 = Verkehrslage
-    .doc = Ob die Verkehrslage an ist.
-
 d-d54rah5t = Navigation läuft
     .doc = Ob die Person einer Route folgt: die laufende Karte sagt den nächsten Richtungswechsel.
-
-d-xlmztacf-filter-traffic = Verkehrslage
 
 d-ahqfw7eh = Orte
     .doc = Was die Antwort eines Geocoders hält: die Orte, die er fand, oder warum er keine hat.
@@ -559,12 +554,6 @@ d-e7bfd2ys = Ort in der Nähe öffnen
 
 d-e7bfd2ys-poi = Sehenswürdigkeit
 
-d-wkm57ksg = Verkehrslage zeigen
-    .doc = Zeigt die Verkehrslage auf der Karte oder nimmt sie weg.
-    .did = schaltete die Verkehrslage um
-
-d-wkm57ksg-traffic = Verkehrslage
-
 d-b7ntcygp = Diese Ansicht herunterladen
     .doc = Speichert, was die Karte zeigt, für die Offline-Nutzung: den Ausschnitt auf dem Bildschirm und die Stufen, deren Kacheln er behält. Ein Aufrufer nennt den Ausschnitt selbst, wo er einen hat (ein Druck, ein Agent): ohne einen ist es der Ort, auf dem die Karte zentriert ist.
     .did = speicherte, was die Karte zeigt, für offline
@@ -600,8 +589,6 @@ d-at7haufh-link = Link
 
 d-m7wrwwy3 = Ort gespeichert
 
-d-zbzi5trm = Verkehrslage eingeschaltet
-
 d-sb4mqylm = Aktionen am Ort
     .w-saved = Gespeichert
     .w-save = Speichern
@@ -611,10 +598,48 @@ d-sb4mqylm = Aktionen am Ort
 d-rfg2gu4h = Zeile eines nahen Ortes
     .w-directions-to-this-place = Directions to this place
 
+d-tltxak2a = Wegbeschreibung
+    .doc = Öffnet oder schließt die Wegbeschreibung neben der Karte, wie es die Zeile der
+        Wegbeschreibung selbst anbietet.
+
+d-tltxak2a-open = Offen
+
+d-6s22d4so = Wegbeschreibung zeigen
+    .doc = Öffnet die Wegbeschreibung neben der Karte.
+
+d-e6sm3pwz = Geometrie
+    .doc = Die Linie, die ein Abschnitt fährt: Breite, dann Länge, in dieser Reihenfolge; die Karte
+        zeichnet ihn danach.
+
+d-ucdlw6uu = Ort anrufen~present
+
+d-7d6h6bke = Website des Orts öffnen~present
+
+d-7grxfwgx = Ort anrufen
+    .doc = Ruft die Telefonnummer des Orts über die Öffnen-Aktion des Systems an.
+    .w-the-place-has-no-phone-number = Der Ort hat keine Telefonnummer.
+
+d-w2qarvwc = Website des Orts öffnen
+    .doc = Öffnet die Website des Orts in der App, die Webadressen öffnet.
+    .w-the-place-has-no-website = Der Ort hat keine Website.
+
+d-s2ed7lsi = Telefon
+    .doc = Die Telefonnummer des Orts, wo der Kartendienst sie kennt.
+
+d-wgimrb5u = Website
+    .doc = Die Website des Orts, wo der Kartendienst sie kennt.
+
+d-baw44icl = Verkehrslage
+    .w-flowing = Fließend
+    .w-slow = Zähfließend
+    .w-heavy = Dicht
+    .w-standstill = Stillstand
+
 d-dnrz2rhj = Fußzeile
     .w-openstreetmap-contributors = © OpenStreetMap contributors
+    .w-traffic = Verkehrslage
+    .w-scale = Maßstab
     .w-no-traffic-data = No traffic data
-    .w-zoom = Zoom { $tile_zoom }
 
 d-zrj5mbzs = Wegbeschreibung
     .w-directions = Directions
@@ -862,6 +887,12 @@ d-oeeojlox = Karte
     .w-look-for-what-stands-around-the = Look for what stands around the map.
     .w-no-saved-places-yet = No saved places yet
     .w-save-a-place-to-find-it = Save a place to find it here.
+    .w-hide-places = Orte ausblenden
+    .w-show-places = Orte anzeigen
+    .w-map-imagery-can-t-be-loaded = Das Kartenbild lässt sich gerade nicht laden
+    .w-the-map-shows-what-it-can = Die Karte zeigt, was sie kann, bis die Kacheln ankommen.
+    .w-call = Anrufen
+    .w-website = Website
     .w-no-recent-searches-yet = No recent searches yet
     .w-recent-searches = Recent searches
     .w-clear = Clear

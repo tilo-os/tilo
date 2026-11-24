@@ -492,6 +492,10 @@ d-wxq3apea = Daten
     .w-done = done();
 
 d-5cczuoub = Feedback
+    .w-scale-rule = Maßstabslinie
+    .w-a-rule-as-long-as-what = Eine Linie, so lang wie das, was sie misst, an beiden Enden mit einer Marke: der Maßstab einer Karte.
+    .w-1-km = 1 km
+    .w-scale = Maßstab
     .w-banners-badges-progress-and-numbers-the = Banner, Badges, Fortschritt und Zahlen, die Fakten einer Sache und was noch lädt.
     .w-shapes-and-lines-drawn-from-values = Formen und Linien aus Werten, in den Tinten des Themes.
     .w-toolbar = Werkzeugleiste

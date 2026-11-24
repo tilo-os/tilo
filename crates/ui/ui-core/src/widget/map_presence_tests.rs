@@ -52,6 +52,7 @@ fn map(at_the_place: Option<Person>) -> Map {
         false,
         Some("Café".to_owned()),
         at_the_place,
+        false,
     )];
     map
 }

@@ -126,3 +126,39 @@ pub fn url_encode(text: &str) -> String {
     }
     out
 }
+
+/// `text` with its percent escapes (`%XX`) read back: the bytes they stand for, and `+` as a
+/// space, as a link's query means them to the person who wrote it.
+#[must_use]
+pub fn url_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let high = (bytes[i + 1] as char).to_digit(16);
+                let low = (bytes[i + 2] as char).to_digit(16);
+                match (high, low) {
+                    (Some(high), Some(low)) => {
+                        out.push((high * 16 + low) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}

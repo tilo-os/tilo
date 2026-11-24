@@ -487,6 +487,8 @@ imports! {
 
     (Abort, "abort", "i", ""),
     (MissingV, "missing", "", "i"),
+    // Appended after every import the released runtimes know, so their numbers never move.
+    (StrUrlDecode, "str_url_decode", "i", "i"),
 }
 
 /// The import with this table index.

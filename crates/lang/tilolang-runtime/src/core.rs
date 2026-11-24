@@ -65,7 +65,7 @@ use Imp::{
     SheetValues, Single, SomeB, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers,
     StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
     StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace, StrSlice,
-    StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlEncode,
+    StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper, StrUrlDecode, StrUrlEncode,
     StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse,
     TimeShift, TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps,
     ToolOpenLink, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
@@ -644,7 +644,8 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | StrToFloat
-            | FloatToStr | StrCmp | StrFind | StrSlice | StrReplace | StrUrlEncode | StrTrim
+            | FloatToStr | StrCmp | StrFind | StrSlice | StrReplace | StrUrlEncode | StrUrlDecode
+            | StrTrim
             | StrLower | StrUpper | StrStartsWith | StrEndsWith | StrContains | StrSplit
             | StrJoin | StrMatches | StrMisspelled | StrSuggestions | DurationText | Sha256
             | Blake3 => self.text_import(imp, mem, a),

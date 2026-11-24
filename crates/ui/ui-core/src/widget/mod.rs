@@ -2195,6 +2195,8 @@ mod document_view;
 pub use document_view::ModelView;
 mod divider;
 pub use divider::{Divider, DividerAxis, RuleEdge, paint_rule};
+mod rule;
+pub use rule::{Rule, RuleProps};
 mod link;
 pub use link::{
     Link, LinkProps, os_open as open_external_url, try_os_open as try_open_external_url,

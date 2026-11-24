@@ -82,6 +82,10 @@ type Place (title: name, untitled: "Place") {
     address: Text = ""
     latitude: Float = 0.0
     longitude: Float = 0.0
+    /// Its phone number, where the map service knows it.
+    phone: Text = ""
+    /// Its website, where the map service knows it.
+    website: Text = ""
     /// Whether the person kept it in their places.
     saved: Bool = false
     /// Whether the last search found it, rather than the person having kept it.
@@ -133,6 +137,8 @@ type Leg (title: line) {
     agency: Text = ""
     /// Whether the times are the service's live times rather than its timetable.
     realtime: Bool = false
+    /// The line the leg travels, as latitude then longitude in turn: what the map draws it along.
+    geometry: List<Float>
 }
 
 /// A journey public transport offers from one place to another.
@@ -270,8 +276,6 @@ type Atlas {
     /// How close the map opens: the camera's zoom, where 1 draws a world pixel as a screen pixel.
     /// [`tile_zoom`] reads it as the level of imagery it shows.
     centre_zoom: Float = 5.3
-    /// Whether the traffic layer is on.
-    traffic: Bool = false
     /// Whether the person is following a route: the live card says the turn ahead.
     navigating: Bool = false
 
@@ -280,7 +284,6 @@ type Atlas {
     live when navigating
 
     search {
-        filter traffic
         sort query a_z
     }
 }
@@ -337,10 +340,16 @@ action accept_places(a: Atlas, places: List<Place>) (
             known.category = one.category
             known.latitude = one.latitude
             known.longitude = one.longitude
-            if not known.saved {
-                known.found = one.found
-            }
-        } else { a.places.insert(one) }
+            known.phone = one.phone
+            known.website = one.website
+            // A place the person kept is still found by a search that brings it: it stands in
+            // the results and stays theirs.
+            known.found = true
+        } else {
+            // What a search or another app found is the search's, until the person keeps it.
+            one.found = true
+            a.places.insert(one)
+        }
     }
 }
 
@@ -357,6 +366,125 @@ fn shown_journey(a: Atlas) -> Option<Journey> {
 /// The place `name` or `key` names, when the map knows it.
 fn known_place(a: Atlas, name: Text) -> Option<Place> {
     a.places.find(p -> p.name.lower() == name.lower() or p.key != "" and p.key == name)
+}
+
+/// Where a place is, as its row reads it: its address and how far it lies from where the camera
+/// looks, or whichever of the two there is.
+fn place_where(place: Place, seen: List<Float>) -> Text {
+    let away = distance_from(seen, place.latitude, place.longitude)
+    if place.address == "" {
+        away
+    } else if away == "" { place.address } else { "{place.address} · {away}" }
+}
+
+/// How far a place is from where the camera looks, as a row reads it: nothing while the map has
+/// not yet said where it looks.
+fn distance_from(seen: List<Float>, latitude: Float, longitude: Float) -> Text {
+    if seen.len() < 2 {
+        ""
+    } else {
+        distance_text(metres_between(seen.at(0) ?? 0.0, seen.at(1) ?? 0.0, latitude, longitude))
+    }
+}
+
+/// A text as the map compares names: lower case and without the marks that make the same name
+/// look like two ("Munchen" finds "München").
+fn fold(text: Text) -> Text {
+    text
+        .lower()
+        .replace("ä", "a")
+        .replace("à", "a")
+        .replace("á", "a")
+        .replace("â", "a")
+        .replace("ã", "a")
+        .replace("å", "a")
+        .replace("æ", "ae")
+        .replace("ç", "c")
+        .replace("è", "e")
+        .replace("é", "e")
+        .replace("ê", "e")
+        .replace("ë", "e")
+        .replace("ì", "i")
+        .replace("í", "i")
+        .replace("î", "i")
+        .replace("ï", "i")
+        .replace("ñ", "n")
+        .replace("ò", "o")
+        .replace("ó", "o")
+        .replace("ô", "o")
+        .replace("õ", "o")
+        .replace("ö", "o")
+        .replace("ø", "o")
+        .replace("œ", "oe")
+        .replace("ß", "ss")
+        .replace("ù", "u")
+        .replace("ú", "u")
+        .replace("û", "u")
+        .replace("ü", "u")
+        .replace("ý", "y")
+        .replace("ÿ", "y")
+}
+
+/// How well `name` answers `query`: its exact name (3), a name that starts with it (2), a word
+/// of the name that does (1), a name that holds it (0), or not at all (-1).
+fn match_tier(query: Text, name: Text) -> Int {
+    let asked = fold(query).trim()
+    let called = fold(name)
+    if asked == "" or called == asked {
+        3
+    } else if called.starts_with(asked) {
+        2
+    } else if called.split(" ").any(word -> word.starts_with(asked)) {
+        1
+    } else if called.contains(asked) { 0 } else { -1 }
+}
+
+/// How far apart two places are on the ground, in metres.
+fn metres_between(lat1: Float, lon1: Float, lat2: Float, lon2: Float) -> Float {
+    let radius = 6371000.0
+    let down = (lat2 - lat1).to_radians()
+    let across = (lon2 - lon1).to_radians()
+    let a = (down / 2.0).sin().pow(2.0)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (across / 2.0).sin().pow(2.0)
+    2.0 * radius * a.sqrt().asin()
+}
+
+/// The places among `places` a search takes in, in the order they answer it: the closest name
+/// first and, among equals, the nearest to where the map looks; one place is counted once
+/// however many records the service wrote for it.
+fn ranked_places(
+    places: List<Place>,
+    query: Text,
+    latitude: Float,
+    longitude: Float,
+) -> List<Place> {
+    let ordered = places.filter(p -> p.latitude != 0.0 or p.longitude != 0.0)
+    ordered = ordered.sort_by(p -> metres_between(latitude, longitude, p.latitude, p.longitude))
+    ordered = ordered.sort_by(p -> match_tier(query, p.name), desc)
+    let kept: List<Place> = []
+    for place in ordered {
+        let named = fold(place.name)
+        let same = kept.any(
+            k -> fold(k.name) == named
+                and metres_between(k.latitude, k.longitude, place.latitude, place.longitude)
+                    < 150.0,
+        )
+        if not same {
+            kept = kept + [place]
+        }
+    }
+    kept
+}
+
+/// The camera zoom that shows a point standing for a circle of `uncertainty` metres with room
+/// around it: a `geo:` link's `;u=`, in the camera's own scale (the projection is 1048576 wide).
+fn zoom_for_uncertainty(latitude: Float, uncertainty: Float) -> Float {
+    if uncertainty <= 0.0 {
+        return 8.0
+    }
+    let around = 40075016.686 * (latitude.clamp(-85.0, 85.0) * 3.14159265 / 180.0).cos()
+    let zoom = 200.0 * around / (1048576.0 * uncertainty)
+    zoom.max(0.0015).min(128.0)
 }
 
 /// A distance bar's reading: how far it stands for, and how many logical pixels across it is.
@@ -706,7 +834,29 @@ fn place_of(value: json.Value) -> Place {
         address: text_of(value, "display_name"),
         latitude: number_of(field_of(value, "lat")),
         longitude: number_of(field_of(value, "lon")),
+        phone: phone_of(value),
+        website: website_of(value),
     )
+}
+
+/// A place's phone number, from the geocoder's extra tags (`extratags`): the plain one, or the
+/// contact field it writes instead.
+fn phone_of(value: json.Value) -> Text {
+    if extra_of(value, "phone") != "" {
+        extra_of(value, "phone")
+    } else { extra_of(value, "contact:phone") }
+}
+
+/// A place's website, from the geocoder's extra tags (`extratags`).
+fn website_of(value: json.Value) -> Text {
+    if extra_of(value, "website") != "" {
+        extra_of(value, "website")
+    } else { extra_of(value, "contact:website") }
+}
+
+/// One of the geocoder's extra tags of a place, where it gives one.
+fn extra_of(value: json.Value, key: Text) -> Text {
+    if let held = field_of(value, "extratags") { text_of(held, key) } else { "" }
 }
 
 /// The places a geocoder's answer holds, each read into a Place.
@@ -923,10 +1073,56 @@ fn legs_of(value: json.Value) -> List<Leg> {
                     text_colour: hex_of(text_of(leg, "routeTextColor")),
                     agency: text_of(leg, "agencyName"),
                     realtime: flag_at(leg, "realTime"),
+                    geometry: if let shape = field_of(leg, "legGeometry") {
+                        polyline_points(
+                            text_of(shape, "points"),
+                            number_at(shape, "precision").to_int(),
+                        )
+                    } else { [] },
                 ),
             ]
     }
     legs
+}
+
+/// The points an encoded polyline stands for, as latitude then longitude in turn: a transit
+/// service's own line for a leg, read at `precision` decimal places (five unless it says).
+fn polyline_points(encoded: Text, precision: Int) -> List<Float> {
+    let places = if precision > 0 { precision } else { 5 }
+    let factor = 10.0.pow(places.to_float())
+    let points: List<Float> = []
+    let value = 0
+    let scale = 1
+    let latitude = 0
+    let longitude = 0
+    let is_latitude = true
+    for mark in encoded.split("") {
+        let code = polyline_code(mark)
+        if code >= 0 {
+            value = value + code % 32 * scale
+            scale = scale * 32
+            if code < 32 {
+                let step = if value % 2 == 1 { -(value + 1) / 2 } else { value / 2 }
+                if is_latitude {
+                    latitude = latitude + step
+                } else {
+                    longitude = longitude + step
+                    points = points + [latitude.to_float() / factor, longitude.to_float() / factor]
+                }
+                is_latitude = not is_latitude
+                value = 0
+                scale = 1
+            }
+        }
+    }
+    points
+}
+
+/// The value of one character of an encoded polyline, or -1 where it is not one: the printable
+/// characters from `?` on, in order, each standing for the six bits above its place.
+fn polyline_code(mark: Text) -> Int {
+    let alphabet = "?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz\{|\}~"
+    alphabet.find(mark) ?? -1
 }
 
 /// One Overpass element as a point of interest, when it has a name and a place.
@@ -1018,28 +1214,14 @@ action search(a: Atlas, query: Text) uses web, time (
             place.found = false
         } else { a.places.remove(place) }
     }
-    let address = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&addressdetails=1&q={encode(words)}"
+    let address = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&addressdetails=1&extratags=1&q={encode(words)}"
     let answer = web.get(address)
     let found = places_of(answer.text(), answer.status)
     if found.why != "" {
         a.status = found.why
         return
     }
-    for place in found.found {
-        if place.latitude != 0.0 or place.longitude != 0.0 {
-            if let known = a.places.find(p -> p.key == place.key and place.key != "") {
-                known.name = place.name
-                known.address = place.address
-                known.category = place.category
-                known.latitude = place.latitude
-                known.longitude = place.longitude
-                known.found = true
-            } else {
-                place.found = true
-                a.places.insert(place)
-            }
-        }
-    }
+    accept_places(a, ranked_places(found.found, words, a.centre_latitude, a.centre_longitude))
     for old in a.recents.filter(r -> r.query.lower() == words.lower()) {
         a.recents.remove(old)
     }
@@ -1091,6 +1273,34 @@ action save_place(p: Place, saved: Bool = not p.saved) (
 action rename_place(p: Place, name: Text) (icon: .pencil, label: "Rename", did: "renamed a place") {
     require name.trim() != "" "A place needs a name"
     p.name = name.trim()
+}
+
+/// Calls the place's phone number, through the system's own open action.
+action call_place(p: Place) (icon: .phone, label: "Call the place") {
+    require p.phone != "" "The place has no phone number"
+    match tool.open_link("tel:{p.phone}") {
+        .ok => {}
+        .err(_) => {}
+    }
+}
+
+/// Opens the place's website in the app that opens web addresses.
+action open_site(p: Place) (icon: .external_link, label: "Open the place's website") {
+    require p.website != "" "The place has no website"
+    match tool.open_link(p.website) {
+        .ok => {}
+        .err(_) => {}
+    }
+}
+
+/// Opens the directions beside the map.
+action show_directions(a: Atlas) (icon: .route, label: "Show the directions") {
+    window_state("directions", true)
+}
+
+/// Opens or closes the directions beside the map, as its own row's toggle asks.
+action set_directions(a: Atlas, open: Bool) (icon: .route, label: "Directions") {
+    window_state("directions", open)
 }
 
 /// Shows the place `place` on the map: the map opens on it.
@@ -1566,16 +1776,6 @@ action open_poi(a: Atlas, poi: Text) (icon: .map_pin, label: "Open place of inte
     }
 }
 
-/// Shows the traffic layer on the map, or takes it away.
-action toggle_traffic(a: Atlas, traffic: Bool = not a.traffic) (
-    icon: .route,
-    label: "Show traffic",
-    on: a.traffic,
-    did: "turned the traffic layer on or off",
-) {
-    a.traffic = traffic
-}
-
 // Offline maps: keeping the imagery of an area on this device, so a trip with no network still
 // shows it. The tiles are the device's work (`engine.call` and `engine.start` on the app's own
 // engine), and what a device keeps is listed as its own resource.
@@ -1795,7 +1995,7 @@ action open_link(a: Atlas, link: Text) -> host.Resource uses web, time (
     let rest = link.slice(4, link.len())
     if rest.contains("q=") {
         let asked = link.split("q=").at(1) ?? ""
-        let words = decode(asked.split("&").at(0) ?? "").trim()
+        let words = (asked.split("&").at(0) ?? "").url_decode().trim()
         if words != "" {
             a.query = words
             for place in a.places.filter(p -> p.found) {
@@ -1804,29 +2004,16 @@ action open_link(a: Atlas, link: Text) -> host.Resource uses web, time (
                 } else { a.places.remove(place) }
             }
             let answer = web.get(
-                "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&addressdetails=1&q={encode(words)}",
+                "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&addressdetails=1&extratags=1&q={encode(words)}",
             )
             let found = places_of(answer.text(), answer.status)
             if found.why != "" {
                 a.status = found.why
             } else {
-                for place in found.found {
-                    if place.latitude != 0.0 or place.longitude != 0.0 {
-                        if let known = a.places.find(p -> p.key == place.key and place.key != "") {
-                            known.name = place.name
-                            known.address = place.address
-                            known.category = place.category
-                            known.latitude = place.latitude
-                            known.longitude = place.longitude
-                            if not known.saved {
-                                known.found = true
-                            }
-                        } else {
-                            place.found = true
-                            a.places.insert(place)
-                        }
-                    }
-                }
+                accept_places(
+                    a,
+                    ranked_places(found.found, words, a.centre_latitude, a.centre_longitude),
+                )
                 for old in a.recents.filter(r -> r.query.lower() == words.lower()) {
                     a.recents.remove(old)
                 }
@@ -1835,9 +2022,15 @@ action open_link(a: Atlas, link: Text) -> host.Resource uses web, time (
             }
         }
     } else {
+        // A point's place is `lat,lon`, with any parameters after `;`: the uncertainty `u=` is
+        // the radius in metres the point stands for, and the map opens close enough to see it.
         let point = rest.split("?").at(0) ?? ""
-        let latitude = (point.split(",").at(0) ?? "").to_float()
-        let longitude = (point.split(",").at(1) ?? "").to_float()
+        let place = point.split(";").at(0) ?? ""
+        let latitude = (place.split(",").at(0) ?? "").to_float()
+        let longitude = (place.split(",").at(1) ?? "").to_float()
+        let uncertainty = if let radius = point.split(";").find(part -> part.starts_with("u=")) {
+            radius.slice(2, radius.len()).to_float() ?? 0.0
+        } else { 0.0 }
         if let lat = latitude {
             if let lon = longitude {
                 if lat < -90.0 or lat > 90.0 or lon < -180.0 or lon > 180.0 {
@@ -1845,8 +2038,10 @@ action open_link(a: Atlas, link: Text) -> host.Resource uses web, time (
                 } else {
                     a.centre_latitude = lat
                     a.centre_longitude = lon
-                    a.centre_zoom = 8.0
-                    a.status = ""
+                    a.centre_zoom = zoom_for_uncertainty(lat, uncertainty)
+                    a.status = if uncertainty > 0.0 {
+                        "A point that may be up to {distance_text(uncertainty)} away"
+                    } else { "" }
                 }
             }
         } else {
@@ -1854,12 +2049,6 @@ action open_link(a: Atlas, link: Text) -> host.Resource uses web, time (
         }
     }
     a
-}
-
-/// The text a link writes its search with, read as the person typed it: `+` as a space and
-/// `%20` as one.
-fn decode(text: Text) -> Text {
-    text.trim().replace("+", " ").replace("%20", " ")
 }
 
 /// The text a request's query is written with: the characters that would end it written so the
@@ -1883,6 +2072,9 @@ view map(a: Atlas) {
     state chosen: Text = ""
     state sheet: Text = ""
     state show_places: Bool = true
+    state directions: Bool = false
+    state traffic: Bool = false
+    state imagery: List<Int> = []
     state least_zoom: Int = 10
     state most_zoom: Int = 15
     // Where the camera rests: its latitude, longitude and zoom, and the map's northern, southern,
@@ -1900,13 +2092,22 @@ view map(a: Atlas) {
         split(side: .leading) {
             primary(min: 20rem) {
                 if show_places {
-                    places_side(a, chosen)
+                    places_side(a, chosen, seen, directions)
                 }
             }
             secondary(min: 22rem) {
                 layers(fill) {
-                    map_pane(a, chosen, seen)
-                    map_controls(a, chosen, sheet, least_zoom, most_zoom)
+                    map_pane(a, chosen, seen, imagery)
+                    map_controls(
+                        a,
+                        chosen,
+                        show_places,
+                        directions,
+                        traffic,
+                        sheet,
+                        least_zoom,
+                        most_zoom,
+                    )
                     if a.status != "" {
                         stack(at: .top, fill, padding: .related) {
                             row(gap: .tight, align: .center) {
@@ -1915,6 +2116,16 @@ view map(a: Atlas) {
                                     on press: clear_search(a)
                                 }
                             }
+                        }
+                    }
+                    if imagery_failed(imagery) {
+                        stack(at: .top, fill, padding: .section) {
+                            ui.Banner(
+                                "Map imagery can't be loaded right now",
+                                message: "The map shows what it can until the tiles arrive.",
+                                kind: .neutral,
+                                bare: true,
+                            )
                         }
                     }
                     if a.navigating {
@@ -1927,7 +2138,7 @@ view map(a: Atlas) {
                             place_card(picked, chosen)
                         }
                     }
-                    footer(a, seen.at(0) ?? a.centre_latitude, seen.at(2) ?? a.centre_zoom)
+                    footer(a, seen.at(0) ?? a.centre_latitude, seen.at(2) ?? a.centre_zoom, traffic)
                 }
             }
         }
@@ -1940,7 +2151,7 @@ view map(a: Atlas) {
 }
 
 /// The map itself: the world's imagery, its markers, the route, and the areas kept offline.
-view map_pane(a: Atlas, chosen: State<Text>, seen: State<List<Float>>) {
+view map_pane(a: Atlas, chosen: State<Text>, seen: State<List<Float>>, imagery: State<List<Int>>) {
     ui.Map(
         name: "Map",
         world: true,
@@ -1953,6 +2164,7 @@ view map_pane(a: Atlas, chosen: State<Text>, seen: State<List<Float>>) {
     ) {
         on marker(name: Text): set(chosen, name).then(open_place(atlas, name))
         on rest(at: List<Float>): set(seen, at)
+        on fault(at: List<Int>): set(imagery, at)
         markers: {
             for place in a.places.filter(p -> p.saved or p.found) {
                 ui.MapMarker(
@@ -1980,6 +2192,7 @@ view map_pane(a: Atlas, chosen: State<Text>, seen: State<List<Float>>) {
                     } else if place.category == .hospital { .hospital } else { .other },
                     selected: place.name == chosen,
                     presence: lenses(place).find(l -> not l.mine)?.who,
+                    label: true,
                 )
             }
             for place in a.pois {
@@ -2014,18 +2227,31 @@ view map_pane(a: Atlas, chosen: State<Text>, seen: State<List<Float>>) {
             if let route = shown_route(a) {
                 ui.MapTrack(name: route.to_name, points: route.geometry, tone: .route, width: 4.0)
             }
+            if let journey = shown_journey(a) {
+                for leg in journey.legs {
+                    if leg.geometry.len() >= 4 {
+                        ui.MapTrack(
+                            name: if leg.line == "" { leg.to_name } else { leg.line },
+                            points: leg.geometry,
+                            tone: if leg.mode == .walk { .walk } else { .transit },
+                            width: if leg.mode == .walk { 3.0 } else { 4.0 },
+                            dashed: leg.mode == .walk,
+                        )
+                    }
+                }
+            }
         }
     }
 }
 
 /// The places beside the map: what a search found, what stands nearby, the places the person
 /// kept, the searches they made, and directions.
-view places_side(a: Atlas, chosen: State<Text>) {
+view places_side(a: Atlas, chosen: State<Text>, seen: List<Float>, directions: Bool) {
     state place: Text = "found"
     state words: Text = ""
     ui.Docked {
         foot: {
-            directions_panel(a)
+            directions_panel(a, directions)
         }
         stack(gap: .related, fill, padding: .related) {
             row(gap: .tight, align: .center) {
@@ -2059,7 +2285,7 @@ view places_side(a: Atlas, chosen: State<Text>) {
                 } else {
                     stack(gap: .tight) {
                         for found in a.places.filter(p -> p.found) {
-                            place_row(found, chosen)
+                            place_row(found, chosen, seen)
                         }
                     }
                 }
@@ -2094,7 +2320,7 @@ view places_side(a: Atlas, chosen: State<Text>) {
                                 presence: lenses(kept).find(l -> not l.mine)?.who,
                             ) {
                                 row: {
-                                    place_body(kept, chosen)
+                                    place_body(kept, chosen, seen)
                                 }
                             }
                         }
@@ -2122,10 +2348,10 @@ view places_side(a: Atlas, chosen: State<Text>) {
 }
 
 /// One place as a row: what it is, where it is, and what a person does with it.
-view place_row(place: Place, chosen: State<Text>) {
+view place_row(place: Place, chosen: State<Text>, seen: List<Float>) {
     ui.ListRow(
         title: place.name,
-        secondary: place.address,
+        secondary: place_where(place, seen),
         icon: place.category.icon(),
         meta: category_name(place.category),
         selected: place.name == chosen,
@@ -2138,10 +2364,10 @@ view place_row(place: Place, chosen: State<Text>) {
 }
 
 /// What a place's row holds: its name and address, with what a person does with it beside.
-view place_body(place: Place, chosen: State<Text>) {
+view place_body(place: Place, chosen: State<Text>, seen: List<Float>) {
     ui.ListRow(
         title: place.name,
-        secondary: place.address,
+        secondary: place_where(place, seen),
         icon: place.category.icon(),
         meta: category_name(place.category),
         selected: place.name == chosen,
@@ -2211,6 +2437,20 @@ view place_card(place: Place, chosen: State<Text>) {
                 }
             }
         }
+        if place.phone != "" or place.website != "" {
+            stack(gap: .tight) {
+                if place.phone != "" {
+                    ui.ListRow(title: place.phone, icon: .phone, meta: "Call") {
+                        on activate: call_place(place)
+                    }
+                }
+                if place.website != "" {
+                    ui.ListRow(title: place.website, icon: .globe, meta: "Website") {
+                        on activate: open_site(place)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2236,11 +2476,26 @@ view poi_row(poi: Poi) {
 view map_controls(
     a: Atlas,
     chosen: State<Text>,
+    show_places: State<Bool>,
+    directions: State<Bool>,
+    traffic: State<Bool>,
     sheet: State<Text>,
     least_zoom: State<Int>,
     most_zoom: State<Int>,
 ) {
     stack(at: .trailing, padding: .related, gap: .tight) {
+        ui.Button(
+            if show_places { "Hide places" } else { "Show places" },
+            icon: .panel_left,
+            icon_only: true,
+            toggled: show_places,
+            keys: ["1"],
+        ) {
+            on press: set(show_places, not show_places)
+        }
+        ui.Button("Directions", icon: .route, icon_only: true, toggled: directions, keys: ["2"]) {
+            on press: set(show_places, true).then(show_directions(a))
+        }
         ui.Button("Zoom in", icon: .plus, icon_only: true, keys: ["+", "="]) {
             on press: zoom_map(a, 1.0)
         }
@@ -2253,8 +2508,8 @@ view map_controls(
         ui.Button("What is nearby", icon: .compass, icon_only: true) {
             on press: find_nearby(a)
         }
-        ui.Button("Show traffic", icon: .route, icon_only: true, toggled: a.traffic) {
-            on press: toggle_traffic(a)
+        ui.Button("Show traffic", icon: .route, icon_only: true, toggled: traffic) {
+            on press: set(traffic, not traffic)
         }
         ui.Button(
             "Offline maps",
@@ -2273,33 +2528,50 @@ view map_controls(
 
 /// What the map is: its credits, how far the bar at its own scale stands for, and the zoom it
 /// shows. The scale is read where the camera rests, so it follows the person's own pan and zoom.
-view footer(a: Atlas, latitude: Float, zoom: Float) {
+view footer(a: Atlas, latitude: Float, zoom: Float, traffic: Bool) {
     let scale = scale_of(latitude, zoom, 96.0)
-    stack(at: .bottom, fill, padding: .related) {
-        row(distribute: .between, align: .center) {
-            ui.Text("© OpenStreetMap contributors", role: .caption, secondary: true)
-            if a.traffic {
+    stack(at: .bottom, fill, padding: .related, gap: .tight) {
+        if traffic {
+            row(gap: .tight, align: .center, wrap: true) {
+                ui.Text("Traffic", role: .caption, secondary: true)
+                traffic_legend()
                 ui.Text("No traffic data", role: .caption, secondary: true)
             }
-            ui.Text(scale.label, role: .caption, secondary: true, numeric: true)
-            ui.Text(
-                "Zoom {tile_zoom(a.centre_zoom)}",
-                role: .caption,
-                secondary: true,
-                numeric: true,
-            )
+        }
+        row(distribute: .between, align: .center) {
+            ui.Text("© OpenStreetMap contributors", role: .caption, secondary: true)
+            row(gap: .tight, align: .center) {
+                ui.Text(scale.label, role: .caption, secondary: true, numeric: true)
+                ui.Rule(length: scale.pixels, ticks: true, label: "Scale")
+            }
         }
     }
 }
 
+/// What the traffic layer's colours mean, where a device's reports show on the map.
+view traffic_legend() {
+    row(gap: .tight, align: .center, wrap: true) {
+        ui.Chip("Flowing", tone: .success)
+        ui.Chip("Slow", tone: .warning)
+        ui.Chip("Heavy", tone: .danger)
+        ui.Chip("Standstill", tone: .neutral)
+    }
+}
+
+/// Whether the imagery the map shows is not arriving: every tile it asks for has failed.
+fn imagery_failed(imagery: List<Int>) -> Bool {
+    let failed = imagery.at(0) ?? 0
+    let shown = imagery.at(1) ?? 0
+    shown > 0 and failed >= shown
+}
+
 /// Directions: how the person travels, what the service found, its turns, and the journeys public
 /// transport offers.
-view directions_panel(a: Atlas) {
-    state showing: Bool = false
+view directions_panel(a: Atlas, showing: Bool) {
     state from_words: Text = ""
     state to_words: Text = ""
     ui.DisclosureRow(title: "Directions", icon: .route, expanded: showing) {
-        on toggle(open: Bool): set(showing, open)
+        on toggle(open: Bool): set_directions(a, open)
         row(gap: .tight) {
             for mode in modes() {
                 ui.Button(

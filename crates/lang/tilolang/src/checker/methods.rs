@@ -20,6 +20,7 @@ pub const TEXT: &[&str] = &[
     "slice",
     "replace",
     "url_encode",
+    "url_decode",
     "split",
     "matches",
     "misspelled",
