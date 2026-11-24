@@ -15,14 +15,14 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tilo_content::ContentStore;
 
+use crate::TermModes;
 use crate::commands::{Commands, FinishedCommand, Marks};
 use crate::emulator::{DEFAULT_HISTORY, Emulator};
 use crate::graphics::TerminalImagePlacement;
 use crate::provider::{OpenError, OpenOptions, Requester};
 use crate::screen::{Line, Screen};
-use crate::session::{classify_pty_read, PtyReadDisposition, Session, SessionEnd};
+use crate::session::{PtyReadDisposition, Session, SessionEnd, classify_pty_read};
 use crate::target::SessionTarget;
-use crate::TermModes;
 
 /// Something that happened to a session: what its shell marked, titled or asked, and how it
 /// ended. A reader asks for what came after the count it last saw, so several readers — the
@@ -381,11 +381,7 @@ impl Live {
 
     /// The words a selection covers, each row's trailing blanks cut.
     #[must_use]
-    pub fn selection_text(
-        &self,
-        anchor: crate::GridPos,
-        cursor: crate::GridPos,
-    ) -> Option<String> {
+    pub fn selection_text(&self, anchor: crate::GridPos, cursor: crate::GridPos) -> Option<String> {
         let selection = crate::Selection { anchor, cursor };
         let columns = self.shared.columns.load(Ordering::Acquire) as usize;
         crate::selection::text(&self.screen(), &selection, columns)
@@ -684,6 +680,9 @@ fn held_registry() -> MutexGuard<'static, BTreeMap<String, Arc<Live>>> {
 /// Register `live` under its id, so the window and the app's calls find the one session.
 pub fn register(live: &Arc<Live>) {
     held_registry().insert(live.id().to_owned(), Arc::clone(live));
+    // The window's `ui.Terminal` reads its sessions from the toolkit, which this crate is not
+    // part of: hand it the grid here, once, so the widget draws what a shell prints.
+    crate::toolkit::hand_to_toolkit();
     bumped_generation();
 }
 

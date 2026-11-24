@@ -28,23 +28,26 @@ pub mod commands;
 mod emulator;
 #[cfg(not(target_arch = "wasm32"))]
 mod graphics;
-pub mod model;
-pub mod parse;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod input;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod live;
+pub mod model;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod ops;
+pub mod parse;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod provider;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod selection;
-#[cfg(not(target_arch = "wasm32"))]
 mod screen;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod selection;
 #[cfg(not(target_arch = "wasm32"))]
 mod session;
 pub mod target;
+/// The live session as the toolkit's `ui.Terminal` reads it: the grid and the keys.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod toolkit;
 pub mod undoability;
 
 pub use commands::{Commands, FinishedCommand, HistoryAsk, Mark, Marks, Piece};
@@ -57,9 +60,10 @@ pub use graphics::{
 pub use model::{Item, ItemKind};
 #[cfg(not(target_arch = "wasm32"))]
 pub use provider::{
-    ConfineRoute, NullMaster, OpenError, OpenOptions, Requester, decide_route, environments_available,
-    exec_script, launch_command_from_context, launch_command_from_env, open_host, open_on_socket,
-    open_self_hosted, open_with, refusal, route, ush_binary, ush_request,
+    ConfineRoute, NullMaster, OpenError, OpenOptions, Requester, decide_route,
+    environments_available, exec_script, launch_command_from_context, launch_command_from_env,
+    open_host, open_on_socket, open_self_hosted, open_with, refusal, route, ush_binary,
+    ush_request,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use screen::{Line, Screen};

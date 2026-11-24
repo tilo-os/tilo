@@ -45,9 +45,6 @@ workspace-hack = { version = "0.1" }
 # from the device's content store and stages a file the toolkit plays. A page's media element
 # plays the address itself, so this is native only.
 tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
-# A terminal's grid: the live sessions the window holds and hands to `ui.Terminal`, one per
-# session id an app's record names.
-tilo-terminal = { version = "0.1.0", path = "../../engines/tilo-terminal" }
 media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-media" }
 
 [[example]]

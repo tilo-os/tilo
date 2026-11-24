@@ -1,16 +1,17 @@
 //! The toolkit's half of a terminal: the grid a `ui.Terminal` draws and the session behind it.
 //!
 //! The engine that runs a shell and keeps its grid is not part of the toolkit (`tilo-terminal`
-//! in `crates/engines/`), exactly as a page's engine is not. The window that draws a terminal
-//! holds its sessions and hands them here ([`set_window_sessions`]) before it builds the nodes,
-//! and every `ui.Terminal` it builds reads the one its `session` names. What travels the other
-//! way is bytes: a key, a pasted text or a pointer report goes to the host's session, which is
-//! the one place the key table lives (`tilo_terminal::input`), so the toolkit never carries a
-//! second encoding of what a shell decodes.
+//! in `crates/engines/`), exactly as a page's engine is not. The engine installs itself as the
+//! process's [`Engine`] ([`set_engine`]), and the window that draws a terminal hands out the
+//! sessions it names ([`set_window_sessions`]) before it builds the nodes, so every
+//! `ui.Terminal` it builds reads the one its `session` names. What travels the other way is
+//! bytes: a key, a pasted text or a pointer report goes to the host's session, which is the one
+//! place the key table lives (`tilo_terminal::input`), so the toolkit never carries a second
+//! encoding of what a shell decodes.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use vello::peniko::Color;
 
@@ -209,6 +210,29 @@ pub type SessionHandle = Arc<dyn Session>;
 
 /// A window's sessions by the id the app names them by.
 pub type Sessions = HashMap<String, SessionHandle>;
+
+/// The engine a window's terminals run on, as the toolkit reaches it: the handle a host installs
+/// so its `ui.Terminal` nodes draw the grids the engine keeps without the window linking it.
+pub trait Engine: Send + Sync {
+    /// A counter that rises whenever a session was opened or released.
+    fn revision(&self) -> u64;
+    /// Every session the engine keeps, by the id an app names it by.
+    fn sessions(&self) -> Sessions;
+}
+
+/// The engine of the windows this process draws: the first one installed is the one they use.
+static ENGINE: OnceLock<Arc<dyn Engine>> = OnceLock::new();
+
+/// Install the engine whose sessions this process's windows draw. Later calls change nothing.
+pub fn set_engine(engine: Arc<dyn Engine>) {
+    let _ = ENGINE.set(engine);
+}
+
+/// The engine whose sessions this process's windows draw, when a host installed one.
+#[must_use]
+pub fn engine() -> Option<Arc<dyn Engine>> {
+    ENGINE.get().cloned()
+}
 
 thread_local! {
     /// The sessions the window drawing now hands to the `ui.Terminal` nodes it builds.
