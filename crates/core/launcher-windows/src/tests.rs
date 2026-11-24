@@ -154,3 +154,32 @@ fn the_job_ends_the_app_with_its_holder() {
         asked.elapsed()
     );
 }
+
+/// A confined app gets handles from the daemon only while the daemon holds the process it
+/// started: once it lets go, the app is an `AppContainer` process like any other, and refused.
+#[test]
+fn a_confined_app_the_daemon_does_not_hold_is_refused_handles() {
+    let program = std::env::current_exe().unwrap();
+    let mut command = Command::new(&program);
+    command
+        .args(["tests::probe", "--exact", "--test-threads", "1"])
+        .env(PROBE, "wait");
+    let (link, launched) = launch(LaunchRequest {
+        package_id: "so.tilo.test.unheld".to_owned(),
+        command,
+        read: vec![program.parent().unwrap().to_owned()],
+        read_write: Vec::new(),
+    })
+    .unwrap();
+    let Launched { child, job } = launched;
+    let pid = child.id();
+    assert!(
+        runtime_portal::handles::Peer::of(pid).is_ok(),
+        "the app the daemon started and holds is its peer"
+    );
+    drop((link, child));
+    let refused = runtime_portal::handles::Peer::of(pid).unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+    assert!(refused.to_string().contains("did not start"), "{refused}");
+    drop(job);
+}

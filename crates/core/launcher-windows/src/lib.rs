@@ -88,7 +88,8 @@ impl Container {
     #[must_use]
     pub fn name_for(package_id: &str) -> String {
         let hash = blake3::hash(package_id.as_bytes()).to_hex();
-        format!("tilo.app.{}", &hash[..32])
+        // Hex is ASCII: the first 32 characters are its first 32 bytes.
+        format!("tilo.app.{}", hash.get(..32).unwrap_or(hash.as_str()))
     }
 
     /// The container of `package_id`, made the first time it is asked for.

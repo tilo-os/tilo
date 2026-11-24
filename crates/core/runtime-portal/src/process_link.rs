@@ -731,6 +731,10 @@ fn off_stdin(link: Descriptor) -> io::Result<Descriptor> {
 /// # Errors
 /// No link could be made, or the program did not start.
 #[cfg(windows)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "one signature on every host: Unix consumes the command"
+)]
 pub fn spawn(command: std::process::Command) -> io::Result<(Descriptor, Child)> {
     windows::spawn(&command, None)
 }
@@ -741,6 +745,10 @@ pub fn spawn(command: std::process::Command) -> io::Result<(Descriptor, Child)> 
 /// # Errors
 /// As [`spawn`], and when this Windows cannot run an `AppContainer` (Wine cannot).
 #[cfg(windows)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "one signature on every host: Unix consumes the command"
+)]
 pub fn spawn_confined(
     command: std::process::Command,
     confinement: &Confinement<'_>,

@@ -1,28 +1,24 @@
 //! Packets on Windows: one message on a message-mode pipe (`tilo_socket::link`), framed as the
-//! count of handles it carries, each handle's value in the receiving process, then the value.
+//! count of handles it carries, each handle's value, then the value.
 //!
-//! A pipe passes no handles itself, so the sender duplicates each into the process at the other
-//! end, which it can only do holding that process. So handles go one way only: from this process
-//! down to a process it started ([`crate::process_link::spawn`]), whose link holds the started
-//! process, and that process takes them off the link it was handed ([`crate::process_link::take`]).
-//! A link that names no started process carries no handles either way, and a started process
-//! cannot hand its starter any: what it names would be its own handles' values, which mean nothing
-//! here, or this process's, which it must not reach.
+//! A pipe passes no handles itself, so only the side that holds the other process moves them
+//! (`crate::handles`): it duplicates each handle it sends into that process and sends the value
+//! it has there, and it takes each value it receives out of that process. The other side names
+//! its own handles, giving up a copy of each for the holder to take, and owns the values the
+//! holder sent it. A process holds the processes it started ([`crate::process_link::spawn`]), and
+//! the server end of a pipe holds the process that connected to it when that is one of this
+//! account's programs. A started process takes handles only from its starter, so a value a peer
+//! that holds nothing sends is never read as a handle of this process.
 
 use std::fmt;
 use std::io::{self, Read as _, Write as _};
-use std::os::windows::io::{
-    AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle as _, OwnedHandle, RawHandle,
-};
+use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, OwnedHandle, RawHandle};
 use std::sync::Arc;
 
 use tilo_socket::Stream;
-use windows_sys::Win32::Foundation::{
-    DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE,
-};
-use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 use super::{MAX_FDS, MAX_PACKET, invalid};
+use crate::handles;
 
 /// The bytes before a packet's value: its count of handles.
 const COUNT: usize = size_of::<u32>();
@@ -61,24 +57,36 @@ fn no_pipe() -> io::Error {
     )
 }
 
-/// Which way handles go on a link.
+/// Who moves the handles on a link.
 #[derive(Clone)]
 enum Peer {
-    /// None either way.
-    Neither,
-    /// Down to the process this one started: the process, which they are duplicated into.
-    Started(Arc<OwnedHandle>),
-    /// Up from the process that started this one, which duplicated them into this one.
+    /// This process, holding the process at the other end: one it started.
+    Held(Arc<handles::Peer>),
+    /// The process that started this one, which holds it.
     Starter,
+    /// Whoever is at the other end of a pipe handed on: this process holds it when this is the
+    /// server end and it is one of this account's programs, asked as a packet carries handles.
+    Found,
+}
+
+/// How handles move on one packet.
+enum Side {
+    /// This process duplicates them into and out of the peer.
+    Holds(Arc<handles::Peer>),
+    /// The peer holds this process: it takes what this one gives up and pushed what it sent.
+    Held,
+    /// This process gives up its handles to whoever holds it, and takes none: the peer holds
+    /// nothing that could have pushed them.
+    Gives,
 }
 
 impl Descriptor {
-    /// A connection that carries no handles.
+    /// A connection, carrying handles as its ends allow (see the module).
     #[must_use]
     pub fn new(stream: Stream) -> Self {
         Self {
             held: Held::Pipe(stream),
-            peer: Peer::Neither,
+            peer: Peer::Found,
         }
     }
 
@@ -90,15 +98,15 @@ impl Descriptor {
     pub fn from_handle(handle: OwnedHandle) -> io::Result<Self> {
         Ok(Self {
             held: held(handle)?,
-            peer: Peer::Neither,
+            peer: Peer::Found,
         })
     }
 
     /// This process's end of the link to the process `started`, which it started.
-    pub(crate) fn to_started(stream: Stream, started: Arc<OwnedHandle>) -> Self {
+    pub(crate) fn to_started(stream: Stream, started: handles::Peer) -> Self {
         Self {
             held: Held::Pipe(stream),
-            peer: Peer::Started(started),
+            peer: Peer::Held(Arc::new(started)),
         }
     }
 
@@ -107,6 +115,24 @@ impl Descriptor {
         Self {
             held: Held::Pipe(stream),
             peer: Peer::Starter,
+        }
+    }
+
+    /// How handles move on this link now.
+    fn side(&self) -> io::Result<Side> {
+        match &self.peer {
+            Peer::Held(peer) => Ok(Side::Holds(Arc::clone(peer))),
+            Peer::Starter => Ok(Side::Held),
+            Peer::Found => {
+                let stream = self.stream()?;
+                if stream.is_server_end() {
+                    Ok(Side::Holds(Arc::new(handles::Peer::of(
+                        stream.peer_pid()?,
+                    )?)))
+                } else {
+                    Ok(Side::Gives)
+                }
+            }
         }
     }
 
@@ -184,9 +210,9 @@ impl AsHandle for Descriptor {
 impl fmt::Debug for Descriptor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let peer = match self.peer {
-            Peer::Neither => "neither",
-            Peer::Started(_) => "started",
+            Peer::Held(_) => "held",
             Peer::Starter => "starter",
+            Peer::Found => "found",
         };
         formatter
             .debug_struct("Descriptor")
@@ -202,82 +228,58 @@ pub(super) fn pair() -> io::Result<(Descriptor, Descriptor)> {
     Ok((Descriptor::new(server), Descriptor::new(client)))
 }
 
-/// Close the handles `values` duplicated into `process`, which a packet never delivered.
-fn close_in(process: &OwnedHandle, values: &[u64]) {
-    for value in values {
-        // SAFETY: a value this process duplicated into `process` and nothing else owns yet;
-        // closing it there needs no target.
-        unsafe {
-            DuplicateHandle(
-                process.as_raw_handle(),
-                *value as usize as HANDLE,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                0,
-                0,
-                DUPLICATE_CLOSE_SOURCE,
-            );
-        }
-    }
-}
-
-/// Write `encoded` on `socket` with the handles `raw` names, duplicated into its peer.
+/// Write `encoded` on `socket` with the handles `raw` names: pushed into the peer this process
+/// holds, or given up for the peer that holds this one.
 pub(super) fn send(socket: &Descriptor, encoded: &[u8], raw: &[RawHandle]) -> io::Result<()> {
-    let mut values = Vec::with_capacity(raw.len());
-    let started = match &socket.peer {
-        Peer::Started(process) => Some(process),
-        _ if raw.is_empty() => None,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "handles go only down a link to a process this one started",
-            ));
-        }
+    let side = if raw.is_empty() {
+        Side::Gives
+    } else {
+        socket.side()?
     };
-    if let Some(process) = started {
-        for handle in raw {
-            let mut theirs: HANDLE = std::ptr::null_mut();
-            // SAFETY: a handle a field of the message holds, borrowed until it is sent, and
-            // the started process, which this process holds open.
-            let duplicated = unsafe {
-                DuplicateHandle(
-                    GetCurrentProcess(),
-                    *handle,
-                    process.as_raw_handle(),
-                    &raw mut theirs,
-                    0,
-                    0,
-                    DUPLICATE_SAME_ACCESS,
-                )
-            };
-            if duplicated == 0 {
-                let error = io::Error::last_os_error();
-                close_in(process, &values);
+    let mut values = Vec::with_capacity(raw.len());
+    for handle in raw {
+        // SAFETY: a handle a field of the message holds, borrowed until it is sent.
+        let handle = unsafe { BorrowedHandle::borrow_raw(*handle) };
+        let moved = match &side {
+            Side::Holds(peer) => peer.push(handle),
+            Side::Held | Side::Gives => handles::release(handle),
+        };
+        match moved {
+            Ok(value) => values.push(value),
+            Err(error) => {
+                take_back(&side, &values);
                 return Err(error);
             }
-            values.push(theirs as usize as u64);
         }
     }
-    let mut frame = Vec::with_capacity(COUNT + VALUE * values.len() + encoded.len());
-    frame.extend_from_slice(
-        &u32::try_from(values.len())
-            .unwrap_or(u32::MAX)
-            .to_le_bytes(),
+    let mut frame = Vec::with_capacity(
+        COUNT
+            .saturating_add(VALUE.saturating_mul(values.len()))
+            .saturating_add(encoded.len()),
     );
+    let count = u32::try_from(values.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many handles"))?;
+    frame.extend_from_slice(&count.to_le_bytes());
     for value in &values {
         frame.extend_from_slice(&value.to_le_bytes());
     }
     frame.extend_from_slice(encoded);
     let written = (socket.stream()?).write(&frame);
     if !matches!(written, Ok(length) if length == frame.len()) {
-        if let Some(process) = started {
-            close_in(process, &values);
-        }
+        take_back(&side, &values);
         return Err(written
             .err()
             .unwrap_or_else(|| io::ErrorKind::WriteZero.into()));
     }
     Ok(())
+}
+
+/// Close the handles `values` names that a packet never delivered.
+fn take_back(side: &Side, values: &[u64]) {
+    match side {
+        Side::Holds(peer) => peer.close(values),
+        Side::Held | Side::Gives => handles::unrelease(values),
+    }
 }
 
 /// The next packet on `socket`: its value's bytes and the handles it carries. `None` once the
@@ -300,25 +302,47 @@ pub(super) fn receive(
         .split_first_chunk::<COUNT>()
         .ok_or_else(|| invalid("a packet without its count of handles"))?;
     let count = usize::try_from(u32::from_le_bytes(*count)).unwrap_or(usize::MAX);
-    if count > MAX_FDS || rest.len() < VALUE * count {
+    if count > MAX_FDS || rest.len() < VALUE.saturating_mul(count) {
         return Err(invalid("a packet names more handles than it carries"));
     }
-    let (values, bytes) = rest.split_at(VALUE * count);
-    if count > 0 && !matches!(socket.peer, Peer::Starter) {
-        return Err(invalid(
-            "handles come only from the process that started this one",
-        ));
+    let (values, bytes) = rest.split_at(VALUE.saturating_mul(count));
+    let values: Vec<u64> = values
+        .chunks_exact(VALUE)
+        .map(|value| u64::from_le_bytes(value.try_into().unwrap_or_default()))
+        .collect();
+    if values.is_empty() {
+        return Ok(Some((bytes.to_vec(), Vec::new())));
     }
     // Owned first, every one: a value that is refused below is still closed.
-    let owned: Vec<OwnedHandle> = values
-        .chunks_exact(VALUE)
-        .map(|value| {
-            let value = u64::from_le_bytes(value.try_into().unwrap_or_default());
-            // SAFETY: the process that started this one duplicated this handle into it for this
-            // packet alone, and nothing else here holds its value.
-            unsafe { OwnedHandle::from_raw_handle(value as usize as RawHandle) }
-        })
-        .collect();
+    let owned: Vec<OwnedHandle> = match socket.side()? {
+        Side::Holds(peer) => {
+            let mut owned = Vec::with_capacity(values.len());
+            for (index, value) in values.iter().enumerate() {
+                match peer.pull(*value) {
+                    Ok(handle) => owned.push(handle),
+                    Err(error) => {
+                        peer.close(values.get(index.saturating_add(1)..).unwrap_or_default());
+                        return Err(invalid(error));
+                    }
+                }
+            }
+            owned
+        }
+        // SAFETY: the process that started this one duplicated each of these into it for this
+        // packet alone, and nothing else here holds their values.
+        Side::Held => values
+            .iter()
+            .filter_map(|value| unsafe { handles::pushed(*value) })
+            .collect(),
+        Side::Gives => {
+            return Err(invalid(
+                "handles come only from a process that holds this one",
+            ));
+        }
+    };
+    if owned.len() != values.len() {
+        return Err(invalid("a packet names a handle that is none"));
+    }
     let handles = owned
         .into_iter()
         .map(Descriptor::from_handle)
