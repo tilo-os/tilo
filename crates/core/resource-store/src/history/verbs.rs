@@ -1033,6 +1033,12 @@ fn entry(
     if let Some(context) = context {
         recorded(context, &mut entry);
     }
+    // The action the change was made by, as its author stamped it: what tells a watcher one
+    // action from another (a ban from a member's removal) without working it out from what it
+    // saw before. Never the action's arguments, which may name a secret.
+    if let Some(verb) = verb_of(doc, version) {
+        entry.insert("verb".into(), verb.into());
+    }
     entry.insert("sentence".into(), sentence(version, words).into());
     // A group names who acted; a move through history is the person's own, named by them.
     if context
@@ -1089,6 +1095,15 @@ fn entry(
 /// reads the change: it made the resource, removed it, or edited it. `None` for a document
 /// whose changes are not resources kept in the store: a change with no word for what it did is
 /// a fault to a watcher, never an edit.
+/// The verb the change `version` was made by, as its author stamped it; `None` for a change
+/// that names none.
+fn verb_of(doc: &AutoCommit, version: &Version) -> Option<String> {
+    let committed = doc.committed_document();
+    let change = committed.get_change_by_hash(&version.hash)?;
+    let stamp = collab_types::Stamp::of(&change)?;
+    (!stamp.verb.is_empty()).then_some(stamp.verb)
+}
+
 fn happened(
     doc: &AutoCommit,
     version: &Version,
@@ -1889,6 +1904,32 @@ mod tests {
                 Some(true)
             );
         }
+    }
+
+    /// A change names the action it was made by, as its author stamped it: what a watcher reads
+    /// to tell one workspace action from another (a ban from a member's removal). Its arguments
+    /// stay out, since one may name a secret.
+    #[test]
+    fn a_change_names_the_action_it_was_made_by() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "banned", true).unwrap();
+        let stamp = tilo_actions::stamp::Stamp {
+            verb: "ban".into(),
+            invocation: "inv-1".into(),
+            ..tilo_actions::stamp::Stamp::default()
+        };
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default().with_message(stamp.message()),
+        );
+        let entries = entries_after(&doc, &[], &TestWords);
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0]["verb"], json!("ban"), "{entries:?}");
+
+        // A change its author stamped no verb on says none.
+        doc.put(ROOT, "banned", false).unwrap();
+        doc.commit().unwrap();
+        let entries = entries_after(&doc, &[], &TestWords);
+        assert_eq!(entries[1]["verb"], Value::Null, "{entries:?}");
     }
 
     /// Every change says what it did to the resource it is a version of, read from the change
