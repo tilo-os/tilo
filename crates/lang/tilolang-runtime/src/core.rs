@@ -29,13 +29,13 @@ use Imp::{
     CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere, CollWhereWith,
     CountBy, DateShow, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday, Describe,
     DescribeRef, DurationText, Earlier, EditField, EngineCall, EngineCancel, EnginePicture,
-    EngineStart, EngineStatus, EngineStream, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs,
-    EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FileAt, FileBook,
-    FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCrop, FileEncode, FileExtract,
-    FileFiles, FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove, FileOfBytes,
-    FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart, FileReadPath, FileRemove,
-    FileRename, FileResize, FileRestore, FileSize, FileStat, FileText, FileThumbnail, FileTrash,
-    FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit, Filters, Find,
+    EngineStart, EngineState, EngineStatus, EngineStream, EntryParts, EnumGetF, EnumGetH, EnumGetI,
+    EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FileAt,
+    FileBook, FileBookCover, FileBookInfo, FileCompress, FileCopy, FileCrop, FileEncode,
+    FileExtract, FileFiles, FileImageInfo, FileList, FileMarkdown, FileMkdir, FileMove,
+    FileOfBytes, FileOfDocument, FileOfText, FileOpen, FileOpenPath, FilePart, FileReadPath,
+    FileRemove, FileRename, FileResize, FileRestore, FileSize, FileStat, FileText, FileThumbnail,
+    FileTrash, FileTrashEntries, FileTurn, FileWatch, FileWrite, FileZip, FilterLit, Filters, Find,
     FirstUnseen, FloatAbs, FloatAcos, FloatAsin, FloatAtan, FloatCbrt, FloatCeil, FloatCeilTo,
     FloatClamp, FloatCos, FloatCosh, FloatExp, FloatFloor, FloatFloorTo, FloatFract, FloatGamma,
     FloatIsFinite, FloatIsNan, FloatLn, FloatLog2, FloatLog10, FloatMax, FloatMin, FloatPow,
@@ -65,8 +65,8 @@ use Imp::{
     TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
     UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild, UiNode, UiOn,
     UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-    Versions, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
-    WebStatusText, WebText, Withdraw, Word, WorkspaceMembers, Zones,
+    Versions, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText,
+    WebText, Withdraw, Word, WorkspaceMembers, Zones,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -656,8 +656,8 @@ impl Core {
             }
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
             FontFamilies => self.font_import(imp, a),
-            EngineCall | EngineStart | EngineStream | EnginePicture | EngineStatus
-            | EngineCancel => self.engine_import(imp, a),
+            EngineCall | EngineStart | EngineStream | EngineState | EnginePicture
+            | EngineStatus | EngineCancel => self.engine_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
             | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | UiBindStateAt
             | StateGet | StateAt | ArgAt | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen

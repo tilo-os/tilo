@@ -123,6 +123,51 @@ pub struct ViewInstance {
     /// The bindings a field was given by what it began: the `begin` handler's action made a
     /// record, and from then on the field edits that record's name. Keyed by the control's key.
     begun: RefCell<std::collections::BTreeMap<String, Binding>>,
+    /// The generation of each stream's state this view took into the slot its views read: what
+    /// moved since is a reading its views run again for.
+    streams: HashMap<String, u64>,
+}
+
+/// Take what the streams pushed since this view last looked into the slots its views read: a
+/// stream that says it is connecting, running or ended is a reading, and the boundary that showed
+/// the word before runs again for the new one. A stream the device forgot says nothing.
+fn take_stream_states(core: &Core, window: &str, taken: &mut HashMap<String, u64>) -> bool {
+    let mut took = false;
+    for (slot, state) in core.live_frames.states() {
+        if taken.get(&slot) == Some(&state.generation) {
+            continue;
+        }
+        core.view_states.borrow_mut().set(
+            crate::view_state::stream_key(window, &slot),
+            Value::text(state.text),
+        );
+        taken.insert(slot, state.generation);
+        took = true;
+    }
+    let held: Vec<String> = taken.keys().cloned().collect();
+    for slot in held {
+        let live = core.live_frames.state(&slot).is_some();
+        if !live && taken.remove(&slot).is_some() {
+            core.view_states.borrow_mut().set(
+                crate::view_state::stream_key(window, &slot),
+                Value::text(""),
+            );
+            took = true;
+        }
+    }
+    took
+}
+
+/// Whether a stream said something this view has not taken, or one it took was forgotten: a
+/// frame that runs before the view does.
+fn streams_moved(core: &Core, taken: &HashMap<String, u64>) -> bool {
+    let states = core.live_frames.states();
+    states
+        .iter()
+        .any(|(slot, state)| taken.get(slot) != Some(&state.generation))
+        || taken
+            .keys()
+            .any(|slot| !states.iter().any(|(held, _)| held == slot))
 }
 
 /// The window a view over `args` runs in when the host names none: the window of its first
@@ -143,6 +188,8 @@ impl ViewInstance {
         target: ViewTarget,
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
+        let mut streams = HashMap::new();
+        take_stream_states(&core, &window, &mut streams);
         let live = Live::open(&core, (viewer, window), target, args)?;
         let mut me = Self {
             core,
@@ -153,6 +200,7 @@ impl ViewInstance {
             subscribed: HashSet::new(),
             events: RefCell::new(Vec::new()),
             begun: RefCell::default(),
+            streams,
         };
         me.subscribe_new();
         Ok(me)
@@ -194,6 +242,7 @@ impl ViewInstance {
 
     /// Mark what the changes heard since the last call reach.
     fn absorb(&mut self) {
+        take_stream_states(&self.core, &self.live.window, &mut self.streams);
         let heard = std::mem::take(&mut *self.changes.borrow_mut());
         self.live.absorb(&self.core, &heard);
         self.live.check_states(&self.core);
@@ -282,6 +331,7 @@ impl ViewInstance {
         !self.changes.borrow().is_empty()
             || self.live.is_dirty()
             || self.live.states_moved(&self.core)
+            || streams_moved(&self.core, &self.streams)
             || self.time_passed().is_some()
     }
 

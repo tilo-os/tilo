@@ -100,6 +100,11 @@ impl tilolang_tilo::runtime::host_work::Push for SessionStreamFrames {
         self.push.frame(frame);
         (self.wake)();
     }
+
+    fn state(&self, slot: &str, state: &str) {
+        self.push.state(slot, state);
+        (self.wake)();
+    }
 }
 
 #[cfg(test)]

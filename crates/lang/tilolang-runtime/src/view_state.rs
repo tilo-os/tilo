@@ -65,6 +65,12 @@ impl StateKey {
     }
 }
 
+/// The slot a stream's state is a reading of, in `window`: the runtime's own, never a view's
+/// declaration, filled from what the device's engine last pushed (`engine.state`).
+pub(crate) fn stream_key(window: &str, job: &str) -> StateKey {
+    StateKey::runtime(window, None, format!("stream:{job}"))
+}
+
 /// Every slot of view state the runtime holds.
 #[derive(Default)]
 pub struct ViewStates {

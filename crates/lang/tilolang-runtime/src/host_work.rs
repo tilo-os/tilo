@@ -5,7 +5,10 @@
 //! The app asks for it by name and the host answers — now (`engine.call`), for work that ends
 //! within a frame or two, as a job that says how far it has got and can be stopped
 //! (`engine.start`, `engine.status`, `engine.cancel`), or as a stream (`engine.stream`) whose
-//! newest frame the device keeps and the app shows by its address while the stream runs.
+//! newest frame the device keeps and the app shows by its address while the stream runs. A
+//! stream also says of itself what a view reads (`engine.state`): whether it is connecting, what
+//! it is, or why it ended — pushed as it changes, so the window knows a connection dropped
+//! without asking.
 //!
 //! What a name means is the device's, not the language's: the host registers the ops it answers
 //! for each app and refuses a name the app does not own. The answer is JSON, which the app reads
@@ -30,12 +33,26 @@ pub struct Frame {
     pub pixels: Arc<Vec<u8>>,
 }
 
-/// What an engine hands its app's window as a stream runs: each frame, as it arrives. The host
-/// keeps the newest frame of each slot and wakes the window, which paints it on its next draw;
-/// nothing here is polled.
+/// What an engine hands its app's window as a stream runs: each frame, as it arrives, and what
+/// the stream says of itself. The host keeps the newest of each and wakes the window, which
+/// paints the frame and reads the state on its next draw; nothing here is polled.
 pub trait Push: Send + Sync {
     /// The stream `frame.slot` shows `frame` now.
     fn frame(&self, frame: Frame);
+
+    /// The stream `slot` says `state` of itself now, as JSON a view reads with `engine.state`:
+    /// that it is connecting, what it shows once it runs, or why it ended. The host keeps the
+    /// newest and wakes the window; a host that reads no stream state keeps nothing.
+    fn state(&self, slot: &str, state: &str) {
+        let _ = (slot, state);
+    }
+}
+
+/// What a stream last said of itself, at the generation it said it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamState {
+    pub generation: u64,
+    pub text: String,
 }
 
 /// What wakes an app's window when a stream it shows has a new frame.
@@ -46,6 +63,11 @@ pub type Wake = Arc<dyn Fn() + Send + Sync>;
 #[derive(Default)]
 pub struct LiveFrames {
     newest: std::sync::Mutex<std::collections::HashMap<String, Frame>>,
+    /// What each stream last said of itself.
+    states: std::sync::Mutex<std::collections::HashMap<String, StreamState>>,
+    /// Counts what streams said, so a state pushed later is newer than every one before it,
+    /// whichever stream said it.
+    said: std::sync::atomic::AtomicU64,
     wake: std::sync::Mutex<Option<Wake>>,
 }
 
@@ -73,9 +95,45 @@ impl LiveFrames {
         held(&self.newest).get(slot).cloned()
     }
 
-    /// Forget the stream `slot`: one that ended shows nothing rather than its last frame.
+    /// What the stream `slot` says of itself now.
+    pub fn put_state(&self, slot: &str, text: &str) {
+        let generation = self
+            .said
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .saturating_add(1);
+        held(&self.states).insert(
+            slot.to_owned(),
+            StreamState {
+                generation,
+                text: text.to_owned(),
+            },
+        );
+        let wake = held(&self.wake).clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
+
+    /// What the stream `slot` says of itself, and the generation it said it at.
+    #[must_use]
+    pub fn state(&self, slot: &str) -> Option<StreamState> {
+        held(&self.states).get(slot).cloned()
+    }
+
+    /// What every stream says of itself now.
+    #[must_use]
+    pub fn states(&self) -> Vec<(String, StreamState)> {
+        held(&self.states)
+            .iter()
+            .map(|(slot, state)| (slot.clone(), state.clone()))
+            .collect()
+    }
+
+    /// Forget the stream `slot`: one that ended shows nothing rather than its last frame, and
+    /// says nothing of itself rather than its last word.
     pub fn forget(&self, slot: &str) {
         held(&self.newest).remove(slot);
+        held(&self.states).remove(slot);
     }
 
     /// Wake `wake` whenever a frame arrives: the window showing the streams.
@@ -87,6 +145,10 @@ impl LiveFrames {
 impl Push for LiveFrames {
     fn frame(&self, frame: Frame) {
         self.put(frame);
+    }
+
+    fn state(&self, slot: &str, state: &str) {
+        self.put_state(slot, state);
     }
 }
 
@@ -163,6 +225,10 @@ impl Core {
                 let input = self.text(a.h(2)?)?;
                 self.result(self.engine_stream(&app, &op, &input).map(Value::text))
             }
+            Imp::EngineState => {
+                let job = self.text(a.h(0)?)?;
+                self.ret_h(self.engine_state(&job))
+            }
             Imp::EnginePicture => {
                 let app = self.text(a.h(0)?)?;
                 let op = self.text(a.h(1)?)?;
@@ -223,6 +289,33 @@ impl Core {
             }
         })?;
         text_answer(answer)
+    }
+
+    /// What the stream `job` says of itself now, as a view reads it (`engine.state`): the newest
+    /// word the device pushed, empty while it said nothing. In a view the read is a dependency:
+    /// the boundary runs again when the stream says something new, whichever frame it arrives on.
+    fn engine_state(&self, job: &str) -> Value {
+        let window = self.frames.borrow().view().map(|vs| vs.window.clone());
+        let Some(window) = window else {
+            // An action reads one word throughout: the newest the stream said, never a
+            // dependency it would have to be run again for.
+            return Value::text(
+                self.live_frames
+                    .state(job)
+                    .map(|state| state.text)
+                    .unwrap_or_default(),
+            );
+        };
+        let key = crate::view_state::stream_key(&window, job);
+        let (generation, seen) = {
+            let states = self.view_states.borrow();
+            (
+                states.generation(&key),
+                states.get(&key).cloned().unwrap_or_else(|| Value::text("")),
+            )
+        };
+        self.note_state_read(key, generation, &seen);
+        seen
     }
 
     fn engine_status(&self, job: &str) -> Result<String, String> {

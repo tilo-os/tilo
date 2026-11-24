@@ -640,6 +640,11 @@ impl tilolang_tilo::runtime::host_work::Push for StreamFrames {
         self.push.frame(frame);
         (self.wake)();
     }
+
+    fn state(&self, slot: &str, state: &str) {
+        self.push.state(slot, state);
+        (self.wake)();
+    }
 }
 
 impl Platform for HostPlatform {

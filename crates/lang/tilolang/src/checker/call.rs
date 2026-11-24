@@ -2787,30 +2787,32 @@ impl Checker<'_> {
     }
 
     /// `engine.call(op, input)`, `engine.start(op, input)`, `engine.stream(op, input)`,
-    /// `engine.picture(op, input)`, `engine.status(job)` and `engine.cancel(job)`: the device's
-    /// own work — a decode, a render, a raster — asked by a name the host answers for this app.
-    /// A call answers now; a start answers a job id, and the job's progress is asked for by that
-    /// id. Both carry JSON, which the app reads into its own records with `json.decode<T>`. A
-    /// stream is a job whose newest frame the device keeps, shown by the address
-    /// `"tilo-live://" + job` and moved on without the app asking. A picture is the same work
-    /// answered as a picture the device keeps: the answer names its bytes, and the app shows
-    /// them in `ui.Image` and `ui.Drawing` by the address it gets. An action asks; a view is
-    /// drawn again from what it is shown, so it never does.
+    /// `engine.state(job)`, `engine.picture(op, input)`, `engine.status(job)` and
+    /// `engine.cancel(job)`: the device's own work — a decode, a render, a raster — asked by a
+    /// name the host answers for this app. A call answers now; a start answers a job id, and the
+    /// job's progress is asked for by that id. Both carry JSON, which the app reads into its own
+    /// records with `json.decode<T>`. A stream is a job whose newest frame the device keeps,
+    /// shown by the address `"tilo-live://" + job` and moved on without the app asking; what it
+    /// says of itself — connecting, running, or why it ended — is `engine.state`, a reading a
+    /// view shows and runs again for when the stream says something new. A picture is the same
+    /// work answered as a picture the device keeps: the answer names its bytes, and the app
+    /// shows them in `ui.Image` and `ui.Drawing` by the address it gets. An action asks; a view
+    /// is drawn again from what it is shown, so it never does.
     fn builtin_engine(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let result = || Ty::Result(Box::new(Ty::Text), Box::new(Ty::Text));
         let asks_input = match name.name.as_str() {
             "call" | "start" | "stream" | "picture" => true,
-            "status" | "cancel" => false,
+            "state" | "status" | "cancel" => false,
             other => {
                 self.err(
                     "E022",
                     name.span,
                     format!(
-                        "`engine` has `call`, `start`, `stream`, `picture`, `status` and \
-                         `cancel`, not `{other}`: `engine.call(op, input)`, \
+                        "`engine` has `call`, `start`, `stream`, `state`, `picture`, \
+                         `status` and `cancel`, not `{other}`: `engine.call(op, input)`, \
                          `engine.start(op, input)`, `engine.stream(op, input)`, \
-                         `engine.picture(op, input)`, `engine.status(job)` and \
-                         `engine.cancel(job)`"
+                         `engine.state(job)`, `engine.picture(op, input)`, \
+                         `engine.status(job)` and `engine.cancel(job)`"
                     ),
                 );
                 for a in args {
@@ -2820,7 +2822,7 @@ impl Checker<'_> {
             }
         };
         let what = format!("`engine.{}`", name.name);
-        if self.st.ctx == Ctx::View {
+        if self.st.ctx == Ctx::View && name.name != "state" {
             self.err(
                 "E067",
                 span,
@@ -2921,6 +2923,7 @@ impl Checker<'_> {
                     Ty::Result(Box::new(Ty::File), Box::new(Ty::Text)),
                 )
             }
+            "state" => Ex::host(Imp::EngineState, vec![held], Ty::Text),
             "status" => Ex::host(Imp::EngineStatus, vec![held], result()),
             _ => Ex::host(Imp::EngineCancel, vec![held], Ty::Bool),
         }

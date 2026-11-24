@@ -1,5 +1,6 @@
 //! A stream an app shows: the device's engine hands its newest frame over as each arrives, the
-//! app shows it by its address, and cancelling the stream takes the frame away.
+//! app shows it by its address, and what the stream says of itself (connecting, running, or why
+//! it ended) is a reading the window shows without asking. Cancelling the stream takes both.
 
 #[cfg(test)]
 mod cases {
@@ -22,6 +23,8 @@ type Screen {
     job: Text = ""
     /// What the device said when it runs no such stream.
     trouble: Text = ""
+    /// What the stream said of itself, as the last action read it.
+    word: Text = ""
 }
 
 /// Watch the device's screen: its frames move the picture without the app asking.
@@ -37,7 +40,12 @@ action watch(s: Screen) {
     }
 }
 
-/// Stop watching: the last frame goes with the stream.
+/// What the stream says of itself now, read from an action.
+action read(s: Screen) {
+    s.word = engine.state(s.job)
+}
+
+/// Stop watching: the last frame and the stream's last word go with it.
 action stop(s: Screen) {
     if s.job != "" {
         engine.cancel(s.job)
@@ -48,6 +56,7 @@ action stop(s: Screen) {
 view window(s: Screen) {
     stack {
         ui.Image(src: "tilo-live://{s.job}", alt: "Another machine's screen")
+        text(engine.state(s.job))
         text(s.trouble)
     }
 }
@@ -71,14 +80,22 @@ view window(s: Screen) {
 
         /// Send the stream `slot` its `generation`th frame, `width`×`height` white pixels.
         fn send(&self, slot: &str, generation: u64, width: u32, height: u32) {
-            let pixels = vec![255_u8; usize::try_from(width * height * 4).unwrap()];
+            let pixels = usize::try_from(width)
+                .unwrap_or(0)
+                .saturating_mul(usize::try_from(height).unwrap_or(0))
+                .saturating_mul(4);
             self.push().frame(Frame {
                 slot: slot.to_owned(),
                 generation,
                 width,
                 height,
-                pixels: Arc::new(pixels),
+                pixels: Arc::new(vec![255_u8; pixels]),
             });
+        }
+
+        /// The stream `slot` says `state` of itself, as the device pushes it.
+        fn say(&self, slot: &str, state: &str) {
+            self.push().state(slot, state);
         }
     }
 
@@ -185,7 +202,19 @@ view window(s: Screen) {
             }
         }
 
-        fn image(&self, view: &ViewInstance) -> String {
+        /// What the window shows of the stream's own word: its first text.
+        fn word(view: &ViewInstance) -> String {
+            let node: &UiNode = of_kind(view.tree(), "ui.Text")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("the window shows a word: {}", dump(view.tree())));
+            match &node.props["value"] {
+                Value::Text(text) => text.clone(),
+                other => panic!("the word reads {other:?}"),
+            }
+        }
+
+        fn image(view: &ViewInstance) -> String {
             let node: &UiNode = of_kind(view.tree(), "ui.Image")
                 .into_iter()
                 .next()
@@ -213,7 +242,7 @@ view window(s: Screen) {
             );
             let window = s.window();
             assert_eq!(
-                s.image(&window),
+                Screen::image(&window),
                 "tilo-live://screen-1",
                 "the window shows the stream's newest frame by its address"
             );
@@ -250,6 +279,46 @@ view window(s: Screen) {
             );
         }
 
+        phase the_window_shows_what_the_stream_says_without_asking;
+        {
+            let s = Screen::new();
+            s.call("watch", vec![Value::resource(&s.root)]);
+            let mut window = s.window();
+            assert_eq!(Screen::word(&window), "", "nothing is said of a stream before it speaks");
+
+            s.device.say("screen-1", "connecting");
+            assert!(
+                window.woken(),
+                "the window is woken by the stream's word, never by asking on a clock"
+            );
+            let patches = window.poll_patches().unwrap();
+            assert!(!patches.is_empty(), "the boundary that shows the word runs again");
+            assert_eq!(Screen::word(&window), "connecting");
+            assert_eq!(
+                Screen::image(&window),
+                "tilo-live://screen-1",
+                "the picture stands beside the word"
+            );
+
+            s.device.say("screen-1", "closed: the machine hung up");
+            assert!(window.woken());
+            window.poll_patches().unwrap();
+            assert_eq!(
+                Screen::word(&window),
+                "closed: the machine hung up",
+                "a connection that dropped says so where the person looks"
+            );
+        }
+
+        phase an_action_reads_the_newest_word;
+        {
+            let s = Screen::new();
+            s.call("watch", vec![Value::resource(&s.root)]);
+            s.device.say("screen-1", "running");
+            s.call("read", vec![Value::resource(&s.root)]);
+            assert_eq!(s.text("word"), "running", "an action reads the word now, not a poll");
+        }
+
         phase stopping_the_stream_takes_its_last_frame_away;
         {
             let s = Screen::new();
@@ -263,7 +332,9 @@ view window(s: Screen) {
                 s.rt.frame("screen-1").is_none(),
                 "a stream that ended shows nothing rather than its last frame"
             );
-            assert_eq!(s.image(&s.window()), "tilo-live://");
+            let window = s.window();
+            assert_eq!(Screen::image(&window), "tilo-live://");
+            assert_eq!(Screen::word(&window), "", "a stream that ended says nothing of itself");
         }
 
         phase a_device_that_runs_no_streams_says_so;
