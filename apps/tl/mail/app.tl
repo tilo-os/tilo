@@ -3197,7 +3197,7 @@ view editor(d: Draft) {
                 ui.Button("Save in Drafts", icon: .cloud) {
                     on press: save_to_drafts(mail, d)
                 }
-                ui.Button("Send", icon: .send) {
+                ui.Button("Send", icon: .send, key: "Ctrl+Enter") {
                     on press: send(d)
                 }
             }

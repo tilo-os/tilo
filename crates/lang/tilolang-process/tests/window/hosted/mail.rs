@@ -3977,10 +3977,39 @@ fn the_composer_offers_more_headers_and_formatting_and_sends_on_the_chord() {
         "the blind recipients show once asked for: {opened:?}"
     );
 
-    // Ctrl+Enter sends from the window, without the press: the bar's Send answers it while the
-    // composer holds the keyboard.
-    session.settle();
+    // Ctrl+Enter sends from the window, without the press: the window shows the draft's
+    // composer, and its Send answers the chord from anywhere in it.
+    session.open_showing(&draft);
+    let said = session.shown();
+    assert!(
+        said.iter().any(|text| text == "Write your message"),
+        "the window shows the draft's composer: {said:#?}"
+    );
+    let send = {
+        fn labelled_send(node: &tilo_app_window::UiNode) -> Option<&tilo_app_window::UiNode> {
+            if node.kind == "ui.Button"
+                && node.props.get("label") == Some(&tilo_app_window::Value::text("Send"))
+                && node.props.contains_key("key")
+            {
+                return Some(node);
+            }
+            node.children.iter().find_map(labelled_send)
+        }
+        let view = session.hosted().view().expect("the window is connected");
+        view.composed()
+            .and_then(labelled_send)
+            .cloned()
+            .unwrap_or_else(|| panic!("the window's Send declares its chord"))
+    };
+    assert_eq!(
+        send.props.get("key"),
+        Some(&tilo_app_window::Value::text("Ctrl+Enter")),
+        "Send answers Ctrl+Enter"
+    );
     session.window.key("ctrl+Enter");
+    session.settle();
+    // A send the window asked the person about is allowed for them, as a call's is.
+    session.allow_asked();
     session.until("the message to go", |_| servers.smtp.sent().len() == 1);
     let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
     assert!(sent.contains("bo@chen.example"), "{sent}");
