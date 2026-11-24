@@ -373,9 +373,9 @@ pub fn account_dir_uid(identity_dir: &Path) -> Option<u32> {
     identity_dir.file_name()?.to_str()?.parse().ok()
 }
 
-/// The key the account `identity_dir` belongs to seals its shares with: its login name where
-/// the computer has one for the account, else a secret made for the account alone, bound to this
-/// computer's device key.
+/// The key the account `identity_dir` belongs to seals its shares with: the account's uid, a
+/// secret made and kept for it alone, and this computer's device key. Nothing here is the
+/// account's login name, so renaming the login keeps every share it sealed.
 fn account_seal_key(identity_dir: &Path) -> io::Result<tilo_seal::SymmetricKey> {
     let uid = account_dir_uid(identity_dir).ok_or_else(|| {
         io::Error::new(
@@ -389,16 +389,8 @@ fn account_seal_key(identity_dir: &Path) -> io::Result<tilo_seal::SymmetricKey> 
     let mut key = blake3::Hasher::new();
     key.update(b"tilo account identity seal v1\0");
     key.update(&uid.to_le_bytes());
-    match crate::provisioning::account_login_name(uid) {
-        Some(login) => {
-            key.update(b"login\0");
-            key.update(login.as_bytes());
-        }
-        None => {
-            key.update(b"account secret\0");
-            key.update(&account_own_secret(identity_dir)?);
-        }
-    }
+    key.update(b"account secret\0");
+    key.update(&account_own_secret(identity_dir)?);
     let device = fs::read(crate::provisioning::collaboration_identity_paths().device_privkey)
         .map_err(|error| {
             io::Error::new(
@@ -412,8 +404,8 @@ fn account_seal_key(identity_dir: &Path) -> io::Result<tilo_seal::SymmetricKey> 
         .map_err(|error| io::Error::other(error.to_string()))
 }
 
-/// A secret made for the account `identity_dir` belongs to, kept private in its directory: what
-/// an account the computer has no login for is sealed with.
+/// A secret made for the account `identity_dir` belongs to, kept private in its directory: the
+/// stable part of the key its root is sealed with, beside the uid and the device key.
 fn account_own_secret(identity_dir: &Path) -> io::Result<[u8; 32]> {
     let path = identity_dir.join("seal.key");
     match fs::read(&path) {
@@ -521,5 +513,39 @@ mod tests {
     fn a_debug_build_without_developer_id_keeps_identity_secrets_in_files() {
         assert!(!tilo_secrets::items_outlive_rebuilds());
         assert!(super::file_secrets_requested());
+    }
+}
+
+#[cfg(test)]
+mod sealed_files {
+    use super::*;
+
+    /// The key a per-account root is sealed with names the account's uid and a secret kept for
+    /// it, never its login name: renaming the login on the computer opens the same shares.
+    #[test]
+    fn a_renamed_login_keeps_the_root() {
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        let home = tempfile::tempdir().unwrap();
+        let identity_root = home.path().join("identity");
+        let device_key = identity_root.join("device-private/keypair.bin");
+        std::fs::create_dir_all(device_key.parent().unwrap()).unwrap();
+        std::fs::write(&device_key, [9_u8; 32]).unwrap();
+        environment.set("TILO_IDENTITY_ROOT", &identity_root);
+        let dir = identity_root.join("accounts").join("1000");
+        std::fs::create_dir_all(&dir).unwrap();
+        let locator = "aa".repeat(32);
+        let first = SealedFileProvider::for_identity_dir(&dir).unwrap();
+        first.store(&locator, b"the person's share").unwrap();
+        assert_eq!(
+            first.load(&locator).unwrap().as_slice(),
+            b"the person's share"
+        );
+        // A provider made again after the account's name changed opens the same share: the key
+        // is made of the uid and the account's own secret, and of no name.
+        let again = SealedFileProvider::for_identity_dir(&dir).unwrap();
+        assert_eq!(
+            again.load(&locator).unwrap().as_slice(),
+            b"the person's share"
+        );
     }
 }

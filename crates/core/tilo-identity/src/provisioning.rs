@@ -137,43 +137,6 @@ pub fn account_display_name(uid: u32) -> String {
         .unwrap_or_else(|| format!("User {uid}"))
 }
 
-/// The login name of the Unix account `uid`, when the computer has one: what a per-account
-/// identity's root is sealed with. An account without a login is sealed with a secret of its
-/// own ([`crate::store::SealedFileProvider`]).
-#[cfg(unix)]
-#[must_use]
-pub fn account_login_name(uid: u32) -> Option<String> {
-    use std::ffi::CStr;
-    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut result = std::ptr::null_mut();
-    let mut buffer = vec![0_u8; 16 * 1024];
-    let status = unsafe {
-        libc::getpwuid_r(
-            uid,
-            pwd.as_mut_ptr(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            std::ptr::addr_of_mut!(result),
-        )
-    };
-    if status != 0 || result.is_null() {
-        return None;
-    }
-    let pwd = unsafe { pwd.assume_init() };
-    let username = unsafe { CStr::from_ptr(pwd.pw_name) }
-        .to_string_lossy()
-        .trim()
-        .to_owned();
-    (!username.is_empty()).then_some(username)
-}
-
-/// [`account_login_name`] on a computer without Unix accounts: none.
-#[cfg(not(unix))]
-#[must_use]
-pub fn account_login_name(_uid: u32) -> Option<String> {
-    None
-}
-
 #[cfg(not(unix))]
 pub fn login_account_display_name() -> String {
     std::env::var("USER")
