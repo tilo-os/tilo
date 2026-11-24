@@ -712,7 +712,10 @@ tilo-app-id = { path = "crates/core/tilo-app-id", version = "0.1.0" }
 # libraries keep upstream's names.
 vello = { package = "tilo-vello", version = "0.9.0", path = "vendor/vello" }
 vello_encoding = { package = "tilo-vello-encoding", version = "0.9.0", path = "vendor/vello_encoding" }
-wgpu = "29"
+# Tilo's wgpu fork, published as tilo-wgpu; the library keeps its name.
+# `Device::poll` reports a lost device instead of panicking, so the compositor
+# survives a GPU reset. See vendor/wgpu/TILO-PATCH.md.
+wgpu = { package = "tilo-wgpu", version = "29.0.3", path = "vendor/wgpu" }
 # Tilo's taffy fork, published as tilo-taffy; the library keeps its name. It rounds layout onto
 # the display's device pixels at any scale, not only whole logical pixels, and measures a flex
 # item at the cross size it is laid out at. See vendor/taffy/TILO-PATCH.md.
@@ -992,9 +995,9 @@ opt-level = 3
 opt-level = 3
 [profile.test.package.peniko]
 opt-level = 3
-[profile.dev.package.wgpu]
+[profile.dev.package.tilo-wgpu]
 opt-level = 3
-[profile.test.package.wgpu]
+[profile.test.package.tilo-wgpu]
 opt-level = 3
 [profile.dev.package.wgpu-core]
 opt-level = 3
@@ -1671,9 +1674,6 @@ libspa-sys = { path = "vendor/libspa-sys" }
 # Pinned DX12 shader cache and opt-in Metal presentation feedback; a device-loss
 # switch that lets tests reset a Vulkan device. See vendor/wgpu-hal/TILO-PATCH.md.
 wgpu-hal = { path = "vendor/wgpu-hal" }
-# `Device::poll` reports a lost device instead of panicking, so the compositor
-# survives a GPU reset. See vendor/wgpu/TILO-PATCH.md.
-wgpu = { path = "vendor/wgpu" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/core/tilo-native-certs" }
 # The pure-Rust server used by Smithay used to panic if a client disappeared

@@ -106,7 +106,9 @@ path = "../vello_shaders"
 optional = true
 
 [dependencies.wgpu]
+package = "tilo-wgpu"
 version = "29.0.3"
+path = "../wgpu"
 features = [
     "std",
     "wgsl",
@@ -118,7 +120,9 @@ default-features = false
 # renderer that lives in shared statics, so wgpu's futures must be Send there
 # too (single-threaded wasm, as everywhere in Tilo).
 [target.'cfg(target_arch = "wasm32")'.dependencies.wgpu]
+package = "tilo-wgpu"
 version = "29.0.3"
+path = "../wgpu"
 features = ["fragile-send-sync-non-atomic-wasm"]
 optional = true
 default-features = false

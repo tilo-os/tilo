@@ -137,7 +137,7 @@ def sdk_closure(meta: dict) -> set[str]:
 # unchanged. Every patch in the closure must be listed here or be a
 # blocker; the reason says why the original suffices. wgpu is not one:
 # tilo-vello compiles its shaders with `Device::create_compute_pipeline_async`,
-# which only the patched wgpu has, so it waits for a published fork.
+# which only the patched wgpu has, so it is the fork tilo-wgpu.
 UPSTREAM_SUFFICES = {
     "accesskit": "dependency trim (zbus's async-io backend follows a feature); same API",
     "accesskit_atspi_common": "dependency trim; the crates.io release, patched only to stay one copy",
@@ -180,6 +180,7 @@ FORKS = (
     "vendor/automerge",
     "vendor/taffy",
     "vendor/cosmic-text",
+    "vendor/wgpu",
 )
 
 

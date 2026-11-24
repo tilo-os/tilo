@@ -20198,8 +20198,8 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "tilo-clock",
+ "tilo-wgpu",
  "tilo-winit",
- "wgpu",
  "workspace-hack",
 ]
 
@@ -21983,6 +21983,7 @@ dependencies = [
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-webview",
+ "tilo-wgpu",
  "tilo-winit",
  "tilo-winit-x11",
  "tilolang-lex",
@@ -21998,7 +21999,6 @@ dependencies = [
  "url",
  "uuid",
  "wat",
- "wgpu",
  "wgpu-hal",
  "windows 0.62.2",
  "windows-sys 0.61.2",
@@ -22128,7 +22128,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-vello-encoding",
  "tilo-vello-shaders",
- "wgpu",
+ "tilo-wgpu",
 ]
 
 [[package]]
@@ -22427,6 +22427,34 @@ dependencies = [
  "serde_json",
  "tiny-skia",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-wgpu"
+version = "29.0.3"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.11.0",
+ "bytemuck",
+ "cfg-if",
+ "cfg_aliases 0.2.2",
+ "document-features",
+ "hashbrown 0.16.1",
+ "js-sys",
+ "log",
+ "naga",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "smallvec",
+ "static_assertions",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu-core",
+ "wgpu-hal",
+ "wgpu-types",
 ]
 
 [[package]]
@@ -25675,34 +25703,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
-name = "wgpu"
-version = "29.0.3"
-dependencies = [
- "arrayvec",
- "bitflags 2.11.0",
- "bytemuck",
- "cfg-if",
- "cfg_aliases 0.2.2",
- "document-features",
- "hashbrown 0.16.1",
- "js-sys",
- "log",
- "naga",
- "parking_lot",
- "portable-atomic",
- "profiling",
- "raw-window-handle",
- "smallvec",
- "static_assertions",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "wgpu-core",
- "wgpu-hal",
- "wgpu-types",
-]
-
-[[package]]
 name = "wgpu-core"
 version = "29.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -26919,6 +26919,7 @@ dependencies = [
  "tantivy",
  "thiserror 2.0.21",
  "tilo-vello-encoding",
+ "tilo-wgpu",
  "time",
  "time-macros",
  "tiny-skia",
@@ -26945,7 +26946,6 @@ dependencies = [
  "vte",
  "wasm-encoder 0.252.0",
  "web-time",
- "wgpu",
  "wgpu-core",
  "winnow 0.7.14",
  "writeable",
@@ -28442,6 +28442,7 @@ dependencies = [
  "tilo-web-search",
  "tilo-webview",
  "tilo-wet-media",
+ "tilo-wgpu",
  "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
@@ -28646,7 +28647,6 @@ dependencies = [
  "web-transport-trait",
  "webpki-roots",
  "weezl",
- "wgpu",
  "wgpu-core",
  "wgpu-core-deps-windows-linux-android",
  "wgpu-hal",

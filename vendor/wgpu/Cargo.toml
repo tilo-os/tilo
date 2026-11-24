@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 rust-version = "1.87.0"
-name = "wgpu"
+name = "tilo-wgpu"
 version = "29.0.3"
 authors = ["gfx-rs developers"]
 build = "build.rs"
@@ -22,12 +22,12 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Cross-platform, safe, pure-rust graphics API"
+description = "wgpu 29.0.3 (https://github.com/gfx-rs/wgpu) reporting a lost device instead of panicking, as Tilo's renderer needs. Tilo's fork; see TILO-PATCH.md."
 homepage = "https://wgpu.rs/"
-readme = "README.md"
+readme = "TILO-PATCH.md"
 keywords = ["graphics"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/gfx-rs/wgpu"
+repository = "https://code.tilo.so/tilo/tilo"
 
 [package.metadata.docs.rs]
 all-features = true

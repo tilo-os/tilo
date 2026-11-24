@@ -1362,6 +1362,7 @@ doc = false
 "tilo-web-search" = { path = "../../crates/integrations/tilo-web-search", default-features = false, features = ["fixture-servers"] }
 "tilo-webview" = { path = "../../crates/engines/tilo-webview", default-features = false, features = ["local-daemons", "webview-adblock"] }
 "tilo-wet-media" = { path = "../../crates/engines/wet-media", default-features = false, features = [] }
+"tilo-wgpu-29_0_3" = { package = "tilo-wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
 "tilo-window-share" = { path = "../../crates/desktop/window-share", default-features = false, features = ["default", "dmabuf"] }
 "tilo-winit-0_30_13" = { package = "tilo-winit", path = "../../vendor/winit", default-features = false, features = ["ahash", "bytemuck", "memmap2", "percent-encoding", "rwh_06", "sctk", "sctk-adwaita", "wayland", "wayland-backend", "wayland-client", "wayland-csd-adwaita-notitle", "wayland-dlopen", "wayland-protocols", "wayland-protocols-plasma", "wayland-scanner", "x11", "x11-dl", "x11rb"] }
 "tilo-winit-x11" = { path = "../../crates/ui/winit-x11", default-features = false, features = [] }
@@ -1546,7 +1547,6 @@ doc = false
 "web-transport-trait-0_4_0" = { package = "web-transport-trait", version = "^0.4.0", default-features = false, features = [] }
 "webpki-roots-1_0_10" = { package = "webpki-roots", version = "^1.0.10", default-features = false, features = [] }
 "weezl-0_1_12" = { package = "weezl", version = "^0.1.12", default-features = false, features = ["alloc", "default", "std"] }
-"wgpu-29_0_3" = { package = "wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
 "wgpu-core-29_0_3" = { package = "wgpu-core", version = "^29.0.3", default-features = false, features = ["default", "dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "std", "vulkan", "wgpu-core-deps-windows-linux-android", "wgsl"] }
 "wgpu-core-deps-windows-linux-android-29_0_3" = { package = "wgpu-core-deps-windows-linux-android", version = "^29.0.3", default-features = false, features = ["dx12", "gles", "renderdoc", "vulkan"] }
 "wgpu-hal-29_0_3" = { package = "wgpu-hal", path = "../../vendor/wgpu-hal", default-features = false, features = ["dx12", "gles", "portable-atomic", "renderdoc", "vulkan"] }
@@ -2480,6 +2480,7 @@ doc = false
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-view-macros" = { path = "../../crates/sdk/view-macros", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
+"tilo-wgpu-29_0_3" = { package = "tilo-wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
 "tilo-words" = { path = "../../crates/core/tilo-words", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../crates/core/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../crates/core/workspace-keys", default-features = false, features = ["test-support"] }
@@ -2589,7 +2590,6 @@ doc = false
 "web-transport-trait-0_4_0" = { package = "web-transport-trait", version = "^0.4.0", default-features = false, features = [] }
 "webpki-roots-1_0_10" = { package = "webpki-roots", version = "^1.0.10", default-features = false, features = [] }
 "weezl-0_1_12" = { package = "weezl", version = "^0.1.12", default-features = false, features = ["alloc", "default", "std"] }
-"wgpu-29_0_3" = { package = "wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
 "wgpu-core-29_0_3" = { package = "wgpu-core", version = "^29.0.3", default-features = false, features = ["default", "dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "std", "vulkan", "wgpu-core-deps-windows-linux-android", "wgsl"] }
 "wgpu-core-deps-windows-linux-android-29_0_3" = { package = "wgpu-core-deps-windows-linux-android", version = "^29.0.3", default-features = false, features = ["dx12", "gles", "renderdoc", "vulkan"] }
 "wgpu-hal-29_0_3" = { package = "wgpu-hal", path = "../../vendor/wgpu-hal", default-features = false, features = ["dx12", "gles", "portable-atomic", "renderdoc", "vulkan"] }
@@ -4155,7 +4155,7 @@ doc = false
 "web-transport-trait-0_4_0" = { package = "web-transport-trait", version = "^0.4.0", default-features = false, features = [] }
 "webpki-roots-1_0_10" = { package = "webpki-roots", version = "^1.0.10", default-features = false, features = [] }
 "weezl-0_1_12" = { package = "weezl", version = "^0.1.12", default-features = false, features = ["alloc", "default", "std"] }
-"wgpu-29_0_3" = { package = "wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
+"tilo-wgpu-29_0_3" = { package = "tilo-wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
 "wgpu-core-29_0_3" = { package = "wgpu-core", version = "^29.0.3", default-features = false, features = ["default", "dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "std", "vulkan", "wgpu-core-deps-windows-linux-android", "wgsl"] }
 "wgpu-core-deps-windows-linux-android-29_0_3" = { package = "wgpu-core-deps-windows-linux-android", version = "^29.0.3", default-features = false, features = ["dx12", "gles", "renderdoc", "vulkan"] }
 "wgpu-hal-29_0_3" = { package = "wgpu-hal", path = "../../vendor/wgpu-hal", default-features = false, features = ["dx12", "gles", "portable-atomic", "renderdoc", "vulkan"] }
@@ -5083,6 +5083,7 @@ doc = false
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-view-macros" = { path = "../../crates/sdk/view-macros", default-features = false, features = [] }
 "tilo-wake" = { path = "../../crates/platform/tilo-wake", default-features = false, features = [] }
+"tilo-wgpu-29_0_3" = { package = "tilo-wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
 "tilo-words" = { path = "../../crates/core/tilo-words", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../crates/core/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../crates/core/workspace-keys", default-features = false, features = ["test-support"] }
@@ -5187,7 +5188,6 @@ doc = false
 "web-transport-trait-0_4_0" = { package = "web-transport-trait", version = "^0.4.0", default-features = false, features = [] }
 "webpki-roots-1_0_10" = { package = "webpki-roots", version = "^1.0.10", default-features = false, features = [] }
 "weezl-0_1_12" = { package = "weezl", version = "^0.1.12", default-features = false, features = ["alloc", "default", "std"] }
-"wgpu-29_0_3" = { package = "wgpu", path = "../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
 "wgpu-core-29_0_3" = { package = "wgpu-core", version = "^29.0.3", default-features = false, features = ["default", "dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "std", "vulkan", "wgpu-core-deps-windows-linux-android", "wgsl"] }
 "wgpu-core-deps-windows-linux-android-29_0_3" = { package = "wgpu-core-deps-windows-linux-android", version = "^29.0.3", default-features = false, features = ["dx12", "gles", "renderdoc", "vulkan"] }
 "wgpu-hal-29_0_3" = { package = "wgpu-hal", path = "../../vendor/wgpu-hal", default-features = false, features = ["dx12", "gles", "portable-atomic", "renderdoc", "vulkan"] }

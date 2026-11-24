@@ -212,6 +212,7 @@ syntect = { version = "5", default-features = false, features = ["plist-load", "
 tantivy = { version = "0.27", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 tilo-vello-encoding = { path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
+tilo-wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
 tiny-skia-path = { version = "0.12" }
 tinystr = { version = "0.8", features = ["serde", "zerovec"] }
@@ -235,7 +236,6 @@ uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 vte = { version = "0.15", features = ["ansi", "serde"] }
 wasm-encoder = { version = "0.252" }
 web-time = { version = "1", default-features = false, features = ["serde"] }
-wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
@@ -451,6 +451,7 @@ syntect = { version = "5", default-features = false, features = ["plist-load", "
 tantivy = { version = "0.27", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 tilo-vello-encoding = { path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
+tilo-wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
 tiny-skia-path = { version = "0.12" }
@@ -475,7 +476,6 @@ uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 vte = { version = "0.15", features = ["ansi", "serde"] }
 wasm-encoder = { version = "0.252" }
 web-time = { version = "1", default-features = false, features = ["serde"] }
-wgpu = { path = "../../vendor/wgpu", features = ["custom", "noop"] }
 winnow = { version = "0.7" }
 writeable = { version = "0.6", default-features = false, features = ["alloc"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }

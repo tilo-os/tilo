@@ -94,6 +94,7 @@ BOUNDARIES = (
                 "tilo-ui",
                 "tilo-vello",
                 "tilo-winit",
+                "tilo-wgpu",
                 "tokio",
                 "vello",
                 "wgpu",
