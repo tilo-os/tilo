@@ -2253,7 +2253,9 @@ impl Workspaces {
                     ) else {
                         continue;
                     };
-                    if let Err(error) = link.send(message) {
+                    // Waits while the link to the serving device is full: the
+                    // asks behind this one wait with it.
+                    if let Err(error) = link.send_content(message).await {
                         tracing::debug!(%name, %error, "a member's content answer did not reach the serving device");
                     }
                 }

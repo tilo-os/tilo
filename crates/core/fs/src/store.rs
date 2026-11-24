@@ -534,40 +534,40 @@ impl ContentStore {
             self.note_read(b.len());
             return Some(b);
         }
-        let key = *hash.as_bytes();
         let files = Arc::clone(&self.files);
-        // The area counts what it reads of a whole blob's file itself; an inline blob is counted
-        // here, once.
-        let whole = tokio::task::spawn_blocking(move || {
-            if let Some(bytes) = files.get_inline(&key) {
-                return Some((Bytes::from(bytes), true));
-            }
-            if files.is_blob(&key) {
-                let entry = files.entry(&key)?;
-                return entry
-                    .complete()
-                    .then(|| files.read_at(&key, 0, entry.size).ok())
-                    .flatten()
-                    // A window's record names its bytes before the barrier syncs them, so a
-                    // power loss can leave a file short of its name. Answering only bytes that
-                    // hash to the name keeps that loss a miss to hydrate from a peer, never
-                    // content served as something it is not.
-                    .filter(|bytes| blake3::hash(bytes).as_bytes() == &key)
-                    .map(|bytes| (Bytes::from(bytes), false));
-            }
-            None
-        })
-        .await
-        .ok()
-        .flatten();
-        if let Some((bytes, inline)) = whole {
-            if inline {
-                self.note_read(bytes.len());
-            }
-            self.cache_insert(hash, bytes.clone());
+        let whole = tokio::task::spawn_blocking(move || whole_blob(&files, hash))
+            .await
+            .ok()
+            .flatten();
+        if let Some(bytes) = self.took_whole(hash, whole) {
             return Some(bytes);
         }
         self.local_chunk(hash).await
+    }
+
+    /// [`Self::local`], read on the calling thread: for a caller that answers from a thread of
+    /// its own, where a read handed to another thread and waited for costs more than the read.
+    pub fn local_now(&self, hash: Hash) -> Option<Bytes> {
+        if let Some(b) = self.cache.get(&hash) {
+            self.note_read(b.len());
+            return Some(b);
+        }
+        if let Some(bytes) = self.took_whole(hash, whole_blob(&self.files, hash)) {
+            return Some(bytes);
+        }
+        file_backed_chunk(&self.files, hash)
+    }
+
+    /// The whole blob `hash` read from where it lives, counted and cached.
+    fn took_whole(&self, hash: Hash, whole: Option<(Bytes, bool)>) -> Option<Bytes> {
+        let (bytes, inline) = whole?;
+        // The area counts what it reads of a whole blob's file itself; an inline blob is counted
+        // here, once.
+        if inline {
+            self.note_read(bytes.len());
+        }
+        self.cache_insert(hash, bytes.clone());
+        Some(bytes)
     }
 
     /// Read-only bytes of a whole blob `hash`: inline, or a complete whole-blob entry's file. Partial
@@ -1644,4 +1644,35 @@ mod tests {
         assert_eq!(read([8; 32], u64::MAX), None);
         drop(store);
     }
+}
+
+/// The whole blob `hash` from `files`: inline, or a complete whole blob's file whose bytes hash to
+/// its name, with whether it was inline.
+fn whole_blob(files: &FileArea, hash: Hash) -> Option<(Bytes, bool)> {
+    let key = *hash.as_bytes();
+    if let Some(bytes) = files.get_inline(&key) {
+        return Some((Bytes::from(bytes), true));
+    }
+    if !files.is_blob(&key) {
+        return None;
+    }
+    let entry = files.entry(&key)?;
+    entry
+        .complete()
+        .then(|| files.read_at(&key, 0, entry.size).ok())
+        .flatten()
+        // A window's record names its bytes before the barrier syncs them, so a power loss can
+        // leave a file short of its name. Answering only bytes that hash to the name keeps that
+        // loss a miss to hydrate from a peer, never content served as something it is not.
+        .filter(|bytes| blake3::hash(bytes).as_bytes() == &key)
+        .map(|bytes| (Bytes::from(bytes), false))
+}
+
+/// A file-backed chunk's bytes from `files`, checked against its hash.
+fn file_backed_chunk(files: &FileArea, hash: Hash) -> Option<Bytes> {
+    let location = files.find_chunk(hash.as_bytes())?;
+    let bytes = files
+        .read_at(&location.key, location.offset, u64::from(location.len))
+        .ok()?;
+    (blake3::hash(&bytes).as_bytes() == hash.as_bytes()).then(|| Bytes::from(bytes))
 }

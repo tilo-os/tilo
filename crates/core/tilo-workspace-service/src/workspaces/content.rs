@@ -69,6 +69,13 @@ pub trait ContentKeeper: Send + Sync {
     /// `from` sent this host in `workspace`.
     fn piece(&self, workspace: &str, from: [u8; 32], frame: &[u8]);
 
+    /// A link to `workspace`'s devices started: ask again at once for what
+    /// is still being gathered there, since what a link that ended carried
+    /// of the asks and their answers ended with it.
+    fn relinked(&self, workspace: &str) {
+        let _ = workspace;
+    }
+
     /// Whether `frame` answers a request this host made in `workspace` and
     /// would keep: such a piece counts against what the keeper keeps, not
     /// the member's general content budget.
@@ -564,6 +571,14 @@ impl Workspaces {
         }
     }
 
+    /// A link to `workspace`'s devices started: whatever gathers content there
+    /// asks again at once for what it still waits on ([`ContentKeeper::relinked`]).
+    pub(crate) fn content_relinked(&self, workspace: &str) {
+        for keeper in self.inner.content.keepers() {
+            keeper.relinked(workspace);
+        }
+    }
+
     /// Each answer a member gives the content this host asks for from now on.
     pub(crate) fn content_answers(&self) -> tokio::sync::broadcast::Receiver<ContentAnswer> {
         self.inner.content.answers.0.subscribe()
@@ -670,7 +685,7 @@ impl Workspaces {
             .direct
             .link(workspace_id)
             .ok_or("the workspace has no link here")?;
-        link.send(message).map_err(|error| {
+        link.send_content(message).await.map_err(|error| {
             format!("a workspace's link did not carry the host's request: {error}")
         })?;
         Ok(self

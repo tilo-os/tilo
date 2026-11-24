@@ -143,6 +143,10 @@ struct Want<T> {
     /// Woken: asked again by the next [`ContentWants::reask`], however
     /// recently it was asked.
     woken: bool,
+    /// The pieces new to the asker that arrived since it last asked: an
+    /// answer carries [`PIECES_PER_ANSWER`] at most, so once that many came
+    /// the asker asks for the next of a large file at once.
+    fresh_since_ask: usize,
 }
 
 impl<T> Want<T> {
@@ -240,6 +244,10 @@ pub struct ContentWants<T> {
     wants: BTreeMap<String, Want<T>>,
     /// Requests open at once; past it, the oldest goes.
     room: usize,
+    /// An answer's last piece arrived for content still short since
+    /// [`Self::take_continued`] last looked: its next pieces are asked for
+    /// by the next [`Self::reask`].
+    continued: bool,
 }
 
 impl<T> Default for ContentWants<T> {
@@ -257,6 +265,7 @@ impl<T> ContentWants<T> {
         Self {
             wants: BTreeMap::new(),
             room: room.max(1),
+            continued: false,
         }
     }
 
@@ -329,6 +338,7 @@ impl<T> ContentWants<T> {
                 pieces: BTreeMap::new(),
                 lacked: false,
                 woken: false,
+                fresh_since_ask: 0,
             },
         );
         Some(request)
@@ -387,6 +397,18 @@ impl<T> ContentWants<T> {
     pub fn wake(&mut self, cluster_id: &str) {
         for want in self.wants.values_mut() {
             if want.cluster_id == cluster_id && want.lacked && want.pieces.is_empty() {
+                want.woken = true;
+            }
+        }
+    }
+
+    /// Ask again, through the next [`Self::reask`], for everything of workspace
+    /// `cluster_id` still being gathered: a link to its devices started, and
+    /// what a link that ended carried of an ask or its answer went with it.
+    /// Each want is asked once more at once, saying what arrived of it.
+    pub fn relinked(&mut self, cluster_id: &str) {
+        for want in self.wants.values_mut() {
+            if want.cluster_id == cluster_id && !want.whole() {
                 want.woken = true;
             }
         }
@@ -459,9 +481,17 @@ impl<T> ContentWants<T> {
                 want.reasks = want.reasks.saturating_add(1);
                 want.last_piece_ms = now_ms;
             }
+            want.fresh_since_ask = 0;
             asks.push((want.tag.clone(), request));
         }
         asks
+    }
+
+    /// Whether an answer's last piece arrived for content still short since
+    /// this was last asked: the asker sends the next [`Self::reask`] now,
+    /// rather than once the transfer seems to have stalled.
+    pub fn take_continued(&mut self) -> bool {
+        std::mem::take(&mut self.continued)
     }
 
     /// Whether `frame` is a piece of content device `device` asked for and
@@ -538,9 +568,17 @@ impl<T> ContentWants<T> {
         want.last_piece_ms = now_ms;
         if fresh {
             want.reasks = 0;
+            want.fresh_since_ask = want.fresh_since_ask.saturating_add(1);
         }
         want.pieces.entry(offset).or_insert(bytes);
-        let assembled = want.assembled()?;
+        let Some(assembled) = want.assembled() else {
+            // The answer's last piece: the rest is asked for at once.
+            if want.fresh_since_ask >= PIECES_PER_ANSWER {
+                want.woken = true;
+                self.continued = true;
+            }
+            return None;
+        };
         let want = self.wants.remove(&hash)?;
         (blake3::hash(&assembled).to_hex().as_str() == hash).then_some(Arrived {
             tag: want.tag,

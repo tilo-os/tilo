@@ -662,6 +662,19 @@ impl Workspaces {
         // every frame the link admits from here on is this reader's, and what
         // the replica held before is not read again.
         let mut reader = link.reader();
+        // A link that starts carrying content: what this host gathers there is
+        // asked for again at once, not after a silence.
+        let mut linked = link.content_linked();
+        let relinking = WeakWorkspaces(Arc::downgrade(&self.inner));
+        let relinked = name.clone();
+        tokio::spawn(async move {
+            while linked.changed().await.is_ok() {
+                let Some(workspaces) = relinking.upgrade() else {
+                    return;
+                };
+                workspaces.content_relinked(&relinked);
+            }
+        });
         tokio::spawn(async move {
             // The link is gone: nothing more comes through it.
             while let Some(frame) = reader.recv().await {
@@ -701,7 +714,10 @@ impl Workspaces {
                 for answer in workspaces.content_answer(&name, &frame.author, &body) {
                     match NeighbourMsg::decode(&answer) {
                         Ok(message) => {
-                            let _ = link.send(message);
+                            // Waits while the asker's link is full: the asks
+                            // behind this one wait with it, and so does the
+                            // asker.
+                            let _ = link.send_content(message).await;
                         }
                         Err(error) => {
                             tracing::warn!(%error, "a content answer did not encode");

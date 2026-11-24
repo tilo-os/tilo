@@ -325,16 +325,10 @@ impl ContentStore {
     /// A file-backed chunk's bytes, checked against its hash.
     pub(super) async fn local_chunk(&self, hash: Hash) -> Option<Bytes> {
         let files = Arc::clone(&self.files);
-        tokio::task::spawn_blocking(move || {
-            let location = files.find_chunk(hash.as_bytes())?;
-            let bytes = files
-                .read_at(&location.key, location.offset, u64::from(location.len))
-                .ok()?;
-            (blake3::hash(&bytes).as_bytes() == hash.as_bytes()).then(|| Bytes::from(bytes))
-        })
-        .await
-        .ok()
-        .flatten()
+        tokio::task::spawn_blocking(move || super::file_backed_chunk(&files, hash))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Bytes `range` of `content` (described by `manifest`) if every one is

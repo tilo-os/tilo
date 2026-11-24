@@ -568,10 +568,9 @@ impl ContentShelf for StoreShelf {
             return None;
         }
         let hash: Hash = hash.parse().ok()?;
-        self.on_store(move |store| {
-            Box::pin(async move { store.local(hash).await.map(|bytes| bytes.to_vec()) })
-        })
-        .flatten()
+        // Asked once for each blob a holder lacks: a read of a few kilobytes, done here rather
+        // than on a thread and runtime of its own.
+        self.0.local_now(hash).map(|bytes| bytes.to_vec())
     }
 
     fn keep_file(

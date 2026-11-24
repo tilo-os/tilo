@@ -897,6 +897,8 @@ struct Inner {
     /// frame reaches every reader, and a reader that falls behind holds the
     /// links back rather than losing one.
     content_readers: Arc<std::sync::Mutex<Vec<tokio::sync::mpsc::Sender<Heard>>>>,
+    /// Counts the links that started carrying content ([`DirectSync::content_linked`]).
+    content_linked: watch::Sender<u64>,
     /// What the devices at this device's links' other ends answered of its writes.
     answered: broadcast::Sender<Answered>,
     changed: watch::Sender<u64>,
@@ -1006,6 +1008,7 @@ impl DirectSync {
             heard: broadcast::channel(OUTGOING).0,
             content_links: Arc::default(),
             content_readers: Arc::default(),
+            content_linked: watch::channel(0).0,
             answered: broadcast::channel(OUTGOING).0,
             changed: watch::channel(0).0,
             caught_up: watch::channel(false).0,
@@ -1036,6 +1039,7 @@ impl DirectSync {
             heard: self.0.heard.clone(),
             content_links: Arc::clone(&self.0.content_links),
             content_readers: Arc::clone(&self.0.content_readers),
+            content_linked: self.0.content_linked.clone(),
             answered: self.0.answered.clone(),
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
@@ -1414,6 +1418,14 @@ impl DirectSync {
         )
         .await;
         Ok(())
+    }
+
+    /// Changes each time one of this device's links starts carrying content:
+    /// an asker asks again then for what it is still gathering, since what a
+    /// link that ended carried of its asks and their answers ended with it.
+    #[must_use]
+    pub fn content_linked(&self) -> watch::Receiver<u64> {
+        self.0.content_linked.subscribe()
     }
 
     /// The links `authored`, a content frame, goes to: an ask to every link
@@ -4141,6 +4153,7 @@ impl ContentLinked {
     fn new(sync: &DirectSync, link: ContentLink) -> Self {
         let room = Arc::clone(&link.room);
         sync.0.content_links.lock_recover().push(link);
+        sync.0.content_linked.send_modify(bump);
         Self {
             links: Arc::clone(&sync.0.content_links),
             room,
