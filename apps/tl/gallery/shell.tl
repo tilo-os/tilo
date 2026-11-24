@@ -108,7 +108,7 @@ view shell_parts(g: Gallery) {
                 }
             }
             ui.DropTarget {
-                on drop(target: host.Resource, at: List<Int>): dropped(last, target)
+                on drop(target: host.Resource): dropped(last, target)
                 ui.Card(title: "A drop target") {
                     ui.Text(
                         "A pinned app let go over this card is taken here.",

@@ -42,6 +42,15 @@ view lock(p: settings.Power) {
     button("Sooner", on: settings.set_lock_minutes(p, 3)) as sooner
   }
 }
+
+view widgets(w: settings.Widgets) {
+  stack {
+    text("{w.team.enabled}")
+    button("No people", on: settings.set_widget_enabled(w, widget: "team", enabled: false)) as off
+    button("Music always", on: settings.set_widget_show(w, widget: "music", show: "always")) as always
+    button("People at the edge", on: settings.place_widget(w, widget: "team", display: "output:1", x: 1.0, y: 0.5)) as corner
+  }
+}
 "#;
 
 /// The resource a view names `ty` by, and where the session publishes it on this device.
@@ -297,4 +306,50 @@ fn power_section(
     lock.poll_patches()
         .expect("the view takes the published change");
     assert_eq!(shown(&lock), Value::text("3"), "{:?}", lock.tree());
+
+    // This device's widgets: kept off, shown always, and moved to an edge, each through the
+    // action the shell and Settings call. The people here are kept when nothing has chosen.
+    let (widgets, published) = root("so.tilo.settings.sections#Widgets");
+    assert_eq!(published, format!("devices/{DEVICE}/settings/widgets"));
+    publish(&host, &services, &widgets, &published);
+    let mut kept = host
+        .open_resource(&widgets, Some(&declared("widgets")))
+        .unwrap();
+    assert_eq!(shown(&kept), Value::text("true"), "{:?}", kept.tree());
+    kept.press(&anchor("off"))
+        .expect("the button calls set-widget-enabled");
+    assert_eq!(
+        services.borrow().read(&published).unwrap()["team"]["enabled"],
+        false,
+        "the session's settings no longer keep the people here"
+    );
+    kept.press(&anchor("always"))
+        .expect("the button calls set-widget-show");
+    assert_eq!(
+        services.borrow().read(&published).unwrap()["music"]["show"],
+        "always"
+    );
+    kept.press(&anchor("corner"))
+        .expect("the button calls place-widget");
+    let placed = services.borrow().read(&published).unwrap()["team"]["places"].clone();
+    assert_eq!(
+        placed,
+        serde_json::json!([{ "display": "output:1", "x": 1.0, "y": 0.5 }]),
+        "the display it was dropped on and the fractions it rests at"
+    );
+
+    // A widget nothing names is refused, and the refusal says which names there are: a script
+    // that misspells one is told so rather than quietly changing nothing.
+    let refused = services.borrow_mut().invoke(
+        &published,
+        "set-widget-enabled",
+        &serde_json::json!({ "widget": "weather", "enabled": true })
+            .as_object()
+            .cloned()
+            .expect("an object"),
+    );
+    assert!(
+        matches!(refused, Some(Err(_))),
+        "a widget named nothing is not one of the four"
+    );
 }

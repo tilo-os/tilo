@@ -17,10 +17,36 @@ pub(crate) struct TimeRoot;
 
 pub(crate) use tilo_device_surfaces::time::Time;
 
-/// The time now, as the session publishes it.
+/// The time now, as the session publishes it: the minute, and today as a calendar reads it — the
+/// day, its weekday, the month's name and the month's own shape, in the person's formats and
+/// language, so a view that draws a month needs no clock and no words of its own.
 fn now(activities: &crate::shell::activities::Activities) -> Time {
+    let local = ui::clock::local_now();
+    let day = local.datetime().date();
+    let formats = ui::format::region::current();
+    let words = ui::format::words();
+    let week = tilo_formats::week(formats);
+    let first = day
+        .checked_sub(jiff::Span::new().days(i64::from(day.day()) - 1))
+        .unwrap_or(day);
     let mut time = Time {
-        clock: ui::clock::time_of_day(ui::clock::local_now()),
+        clock: ui::clock::time_of_day(local),
+        year: i64::from(day.year()),
+        month: i64::from(day.month()),
+        day: i64::from(day.day()),
+        weekday: i64::from(day.weekday().to_monday_one_offset()),
+        week_start: i64::from(formats.first_day.weekday().to_monday_one_offset()),
+        month_name: tilo_formats::month_name(day.month(), words),
+        days_in_month: i64::from(day.days_in_month()),
+        first_weekday: i64::from(first.weekday().to_monday_one_offset()),
+        weekdays: week
+            .iter()
+            .map(|weekday| tilo_formats::weekday_short(*weekday, words))
+            .collect(),
+        weekday_names: week
+            .iter()
+            .map(|weekday| tilo_formats::weekday_name(*weekday, words))
+            .collect(),
         ..Time::default()
     };
     let Some(published) = activities.published(crate::shell::activities::CLOCKS_APP) else {

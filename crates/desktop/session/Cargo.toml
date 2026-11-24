@@ -111,6 +111,7 @@ tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
 # A browser environment's session asks its server to enter the workspace it was handed, the way a
 # member device does.
 tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-formats = { path = "../../ui/tilo-formats" }
 toml.workspace = true
 url.workspace = true
 # The key this device signs its own changes of a workspace with, as the

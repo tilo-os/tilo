@@ -483,6 +483,7 @@ impl Checker<'_> {
             "wide" => class_is(3),
             "width" => read(Imp::SpaceF, "width", Ty::Float),
             "height" => read(Imp::SpaceF, "height", Ty::Float),
+            "rem" => read(Imp::SpaceF, "rem", Ty::Float),
             other => {
                 self.err(
                     "E021",

@@ -1,8 +1,3 @@
-use so.tilo.device as device
-use so.tilo.session as session
-use so.tilo.settings.sections as settings
-use tilo.workspace as workspace
-
 /// The widgets the person keeps on their shell: what plays (`music`), who is here (`team`), today
 /// and the month around it (`calendar`), and what this machine is doing (`system_monitor`).
 ///
@@ -88,7 +83,14 @@ view widget_header(
 ) {
     row(gap: .related, align: .center, fill) {
         if unfolded {
-            ui.Icon(widget_icon(kind), size: .small)
+            ui.Icon(
+                if kind == "music" {
+                    .music
+                } else if kind == "team" {
+                    .users
+                } else if kind == "calendar" { .calendar } else { .activity },
+                size: .small,
+            )
             ui.Text(widget_name(kind), role: .label, lines: 1, truncate, fill)
             ui.MenuButton("Menu", icon: .more_horizontal, icon_only: true, role: .plain) {
                 ui.MenuItem("Back after a pause", checked: prefs.show == .pause) {
@@ -114,7 +116,13 @@ view widget_header(
                 }
                 ui.MenuSeparator()
                 ui.MenuItem("Remove from the shell", icon: .minus, destructive: true) {
-                    on choose: remove_widget(kind, removed).then(set(open, ""))
+                    on choose: settings.set_widget_enabled(
+                        settings.widgets,
+                        widget: kind,
+                        enabled: false,
+                    )
+                        .then(set(removed, kind))
+                        .then(set(open, ""))
                 }
             }
             ui.Button("Fold", icon: .minimize_2, icon_only: true, role: .plain) {
@@ -122,7 +130,14 @@ view widget_header(
             }
         } else {
             row(gap: .related, align: .center, fill) {
-                ui.Icon(widget_icon(kind), size: .small)
+                ui.Icon(
+                if kind == "music" {
+                    .music
+                } else if kind == "team" {
+                    .users
+                } else if kind == "calendar" { .calendar } else { .activity },
+                size: .small,
+            )
                 ui.Text(widget_glance(kind, a), role: .label, lines: 1, truncate, fill)
                 ui.Button(
                     "Open {widget_name(kind)}",
@@ -145,7 +160,7 @@ view widget_removed(kind: Text, removed: State<Text>) {
             row(gap: .related, align: .center) {
                 ui.Icon(.info, tone: .info)
                 ui.Text("{widget_name(kind)} removed", role: .label)
-                ui.Button("Undo", icon: .undo, role: .plain) {
+                ui.Button("Undo", icon: .undo_2, role: .plain) {
                     on press: keep_widget(kind).then(set(removed, ""))
                 }
                 ui.Button("Dismiss", icon: .x, icon_only: true, role: .plain) {
@@ -156,14 +171,8 @@ view widget_removed(kind: Text, removed: State<Text>) {
     }
 }
 
-/// Takes the widget off the shell: the person's own choice, which Settings shows the same way.
-fn remove_widget(kind: Text, removed: State<Text>): Action {
-    settings.set_widget_enabled(settings.widgets, widget: kind, enabled: false)
-        .then(set(removed, kind))
-}
-
 /// Keeps the widget on the shell again, as its removal's Undo asks.
-fn keep_widget(kind: Text): Action {
+fn keep_widget(kind: Text) -> Action {
     settings.set_widget_enabled(settings.widgets, widget: kind, enabled: true)
 }
 
@@ -171,9 +180,9 @@ fn keep_widget(kind: Text): Action {
 /// move in on this display.
 fn drop_widget(kind: Text, at: List<Int>, room: List<Float>, display: Text) -> Action {
     let x = (at.at(0) ?? 0).to_float() - widget_margin()
-    let y = (at.at(1) ?? 0).to_float() - widget_margin()
+    let y = (at.at(1) ?? 0).to_float() - widget_margin() - widget_bar_room()
     let across = ((room.at(0) ?? 1.0) - 2.0 * widget_margin()).max(1.0)
-    let down = ((room.at(1) ?? 1.0) - 2.0 * widget_margin()).max(1.0)
+    let down = ((room.at(1) ?? 1.0) - widget_margin() - widget_bar_room()).max(1.0)
     settings.place_widget(
         settings.widgets,
         widget: kind,
@@ -242,6 +251,12 @@ fn widget_margin() -> Float {
     16.0
 }
 
+/// The room the style's bar keeps at the top of the screen, in logical pixels: a widget rests
+/// under it, as the Rust desktop's widgets rested under the bar, and never covers it.
+fn widget_bar_room() -> Float {
+    44.0
+}
+
 /// Where a widget's left edge stands, from a fraction across the room it can move in.
 fn widget_left(room_px: Float, across: Float, width: Float) -> Float {
     let room = (room_px - 2.0 * widget_margin() - width).max(0.0)
@@ -250,8 +265,9 @@ fn widget_left(room_px: Float, across: Float, width: Float) -> Float {
 
 /// Where a widget's top edge stands, from a fraction down the room it can move in.
 fn widget_top(room_px: Float, down: Float, height: Float) -> Float {
-    let room = (room_px - 2.0 * widget_margin() - height).max(0.0)
-    widget_margin() + room * down.clamp(0.0, 1.0)
+    let top = widget_margin() + widget_bar_room()
+    let room = (room_px - top - widget_margin() - height).max(0.0)
+    top + room * down.clamp(0.0, 1.0)
 }
 
 /// How wide a widget stands: its card's width as the person left it, or the quiet form's.
@@ -304,15 +320,6 @@ fn widget_name(kind: Text) -> Text {
     }
 }
 
-/// A widget's glyph.
-fn widget_icon(kind: Text) -> ui.Icon {
-    if kind == "music" {
-        .music
-    } else if kind == "team" {
-        .users
-    } else if kind == "calendar" { .calendar } else { .activity }
-}
-
 /// What a widget's quiet form says beside its glyph: the one fact it rests on.
 fn widget_glance(kind: Text, a: Layout) -> Text {
     if kind == "music" {
@@ -320,7 +327,7 @@ fn widget_glance(kind: Text, a: Layout) -> Text {
     } else if kind == "team" {
         "{a.people.len()} here"
     } else if kind == "calendar" {
-        "{weekday_name(today.weekday())} {today.day()}"
+        "{weekday_of(device.time)} {device.time.day}"
     } else { load_words() }
 }
 
@@ -422,40 +429,38 @@ view widget_team(unfolded: Bool) {
 
 /// Today's date and, open, the month around it, from the person's own week.
 view widget_calendar(unfolded: Bool) {
+    let t = device.time
     stack(gap: .related) {
         row(gap: .related, align: .baseline) {
-            ui.Text("{today.day()}", role: .title, numeric: true)
+            ui.Text("{t.day}", role: .title, numeric: true)
             stack(gap: .none, fill) {
-                ui.Text(weekday_name(today.weekday()), role: .label)
-                ui.Text(month_name(today.month()), role: .caption, secondary: true)
+                ui.Text(weekday_of(t), role: .label)
+                ui.Text(t.month_name, role: .caption, secondary: true)
             }
         }
         if unfolded {
-            month_grid()
+            month_grid(t)
         }
     }
 }
 
 /// The month around today: its weeks from the person's first day, each day in its column, today
 /// marked.
-view month_grid() {
-    let first = first_of_month(today)
-    let lead = (first - first.start_of_week()).seconds() / 86400
-    let days = days_in_month(first)
-    let start = first.start_of_week()
+view month_grid(t: device.Time) {
+    let lead = if t.first_weekday >= t.week_start {
+        t.first_weekday - t.week_start
+    } else {
+        t.first_weekday - t.week_start + 7
+    }
     grid(columns: 7, gap: .tight) {
         for column in [0, 1, 2, 3, 4, 5, 6] {
-            ui.Text(
-                weekday_short((start + Duration(column * 86400)).weekday()),
-                role: .caption,
-                secondary: true,
-            )
+            ui.Text(t.weekdays.at(column) ?? "", role: .caption, secondary: true)
         }
         for week in [0, 1, 2, 3, 4, 5] {
             for column in [0, 1, 2, 3, 4, 5, 6] {
                 let day = week * 7 + column - lead + 1
-                if day >= 1 and day <= days {
-                    if day == today.day() {
+                if day >= 1 and day <= t.days_in_month {
+                    if day == t.day {
                         ui.Badge("{day}", tone: .success)
                     } else {
                         ui.Text("{day}", role: .caption, numeric: true)
@@ -468,15 +473,14 @@ view month_grid() {
     }
 }
 
-/// The month a day falls in, its first day.
-fn first_of_month(day: Date) -> Date {
-    day - Duration((day.day() - 1) * 86400)
-}
-
-/// How many days the month a day falls in has.
-fn days_in_month(first: Date) -> Int {
-    let next = first + 32d
-    (first_of_month(next) - 1d).day()
+/// Today's weekday name, from the week the person's own week starts on.
+fn weekday_of(t: device.Time) -> Text {
+    let at = if t.weekday >= t.week_start {
+        t.weekday - t.week_start
+    } else {
+        t.weekday - t.week_start + 7
+    }
+    t.weekday_names.at(at) ?? ""
 }
 
 /// What the machine is doing: its processors and memory now, and how they got there.
@@ -516,59 +520,4 @@ view widget_load(unfolded: Bool) {
             }
         }
     }
-}
-
-/// A weekday's short name, as the month's columns head it.
-fn weekday_short(w: Weekday) -> Text {
-    if w == .monday {
-        "Mon"
-    } else if w == .tuesday {
-        "Tue"
-    } else if w == .wednesday {
-        "Wed"
-    } else if w == .thursday {
-        "Thu"
-    } else if w == .friday {
-        "Fri"
-    } else if w == .saturday { "Sat" } else { "Sun" }
-}
-
-/// A weekday's name, as today's date says it.
-fn weekday_name(w: Weekday) -> Text {
-    if w == .monday {
-        "Monday"
-    } else if w == .tuesday {
-        "Tuesday"
-    } else if w == .wednesday {
-        "Wednesday"
-    } else if w == .thursday {
-        "Thursday"
-    } else if w == .friday {
-        "Friday"
-    } else if w == .saturday { "Saturday" } else { "Sunday" }
-}
-
-/// A month's name, from its number.
-fn month_name(month: Int) -> Text {
-    if month == 1 {
-        "January"
-    } else if month == 2 {
-        "February"
-    } else if month == 3 {
-        "March"
-    } else if month == 4 {
-        "April"
-    } else if month == 5 {
-        "May"
-    } else if month == 6 {
-        "June"
-    } else if month == 7 {
-        "July"
-    } else if month == 8 {
-        "August"
-    } else if month == 9 {
-        "September"
-    } else if month == 10 {
-        "October"
-    } else if month == 11 { "November" } else { "December" }
 }

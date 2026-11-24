@@ -322,7 +322,7 @@ view strip_window(a: Layout, s: LayoutStrip, lists: Bool) {
     let chosen = placed.find(p -> p.key == s.active)
     let shown = chosen ?? placed.first()
     ui.DropTarget {
-        on drop(target: host.Resource, at: List<Int>): tab_place_here(a, s, target)
+        on drop(target: host.Resource): tab_place_here(a, s, target)
         ui.WindowFrame(
             name: window_name(shown),
             glyph: window_glyph(shown),
