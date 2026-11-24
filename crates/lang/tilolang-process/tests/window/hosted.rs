@@ -455,6 +455,21 @@ pub(crate) struct Session {
     broker: Box<dyn std::any::Any>,
     /// The invocations the test has delivered, numbered: each is answered by its own id.
     invoked: u64,
+    /// The calls of the app's own actions its runs and presses sent the dispatch, kept as the
+    /// dispatch keeps them.
+    asks: Vec<Asked>,
+}
+
+/// A call of the window's own app's action that its code sent through the dispatch: one the
+/// authority asks the person about first, as the runtime runs every other of its own actions in
+/// place. The test's broker keeps it asked, as the dispatch keeps it in its asked record, until
+/// the test answers it for the person ([`Session::allow_asked`]).
+struct Asked {
+    request: ui::tilo_actions::remote::InvokeRequest,
+    /// The id the allowed call was delivered to the instance under.
+    delivered: Option<u64>,
+    /// Whether its answer reached the run that waits on it.
+    answered: bool,
 }
 
 /// `person`'s instance of the app of `route`, at a desktop that speaks English.
@@ -777,6 +792,7 @@ impl Session {
             woken,
             broker,
             invoked: 1,
+            asks: Vec::new(),
         }
     }
 
@@ -831,13 +847,140 @@ impl Session {
     /// (`StoreStats`, `ReadStats`), and what it holds is the state it left —
     /// `FrameHarness::frame_schedule` says whether the window came to rest.
     fn settle(&mut self) {
-        settle::settle(&mut self.host, &self.woken, || self.window.frame());
+        loop {
+            settle::settle(&mut self.host, &self.woken, || self.window.frame());
+            if !self.dispatch() {
+                return;
+            }
+        }
     }
 
     /// The host's frames until it owes nothing, the window not drawn: what its instance answers
     /// before the window's next frame.
     fn settle_host(&mut self) {
-        settle::settle(&mut self.host, &self.woken, || false);
+        loop {
+            settle::settle(&mut self.host, &self.woken, || false);
+            if !self.dispatch() {
+                return;
+            }
+        }
+    }
+
+    /// Play the dispatch for the calls of the app's own actions the instance sent it, as the
+    /// session's does: a new one is kept asked, and the caller hears it waits in its asked
+    /// record; one the test allowed and the instance answered is answered to its caller. Whether
+    /// anything was told the instance.
+    fn dispatch(&mut self) -> bool {
+        use collaboration::CollabEvent;
+        use ui::tilo_actions::remote::{InvocationState, RemoteActionMessage, application_provider};
+        let Some((inbox, _)) = self.broker.downcast_ref::<(Inbox, Routed)>() else {
+            return false;
+        };
+        let mut told = Vec::new();
+        for request in self.sent.borrow().iter() {
+            match request {
+                CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(call),
+                } if application_provider(&call.target.provider)
+                    .is_some_and(|(_, app)| app == self.app)
+                    && !self
+                        .asks
+                        .iter()
+                        .any(|kept| kept.request.invocation == call.invocation) =>
+                {
+                    let waiting = ui::tilo_actions::InvocationUpdate::Progress {
+                        invocation: call.invocation,
+                        sequence: 1,
+                        phase: ui::tilo_actions::remote::asked::ASKED_PHASE.to_owned(),
+                        completed: None,
+                        total: None,
+                        message: Some(format!("asked/{}", call.invocation.0)),
+                    };
+                    told.push(RemoteActionMessage::Update {
+                        invocation: call.invocation,
+                        state: Some(InvocationState::new(call.invocation, waiting)),
+                        correlation: None,
+                    });
+                    self.asks.push(Asked {
+                        request: call.clone(),
+                        delivered: None,
+                        answered: false,
+                    });
+                }
+                CollabRequest::UpdateInvocation { id, update } if update.is_terminal() => {
+                    if let Some(kept) = self
+                        .asks
+                        .iter_mut()
+                        .find(|kept| kept.delivered == Some(*id) && !kept.answered)
+                    {
+                        kept.answered = true;
+                        let invocation = kept.request.invocation;
+                        told.push(RemoteActionMessage::Update {
+                            invocation,
+                            state: Some(InvocationState::new(invocation, update.clone())),
+                            correlation: None,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        let moved = !told.is_empty();
+        inbox.borrow_mut().extend(
+            told.into_iter()
+                .map(|message| CollabEvent::RemoteAction { message }),
+        );
+        moved
+    }
+
+    /// The actions of the calls the dispatch keeps asked that nobody answered yet, oldest
+    /// first: what the shell's asking view asks the person about.
+    fn asked(&self) -> Vec<String> {
+        self.asks
+            .iter()
+            .filter(|kept| kept.delivered.is_none())
+            .map(|kept| kept.request.target.address.action.clone())
+            .collect()
+    }
+
+    /// The person allows every call the dispatch keeps asked: each is delivered to the instance
+    /// as the dispatch runs an allowed call, admitted for them, and its answer goes on to what
+    /// waits on it. How many there were.
+    fn allow_asked(&mut self) -> usize {
+        use collaboration::CollabEvent;
+        let invoker = ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::person(
+            self.person.clone(),
+        ));
+        let mut delivered = Vec::new();
+        for kept in self.asks.iter_mut().filter(|kept| kept.delivered.is_none()) {
+            let id = self.invoked;
+            self.invoked += 1;
+            kept.delivered = Some(id);
+            let call = &kept.request;
+            let ui::tilo_actions::remote::InvokeArgument::Json(arguments) = &call.argument else {
+                panic!("a call of the app's own action carries its arguments as JSON: {call:?}");
+            };
+            let argument = format!(
+                "{}{}",
+                ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(arguments.clone())
+            );
+            delivered.push(CollabEvent::Invocation {
+                id,
+                invocation: call.invocation,
+                resource: call.target.address.resource.clone(),
+                action: call.target.address.action.clone(),
+                argument: Some(argument),
+                actor: invoker.acting.by.clone(),
+                context: Some(Box::new(
+                    ui::tilo_actions::ActionContext::default().with_invoker(invoker.clone()),
+                )),
+            });
+        }
+        let allowed = delivered.len();
+        self.inbox().borrow_mut().extend(delivered);
+        self.settle();
+        allowed
     }
 
     /// Close the window and let the host end its instance, as the session's loop does when a

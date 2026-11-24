@@ -15,11 +15,9 @@ use tilolang_tilo::runtime::store::Store as _;
 use tilolang_tilo::runtime::{ResourceRef, UiNode, Value as RtValue};
 
 use super::{Session, Window};
-use crate::change_marks::action_id;
 
 const APP: &str = "so.tilo.mail";
 const ME: &str = "sam@rivera.example";
-const HOST: &str = "tl:host";
 
 /// The longest a server may take to answer before the test says so.
 const LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
@@ -374,51 +372,12 @@ impl Session {
         }
         let resource = tilolang_tilo::publish::resource_id(APP, &on.id_string());
         let arguments = arguments.as_object().cloned().unwrap_or_default();
-        let asked_before = self.asked(on);
-        // The API runs an action by the name the app publishes it under.
-        let answered = self.invoke(None, None, &resource, name, &arguments)?;
+        // The API runs an action by the name the app publishes it under. What the action asks
+        // on the way (a send its code makes) waits in its asked record, and the person allows
+        // it, as they do in the shell's asking view.
+        let answered = self.invoke_allowing(None, None, &resource, name, &arguments)?;
         self.settle();
-        // What the action asks first — a send its code makes — is allowed, as the person allows
-        // what the app's sheet asks of them, through the API.
-        self.approve_asks(on, &asked_before)?;
         Ok(answered)
-    }
-
-    /// Answer the asks on `on` that were not there before, allowing each: what an action the
-    /// person ran asked to reach outside, as they allow it on the app's sheet.
-    fn approve_asks(&mut self, on: &ResourceRef, before: &[String]) -> Result<(), String> {
-        for asked in self.asked(on) {
-            if before.contains(&asked) {
-                continue;
-            }
-            let decide = action_id(self, HOST, "Decide suggestion");
-            let decided = self.invoke(
-                None,
-                None,
-                HOST,
-                &decide,
-                &json!({ "target": asked, "decision": "approve" })
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default(),
-            )?;
-            let state = decided.value.as_ref().map(|value| value["state"].clone());
-            if state != Some(json!("done")) {
-                return Err(format!("the ask was not carried out: {decided:?}"));
-            }
-            self.settle();
-        }
-        Ok(())
-    }
-
-    /// What waits for the person's answer on `on`: the suggestions an action asked, by id.
-    fn asked(&self, on: &ResourceRef) -> Vec<String> {
-        self.instance_host()
-            .runtime()
-            .proposals_of(on)
-            .into_iter()
-            .map(|(asked, _)| asked.id_string())
-            .collect()
     }
 
     /// [`Self::try_call`] of an action that runs.
@@ -837,15 +796,10 @@ fn a_mailbox_read_to_the_lists_end_reads_the_page_before_it() {
     // already reach outside; what the list asks, they allow, as anything an app reaches outside
     // for.
     session.until("the list's end to ask for the page or read it", |session| {
-        session.threads().len() == 60 || session.ask_bar().as_deref() == Some("Show older messages")
+        session.threads().len() == 60 || session.asked() == ["older_messages"]
     });
-    if session.ask_bar().as_deref() == Some("Show older messages") {
-        session
-            .hosted()
-            .view()
-            .expect("the window is connected")
-            .answer(tilo_render_protocol::patch::Answer::Allow);
-        session.settle();
+    if session.asked() == ["older_messages"] {
+        session.allow_asked();
     }
     session.until("the page before it", |session| {
         session.threads().len() == 60
@@ -970,10 +924,10 @@ fn junk_the_server_holds_shows_in_its_place() {
 }
 
 /// An editor of the workspace's mailbox, which holds its own keys, is offered Check now like
-/// its owner; the rules ask an editor before what reaches outside, so the press stops on the
-/// window's Ask bar rather than the action showing dimmed.
+/// its owner, and the press runs: Mail's author is trusted for the account check it declares,
+/// so an admitted call is not asked again. What an author may not do still asks before it runs.
 #[test]
-fn an_editors_check_now_is_offered_and_asks_on_the_ask_bar() {
+fn an_editors_check_now_is_offered_and_runs_admitted() {
     let _settled = ui::motion::testing::settled();
     let servers = servers();
     let connector = MailConnector::of(account(&servers));
@@ -991,12 +945,16 @@ fn an_editors_check_now_is_offered_and_asks_on_the_ask_bar() {
         .availability
         .clone();
     assert_eq!(check, ui::tilo_actions::Availability::Available);
+    let before = servers.imap.logins();
     super::choose(&mut session, "Check now");
     assert_eq!(
-        session.ask_bar().as_deref(),
-        Some("Check now"),
-        "the press asks first"
+        session.asked(),
+        Vec::<String>::new(),
+        "an admitted call runs without asking again"
     );
+    session.until("the server to be checked", |_| {
+        servers.imap.logins() > before
+    });
 }
 
 #[test]

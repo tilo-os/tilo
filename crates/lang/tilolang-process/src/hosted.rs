@@ -1443,7 +1443,9 @@ struct Child {
     served: Option<(u64, tilo_actions::InvocationId)>,
     /// The person the served invocation acts for, when the broker named one: what the run goes
     /// on as when the answer comes.
-    person: Option<String>,
+    person: Option<String>,    /// The asked record the call waits in, once the dispatch said a person is asked about it:
+    /// the served invocation said so once, naming it.
+    asked: Option<String>,
 }
 
 /// The wake scope an instance's code runs in, the device's content store registered for it: an
@@ -3150,6 +3152,7 @@ impl Hosted {
                 run,
                 served,
                 person,
+                asked: None,
             },
         );
     }
@@ -3224,8 +3227,54 @@ impl Hosted {
     /// What another app's api answered of a child call: the run waiting on it goes on, and the
     /// invocation the broker served is answered when the run ends. Whether the message was an
     /// answer this instance waits on.
+    /// The call `call` a run waits on waits in the asked record `record` for a person's yes: the
+    /// invocation the run serves says it is asked, naming that record, as the dispatch says of
+    /// any call it keeps asked, so whoever made it reads that it waits for a person and not
+    /// that it hangs. Its result follows once they answer. Said once per record.
+    fn asked_in(&self, call: tilo_actions::InvocationId, record: String) {
+        let served = {
+            let mut children = self.children.borrow_mut();
+            let Some(child) = children.get_mut(&call.0.to_string()) else {
+                return;
+            };
+            if child.asked.as_deref() == Some(record.as_str()) {
+                return;
+            }
+            child.asked = Some(record.clone());
+            child.served
+        };
+        let Some((id, invocation)) = served else {
+            return;
+        };
+        self.answer_invocation(
+            id,
+            InvocationUpdate::Progress {
+                invocation,
+                sequence: 1,
+                phase: tilo_actions::remote::asked::ASKED_PHASE.to_owned(),
+                completed: None,
+                total: None,
+                message: Some(record),
+            },
+        );
+    }
+
     fn answered(&mut self, message: &tilo_actions::remote::RemoteActionMessage) -> bool {
         use tilo_actions::remote::{ActionCallError, ReceiptStatus, RemoteActionMessage};
+        if let RemoteActionMessage::Update {
+            invocation,
+            state: Some(state),
+            ..
+        } = message
+            && let InvocationUpdate::Progress {
+                phase,
+                message: record,
+                ..
+            } = &state.update
+            && phase == tilo_actions::remote::asked::ASKED_PHASE
+        {
+            self.asked_in(*invocation, record.clone().unwrap_or_default());
+        }
         let receipt = match message {
             RemoteActionMessage::Receipt(receipt) => receipt.clone(),
             RemoteActionMessage::Update {

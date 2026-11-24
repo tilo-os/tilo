@@ -586,6 +586,32 @@ impl super::Session {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
+        self.invoke_answering(invoker, ambient, resource, action, arguments, false)
+    }
+
+    /// [`Self::invoke`] of an action whose run asks the person on the way (a send its code
+    /// makes): the API answers that it waits in its asked record, the person allows what it
+    /// asks, as they do in the shell's asking view, and the API answers its result.
+    pub(crate) fn invoke_allowing(
+        &mut self,
+        invoker: Option<ui::tilo_actions::ActionInvoker>,
+        ambient: Option<&ui::tilo_actions::ActionContext>,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ui::tilo_actions::ActionOutput, String> {
+        self.invoke_answering(invoker, ambient, resource, action, arguments, true)
+    }
+
+    fn invoke_answering(
+        &mut self,
+        invoker: Option<ui::tilo_actions::ActionInvoker>,
+        ambient: Option<&ui::tilo_actions::ActionContext>,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        allowing: bool,
+    ) -> Result<ui::tilo_actions::ActionOutput, String> {
         // The broker always names the invoker it admitted: the person at the window when the
         // call names no one else.
         let invoker = invoker.unwrap_or_else(|| {
@@ -601,13 +627,19 @@ impl super::Session {
             ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(arguments.clone())
         );
-        let answered = self.deliver(
+        let (id, mut answered) = self.deliver_numbered(
             &actor,
             resource.to_owned(),
             action.to_owned(),
             Some(arguments),
             context,
         );
+        while allowing && answered.as_ref().is_some_and(asked) {
+            if self.allow_asked() == 0 {
+                break;
+            }
+            answered = self.answer_to(id);
+        }
         match answered {
             Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
                 self.show_write(&acting, resource, action, &output);
@@ -691,6 +723,19 @@ impl super::Session {
         arguments: Option<String>,
         context: Option<ui::tilo_actions::ActionContext>,
     ) -> Option<ui::tilo_actions::InvocationUpdate> {
+        self.deliver_numbered(actor, resource, action, arguments, context)
+            .1
+    }
+
+    /// [`Self::deliver`], with the id it was delivered under.
+    fn deliver_numbered(
+        &mut self,
+        actor: &ui::tilo_actions::Actor,
+        resource: String,
+        action: String,
+        arguments: Option<String>,
+        context: Option<ui::tilo_actions::ActionContext>,
+    ) -> (u64, Option<ui::tilo_actions::InvocationUpdate>) {
         let id = self.invoked;
         self.invoked += 1;
         self.inbox()
@@ -705,6 +750,11 @@ impl super::Session {
                 context: context.map(Box::new),
             });
         self.settle();
+        (id, self.answer_to(id))
+    }
+
+    /// What the API last said of the invocation delivered as `id`.
+    fn answer_to(&self, id: u64) -> Option<ui::tilo_actions::InvocationUpdate> {
         self.sent
             .borrow()
             .iter()
@@ -717,6 +767,15 @@ impl super::Session {
                 _ => None,
             })
     }
+}
+
+/// Whether `update` says the invocation waits in an asked record for a person's yes.
+fn asked(update: &ui::tilo_actions::InvocationUpdate) -> bool {
+    matches!(
+        update,
+        ui::tilo_actions::InvocationUpdate::Progress { phase, .. }
+            if phase == ui::tilo_actions::remote::asked::ASKED_PHASE
+    )
 }
 
 /// What the person may do in the app, as the session hands it with the launch and says again when
