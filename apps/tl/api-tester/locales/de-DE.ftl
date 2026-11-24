@@ -601,10 +601,26 @@ d-b4rb4yd6 = Anmeldung vergessen
     .doc = Nimmt diesem Gerät die Anmeldung der Anfrage ab.
 
 d-w3dgdots = Senden
-    .doc = Sendet, was der Bauer hält, an die Adresse, die er nennt, in der genutzten Umgebung.
+    .doc = Sendet, was der Bauer hält, an die Adresse, die er nennt, in der genutzten Umgebung, und antwortet dem Aufrufer mit der Antwort: Status, Statustext, Kopfzeilen, Größe und Rumpf.
     .did = sendete eine Anfrage
     .w-a-request-is-already-on-its = Eine Anfrage ist bereits unterwegs
     .w-enter-a-url-to-send-the = Gib eine Adresse ein, an die die Anfrage geht
+
+d-ghg77k35 = Senden
+    .doc = Startet, was `send` sendet, als Auftrag, den die Person am Fenster abbrechen kann; die Antwort faltet `trigger watch_send` ein.
+    .did = sendete eine Anfrage
+    .w-a-request-is-already-on-its = Eine Anfrage ist bereits unterwegs
+    .w-enter-a-url-to-send-the = Gib eine Adresse ein, an die die Anfrage geht
+
+d-eu2tzmeb = Senden fehlgeschlagen
+    .doc = Beendet ein Senden, das keine Antwort der Maschine bekam, und sagt am Fenster, warum.
+
+d-eu2tzmeb-why = Warum
+
+d-7n6odtxa = Senden abschließen
+    .doc = Faltet, was der Auftrag eines Sendens über sich gesagt hat, ins Fenster, und antwortet mit der Antwort, die der Auftrag brachte, wenn er mit einer kam.
+
+d-7n6odtxa-state = Zustand
 
 d-gw3xhdma = Anfrage abbrechen
     .doc = Hört auf, auf die Antwort des Dienstes zu warten.
@@ -675,6 +691,8 @@ d-idikzlq5 = Anmeldung behalten
 d-4pwx6lsh = Wert behalten
 
 d-5bgid526 = Senden
+
+d-thdjgmf2 = Senden
 
 d-jakzld6e = Rumpf kopieren
 

@@ -1,8 +1,8 @@
 //! The API Tester (`apps/tl/api-tester/app.tl`) end to end: a request built, saved, opened and
 //! sent; its variables handed to the device; its sign-in kept on the device and never in the
-//! workspace; the answer the device's engine gives and the history entry it makes; a send stopped
-//! before it answers; and the window, with its request tabs, its rows, its sheets and its
-//! response pane.
+//! workspace; the answer the device's engine gives, the answer a send returns to its caller, and
+//! the history entry it makes; a send stopped before it answers; and the window, with its request
+//! tabs, its rows, its sheets and its response pane.
 
 #[cfg(test)]
 mod cases {
@@ -228,7 +228,11 @@ mod cases {
     fn answer_json(status: i32, body: &str) -> String {
         serde_json::json!({
             "status": status,
-            "status_text": if status == 200 { "OK" } else { "Not Found" },
+            "status_text": match status {
+                200 => "OK",
+                201 => "Created",
+                _ => "Not Found",
+            },
             "duration_ms": 84,
             "size_bytes": body.len(),
             "size_exact": true,
@@ -591,7 +595,7 @@ mod cases {
 
         // Sending hands the device the request as typed, with its variables.
         s.engine.answer_with(&answer_json(200, "{}"));
-        s.done("send", vec![Value::resource(&s.root)]);
+        s.done("start_send", vec![Value::resource(&s.root)]);
         let ask = s.engine.last_ask();
         assert_eq!(ask.method, "GET");
         assert_eq!(
@@ -615,7 +619,7 @@ mod cases {
         let body = "{\"id\":1}";
         s.engine.answer_with(&answer_json(200, body));
 
-        s.done("send", vec![Value::resource(&s.root)]);
+        s.done("start_send", vec![Value::resource(&s.root)]);
         assert!(s.flag(&s.root, "sending"), "the request is on its way");
         s.done("poll_send", vec![Value::resource(&s.root)]);
 
@@ -662,14 +666,14 @@ mod cases {
         let s = Tester::new();
         let window = s.window();
         s.type_url(&window, "https://api.example.com/slow");
-        s.done("send", vec![Value::resource(&s.root)]);
+        s.done("start_send", vec![Value::resource(&s.root)]);
         s.done("cancel_send", vec![Value::resource(&s.root)]);
         assert!(*s.engine.cancelled.borrow());
         assert!(!s.flag(&s.root, "sending"));
         assert_eq!(s.text(&s.root, "failure"), "The request was cancelled.");
 
         *s.engine.state.borrow_mut() = "failed".to_owned();
-        s.done("send", vec![Value::resource(&s.root)]);
+        s.done("start_send", vec![Value::resource(&s.root)]);
         s.done("poll_send", vec![Value::resource(&s.root)]);
         assert_eq!(
             s.text(&s.root, "failure"),
@@ -682,13 +686,97 @@ mod cases {
     }
 
     #[test]
+    fn a_send_answers_its_caller_with_the_response() {
+        let s = Tester::new();
+        let window = s.window();
+        s.type_url(&window, "https://api.example.com/users");
+        let body = "{\"id\":1}";
+        s.engine.answer_with(
+            &serde_json::json!({
+                "status": 201,
+                "status_text": "Created",
+                "duration_ms": 84,
+                "size_bytes": body.len(),
+                "size_exact": true,
+                "shown_bytes": body.len(),
+                "binary": false,
+                "content_type": "application/json; charset=utf-8",
+                "body": body,
+                "headers": [
+                    ["content-type", "application/json; charset=utf-8"],
+                    ["x-request-id", "req-42"],
+                ],
+            })
+            .to_string(),
+        );
+
+        // The invocation answers the response itself, so an agent or a script reads the status,
+        // the text, the body, the size and the headers in the one call.
+        let answered = s.done("send", vec![Value::resource(&s.root)]);
+        let answer = match answered {
+            Value::Text(text) => text,
+            other => panic!("send answers its caller the response: {other:?}"),
+        };
+        let read: serde_json::Value = serde_json::from_str(&answer).expect("the answer is JSON");
+        assert_eq!(read["status"], serde_json::json!(201));
+        assert_eq!(read["status_text"], serde_json::json!("Created"));
+        assert_eq!(read["body"], serde_json::json!(body));
+        assert_eq!(read["size_bytes"], serde_json::json!(body.len()));
+        assert!(
+            read["headers"]
+                .as_array()
+                .is_some_and(|headers| headers.iter().any(|pair| pair
+                    .get(0)
+                    .and_then(|v| v.as_str())
+                    == Some("x-request-id")
+                    && pair.get(1).and_then(|v| v.as_str()) == Some("req-42"))),
+            "the headers come back with it: {}",
+            read["headers"]
+        );
+
+        // The same answer reaches the window: the pane, the flag and the history entry.
+        assert!(!s.flag(&s.root, "sending"));
+        assert!(s.flag(&s.root, "answered"));
+        assert_eq!(s.text(&s.root, "failure"), "");
+        assert_eq!(
+            s.nested(&s.root, "answer", "status"),
+            serde_json::json!(201)
+        );
+        assert_eq!(s.nested(&s.root, "answer", "body"), serde_json::json!(body));
+        let history = s.records(&s.root, "history");
+        assert_eq!(history.len(), 1, "the send is kept as one entry");
+        assert_eq!(s.number(&history[0], "status"), 201);
+        assert!(
+            s.text(&history[0], "replay")
+                .contains("https://api.example.com/users"),
+            "the entry keeps the request it sent"
+        );
+
+        // A send the engine fails answers nothing and leaves why it failed in the window.
+        *s.engine.state.borrow_mut() = "failed".to_owned();
+        let answered = s.done("send", vec![Value::resource(&s.root)]);
+        assert_eq!(answered, Value::text(""), "a failed send answers nothing");
+        assert_eq!(
+            s.text(&s.root, "failure"),
+            "the server refused the connection"
+        );
+        assert!(s.flag(&s.root, "answered"));
+        assert!(!s.flag(&s.root, "sending"));
+        assert_eq!(
+            s.records(&s.root, "history").len(),
+            1,
+            "nothing came back to keep"
+        );
+    }
+
+    #[test]
     fn a_sent_request_opens_again_and_can_be_saved() {
         let s = Tester::new();
         let window = s.window();
         s.type_url(&window, "https://api.example.com/users");
         s.done("add_param", vec![Value::resource(&s.draft())]);
         s.engine.answer_with(&answer_json(201, "{}"));
-        s.done("send", vec![Value::resource(&s.root)]);
+        s.done("start_send", vec![Value::resource(&s.root)]);
         s.done("poll_send", vec![Value::resource(&s.root)]);
         assert_eq!(s.text(&s.root, "failure"), "", "the send went through");
         assert!(s.flag(&s.root, "answered"));
@@ -747,7 +835,7 @@ mod cases {
         s.type_url(&window, "https://api.example.com/users");
         let body = "{\"id\":1}";
         s.engine.answer_with(&answer_json(200, body));
-        s.done("send", vec![Value::resource(&s.root)]);
+        s.done("start_send", vec![Value::resource(&s.root)]);
         s.done("poll_send", vec![Value::resource(&s.root)]);
 
         // The body, the headers and the request each leave as the person's copy.
@@ -801,7 +889,7 @@ mod cases {
         let window = s.window();
         s.type_url(&window, "https://api.example.com/users");
         s.engine.answer_with(&answer_json(200, "{\"id\":1}"));
-        s.done("send", vec![Value::resource(&s.root)]);
+        s.done("start_send", vec![Value::resource(&s.root)]);
         s.done("poll_send", vec![Value::resource(&s.root)]);
         let tree = s.window().tree().clone();
         let badges = of_kind(&tree, "ui.Badge");
