@@ -16,7 +16,10 @@ use tokio::sync::{mpsc, oneshot};
 /// The providers a daemon publishes through, by the resources each answers.
 #[derive(Default)]
 pub struct Published {
-    providers: Vec<(&'static [&'static str], std::sync::Arc<dyn PublishedResources>)>,
+    providers: Vec<(
+        &'static [&'static str],
+        std::sync::Arc<dyn PublishedResources>,
+    )>,
     /// The provider of every resource no other names: what the desktop session signed in here
     /// publishes, which it decides as it runs.
     rest: Option<std::sync::Arc<dyn PublishedResources>>,

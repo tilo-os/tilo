@@ -5,7 +5,8 @@
 #   wine-test.sh units <imager-tests.exe>     the imager's unit tests
 #   wine-test.sh install <package-dir>        install the package silently, check what it
 #                                             installed, uninstall
-#   wine-test.sh runtime <tilo-runtime.exe>   the platform layer's tests, then the device daemon's CLI
+#   wine-test.sh runtime <tilo-runtime.exe>   the platform layer's tests, then the device daemon,
+#                                             which must answer a client
 #
 # Wine is not Windows: the disk, volume and privilege APIs the media writer
 # uses are partial or missing there, so tests that need them are listed in
@@ -71,9 +72,8 @@ case "$mode" in
     printf 'installed and uninstalled %s under Wine\n' "$(basename -- "$setup")"
     ;;
   runtime)
-    # The daemon's CLI is the first thing a Windows user reaches, and the port
-    # is partial: asking it to run the daemon must answer that it does not run
-    # on Windows yet, in words, rather than crash or start half of one.
+    # The daemon is the first thing a Windows user reaches: it must serve, and
+    # answer a client on its native endpoint, as it does everywhere else.
     runtime="${2:?the tilo-runtime.exe to run}"
     # The platform layer's own tests first: pipes, account checks and the rest
     # the daemon stands on, less what Wine cannot show (wine-skip.txt).
@@ -87,19 +87,31 @@ case "$mode" in
       timeout --kill-after=30 "${TILO_WINE_TEST_TIMEOUT:-600}" \
         wine "$tests" --test-threads 1 --nocapture "${skips[@]}"
     done
-    set +e
-    output="$(timeout --kill-after=30 300 wine "$runtime" \
-      --profile 'C:\tilo-runtime-profile' 2>&1)"
-    status=$?
-    set -e
-    printf '%s\n' "$output"
-    if [ "$status" -eq 0 ]; then
-      printf 'the Windows daemon exited successfully instead of refusing to run\n' >&2
-      exit 1
-    fi
-    case "$output" in
-      *"does not run on Windows yet"*) ;;
-      *) printf 'the Windows daemon failed without its refusal:\n%s\n' "$output" >&2; exit 1 ;;
+    profile='C:\tilo-runtime-profile'
+    log="$prefix/daemon.log"
+    timeout --kill-after=30 600 wine "$runtime" --profile "$profile" >"$log" 2>&1 &
+    daemon=$!
+    # An MCP client's first request, carried to the daemon by `--connect`: its
+    # answer comes from the daemon's native endpoint (a named pipe here).
+    ask='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"wine-test","version":"1"}}}'
+    answer=""
+    for _ in $(seq 1 120); do
+      kill -0 "$daemon" 2>/dev/null || break
+      answer="$(printf '%s\n' "$ask" \
+        | timeout --kill-after=10 60 wine "$runtime" --profile "$profile" --connect 2>/dev/null \
+        | head -n 1 || true)"
+      case "$answer" in *'"result"'*) break ;; esac
+      sleep 1
+    done
+    kill "$daemon" 2>/dev/null || true
+    wait "$daemon" 2>/dev/null || true
+    case "$answer" in
+      *'"result"'*) printf 'the Windows daemon served: %s\n' "$answer" ;;
+      *)
+        printf 'the Windows daemon answered no client (last answer: %s); its log:\n' "${answer:-none}" >&2
+        cat "$log" >&2
+        exit 1
+        ;;
     esac
     ;;
   *) printf 'unknown mode: %s\n' "$mode" >&2; exit 2 ;;

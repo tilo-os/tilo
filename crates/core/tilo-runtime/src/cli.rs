@@ -1,13 +1,10 @@
 //! The runtime executable's command line, shared by every host binary.
 
 use crate::daemon;
-#[cfg(unix)]
 use crate::profile;
-#[cfg(unix)]
 use std::path::Path;
 use std::{ffi::OsString, io};
 
-#[cfg(unix)]
 #[allow(
     clippy::disallowed_methods,
     reason = "called from `run` before tracing or any other thread starts, so no other thread can read the environment concurrently; the profile variables must reach this process and every child it spawns"
@@ -36,7 +33,6 @@ pub const CONSENT_HELPER_ARG: &str = "--device-consent";
 fn run() -> io::Result<()> {
     // The app surfaces changes are decided against live in the content store
     // the apps this runtime hosts keep their content in.
-    #[cfg(unix)]
     {
         let content = tilo_content_device::for_app();
         tilo_workspace_service::apps::decide_receipt_against_surfaces(move |_, hash| {
@@ -73,7 +69,6 @@ fn run() -> io::Result<()> {
         if args.standalone {
             // A profile named apart keeps the daemon's environment inside it.
             daemon::validate_profile(&args.profile)?;
-            #[cfg(unix)]
             configure_profile(&args.profile)?;
         } else {
             // The person's own profile, made on the first start.
@@ -116,7 +111,6 @@ fn run() -> io::Result<()> {
 pub fn host(program: &str) -> std::process::ExitCode {
     // Untrusted Automerge bytes are decoded in worker processes started from
     // this executable; each of them is served here and exits.
-    #[cfg(unix)]
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }

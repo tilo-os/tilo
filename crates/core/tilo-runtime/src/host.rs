@@ -1,20 +1,24 @@
-//! Unix transport/launch edge, shared by macOS and Linux.
+//! Where a profile's services are reached, and what an app is handed of them: one connection
+//! to each, handshaken with the app's identity before the app holds it. On Unix a native app
+//! started against them inherits the descriptors at their own numbers; a Windows app takes
+//! everything on its process link instead (`runtime_portal::process_link`).
+use std::{fs::File, io, path::Path};
+#[cfg(unix)]
 use std::{
-    fs::File,
-    io,
     os::{
         fd::{AsRawFd, RawFd},
-        unix::{fs::PermissionsExt, net::UnixStream, process::CommandExt},
+        unix::{fs::PermissionsExt, process::CommandExt},
     },
-    path::Path,
     process::{Child, Command},
 };
+#[cfg(unix)]
+use tilo_files::native::socket::Stream;
 
 /// Native automatic startup rejects a pre-existing public profile before any
 /// legacy profile initialization can change its permissions.
 pub(crate) fn check_private_profile(path: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.permissions().mode() & 0o077 != 0 => {
+        Ok(metadata) if !tilo_files::native::private::is_owner_only(&metadata) => {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "native runtime profile must be private (mode 0700)",
@@ -37,7 +41,8 @@ pub struct ServiceSockets<'a> {
 /// Connect the document-media socket with this app's scope fixed before the
 /// app holds the descriptor. A host without the service leaves the app on
 /// its process-local store.
-fn connect_blobs(path: &Path, app_id: &str, workspace: &str) -> Option<UnixStream> {
+#[cfg(unix)]
+fn connect_blobs(path: &Path, app_id: &str, workspace: &str) -> Option<Stream> {
     use runtime_fs::blobs::{BlobActor, BlobScope, write_handoff};
 
     let scope = BlobScope::new(workspace, app_id).ok()?;
@@ -52,17 +57,19 @@ fn connect_blobs(path: &Path, app_id: &str, workspace: &str) -> Option<UnixStrea
 
 /// One app's connections to the host's services, handshaken with its
 /// identity before the app holds any of them.
+#[cfg(unix)]
 pub(crate) struct ServiceConnections {
     /// `None` for a window whose instance a tilolang process runs: it holds none of the app's
     /// data.
-    collab: Option<UnixStream>,
-    identity: UnixStream,
-    blobs: Option<UnixStream>,
+    collab: Option<Stream>,
+    identity: Stream,
+    blobs: Option<Stream>,
 }
 
 /// The surface file this process was started with ([`ui::app_surface::SURFACE_FILE_ENV`]),
 /// when it hashes to [`ui::app_surface::SURFACE_HASH_ENV`]: what `tilolang dev`
 /// names for an app under development.
+#[cfg(unix)]
 fn started_surface() -> Option<String> {
     let path = std::env::var_os(ui::app_surface::SURFACE_FILE_ENV)?;
     let hash = std::env::var(ui::app_surface::SURFACE_HASH_ENV).ok()?;
@@ -71,6 +78,7 @@ fn started_surface() -> Option<String> {
     (*blake3::hash(surface.as_bytes()).as_bytes() == expected).then_some(surface)
 }
 
+#[cfg(unix)]
 impl ServiceConnections {
     pub(crate) fn connect(
         app_id: &str,
@@ -160,9 +168,11 @@ impl ServiceConnections {
 
 /// Own the connected sockets until spawn/exec finishes. Preparation is shared
 /// by the manifest launcher and independently attached native apps.
+#[cfg(unix)]
 pub(crate) struct Connections {
     _services: ServiceConnections,
 }
+#[cfg(unix)]
 impl Connections {
     pub(crate) fn prepare(
         command: &mut Command,
@@ -206,6 +216,7 @@ impl Connections {
 /// Spawn `command` as `app_id` with its service connections inherited.
 /// # Errors
 /// Returns `Connections::prepare` or spawn errors.
+#[cfg(unix)]
 pub fn launch(
     mut command: Command,
     app_id: &str,
@@ -220,6 +231,7 @@ pub fn launch(
 pub(crate) fn private_file(path: &Path) -> io::Result<File> {
     // One this user owns that others may read (an earlier Tilo made its files so) is made
     // private first: nobody but its owner and the superuser could have written it.
+    #[cfg(unix)]
     if let Ok(metadata) = std::fs::symlink_metadata(path)
         && metadata.is_file()
         && tilo_files::native::private::owned_by_me(&metadata)
@@ -230,7 +242,7 @@ pub(crate) fn private_file(path: &Path) -> io::Result<File> {
     tilo_files::native::private::lock_file(path)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     #[test]
     fn a_runtime_file_an_earlier_tilo_left_readable_is_made_private() {

@@ -1,6 +1,7 @@
 //! What a transfer does to the filesystem around its copies: removals,
 //! durability syncs and the Trash.
 
+#[cfg(unix)]
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io;

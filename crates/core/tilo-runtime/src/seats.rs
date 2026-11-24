@@ -28,8 +28,8 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
-use std::os::fd::OwnedFd;
-use std::os::unix::net::UnixStream;
+use runtime_portal::process_link::Descriptor;
+use tilo_socket::Stream;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -156,7 +156,7 @@ fn rows() -> Vec<CatalogueRow> {
 
 /// How a connection's peer is read: the kernel's account and process at its other end, or a
 /// test's stand-in.
-pub(crate) type PeerOf = fn(&UnixStream) -> io::Result<Peer>;
+pub(crate) type PeerOf = fn(&Stream) -> io::Result<Peer>;
 
 /// The process at the other end of a connection, as the kernel names it.
 #[derive(Clone, Copy, Debug)]
@@ -171,8 +171,10 @@ impl Peer {
     ///
     /// # Errors
     /// The kernel does not say.
-    pub(crate) fn of(stream: &UnixStream) -> io::Result<Self> {
+    pub(crate) fn of(stream: &Stream) -> io::Result<Self> {
+        #[cfg(unix)]
         use std::os::fd::AsRawFd as _;
+        #[cfg(unix)]
         let fd = stream.as_raw_fd();
         #[cfg(any(target_os = "linux", target_os = "android"))]
         {
@@ -231,19 +233,41 @@ impl Peer {
                     .filter(|_| read == 0),
             })
         }
-        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+        // A pipe of the daemon's admits its own account's processes alone (`tilo_socket`).
+        #[cfg(windows)]
         {
-            let _ = fd;
-            Err(io::ErrorKind::Unsupported.into())
+            Ok(Self {
+                uid: own_account(),
+                pid: stream.peer_pid().ok(),
+            })
         }
     }
 }
+
+/// This daemon's own account, as the admission names accounts
+/// ([`tilo_api::daemon::admission::Admission`]): its uid on Unix. Windows names an account by a
+/// SID rather than a number, and a pipe of the daemon's admits only its own account's processes,
+/// so every peer there is this one account, which the admission knows by this number.
+pub(crate) fn own_account() -> u32 {
+    #[cfg(unix)]
+    {
+        rustix::process::geteuid().as_raw()
+    }
+    #[cfg(windows)]
+    {
+        OWN_WINDOWS_ACCOUNT
+    }
+}
+
+/// The number the admission knows the daemon's own Windows account by: any but [`ROOT`]'s.
+#[cfg(windows)]
+const OWN_WINDOWS_ACCOUNT: u32 = 1;
 
 /// The process at the other end of `stream`, as the kernel says.
 ///
 /// # Errors
 /// The kernel does not say.
-pub(crate) fn peer_of(stream: &UnixStream) -> io::Result<Peer> {
+pub(crate) fn peer_of(stream: &Stream) -> io::Result<Peer> {
     Peer::of(stream)
 }
 
@@ -276,7 +300,7 @@ pub(crate) trait Shells: Send + Sync {
     ///
     /// # Errors
     /// No link could be made.
-    fn arrived(&self, importing: bool) -> io::Result<UnixStream>;
+    fn arrived(&self, importing: bool) -> io::Result<Stream>;
 
     /// Start the person's shell with `args` and `env`, handed its link and, when the session that
     /// asked sent one (`window`), the connection it draws its window on.
@@ -287,7 +311,7 @@ pub(crate) trait Shells: Send + Sync {
         &self,
         args: Vec<OsString>,
         env: Vec<(OsString, OsString)>,
-        window: Option<OwnedFd>,
+        window: Option<Descriptor>,
     ) -> io::Result<Child>;
 }
 
@@ -396,7 +420,7 @@ impl Seats {
     }
 
     /// Who the connection `stream` is. One whose account the kernel does not say is a stranger.
-    pub(crate) fn seat(&self, stream: &UnixStream) -> Seat {
+    pub(crate) fn seat(&self, stream: &Stream) -> Seat {
         let peer = match (self.peer_of)(stream) {
             Ok(peer) => peer,
             Err(error) => {
@@ -440,7 +464,7 @@ impl Seats {
         &self,
         seat: Seat,
         request: &Value,
-        received: &Mutex<Vec<OwnedFd>>,
+        received: &Mutex<Vec<Descriptor>>,
     ) -> Option<Answer<'static>> {
         let ready = |answer: Value| Answer::InOrder(Box::pin(async move { Ok(Some(answer)) }));
         let refused = |why: String| ready(json!({"error": why}));
@@ -492,7 +516,7 @@ impl Seats {
         &self,
         seat: Seat,
         request: &Value,
-        received: &Mutex<Vec<OwnedFd>>,
+        received: &Mutex<Vec<Descriptor>>,
     ) -> Answer<'static> {
         if let Err(why) = self.starts_shells(seat) {
             return Answer::InOrder(Box::pin(async move { Ok(Some(json!({"error": why}))) }));
@@ -548,7 +572,11 @@ impl Seats {
             let status = tokio::task::spawn_blocking(move || child.wait())
                 .await
                 .map_err(io::Error::other)??;
+            #[cfg(unix)]
             let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+            // A Windows process ends with a code alone.
+            #[cfg(windows)]
+            let signal = None::<i32>;
             Ok(Some(json!({"code": status.code(), "signal": signal})))
         })))
     }
@@ -560,7 +588,7 @@ impl Seats {
         seat: Seat,
         action: &str,
         args: &Value,
-        handed: &Mutex<Option<OwnedFd>>,
+        handed: &Mutex<Option<Descriptor>>,
     ) -> Result<Value, String> {
         if action == CERTIFIED {
             return self.certified(seat, args);
@@ -650,7 +678,7 @@ impl Seats {
         &self,
         seat: Seat,
         request: &Value,
-        handed: &Mutex<Option<OwnedFd>>,
+        handed: &Mutex<Option<Descriptor>>,
     ) -> Result<Value, String> {
         let uid = uid_in(request)?;
         let named = request
@@ -721,7 +749,7 @@ impl Seats {
                 .ok()
         });
         let shell = link.is_some();
-        *handed.lock_recover() = link.map(OwnedFd::from);
+        *handed.lock_recover() = link.map(runtime_portal::packet::descriptor_of);
         Ok(json!({"person": hex::encode(held.person), "shell": shell}))
     }
 
@@ -824,11 +852,11 @@ pub(crate) struct Seated {
     pub(crate) seat: Seat,
     pub(crate) seats: Arc<Seats>,
     /// A descriptor an answer on this connection carries, until it is written with it.
-    pub(crate) handed: Arc<Mutex<Option<OwnedFd>>>,
+    pub(crate) handed: Arc<Mutex<Option<Descriptor>>>,
     /// The descriptors the client sent with its first line: a nested session's window
     /// connection, which a shell started on this connection is handed
     /// ([`Shells::start`]).
-    pub(crate) received: Arc<Mutex<Vec<OwnedFd>>>,
+    pub(crate) received: Arc<Mutex<Vec<Descriptor>>>,
 }
 
 impl Seated {
@@ -844,7 +872,7 @@ impl Seated {
 
     /// Keep `descriptors`, which the client sent with its first line, for the call that hands
     /// them on.
-    pub(crate) fn receives(&self, descriptors: Vec<OwnedFd>) {
+    pub(crate) fn receives(&self, descriptors: Vec<Descriptor>) {
         *self.received.lock_recover() = descriptors;
     }
 
@@ -864,8 +892,8 @@ impl Seated {
 /// A connection's writer that sends the descriptor an answer carries ([`Seated::handed`]) with
 /// the first bytes written after it.
 pub(crate) struct Handing<'a> {
-    pub(crate) stream: &'a UnixStream,
-    pub(crate) handed: Option<&'a Mutex<Option<OwnedFd>>>,
+    pub(crate) stream: &'a Stream,
+    pub(crate) handed: Option<&'a Mutex<Option<Descriptor>>>,
 }
 
 impl io::Write for Handing<'_> {
@@ -875,10 +903,18 @@ impl io::Write for Handing<'_> {
             .filter(|_| !bytes.is_empty())
             .and_then(|handed| handed.lock_recover().take());
         match fd {
+            #[cfg(unix)]
             Some(fd) => {
                 runtime_portal::fd_transport::send_with_fd(self.stream, bytes, &fd)?;
                 Ok(bytes.len())
             }
+            // Only root's sign-in hands a descriptor on a native connection, and Windows has no
+            // root to sign anyone in.
+            #[cfg(windows)]
+            Some(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a Windows connection carries no descriptor",
+            )),
             None => io::Write::write(&mut &*self.stream, bytes),
         }
     }

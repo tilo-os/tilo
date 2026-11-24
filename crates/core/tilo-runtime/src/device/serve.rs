@@ -7,11 +7,11 @@
 //! the agent the login was made for ([`hold`]). One process keeps the device: the host keeps one
 //! session per device, and two processes entering as it would cut each other off.
 
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
+use tilo_socket::Stream;
 
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
@@ -55,15 +55,29 @@ const LOG_KEPT: u64 = 8 << 20;
 /// Empty this holder's log once it grew past [`LOG_KEPT`]: it is added to by every holder
 /// started ([`start_holder`]), and the one that holds the device is the one that writes most.
 fn trim_log() {
-    let stderr = std::io::stderr();
-    let Ok(metadata) = rustix::fs::fstat(&stderr) else {
+    let Ok(log) = stderr_file() else {
         return;
     };
-    let regular =
-        rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::RegularFile;
-    if regular && u64::try_from(metadata.st_size).is_ok_and(|size| size > LOG_KEPT) {
-        let _ = rustix::fs::ftruncate(&stderr, 0);
+    if log
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > LOG_KEPT)
+    {
+        let _ = log.set_len(0);
     }
+}
+
+/// What this process's error output is written to, as a file of its own.
+fn stderr_file() -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    use std::os::fd::AsFd as _;
+    #[cfg(windows)]
+    use std::os::windows::io::AsHandle as _;
+    let stderr = std::io::stderr();
+    #[cfg(unix)]
+    let owned = stderr.as_fd().try_clone_to_owned()?;
+    #[cfg(windows)]
+    let owned = stderr.as_handle().try_clone_to_owned()?;
+    Ok(std::fs::File::from(owned))
 }
 
 /// The threads a bridge's runtime works on.
@@ -100,7 +114,7 @@ impl Socket {
 }
 
 /// What takes an agent's connection, with what was read of it already.
-type Taker = Arc<dyn Fn(UnixStream, Vec<u8>) + Send + Sync>;
+type Taker = Arc<dyn Fn(Stream, Vec<u8>) + Send + Sync>;
 
 /// How long an agent's connection waits for the person's part of the daemon to take it.
 const TAKEN_WITHIN: Duration = Duration::from_secs(30);
@@ -113,7 +127,7 @@ pub(crate) struct Agents(Arc<(std::sync::Mutex<Option<Taker>>, std::sync::Condva
 impl Agents {
     /// Hand `stream`, of which `read` was read already, to the person's part, waiting for it to
     /// start; one that none takes in time is told why and closed.
-    pub(crate) fn take(&self, stream: UnixStream, read: Vec<u8>) {
+    pub(crate) fn take(&self, stream: Stream, read: Vec<u8>) {
         let (slot, started) = &*self.0;
         let deadline = Instant::now()
             .checked_add(TAKEN_WITHIN)
@@ -155,15 +169,15 @@ impl Agents {
     /// An agent's connection, handed over as the native endpoint hands one: waits for the
     /// person's part to take it.
     #[cfg(test)]
-    fn connect(&self) -> UnixStream {
-        let (agent, served) = UnixStream::pair().unwrap();
+    fn connect(&self) -> Stream {
+        let (agent, served) = tilo_socket::pair().unwrap();
         self.take(served, Vec::new());
         agent
     }
 }
 
 /// Tell the agent at `stream` why it is not served, as a JSON-RPC error that names no request.
-pub(crate) fn refuse(stream: &UnixStream, why: &str) {
+pub(crate) fn refuse(stream: &Stream, why: &str) {
     use std::io::Write as _;
     let refusal = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32000, "message": why}});
     let mut writing = stream;
@@ -404,12 +418,7 @@ fn taking(socket: Arc<Socket>) -> Taker {
 /// Serve `stream`, a connection [`taking`] took with `read` read of it already: its first request is read here, and one
 /// asking how the peer stands ([`PEER_STATUS`]) is answered here; any other is an agent's, served by `socket`'s agents'
 /// endpoint from there on.
-fn first_request(
-    stream: UnixStream,
-    read: Vec<u8>,
-    socket: &Socket,
-    runtime: &tokio::runtime::Handle,
-) {
+fn first_request(stream: Stream, read: Vec<u8>, socket: &Socket, runtime: &tokio::runtime::Handle) {
     use std::io::{BufRead as _, Read as _, Write as _};
     let Ok(reading) = stream.try_clone() else {
         return;
@@ -742,8 +751,8 @@ mod tests {
 
     /// One agent connection to the device's socket, as `tilo mcp` relays it.
     struct Agent {
-        writing: UnixStream,
-        reading: std::io::BufReader<UnixStream>,
+        writing: Stream,
+        reading: std::io::BufReader<Stream>,
         asked: u64,
         /// The run the daemon answers this connection as.
         run: Value,

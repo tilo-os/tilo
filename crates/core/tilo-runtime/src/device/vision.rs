@@ -17,9 +17,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ResourceSearch,
 };
-use tilo_actions::{
-    ActionInvoker, ActionOutput, InvocationId, InvocationUpdate, ResourceSpec,
-};
+use tilo_actions::{ActionInvoker, ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Service, Started};
 use tilo_vision_service::index::VisionIndex;
@@ -142,11 +140,7 @@ impl ActionProvider for ImageModel {
         None
     }
 
-    fn cancel(
-        &self,
-        _caller: &Caller,
-        _id: &InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Err(ActionCallError::UnknownInvocation))
     }
 }

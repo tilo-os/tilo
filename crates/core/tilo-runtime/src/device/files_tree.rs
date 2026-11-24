@@ -63,13 +63,11 @@ pub(crate) fn serve(
     let follows = tilo_rt::app().spawn(follow_access(copies, (person, device), told));
     // Where each folder a mount holds stands: how much it has to send and to fetch.
     let folders = Folders::default();
-    workspaces
-        .copies()
-        .publish_own(
-            FOLDERS_APP,
-            tilo_workspace_service::workspaces::OwnReaders::ThisDevice,
-            Arc::new(folders.clone()),
-        );
+    workspaces.copies().publish_own(
+        FOLDERS_APP,
+        tilo_workspace_service::workspaces::OwnReaders::ThisDevice,
+        Arc::new(folders.clone()),
+    );
     let serving = socket::serve(
         path,
         service,

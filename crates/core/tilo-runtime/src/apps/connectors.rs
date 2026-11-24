@@ -16,17 +16,17 @@
 //! ([`runtime_portal::origin_connector`]).
 
 use std::collections::HashMap;
-use std::os::fd::OwnedFd;
 use std::sync::Mutex;
 
 use runtime_portal::origin_connector;
+use runtime_portal::process_link::Descriptor;
 use tilo_lock::MutexRecover as _;
 
 /// Which connector: the app, its origin and the workspace.
 type Key = (String, String, String);
 
 /// A connector's process, as the platform's launcher started it.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
 pub(crate) type Process = std::process::Child;
 /// A connector's process, as the platform's launcher started it.
 #[cfg(target_os = "macos")]
@@ -34,23 +34,23 @@ pub(crate) type Process = launcher_macos::LaunchedApp;
 
 /// A running connector: the device's end of its socket, and its process.
 struct Running {
-    socket: OwnedFd,
+    socket: Descriptor,
     child: Process,
 }
 
 /// What hands a connector whose manifest grants it the workspace's account sign-ins those
 /// sign-ins, over its socket, before its first reader: the connector's socket, its app and the
 /// workspace.
-pub(crate) type SignIns = dyn Fn(&OwnedFd, &str, &str) -> std::io::Result<()> + Send + Sync;
+pub(crate) type SignIns = dyn Fn(&Descriptor, &str, &str) -> std::io::Result<()> + Send + Sync;
 
 /// The pid a started connector runs as, as the launch record names it; `None` where the system
 /// does not say it in a pid this daemon records.
 #[cfg_attr(
-    target_os = "android",
-    expect(dead_code, reason = "Android starts no connector process")
+    any(target_os = "android", windows),
+    expect(dead_code, reason = "Android and Windows start no connector process")
 )]
 pub(crate) fn pid(process: &Process) -> Option<u32> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "android", windows))]
     {
         Some(process.id())
     }
@@ -86,8 +86,8 @@ impl Connectors {
         &self,
         (app, origin, workspace): (&str, &str, &str),
         signs_in: bool,
-        theirs: &OwnedFd,
-        start: &dyn Fn(&OwnedFd) -> Result<Process, String>,
+        theirs: &Descriptor,
+        start: &dyn Fn(&Descriptor) -> Result<Process, String>,
     ) -> Result<(), String> {
         let key = (app.to_owned(), origin.to_owned(), workspace.to_owned());
         let mut running = self.running.lock_recover();
@@ -184,7 +184,7 @@ impl Drop for Connectors {
 
 /// Whether `process` still runs.
 fn alive(process: &mut Process) -> bool {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "android", windows))]
     {
         matches!(process.try_wait(), Ok(None))
     }
@@ -217,6 +217,7 @@ fn reap(child: Process) {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::os::fd::OwnedFd;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A connector process that keeps its socket and reads what it is sent until it closes.

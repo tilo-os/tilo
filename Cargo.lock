@@ -19579,6 +19579,7 @@ dependencies = [
  "iroh-blobs",
  "launcher",
  "launcher-macos",
+ "launcher-windows",
  "libc",
  "linux-vm",
  "package-actions",

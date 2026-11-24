@@ -29,14 +29,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use accounts::sign_ins::{self, Answer, Ask, Held};
-use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::ItemRef;
+use tilo_socket::tokio::{Listener, Stream};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::account_logins::{AccountLogin, accounts_document};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
-use tokio::net::unix::OwnedReadHalf;
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{ReadHalf, WriteHalf};
 use tokio::sync::broadcast::error::RecvError;
 
 /// What a connector's ask for the sign-in of another workspace's account is refused with.
@@ -167,15 +166,17 @@ fn hand(
     app: &str,
     workspace: &str,
 ) -> std::io::Result<()> {
-    let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
-    ours.set_nonblocking(true)?;
-    runtime_portal::origin_connector::send_sign_ins(connector, theirs.into())?;
+    let (ours, theirs) = tilo_socket::pair()?;
+    runtime_portal::origin_connector::send_sign_ins(
+        connector,
+        runtime_portal::packet::descriptor_of(theirs),
+    )?;
     let answering = Arc::clone(answering);
     let scope = Scope::connector(app.to_owned(), workspace.to_owned());
     // Taken on the runtime that answers it: the caller may be on no runtime at all.
     tilo_rt::app().spawn(async move {
         let answering_it = async {
-            let (read, write) = UnixStream::from_std(ours)?.into_split();
+            let (read, write) = tokio::io::split(tilo_socket::tokio::from_std(ours)?);
             answered(BufReader::new(read), write, &scope, &answering).await
         };
         if let Err(error) = answering_it.await {
@@ -235,32 +236,20 @@ pub fn serve(
 }
 
 /// Bind `path` in a directory only this account reaches, the socket itself only this account's.
-fn bind(path: &Path) -> std::io::Result<std::os::unix::net::UnixListener> {
+fn bind(path: &Path) -> std::io::Result<tilo_socket::Listener> {
     let directory = path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&directory)?;
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let bound = tilo_files::native::socket::bind(path)?;
-    bound.set_nonblocking(true)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(bound)
+    tilo_files::native::private::directory(&directory)?;
+    tilo_files::native::private::bind_socket(path)
 }
 
 /// Answer every connection on `bound` within the scope `scope` makes; the connections answered
 /// end with it.
 async fn serving(
-    bound: std::os::unix::net::UnixListener,
+    bound: tilo_socket::Listener,
     answering: Arc<Answering>,
     scope: fn() -> Scope,
 ) -> std::io::Result<()> {
-    let listener = UnixListener::from_std(bound)?;
+    let listener: Listener = tilo_socket::tokio::listener(bound)?;
     let mut connections = tokio::task::JoinSet::new();
     loop {
         let stream = tokio::select! {
@@ -283,27 +272,31 @@ async fn serving(
     }
 }
 
-/// Whether the peer is a process of this login's user.
-fn own(stream: &UnixStream) -> bool {
-    stream
-        .peer_cred()
-        .is_ok_and(|peer| peer.uid() == rustix::process::getuid().as_raw())
+/// Whether the peer is a process of this login's user: on Windows, every peer the pipe took.
+fn own(stream: &Stream) -> bool {
+    #[cfg(unix)]
+    {
+        stream
+            .peer_cred()
+            .is_ok_and(|peer| peer.uid() == rustix::process::getuid().as_raw())
+    }
+    #[cfg(windows)]
+    {
+        let _ = stream;
+        true
+    }
 }
 
 /// A connection to a socket, answered within `scope`.
-async fn connection(
-    stream: UnixStream,
-    answering: &Answering,
-    scope: &Scope,
-) -> std::io::Result<()> {
-    let (read, write) = stream.into_split();
+async fn connection(stream: Stream, answering: &Answering, scope: &Scope) -> std::io::Result<()> {
+    let (read, write) = tokio::io::split(stream);
     answered(BufReader::new(read), write, scope, answering).await
 }
 
 /// Answer every ask on `read` within `scope`, on `write`, until the asker goes away.
 async fn answered(
-    mut read: BufReader<OwnedReadHalf>,
-    mut write: tokio::net::unix::OwnedWriteHalf,
+    mut read: BufReader<ReadHalf<Stream>>,
+    mut write: WriteHalf<Stream>,
     scope: &Scope,
     answering: &Answering,
 ) -> std::io::Result<()> {
@@ -336,7 +329,7 @@ async fn answered(
 
 /// Once the asker on `read` went away: the end of its connection, or a read of it that failed.
 /// An asker that asks again before its answer is kept waiting for it.
-async fn gone(read: &mut BufReader<OwnedReadHalf>) -> std::io::Result<()> {
+async fn gone(read: &mut BufReader<ReadHalf<Stream>>) -> std::io::Result<()> {
     if read.fill_buf().await?.is_empty() {
         return Ok(());
     }

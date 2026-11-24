@@ -33,31 +33,28 @@ use tilo_workspace_service::apps::{
     },
 };
 
-#[cfg(unix)]
 mod connection;
-#[cfg(unix)]
 mod connectors;
-#[cfg(unix)]
 mod instances;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_os = "macos")]
-pub(crate) use macos::{installed_runtime, verified_tilolang};
+#[cfg(any(target_os = "macos", windows))]
+mod verified;
+#[cfg(any(target_os = "macos", windows))]
+pub(crate) use verified::{installed_runtime, verified_tilolang};
 #[cfg(target_os = "linux")]
 mod original;
-
-#[cfg(unix)]
 /// A view the daemon opened for a caller: the descriptors its page window is started with
 /// (`Processes::show_page`), and the device's end of that window's page link.
 pub(crate) struct OpenedView {
     /// The window's end of its instance's patch connection.
-    pub patch: std::os::fd::OwnedFd,
+    pub patch: runtime_portal::process_link::Descriptor,
     /// The window's end of the page link.
-    pub page: std::os::fd::OwnedFd,
+    pub page: runtime_portal::process_link::Descriptor,
     /// The device's end of the page link, which asks the window for the page.
-    pub link: std::os::unix::net::UnixStream,
+    pub link: tilo_socket::Stream,
 }
 
 /// Whether a launch of an app shows a window, or runs the app's code with none.
@@ -103,14 +100,10 @@ pub struct Apps {
     /// workspace service that holds the person's grants is open.
     grants: OnceLock<Arc<dyn LaunchGrantsSource>>,
     /// The tilolang instances this daemon starts itself, with no session.
-    #[cfg(unix)]
     instances: instances::Instances,
     /// The origin connectors this device runs for its tilolang apps' instances.
-    #[cfg(unix)]
     connectors: connectors::Connectors,
 }
-
-#[cfg(unix)]
 impl Apps {
     /// Hand each origin connector this device starts whose manifest grants it its workspace's
     /// account sign-ins through `sign_ins` from now on.
@@ -171,7 +164,8 @@ impl Apps {
         drop(data_home);
         #[cfg(not(target_os = "linux"))]
         drop(launcher_candidates);
-        // What starts a tilolang host: `tilo-launcher` on Linux, the installed runtime on macOS.
+        // What starts a tilolang host: `tilo-launcher` on Linux, the installed runtime on macOS
+        // and Windows.
         #[cfg(target_os = "linux")]
         let finds_launcher: instances::FindsLauncher = {
             let candidates = launcher_candidates.clone();
@@ -179,7 +173,7 @@ impl Apps {
         };
         #[cfg(target_os = "android")]
         let finds_launcher: instances::FindsLauncher = Box::new(|| Ok(()));
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         let finds_launcher: instances::FindsLauncher = {
             let catalog = catalog.clone();
             Box::new(move || {
@@ -192,14 +186,12 @@ impl Apps {
         // connection from it as the app it runs.
         let launched: Arc<Launched> = Arc::default();
         Self {
-            #[cfg(unix)]
             instances: instances::Instances::new(profile, finds_launcher, Arc::clone(&launched)),
             catalog,
             root: profile.to_path_buf(),
             sockets: profile.to_path_buf(),
             #[cfg(target_os = "macos")]
             data_home,
-            #[cfg(unix)]
             connectors: connectors::Connectors::default(),
             #[cfg(target_os = "linux")]
             launcher_candidates,
@@ -252,26 +244,19 @@ impl Apps {
         &self,
         providers: tilo_workspace_service::workspaces::providers::Providers,
     ) {
-        #[cfg(unix)]
         self.instances.read_provided_from(providers);
-        #[cfg(not(unix))]
-        let _ = providers;
     }
 
     /// Run the code of an app whose calls name no view as `person`, the member the device acts
     /// as, from now on.
     pub(crate) fn keep_person(&self, person: &str) {
-        #[cfg(unix)]
         self.instances.keep_person(person.to_owned());
-        #[cfg(not(unix))]
-        let _ = person;
     }
 
     /// This daemon's tilolang processes, which start every tilolang process it runs.
     ///
     /// # Errors
     /// No launcher is installed to start them.
-    #[cfg(unix)]
     pub(crate) fn processes(&self) -> Result<Arc<crate::device::processes::Processes>, String> {
         self.instances.processes().cloned()
     }
@@ -288,7 +273,6 @@ impl Apps {
     /// # Errors
     /// The app is no tilolang app installed here, no launcher can start its process, or its
     /// instance or its window did not start.
-    #[cfg(unix)]
     pub fn open_view(
         &self,
         caller: &tilo_actions::remote::Caller,
@@ -296,7 +280,7 @@ impl Apps {
         workspace: &str,
         record: Option<String>,
         reveal: Option<String>,
-    ) -> Result<std::os::unix::net::UnixStream, String> {
+    ) -> Result<tilo_socket::Stream, String> {
         let view = self.instances.open_view(
             caller,
             (app, workspace, self.origin_connection(app, workspace)?),
@@ -481,12 +465,11 @@ impl Apps {
     /// # Errors
     /// The app is not installed here, declares more than one origin, or its connector cannot
     /// start ([`Self::start_connector`]).
-    #[cfg(unix)]
     pub(crate) fn origin_connection(
         &self,
         app: &str,
         workspace: &str,
-    ) -> Result<Option<std::os::fd::OwnedFd>, String> {
+    ) -> Result<Option<runtime_portal::process_link::Descriptor>, String> {
         // Any other app is refused where its instance would start, saying why.
         if !crate::device::package_runs::runs_in_process(app) {
             return Ok(None);
@@ -506,13 +489,12 @@ impl Apps {
     ///
     /// # Errors
     /// The app reaches no such origin, or its connector cannot be started or takes no connection.
-    #[cfg(unix)]
     pub(crate) fn attach_origin(
         &self,
         app: &str,
         origin: &str,
         workspace: &str,
-        connection: &std::os::fd::OwnedFd,
+        connection: &runtime_portal::process_link::Descriptor,
     ) -> Result<(), String> {
         let Some((_, signs_in)) =
             crate::device::package_runs::origin_of(app)?.filter(|(declared, _)| declared == origin)
@@ -531,14 +513,14 @@ impl Apps {
     /// # Errors
     /// This device does not serve the workspace, the app is not installed here or its signed
     /// package does not verify, or no launcher can start it.
-    #[cfg(unix)]
     pub(crate) fn start_connector(
         &self,
         app_id: &str,
         workspace: &str,
         origin: &str,
-        socket: &std::os::fd::OwnedFd,
+        socket: &runtime_portal::process_link::Descriptor,
     ) -> Result<connectors::Process, String> {
+        #[cfg(unix)]
         use std::os::fd::AsFd as _;
         if !self
             .grants
@@ -591,6 +573,14 @@ impl Apps {
                 "Android starts no process for an app: its apps run in the Tilo app's own process"
                     .to_owned(),
             )
+        }
+        #[cfg(windows)]
+        {
+            let _ = (app, origin, socket);
+            Err(format!(
+                "{app_id}'s connector to {origin} is a launch of the app itself, which this \
+                 Windows device does not start: only tilolang apps run here"
+            ))
         }
     }
 
@@ -914,7 +904,6 @@ impl LauncherServices for Apps {
         workspace: &str,
         record: Option<&str>,
     ) -> Result<Option<tilo_workspace_service::apps::services::WindowlessStart>, String> {
-        #[cfg(unix)]
         if crate::device::package_runs::runs_in_process(app) {
             let origin = self.origin_connection(app, workspace)?;
             return self
@@ -952,15 +941,12 @@ impl LauncherServices for Apps {
         window_instance: Option<u64>,
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
         // A connection this process made for an instance it started: the one it names, once.
-        #[cfg(unix)]
         if pid == std::process::id()
             && let Some(instance) = window_instance
             && let Some(launch) = self.instances.take(app, workspace, instance)
         {
             return Ok(Some(launch));
         }
-        #[cfg(not(unix))]
-        let _ = window_instance;
         if self.serves(pid, app, workspace) {
             return Ok(Some(AuthenticatedApplicationLaunch {
                 continuation_instance: None,
@@ -1365,14 +1351,12 @@ pub(crate) const fn device_cap(device: tilo_capture::DeviceKind) -> collab_types
         tilo_capture::DeviceKind::Microphone => collab_types::caps::DeviceCap::Microphone,
     }
 }
-
-#[cfg(unix)]
 impl crate::device::processes::Origins for Apps {
     fn connection(
         &self,
         app: &str,
         workspace: &str,
-    ) -> Result<Option<std::os::fd::OwnedFd>, String> {
+    ) -> Result<Option<runtime_portal::process_link::Descriptor>, String> {
         self.origin_connection(app, workspace)
     }
 
@@ -1381,7 +1365,7 @@ impl crate::device::processes::Origins for Apps {
         app: &str,
         origin: &str,
         workspace: &str,
-        connection: &std::os::fd::OwnedFd,
+        connection: &runtime_portal::process_link::Descriptor,
     ) -> Result<(), String> {
         self.attach_origin(app, origin, workspace, connection)
     }

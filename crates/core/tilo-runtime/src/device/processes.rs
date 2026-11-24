@@ -44,7 +44,6 @@
 //! a process keeps no copy of its own on disk.
 
 use std::collections::{HashMap, VecDeque};
-use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -54,8 +53,8 @@ use runtime_portal::device_processes::{
     FromDevice, HandedFds, HandedInstance, MediaChange, Running, ToDevice,
 };
 use runtime_portal::process_link::{
-    AppAccess, AppBuild, FromProcess, InstanceFds, InstanceRequest, MediaCommand, MediaView,
-    OpenRequest, Packet as _, TaskFds, TaskRequest, ToProcess,
+    AppAccess, AppBuild, Descriptor, FromProcess, InstanceFds, InstanceRequest, MediaCommand,
+    MediaView, OpenRequest, Packet as _, TaskFds, TaskRequest, ToProcess,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -64,7 +63,7 @@ use super::package_runs::{Verified, installed_apps, runs_in_process, verified_in
 /// Hand the process behind `socket` the instance `request` with its connections, keeping them
 /// to hand to another process should this one have ended.
 fn send_instance(
-    socket: &OwnedFd,
+    socket: &Descriptor,
     request: &InstanceRequest,
     fds: &InstanceFds,
 ) -> std::io::Result<()> {
@@ -122,7 +121,7 @@ struct HostKey {
 /// A running process.
 struct Host {
     /// The daemon's end of its socket.
-    socket: Arc<OwnedFd>,
+    socket: Arc<Descriptor>,
     /// The windows whose instances it runs, each with its app.
     instances: HashMap<u64, String>,
     /// Which start of the process this is, so the end of an earlier one never retires a later one.
@@ -150,24 +149,24 @@ pub struct Instance {
     pub person: String,
     /// The process's end of the window's patch connection: `None` for an instance that shows
     /// nothing.
-    pub patch: Option<OwnedFd>,
+    pub patch: Option<Descriptor>,
     /// The instance's collaboration connection, attested as that window, or as an instance that
     /// shows nothing.
-    pub collaboration: OwnedFd,
+    pub collaboration: Descriptor,
     /// Its identity-service connection, named for the app and workspace.
-    pub identity: OwnedFd,
+    pub identity: Descriptor,
     /// Its connection to the app's origin connector, when the app has one.
-    pub origin: Option<OwnedFd>,
+    pub origin: Option<Descriptor>,
     /// Its connection to the device's content store, scoped to the app in its workspace: the
     /// files a person chooses, the pictures its document holds.
-    pub content: Option<OwnedFd>,
+    pub content: Option<Descriptor>,
     /// Its connection to the person's chooser, when this session serves one.
-    pub chooser: Option<OwnedFd>,
+    pub chooser: Option<Descriptor>,
     /// Its connection to the person's clipboard, when this session serves one.
-    pub clipboard: Option<OwnedFd>,
+    pub clipboard: Option<Descriptor>,
     /// Its connection to this session's tools service, whose far end answers for this app: what
     /// `File.open` asks which app opens a file and starts it.
-    pub tools: Option<OwnedFd>,
+    pub tools: Option<Descriptor>,
     /// The record the window was asked to show, by its id.
     pub document: Option<String>,
     /// The item the window opens on, by its anchor.
@@ -188,7 +187,7 @@ pub struct Instance {
 
 impl Instance {
     /// The instance a session handed over, with the connections it opened for it.
-    fn handed(instance: HandedInstance, fds: HandedFds, origin: Option<OwnedFd>) -> Self {
+    fn handed(instance: HandedInstance, fds: HandedFds, origin: Option<Descriptor>) -> Self {
         Self {
             app: instance.app,
             workspace: instance.workspace,
@@ -224,8 +223,8 @@ type Verifies = dyn Fn(&str, &str) -> Result<Verified, String> + Send + Sync;
 pub type Launcher = PathBuf;
 
 /// What starts a host here ([`spawn_host`]): the installed packages, whose tilolang runtime the
-/// host runs from in its Seatbelt sandbox, on macOS.
-#[cfg(target_os = "macos")]
+/// host runs from in its sandbox (Seatbelt on macOS, an `AppContainer` on Windows).
+#[cfg(any(target_os = "macos", windows))]
 pub type Launcher = package_store::Catalog;
 
 /// Nothing, on Android: the daemon starts no host there ([`spawn_host`]), since an app runs in
@@ -250,7 +249,7 @@ pub(crate) trait Origins: Send + Sync {
     ///
     /// # Errors
     /// Its connector cannot be started.
-    fn connection(&self, app: &str, workspace: &str) -> Result<Option<OwnedFd>, String>;
+    fn connection(&self, app: &str, workspace: &str) -> Result<Option<Descriptor>, String>;
 
     /// Attach `connection` to `app`'s connector of `origin` in `workspace`.
     ///
@@ -261,7 +260,7 @@ pub(crate) trait Origins: Send + Sync {
         app: &str,
         origin: &str,
         workspace: &str,
-        connection: &OwnedFd,
+        connection: &Descriptor,
     ) -> Result<(), String>;
 }
 
@@ -513,7 +512,7 @@ impl Processes {
         origins: Arc<dyn Origins>,
     ) -> tilo_workspace_service::apps::shell::ShellProcesses {
         let (processes, has) = (Arc::clone(self), Arc::<Has>::from(has));
-        Arc::new(move |connection: OwnedFd| {
+        Arc::new(move |connection: Descriptor| {
             let (processes, has, origins) = (
                 Arc::clone(&processes),
                 Arc::clone(&has),
@@ -529,7 +528,7 @@ impl Processes {
     }
 
     /// Answer the one ask on `connection`, which the shell opened.
-    fn answer(self: &Arc<Self>, connection: &OwnedFd, has: &Has, origins: &dyn Origins) {
+    fn answer(self: &Arc<Self>, connection: &Descriptor, has: &Has, origins: &dyn Origins) {
         let asked = match ToDevice::receive(connection) {
             Ok(Some(asked)) => asked,
             Ok(None) => return,
@@ -781,7 +780,7 @@ impl Processes {
     fn send_later_build(
         &self,
         key: &HostKey,
-        socket: &OwnedFd,
+        socket: &Descriptor,
         app: &str,
         build: &mut Build,
     ) -> std::io::Result<bool> {
@@ -943,8 +942,7 @@ impl Processes {
         let (workspace, task) = (request.workspace.clone(), request.task.clone());
         ToProcess::Task { request, fds }.send(&process.socket)?;
         // It takes nothing more: it ends once its task did.
-        // SAFETY: shutting down the writing half of a socket this device owns.
-        let _ = unsafe { libc::shutdown(process.socket.as_raw_fd(), libc::SHUT_WR) };
+        let _ = ToProcess::Finish.send(&process.socket);
         running.insert(key, process);
         tracing::info!(%workspace, %task, "a task's host started");
         Ok(())
@@ -963,7 +961,7 @@ impl Processes {
         app: &str,
         workspace: &str,
         view: crate::apps::OpenedView,
-    ) -> std::io::Result<std::os::unix::net::UnixStream> {
+    ) -> std::io::Result<tilo_socket::Stream> {
         let verified = (self.verifies)(workspace, app).map_err(std::io::Error::other)?;
         (self.opened)(app);
         let key = HostKey {
@@ -1023,7 +1021,7 @@ impl Processes {
     fn start(
         self: &Arc<Self>,
         key: &HostKey,
-        page: Option<(OwnedFd, OwnedFd)>,
+        page: Option<(Descriptor, Descriptor)>,
     ) -> std::io::Result<Host> {
         let storage = self.storage(key)?;
         let earlier = self.earlier(key);
@@ -1077,7 +1075,7 @@ impl Processes {
         key: &HostKey,
         generation: u64,
         pid: u32,
-        followed: &OwnedFd,
+        followed: &Descriptor,
         wait: Wait,
         said: Said,
     ) {
@@ -1185,9 +1183,8 @@ impl Processes {
                 .collect()
         };
         for process in closed {
-            // The process reads the end of its socket and ends once it runs nothing.
-            // SAFETY: shutting down the writing half of a socket the daemon owns.
-            let _ = unsafe { libc::shutdown(process.socket.as_raw_fd(), libc::SHUT_WR) };
+            // The process lets its link go and ends once it runs nothing.
+            let _ = ToProcess::Finish.send(&process.socket);
         }
     }
 }
@@ -1215,8 +1212,9 @@ fn spawn_host(
     key: &HostKey,
     storage: &Path,
     earlier: Option<(&Path, &Path)>,
-    page: Option<(OwnedFd, OwnedFd)>,
+    page: Option<(Descriptor, Descriptor)>,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
+    use std::os::fd::AsRawFd as _;
     let mut command = std::process::Command::new(launcher);
     command
         .arg(launcher::run::tilolang_process::SUBCOMMAND)
@@ -1271,7 +1269,7 @@ fn spawn_host(
     _key: &HostKey,
     _storage: &Path,
     _earlier: Option<(&Path, &Path)>,
-    _page: Option<(OwnedFd, OwnedFd)>,
+    _page: Option<(Descriptor, Descriptor)>,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -1285,10 +1283,11 @@ fn spawn_host(
     key: &HostKey,
     storage: &Path,
     _earlier: Option<(&Path, &Path)>,
-    page: Option<(OwnedFd, OwnedFd)>,
+    page: Option<(Descriptor, Descriptor)>,
 ) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
     use runtime_portal::process_link::{FD_ENV, PAGE_ENV, STORAGE_ENV};
     use std::ffi::OsString;
+    use std::os::fd::AsRawFd as _;
     let runtime = crate::apps::installed_runtime(launcher, &key.runtime)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
     let (ours, theirs) = runtime_portal::process_link::pair()?;
@@ -1332,6 +1331,56 @@ fn spawn_host(
         Started {
             pid,
             stderr: Some(Box::new(said)),
+            wait: Box::new(move || launched.wait()),
+        },
+    ))
+}
+
+/// [`spawn_host`] on Windows: the tilolang runtime's own binary, from the installed runtime
+/// package the host runs on (verified as on macOS), in an `AppContainer` of the app's own that
+/// reads the runtime, keeps its storage and reaches nothing else: no network, no pipe of the
+/// daemon's, no other app's storage. It inherits its link alone and takes everything else on it,
+/// and its job ends it, and whatever it started, with the daemon. A visitor's page window is
+/// started with two connections besides its link, which a confined Windows start does not hand
+/// over yet, so a page view is refused on Windows.
+#[cfg(windows)]
+fn spawn_host(
+    launcher: &Launcher,
+    key: &HostKey,
+    storage: &Path,
+    _earlier: Option<(&Path, &Path)>,
+    page: Option<(Descriptor, Descriptor)>,
+) -> std::io::Result<(runtime_portal::process_link::Descriptor, Started)> {
+    if page.is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "a page view's window is not started on a Windows device",
+        ));
+    }
+    let runtime = crate::apps::installed_runtime(launcher, &key.runtime)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error))?;
+    let mut command = std::process::Command::new(
+        runtime
+            .join(launcher::manifest::TILOLANG_BIN)
+            .with_extension(std::env::consts::EXE_EXTENSION),
+    );
+    command.env(runtime_portal::process_link::STORAGE_ENV, storage);
+    let (link, mut launched) = launcher_windows::launch(launcher_windows::LaunchRequest {
+        package_id: key.app.clone(),
+        command,
+        read: vec![runtime],
+        read_write: vec![storage.to_path_buf()],
+    })?;
+    let stderr = launched
+        .child
+        .stderr
+        .take()
+        .map(|stderr| Box::new(stderr) as Box<dyn std::io::Read + Send>);
+    Ok((
+        link,
+        Started {
+            pid: launched.pid(),
+            stderr,
             wait: Box::new(move || launched.wait()),
         },
     ))
@@ -1385,11 +1434,18 @@ fn last_lines(mut stderr: impl std::io::Read, tag: &str) -> VecDeque<String> {
 /// Why a process ended that did not say so itself: how it ended, as the daemon saw it, and the last
 /// lines of its error output.
 fn seen_end(status: &std::io::Result<std::process::ExitStatus>, last: &VecDeque<String>) -> String {
+    #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt as _;
+    #[cfg(unix)]
+    let signal = |status: &std::process::ExitStatus| status.signal();
+    // A Windows process always ends with a code: one the system's end of it set says so itself.
+    #[cfg(windows)]
+    let signal = |_: &std::process::ExitStatus| None::<i32>;
     let how = match status {
-        Ok(status) => match (status.code(), status.signal()) {
+        Ok(status) => match (status.code(), signal(status)) {
             (Some(code), _) => format!("it exited with status {code} without saying why"),
             (None, Some(signal)) => {
+                #[cfg(unix)]
                 let name = match signal {
                     libc::SIGTERM => " (SIGTERM)",
                     libc::SIGKILL => " (SIGKILL: killed, as memory pressure kills)",
@@ -1398,6 +1454,8 @@ fn seen_end(status: &std::io::Result<std::process::ExitStatus>, last: &VecDeque<
                     libc::SIGSYS => " (SIGSYS: its sandbox refused a system call)",
                     _ => "",
                 };
+                #[cfg(windows)]
+                let name = "";
                 format!("it was ended by signal {signal}{name} before it could say why")
             }
             (None, None) => format!("it ended ({status}) without saying why"),
@@ -1414,6 +1472,7 @@ fn seen_end(status: &std::io::Result<std::process::ExitStatus>, last: &VecDeque<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::OwnedFd;
 
     const NOTES: &str = "so.tilo.notes";
 
@@ -2044,8 +2103,11 @@ mod tests {
         processes.close_idle(Instant::now() + IDLE);
         assert!(!running(WORKSPACE), "idle for long enough, it is closed");
         assert!(
-            ToProcess::receive(&theirs).unwrap().is_none(),
-            "the process reads the end of its socket, and ends"
+            matches!(
+                ToProcess::receive(&theirs).unwrap(),
+                Some(ToProcess::Finish)
+            ),
+            "the process is told nothing more comes, and ends"
         );
         assert!(running(BUSY), "a process running a window is never idle");
         drop(busy_theirs);
@@ -2073,6 +2135,31 @@ mod tests {
         );
     }
 
+    /// Where [`a_task_host_reads_until_finished`] says what its link carried.
+    #[cfg(target_os = "linux")]
+    const TASK_HANDED_ENV: &str = "TILO_TEST_TASK_HANDED";
+
+    /// Run as the task's host the test launcher starts: read the link until the device says
+    /// nothing more comes, write what came, and end. Outside that, nothing to do.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_task_host_reads_until_finished() {
+        use std::os::fd::AsFd as _;
+        let Some(handed) = std::env::var_os(TASK_HANDED_ENV) else {
+            return;
+        };
+        let link = std::io::stdin().as_fd().try_clone_to_owned().unwrap();
+        let mut came = Vec::new();
+        loop {
+            match ToProcess::receive(&link).unwrap() {
+                Some(ToProcess::Finish) | None => break,
+                Some(ToProcess::Task { request, .. }) => came.push(request.task),
+                Some(other) => panic!("a task's host is handed its task alone: {other:?}"),
+            }
+        }
+        std::fs::write(handed, came.join("\n")).unwrap();
+    }
+
     /// An agent task's host is started as every tilolang process here is, through the launcher's
     /// tilolang process kind, and granted less than an app's: its own storage, and nothing the
     /// workspace's apps kept on this device. It is handed its task and nothing after it, so it
@@ -2085,17 +2172,21 @@ mod tests {
         let home = tempfile::tempdir().expect("a device's home");
         // What Notes kept of the workspace, which only Notes' own process is granted.
         let kept = earlier_documents(home.path(), WORKSPACE, NOTES);
-        // A launcher that says what it was asked to start, and holds the link it was handed
-        // until the device lets go of it.
+        // A launcher that says what it was asked to start, then runs as the host: it reads its
+        // link until the device says nothing more comes ([`a_task_host_reads_until_finished`]).
         let asked = home.path().join("asked");
         let handed = home.path().join("handed");
         let launcher = home.path().join("tilo-launcher");
         std::fs::write(
             &launcher,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexec cat > '{}'\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n\
+                 {}='{}' exec '{}' device::processes::tests::a_task_host_reads_until_finished \
+                 --exact --test-threads 1\n",
                 asked.display(),
-                handed.display()
+                TASK_HANDED_ENV,
+                handed.display(),
+                std::env::current_exe().unwrap().display(),
             ),
         )
         .expect("the launcher is written");
@@ -2167,9 +2258,10 @@ mod tests {
             !asked.contains(&kept.display().to_string()),
             "nothing Notes kept is granted to a task's host"
         );
-        assert!(
-            std::fs::metadata(&handed).expect("the link was read").len() > 0,
-            "the task was handed over the link"
+        assert_eq!(
+            std::fs::read_to_string(&handed).expect("the link was read"),
+            "run-1",
+            "the task was handed over the link, and nothing after it"
         );
     }
 

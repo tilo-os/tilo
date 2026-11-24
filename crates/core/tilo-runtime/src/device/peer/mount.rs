@@ -152,7 +152,8 @@ pub(crate) fn show(
 }
 
 /// Show the filesystem `make` makes at `at` as a synced folder: macOS's until its file provider
-/// writes, and Android's, where an app mounts nothing.
+/// writes, Windows's until its cloud files provider does, and Android's, where an app mounts
+/// nothing.
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn show(
     make: impl Fn() -> std::io::Result<QuickFS>,

@@ -163,7 +163,7 @@ fn verified_package(
 }
 
 /// `app`, installed here, verified as a launch verifies it, on runtimes installed here: on Linux
-/// as `tilo-launcher` verifies a launch, on macOS as the daemon verifies an app it launches
+/// as `tilo-launcher` verifies a launch, on macOS and Windows as the daemon verifies an app it launches
 /// (`crate::apps`). An app installed for runtimes since replaced runs nowhere until it is built
 /// again.
 pub(super) fn verified_installed(_workspace: &str, app: &str) -> Result<Verified, String> {
@@ -182,7 +182,7 @@ pub(super) fn verified_installed(_workspace: &str, app: &str) -> Result<Verified
             module: verified.module,
         })
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     return package_store::find_installed(app)
         .map_err(|error| format!("the package store cannot be read: {error}"))?
         .ok_or_else(|| format!("{app} is not installed"))

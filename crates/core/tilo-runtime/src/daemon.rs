@@ -5,18 +5,16 @@ use crate::seats::{AppAt, Seated, Seats};
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::{
     ffi::OsString,
     io::{self, BufRead, BufReader, Read, Write},
-    os::unix::{
-        net::{UnixListener, UnixStream},
-        process::CommandExt,
-    },
     path::{Path, PathBuf},
     process::Command,
     sync::{
         Arc, Condvar, Mutex, OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -25,6 +23,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_mcp::lines::{Answer, Frame, mcp_answer, read_frame, serve_lines, spawn_reader};
 use tilo_mcp::session_api::{Asking, bridge_stdio};
+use tilo_socket::{Listener, Stream};
 
 use crate::daemon_args::invalid;
 pub use crate::daemon_args::{Mode, default_profile, parse_args, validate_profile};
@@ -158,8 +157,8 @@ pub fn serve(profile: &Path, dev: bool) -> io::Result<()> {
 pub struct Running {
     native: PathBuf,
     stop: crate::device::serve::Stop,
-    /// A duplicate of the native endpoint's listener: shutting it down ends its thread's accept.
-    listener: UnixListener,
+    /// The native endpoint, which takes no connection once it is closing.
+    endpoint: Arc<Native>,
     accepting: Option<std::thread::JoinHandle<()>>,
     serving: Option<std::thread::JoinHandle<io::Result<()>>>,
     /// The person's services while they run: what starts their shell.
@@ -224,7 +223,7 @@ impl Running {
         // and the people signed in act as themselves.
         tilo_api::daemon::admission::install(
             tilo_api::daemon::admission::Admission::new(
-                rustix::process::geteuid().as_raw(),
+                crate::seats::own_account(),
                 tilo_api::daemon::system_daemon(),
             )
             .keeping_accounts_in(profile.to_path_buf())?,
@@ -234,6 +233,7 @@ impl Running {
         // once they run. This process has the device's lock, so only it removes a stale endpoint.
         let path = native_socket(profile)?;
         let listener = tilo_files::native::private::bind_socket(&path)?;
+        #[cfg(unix)]
         if tilo_api::daemon::system_daemon() {
             use std::os::unix::fs::PermissionsExt as _;
             // Every account reaches it; the admission decides what each is answered.
@@ -242,11 +242,11 @@ impl Running {
         let native = Arc::new(Native::new(
             device.answers(),
             crate::seats::peer_of,
-            tilo_api::daemon::admission::here(|| rustix::process::geteuid().as_raw()),
+            tilo_api::daemon::admission::here(crate::seats::own_account),
         ));
+        let endpoint = Arc::clone(&native);
         let accepting = {
             let native = Arc::clone(&native);
-            let listener = listener.try_clone()?;
             std::thread::Builder::new()
                 .name("tilo-native".into())
                 .spawn(move || {
@@ -267,7 +267,7 @@ impl Running {
         Ok(Self {
             native: path,
             stop,
-            listener,
+            endpoint,
             accepting: Some(accepting),
             serving: Some(serving),
             person,
@@ -297,8 +297,13 @@ impl Running {
     /// # Errors
     /// The person's services did not start in time, or the link could not be made.
     #[cfg(feature = "test-support")]
-    pub fn link_shell(&self, within: Duration) -> io::Result<std::os::fd::OwnedFd> {
-        Ok(self.person.within(within)?.shell_link()?.into())
+    pub fn link_shell(
+        &self,
+        within: Duration,
+    ) -> io::Result<runtime_portal::process_link::Descriptor> {
+        Ok(runtime_portal::packet::descriptor_of(
+            self.person.within(within)?.shell_link()?,
+        ))
     }
 
     /// The person the daemon serves, by their id (the hex of their root), once their services
@@ -341,10 +346,12 @@ impl Running {
         served
     }
 
-    /// Close the native endpoint and wait for its thread.
+    /// Close the native endpoint and wait for its thread: it takes no connection once it is
+    /// closing, and the one made here wakes its wait for the next.
     fn close(&mut self) {
-        let _ = rustix::net::shutdown(&self.listener, rustix::net::Shutdown::Both);
+        self.endpoint.closing.store(true, Ordering::Relaxed);
         if let Some(accepting) = self.accepting.take() {
+            drop(tilo_socket::connect(&self.native));
             let _ = accepting.join();
         }
         let _ = std::fs::remove_file(&self.native);
@@ -527,7 +534,7 @@ impl PersonShells {
 }
 
 impl crate::seats::Shells for PersonShells {
-    fn arrived(&self, importing: bool) -> io::Result<UnixStream> {
+    fn arrived(&self, importing: bool) -> io::Result<Stream> {
         let daemon = self.daemon()?;
         if !importing && let Err(error) = daemon.workspace() {
             tracing::warn!(%error, "the person who signed in has no workspace here yet");
@@ -540,7 +547,7 @@ impl crate::seats::Shells for PersonShells {
         &self,
         args: Vec<std::ffi::OsString>,
         env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
-        window: Option<std::os::fd::OwnedFd>,
+        window: Option<runtime_portal::process_link::Descriptor>,
     ) -> io::Result<std::process::Child> {
         let daemon = self.daemon()?;
         let mut command = std::process::Command::new(shell_program()?);
@@ -554,7 +561,7 @@ impl crate::seats::Shells for PersonShells {
         &self,
         _: Vec<std::ffi::OsString>,
         _: Vec<(std::ffi::OsString, std::ffi::OsString)>,
-        _: Option<std::os::fd::OwnedFd>,
+        _: Option<runtime_portal::process_link::Descriptor>,
     ) -> io::Result<std::process::Child> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -689,7 +696,7 @@ fn app_take(session: &Arc<Daemon>) -> AppTake {
 /// action wire alone, decided by the workspace's broker with the app's grants. Anything else an
 /// app asks, its MCP projection above all, is refused before its first call.
 fn serve_app(
-    stream: UnixStream,
+    stream: Stream,
     slot: ConnectionSlot,
     _seated: Seated,
     session: &Arc<Daemon>,
@@ -751,18 +758,17 @@ pub(crate) fn serve_for_test(
 }
 
 /// A connection the native endpoint takes, with the slot it counts against and who it is.
-type Take = Box<dyn Fn(UnixStream, ConnectionSlot, Seated) -> io::Result<()> + Send + Sync>;
+type Take = Box<dyn Fn(Stream, ConnectionSlot, Seated) -> io::Result<()> + Send + Sync>;
 
 /// A connection from an app the daemon started: the app it runs and the workspace it runs in,
 /// with the slot it counts against and who it is.
-type AppTake =
-    Box<dyn Fn(UnixStream, ConnectionSlot, Seated, AppAt) -> io::Result<()> + Send + Sync>;
+type AppTake = Box<dyn Fn(Stream, ConnectionSlot, Seated, AppAt) -> io::Result<()> + Send + Sync>;
 
 /// A connection of an account signed in as another person than the device's, taken as the key
 /// of theirs it acts as, with that key's certificate.
 type KeyTake = Box<
     dyn Fn(
-            UnixStream,
+            Stream,
             ConnectionSlot,
             Seated,
             ed25519_dalek::SigningKey,
@@ -791,6 +797,8 @@ struct Native {
     keys: Mutex<Option<Arc<KeyTake>>>,
     /// Told when [`Self::person`] is set.
     started: (Mutex<()>, Condvar),
+    /// Set as the daemon stops: the endpoint takes no more connections.
+    closing: AtomicBool,
 }
 
 impl Native {
@@ -809,16 +817,12 @@ impl Native {
             person: Mutex::new(None),
             apps: Mutex::new(None),
             keys: Mutex::new(None),
+            closing: AtomicBool::new(false),
         }
     }
 
     /// Serve `stream` the device's own actions, as the account `seated` asks them.
-    fn device_only(
-        &self,
-        stream: UnixStream,
-        slot: ConnectionSlot,
-        seated: Seated,
-    ) -> io::Result<()> {
+    fn device_only(&self, stream: Stream, slot: ConnectionSlot, seated: Seated) -> io::Result<()> {
         let answers = self.answers.seated(seated.clone());
         let frames = Frames::of_the_device(answers.clone());
         Endpoint {
@@ -890,8 +894,14 @@ impl Native {
 
     /// Serve each connection to `listener` as whatever answers when it comes ([`accept`]): an
     /// account the daemon does not serve is answered the device's own actions alone.
-    fn accept(self: &Arc<Self>, listener: &UnixListener) -> io::Result<()> {
+    fn accept(self: &Arc<Self>, listener: &Listener) -> io::Result<()> {
         accept(listener, |stream, slot| {
+            if self.closing.load(Ordering::Relaxed) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "the native endpoint closed",
+                ));
+            }
             let seated = Seated::new(self.seats.seat(&stream), Arc::clone(&self.seats));
             self.take(stream, slot, seated)
         })
@@ -899,7 +909,7 @@ impl Native {
 
     fn take(
         self: &Arc<Self>,
-        stream: UnixStream,
+        stream: Stream,
         slot: ConnectionSlot,
         seated: Seated,
     ) -> io::Result<()> {
@@ -964,8 +974,8 @@ impl Native {
 /// Hand each connection to `listener` to `take`, at most [`MAX_CONNECTIONS`] at once. One more
 /// is told there is no room and closed ([`refuse_busy`]).
 fn accept(
-    listener: &UnixListener,
-    take: impl Fn(UnixStream, ConnectionSlot) -> io::Result<()>,
+    listener: &Listener,
+    take: impl Fn(Stream, ConnectionSlot) -> io::Result<()>,
 ) -> io::Result<()> {
     let active = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
@@ -1134,7 +1144,7 @@ const _: () = assert!(MAX_CONNECTIONS == 64, "NO_ROOM names the bound");
 /// close: a JSON-RPC error that names no request, since none of its requests
 /// is read. The line is written without waiting on the client, so one that
 /// reads nothing cannot keep the endpoint from the next connection.
-fn refuse_busy(mut stream: UnixStream) {
+fn refuse_busy(mut stream: Stream) {
     let refusal = json!({"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":NO_ROOM}});
     let told = stream
         .set_write_timeout(Some(Duration::from_secs(1)))
@@ -1162,12 +1172,7 @@ impl<H> Clone for Endpoint<H> {
 impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> Endpoint<H> {
     /// Serve `stream` on its own thread, counted in `slot` while it lasts, as `seated` says
     /// who it is.
-    fn take(
-        &self,
-        stream: UnixStream,
-        slot: ConnectionSlot,
-        seated: Option<Seated>,
-    ) -> io::Result<()> {
+    fn take(&self, stream: Stream, slot: ConnectionSlot, seated: Option<Seated>) -> io::Result<()> {
         let endpoint = self.clone();
         std::thread::Builder::new()
             .name("tilo-native-mcp".into())
@@ -1179,7 +1184,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
     }
 
     /// Serve `stream` on this thread until it ends, `read` being what was read of it already.
-    pub(crate) fn serve(&self, stream: UnixStream, read: Vec<u8>, seated: Option<&Seated>) {
+    pub(crate) fn serve(&self, stream: Stream, read: Vec<u8>, seated: Option<&Seated>) {
         // The first line says whether the client asks to be carried to another device's MCP
         // server, or to have a shell started; anything else is served here, that line first. A
         // descriptor sent with it (a session's window connection, on its start) comes along.
@@ -1284,20 +1289,22 @@ impl Drop for ConnectionSlot {
 /// descriptor that rides it (the window connection a session in a window sends with its
 /// `shells#start`) is owned here rather than dropped by the reader.
 fn first_line(
-    stream: &UnixStream,
+    stream: &Stream,
     read: Vec<u8>,
-) -> io::Result<(Vec<u8>, Vec<u8>, Vec<std::os::fd::OwnedFd>)> {
+) -> io::Result<(
+    Vec<u8>,
+    Vec<u8>,
+    Vec<runtime_portal::process_link::Descriptor>,
+)> {
     let mut line = read;
     let mut descriptors = Vec::new();
     let mut received = false;
     while !line.contains(&b'\n') && line.len() < FIRST_LINE as usize {
         let (chunk, fds) = if received {
-            let mut chunk = [0_u8; 16 * 1024];
-            let taken = Read::read(&mut &*stream, &mut chunk)?;
-            (chunk.get(..taken).unwrap_or_default().to_vec(), Vec::new())
+            (read_some(stream)?, Vec::new())
         } else {
             received = true;
-            runtime_portal::fd_transport::recv_with_fds(stream)?
+            first_message(stream)?
         };
         if chunk.is_empty() {
             break;
@@ -1312,9 +1319,31 @@ fn first_line(
     Ok((line, rest, descriptors))
 }
 
+/// What `stream` holds now, up to a chunk of it.
+fn read_some(stream: &Stream) -> io::Result<Vec<u8>> {
+    let mut chunk = [0_u8; 16 * 1024];
+    let taken = Read::read(&mut &*stream, &mut chunk)?;
+    Ok(chunk.get(..taken).unwrap_or_default().to_vec())
+}
+
+/// The first message on `stream`, with the descriptors it carries: a Windows pipe carries bytes
+/// alone.
+fn first_message(
+    stream: &Stream,
+) -> io::Result<(Vec<u8>, Vec<runtime_portal::process_link::Descriptor>)> {
+    #[cfg(unix)]
+    {
+        runtime_portal::fd_transport::recv_with_fds(stream)
+    }
+    #[cfg(windows)]
+    {
+        Ok((read_some(stream)?, Vec::new()))
+    }
+}
+
 /// Answer one native connection that asks the seats alone ([`Seats::asks`]).
 fn serve_seat(
-    stream: &UnixStream,
+    stream: &Stream,
     input: impl Read + Send + 'static,
     seated: &Seated,
 ) -> io::Result<()> {
@@ -1340,7 +1369,7 @@ fn serve_seat(
 /// MCP requests as [`serve_lines`] does, overlapping one another. An `agent`'s connection hears
 /// first what [`Presence::answer_first`] answers.
 fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>(
-    stream: &UnixStream,
+    stream: &Stream,
     input: impl Read + Send + 'static,
     server: &Arc<McpServer<H>>,
     status: &Status,
@@ -1507,6 +1536,10 @@ pub fn connect(
 }
 
 /// Attach connected service descriptors and replace this host with the app.
+///
+/// # Errors
+/// The daemon does not run, the app's connections could not be made, or the app did not start.
+#[cfg(unix)]
 pub fn run_app(
     profile: &Path,
     app_id: &str,
@@ -1589,6 +1622,27 @@ pub fn run_app(
     Err(error)
 }
 
+/// An app on Windows is handed its services on its process link, by the daemon that starts it;
+/// nothing there attaches one by replacing a host process with it.
+///
+/// # Errors
+/// Always [`io::ErrorKind::Unsupported`].
+#[cfg(windows)]
+pub fn run_app(
+    _profile: &Path,
+    _app_id: &str,
+    _workspace: Option<&str>,
+    _executable: &OsString,
+    _args: &[OsString],
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "--run-app attaches a Unix app to the daemon; a Windows app is handed its services by \
+         the daemon that starts it",
+    ))
+}
+
+#[cfg(unix)]
 fn activate_existing(profile: &Path, app_id: &str) -> io::Result<bool> {
     let mut stream = tilo_files::native::socket::connect(&native_socket(profile)?)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -1617,6 +1671,7 @@ fn activate_existing(profile: &Path, app_id: &str) -> io::Result<bool> {
 
 /// Kernel-held admission survives exec and is released on owner exit. File
 /// contents and PID observations are diagnostics, never proof of a live owner.
+#[cfg(unix)]
 fn default_launch_guard(
     profile: &Path,
     app_id: &str,

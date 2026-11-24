@@ -4,6 +4,7 @@ use crate::device::services::Daemon;
 use crate::device::services::tests::isolated_root;
 use serde_json::Value;
 use std::io::BufReader;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use tilo_actions::remote::{CatalogueQuery, RemoteActionMessage};
@@ -509,8 +510,7 @@ fn a_folder_put_again_sends_none_of_its_bytes() {
     );
 }
 
-const FIRST_CONNECT_TEST: &str =
-    "device::local::tests::a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens";
+const FIRST_CONNECT_TEST: &str = "device::local::tests::a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens";
 
 /// `tilo ls` right after the daemon starts, on a computer whose person has no workspace yet: the
 /// daemon opens it as the command connects, through the one way it opens it for anyone, and the
@@ -560,8 +560,7 @@ fn a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens()
     );
 }
 
-const WORKSPACES_TEST: &str =
-    "device::local::tests::the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other";
+const WORKSPACES_TEST: &str = "device::local::tests::the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other";
 
 /// The provider whose one action asks its person first, as its contract says.
 const ASKS: &str = "so.tilo.probe";

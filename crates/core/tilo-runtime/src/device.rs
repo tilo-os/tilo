@@ -23,8 +23,7 @@ pub(crate) mod account;
 #[cfg(target_os = "linux")]
 mod agent_tools;
 mod asked;
-// The account sign-ins socket a Unix login's cloud service and origin connectors reach.
-#[cfg(unix)]
+// The account sign-ins socket a login's cloud service and origin connectors reach.
 pub mod account_sign_ins;
 mod commits;
 #[cfg(target_os = "linux")]
@@ -33,7 +32,6 @@ mod content;
 #[cfg(target_os = "linux")]
 pub mod environments;
 // The device's content, and on Tilo OS the steps that change it; elsewhere a device offers no steps.
-#[cfg(unix)]
 pub mod control;
 mod files_tree;
 #[cfg(test)]
@@ -53,16 +51,13 @@ pub(crate) mod migrate;
 pub mod nearby;
 mod offload_place;
 mod own_device;
-#[cfg(unix)]
 pub mod package_runs;
-#[cfg(unix)]
 pub mod packages;
 mod page_media;
 #[cfg(test)]
 mod page_ticket_tests;
 pub mod peer;
 pub(crate) mod presence;
-#[cfg(unix)]
 pub mod processes;
 /// The resources the daemon publishes to the apps attached to it: one table, a provider each.
 pub mod published;
@@ -72,7 +67,6 @@ mod search;
 pub mod serve;
 pub mod server_settings;
 pub mod services;
-#[cfg(unix)]
 mod shell;
 pub mod shortcuts;
 pub(crate) mod signing;
@@ -91,7 +85,6 @@ mod ticket_tests;
 pub(crate) mod unclaimed;
 #[cfg(test)]
 mod unclaimed_tests;
-#[cfg(unix)]
 mod vision;
 pub mod wake;
 pub mod wifi;

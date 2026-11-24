@@ -17,6 +17,7 @@
 //! call its actions. The window takes its patch connection on its process link and holds none of
 //! the app's data (no collaboration connection), exactly as a Linux session's window.
 
+use super::verified::{installed_runtime, verify_package};
 use super::{Apps, Launch, Sockets};
 use crate::host::{ServiceConnections, ServiceSockets};
 use app_catalogue::apps::InstalledApp;
@@ -282,35 +283,6 @@ fn hosted_window(apps: &Apps, app: &InstalledApp, workspace: &str) -> Result<Hos
     })
 }
 
-/// The installed tilolang app `installed`, verified as a launch of it verifies it, on a tilolang
-/// runtime installed here: what its tilolang process is handed
-/// ([`crate::device::package_runs`]).
-///
-/// # Errors
-/// It does not verify, is no tilolang app, or its runtime is not installed or does not verify.
-pub(crate) fn verified_tilolang(
-    installed: &package_store::registry::InstalledPackage,
-) -> Result<crate::device::package_runs::Verified, String> {
-    verify_package(installed)?;
-    let manifest = launcher::manifest::read_manifest(&installed.manifest_path)
-        .map_err(|error| error.to_string())?;
-    let runtime = manifest
-        .entrypoint
-        .runtime
-        .clone()
-        .filter(|runtime| launcher::manifest::is_tilolang(runtime))
-        .ok_or_else(|| format!("{} is no tilolang app", installed.id))?;
-    let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
-    installed_runtime(&catalog, &runtime)?;
-    let module = runtime_portal::process_link::Module::read(&installed.payload_root)
-        .map_err(|error| format!("its module: {error}"))?;
-    Ok(crate::device::package_runs::Verified {
-        app_runtime: manifest.runtime.clone().unwrap_or_default(),
-        runtime,
-        module,
-    })
-}
-
 /// Install the runtime packages the running Tilo.app carries (`Contents/Resources/runtimes/<package
 /// root>.tapp`, the tilolang runtime among them) that this profile does not have yet, through the
 /// one installer, as the Store installs any package: each must be the exact package its sealed
@@ -565,70 +537,4 @@ fn runtime_payload(
 ) -> Result<std::path::PathBuf, String> {
     installed_runtime(catalog, runtime)
         .map_err(|why| format!("refusing to launch {}: {why}", app.app_id))
-}
-
-/// The payload of the installed runtime package that provides `runtime` (`<name>/<version>`),
-/// proven as an app's own payload is: what a tilolang process runs from, and a window on that
-/// runtime.
-///
-/// # Errors
-/// No installed package provides it, or the one that does fails [`verify_package`].
-pub(crate) fn installed_runtime(
-    catalog: &package_store::Catalog,
-    runtime: &str,
-) -> Result<std::path::PathBuf, String> {
-    let provides = |package: &package_store::registry::InstalledPackage| {
-        let manifest = std::fs::read_to_string(&package.manifest_path)
-            .ok()
-            .and_then(|source| tilo_app_package::Manifest::from_toml_str(&source).ok());
-        manifest.is_some_and(|manifest| {
-            manifest.package.kind == tilo_app_package::Kind::Runtime
-                && manifest.package.provides.as_deref() == Some(runtime)
-        })
-    };
-    let package = catalog
-        .list()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .find(provides)
-        .ok_or_else(|| format!("the runtime it runs on, {runtime}, is not installed"))?;
-    verify_package(&package).map_err(|why| format!("its runtime {runtime}: {why}"))?;
-    Ok(package.payload_root)
-}
-
-/// Prove `package` is still what was installed: its record's signature by its publisher, the
-/// manifest and every payload file against the signed hashes, no file it did not ship, and a
-/// publisher key this profile has not revoked. The error says which check failed.
-fn verify_package(package: &package_store::registry::InstalledPackage) -> Result<(), String> {
-    use package_store::integrity;
-    let report =
-        integrity::verify(package, &package.payload_root).map_err(|error| error.to_string())?;
-    if let Some(fault) = report.faults.first() {
-        return Err(format!("its payload changed after install ({fault})"));
-    }
-    if let Some(unexpected) = report.unexpected.first() {
-        return Err(format!(
-            "its payload holds a file the package did not ship ({unexpected})"
-        ));
-    }
-    let signed = integrity::read_record(
-        &integrity::record_dir(package),
-        &package.id,
-        &package.package_id_hex,
-    )
-    .map_err(|error| error.to_string())?;
-    let revoked = tilo_app_package::RevocationList {
-        revoked: tilo_control::packages::trust()
-            .1
-            .into_iter()
-            .map(|key| tilo_app_package::RevokedKey {
-                pubkey_hex: key.pubkey_hex,
-                reason: key.reason,
-            })
-            .collect(),
-    };
-    if let Some(entry) = revoked.find(&signed.root.publisher_identity) {
-        return Err(format!("its publisher's key is revoked ({})", entry.reason));
-    }
-    Ok(())
 }

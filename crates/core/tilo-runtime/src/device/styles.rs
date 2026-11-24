@@ -20,13 +20,11 @@ pub(crate) struct StylesShown {
 /// else the person's own store) in their own workspace, from now on.
 pub(crate) fn publish(workspaces: &Arc<ServiceWorkspaces>) -> StylesShown {
     let styles = Styles::default();
-    workspaces
-        .copies()
-        .publish_own(
-            STYLES_APP,
-            tilo_workspace_service::workspaces::OwnReaders::Workspace,
-            Arc::new(styles.clone()),
-        );
+    workspaces.copies().publish_own(
+        STYLES_APP,
+        tilo_workspace_service::workspaces::OwnReaders::Workspace,
+        Arc::new(styles.clone()),
+    );
     let catalog = match package_store::Catalog::from_env() {
         Ok(catalog) => catalog,
         Err(error) => {
@@ -66,7 +64,9 @@ fn read_again(catalog: Option<package_store::Catalog>, styles: &Styles) {
     static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let styles = styles.clone();
     tilo_rt::app().spawn_blocking(move || {
-        let _one = READING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one = READING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let apps: Vec<(String, PathBuf)> = match catalog.as_ref().map(app_catalogue::apps::read) {
             Some(Ok(apps)) => apps
                 .into_iter()

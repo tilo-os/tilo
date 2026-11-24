@@ -741,6 +741,8 @@ mod tests {
         assert_eq!(app.image(), None);
     }
 
+    /// An app is handed its session connection as an inherited descriptor, which only Unix does.
+    #[cfg(unix)]
     #[test]
     fn an_app_with_no_session_connection_refuses_rather_than_keeping_a_private_copy() {
         assert!(

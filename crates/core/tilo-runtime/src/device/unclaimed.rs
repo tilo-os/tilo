@@ -103,7 +103,6 @@ impl ThisDevice {
             }),
             None,
         );
-        #[cfg(unix)]
         match super::packages::PackageCache::this_device(&self.key.verifying_key().to_bytes()) {
             Ok(cache) => return answers.with_packages(cache),
             Err(why) => tracing::warn!(%why, "this device keeps no packages"),
@@ -436,7 +435,7 @@ impl From<String> for Refusal {
 /// login name. Root asking for its daemon names the daemon's own account.
 fn founder_name(uid: u32) -> String {
     let uid = if uid == tilo_api::daemon::admission::ROOT {
-        rustix::process::geteuid().as_raw()
+        crate::seats::own_account()
     } else {
         uid
     };
@@ -470,7 +469,6 @@ impl ActionProvider for DeviceOnly {
                 let mut page = device_only_catalogue(&query);
                 page.providers.push(provider(""));
                 page.providers.push(crate::seats::provider());
-                #[cfg(unix)]
                 if self.packages().is_some() {
                     page.providers.push(CatalogueProvider {
                         provider: super::packages::PROVIDER.to_owned(),

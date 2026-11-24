@@ -90,7 +90,7 @@ pub fn pair() -> io::Result<(Stream, Stream)> {
         ConnectNamedPipe(server.as_raw_handle(), at)
     }) {
         Ok(_) => {}
-        Err(error) if error.raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32) => {}
+        Err(error) if error.raw_os_error() == Some(ERROR_PIPE_CONNECTED.cast_signed()) => {}
         Err(error) => return Err(error),
     }
     let mut client_pid = 0;
@@ -220,7 +220,12 @@ pub fn wait(
     timeout: Option<Duration>,
 ) -> io::Result<()> {
     // Each stream is watched for a message and for its own shutdown.
-    if streams.len() * 2 + signals.len() > MOST_WATCHED {
+    if streams
+        .len()
+        .saturating_mul(2)
+        .saturating_add(signals.len())
+        > MOST_WATCHED
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "a wait watches at most 64 handles: two for each stream, one for each signal",
@@ -261,7 +266,11 @@ pub fn wait(
     let handles: Vec<HANDLE> = pending
         .iter()
         .map(|pending| pending.event.as_raw_handle())
-        .chain(signals.iter().map(|signal| signal.as_raw_handle()))
+        .chain(
+            signals
+                .iter()
+                .map(std::os::windows::io::AsRawHandle::as_raw_handle),
+        )
         .chain(
             streams
                 .iter()
@@ -362,8 +371,12 @@ mod tests {
         let signal = super::super::event().unwrap();
         // SAFETY: the event just made.
         unsafe { windows_sys::Win32::System::Threading::SetEvent(signal.as_raw_handle()) };
-        use std::os::windows::io::AsHandle as _;
-        wait(&[&client], &[signal.as_handle()], None).unwrap();
+        wait(
+            &[&client],
+            &[std::os::windows::io::AsHandle::as_handle(&signal)],
+            None,
+        )
+        .unwrap();
         assert!(
             !client.ready().unwrap(),
             "a signal ends it with nothing to read"

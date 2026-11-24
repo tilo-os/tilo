@@ -5,9 +5,9 @@
 //! as that agent's, for the person, under the agent's grants there. The desktop session and the
 //! device's daemon serve such clients alike.
 
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_socket::Stream;
 
 use collab_types::signer::DeviceSigner;
 use iroh::{EndpointAddr, EndpointId};
@@ -76,7 +76,7 @@ impl OtherDevices {
     /// action frame signed by the agent's own key this device made, and decided there. Refused,
     /// with why, where no device of the person's goes by that name. Blocks the calling thread,
     /// which must not be one of the runtime's.
-    pub fn serve_forward(&self, mut stream: UnixStream, forward: &tilo_mcp::devices::Forward) {
+    pub fn serve_forward(&self, mut stream: Stream, forward: &tilo_mcp::devices::Forward) {
         let (device, workspace) = match self.target(forward) {
             Ok(target) => target,
             Err(reason) => {

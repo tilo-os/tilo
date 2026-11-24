@@ -20,10 +20,10 @@ impl Keeping {
     fn holding(resources: &[&str]) -> Arc<Self> {
         let keeping = Self::default();
         for resource in resources {
-            keeping
-                .readings
-                .lock_recover()
-                .insert((*resource).to_owned(), format!("{{\"name\":\"{resource}\"}}"));
+            keeping.readings.lock_recover().insert(
+                (*resource).to_owned(),
+                format!("{{\"name\":\"{resource}\"}}"),
+            );
         }
         Arc::new(keeping)
     }
@@ -141,7 +141,12 @@ fn a_change_reaches_the_provider_that_keeps_the_resource_and_no_other() {
         .serving(&FIRST, first)
         .serving(&SECOND, second);
     let changed = published
-        .invoke(&caller(), "device:second", "set", br#"{"name":"changed"}"#.to_vec())
+        .invoke(
+            &caller(),
+            "device:second",
+            "set",
+            br#"{"name":"changed"}"#.to_vec(),
+        )
         .blocking_recv()
         .unwrap();
     assert!(matches!(changed, runtime_collab::wire::Receipt::Done(_)));
@@ -175,7 +180,10 @@ fn a_watch_is_kept_by_the_provider_and_goes_when_the_table_lets_it() {
     let sent = readings.try_recv().unwrap();
     assert!(matches!(
         sent,
-        runtime_collab::wire::Event::Reading { reading: Some(_), .. }
+        runtime_collab::wire::Event::Reading {
+            reading: Some(_),
+            ..
+        }
     ));
     published.unwatch(watch);
     let refused = published

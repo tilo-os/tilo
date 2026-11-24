@@ -14,9 +14,9 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write as _};
-use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_socket::Stream;
 
 use tilo_actions::remote::{
     self, ActionCallError, ActionProvider, Caller, RemoteActionFrame, RemoteActionMessage,
@@ -114,7 +114,7 @@ impl Frames {
     /// Answer `stream`'s frames, `first` and then each line `input` reads, until it ends
     /// ([`remote::serve_lines`]), each in the workspace it names: admitted there once, on its
     /// first frame.
-    pub(crate) fn serve(&self, mut stream: UnixStream, first: &[u8], input: impl BufRead) {
+    pub(crate) fn serve(&self, mut stream: Stream, first: &[u8], input: impl BufRead) {
         // The tree's actions run their steps on the process's runtime, as they do for MCP.
         let _runtime = tilo_rt::app().handle().enter();
         let own = match (self.tree)(None) {
@@ -174,7 +174,7 @@ pub(crate) fn is_frame(line: &[u8]) -> bool {
 }
 
 /// Tell `stream`'s peer why it is not served, and close.
-pub(crate) fn refuse(mut stream: UnixStream, why: &str) {
+pub(crate) fn refuse(mut stream: Stream, why: &str) {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
     let _ = writeln!(stream, "{}", remote::line_refusal("not_permitted", why));
     let _ = stream.shutdown(std::net::Shutdown::Both);

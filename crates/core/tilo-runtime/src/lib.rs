@@ -9,48 +9,22 @@
 //! ([`device`]).
 
 #[cfg(unix)]
-use std::{
-    io,
-    path::Path,
-    process::{Child, Command},
-};
+use std::process::{Child, Command};
+use std::{io, path::Path};
 
-#[cfg(unix)]
 mod apps;
-#[cfg(unix)]
 pub mod cli;
-#[cfg(unix)]
 pub mod daemon;
-#[cfg(windows)]
-#[path = "daemon_windows.rs"]
-mod daemon;
 mod daemon_args;
-#[cfg(unix)]
 pub mod device;
-#[cfg(unix)]
+pub mod host;
 mod i18n;
-#[cfg(unix)]
 pub mod key_sessions;
-#[cfg(unix)]
 pub mod offload;
-#[cfg(unix)]
 mod os_search;
-#[cfg(unix)]
 pub mod other_devices;
-#[cfg(unix)]
 pub mod personal_devices;
-#[cfg(unix)]
 pub mod profile;
-// Where this platform reaches a profile's services and starts an app against
-// them: Unix sockets and inherited descriptors on Unix, and the Windows edge
-// that refuses in words until named pipes and handle passing are here.
-#[cfg(unix)]
-#[path = "host/unix.rs"]
-pub mod host;
-#[cfg(windows)]
-#[path = "host/windows.rs"]
-pub mod host;
-#[cfg(unix)]
 mod seats;
 
 // Workspace admission decodes peer bytes in automerge worker processes started
@@ -68,12 +42,10 @@ pub const BLOB_SOCKET: &str = "blobs.sock";
 /// enough that an app called again finds it running, short enough that the apps of an afternoon
 /// don't hold a small device's memory. It is the same for an app's process whichever language
 /// the app is written in, and the call that comes after starts it again.
-#[cfg(unix)]
 pub const IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.
-#[cfg(unix)]
 pub trait RuntimeServices: Sized {
     /// The action host MCP callers browse and invoke through.
     type ActionProvider: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static;
@@ -128,7 +100,9 @@ pub trait RuntimeServices: Sized {
         workspace: &str,
     ) -> io::Result<tilo_mcp::SessionFactory<Self::ActionProvider>>;
 
-    /// Spawn `command` as `app_id`, connected to this session's services.
+    /// Spawn `command` as `app_id`, connected to this session's services: inherited at their own
+    /// numbers, which only Unix does.
+    #[cfg(unix)]
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child>;
 
     /// Where MCP answers read the content apps stored; `None` for a host

@@ -18,11 +18,12 @@
 //! ([`tilo_workspace_service::apps::services::AuthenticatedApplicationLaunch::opened_for`]):
 //! stamped as theirs, refused where they may not make it, and reading only what they may read.
 
-use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use runtime_portal::packet::descriptor_of;
+use runtime_portal::process_link::Descriptor;
 use tilo_actions::remote::Caller;
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_service::apps::services::{AuthenticatedApplicationLaunch, WindowlessStart};
@@ -63,7 +64,7 @@ pub(crate) type FindsLauncher = Box<dyn Fn() -> Result<Launcher, String> + Send 
 #[cfg(target_os = "macos")]
 pub(crate) struct HostedWindow {
     pub instance: u64,
-    pub patch: OwnedFd,
+    pub patch: Descriptor,
 }
 
 /// The tilolang instances this daemon starts; see the module docs.
@@ -94,7 +95,7 @@ pub(crate) struct Instances {
 /// exactly the chosen file. `None` on a platform where the desktop session serves it instead.
 #[cfg(target_os = "macos")]
 impl Instances {
-    fn chooser_for(&self, app: &str, workspace: &str) -> Option<OwnedFd> {
+    fn chooser_for(&self, app: &str, workspace: &str) -> Option<Descriptor> {
         let serving = tilo_dialogs::chooser_service::Serving {
             person: Some(Arc::new(MacPerson)),
             documents: self.documents.clone(),
@@ -103,13 +104,13 @@ impl Instances {
         tilo_dialogs::chooser_service::pair(serving, app, workspace)
             .inspect_err(|error| tracing::warn!(app, %error, "a hosted app gets no file chooser"))
             .ok()
-            .map(OwnedFd::from)
+            .map(descriptor_of)
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 impl Instances {
-    fn chooser_for(&self, _app: &str, _workspace: &str) -> Option<OwnedFd> {
+    fn chooser_for(&self, _app: &str, _workspace: &str) -> Option<Descriptor> {
         None
     }
 }
@@ -251,7 +252,7 @@ impl Instances {
         &self,
         app: &str,
         workspace: &str,
-        origin: Option<OwnedFd>,
+        origin: Option<Descriptor>,
     ) -> Result<WindowlessStart, String> {
         self.start(
             (app, workspace, origin),
@@ -276,7 +277,7 @@ impl Instances {
     pub(crate) fn open_view(
         &self,
         caller: &Caller,
-        (app, workspace, origin): (&str, &str, Option<OwnedFd>),
+        (app, workspace, origin): (&str, &str, Option<Descriptor>),
         record: Option<String>,
         reveal: Option<String>,
     ) -> Result<OpenedView, String> {
@@ -294,8 +295,8 @@ impl Instances {
             .map_or_else(|| acting.by.to_string(), ToOwned::to_owned);
         let (view, patch) = runtime_portal::process_link::pair()
             .map_err(|error| format!("the view's patch connection: {error}"))?;
-        let (link, page) = std::os::unix::net::UnixStream::pair()
-            .map_err(|error| format!("the view's page link: {error}"))?;
+        let (link, page) =
+            tilo_socket::pair().map_err(|error| format!("the view's page link: {error}"))?;
         self.start(
             (app, workspace, origin),
             person,
@@ -305,7 +306,7 @@ impl Instances {
         )?;
         Ok(OpenedView {
             patch: view,
-            page: OwnedFd::from(page),
+            page: descriptor_of(page),
             link,
         })
     }
@@ -323,7 +324,7 @@ impl Instances {
         &self,
         app: &str,
         workspace: &str,
-        origin: Option<OwnedFd>,
+        origin: Option<Descriptor>,
     ) -> Result<HostedWindow, String> {
         let (window, patch) = runtime_portal::process_link::pair()
             .map_err(|error| format!("the window's patch connection: {error}"))?;
@@ -345,10 +346,10 @@ impl Instances {
     /// none runs: shown over `patch` when it has one. The instance it started.
     fn start(
         &self,
-        (app, workspace, origin): (&str, &str, Option<OwnedFd>),
+        (app, workspace, origin): (&str, &str, Option<Descriptor>),
         person: String,
         shows: Shows,
-        patch: Option<OwnedFd>,
+        patch: Option<Descriptor>,
         (document, reveal): (Option<String>, Option<String>),
     ) -> Result<u64, String> {
         if !crate::device::package_runs::runs_in_process(app) {
@@ -392,7 +393,7 @@ impl Instances {
         workspace: &str,
         instance: u64,
         shows: Shows,
-    ) -> Result<OwnedFd, String> {
+    ) -> Result<Descriptor, String> {
         let mut stream = tilo_files::native::socket::connect(&self.collab)
             .map_err(|error| format!("{app} could not reach its workspace: {error}"))?;
         self.made.lock_recover().push(Made {
@@ -409,17 +410,17 @@ impl Instances {
                 "{app}'s instance was not named to its workspace: {error}"
             ));
         }
-        Ok(OwnedFd::from(stream))
+        Ok(descriptor_of(stream))
     }
 
     /// The instance's identity-service connection, opened and named for `app` in `workspace` as
     /// the launcher names a launched app's.
-    fn identity(&self, app: &str, workspace: &str) -> Result<OwnedFd, String> {
+    fn identity(&self, app: &str, workspace: &str) -> Result<Descriptor, String> {
         let mut stream = tilo_files::native::socket::connect(&self.identity)
             .map_err(|error| format!("{app} could not reach the identity service: {error}"))?;
         launcher::services::write_identity_handshake(&mut stream, app, workspace)
             .map_err(|error| format!("{app}'s identity connection: {error}"))?;
-        Ok(OwnedFd::from(stream))
+        Ok(descriptor_of(stream))
     }
 
     /// The launch the collaboration service attests a connection from this process as: the

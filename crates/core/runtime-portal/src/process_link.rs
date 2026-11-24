@@ -113,6 +113,9 @@ pub enum ToProcess {
         instance: u64,
         command: MediaCommand,
     },
+    /// Nothing more comes: the process lets its link go and ends once it runs nothing. This
+    /// is the session's half of closing the link, which a Windows pipe cannot close one way.
+    Finish,
 }
 
 impl Packet for ToProcess {
@@ -125,7 +128,8 @@ impl Packet for ToProcess {
             | Self::Patch { .. }
             | Self::Locale(_)
             | Self::Access(_)
-            | Self::MediaCommand { .. } => false,
+            | Self::MediaCommand { .. }
+            | Self::Finish => false,
         };
         if over {
             Err("a module over the link's limit")

@@ -216,8 +216,8 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
             && let Some(open) = api.as_ref()
         {
             match ToProcess::receive(open) {
+                Ok(Some(ToProcess::Finish) | None) => api = None,
                 Ok(Some(message)) => take(&mut host, open, message),
-                Ok(None) => api = None,
                 // The packet was taken: the API carries the next one.
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                     tracing::error!(%error, "the API carried something unreadable");
@@ -275,6 +275,7 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
                 tracing::error!(task = request.task, %error, "a task did not start");
             }
         }
+        ToProcess::Finish => {}
         other @ (ToProcess::Window { .. } | ToProcess::Patch { .. }) => {
             tracing::error!(
                 ?other,

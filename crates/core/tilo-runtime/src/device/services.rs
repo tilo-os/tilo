@@ -23,11 +23,11 @@ use crate::personal_devices::PersonalDevices;
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, apps, host, profile};
 use ed25519_dalek::SigningKey;
 use serde_json::{Map, Value, json};
+#[cfg(unix)]
+use std::process::{Child, Command};
 use std::{
     io,
-    os::fd::OwnedFd,
     path::{Path, PathBuf},
-    process::{Child, Command},
     sync::{Arc, Mutex},
 };
 use tilo_actions::remote::invocation_record::Invocations;
@@ -99,7 +99,6 @@ pub struct Daemon {
     policy_origin: tilo_workspace_service::apps::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
     /// The links of the shells this daemon starts ([`Self::start_shell`]).
-    #[cfg(unix)]
     shell_links: Arc<tilo_workspace_service::apps::shell::ShellLinks>,
     workspaces: Arc<ServiceWorkspaces>,
     _identity: IdentityBrokerHandle,
@@ -119,7 +118,6 @@ pub struct Daemon {
     #[cfg(not(windows))]
     _styles: super::styles::StylesShown,
     /// The account sign-ins socket, while this login has a runtime directory to serve it in.
-    #[cfg(unix)]
     account_sign_ins: Option<super::account_sign_ins::AccountSignIns>,
     _media: profile::MediaHost,
     /// The endpoint's router, held so the workspace host, the device actions, the work this
@@ -311,7 +309,7 @@ pub fn this_accounts_root_dir() -> io::Result<std::path::PathBuf> {
 /// The uid of the account this process runs as.
 #[must_use]
 pub fn this_account_uid() -> u32 {
-    rustix::process::geteuid().as_raw()
+    crate::seats::own_account()
 }
 
 /// The root this computer keeps for the account `uid` alone, when it keeps one.
@@ -366,7 +364,7 @@ pub(crate) fn root_record_for_person(person: [u8; 32]) -> io::Result<std::path::
         // A person's own service, which is no account's but its owner's, opens the root kept for
         // the account it runs as: no sign-in names that account there.
         if !admission.system() {
-            let uid = rustix::process::geteuid().as_raw();
+            let uid = crate::seats::own_account();
             if let Ok(record) = root_record(uid)
                 && tilo_identity::store::load_metadata_from_path(&record)
                     .is_ok_and(|metadata| metadata.group_public_key == person)
@@ -432,7 +430,7 @@ pub(crate) fn device_person() -> Option<[u8; 32]> {
         return Some(held.person);
     }
     // A person's own service keeps their root under the account it runs as.
-    let record = root_record(rustix::process::geteuid().as_raw()).ok()?;
+    let record = root_record(crate::seats::own_account()).ok()?;
     tilo_identity::store::load_metadata_from_path(&record)
         .ok()
         .map(|metadata| metadata.group_public_key)
@@ -509,7 +507,7 @@ pub fn device_root_record() -> io::Result<std::path::PathBuf> {
 /// Where the device's person's root is kept: under the account the device was set up from, or,
 /// in a person's own service, under the account it runs as.
 fn device_person_root_record() -> io::Result<std::path::PathBuf> {
-    let uid = device_person_uid().unwrap_or_else(|| rustix::process::geteuid().as_raw());
+    let uid = device_person_uid().unwrap_or_else(crate::seats::own_account);
     root_record(uid)
 }
 
@@ -625,8 +623,7 @@ impl Daemon {
     ///
     /// # Errors
     /// The dispatch's socket does not take the connection.
-    #[cfg(unix)]
-    pub fn shell_link(&self) -> io::Result<std::os::unix::net::UnixStream> {
+    pub fn shell_link(&self) -> io::Result<tilo_socket::Stream> {
         use runtime_collab::wire::shell::SHELL_MAGIC;
         use std::io::Write as _;
         let secret = self
@@ -634,7 +631,7 @@ impl Daemon {
             .make(tilo_workspace_service::apps::shell::ShellCaller {
                 person: self.workspaces.device_cert().user_public_key,
             });
-        let mut link = std::os::unix::net::UnixStream::connect(self.broker.app_socket())?;
+        let mut link = tilo_socket::connect(self.broker.app_socket())?;
         link.write_all(SHELL_MAGIC)?;
         link.write_all(&secret)?;
         Ok(link)
@@ -657,7 +654,11 @@ impl Daemon {
     /// # Errors
     /// No link could be made, or the shell did not start.
     #[cfg(target_os = "linux")]
-    pub fn start_shell(&self, mut command: Command, window: Option<OwnedFd>) -> io::Result<Child> {
+    pub fn start_shell(
+        &self,
+        mut command: Command,
+        window: Option<runtime_portal::process_link::Descriptor>,
+    ) -> io::Result<Child> {
         use std::os::fd::AsRawFd as _;
         /// Where the shell finds its link.
         const SHELL_FD: i32 = 3;
@@ -735,7 +736,6 @@ impl Daemon {
     ///
     /// # Errors
     /// As [`apps::Apps::open_view`].
-    #[cfg(unix)]
     pub fn open_view(
         &self,
         caller: &Caller,
@@ -743,7 +743,7 @@ impl Daemon {
         workspace: &str,
         record: Option<String>,
         reveal: Option<String>,
-    ) -> Result<std::os::unix::net::UnixStream, String> {
+    ) -> Result<tilo_socket::Stream, String> {
         self.apps.open_view(caller, app, workspace, record, reveal)
     }
 
@@ -1437,9 +1437,7 @@ impl Daemon {
         );
         workspaces.keep_search(Arc::clone(&search));
         stage("starting the collaboration broker");
-        #[cfg(unix)]
         let shell_links = Arc::default();
-        #[cfg(unix)]
         let shell_dispatch: Arc<super::shell::Dispatching> = Arc::default();
         let invocations: Arc<Invocations> = Arc::default();
         // The person's shortcuts, saved into the workspaces this device holds and run here: the
@@ -1466,11 +1464,8 @@ impl Daemon {
                 key_sessions: key_sessions.as_ref(),
                 personal: personal.clone(),
                 nearby: Arc::clone(&nearby),
-                #[cfg(unix)]
                 shell_links: &shell_links,
-                #[cfg(unix)]
                 shell_dispatch: &shell_dispatch,
-                #[cfg(unix)]
                 identity: identity_broker.handover(),
             },
             brokers,
@@ -1509,7 +1504,6 @@ impl Daemon {
         }
         // The device's image model, which apps ask by the addresses it publishes rather than
         // through a connection of their own: one copy on this daemon's dispatch.
-        #[cfg(unix)]
         if let Ok(model) =
             super::vision::ImageModel::start(&sockets.join(BLOB_SOCKET), &search, &actor)
         {
@@ -1595,7 +1589,6 @@ impl Daemon {
         start_agents(&broker, &workspaces, &tickets, initiative);
         // The apps installed here that keep a long-lived connection: the trigger runner takes
         // each one's turn where this device has what it needs, and runs it while it holds it.
-        #[cfg(unix)]
         workspaces.copies().run_connections(
             Arc::clone(&apps) as Arc<dyn tilo_workspace_service::work::HostConnections>
         );
@@ -1642,7 +1635,6 @@ impl Daemon {
             );
         }
         // So is its package cache, the one it answered before the login too.
-        #[cfg(unix)]
         match super::packages::PackageCache::this_device(&identity.cert.device_public_key) {
             Ok(cache) => {
                 super::packages::follow(&cache, Arc::clone(&workspaces));
@@ -1666,7 +1658,6 @@ impl Daemon {
         );
         // The workspaces' accounts and their sign-ins, for this login's cloud service and the
         // origin connectors this daemon starts.
-        #[cfg(unix)]
         let account_sign_ins = account_sign_ins(
             &workspaces,
             Caller::authenticated(
@@ -1676,7 +1667,6 @@ impl Daemon {
         );
         // The origin connectors this device starts are handed their workspace's account sign-ins
         // by them.
-        #[cfg(unix)]
         if let Some(sign_ins) = &account_sign_ins {
             apps.hand_sign_ins(Box::new(sign_ins.hands()));
         }
@@ -1687,11 +1677,9 @@ impl Daemon {
             _files_tree: files_tree,
             #[cfg(not(windows))]
             _styles: styles,
-            #[cfg(unix)]
             account_sign_ins,
             policy_origin,
             broker,
-            #[cfg(unix)]
             shell_links,
             other_devices: other_devices(&workspaces),
             apps,
@@ -1782,7 +1770,6 @@ impl Daemon {
             }));
         }
         // The person's shell reaches the one dispatch their own runs do, as them.
-        #[cfg(unix)]
         match daemon.person() {
             Ok(person) => shell_dispatch.serve(person),
             Err(error) => tracing::warn!(%error, "this daemon's shell reaches no dispatch"),
@@ -1905,7 +1892,6 @@ fn asked_store(
 /// connections `links` holds a vouch for as that vouch's connector: `None`, said in the log, where
 /// there is no runtime directory or the socket cannot be made there, and the cloud service and
 /// origin connectors then reach no account's sign-in.
-#[cfg(unix)]
 fn account_sign_ins(
     workspaces: &ServiceWorkspaces,
     person: Caller,
@@ -2065,20 +2051,17 @@ struct BrokerParts<'a> {
     /// answers.
     nearby: Arc<super::nearby::Nearby>,
     /// The links of the shells this daemon starts.
-    #[cfg(unix)]
     shell_links: &'a Arc<tilo_workspace_service::apps::shell::ShellLinks>,
     /// The person's key sessions, which serve the workspaces' apps as pages: a page's view's
     /// call is the browser's that shows it.
     key_sessions: Option<&'a Arc<crate::key_sessions::KeySessions>>,
     /// The dispatch those shells' calls reach, once the broker serves.
-    #[cfg(unix)]
     shell_dispatch: &'a Arc<super::shell::Dispatching>,
     /// The person's shortcuts, which the workspaces' events are saved as.
     shortcuts: Arc<dyn ShortcutLibraryServices>,
     /// The identity service, serving the connections those shells take for it from the person's
     /// apps.
-    #[cfg(unix)]
-    identity: Arc<dyn Fn(std::os::unix::net::UnixStream) + Send + Sync>,
+    identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
 }
 
 /// Start the collaboration broker over this profile's services.
@@ -2304,7 +2287,6 @@ fn broker_services(
         ),
         // The person's desktop session: their workspaces' documents, governance and standing,
         // reached through this device alone.
-        #[cfg(unix)]
         shell: Some(Arc::new(super::shell::services(
             parts.workspaces,
             parts.shell_links,
@@ -2337,7 +2319,6 @@ fn broker_services(
 
 /// The device's tilolang processes, as the person's shell hands them its windows' instances on
 /// its link: for the workspaces this device has for them alone. `None` where no process can start.
-#[cfg(unix)]
 fn shell_processes(
     apps: &Arc<apps::Apps>,
     workspaces: &Arc<ServiceWorkspaces>,
@@ -2446,6 +2427,7 @@ impl RuntimeServices for Daemon {
         ))
     }
 
+    #[cfg(unix)]
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
         let child = host::launch(
             command,
@@ -4700,7 +4682,6 @@ impl Daemon {
     /// The account sign-ins this daemon serves, which hand an origin connector its own
     /// ([`super::account_sign_ins::AccountSignIns::hand`]); `None` where this login has no runtime
     /// directory to serve them in.
-    #[cfg(unix)]
     #[must_use]
     pub fn account_sign_ins(&self) -> Option<&super::account_sign_ins::AccountSignIns> {
         self.account_sign_ins.as_ref()
@@ -4878,12 +4859,9 @@ fn serve_key_sessions(
         )),
         sessions,
     );
-    #[cfg(unix)]
     key_sessions
         .pages_served()
         .show_through(Arc::new(AppViews(Arc::clone(apps))));
-    #[cfg(not(unix))]
-    let _ = apps;
     Ok(())
 }
 
@@ -4921,10 +4899,8 @@ pub(super) fn action_provider(
 
 /// Apps' views on this device's web pages: each an instance of the app this daemon starts for
 /// the page's person, laid out by a window process that draws nothing ([`apps::Apps::open_view`]).
-#[cfg(unix)]
 struct AppViews(Arc<apps::Apps>);
 
-#[cfg(unix)]
 impl crate::key_sessions::PageViews for AppViews {
     fn open(
         &self,

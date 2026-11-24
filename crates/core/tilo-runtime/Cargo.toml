@@ -173,13 +173,6 @@ ui = { package = "tilo-ui", path = "../../ui/ui-core" }
 # the web UI it serves.
 tilo-server = { path = "../tilo-server", features = ["web"] }
 
-# Agents run Rust apps' components in process, which a Windows device builds without; this
-# selection goes when the agent host stops linking the apps.
-[target.'cfg(not(windows))'.dependencies]
-tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agents"] }
-
-# What only a Unix host's sandboxes, sockets and descriptors use.
-[target.'cfg(unix)'.dependencies]
 # The workspaces' accounts and their sign-ins, told on the account sign-ins socket, and the
 # secret's buffers wiped once sent.
 accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
@@ -187,9 +180,6 @@ zeroize.workspace = true
 # The launcher's manifest view, service names and developer-override check;
 # its binary builds every Linux app sandbox.
 launcher = { path = "../launcher" }
-libc.workspace = true
-# The log a daemon keeps trims, and the socket it stops taking connections at.
-rustix = { workspace = true, features = ["fs", "net", "std"] }
 # The device's package cache: its published actions are this library's changes.
 package-actions = { path = "../package-actions" }
 # The repositories a version the workspaces run is fetched from.
@@ -202,6 +192,20 @@ registry-types = { package = "tilo-registry-types", path = "../registry-types" }
 tempfile.workspace = true
 # How long a runtime build nothing runs on is kept before the cache collects it.
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
+
+# Agents run Rust apps' components in process, which a Windows device builds without; this
+# selection goes when the agent host stops linking the apps.
+[target.'cfg(not(windows))'.dependencies]
+tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agents"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+# The log a daemon keeps trims, and the socket it stops taking connections at.
+rustix = { workspace = true, features = ["fs", "net", "std"] }
+
+# Every tilolang process a Windows device starts runs in an AppContainer of its app's own.
+[target.'cfg(windows)'.dependencies]
+launcher-windows = { path = "../launcher-windows" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

@@ -109,6 +109,11 @@ impl Launched {
             })
             .map(|(pid, _)| *pid)
             .collect();
+        // No app process runs with no window on Windows: only tilolang apps run there, in
+        // their processes, whose connections are their connectors.
+        #[cfg(windows)]
+        drop(pids);
+        #[cfg(unix)]
         for pid in pids {
             let Ok(raw) = libc::pid_t::try_from(pid) else {
                 continue;

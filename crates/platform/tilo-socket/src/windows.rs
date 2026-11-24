@@ -77,8 +77,8 @@ pub(crate) fn wide(name: &str) -> Vec<u16> {
     OsStr::new(name).encode_wide().chain(Some(0)).collect()
 }
 
-/// Whether the process at the other end of `pipe` runs as `account`.
-pub(crate) fn peer_is(pipe: RawHandle, server_end: bool, account: &Account) -> io::Result<bool> {
+/// The process at the other end of `pipe`.
+fn peer_pid(pipe: RawHandle, server_end: bool) -> io::Result<u32> {
     let mut pid = 0;
     // SAFETY: a live pipe handle and a valid output pointer.
     let found = unsafe {
@@ -91,7 +91,12 @@ pub(crate) fn peer_is(pipe: RawHandle, server_end: bool, account: &Account) -> i
     if found == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(Account::of_process(pid)?.is(account))
+    Ok(pid)
+}
+
+/// Whether the process at the other end of `pipe` runs as `account`.
+pub(crate) fn peer_is(pipe: RawHandle, server_end: bool, account: &Account) -> io::Result<bool> {
+    Ok(Account::of_process(peer_pid(pipe, server_end)?)?.is(account))
 }
 
 /// A listening pipe: the instance the next client connects to.
@@ -171,7 +176,7 @@ impl Listener {
             }) {
                 Ok(_) => {}
                 // A client that connected before the call is connected all the same.
-                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32) => {}
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_CONNECTED.cast_signed()) => {}
                 Err(error) => return Err(error),
             }
             // The next client finds an instance waiting while this one is served.
@@ -318,6 +323,15 @@ impl Stream {
         (self.pipe, self.connection.server_end)
     }
 
+    /// The process at the other end, as the system says: on a pipe of this
+    /// account's, a process of this same account (`crate::account`).
+    ///
+    /// # Errors
+    /// The system does not say, as for an end no process holds any more.
+    pub fn peer_pid(&self) -> io::Result<u32> {
+        peer_pid(self.pipe.as_raw_handle(), self.connection.server_end)
+    }
+
     /// Another handle to the same connection, sharing its timeouts and its
     /// shutdown.
     ///
@@ -328,6 +342,21 @@ impl Stream {
             pipe: self.pipe.try_clone()?,
             connection: Arc::clone(&self.connection),
         })
+    }
+
+    /// Whether reads and writes wait for the other end: on a pipe here they always do, bounded
+    /// by the timeouts, so only `false` is taken.
+    ///
+    /// # Errors
+    /// `Unsupported` for `true`.
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        if nonblocking {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a pipe always waits: bound it with a timeout instead",
+            ));
+        }
+        Ok(())
     }
 
     /// Bound each read: one that waits longer is cancelled and fails with
@@ -414,7 +443,7 @@ impl Stream {
                 if error.kind() == io::ErrorKind::NotConnected
                     || [ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED]
                         .iter()
-                        .any(|code| error.raw_os_error() == Some(*code as i32)) =>
+                        .any(|code| error.raw_os_error() == Some((*code).cast_signed())) =>
             {
                 Ok(0)
             }
@@ -710,7 +739,7 @@ mod tests {
                 0
             );
             let _text = LocalAllocation(text.cast());
-            let length = (0..).take_while(|&at| *text.add(at) != 0).count();
+            let length = (0..usize::MAX).take_while(|&at| *text.add(at) != 0).count();
             String::from_utf16(std::slice::from_raw_parts(text, length)).unwrap()
         };
         let sid = Account::current().unwrap().sid_string().unwrap();

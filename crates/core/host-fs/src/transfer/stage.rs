@@ -9,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 
 use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
 
+#[cfg(unix)]
 use super::publish::{self, Names};
 use super::{Failure, TransferObserver, copy};
 
@@ -27,6 +28,13 @@ pub(crate) const PAYLOAD: &str = "payload";
 pub struct Staging {
     receiving: File,
     receiving_dir: cap_std::fs::Dir,
+    #[cfg_attr(
+        not(unix),
+        expect(
+            dead_code,
+            reason = "only a Unix publish names the folder in what it says"
+        )
+    )]
     receiving_display: PathBuf,
     container: PathBuf,
     name: OsString,
@@ -65,6 +73,7 @@ impl Staging {
     ) -> io::Result<Self> {
         for _ in 0..32 {
             let name = OsString::from(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4().simple()));
+            #[cfg_attr(not(unix), expect(unused_mut, reason = "only Unix sets a mode"))]
             let mut builder = cap_std::fs::DirBuilder::new();
             #[cfg(unix)]
             {
@@ -156,6 +165,7 @@ impl Staging {
             let Component::Normal(name) = component else {
                 return Err(io::Error::other("a received folder is not portable"));
             };
+            #[cfg_attr(not(unix), expect(unused_mut, reason = "only Unix sets a mode"))]
             let mut builder = cap_std::fs::DirBuilder::new();
             #[cfg(unix)]
             {
