@@ -2030,6 +2030,10 @@ impl DirectSync {
                 // the device on the other end: this side's own flag is what
                 // this side's catch-up already obeys.
                 opens: opens && !dialing,
+                #[cfg(not(target_arch = "wasm32"))]
+                scope: admit.scope,
+                #[cfg(target_arch = "wasm32")]
+                scope: LinkScope::default(),
                 catch_up,
                 first_answer,
                 opened: Arc::clone(&opened),
@@ -3800,6 +3804,10 @@ struct Sending {
     /// as it opens them: it is sent a write of a record it did not open only
     /// when the record is one every device is sent.
     opens: bool,
+    /// What the host admitted the device on the other end to
+    /// ([`LinkScope::reads`]): a device confined to one record is sent that
+    /// record's live writes and no other's, as its history is.
+    scope: LinkScope,
     /// What this stream opens with.
     catch_up: Vec<Authored>,
     /// Set once the first history this device answers is written: its live
@@ -3861,11 +3869,12 @@ async fn send_authored(
         remote,
         dialing,
         opens,
+        scope,
         catch_up,
         mut first_answer,
         opened,
     } = sending;
-    let reaches = link.reach_of(remote, LinkScope::default());
+    let reaches = link.reach_of(remote, scope);
     let takes = |message: &NeighbourMsg| reaches(message) && opened_admits(message, opens, &opened);
     for authored in catch_up.iter().filter(|authored| takes(&authored.message)) {
         write_authored(&mut send, authored).await?;
