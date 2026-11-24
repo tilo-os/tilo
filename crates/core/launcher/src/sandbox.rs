@@ -23,6 +23,13 @@ pub fn runtime_library_path(version: &str) -> PathBuf {
     runtime_mount_for(version).join("lib")
 }
 
+/// The `NODE_PATH` of a sandbox running a script on the runtime bundle mounted for `version`: the
+/// bundle's `lib/node_modules`, where bun resolves a package the runtime provides (the SDK's native
+/// addon) that the app carries none of.
+pub fn runtime_node_path(version: &str) -> PathBuf {
+    runtime_mount_for(version).join("lib/node_modules")
+}
+
 /// The selected signed SDK's catalog, private to this application's namespace.
 pub const RUNTIME_FONT_CATALOG_PATH: &str = "/run/tilo-fonts";
 

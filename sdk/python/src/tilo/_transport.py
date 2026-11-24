@@ -16,9 +16,15 @@ import os
 import re
 import time
 from collections.abc import Mapping
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-import httpx
+if TYPE_CHECKING:
+    # The HTTP client belongs to the key transport alone. The daemon transport
+    # imports none, so a program that reaches this computer's daemon needs only
+    # the package and its extension — including in a runtime that ships the SDK
+    # without httpx — and a key transport that cannot find it fails at its first
+    # call, where it is installed for.
+    import httpx
 
 from . import __version__ as VERSION
 from ._errors import (
@@ -191,6 +197,8 @@ class KeyTransport:
 
     def client(self) -> httpx.AsyncClient:
         """The httpx client these calls go through."""
+        import httpx
+
         if self._http is not None:
             return self._http
         if self._owned is None:
@@ -306,6 +314,8 @@ class KeyTransport:
         self._opened = True
 
     async def _send(self, request: Mapping[str, Any]) -> tuple[int, Mapping[str, str], str]:
+        import httpx
+
         try:
             response = await self.client().post(
                 f"{self.url}{MCP_PATH}", json=request, headers=self._headers()

@@ -285,6 +285,12 @@ and `python/3.13.18+python` are the releases those two packages carry today;
 package from `os/external-assets/github-assets.tsv`, which pins every asset's
 SHA-256.
 
+Each runtime package also carries the SDK's native part, so a program reaches
+this computer's daemon without shipping a build of it: bun resolves
+`import("tilo-sdk-native")` from the runtime's own modules (the launcher names
+that directory in `NODE_PATH` for a script entrypoint), and CPython imports
+`tilo` and its `_native` extension from the runtime's own lib directory.
+
 ## Publish
 
 ```sh

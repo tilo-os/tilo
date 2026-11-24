@@ -768,18 +768,19 @@ fn splice_runtime_mounts(
 ) -> Result<Vec<String>, LaunchError> {
     let required = resolve_required_runtimes(manifest, opts)?;
     preflight_entrypoint_runtime(manifest, opts, runtime, &required)?;
-    splice_runtime_mounts_with(argv, opts, runtime.is_some(), &required)
+    splice_runtime_mounts_with(argv, manifest, opts, runtime.is_some(), &required)
 }
 
 /// [`splice_runtime_mounts`] for required runtimes already resolved.
 fn splice_runtime_mounts_with(
     argv: &mut Vec<String>,
+    manifest: &ManifestView,
     opts: &LaunchOptions,
     resolved_runtime_present: bool,
     required: &[(PathBuf, String)],
 ) -> Result<Vec<String>, LaunchError> {
     let mut paths = splice_minimal_libs(argv, opts, resolved_runtime_present)?;
-    paths.extend(splice_resolved_required_runtimes(argv, required)?);
+    paths.extend(splice_resolved_required_runtimes(argv, manifest, required)?);
     Ok(paths)
 }
 
@@ -802,9 +803,11 @@ fn resolve_required_runtimes(
         .collect()
 }
 
-/// Mount each bundle read-only at its runtime mount, before the trailing entrypoint token.
+/// Mount each bundle read-only at its runtime mount, before the trailing entrypoint token, and name
+/// the entrypoint runtime's modules where a script finds them.
 fn splice_resolved_required_runtimes(
     argv: &mut Vec<String>,
+    manifest: &ManifestView,
     bundles: &[(PathBuf, String)],
 ) -> Result<Vec<String>, LaunchError> {
     let mut mounts = Vec::new();
@@ -814,7 +817,47 @@ fn splice_resolved_required_runtimes(
         argv.push(entry);
         mounts.push(mount.display().to_string());
     }
+    splice_runtime_node_path(argv, manifest, bundles)?;
     Ok(mounts)
+}
+
+/// `NODE_PATH` names the module directories bun resolves a bare import from.
+const NODE_PATH_ENV: &str = "NODE_PATH";
+
+/// A script entrypoint imports the packages its runtime provides (the SDK's native addon) rather
+/// than carrying them in its payload. bun resolves a bare `import` through `NODE_PATH` — Node
+/// honours it for `require` alone — so a script whose runtime bundle carries `lib/node_modules`
+/// gets the mount's directory, read-only like the rest of the runtime. A compiled entrypoint
+/// resolves no package and gets none.
+fn splice_runtime_node_path(
+    argv: &mut Vec<String>,
+    manifest: &ManifestView,
+    bundles: &[(PathBuf, String)],
+) -> Result<(), LaunchError> {
+    if manifest.entrypoint.script.is_none() {
+        return Ok(());
+    }
+    let Some(raw) = manifest.entrypoint.runtime.as_deref() else {
+        return Ok(());
+    };
+    let Some((_, version)) = raw.split_once('/') else {
+        return Ok(());
+    };
+    let Some((root, _)) = bundles.iter().find(|(_, held)| held == version) else {
+        return Ok(());
+    };
+    if !root.join("lib/node_modules").is_dir() {
+        return Ok(());
+    }
+    splice_cli_setenv(
+        argv,
+        Some((
+            NODE_PATH_ENV.to_string(),
+            crate::sandbox::runtime_node_path(version)
+                .display()
+                .to_string(),
+        )),
+    )
 }
 
 /// [`resolve_required_runtimes`] then [`splice_resolved_required_runtimes`].
@@ -823,7 +866,7 @@ fn splice_required_runtimes(
     manifest: &crate::manifest::ManifestView,
     opts: &LaunchOptions,
 ) -> Result<Vec<String>, LaunchError> {
-    splice_resolved_required_runtimes(argv, &resolve_required_runtimes(manifest, opts)?)
+    splice_resolved_required_runtimes(argv, manifest, &resolve_required_runtimes(manifest, opts)?)
 }
 
 /// Verify the bundle at `path`: `require_runtime_publisher`, else the trust list, else any signed
@@ -2617,8 +2660,15 @@ fn build_initial_argv(
     dbus_plan: Option<&DBusBindPlan>,
     capabilities: &CapabilityPlan,
 ) -> Result<BuiltArgv, LaunchError> {
-    let (command, setenv, entry_tail) =
-        build_entry_argv(manifest, payload_root, opts, runtime_arg, binds, dbus_plan, capabilities)?;
+    let (command, setenv, entry_tail) = build_entry_argv(
+        manifest,
+        payload_root,
+        opts,
+        runtime_arg,
+        binds,
+        dbus_plan,
+        capabilities,
+    )?;
     let mut args = script_args(manifest);
     args.extend(entry_tail);
     Ok((command, setenv, args))
@@ -3037,6 +3087,7 @@ pub(crate) fn launch_with_context(
     splice_game_ntsync(&mut argv, latency_sensitive)?;
     let ro_paths = splice_runtime_mounts_with(
         &mut argv,
+        manifest,
         opts,
         resolved_runtime.is_some(),
         &required_runtimes,

@@ -2,7 +2,9 @@
 //! Python and a JavaScript one. Each is started by the launcher under `bwrap` exactly as any
 //! app, on the signed runtime bundle of its runtime package (`so.tilo.runtime.python`,
 //! `so.tilo.runtime.bun`), handed the daemon's native endpoint as a descriptor the launcher
-//! connected itself, and reaching the network only through its egress grant.
+//! connected itself, and reaching the network only through its egress grant. Each imports the
+//! SDK from the runtime it runs on — the addon among the runtime's modules, and Python's package
+//! in its own lib directory — so neither carries a build of the native part in its payload.
 //!
 //! The runtime packages are built from their pinned upstream releases by
 //! `tools/apps/runtime_packages.sh`; the `script-runtimes` t check hands their unpacked payloads
@@ -30,15 +32,31 @@ const BLOCKED: &str = "blocked.invalid";
 /// the release it was built for; this test builds the host's minimal set under a name of its own.
 const APP_RUNTIME: &str = "test-app-runtime";
 
-/// What the Python probe does, in order, one line of output each: where it runs from, what the
-/// daemon answered on the descriptor it was handed, and what each HTTP request through the proxy
-/// the sandbox names came back with.
+/// What the Python probe does, in order, one line of output each: where it runs from, that the
+/// runtime's own lib directory provides the SDK, what the daemon answered on the descriptor it was
+/// handed, and what each HTTP request through the proxy the sandbox names came back with.
 const PYTHON_SCRIPT: &str = r#"
-import os, socket, sys, urllib.request
+import asyncio, os, socket, sys, urllib.request
+
+import tilo
+from tilo import _native
 
 print("SCRIPT " + sys.argv[0])
 print("MODULE " + os.environ.get("TILO_APP_MODULE", ""))
 print("WORKSPACE " + os.environ.get("TILO_WORKSPACE_ID", ""))
+
+
+async def probe_addon():
+    try:
+        await _native.connect("/nonexistent/tilo-native.sock")
+        return "unexpected-connect"
+    except Exception as error:
+        said = str(error)
+        return "loaded" if "/nonexistent/tilo-native.sock" in said else "failed " + said
+
+
+print("ADDON " + asyncio.run(probe_addon()))
+print("ADDONFILE " + _native.__file__)
 native = socket.socket(fileno=int(os.environ["TILO_SVC_NATIVE_FD"]))
 native.sendall(b'{"version":1,"message":{"probe":"hello"}}\n')
 print("NATIVE " + native.makefile().readline().strip())
@@ -67,6 +85,18 @@ const mount = process.env.TILO_APP_MODULE ?? "";
 console.log("SCRIPT " + process.argv[1]);
 console.log("MODULE " + mount);
 console.log("WORKSPACE " + (process.env.TILO_WORKSPACE_ID ?? ""));
+
+// The runtime's own module directory provides the SDK: a bare import resolves through NODE_PATH,
+// and connecting loads the addon (a socket that answers nothing then fails after it loaded).
+const marker = "/nonexistent/tilo-native.sock";
+try {
+  const { connect } = await import("tilo-sdk-native");
+  await connect(marker);
+  console.log("ADDON unexpected-connect");
+} catch (error) {
+  const said = String(error && error.message ? error.message : error);
+  console.log("ADDON " + (said.includes(marker) ? "loaded" : "failed " + said));
+}
 
 const native = Number(process.env.TILO_SVC_NATIVE_FD);
 fs.writeSync(native, '{"version":1,"message":{"probe":"hello"}}\n');
@@ -127,10 +157,11 @@ struct RuntimePackage {
 /// [`RuntimePackage`] for `name`, or `None` when no package tree was handed to this run.
 fn runtime_package(name: &str) -> Option<RuntimePackage> {
     let root = PathBuf::from(std::env::var_os("TILO_RUNTIME_PACKAGES")?);
-    let manifest: toml::Value =
-        toml::from_str(&std::fs::read_to_string(root.join(format!("{name}.manifest.toml")))
-            .expect("the runtime package's manifest is in the package tree"))
-        .expect("the runtime package's manifest is TOML");
+    let manifest: toml::Value = toml::from_str(
+        &std::fs::read_to_string(root.join(format!("{name}.manifest.toml")))
+            .expect("the runtime package's manifest is in the package tree"),
+    )
+    .expect("the runtime package's manifest is TOML");
     let provides = manifest["package"]["provides"]
         .as_str()
         .expect("a runtime package names what it provides")
@@ -149,7 +180,9 @@ fn runtime_package(name: &str) -> Option<RuntimePackage> {
     );
     let bundle = root.join(version);
     assert!(
-        bundle.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).is_file(),
+        bundle
+            .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME)
+            .is_file(),
         "the {name} package's payload is not at {}",
         bundle.display()
     );
@@ -214,6 +247,7 @@ fn server() -> u16 {
 /// Start `script` under `package`'s runtime, in the app sandbox, and answer what it printed; the
 /// daemon's endpoint is listened to here and answered with the peer it saw.
 fn probe(package: &str, script_name: &str, script: &str) -> String {
+    let runtime = package;
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     home.env().remove(runtime_bundle::RUNTIME_DIR_ENV);
     let root = home.root().to_path_buf();
@@ -248,7 +282,7 @@ fn probe(package: &str, script_name: &str, script: &str) -> String {
         "the frame arrived: {sent}"
     );
 
-    assert_script_saw(&out, script_name);
+    assert_script_saw(&out, script_name, runtime);
     out
 }
 
@@ -350,7 +384,7 @@ fn workspace_grants(root: &Path) -> PathBuf {
 /// What the script printed, as the sandbox and the launch must have given it: where it runs from,
 /// its module and workspace, the daemon's peer, its grant's host answered and any other refused,
 /// and the procfs a script runtime reads masked.
-fn assert_script_saw(out: &str, script_name: &str) {
+fn assert_script_saw(out: &str, script_name: &str, runtime: &str) {
     let said = |prefix: &str| -> Vec<String> {
         out.lines()
             .filter_map(|line| line.strip_prefix(prefix))
@@ -366,6 +400,21 @@ fn assert_script_saw(out: &str, script_name: &str) {
     assert_eq!(said("MODULE "), vec![mount.display().to_string()], "{out}");
     assert_eq!(said("WORKSPACE "), vec!["workspace-a".to_owned()], "{out}");
     assert_eq!(
+        said("ADDON "),
+        vec!["loaded".to_owned()],
+        "the runtime's modules provide the SDK, and its native part loads in the sandbox: {out}"
+    );
+    if runtime == "python" {
+        // CPython found the package in the runtime's own lib directory: nothing in the payload
+        // carried it.
+        let files = said("ADDONFILE ");
+        assert_eq!(files.len(), 1, "{out}");
+        assert!(
+            files[0].starts_with("/run/tilo-runtime/"),
+            "the Python extension is the mounted runtime's: {out}"
+        );
+    }
+    assert_eq!(
         said("NATIVE "),
         vec![format!("{{\"peer\":{}}}", std::process::id())],
         "the connection's peer is the launching process, the one a daemon records: {out}"
@@ -376,7 +425,9 @@ fn assert_script_saw(out: &str, script_name: &str) {
         "the host the grant names answers: {out}"
     );
     assert!(
-        said("GET ").get(1).is_some_and(|line| line.starts_with("refused ")),
+        said("GET ")
+            .get(1)
+            .is_some_and(|line| line.starts_with("refused ")),
         "any other host is refused: {out}"
     );
     assert_eq!(said("GET ").len(), 2, "{out}");

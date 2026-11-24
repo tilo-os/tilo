@@ -17,6 +17,7 @@ const require = createRequire(import.meta.url);
 // name of each one's binary and package.
 const PLATFORMS = {
   "linux-x64": "linux-x64-gnu",
+  "linux-arm64": "linux-arm64-gnu",
 };
 
 let native;

@@ -139,11 +139,23 @@ runtime_plan="$out/runtime-plan.json"
 python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
 mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
 features=$(jq -r '.features | join(",")' "$runtime_plan")
+# The language runtimes the selected apps name (`optional-runtimes`): each runtime package
+# carries the SDK's native part, so an app imports it from the runtime instead of shipping it.
+mapfile -t language_runtimes < <(jq -r '.runtimes[]? | split("/")[0]' "$plan" | sort -u)
+sdk_packages=()
+for language_runtime in "${language_runtimes[@]}"; do
+    case "$language_runtime" in
+        bun) sdk_packages+=(-p tilo-sdk-node-native) ;;
+        python) sdk_packages+=(-p tilo-sdk-python-native) ;;
+    esac
+done
+[[ ${#sdk_packages[@]} == 0 ]] || sdk_packages+=(-p tilo-automerge-isolate)
 if [[ -z $prebuilt ]]; then
 # A compile that only reads the apps (TILO_APP_SKIP_TOOLS=1 with TILO_APP_COMPILE_ONLY, the
 # app-binaries check) packs nothing, so it needs no packing tools.
 if [[ ${TILO_APP_SKIP_TOOLS:-} != 1 && $tools_built != 1 ]]; then
-    (cd "$repo_root" && cargo build --profile "$tools_profile" --locked -p tilo-app-package-cli -p tilo-runtime-bundle)
+    (cd "$repo_root" && cargo build --profile "$tools_profile" --locked \
+        -p tilo-app-package-cli -p tilo-runtime-bundle "${sdk_packages[@]}")
     if (( tilolang_apps > 0 )); then
         # `tilolang build` stages, packs and signs each package's tapp.
         (cd "$repo_root" && cargo build --profile "$tools_profile" --locked \
@@ -384,7 +396,7 @@ fi
 mkdir -p "$out/runtime-package/language"
 # shellcheck source=/dev/null
 . "$repo_root/tools/apps/runtime_packages.sh"
-while IFS= read -r runtime; do
+for runtime in "${language_runtimes[@]}"; do
     case "$runtime" in
         tilo-runtime | tilolang) continue ;;
         bun | python) ;;
@@ -395,7 +407,7 @@ while IFS= read -r runtime; do
     esac
     runtime_package_build "$runtime" "$release_dir/tilo-runtime-bundle" "$release_dir" \
         "$identity" "$out" "$runtime_package_version" >/dev/null
-done < <(jq -r '.runtimes[]? | split("/")[0]' "$plan" | sort -u)
+done
 
 # Every language other than English, as the registry offers it: one signed
 # `kind = "language-pack"` package per locale, data for every architecture

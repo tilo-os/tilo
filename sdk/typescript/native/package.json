@@ -17,7 +17,8 @@
     "index.d.ts"
   ],
   "optionalDependencies": {
-    "tilo-sdk-native-linux-x64-gnu": "0.1.0"
+    "tilo-sdk-native-linux-x64-gnu": "0.1.0",
+    "tilo-sdk-native-linux-arm64-gnu": "0.1.0"
   },
   "scripts": {
     "test": "bun test"

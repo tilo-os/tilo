@@ -111,6 +111,15 @@ fn install_signed_bundle(
     xdg_data_home: &Path,
     version: &str,
 ) -> (PathBuf, runtime_bundle::Identity) {
+    install_signed_bundle_with(xdg_data_home, version, &[])
+}
+
+/// [`install_signed_bundle`] carrying `extra_libs` as well (a directory lands under `lib/<name>`).
+fn install_signed_bundle_with(
+    xdg_data_home: &Path,
+    version: &str,
+    extra_libs: &[PathBuf],
+) -> (PathBuf, runtime_bundle::Identity) {
     let host = tempfile::tempdir().unwrap();
     for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
         let p = host.path().join(rel);
@@ -129,7 +138,7 @@ fn install_signed_bundle(
             from: Some(host.path()),
             arch: Some("x86_64"),
             identity: Some(&id_path),
-            extra_libs: &[],
+            extra_libs,
             extra_bins: &[],
         },
     )
@@ -541,6 +550,50 @@ tilo_test_env::scenario! {
                 launcher::run::LaunchError::RuntimeBundleSignature { .. }
             ),
             "{refused}"
+        );
+    }
+
+    phase a_script_entrypoints_runtime_names_its_modules_and_a_binary_gets_none;
+    {
+        let mut home = runtime_home();
+        let modules = tempfile::tempdir().unwrap();
+        let package = modules.path().join("node_modules/tilo-sdk-native");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("package.json"), "{}").unwrap();
+        let (installed, identity) =
+            install_signed_bundle_with(home.data(), "2026.10.0-engine", &[modules
+                .path()
+                .join("node_modules")]);
+        let mut m = hello_manifest(BTreeMap::new());
+        m.required_runtimes = vec!["tilo-runtime/2026.10.0-engine".to_string()];
+        m.entrypoint.runtime = Some("tilo-runtime/2026.10.0-engine".to_string());
+        m.entrypoint.script = Some("main.js".to_string());
+        let trust_file = home.root().join("trust.txt");
+        std::fs::write(&trust_file, format!("{}\n", identity.public_key_hex())).unwrap();
+        home.env()
+            .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
+        let opts = offline_options();
+
+        assert!(installed.join("lib/node_modules/tilo-sdk-native/package.json").is_file());
+        let (argv, mounts) = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap();
+        assert_eq!(mounts, ["/run/tilo-runtime/2026.10.0-engine"]);
+        assert!(
+            argv.windows(3).any(|w| w
+                == [
+                    "--setenv",
+                    "NODE_PATH",
+                    "/run/tilo-runtime/2026.10.0-engine/lib/node_modules"
+                ]),
+            "a script entrypoint resolves packages from its runtime: {argv:?}"
+        );
+        assert_eq!(argv.last().map(String::as_str), Some("entry"));
+
+        // A compiled entrypoint imports no package: nothing names a module directory for it.
+        m.entrypoint.script = None;
+        let (argv, _) = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap();
+        assert!(
+            !argv.iter().any(|arg| arg == "NODE_PATH"),
+            "a binary entrypoint gets no module path: {argv:?}"
         );
     }
 

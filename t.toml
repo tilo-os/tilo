@@ -1508,7 +1508,8 @@ work=$TMPDIR/script-runtimes
 packages=$work/packages
 bin=$CARGO_TARGET_DIR/debug
 mkdir -p "$packages"
-cargo build --locked -p tilo-runtime-bundle -p tilo-app-package-cli
+cargo build --locked -p tilo-runtime-bundle -p tilo-app-package-cli \
+    -p tilo-sdk-node-native -p tilo-sdk-python-native -p tilo-automerge-isolate
 identity=$work/publisher.json
 "$bin/tilo-runtime-bundle" key generate --out "$identity"
 # The packages are fixtures for the launcher's tests: a throwaway publisher, a version of no
