@@ -1992,7 +1992,7 @@ impl Device {
             self.runtime.spawn(async move {
                 let execution = ExecutionLease::mint();
                 if let Err(error) = service.serve_transport(&link, None, &execution).await {
-                    tracing::debug!(%error, "a dialled device's link ended in error");
+                    tracing::warn!(%error, "a dialled device's link ended in error: what it asks back over it goes unanswered");
                 }
                 execution.close();
             });
