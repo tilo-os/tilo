@@ -505,7 +505,7 @@ impl Workspaces {
         runtime.spawn(async move {
             if let Some(device) = device {
                 let keys_here = tokio::time::timeout(
-                    crate::own_device::OPEN_WAIT,
+                    super::sealed_documents::OPEN_WAIT,
                     super::sealed_documents::wait_for_group_keys(&device, &workspace),
                 )
                 .await
