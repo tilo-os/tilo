@@ -55,7 +55,6 @@ impl DocumentInterface {
     }
 
     fn set_text_selections(&self, _selections: Vec<TextSelection>) -> fdo::Result<bool> {
-        crate::read_only::admit()?;
         Err(unsupported())
     }
 }

@@ -400,7 +400,6 @@ tilo_test_env::scenario! {
             let plan = launcher::sandbox::DBusBindPlan {
                 host_socket: guard.socket_path().to_path_buf(),
                 sandbox_path: launcher::dbus_proxy::sandbox_bus_path(1234),
-                atspi: None,
             };
 
             let pid = guard.pid().expect("proxy pid");
