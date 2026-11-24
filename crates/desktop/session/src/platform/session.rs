@@ -1666,7 +1666,7 @@ impl Session {
         // The layouts this machine installs and the keys of the one inspected, drawn for a pane.
         services
             .borrow_mut()
-            .add(Box::new(crate::keyboard_map::Served::new()));
+            .add(Box::new(crate::keyboard_map::Served::new(inputs.clone())));
         services
             .borrow_mut()
             .add(Box::new(crate::keyboard::KeyboardService::new(

@@ -9,12 +9,15 @@
 //! it on a later pass ([`WorkspaceSettings::refresh`]). Before the session holds a workspace,
 //! writes wait, kept in a file of the device's ([`WorkspaceSettings::kept_in`]) so a device that
 //! holds none yet keeps them across restarts, and are written once it does
-//! ([`WorkspaceSettings::attach`]); until then a setting nobody chose reads as its default.
+//! ([`WorkspaceSettings::attach`]); until then a setting nobody chose reads as its default. That
+//! file is written by a worker ([`WorkspaceSettings::flush_kept`] waits for it, and
+//! [`SettingsSource::flush_pending`] and dropping the settings flush it too), so a change made on
+//! the loop never waits on the disk and a change made before a restart is still there.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
@@ -145,6 +148,21 @@ pub struct WorkspaceSettings {
     changes: ChangeSignal,
     /// Where what waits for a workspace is kept.
     kept: Option<PathBuf>,
+    /// The worker that writes [`Self::kept`], so the pass that made a change never waits on the
+    /// disk. `None` until something first waits; a write made while no worker can be started is
+    /// made on the caller, as before.
+    writing: Mutex<Option<mpsc::Sender<Kept>>>,
+}
+
+/// What the worker that keeps what waits for a workspace is given.
+enum Kept {
+    /// Keep `bytes` at `file`, or remove it for `None`.
+    Write {
+        file: PathBuf,
+        bytes: Option<Vec<u8>>,
+    },
+    /// Say when everything handed to the worker before this is on the disk.
+    Flush(mpsc::Sender<()>),
 }
 
 impl Default for WorkspaceSettings {
@@ -162,21 +180,22 @@ impl WorkspaceSettings {
             revision: AtomicU64::new(1),
             changes: ChangeSignal::default(),
             kept: None,
+            writing: Mutex::new(None),
         }
     }
 
     /// Settings whose writes keep `file` while they wait for a workspace: what an earlier run
-    /// set there and no workspace took yet is read from it, and waits again.
+    /// set there and no workspace took yet is read from it, and waits again. What is kept is
+    /// written by a worker, so the pass that made a change does not wait on the disk
+    /// ([`Self::flush_kept`]).
     #[must_use]
     pub fn kept_in(file: PathBuf) -> Self {
         let waiting: Map<String, Value> = std::fs::read(&file)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        let settings = Self {
-            kept: Some(file),
-            ..Self::new()
-        };
+        let mut settings = Self::new();
+        settings.kept = Some(file);
         let sections: Vec<(String, Map<String, Value>)> = waiting
             .into_iter()
             .filter_map(|(name, values)| match values {
@@ -196,6 +215,9 @@ impl WorkspaceSettings {
     }
 
     /// Keep what waits for the store in [`Self::kept`], or remove the file once nothing does.
+    ///
+    /// The file is written by a worker ([`Self::flush_kept`] waits for it): a change made on the
+    /// session's loop never waits on the disk.
     fn keep(&self) {
         let Some(file) = &self.kept else {
             return;
@@ -206,21 +228,62 @@ impl WorkspaceSettings {
                 crate::merge_section(&mut waiting, section, values.clone());
             }
         }
-        let kept = if waiting.is_empty() {
-            match std::fs::remove_file(file) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                removed => removed,
-            }
+        let bytes = if waiting.is_empty() {
+            None
         } else {
-            let partial = file.with_extension("partial");
-            file.parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| serde_json::to_vec(&waiting).map_err(std::io::Error::other))
-                .and_then(|bytes| std::fs::write(&partial, bytes))
-                .and_then(|()| std::fs::rename(&partial, file))
+            match serde_json::to_vec(&waiting) {
+                Ok(bytes) => Some(bytes),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        file = %file.display(),
+                        "the settings waiting for a workspace were not kept"
+                    );
+                    return;
+                }
+            }
         };
-        if let Err(error) = kept {
-            tracing::warn!(%error, file = %file.display(), "the settings waiting for a workspace were not kept");
+        self.keep_elsewhere(file, bytes.as_deref());
+    }
+
+    /// Hand the file's next content to the worker, or write it here when no worker runs.
+    fn keep_elsewhere(&self, file: &Path, bytes: Option<&[u8]>) {
+        let jobs = {
+            let mut writing = self.writing.lock_recover();
+            if writing.is_none() {
+                match start_writer() {
+                    Ok(started) => *writing = Some(started),
+                    Err(error) => tracing::warn!(
+                        %error,
+                        "the settings have no worker to keep them waiting: they are kept here"
+                    ),
+                }
+            }
+            writing.clone()
+        };
+        let handed = jobs.is_some_and(|jobs| {
+            jobs.send(Kept::Write {
+                file: file.to_owned(),
+                bytes: bytes.map(<[u8]>::to_vec),
+            })
+            .is_ok()
+        });
+        if !handed {
+            write_waiting(file, bytes);
+        }
+    }
+
+    /// Wait until everything the settings keep for a workspace that is not held yet is on the
+    /// disk: what another run reads back ([`Self::kept_in`]), and what leaving the settings alive
+    /// or dropping them must not lose.
+    pub fn flush_kept(&self) {
+        let jobs = self.writing.lock_recover().clone();
+        let Some(jobs) = jobs else {
+            return;
+        };
+        let (done, waited) = mpsc::channel();
+        if jobs.send(Kept::Flush(done)).is_ok() {
+            let _ = waited.recv();
         }
     }
 
@@ -436,6 +499,52 @@ impl WorkspaceSettings {
             Reply::Versions(versions) => Ok(versions),
             _ => Ok(Vec::new()),
         }
+    }
+}
+
+impl Drop for WorkspaceSettings {
+    fn drop(&mut self) {
+        // What waits for a workspace outlives these settings: another run reads it
+        // ([`Self::kept_in`]), so nothing a person set may be lost as they go.
+        self.flush_kept();
+    }
+}
+
+/// The worker that keeps what waits for a workspace, and the channel to it.
+fn start_writer() -> std::io::Result<mpsc::Sender<Kept>> {
+    let (jobs, work) = mpsc::channel::<Kept>();
+    std::thread::Builder::new()
+        .name("tilo-settings-waiting".into())
+        .spawn(move || {
+            while let Ok(job) = work.recv() {
+                match job {
+                    Kept::Write { file, bytes } => write_waiting(&file, bytes.as_deref()),
+                    Kept::Flush(done) => {
+                        let _ = done.send(());
+                    }
+                }
+            }
+        })?;
+    Ok(jobs)
+}
+
+/// Keep `bytes` at `file`, or remove the file once nothing waits for a workspace.
+fn write_waiting(file: &Path, bytes: Option<&[u8]>) {
+    let kept = match bytes {
+        None => match std::fs::remove_file(file) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            removed => removed,
+        },
+        Some(bytes) => {
+            let partial = file.with_extension("partial");
+            file.parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&partial, bytes))
+                .and_then(|()| std::fs::rename(&partial, file))
+        }
+    };
+    if let Err(error) = kept {
+        tracing::warn!(%error, file = %file.display(), "the settings waiting for a workspace were not kept");
     }
 }
 
@@ -786,6 +895,7 @@ impl SettingsSource for WorkspaceSettings {
 
     fn flush_pending(&self) {
         self.sync();
+        self.flush_kept();
     }
 
     fn take_deferred_failures(&self) -> Vec<DeferredFailure> {

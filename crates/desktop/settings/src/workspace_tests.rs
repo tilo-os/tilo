@@ -78,6 +78,8 @@ tilo_test_env::scenario! {
             .update_section("power", object(json!({"lock_minutes": 3})))
             .unwrap();
         assert_eq!(settings.load()["locale"]["language"], json!("de-DE"));
+        // Another run reads the file, not this one: what waits is on the disk before it goes.
+        settings.flush_kept();
         drop(settings);
 
         // The device restarts before it holds a workspace: what was set is still set.
@@ -96,6 +98,8 @@ tilo_test_env::scenario! {
             Some(json!({"lock_minutes": 3}))
         );
         assert_eq!(settings.load()["locale"]["language"], json!("de-DE"));
+        // The file is written by a worker: what it no longer holds is gone once it says so.
+        settings.flush_kept();
         assert!(!file.exists(), "what the workspace took waits no longer");
     }
 

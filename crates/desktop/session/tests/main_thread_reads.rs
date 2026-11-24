@@ -144,6 +144,59 @@ fn drive() {
         let _ = store.load_reconciled_cached();
     }
 
+    // A setting the person changes: the session keeps it for the workspace it does not hold yet,
+    // and leaves the settings for the processes outside the session, both from workers of their
+    // own. A setter writes a section this way, and the change is made on the loop because that is
+    // where the model a press runs in does.
+    let mut learned = serde_json::Map::new();
+    learned.insert("enabled".to_owned(), serde_json::Value::Bool(false));
+    let mut hints = serde_json::Map::new();
+    hints.insert("learned".to_owned(), serde_json::Value::Object(learned));
+    settings_store::update_section("control_hints", hints).expect("the setting is kept");
+    for _ in 0..8 {
+        session.step(Duration::from_millis(1)).expect("a turn");
+    }
+    // What waits for the workspace is kept by now; the settings the processes outside read are
+    // the worker's to leave.
+    settings_store::flush_pending_writes();
+    // Both files hold the change once the workers wrote them, and they are read on a thread of
+    // their own: the loop walks neither.
+    let kept = settings_store::config_path(std::path::Path::new(settings_store::outside::WAITING));
+    let left = settings_store::outside::path();
+    let held = std::thread::spawn(move || {
+        // What waits is a map of sections; what the session leaves holds them under `settings`.
+        let shows = |path: &Option<std::path::PathBuf>, bare: bool| {
+            (0..200).any(|_| {
+                let shows = path
+                    .as_ref()
+                    .and_then(|path| std::fs::read(path).ok())
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .is_some_and(|held| {
+                        let held = if bare { &held } else { &held["settings"] };
+                        held.get("control_hints")
+                            .and_then(|hints| hints.get("learned"))
+                            .and_then(|learned| learned.get("enabled"))
+                            == Some(&serde_json::Value::Bool(false))
+                    });
+                if !shows {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                shows
+            })
+        };
+        (shows(&kept, true), shows(&left, false))
+    })
+    .join()
+    .expect("the reader runs");
+    assert!(
+        held.0,
+        "the session kept the change for the workspace it does not hold yet"
+    );
+    assert!(
+        held.1,
+        "the session left the change for the processes outside it"
+    );
+
     let walks = tilo_liveness::main_thread_files::report().expect("the audit's report");
     let mut listed = String::new();
     for walk in &walks {

@@ -111,9 +111,13 @@ fn set_at(
     if let Some(app) = app {
         values = Map::from_iter([(app, Value::Object(values))]);
     }
-    crate::workspace::WorkspaceSettings::kept_in(waiting.to_owned())
+    let keeping = crate::workspace::WorkspaceSettings::kept_in(waiting.to_owned());
+    keeping
         .update_section(&section, values.clone())
         .map_err(|error| error.to_string())?;
+    // What this device's processes read waits in that file: it is on the disk before this
+    // returns.
+    keeping.flush_kept();
     let mut settings = held.settings;
     let Value::Object(kept) = settings
         .entry(section)
