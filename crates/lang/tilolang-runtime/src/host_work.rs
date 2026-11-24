@@ -12,7 +12,8 @@
 
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_i32, trap};
-use crate::engine::Wasm;
+use crate::engine::{HostFail, Wasm};
+use crate::run::JournalEntry;
 use crate::value::Value;
 
 /// What the device answers an app's engine work with (`Runtime::set_engine`).
@@ -82,10 +83,13 @@ impl Core {
     }
 
     fn engine_ask(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        match self.engine_work.borrow().as_ref() {
-            Some(host) => host.call(app, op, input),
-            None => Err(no_engine()),
-        }
+        let answer = self.device_work("call", op, input, || {
+            match self.engine_work.borrow().as_ref() {
+                Some(host) => answered(host.call(app, op, input)),
+                None => Value::Error(no_engine()),
+            }
+        })?;
+        text_answer(answer)
     }
 
     /// One picture the device's engine answers: the same request as `engine.call`, whose answer
@@ -100,24 +104,110 @@ impl Core {
     }
 
     fn engine_begin(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        match self.engine_work.borrow().as_ref() {
-            Some(host) => host.start(app, op, input),
-            None => Err(no_engine()),
-        }
+        let answer = self.device_work("start", op, input, || {
+            match self.engine_work.borrow().as_ref() {
+                Some(host) => answered(host.start(app, op, input)),
+                None => Value::Error(no_engine()),
+            }
+        })?;
+        text_answer(answer)
     }
 
     fn engine_status(&self, job: &str) -> Result<String, String> {
-        match self.engine_work.borrow().as_ref() {
-            Some(host) => host.status(job),
-            None => Err(no_engine()),
-        }
+        let answer = self.device_work("status", job, "", || {
+            match self.engine_work.borrow().as_ref() {
+                Some(host) => answered(host.status(job)),
+                None => Value::Error(no_engine()),
+            }
+        })?;
+        text_answer(answer)
     }
 
     fn engine_stop(&self, job: &str) -> bool {
-        self.engine_work
-            .borrow()
-            .as_ref()
-            .is_some_and(|host| host.cancel(job))
+        self.device_work("cancel", job, "", || {
+            Value::Bool(
+                self.engine_work
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|host| host.cancel(job)),
+            )
+        })
+        .is_ok_and(|answer| answer == Value::Bool(true))
+    }
+
+    /// Answer the device work `kind` names, asked of it once: a run that is run again after a
+    /// call it made answers from its journal, so it does not ask the device twice and does not
+    /// take another branch on an answer that moved on.
+    fn device_work(
+        &self,
+        kind: &str,
+        name: &str,
+        input: &str,
+        live: impl FnOnce() -> Value,
+    ) -> Result<Value, String> {
+        {
+            let mut frames = self.frames.borrow_mut();
+            let Some(run) = frames.run_mut() else {
+                drop(frames);
+                return Ok(live());
+            };
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                let JournalEntry::Engine {
+                    kind: before_kind,
+                    name: before_name,
+                    input: before_input,
+                    answer,
+                } = entry
+                else {
+                    return Err(
+                        "the run diverged from its journal: expected the device's answer"
+                            .to_owned(),
+                    );
+                };
+                if before_kind != kind || before_name != name || before_input != input {
+                    return Err(format!(
+                        "the run diverged from its journal: it now asks the device to {kind} \
+                         `{name}` with {input:?}, where it asked it to {before_kind} \
+                         `{before_name}` with {before_input:?}"
+                    ));
+                }
+                let answer = answer.clone();
+                run.cursor = run.cursor.saturating_add(1);
+                return Ok(answer);
+            }
+        }
+        let answer = live();
+        self.journal_push(JournalEntry::Engine {
+            kind: kind.to_owned(),
+            name: name.to_owned(),
+            input: input.to_owned(),
+            answer: answer.clone(),
+        })
+        .map_err(|fail| match fail {
+            HostFail::Trap(why) => why,
+            HostFail::Suspend => "answering the device's work cannot wait".to_owned(),
+        })?;
+        Ok(answer)
+    }
+}
+
+/// A device's answer as a journal keeps it: what it said, or why it refused.
+fn answered(result: Result<String, String>) -> Value {
+    match result {
+        Ok(text) => Value::Text(text),
+        Err(why) => Value::Error(why),
+    }
+}
+
+/// The text a device answered, or the refusal it gave.
+fn text_answer(answer: Value) -> Result<String, String> {
+    match answer {
+        Value::Text(text) => Ok(text),
+        Value::Error(why) => Err(why),
+        other => Err(format!(
+            "the device answered a {}, not text",
+            other.kind_name()
+        )),
     }
 }
 

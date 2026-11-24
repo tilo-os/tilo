@@ -3240,6 +3240,7 @@ fn entry_value(entry: &JournalEntry) -> Value {
         | JournalEntry::Web { .. }
         | JournalEntry::Wrote { .. }
         | JournalEntry::Notified
+        | JournalEntry::Engine { .. }
         | JournalEntry::Page { .. } => Value::Unit,
     }
 }

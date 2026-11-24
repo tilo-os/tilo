@@ -32,36 +32,36 @@ mod e2e_apps;
 mod e2e_blocks;
 #[path = "e2e_calculator.rs"]
 mod e2e_calculator;
-#[path = "e2e_canvas.rs"]
-mod e2e_canvas;
-#[path = "e2e_code_editor.rs"]
-mod e2e_code_editor;
 #[path = "e2e_call_fn.rs"]
 mod e2e_call_fn;
+#[path = "e2e_canvas.rs"]
+mod e2e_canvas;
 #[path = "e2e_cleanup.rs"]
 mod e2e_cleanup;
 #[path = "e2e_clocks.rs"]
 mod e2e_clocks;
+#[path = "e2e_code_editor.rs"]
+mod e2e_code_editor;
 #[path = "e2e_counter.rs"]
 mod e2e_counter;
-#[path = "e2e_disk_usage.rs"]
-mod e2e_disk_usage;
 #[path = "e2e_db_client.rs"]
 mod e2e_db_client;
+#[path = "e2e_disk_usage.rs"]
+mod e2e_disk_usage;
 #[path = "e2e_ebook.rs"]
 mod e2e_ebook;
+#[path = "e2e_enums.rs"]
+mod e2e_enums;
 #[path = "e2e_feeds.rs"]
 mod e2e_feeds;
 #[path = "e2e_file_picker.rs"]
 mod e2e_file_picker;
-#[path = "e2e_enums.rs"]
-mod e2e_enums;
-#[path = "engine.rs"]
-mod engine;
-#[path = "e2e_layout.rs"]
-mod e2e_layout;
+#[path = "e2e_git_client.rs"]
+mod e2e_git_client;
 #[path = "e2e_hex_editor.rs"]
 mod e2e_hex_editor;
+#[path = "e2e_layout.rs"]
+mod e2e_layout;
 #[path = "e2e_mail_files.rs"]
 mod e2e_mail_files;
 #[path = "e2e_native.rs"]
@@ -76,14 +76,14 @@ mod e2e_scratchpad;
 mod e2e_speed_test;
 #[path = "e2e_std.rs"]
 mod e2e_std;
-#[path = "e2e_tool_context.rs"]
-mod e2e_tool_context;
 #[path = "e2e_todo.rs"]
 mod e2e_todo;
-#[path = "e2e_git_client.rs"]
-mod e2e_git_client;
+#[path = "e2e_tool_context.rs"]
+mod e2e_tool_context;
 #[path = "e2e_video_editor.rs"]
 mod e2e_video_editor;
+#[path = "engine.rs"]
+mod engine;
 
 #[path = "e2e_store.rs"]
 mod e2e_store;
@@ -103,7 +103,6 @@ mod image;
 mod interpolation;
 #[path = "json.rs"]
 mod json;
-mod page;
 #[path = "list.rs"]
 mod list;
 #[path = "members.rs"]
@@ -117,6 +116,7 @@ mod nested_proposals;
 mod outcomes;
 #[path = "outside.rs"]
 mod outside;
+mod page;
 #[path = "programs.rs"]
 mod programs;
 #[path = "props.rs"]
@@ -131,6 +131,8 @@ mod queries;
 mod random;
 #[path = "reaches.rs"]
 mod reaches;
+#[path = "record_lists.rs"]
+mod record_lists;
 #[path = "rich_text.rs"]
 mod rich_text;
 #[path = "runs.rs"]

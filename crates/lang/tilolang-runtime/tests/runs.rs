@@ -9,7 +9,10 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::delegate::Invoked;
-    use tilolang_runtime::{InvokeOutcome, ModelHost, Pending, RunOutcome, Runtime, Store, Value};
+    use tilolang_runtime::{
+        AmStore, InvokeOutcome, ModelHost, Pending, RunOutcome, Runtime, SimpleAuthority, Store,
+        Value,
+    };
 
     fn incs(w: &World, c: &tilolang_runtime::ResourceRef) -> usize {
         w.rt.history(&c.doc)
@@ -260,5 +263,185 @@ mod cases {
         let out = w.dispatch.allow(&w.rt, &run);
         assert_eq!(out, RunOutcome::Done(Value::text("classify:hello")));
         assert_eq!(calls.get(), 1, "the replay used the journaled answer");
+    }
+
+    /// An action that reads its collection, calls its own insert for each name it lacks, and
+    /// writes again: every call and every write of the run happens once, though the run is run
+    /// again from its start after each call.
+    const ATLAS: &str = r#"app so.tilo.atlas "Atlas"
+
+type Item {
+    name: Text
+}
+
+type Board {
+    items: Collection<Item>
+    taken: Int merge counter
+}
+
+root Board
+
+default view board for Board
+
+view board(b: Board) {
+    text("{b.items.len()}")
+}
+
+action add(b: Board, name: Text) {
+    b.items.insert(Item(name: name))
+}
+
+action take(b: Board, names: List<Text>) -> Int {
+    let known = b.items.count()
+    for name in names {
+        if not b.items.any(i -> i.name == name) {
+            add(b, name)
+        }
+    }
+    b.taken += 1
+    return b.items.count() - known
+}
+"#;
+
+    /// An app that asks the device a question whose answer moves on, and then calls one of two
+    /// actions of its own by what the answer said: a run that replays must read the answer it
+    /// read the first time, or it takes the other branch and diverges from its journal.
+    const POLLED: &str = r#"app so.tilo.polled "Polled"
+
+type Note {
+    name: Text
+}
+
+type Lib {
+    notes: Collection<Note>
+    state: Text
+}
+
+root Lib
+
+default view lib for Lib
+
+view lib(l: Lib) {
+    text("{l.state}")
+}
+
+action land(l: Lib, name: Text) {
+    l.notes.insert(Note(name: name))
+}
+
+action other(l: Lib, name: Text) {
+    l.state = "other {name}"
+}
+
+action poll(l: Lib) -> Text {
+    match engine.call("next", "") {
+        .ok(step) => {
+            if step == "1" {
+                land(l, "one")
+                l.state = "one"
+            } else {
+                other(l, "two")
+                l.state = "two"
+            }
+            l.state
+        }
+        .err(why) => why
+    }
+}
+"#;
+
+    /// The device work an app asks for: each answer is the count it was asked at, moving on with
+    /// every question, as a job's progress does.
+    #[derive(Clone, Default)]
+    struct Moving(Rc<Cell<u32>>);
+
+    impl tilolang_runtime::host_work::EngineHost for Moving {
+        fn call(&self, _app: &str, _op: &str, _input: &str) -> Result<String, String> {
+            let n = self.0.get().saturating_add(1);
+            self.0.set(n);
+            Ok(n.to_string())
+        }
+
+        fn start(&self, _app: &str, _op: &str, _input: &str) -> Result<String, String> {
+            self.call("", "", "")
+        }
+
+        fn status(&self, _job: &str) -> Result<String, String> {
+            self.call("", "", "")
+        }
+
+        fn cancel(&self, _job: &str) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_run_that_calls_an_action_reads_the_device_answer_it_read() {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let device = Moving::default();
+        rt.set_engine(device.clone());
+        let app = App::compile(POLLED, &[]);
+        app.load(&rt);
+        let lib = rt.create_root("Lib").unwrap();
+        let poll = app.action("poll");
+        let out = rt
+            .invoke_action(&me(), (poll.as_str(), vec![Value::resource(&lib)]))
+            .unwrap();
+        assert_eq!(
+            out,
+            InvokeOutcome::Done(Value::text("one")),
+            "the branch the first answer chose is the one the run stays on"
+        );
+        assert_eq!(
+            device.0.get(),
+            1,
+            "the device was asked once, not again for the replay"
+        );
+        match rt.read(&lib, "notes").unwrap() {
+            Value::List(items) => assert_eq!(items.len(), 1, "the call it made once"),
+            other => panic!("notes reads {other:?}"),
+        }
+        assert_eq!(rt.read(&lib, "state").unwrap(), Value::text("one"));
+    }
+
+    #[test]
+    fn an_action_that_calls_one_of_its_own_runs_each_call_once() {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let app = App::compile(ATLAS, &[]);
+        app.load(&rt);
+        let board = rt.create_root("Board").unwrap();
+        let take = app.action("take");
+        let out = rt
+            .invoke_action(
+                &me(),
+                (
+                    take.as_str(),
+                    vec![
+                        Value::resource(&board),
+                        Value::List(vec![Value::text("one"), Value::text("two")]),
+                    ],
+                ),
+            )
+            .unwrap();
+        assert_eq!(out, InvokeOutcome::Done(Value::Int(2)), "{out:?}");
+        match rt.read(&board, "items").unwrap() {
+            Value::List(items) => assert_eq!(items.len(), 2, "each call inserted one item once"),
+            other => panic!("items reads {other:?}"),
+        }
+        assert_eq!(
+            rt.read(&board, "taken").unwrap(),
+            Value::Int(1),
+            "the write after the calls happens once"
+        );
+        let add = app.action("add");
+        assert_eq!(
+            rt.history(&board.doc)
+                .unwrap()
+                .iter()
+                .filter(|note| note.action == add)
+                .count(),
+            2,
+            "each call is one change, and ten replays make no more"
+        );
     }
 }

@@ -47,6 +47,17 @@ pub enum JournalEntry {
     /// A person was told something (`notify`), and the run carries on: a replay tells them no
     /// more than the first run did.
     Notified,
+    /// Work the run asked the device to do, and what it answered: a call or a job it started
+    /// (`kind` `call` or `start`, the op in `name` and the input), a job's status (`status`) or
+    /// its stopping (`cancel`). A replay answers from here rather than doing the work again, so
+    /// answers that move on (a job's progress) are the ones the run first saw.
+    Engine {
+        kind: String,
+        name: String,
+        input: String,
+        /// What the device answered: its own answer, or why it refused; a flag for `cancel`.
+        answer: Value,
+    },
 }
 
 impl JournalEntry {

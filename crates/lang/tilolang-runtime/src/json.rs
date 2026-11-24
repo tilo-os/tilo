@@ -8,9 +8,9 @@
 //! JSON path of the value that did not fit (`$.items[2].title`).
 //!
 //! A record read here is a record value, not a resource: it has no id until it is put in a
-//! collection (`feed.items.insert(item)`), which is what a record value is for. A record field
-//! that holds a resource (a record, a collection, a set) cannot be made from text, so reading it
-//! from text says so at its path.
+//! collection (`feed.items.insert(item)`), which is what a record value is for. A field that
+//! holds a resource (a bare record, a collection, a set) cannot be made from text, so reading it
+//! from text says so at its path; a list of records can, as the records are values there.
 
 use std::collections::BTreeMap;
 
@@ -363,7 +363,7 @@ impl Reader<'_> {
     /// A record's field, which the store keeps as a value or as a reference to a resource: text
     /// makes the value, never the reference.
     fn field(&self, json: &Json, ty: &Ty, at: &str, app: &str) -> Result<Value, String> {
-        if holds_resources(ty) {
+        if names_a_resource(ty) {
             return Err(format!(
                 "{at}: a `{}` holds resources, and JSON text makes none: read a `List` of them and insert what it holds",
                 ty.display(app)
@@ -471,12 +471,13 @@ impl Reader<'_> {
     }
 }
 
-/// Whether a value of the type is a resource (a record, a collection, a set), or holds one
-/// where a stored value can: text cannot make one.
-fn holds_resources(ty: &Ty) -> bool {
+/// Whether a value of the type is a resource the store holds (a bare record, a collection, a set,
+/// a filter), or a reference to one where it stands in an option: text cannot make one. A list of
+/// records is not: it holds record values, as a route holds the steps it was written with.
+fn names_a_resource(ty: &Ty) -> bool {
     match ty {
         Ty::Record(_) | Ty::Collection(_) | Ty::Set(_) | Ty::Filter(_) => true,
-        Ty::Option(t) | Ty::List(t) | Ty::Map(t) | Ty::Result(t, _) => holds_resources(t),
+        Ty::Option(t) => names_a_resource(t),
         _ => false,
     }
 }

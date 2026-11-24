@@ -584,6 +584,19 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
             m.insert("fields".into(), Json::Object(fields));
             Json::Object(m)
         }
+        // A record value, where it stands among other values: the field of one whose type is a
+        // `List` of a record type holds the records themselves, as a route holds its steps, not
+        // items of a collection.
+        Value::Rec(rec) => {
+            let mut fields = Map::new();
+            for (id, v) in &rec.fields {
+                fields.insert(id.clone(), to_json(v)?);
+            }
+            let mut m = Map::new();
+            m.insert("record".into(), Json::String(rec.ty.clone()));
+            m.insert("fields".into(), Json::Object(fields));
+            Json::Object(m)
+        }
         Value::Ref(r) => {
             let mut m = ref_fields(&r.target);
             if let Some(a) = &r.author {
@@ -614,7 +627,6 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         // Text read as a document, which is what it is.
         Value::Json(json) => (**json).clone(),
         Value::Node(_)
-        | Value::Rec(_)
         | Value::Coll(_)
         | Value::Event
         | Value::EventPart(_)
@@ -734,6 +746,11 @@ fn collect_references(value: &Value, out: &mut Vec<String>) {
                 collect_references(value, out);
             }
         }
+        Value::Rec(rec) => {
+            for value in rec.fields.values() {
+                collect_references(value, out);
+            }
+        }
         Value::Rich(rich) => {
             for reference in rich.references() {
                 if let Some(id) = crate::rich::resource_id(&reference) {
@@ -782,6 +799,16 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
         return Ok(Value::Enum(EnumValue {
             ty: ty.clone(),
             variant: variant.clone(),
+            fields,
+        }));
+    }
+    if let (Some(Json::String(ty)), Some(Json::Object(f))) = (m.get("record"), m.get("fields")) {
+        let mut fields = BTreeMap::new();
+        for (id, v) in f {
+            fields.insert(id.clone(), from_json(v)?);
+        }
+        return Ok(Value::Rec(RecordInit {
+            ty: ty.clone(),
             fields,
         }));
     }
@@ -893,6 +920,18 @@ mod tests {
                     ty: "e1".into(),
                     variant: "v1".into(),
                     fields: BTreeMap::from([("f1".to_owned(), Value::text("payload"))]),
+                }),
+                // A record value holding records: a trip and its steps, which a field typed as a
+                // list of a record type stores as values rather than items.
+                Value::Rec(RecordInit {
+                    ty: "t1".into(),
+                    fields: BTreeMap::from([(
+                        "steps".to_owned(),
+                        Value::List(vec![Value::Rec(RecordInit {
+                            ty: "s1".into(),
+                            fields: BTreeMap::from([("said".to_owned(), Value::text("go"))]),
+                        })]),
+                    )]),
                 }),
             ]);
             let json = to_json(&v).unwrap();
