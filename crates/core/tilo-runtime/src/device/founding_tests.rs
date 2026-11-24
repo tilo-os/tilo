@@ -45,6 +45,28 @@ fn a_half_made_computer_stays_up_and_founds_its_person() {
     tilo_user_identity::sign_device_cert(&mut cert, &person).unwrap();
     let place = tilo_device_identity::login::Place::here(keys.clone()).unwrap();
     tilo_device_identity::login::file_certificate(&place, &cert).unwrap();
+    // Where a login of this person's device said it enters, kept beside the certificate: the
+    // daemon starts again from it, and asks as the person's own account hear it.
+    let server = iroh::SecretKey::from_bytes(&[0x3c; 32]);
+    tilo_device_identity::login::file_entry(
+        &place,
+        &tilo_device_identity::login::Device {
+            site: "https://tilo.test/".into(),
+            host_origin: "https://eu1.tilo.test".into(),
+            workspace: tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key)
+                .to_string(),
+            workspace_name: Some("Ada's".into()),
+            agent: String::new(),
+            cert: cert.clone(),
+            server_cert: cert.clone(),
+            server_address: Some(tilo_device_identity::login::ServerAddress {
+                endpoint_addr: iroh::EndpointAddr::new(server.public()),
+                relay_url: None,
+                web: None,
+            }),
+        },
+    )
+    .unwrap();
     assert!(
         tilo_identity::trusted_device::serving(&keys).is_err(),
         "an account with no identity record starts nothing"
@@ -87,6 +109,11 @@ fn a_half_made_computer_stays_up_and_founds_its_person() {
     assert_eq!(
         who["holds_root"], false,
         "the root is another device's: {who}"
+    );
+    assert_eq!(
+        who["home"]["workspace"],
+        tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key).to_string(),
+        "the daemon's own account is told where it enters, from the entry the login left: {who}"
     );
 
     // The account's identity is the person's, in the store its services read.
