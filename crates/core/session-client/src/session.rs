@@ -877,7 +877,7 @@ impl Task {
         self.enter_if_entering().await;
         // A workspace this session was asked to join before its host placed it is asked for
         // again on every new connection ([`Cmd::JoinPlaced`]).
-        for workspace_id in self.placing.keys().copied().collect::<Vec<_>>() {
+        for workspace_id in self.placing.keys().copied() {
             self.place(workspace_id);
         }
         for workspace_id in self.workspaces.clone() {
