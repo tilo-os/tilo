@@ -64,7 +64,6 @@ pub mod kept_content;
 #[cfg(feature = "agents")]
 pub mod linux_devices;
 #[cfg(feature = "agents")]
-pub mod machine_agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod servers;
 #[cfg(feature = "web")]

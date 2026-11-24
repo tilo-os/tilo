@@ -38,7 +38,6 @@ pub mod certify;
 pub mod config;
 pub mod devices;
 pub mod directory;
-mod earlier;
 pub mod entering;
 pub mod host_voice;
 pub mod hosted;

@@ -15,41 +15,10 @@ use thiserror::Error;
 pub const METRICS_FILE: &str = "metrics.json";
 
 /// The server's own state root below the daemon's state root (`state_root` in
-/// its server configuration): it keeps [`METRICS_FILE`] there. A workspace host
-/// reads the snapshot from here.
+/// its server configuration): it keeps [`METRICS_FILE`] there.
 #[must_use]
 pub fn workspace_server_root(workspace_state: &Path) -> PathBuf {
     workspace_state.join("server")
-}
-
-/// A folder of the name the server's own folder had in earlier builds
-/// ([`crate::earlier::SERVER_ROOT`]), found while this build's folder is not
-/// there yet: under `workspace_state`, or beside it when `workspace_state` is
-/// itself a folder of the present name, as the image's start script passes it.
-///
-/// Nothing of it is used. Whoever starts a server there says so, so that a
-/// server which comes up empty beside what an earlier build kept names where
-/// that lies.
-#[must_use]
-pub fn earlier_server_root_beside(workspace_state: &Path) -> Option<PathBuf> {
-    if workspace_server_root(workspace_state).exists() {
-        return None;
-    }
-    let under = workspace_state.join(crate::earlier::SERVER_ROOT);
-    let named_as_now = workspace_state.file_name() == Some(std::ffi::OsStr::new("server"));
-    let beside = named_as_now.then(|| workspace_state.with_file_name(crate::earlier::SERVER_ROOT));
-    [Some(under), beside]
-        .into_iter()
-        .flatten()
-        .find(|earlier| earlier.is_dir())
-}
-
-/// Where a connector worker kept its counters as Prometheus text, one
-/// `<app>.prom` each, below the state root of the server that ran it. The
-/// daemon runs no connector worker, so nothing writes here now.
-#[must_use]
-pub fn workspace_textfile_dir(workspace_state: &Path) -> PathBuf {
-    workspace_state.join("metrics.d")
 }
 
 /// Immutable copy of every server counter for status reports.
@@ -188,31 +157,5 @@ mod tests {
         };
         save_metrics(tmp.path(), &snapshot).unwrap();
         assert_eq!(load_metrics(tmp.path()).unwrap(), Some(snapshot));
-    }
-
-    /// A server that would start empty beside what an earlier build kept is
-    /// told where that lies; one with a folder of its own is told nothing.
-    #[test]
-    fn a_folder_of_the_earlier_name_is_named_while_this_builds_is_not_there() {
-        let state = tempfile::tempdir().unwrap();
-        assert_eq!(earlier_server_root_beside(state.path()), None);
-        let under = state.path().join(crate::earlier::SERVER_ROOT);
-        std::fs::create_dir(&under).unwrap();
-        assert_eq!(earlier_server_root_beside(state.path()), Some(under));
-
-        // As the image's start script passes it: `--state` is itself a folder
-        // of the present name, and the earlier one lies beside it.
-        let above = tempfile::tempdir().unwrap();
-        let given = above.path().join("server");
-        let beside = above.path().join(crate::earlier::SERVER_ROOT);
-        std::fs::create_dir(&given).unwrap();
-        std::fs::create_dir(&beside).unwrap();
-        assert_eq!(earlier_server_root_beside(&given), Some(beside));
-
-        // Once this build's own folder is there, nothing is said.
-        std::fs::create_dir(given.join("server")).unwrap();
-        assert_eq!(earlier_server_root_beside(&given), None);
-        std::fs::create_dir(state.path().join("server")).unwrap();
-        assert_eq!(earlier_server_root_beside(state.path()), None);
     }
 }
