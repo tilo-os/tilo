@@ -10,7 +10,7 @@ mod cases {
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
+        AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/ebook/app.tl");
@@ -277,7 +277,8 @@ action open_window(resource: host.Resource) {
 
     impl Books {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let authority = TestAuthority::new();
+            let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let device = Device::default();
             rt.set_blobs(device.clone());
             rt.set_web(device.clone());
@@ -295,7 +296,8 @@ action open_window(resource: host.Resource) {
             let workspace = App::compile(WORKSPACE_SOURCE, &[]);
             workspace.load(&rt);
             let app = App::compile(SOURCE, &[workspace.meta().clone(), session.meta().clone()]);
-            app.load(&rt);
+            authority.trust(&app.load(&rt));
+            authority.grant_outside(&app.action("copy_passage"));
             let lib = rt.create_root("Library").unwrap();
             let books = Self {
                 rt,
