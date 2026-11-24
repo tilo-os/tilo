@@ -553,6 +553,14 @@ struct Inner {
 }
 
 impl Tickets {
+    /// Serve again every planned machine's ticket this daemon issued before it last stopped and
+    /// that still waits for its machine.
+    pub(crate) async fn restore(&self) {
+        if let Err(error) = self.0.fleet.restore().await {
+            tracing::warn!(%error, "the planned machines' tickets are not served again yet");
+        }
+    }
+
     /// Serve tickets from this daemon, on `service`: the one action service its router answers
     /// the device actions on, which admits a ticket's certify call while a computer asks.
     ///
@@ -877,8 +885,16 @@ impl Tickets {
             ),
         }
         .context("the certificate given is there")?;
-        // The person's other devices list it as soon as the host keeps it there.
-        self.0.tickets.keep_listed(&cert).await;
+        // The person's other devices list it as soon as the record of their own workspace keeps it.
+        if let Some(service) = &self.0.workspaces
+            && let Err(error) = tilo_workspace_service::workspaces::person_workspace::devices::keep(
+                service.copies(),
+                &cert,
+            )
+            .await
+        {
+            tracing::warn!(%error, "the computer a ticket added is not listed with the person's devices yet");
+        }
         let mut told = served.told();
         let _ = tokio::time::timeout(TELL_WAIT, told.wait_for(|told| *told)).await;
         // The computer may ask a lost answer again: the call is answered where it is.
