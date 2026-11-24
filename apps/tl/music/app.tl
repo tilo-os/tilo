@@ -1,6 +1,7 @@
 app so.tilo.music "Music" (
     icon: .music,
     category: .multimedia,
+    schemes: "music",
     tagline: "The music on your devices, and the catalogues that have more",
     keywords: ["music", "musik", "song", "songs", "titel", "track", "tracks", "album", "alben", "artist", "artists", "künstler", "kuenstler", "playlist", "playlists", "wiedergabe", "player", "audio", "listen", "hören", "hoeren", "spotify", "youtube music", "lyrics", "songtext", "liedtext"],
 )
@@ -1056,6 +1057,43 @@ action play_album(a: Album) (icon: .play) {
 action play_mixtape(m: Mixtape) (icon: .play) {
     let lib = root Library
     playback.play_list(session(lib), m.tracks.map(item -> item), at: 0)
+}
+
+/// The rest of `link` past `prefix`, or empty text when it does not start with it.
+fn link_after(link: Text, prefix: Text) -> Text {
+    if link.starts_with(prefix) { link.slice(prefix.len(), link.len()) } else { "" }
+}
+
+/// Opens a `music://` link: the song it names plays, and the album, artist or playlist it names
+/// opens on its page. A shell hands a link here whether or not a window of Music is open, and what
+/// this returns opens in the window; a link this library holds nothing for shows the library.
+action open_link(lib: Library, link: Text) -> host.Resource {
+    let track = link_after(link, "music://track/")
+    if track != "" {
+        if let t = lib.tracks.find(x -> x.key == track) {
+            play_song(t)
+            return t
+        }
+    }
+    let album = link_after(link, "music://album/")
+    if album != "" {
+        if let a = lib.albums.find(x -> x.key == album) {
+            return a
+        }
+    }
+    let artist = link_after(link, "music://artist/")
+    if artist != "" {
+        if let a = lib.artists.find(x -> x.key == artist) {
+            return a
+        }
+    }
+    let playlist = link_after(link, "music://playlist/")
+    if playlist != "" {
+        if let p = lib.playlists.find(x -> x.key == playlist) {
+            return p
+        }
+    }
+    lib
 }
 
 /// The queue of what plays: the songs it holds, in order. A row dropped in another place moves

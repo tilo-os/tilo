@@ -275,6 +275,10 @@ d-jjm34kdi = Audiodatei öffnen
 
 d-jjm34kdi-file = Datei
 
+d-ijpx3myl = Link öffnen
+    .doc = Öffnet einen `music://`-Link: der Titel, den er benennt, wird gespielt, und das Album, der Künstler oder die Wiedergabeliste, das er benennt, öffnet sich auf seiner Seite.
+d-ijpx3myl-link = Link
+
 d-luhqjplo = Titel abspielen
     .doc = Spielt einen Titel allein ab: was ein Druck auf eine Zeile tut.
 

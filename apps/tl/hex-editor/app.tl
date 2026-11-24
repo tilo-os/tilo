@@ -551,6 +551,15 @@ action open_file(lib: Library, file: File) -> Document (
     icon: .file_plus,
     label: "Open a file",
     did: "opened a file",
+    opens: [
+    "application/octet-stream",
+    "application/x-binary",
+    .bin,
+    .dat,
+    .dmp,
+    .raw,
+    .rom,
+],
 ) {
     opened_buffer(lib, file.name, file.url, "", file.size)
 }

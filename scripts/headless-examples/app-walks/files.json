@@ -1,0 +1,362 @@
+{
+  "app": "files",
+  "said": "Files",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.file-explorer",
+    "package": "files"
+  },
+  "packages": [
+    "pdf",
+    "video",
+    "ebook",
+    "word-processor",
+    "sheets",
+    "music",
+    "photos",
+    "store",
+    "code-editor",
+    "hex-editor"
+  ],
+  "steps": [
+    {
+      "id": "fixtures",
+      "said": "The person's home folder holds a file of each kind the apps open",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "pdf": {
+            "name": "walk.pdf",
+            "text": "PdfWalk"
+          }
+        },
+        {
+          "clip": {
+            "name": "walk.mp4"
+          }
+        },
+        {
+          "epub": {
+            "name": "walk.epub",
+            "title": "The Walked Book",
+            "author": "Ada Ferrer",
+            "chapter": "A chapter opened from Files."
+          }
+        },
+        {
+          "file": {
+            "name": "walk.rtf",
+            "text": "{\\rtf1\\ansi Writer walked this file}"
+          }
+        },
+        {
+          "file": {
+            "name": "walk.csv",
+            "text": "Fruit,Qty\nApricots,7\n"
+          }
+        },
+        {
+          "tone": {
+            "name": "walk.wav",
+            "seconds": 2,
+            "hz": 440
+          }
+        },
+        {
+          "image": {
+            "name": "walk.png"
+          }
+        },
+        {
+          "file": {
+            "name": "walk.rs",
+            "text": "fn walked_by_files() {}\n"
+          }
+        },
+        {
+          "file": {
+            "name": "walk.bin",
+            "text": "HEXWALK"
+          }
+        },
+        {
+          "package": {
+            "name": "counter",
+            "as": "walk.tapp"
+          }
+        }
+      ],
+      "budget_ms": 300000
+    },
+    {
+      "id": "open",
+      "said": "Open Files on the person's home folder",
+      "ops": [
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        },
+        {
+          "wait_for": {
+            "shown": "walk.pdf"
+          }
+        },
+        {
+          "wait_for": {
+            "shown": "walk.tapp"
+          }
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "pdf",
+      "said": "A PDF opens in the PDF reader, showing its page",
+      "ops": [
+        {
+          "press": "walk.pdf"
+        },
+        {
+          "wait_window": "so.tilo.pdf-viewer"
+        },
+        {
+          "must": {
+            "see": [
+              "PdfWalk"
+            ],
+            "within": 30
+          }
+        },
+        {
+          "close_app": "so.tilo.pdf-viewer"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "video",
+      "said": "A video opens in the video player, showing its clip",
+      "ops": [
+        {
+          "press": "walk.mp4"
+        },
+        {
+          "wait_window": "so.tilo.video"
+        },
+        {
+          "count": {
+            "see": "walk.mp4",
+            "is": 2,
+            "within": 30
+          }
+        },
+        {
+          "close_app": "so.tilo.video"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "book",
+      "said": "An EPUB opens in Books on its first chapter",
+      "ops": [
+        {
+          "press": "walk.epub"
+        },
+        {
+          "wait_window": "so.tilo.ebook"
+        },
+        {
+          "must": {
+            "see": [
+              "The Walked Book"
+            ],
+            "within": 30
+          }
+        },
+        {
+          "close_app": "so.tilo.ebook"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "writer",
+      "said": "A document opens in Writer with its words",
+      "ops": [
+        {
+          "press": "walk.rtf"
+        },
+        {
+          "wait_window": "so.tilo.word-processor"
+        },
+        {
+          "must": {
+            "see": [
+              "Writer walked this file"
+            ],
+            "within": 30
+          }
+        },
+        {
+          "close_app": "so.tilo.word-processor"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "sheets",
+      "said": "A table opens in Sheets with its cells",
+      "ops": [
+        {
+          "press": "walk.csv"
+        },
+        {
+          "wait_window": "so.tilo.sheets"
+        },
+        {
+          "must": {
+            "see": [
+              "Apricots"
+            ],
+            "within": 30
+          }
+        },
+        {
+          "close_app": "so.tilo.sheets"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "music",
+      "said": "A song opens in Music and plays",
+      "ops": [
+        {
+          "press": "walk.wav"
+        },
+        {
+          "wait_window": "so.tilo.music"
+        },
+        {
+          "must": {
+            "see": [
+              "walk"
+            ],
+            "within": 30
+          }
+        },
+        {
+          "close_app": "so.tilo.music"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "photo",
+      "said": "A photograph opens in Photos in its library",
+      "ops": [
+        {
+          "press": "walk.png"
+        },
+        {
+          "wait_window": "so.tilo.photos"
+        },
+        {
+          "count": {
+            "see": "walk.png",
+            "is": 2,
+            "within": 30
+          }
+        },
+        {
+          "close_app": "so.tilo.photos"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "code",
+      "said": "A source file opens in the code editor with its words",
+      "ops": [
+        {
+          "press": "walk.rs"
+        },
+        {
+          "wait_window": "so.tilo.code-editor"
+        },
+        {
+          "must": {
+            "see": [
+              "walked_by_files"
+            ],
+            "within": 30
+          }
+        },
+        {
+          "close_app": "so.tilo.code-editor"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "hex",
+      "said": "A binary opens in the hex editor with its bytes",
+      "ops": [
+        {
+          "press": "walk.bin"
+        },
+        {
+          "wait_window": "so.tilo.hex-editor"
+        },
+        {
+          "must": {
+            "see": [
+              "HEXWALK"
+            ],
+            "within": 30
+          }
+        },
+        {
+          "close_app": "so.tilo.hex-editor"
+        }
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "package",
+      "said": "A package file opens in the Store for review",
+      "ops": [
+        {
+          "press": "walk.tapp"
+        },
+        {
+          "wait_window": "so.tilo.store"
+        },
+        {
+          "must": {
+            "see": [
+              "Package verified"
+            ],
+            "within": 60
+          }
+        },
+        {
+          "close_app": "so.tilo.store"
+        }
+      ],
+      "budget_ms": 120000
+    }
+  ]
+}

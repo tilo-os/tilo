@@ -408,8 +408,8 @@ fn a_page_opened_with_a_file_shows_what_the_app_made_of_it() {
     );
     let body = answer["body"].as_str().expect("a body");
     assert!(
-        body.contains("Plan") && body.contains("one"),
-        "the note the file made stands in the page: {body}"
+        body.contains("Plan") && body.contains("1 word"),
+        "the note the file made stands in the page, named by its heading and holding its words: {body}"
     );
     tilolang_web::app_close(handle(&answer));
 }

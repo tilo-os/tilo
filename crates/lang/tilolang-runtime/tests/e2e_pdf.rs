@@ -463,6 +463,37 @@ mod cases {
         assert_eq!(reader.count(&doc, "marks"), 0);
     }
 
+    /// A second file opened while the reader already runs adds its own document, and that
+    /// document's window shows it: the same action a shell runs when a person opens another file
+    /// in the app it is already showing.
+    #[test]
+    fn a_pdf_opened_while_the_reader_runs_shows_its_own_document() {
+        let reader = Reader::new();
+        let first = reader.open();
+        let second_file = reader.device.keeping(
+            "Later.pdf",
+            "application/pdf",
+            b"%PDF-1.4 the second document",
+        );
+        let second = returned_ref(reader.call(
+            "open_pdf",
+            vec![Value::resource(&reader.lib), Value::file(second_file)],
+        ));
+        assert_ne!(
+            first.id_string(),
+            second.id_string(),
+            "each file is its own document"
+        );
+        assert_eq!(
+            reader.count(&reader.lib, "documents"),
+            2,
+            "both documents stand in the library"
+        );
+        let window = reader.window("reader", vec![Value::resource(&second)]);
+        let shown = crate::common::dump(window.tree());
+        assert!(shown.contains("Later.pdf"), "the second file:\n{shown}");
+    }
+
     #[test]
     fn a_locked_or_required_field_says_so() {
         let reader = Reader::new();

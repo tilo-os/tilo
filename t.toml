@@ -7226,7 +7226,7 @@ proof = ["tilolang", "two-people", "mail-two-members", "agent-sessions", "sessio
 # display snapshot the compositor publishes there (tools/ci/app-walk.sh).
 [[check]]
 name = "app-walk/{app}"
-run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app}"
+run = "bash tools/test-env.sh bash tools/ci/app-walk.sh /target/app-walk/{app} {app} ${T_INPUT_WALK:+--only-walk \"$T_INPUT_WALK\"}"
 needs = ["font-seed", "nested-session", "tilolang-cli-binary"]
 env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1", TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TILOLANG = "/target/debug/tilolang", TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
@@ -7235,7 +7235,7 @@ outputs = ["/target/app-walk/{app}/**"]
 evidence = ["/target/app-walk/{app}/**"]
 timeout_secs = 2400
 on = ["dispatch", "idle"]
-dispatch_inputs = { only = "", discover = "" }
+dispatch_inputs = { only = "", discover = "", walk = "" }
 [check.matrix]
 app = ["api-tester", "apps", "backups", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "code-editor", "devices", "displays-across-devices", "file-explorer", "git-client", "maps", "music", "notes", "scratchpad", "settings", "shell", "store", "tube", "video-player", "clocks", "same-apps", "nearby-send", "speakers"]
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the

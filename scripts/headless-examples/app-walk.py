@@ -2739,6 +2739,76 @@ class Walk:
             song.writeframes(bytes(frames))
         return {"file": str(path), "bytes": path.stat().st_size}
 
+    def op_pdf(self, value) -> dict:
+        """Write a one-page PDF drawing `text` in Helvetica where a person's files
+        are, so a walk opens a document a reader can actually read."""
+        name, text = value["name"], value.get("text", "A page")
+        folder = self.session.state / "home"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        path.write_bytes(one_page_pdf(text))
+        return {"file": str(path), "bytes": path.stat().st_size}
+
+    def op_epub(self, value) -> dict:
+        """Write a one-chapter EPUB where a person's files are: its title, author
+        and chapter, as a book a reader opens."""
+        import zipfile
+
+        name = value["name"]
+        title = value.get("title", "A book")
+        author = value.get("author", "Ada Ferrer")
+        chapter = value.get("chapter", "The first chapter.")
+        folder = self.session.state / "home"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / name
+        container = (
+            '<?xml version="1.0"?>\n'
+            '<container version="1.0" '
+            'xmlns="urn:oasis:names:tc:opendocument:xmlns:container">\n'
+            '  <rootfiles><rootfile full-path="OEBPS/content.opf" '
+            'media-type="application/oebps-package+xml"/></rootfiles>\n'
+            "</container>"
+        )
+        package = (
+            '<?xml version="1.0"?>\n'
+            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0">\n'
+            '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
+            f"    <dc:title>{title}</dc:title>\n"
+            f"    <dc:creator>{author}</dc:creator>\n"
+            "    <dc:language>en</dc:language>\n"
+            "  </metadata>\n"
+            "  <manifest>\n"
+            '    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>\n'
+            "  </manifest>\n"
+            '  <spine><itemref idref="c1"/></spine>\n'
+            "</package>"
+        )
+        page = (
+            '<?xml version="1.0"?>\n'
+            '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            f"<h1>{title}</h1><p>{chapter}</p></body></html>"
+        )
+        with zipfile.ZipFile(path, "w") as book:
+            book.writestr("mimetype", "application/epub+zip")
+            book.writestr("META-INF/container.xml", container)
+            book.writestr("OEBPS/content.opf", package)
+            book.writestr("OEBPS/c1.xhtml", page)
+        return {"file": str(path), "bytes": path.stat().st_size}
+
+    def op_package(self, value) -> dict:
+        """Sign the package `apps/tl/<name>` as a `.tapp` where a person's files are:
+        a package the Store reviews when it is opened."""
+        import shutil as copy
+
+        name = value["name"] if isinstance(value, dict) else value
+        shown = value.get("as") if isinstance(value, dict) else None
+        built = build_tapp(name, self.out / "build" / self.variant / "package", self.state)
+        folder = self.session.state / "home"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / (shown or f"{name}.tapp")
+        copy.copyfile(built, path)
+        return {"file": str(path), "bytes": path.stat().st_size}
+
     def chooser_question(self) -> dict | None:
         """The file chooser asking the person now, if one is."""
         questions = self.session.control({"op": "questions"})["answer"]["questions"]
@@ -3058,6 +3128,37 @@ def build_tapp(name: str, out: Path, state: Path) -> Path:
     if not tapp.is_file():
         raise Failed(f"tilolang build made no {tapp}")
     return tapp
+
+
+def one_page_pdf(text: str) -> bytes:
+    """A one-page PDF drawing `text` in non-embedded Helvetica, behind a plain xref table:
+    the document a reader opens and shows, made here rather than carried in the tree."""
+    stream = (
+        "BT /F1 12 Tf 72 720 Td 14 TL\n"
+        f"({text}) Tj T*\n"
+        "ET"
+    )
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        "/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream",
+    ]
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{number} 0 obj\n{body}\nendobj\n".encode())
+    xref = len(pdf)
+    pdf.extend(f"xref\n0 {len(offsets) + 1}\n0000000000 65535 f \n".encode())
+    for offset in offsets:
+        pdf.extend(f"{offset:010} 00000 n \n".encode())
+    pdf.extend(
+        f"trailer\n<< /Size {len(offsets) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(pdf)
 
 
 def prepare_state(state: Path, apps: str, build: bool) -> None:
@@ -3467,6 +3568,8 @@ def main() -> int:
     parser.add_argument("--only", choices=VARIANTS, help="walk one version alone")
     parser.add_argument("--out", type=Path, help="where the shots, logs and walk.json go")
     parser.add_argument("--file", help="a walk file to read instead of app-walks/APP.json")
+    parser.add_argument("--only-walk", metavar="WALK",
+                        help="walk one of the family's walks, by its step file's name")
     parser.add_argument("--state", type=Path,
                         help="where each version's session state goes (default: under --out)")
     parser.add_argument("--build", action="store_true",
@@ -3506,6 +3609,11 @@ def main() -> int:
         family = [] if options.file else family_of(name)
         if family:
             walked = family
+            if options.only_walk:
+                walked = [(path, spec) for path, spec in walked
+                          if path.stem == options.only_walk]
+                if not walked:
+                    raise Failed(f"the {name} family has no walk {options.only_walk!r}")
         else:
             path, spec = load_walk(options.app, options.file)
             name = name or path.stem
