@@ -1875,8 +1875,9 @@ action poll_server(p: Project) {
                 p.server_trouble = state.failure
                 if let progress = state.progress {
                     let percent = progress.percent ?? 0
-                    p.server_progress =
-                        if percent > 0 { "{progress.title} {percent}%" } else { progress.title }
+                    p.server_progress = if percent > 0 {
+                        "{progress.title} {percent}%"
+                    } else { progress.title }
                 } else {
                     p.server_progress = ""
                 }
