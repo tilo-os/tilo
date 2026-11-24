@@ -281,7 +281,7 @@
   },
   "so.tilo.tasks tasks.issues#history": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#history",
-    "test": "crates/core/collaboration/src/history_source/verbs.rs:522"
+    "test": "crates/core/resource-store/src/history/verbs.rs:522"
   },
   "so.tilo.tasks tasks.issues#link": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#relate",
@@ -441,7 +441,7 @@
   },
   "so.tilo.tasks tasks.tracker#history": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#history",
-    "test": "crates/core/collaboration/src/history_source/verbs.rs:522"
+    "test": "crates/core/resource-store/src/history/verbs.rs:522"
   },
   "so.tilo.tasks tasks.tracker#involve": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#involve",
