@@ -95,7 +95,9 @@ lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock", "dep:tilo-engine
 # (`dmabuf_import`). Shared by the WebView's rendered pages and the video
 # decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
 # `ash` for the raw-Vulkan interop, so it stays opt-in for builds that need
-# neither.
+# neither. It needs Tilo's wgpu-hal (vendor/wgpu-hal) for the queue's wait semaphores and foreign
+# external memory, which crates.io does not have, so it stays off for apps built on the
+# published SDK.
 dmabuf-import = ["dep:ash"]
 # Zero-copy GPU video frames: the dmabuf import above for a hardware
 # decoder's output. Plane upload and the YUV->RGB conversion (`gpu_video`)

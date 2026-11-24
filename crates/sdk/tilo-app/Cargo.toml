@@ -22,7 +22,7 @@ description = "The Tilo application SDK: one app source for Linux, macOS and the
 #
 # A headless tool that wants only the toolkit opts out with
 # `default-features = false` and names what it keeps.
-default = ["native", "broker-transport", "mpris", "gpu-video"]
+default = ["native", "broker-transport", "mpris"]
 # The native desktop runner and host services; see `tilo-runner-native`.
 native = ["dep:tilo-runner-native"]
 # The collaboration manager's built-in broker transport; see `tilo-ui`'s
@@ -38,6 +38,9 @@ webview-adblock = ["tilo-runner-native?/webview-adblock"]
 # X11 windows for development builds on an X11 host; see `tilo-ui`'s `x11`.
 # The release runtime is Wayland only.
 x11 = ["tilo-runner-native?/x11"]
+# Zero-copy GPU buffers and video frames. They need Tilo's wgpu-hal (vendor/wgpu-hal), which
+# crates.io does not have, so they stay off by default; Tilo's runtime library turns them on for
+# the apps it carries, and an app built on the published SDK uploads frames instead.
 dmabuf-import = ["tilo-runner-native?/dmabuf-import"]
 gpu-video = ["tilo-runner-native?/gpu-video"]
 # The real-time video decoder behind `ui::call_pictures` (GStreamer): an app
