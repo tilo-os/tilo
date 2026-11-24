@@ -1779,7 +1779,9 @@ impl Daemon {
         workspaces.copies().machines(environments);
         stage("serving the workspaces' trees to the files daemon");
         let files_tree = super::files_tree::serve(
-            &tilo_device_identity::login::files_tree_socket().map_err(io::Error::other)?,
+            &place
+                .sockets()
+                .join(tilo_device_identity::login::FILES_TREE_SOCKET),
             &workspaces,
             files_daemons,
             identity_socket.clone(),

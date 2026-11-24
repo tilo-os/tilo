@@ -90,7 +90,7 @@ fn command(_args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Resul
     // from, nothing starts, so the desktop never shows an empty workspace.
     // This production check validates the existing certificate and key; it
     // never creates credentials.
-    workspace_startup::inspect(&paths.state, &super::tree_socket()?)?.require_existing()?;
+    workspace_startup::inspect(&paths.state, &super::tree_socket(None)?)?.require_existing()?;
     let person = existing_person(&IdentityPaths::under(&paths.identity))?;
     eprintln!(
         "Files mount starts as this device's identity, certified for person {}",

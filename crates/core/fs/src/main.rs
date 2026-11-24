@@ -279,7 +279,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             cache_dir,
             require_existing,
         } => {
-            let status = workspace_startup::inspect(&cache_dir, &tree_socket()?)?;
+            let status = workspace_startup::inspect(&cache_dir, &tree_socket(None)?)?;
             if require_existing {
                 status.require_existing()?;
             }
@@ -302,7 +302,8 @@ async fn run_command(cli: Cli) -> Result<()> {
                 let cache = cache_dir
                     .as_deref()
                     .context("recovery requires --cache-dir")?;
-                workspace_startup::inspect(cache, &tree_socket()?)?.require_existing()?;
+                workspace_startup::inspect(cache, &tree_socket(backend.native_owner.as_deref())?)?
+                    .require_existing()?;
             }
             Box::pin(serve(
                 mount_point,
@@ -644,8 +645,10 @@ async fn serve(
     // as this device's write the first time the sync runs, signed as every other change of it is.
     let workspace =
         tilo_server_protocol::servers::person_workspace_id(&credentials.user_public_key());
+    let trees = tree_socket(backend.native_owner.as_deref())?;
     let (tree, namespace, kept, service) = open_tree(
         np.as_deref(),
+        trees,
         workspace,
         &credentials,
         author,
@@ -784,6 +787,7 @@ const TREE_STOPS_WITHIN: Duration = Duration::from_secs(10);
 /// this run alone, synced with nothing.
 async fn open_tree(
     dir: Option<&Path>,
+    trees: PathBuf,
     workspace: String,
     credentials: &tilo_fs::identity::PeerCredentials,
     author: String,
@@ -807,7 +811,7 @@ async fn open_tree(
     };
     set_aside_older_namespace_file(dir)?;
     let (tree, service) = tilo_fs::tree_sync::remote::start(
-        tree_socket()?,
+        trees,
         workspace,
         (
             credentials.device_public_key(),
@@ -823,9 +827,16 @@ async fn open_tree(
     Ok((Some(tree), namespace, Some(kept), Some(service)))
 }
 
-/// Where this device's daemon serves the trees of the workspaces it belongs to.
-fn tree_socket() -> Result<PathBuf> {
-    tilo_device_identity::login::files_tree_socket().map_err(anyhow::Error::msg)
+/// Where this device's daemon serves the trees of the workspaces it belongs to: among the sockets
+/// of the daemon the mount's person reaches, the `--native-owner` (`UID:GID`) a machine's daemon
+/// mounts for, else this account. A machine's daemon is root's, so its own account names no
+/// person's daemon.
+fn tree_socket(owner: Option<&str>) -> Result<PathBuf> {
+    let account = match owner {
+        Some(spec) => parse_owner(spec)?.0,
+        None => rustix::process::geteuid().as_raw(),
+    };
+    tilo_device_identity::login::files_tree_socket(account).map_err(anyhow::Error::msg)
 }
 
 /// The directory the mount keeps its tree's documents in, each with the journal of the changes
