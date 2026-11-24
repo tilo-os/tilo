@@ -19,7 +19,7 @@ root disks: Disks
 default view window for Disks
 
 /// What a person calls a drive: the name they gave it, else its model, else its name in `/dev`.
-fn drive_name(d: Disks, drive: device.Drive) -> Text {
+fn drive_name(d: Disks, drive: device.DisksDrive) -> Text {
     if let serial = drive.serial {
         if let named = d.names.get(serial) {
             named
@@ -51,7 +51,7 @@ fn rate_words(bytes: Float) -> Text {
 }
 
 /// The size a drive allocates to its partitions.
-fn allocated(drive: device.Drive, at: Int) -> Int {
+fn allocated(drive: device.DisksDrive, at: Int) -> Int {
     if at >= drive.partitions.len() {
         0
     } else {
@@ -118,7 +118,7 @@ view window(d: Disks) {
 }
 
 /// One drive in the list: what it is called, how big it is, and whether it needs attention.
-view drive_row(d: Disks, drive: device.Drive, chosen: State<Text>) {
+view drive_row(d: Disks, drive: device.DisksDrive, chosen: State<Text>) {
     if let health = drive.health {
         if health.failing {
             ui.ListRow(
@@ -151,7 +151,7 @@ view drive_row(d: Disks, drive: device.Drive, chosen: State<Text>) {
 }
 
 /// A drive's row with the reading it shows first and no tone: its health says nothing to tone.
-view drive_row_of(d: Disks, drive: device.Drive, chosen: State<Text>, reading: Text) {
+view drive_row_of(d: Disks, drive: device.DisksDrive, chosen: State<Text>, reading: Text) {
     ui.ListRow(
         drive_name(d, drive),
         secondary: "{size_words(drive.size_bytes)} - {drive.name}",
@@ -168,7 +168,7 @@ view drive_row_of(d: Disks, drive: device.Drive, chosen: State<Text>, reading: T
 view drive_detail(
     d: Disks,
     disks: device.Disks,
-    drive: device.Drive,
+    drive: device.DisksDrive,
     tab: State<Text>,
     formatting: State<Text>,
 ) {
@@ -201,7 +201,12 @@ fn tab_key(index: Int) -> Text {
 }
 
 /// The drive as one bar: its partitions by size, then the space no partition uses.
-view overview_pane(d: Disks, disks: device.Disks, drive: device.Drive, formatting: State<Text>) {
+view overview_pane(
+    d: Disks,
+    disks: device.Disks,
+    drive: device.DisksDrive,
+    formatting: State<Text>,
+) {
     let free = drive.size_bytes - allocated(drive, 0)
     ui.Section("How it is divided") {
         if drive.size_bytes > 0 {
@@ -265,7 +270,7 @@ view overview_pane(d: Disks, disks: device.Disks, drive: device.Drive, formattin
 
 /// Mounts the drive's first partition, which is what a drive without a filesystem of its own
 /// holds.
-action mount_first(drive: device.Drive) {
+action mount_first(drive: device.DisksDrive) {
     if let first = drive.partitions.first() {
         device.mount(device.disks, device: first.name)
     }
@@ -293,7 +298,7 @@ view shape(share: Int, mounted: Bool) {
 }
 
 /// The drive's own account of its health.
-view health_pane(drive: device.Drive) {
+view health_pane(drive: device.DisksDrive) {
     if let health = drive.health {
         ui.Section("Health") {
             ui.PropertyList {
@@ -343,7 +348,7 @@ view health_pane(drive: device.Drive) {
 }
 
 /// Every partition with what it holds and what can be done to it.
-view partitions_pane(d: Disks, drive: device.Drive, formatting: State<Text>) {
+view partitions_pane(d: Disks, drive: device.DisksDrive, formatting: State<Text>) {
     if drive.partitions.is_empty() {
         ui.EmptyState(
             "No partitions",

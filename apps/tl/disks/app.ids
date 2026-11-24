@@ -12,7 +12,7 @@ format_dialog = v6h7ojdk
 health_pane = ta2u27ch
 health_words = q7p23wal
 label_of = 4mepehpt
-mount_first@device.Drive = cno6mkpj
+mount_first@device.DisksDrive = cno6mkpj
 name_drive@Disks = pezu5gyc
 overview_pane = pilprq2u
 partition_words = s5r7sgxu
@@ -27,3 +27,6 @@ window.chosen = exfzozkl
 window.filesystem = mghdcz4n
 window.formatting = fz6foww7
 window.tab = m5e7543k
+
+# retired
+mount_first@device.Drive = cno6mkpj

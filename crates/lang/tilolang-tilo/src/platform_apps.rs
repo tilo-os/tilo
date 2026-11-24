@@ -135,7 +135,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("firmware", "Firmware", "firmware"),
     ("containers", "Containers", "containers"),
     ("processes", "Processes", "processes"),
-    ("disks", "Drives", "disks"),
+    ("disks", "Disks", "disks"),
     ("firewall", "Firewall", "firewall"),
     ("journal", "Journal", "journal"),
     ("modem", "Modem", "modem"),

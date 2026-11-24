@@ -433,8 +433,7 @@ pub fn compile(
     dir: &Path,
     search: &[PathBuf],
     rng: &mut dyn tilolang::ids::Entropy,
-) -> Result<(Vec<tilolang::source::BuiltPackage>, Vec<PackageMeta>), tilolang::source::BuildError>
-{
+) -> Result<(Vec<tilolang::source::BuiltPackage>, Vec<PackageMeta>), tilolang::source::BuildError> {
     let published = published_packages(&tilolang::source::search_of(dir, search))
         .map_err(tilolang::source::BuildError::Read)?;
     let built = tilolang::source::compile_package(dir, search, &published, rng)?;
@@ -763,14 +762,21 @@ impl Reader<'_> {
     }
 
     /// Declares the named types of `surface`, the resource type `own`'s, and gives the name each
-    /// is declared under: a type another resource declared differently is this resource's own,
-    /// named after it.
+    /// is declared under: a type another resource declared differently, or another resource's
+    /// own type is called, is this resource's own, named after it. A kind of one segment
+    /// (`network`) has no longer name to step aside to ([`type_name`]), so the system service's
+    /// network reading in `processes` is `ProcessesNetwork` beside the device's `Network`.
     fn named_types(&mut self, surface: &Surface, own: Option<&str>) -> BTreeMap<String, String> {
         let mut renamed: BTreeMap<String, String> = BTreeMap::new();
         for named in &surface.types {
+            let a_kind_is_called_so = self
+                .kinds
+                .values()
+                .any(|kind| *kind == named.name && Some(kind.as_str()) != own);
             let name = match self.declared.get(&named.name) {
                 Some((declared, _)) if declared == named => continue,
                 Some(_) => format!("{}{}", own.unwrap_or_default(), named.name),
+                None if a_kind_is_called_so => format!("{}{}", own.unwrap_or_default(), named.name),
                 None => named.name.clone(),
             };
             renamed.insert(named.name.clone(), name.clone());

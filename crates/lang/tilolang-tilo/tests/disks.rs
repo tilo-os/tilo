@@ -92,7 +92,9 @@ impl Installed {
         let metas = tilolang_tilo::platform_apps::platform_packages()
             .expect("the platform's packages read");
         for meta in &metas {
-            host.runtime().load_foreign(meta.clone()).expect("the device is loaded");
+            host.runtime()
+                .load_foreign(meta.clone())
+                .expect("the device is loaded");
         }
         let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
@@ -113,8 +115,20 @@ impl Installed {
             .collect();
         let sent = Sent::default();
         host.runtime().set_invoker(sent.clone());
-        host.runtime().set_reading(&reading(), READING).expect("the reading is set");
-        let root = host.runtime().create_root("Disks").expect("the app's root");
+        host.runtime()
+            .set_reading(&reading(), READING)
+            .expect("the reading is set");
+        // The device publishes a `Disks` too (its drives' reading), so the app's own is named by
+        // its id.
+        let disks = package
+            .meta
+            .types
+            .iter()
+            .find(|ty| ty.name == "Disks")
+            .expect("the app's root type")
+            .id
+            .clone();
+        let root = host.runtime().create_root(&disks).expect("the app's root");
         Self {
             host,
             root,
@@ -194,8 +208,17 @@ fn a_chosen_drive_shows_its_partitions_and_unallocated_space() {
     let app = Installed::new();
     let window = app.window();
     window.set_view_state("chosen", Value::text("nvme0n1"));
-    for wanted in ["How it is divided", "nvme0n1p1 boot", "Unallocated", "Open at /"] {
-        assert!(contains(&window, wanted), "{wanted} shows: {:?}", shown(&window));
+    for wanted in [
+        "How it is divided",
+        "nvme0n1p1 boot",
+        "Unallocated",
+        "Open at /",
+    ] {
+        assert!(
+            contains(&window, wanted),
+            "{wanted} shows: {:?}",
+            shown(&window)
+        );
     }
 }
 
@@ -205,8 +228,17 @@ fn the_health_tab_shows_what_the_drive_reports() {
     let window = app.window();
     window.set_view_state("chosen", Value::text("nvme0n1"));
     window.set_view_state("tab", Value::text("health"));
-    for wanted in ["Verdict", "Temperature", "Life used", "Media errors", "Last self-test"] {
-        assert!(has(&window, wanted) || contains(&window, wanted), "{wanted} shows");
+    for wanted in [
+        "Verdict",
+        "Temperature",
+        "Life used",
+        "Media errors",
+        "Last self-test",
+    ] {
+        assert!(
+            has(&window, wanted) || contains(&window, wanted),
+            "{wanted} shows"
+        );
     }
 }
 
@@ -218,7 +250,10 @@ fn the_partitions_tab_offers_each_partition_its_verbs() {
     window.set_view_state("tab", Value::text("partitions"));
     let words = shown(&window);
     for wanted in ["nvme0n1p1", "nvme0n1p2", "Close", "Erase…"] {
-        assert!(words.iter().any(|text| text.contains(wanted)), "{wanted} shows: {words:?}");
+        assert!(
+            words.iter().any(|text| text.contains(wanted)),
+            "{wanted} shows: {words:?}"
+        );
     }
 }
 
@@ -234,11 +269,13 @@ fn a_drive_is_named_in_the_workspace() {
         .expect("the rename verb");
     app.host
         .runtime()
-        .invoke_action(&me(), (id.as_str(), vec![
-            app.root_value(),
-            Value::text("S1"),
-            Value::text("System"),
-        ]))
+        .invoke_action(
+            &me(),
+            (
+                id.as_str(),
+                vec![app.root_value(), Value::text("S1"), Value::text("System")],
+            ),
+        )
         .expect("the rename runs");
     let window = app.window();
     assert!(contains(&window, "System"), "{:?}", shown(&window));
