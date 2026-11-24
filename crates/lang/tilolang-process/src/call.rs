@@ -16,9 +16,9 @@ use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::platform::call_place;
 use tilolang_tilo::runtime::value::ResourceRef;
 use tilolang_tilo::runtime::{Actor, Bridged, CallMember, CallStep};
-use ui::native_media::{Command, Issue, REPLY_LOST, Request, Snapshot, State, WATCH_LOST};
-use ui::permissions::MemberId;
-use ui::time::{Duration, Instant};
+use ui_core::native_media::{Command, Issue, REPLY_LOST, Request, Snapshot, State, WATCH_LOST};
+use ui_core::permissions::MemberId;
+use ui_core::time::{Duration, Instant};
 
 /// What an instance knows of the system's calls, and what it asked of them.
 pub struct Calls {
@@ -92,7 +92,7 @@ impl Calls {
         };
         self.intent = self.intent.saturating_add(1);
         let request_id = self.request_id();
-        self.pending.insert(request_id, ui::time::now());
+        self.pending.insert(request_id, ui_core::time::now());
         self.queued.push(CollabRequest::NativeMediaCommand {
             request_id,
             command: Request {
@@ -154,7 +154,7 @@ impl Calls {
                 tracing::debug!(%why, "the call service refused a request");
                 if watched {
                     // Not before a while: a service that refuses a watch refuses the next one too.
-                    self.watch_after = ui::time::now().checked_add(Duration::from_secs(5));
+                    self.watch_after = ui_core::time::now().checked_add(Duration::from_secs(5));
                 } else {
                     self.refused = Some("The call could not do that just now.".to_owned());
                     if self.pending.is_empty() {
@@ -171,7 +171,7 @@ impl Calls {
     /// step given up on, or the refused watch asked again.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
-        let now = ui::time::now();
+        let now = ui_core::time::now();
         let lost = self
             .watch
             .and_then(|(_, sent)| sent.checked_add(WATCH_LOST))
@@ -189,7 +189,7 @@ impl Calls {
     /// Send what waits through `send`, and keep a watch outstanding: who is in each call of the
     /// record shows as it moves.
     pub fn say(&mut self, mut send: impl FnMut(CollabRequest) -> bool) {
-        let now = ui::time::now();
+        let now = ui_core::time::now();
         // A step whose answer never came is given up on, so the controls show what is.
         let before = self.pending.len();
         self.pending

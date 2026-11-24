@@ -28,7 +28,7 @@ use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::platform::call_place;
 use tilolang_tilo::runtime::value::ResourceRef;
 use tilolang_tilo::runtime::{Invoked, LineRun};
-use ui::time::{Duration, Instant};
+use ui_core::time::{Duration, Instant};
 
 /// How often the record of an invocation that runs or waits is read again.
 const READ_AGAIN: Duration = Duration::from_millis(1000);
@@ -97,7 +97,7 @@ impl Invocations {
     /// reads one.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
-        let now = ui::time::now();
+        let now = ui_core::time::now();
         self.followed
             .values()
             .filter(|followed| followed.id.is_some())
@@ -151,7 +151,7 @@ impl Invocations {
                     ..Followed::default()
                 });
         }
-        let now = ui::time::now();
+        let now = ui_core::time::now();
         let mut due = Vec::new();
         for (read, followed) in &mut self.followed {
             let Some(id) = followed.id else {
