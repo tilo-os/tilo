@@ -1175,11 +1175,12 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_CONFIG_HOME", profile.path())
         .set(tilo_identity::store::FILE_SECRETS_ENV, "1");
-    // The person whose root this daemon keeps, as founding left it.
+    // The person whose root this daemon keeps, as founding left it: the root is sealed with this
+    // computer's own device key, where the daemon keeps it.
     let identity_dir = crate::device::services::this_accounts_root_dir().unwrap();
-    tilo_identity::provisioning::create_person(
+    let ada = tilo_identity::provisioning::create_person(
         &identity_dir,
-        &tilo_device_identity::IdentityPaths::under(profile.path().join("device")),
+        &tilo_identity::provisioning::collaboration_identity_paths(),
         "Ada",
         "",
         tilo_identity::provisioning::IdentityStorage::Files,
@@ -1204,9 +1205,10 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
         issuer.copies().action_service(),
     );
 
-    // The device's one dispatch: its record of each invocation, and the person who asks.
+    // The device's one dispatch: its record of each invocation, and the person who asks: Ada,
+    // whose root this computer keeps and whose call runs with it.
     let invocations = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
-    let person = tilo_actions::remote::Caller::authenticated([7; 32], [8; 32]);
+    let person = tilo_actions::remote::Caller::authenticated(ada, [8; 32]);
     let page = super::ticket::catalogue(&tilo_actions::remote::CatalogueQuery::default());
     for (action, args, field) in [
         (
