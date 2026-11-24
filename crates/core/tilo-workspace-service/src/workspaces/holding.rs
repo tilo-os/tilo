@@ -243,8 +243,10 @@ fn names_holder(peer: &StatePeer, caller: &DeviceCert) -> bool {
         .any(|hint| hint.host.device_public_key == caller.device_public_key)
 }
 
-/// That `peer`'s governance names `caller`'s device among the workspace's
-/// holders, which write it as the device it was made on does.
+/// That `peer`'s governance names `caller` among the workspace's holders,
+/// which write it as the device it was made on does: the very certificate it
+/// keeps for that holder, so another certificate of the same device key (one
+/// its person never signed) writes nothing.
 ///
 /// # Errors
 ///
@@ -253,7 +255,12 @@ pub(super) fn require_holder(
     peer: &StatePeer,
     caller: &DeviceCert,
 ) -> Result<(), super::CollaborationError> {
-    if names_holder(peer, caller) {
+    if peer
+        .governance()
+        .keeping_devices()
+        .iter()
+        .any(|hint| hint.host == *caller)
+    {
         Ok(())
     } else {
         Err(super::CollaborationError::new(
