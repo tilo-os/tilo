@@ -247,7 +247,7 @@ fn answered(
 ) -> InvocationReceipt {
     let who = who;
     let record = |status: InvocationStatus, output: Option<serde_json::Value>| {
-        let now = now_ms();
+        let now = tilo_clock::unix_now_ms_i64();
         InvocationRecord {
             id: Some(invocation.0.to_string()),
             calls: vec![invocation.0.to_string()],
