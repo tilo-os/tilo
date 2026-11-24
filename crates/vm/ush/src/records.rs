@@ -585,7 +585,7 @@ fn check_key(key: &str) -> Result<(), RecordError> {
 )]
 pub mod testing {
     use std::collections::BTreeMap;
-    use std::os::unix::net::{UnixListener, UnixStream};
+    use tilo_files::native::socket;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
@@ -615,7 +615,7 @@ pub mod testing {
             if let Some(parent) = socket.parent() {
                 std::fs::create_dir_all(parent).expect("the workspace socket's directory");
             }
-            let listener = UnixListener::bind(socket).expect("the workspace's socket");
+            let listener = socket::bind(socket).expect("the workspace's socket");
             let documents = Documents::default();
             let stopping = Arc::new(AtomicBool::new(false));
             let served = {
@@ -701,7 +701,7 @@ pub mod testing {
         fn drop(&mut self) {
             self.stopping.store(true, Ordering::Release);
             // The accept that waits is answered, and sees it is to stop.
-            drop(UnixStream::connect(&self.socket));
+            drop(socket::connect(&self.socket));
             if let Some(served) = self.served.take() {
                 let _ = served.join();
             }
