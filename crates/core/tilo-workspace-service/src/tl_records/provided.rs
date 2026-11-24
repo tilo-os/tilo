@@ -708,16 +708,34 @@ mod tests {
             format!("{found:?}").contains("4711"),
             "search finds it for the conversation's own person"
         );
+        // Every level of the record's pages as `person` reads them, from the top down.
         let page = |person: &str| {
-            let page = workspaces
-                .record_page(
-                    &workspace,
-                    &records.route(&workspace),
-                    person,
-                    &tilo_actions::remote::CatalogueQuery::default(),
-                )
-                .expect("the record's page reads");
-            serde_json::to_string(&page).unwrap()
+            let route = records.route(&workspace);
+            let mut parents = vec![None::<String>];
+            let mut shown = String::new();
+            let mut walked = std::collections::BTreeSet::new();
+            while let Some(parent) = parents.pop() {
+                let mut query = tilo_actions::remote::CatalogueQuery {
+                    parent_resource: parent,
+                    ..tilo_actions::remote::CatalogueQuery::default()
+                };
+                loop {
+                    let page = workspaces
+                        .record_page(&workspace, &route, person, &query)
+                        .expect("the record's page reads");
+                    shown.push_str(&serde_json::to_string(&page.rows).unwrap());
+                    for row in page.rows.iter().filter(|row| row.has_children) {
+                        if walked.insert(row.resource.id.clone()) {
+                            parents.push(Some(row.resource.id.clone()));
+                        }
+                    }
+                    if page.next_cursor.is_empty() {
+                        break;
+                    }
+                    query.cursor = page.next_cursor;
+                }
+            }
+            shown
         };
         assert!(
             !page(&cy_person).contains("4711"),
@@ -746,6 +764,16 @@ mod tests {
         let tasks = crate::tl_records::built_in(TASKS)
             .unwrap()
             .expect("Tasks is built in");
+        // The record's channel is founded here, as a window opening it first would.
+        BuiltInRecords {
+            workspaces: workspaces.clone(),
+            app: TASKS,
+            runtime: tokio::runtime::Handle::current(),
+            rooted: Arc::default(),
+        }
+        .rooted(&workspace, &ada_person)
+        .await
+        .expect("Tasks' record has its root");
         let ada = crate::tl_records::member(tilo_actions::MemberId::person(ada_person.clone()));
         let who = ada.clone();
         workspaces

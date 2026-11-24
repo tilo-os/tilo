@@ -899,7 +899,8 @@ fn empty_writing(draft: Option<Draft>, body: RichText) -> Bool {
 ///
 /// A composer names the person's `draft`: what it holds is the message, and the draft is emptied in
 /// the same change, so the press is one step to undo. What is sent without a draft is the `body`
-/// given, as a program writing a message says it.
+/// given, as a program writing a message says it. A reply an agent's `turn` writes begins empty
+/// and takes the model's words as it writes them.
 action send(
     to: TextChannel | Thread | Direct,
     body: RichText = RichText(""),
@@ -908,7 +909,7 @@ action send(
     turn: Text = "",
     draft: Option<Draft> = .none,
 ) -> Message uses notify (icon: .send, label: "Send", did: "wrote a message") {
-    require not empty_writing(draft, body) "Type a message first"
+    require turn != "" or not empty_writing(draft, body) "Type a message first"
     let words = if let writing = draft { writing.body } else { body }
     // What the person chose for the message waits on their draft; what a program sends with it
     // comes as an argument.

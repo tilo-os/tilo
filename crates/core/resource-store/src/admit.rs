@@ -441,10 +441,9 @@ fn verb_admits(
         // there, and a surface lists no write a reference leads to. Another package's
         // records stay out of its reach.
         if let Some(package) = tilolang_package(kind)
-            && verb
-                .writes
-                .keys()
-                .any(|own| tilolang_package(own) == Some(package))
+            && verb.writes.keys().any(|own| {
+                tilolang_package(own) == Some(package) || own.strip_prefix("tl.") == Some(package)
+            })
         {
             return Ok(());
         }

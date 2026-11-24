@@ -352,16 +352,17 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         "the server takes Scout's turn once Bea approved it"
     );
 
-    // Chat answers for its record on both devices. Bea makes a channel and mentions Scout there;
-    // her own device starts nothing.
-    for (workspaces, person) in [(beas, bea_person.clone()), (adas, bea_person.clone())] {
+    // Chat answers for its record on both devices, each opening it as its own person. Bea makes
+    // a channel and mentions Scout there; her own device starts nothing.
+    let ada_person = hex::encode(hosted.ada_cert.user_public_key);
+    for (workspaces, person) in [(beas, bea_person.clone()), (adas, ada_person)] {
         crate::tl_records::provided::register(workspaces);
         let chat = crate::tl_records::built_in(CHAT)
             .unwrap()
             .expect("Chat is built in");
-        let as_bea = crate::tl_records::member(tilo_actions::MemberId::person(person.clone()));
+        let as_person = crate::tl_records::member(tilo_actions::MemberId::person(person.clone()));
         workspaces
-            .with_tl_record(&workspace, &chat, (as_bea, &person), |opened| {
+            .with_tl_record(&workspace, &chat, (as_person, &person), |opened| {
                 opened.open_root().map(drop)
             })
             .await

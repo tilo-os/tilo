@@ -172,8 +172,14 @@ pub(super) async fn chat_writes(
     body: Option<Json>,
 ) -> Result<(), String> {
     let invocation = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+    // A change records the id Chat's declaration keeps for `send`, as its schema declares it.
+    let send = crate::tl_records::built_in(CHAT)
+        .unwrap()
+        .expect("Chat is built in")
+        .action_id("send")
+        .expect("Chat declares `send`");
     let stamp = Stamp {
-        verb: "send".into(),
+        verb: send,
         invoker: Stamp::by(by),
         invocation: invocation.0.to_string(),
         at: jiff::Timestamp::now().to_string(),
@@ -468,12 +474,21 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         argument(&request, "reply_to"),
         json!(format!("tl:{CHAT}:m-1"))
     );
-    assert!(
-        argument(&request, "body")
-            .as_str()
-            .is_some_and(|body| body.contains(PLAN_READY)),
-        "{request:?}"
-    );
+    // The reply begins empty, naming the turn, and takes the model's words as it writes them.
+    let deadline = tilo_test_env::hang_deadline();
+    while !dispatch.asked().iter().any(|asked| {
+        matches!(asked.target.address.action.as_str(), "send" | "edit")
+            && argument(asked, "body")
+                .as_str()
+                .is_some_and(|body| body.contains(PLAN_READY))
+    }) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reply never took the answer: {:?}",
+            dispatch.asked()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     assert_eq!(
         caller.acting().agent_id(),
         Some(SCOUT),
@@ -533,7 +548,11 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         .first()
         .and_then(|version| version.stamp.clone())
         .expect("the reply names the action that made it");
-    assert_eq!(made.verb, "send", "{made:?}");
+    let send = crate::tl_records::built_in(CHAT)
+        .unwrap()
+        .expect("Chat is built in")
+        .action_id("send");
+    assert_eq!(Some(made.verb.clone()), send, "{made:?}");
     assert_eq!(
         made.invoker,
         Stamp::by(&caller.acting().by),

@@ -221,9 +221,16 @@ impl Schema {
                 {
                     nested.insert(kind.clone());
                 }
+                let mut writes = writes_of(surface, own, &|_, field| units.contains(field), false);
+                // A tilolang action on no resource is declared on its package's own surface,
+                // which holds no fields: its verb names that kind, so the package's code is
+                // what bounds it within the package's records, as for a verb of one of its types.
+                if writes.is_empty() && surface.kind.starts_with("tl.") {
+                    writes.insert(surface.kind.clone(), Writes::default());
+                }
                 Verb {
                     name: verb.id.clone(),
-                    writes: writes_of(surface, own, &|_, field| units.contains(field), false),
+                    writes,
                     nested,
                 }
             })
