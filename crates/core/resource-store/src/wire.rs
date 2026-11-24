@@ -810,6 +810,14 @@ mod record_wire_tests {
     /// route's record; and an earlier app reads an answer that says the record is on its way.
     #[test]
     fn a_record_command_crosses_versions_or_is_refused() {
+        /// A reply as a reader from before `pending` reads it.
+        #[derive(Debug, serde::Deserialize)]
+        enum EarlierReply {
+            RecordChanges {
+                heads: Vec<String>,
+                next: Option<u64>,
+            },
+        }
         for command in [
             Command::RecordChanges {
                 record: Some("note-1".into()),
@@ -851,13 +859,6 @@ mod record_wire_tests {
             serde_json::from_str::<Reply>(earlier).unwrap(),
             Reply::RecordChanges { pending: false, .. }
         ));
-        #[derive(Debug, serde::Deserialize)]
-        enum EarlierReply {
-            RecordChanges {
-                heads: Vec<String>,
-                next: Option<u64>,
-            },
-        }
         let pending = serde_json::to_string(&Reply::RecordChanges {
             changes: Bytes::default(),
             heads: Vec::new(),

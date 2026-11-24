@@ -219,7 +219,7 @@ impl LocalPort {
             .filter_map(|head| head.parse().ok())
             .filter(|head| doc.get_change_meta_by_hash(head).is_some())
             .collect();
-        let changes: Vec<u8> = doc
+        let mut changes: Vec<u8> = doc
             .get_changes(&known)
             .iter()
             .flat_map(|change| change.raw_bytes().iter().copied())
@@ -228,11 +228,14 @@ impl LocalPort {
             .ok()
             .filter(|start| *start <= changes.len())
             .ok_or("the page starts past the record's changes")?;
-        let end = changes.len().min(start.saturating_add(RECORD_PAGE_BYTES));
+        let total = changes.len();
+        let end = total.min(start.saturating_add(RECORD_PAGE_BYTES));
+        changes.truncate(end);
+        changes.drain(..start);
         Ok(Reply::RecordChanges {
-            changes: Bytes(changes[start..end].to_vec()),
+            changes: Bytes(changes),
             heads: doc.get_heads().iter().map(ToString::to_string).collect(),
-            next: (end < changes.len()).then(|| u64::try_from(end).unwrap_or(u64::MAX)),
+            next: (end < total).then(|| u64::try_from(end).unwrap_or(u64::MAX)),
             pending: false,
         })
     }
