@@ -676,7 +676,10 @@ impl WorkspacePolicy {
     /// An agent its person stopped ([`crate::agent_answers::stop_grant`]) is
     /// refused everything, as a banned person is: no more specific grant lifts
     /// the stop, not the rights its certificate carries nor an answer its
-    /// person gave it before.
+    /// person gave it before. A grant of the workspace's governance that denies
+    /// the agent something (one that is no person's answer for it,
+    /// [`crate::agent_answers::is_answer`]) refuses every agent of that id
+    /// alike, whoever set it, and nothing more specific lifts it either.
     #[must_use]
     pub fn party_of_agent(&self, agent: &str, person: &str) -> Party<'_> {
         let grantee = Grantee::agent(agent);
@@ -685,9 +688,10 @@ impl WorkspacePolicy {
             .grants
             .iter()
             .filter(|grant| {
-                grant.id == stop
-                    && grant.grantee == grantee
-                    && grant.granted_by.person_id() == Some(person)
+                grant.grantee == grantee
+                    && ((grant.id == stop && grant.granted_by.person_id() == Some(person))
+                        || (grant.answer == Answer::Deny
+                            && !crate::agent_answers::is_answer(grant)))
             })
             .collect();
         let theirs: Vec<&Grant> = self

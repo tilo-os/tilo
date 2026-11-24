@@ -439,27 +439,15 @@ impl Workspaces {
     }
 
     /// `workspace`'s policy where it answers something for `agent` now: `None` while its
-    /// person gave no answer for that agent, so nothing narrows it. What answers it are the
-    /// grants the person set as its answers ([`tilo_action_policy::agent_answers::is_answer`]);
-    /// a grant kept for one use of theirs (the "Always" of a vault item's leave) narrows
-    /// nothing.
+    /// person gave no answer for that agent, so nothing narrows it
+    /// ([`super::hosted_use::answers_narrow`]).
     pub async fn agent_policy(
         &self,
         workspace: &str,
         agent: &str,
     ) -> Option<tilo_action_policy::WorkspacePolicy> {
         let policy = self.policy_of(workspace).await?;
-        let named = tilo_action_policy::Grantee::agent(agent.to_owned());
-        let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
-        policy
-            .grants
-            .iter()
-            .any(|grant| {
-                grant.grantee == named
-                    && grant.is_live(&now)
-                    && tilo_action_policy::agent_answers::is_answer(grant)
-            })
-            .then_some(policy)
+        super::hosted_use::answers_narrow(&policy, agent).then_some(policy)
     }
 
     /// The sandbox capabilities `workspace`'s governance grants its apps: the
