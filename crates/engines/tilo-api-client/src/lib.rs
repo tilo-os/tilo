@@ -108,23 +108,27 @@ fn encode_component(text: &str) -> String {
 /// tolerated, and an unknown name stays visible, so the person sees exactly which placeholder
 /// did not resolve.
 #[must_use]
-pub fn substitute(input: &str, vars: &std::collections::HashMap<String, String>) -> String {
+pub fn substitute<S: std::hash::BuildHasher>(
+    input: &str,
+    vars: &std::collections::HashMap<String, String, S>,
+) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
-    while let Some(open) = rest.find("{{") {
-        let (before, after_open) = rest.split_at(open);
+    while let Some((before, after_open)) = rest.split_once("{{") {
         out.push_str(before);
-        let Some(close) = after_open.get(2..).and_then(|after| after.find("}}")) else {
+        let Some((raw, after_close)) = after_open.split_once("}}") else {
+            out.push_str("{{");
             out.push_str(after_open);
             return out;
         };
-        let raw = after_open.get(2..2 + close).unwrap_or_default();
-        let whole = after_open.get(..2 + close + 2).unwrap_or(after_open);
-        match vars.get(raw.trim()) {
-            Some(value) => out.push_str(value),
-            None => out.push_str(whole),
+        if let Some(value) = vars.get(raw.trim()) {
+            out.push_str(value);
+        } else {
+            out.push_str("{{");
+            out.push_str(raw);
+            out.push_str("}}");
         }
-        rest = after_open.get(2 + close + 2..).unwrap_or_default();
+        rest = after_close;
     }
     out.push_str(rest);
     out
@@ -317,7 +321,9 @@ fn job_counter() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX));
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
     // The moment and the count together: unique on a device across restarts.
     let count = NEXT.fetch_add(1, Ordering::Relaxed);
     at.saturating_mul(1000).saturating_add(count)
@@ -403,10 +409,12 @@ pub fn start(op: &str, input: &str) -> Result<String, String> {
 ///
 /// No such job on this device.
 pub fn status(job: &str) -> Result<String, String> {
-    let known = jobs()
+    let found = jobs()
         .lock()
-        .map_err(|_| "the job table is unreadable".to_owned())?;
-    let Some(job) = known.get(job) else {
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .get(job)
+        .cloned();
+    let Some(job) = found else {
         return Err(format!("no job `{job}` runs on this device"));
     };
     if job.cancelled.load(Ordering::Acquire) {
@@ -500,7 +508,12 @@ fn send(out: &Outgoing, cancelled: &AtomicBool) -> Result<serde_json::Value, Str
     let headers: Vec<(String, String)> = resp
         .headers()
         .iter()
-        .map(|(name, value)| (name.as_str().to_owned(), value.to_str().unwrap_or("").to_owned()))
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                value.to_str().unwrap_or("").to_owned(),
+            )
+        })
         .collect();
     let content_type = resp
         .headers()
@@ -539,7 +552,7 @@ fn send(out: &Outgoing, cancelled: &AtomicBool) -> Result<serde_json::Value, Str
 /// all of it. A cancel stops the read.
 fn read_shown(resp: &mut impl Read, cancelled: &AtomicBool) -> Result<(Vec<u8>, bool), String> {
     let mut body = Vec::new();
-    let mut chunk = [0u8; 64 * 1024];
+    let mut chunk = vec![0u8; 64 * 1024];
     loop {
         if cancelled.load(Ordering::Acquire) {
             return Ok((body, false));
@@ -674,13 +687,11 @@ mod tests {
 
     #[test]
     fn variables_resolve_where_written_and_an_unknown_one_stays_visible() {
-        let vars: std::collections::HashMap<String, String> = [
-            ("base", "https://api.example.com"),
-            ("id", "7"),
-        ]
-        .iter()
-        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-        .collect();
+        let vars: std::collections::HashMap<String, String> =
+            [("base", "https://api.example.com"), ("id", "7")]
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
         assert_eq!(
             substitute("{{base}}/users/{{ id }}", &vars),
             "https://api.example.com/users/7"
@@ -703,11 +714,7 @@ mod tests {
         ] {
             let mut ask = ask("GET", base);
             ask.params = vec![("q".into(), "rust lang".into())];
-            assert_eq!(
-                build_outgoing(&ask).unwrap().url,
-                expected,
-                "base: {base}"
-            );
+            assert_eq!(build_outgoing(&ask).unwrap().url, expected, "base: {base}");
 
             ask.params.clear();
             assert_eq!(build_outgoing(&ask).unwrap().url, base);
