@@ -1811,7 +1811,9 @@ impl Workspaces {
         drop(governed);
         let _ = self.inner.changes.send(workspace.to_owned());
         // What this device decides for others no longer covers the workspace: whoever follows
-        // that, the Files mounts among them, is woken to make what it enforces again.
+        // that, the Files mounts among them, is woken to make what it enforces again. A build
+        // without the device's keys decides nothing for others, so it has nobody to wake.
+        #[cfg(feature = "device-keys")]
         tilo_identity::policy_change::announce();
         Ok(())
     }
