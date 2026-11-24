@@ -250,14 +250,7 @@ impl Link {
                             message: format!("this session publishes no `{resource}` resource"),
                         });
                     } else {
-                        answer(
-                            services,
-                            &caller,
-                            &resource,
-                            &action,
-                            &arguments,
-                            reply,
-                        );
+                        answer(services, &caller, &resource, &action, &arguments, reply);
                     }
                 }
             }
@@ -330,8 +323,8 @@ impl Link {
         dispatch
             .follow(caller.workspace.clone(), request)
             .then(move |answer| {
-                let answer =
-                    answer.unwrap_or_else(|| Err("the device's dispatch never answered".to_owned()));
+                let answer = answer
+                    .unwrap_or_else(|| Err("the device's dispatch never answered".to_owned()));
                 let _ = reply.send(match answer {
                     Ok(output) => receipt(Ok(output)),
                     Err(reason) => Receipt::Refused {
@@ -345,7 +338,8 @@ impl Link {
 
     /// Answer a snapshot of `resource` for `caller`: from the services when one of them publishes
     /// it, and with no reading when none does.
-    fn answer_snapshot(        &self,
+    fn answer_snapshot(
+        &self,
         services: &Services,
         caller: Caller,
         resource: String,
@@ -386,7 +380,11 @@ impl Link {
                 return true;
             }
             let reading = services
-                .read_for(&watch.caller.app_id, &watch.caller.workspace, &watch.resource)
+                .read_for(
+                    &watch.caller.app_id,
+                    &watch.caller.workspace,
+                    &watch.resource,
+                )
                 .map(|value| encoded(&value));
             watch.revision = Some(revision);
             if reading.is_none() {
@@ -2350,9 +2348,12 @@ mod tests {
         let link = Link::new(wake);
         let dispatch = std::sync::Arc::new(Dispatched::default());
         link.dispatching(std::sync::Arc::clone(&dispatch) as std::sync::Arc<dyn WorkspaceActions>);
-        let (reply, answered) = oneshot::channel();
+        let (reply, mut answered) = oneshot::channel();
         link.ask(Ask::Invoke {
-            caller: Caller::local_person("ada").in_workspace("team"),
+            caller: Caller {
+                app_id: "so.tilo.settings".to_owned(),
+                workspace: "team".to_owned(),
+            },
             resource: "workspace/content".to_owned(),
             action: "set-policy".to_owned(),
             arguments: serde_json::to_vec(&serde_json::json!({
