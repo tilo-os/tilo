@@ -1,0 +1,9 @@
+{
+  "name": "so.tilo.discord-bridge",
+  "private": true,
+  "type": "module",
+  "description": "The Discord bridge's program: the service's REST and gateway, and the workspace's records and actions",
+  "scripts": {
+    "test": "bun test"
+  }
+}

@@ -1,0 +1,29 @@
+# The bridge's process: a bun program the daemon's one launcher starts in the app sandbox,
+# attested as this app. Its held connection is the Discord gateway, placed on one device.
+[package]
+id = "so.tilo.discord"
+kind = "app"
+optional-runtimes = ["bun/1+bun"]
+
+[entrypoint]
+type = "cli"
+runtime = "bun/1+bun"
+bin = "bin/bun"
+script = "main.js"
+connection = true
+
+[services]
+native = "required@1"
+
+# What a device must give before it takes the held connection.
+[capabilities]
+required = ["network.http", "secrets"]
+
+[sandbox.net]
+mode = "allowlist"
+hosts = [
+  "discord.com",
+  "gateway.discord.gg",
+  "cdn.discordapp.com",
+  "media.discordapp.net",
+]
