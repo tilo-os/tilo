@@ -470,11 +470,14 @@ async fn a_person_and_who_acts_for_them_read_here_and_nobody_acting_for_nobody()
         .acting_for(h.person.clone())
         .in_workspace(h.kitchen.clone());
     assert!(not_read(&h.read(&messages, &h.kitchen, "").await));
-    // An agent the person's own device handed its session to reads no record outside its app;
-    // nor does an agent or an app acting for nobody.
+    // An agent the person's own device handed its session to reads as they do, narrowed by what
+    // their answers deny it: `scribe` reads here, but not the record the workspace's answers deny
+    // it. An agent the answers name nowhere, or an app acting for nobody, reads nothing.
+    let scribe = person.clone().delegated_to("scribe");
+    assert!(document(&h.read(&scribe, &h.kitchen, "").await));
+    assert!(not_read(&h.read(&scribe, &h.kitchen, "private").await));
     for caller in [
-        person.delegated_to("scribe"),
-        Caller::local_agent("scribe")
+        Caller::local_agent("a-stranger")
             .in_workspace(h.kitchen.clone())
             .in_new_execution(),
         Caller::local_app("so.tilo.messages").in_workspace(h.kitchen.clone()),
