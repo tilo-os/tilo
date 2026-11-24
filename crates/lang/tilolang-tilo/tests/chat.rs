@@ -2246,7 +2246,9 @@ fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() 
         .package("so.tilo.discord.preview")
         .expect("the Discord package")
         .meta;
-    for name in ["Accounts", "Discord", "Mapping", "Link", "DChannel", "DRole"] {
+    for name in [
+        "Accounts", "Discord", "Mapping", "Link", "DChannel", "DRole",
+    ] {
         assert!(
             bridge_meta.types.iter().any(|t| t.name == name),
             "the bridge package declares {name}"
@@ -2278,11 +2280,17 @@ fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() 
     let mut said: Vec<String> = rows.iter().flat_map(texts).collect();
     let nodes: Vec<tilolang_runtime::UiNode> = rows
         .iter()
-        .flat_map(|row| crate::fixtures::nodes(row).into_iter().cloned().collect::<Vec<_>>())
+        .flat_map(|row| {
+            crate::fixtures::nodes(row)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
         .collect();
     said.extend(texts(view.tree()));
     assert!(
-        said.iter().any(|text| text.contains("wrote this in Discord")),
+        said.iter()
+            .any(|text| text.contains("wrote this in Discord")),
         "the outside author and the service: {said:?}"
     );
     let pictures: Vec<String> = nodes
@@ -2326,10 +2334,14 @@ fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() 
         .find(|f| f.name == "service")
         .expect("a service field");
     assert_eq!(
-        ada.host.runtime().read(&reference.target, &service.id).unwrap(),
+        ada.host
+            .runtime()
+            .read(&reference.target, &service.id)
+            .unwrap(),
         Value::Text("Discord".to_owned()),
         "the channel says the service it is carried to"
     );
+}
 /// The drafts the app holds, as the person looking reads them: another member's are not here.
 fn drafts(r: &Replica) -> Vec<tilolang_runtime::ResourceRef> {
     match r.read(&r.root(APP), "drafts") {
