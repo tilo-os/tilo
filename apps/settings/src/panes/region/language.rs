@@ -9,7 +9,7 @@
 use std::cell::{Cell, RefCell};
 
 use ui::framework::{EffectAnswer, EffectCx, Effected};
-use ui::tilo_actions::remote::{Confirmation, InvokeArgument, workspace_governance};
+use ui::tilo_actions::remote::{Confirmation, InvokeArgument, RemoteActionTarget};
 use ui::tilo_resource;
 use ui::{Arrival, InvocationCall, LocalState, RemoteActions};
 
@@ -112,7 +112,7 @@ fn offers_from(answer: serde_json::Value) -> Result<Vec<LanguageOffer>, String> 
 pub struct LanguageArea {
     remote: RemoteActions,
     /// The offers the registries make, once the workspace answered.
-    offers: LocalState<Option<Offered>>,
+    pub(crate) offers: LocalState<Option<Offered>>,
     /// The read of the offers under way.
     reading: RefCell<Option<InvocationCall>>,
     /// The language whose pack is being named in the tree, and the call that names it.
@@ -172,7 +172,7 @@ impl LanguageArea {
             return;
         };
         *self.reading.borrow_mut() = Some(self.remote.invoke(
-            workspace_governance(&workspace, "app.offers"),
+            RemoteActionTarget::workspace_governance(&workspace, "app.offers"),
             InvokeArgument::Json(serde_json::Map::new()),
             None,
         ));
@@ -230,7 +230,7 @@ impl LanguageArea {
             arguments.insert("surface".into(), offer.surface.clone().into());
         }
         let call = self.remote.invoke(
-            workspace_governance(&workspace, "install-app"),
+            RemoteActionTarget::workspace_governance(&workspace, "install-app"),
             InvokeArgument::Json(arguments),
             Some(Confirmation::Confirmed),
         );
@@ -260,7 +260,8 @@ impl LanguageArea {
             Arrival::Ready(
                 ui::tilo_actions::InvocationUpdate::Accepted { .. }
                 | ui::tilo_actions::InvocationUpdate::Progress { .. }
-                | ui::tilo_actions::InvocationUpdate::Item { .. },
+                | ui::tilo_actions::InvocationUpdate::Item { .. }
+                | ui::tilo_actions::InvocationUpdate::Cancelled { .. },
             ) => return,
         };
         self.installing.borrow_mut().take();
@@ -350,7 +351,7 @@ pub(crate) fn answer(
     _cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let LanguageEffect::ChooseLanguage { language } = effect;
-    let languages = area(app).ok_or(crate::area::missing)?;
+    let languages = area(app).ok_or_else(crate::area::missing)?;
     languages.read();
     let offered = languages.offers.get().unwrap_or_default();
     let chosen = resolve(

@@ -80,8 +80,9 @@ fn start(app: &mut TestApp<SettingsShell>, effect: &AgentModelsEffect) {
     };
     let mut arguments = effect.arguments();
     arguments.remove("provider");
+    let approval = app.harness().approval();
     app.harness()
-        .start_bound_job_for(None, &address, &arguments, true)
+        .start_bound_job_for(None, &address, &arguments, Some(&approval))
         .unwrap();
 }
 

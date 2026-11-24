@@ -137,6 +137,9 @@ impl FleetRead {
                     joined: false,
                     after: None,
                     wait_ms: None,
+                    document: false,
+                    listing: false,
+                    decide: false,
                 },
             )
         };

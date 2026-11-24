@@ -21,7 +21,6 @@ pub mod billing;
 pub mod bluetooth;
 #[cfg(feature = "tilo-os")]
 pub mod device_mesh;
-#[cfg(any(test, not(feature = "tilo-os")))]
 pub mod person_settings;
 // The pane waits on a read only the device answers, so a build without the
 // device's own panes shows where it is instead of the pane itself; its model

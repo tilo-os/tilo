@@ -172,14 +172,14 @@ fn output_card(
     let stereo = model
         .output_device()
         .is_some_and(|device| device.channels == 2);
-    if model.runtime_caps.balance && stereo {
+    if model.runtime.capabilities().balance && stereo {
         output_rows.push(balance(cx));
     }
     if model.offers_mono() {
         output_rows.push(mono(cx));
         output_rows.push(note(&t("sound-mono-caption")));
     }
-    if model.runtime_caps.channel_test && stereo {
+    if model.runtime.capabilities().channel_test && stereo {
         let side = |id: &str, label: &str, channel: &str| {
             invoking(
                 actions,
@@ -275,7 +275,7 @@ fn volume_line(actions: &Actions<Settings>, model: &AudioModel) -> Box<dyn Widge
 /// The level of what the output in use plays, when this device can meter a
 /// sink: the shared meter reads it on its own, and only while a page holds it.
 fn output_meter(model: &AudioModel) -> Option<Box<dyn Widget>> {
-    if !model.runtime_caps.microphone_meter {
+    if !model.runtime.capabilities().microphone_meter {
         return None;
     }
     let device = model
@@ -331,7 +331,7 @@ fn input_card(
                 ),
         );
     }
-    if model.runtime_caps.microphone_meter && model.input_device().is_some() {
+    if model.runtime.capabilities().microphone_meter && model.input_device().is_some() {
         let running = model.mic_test.is_some();
         let activity = if running {
             t("sound-mic-listening")
