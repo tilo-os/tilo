@@ -2277,6 +2277,13 @@ impl Core {
     /// name for the value sees the change.
     fn rec_edit(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let rec_h = a.h(0)?;
+        // A record value an action was handed is one it reads: a change to it would land in the
+        // copy the invocation drops, so the write says what the value is instead.
+        if self.frames.borrow().handed(rec_h) {
+            return trap(
+                "a record value an action is handed names no resource to change: insert it first, and change what the insert made".to_owned(),
+            );
+        }
         let field = self.text(a.h(1)?)?;
         let ty = self.with_val(rec_h, |r| match r {
             Value::Rec(rec) => Ok(rec.ty.clone()),

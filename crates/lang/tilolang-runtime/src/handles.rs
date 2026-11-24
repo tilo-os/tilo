@@ -8,7 +8,7 @@
 //! the module whose code made it, and keeps that author when it is passed to other code: that
 //! is the authorship chain the authority decides on.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ids::{Actor, ModuleHash, RunId};
 use crate::run::{Clock, Journal, JournalEntry};
@@ -225,6 +225,9 @@ pub struct Frame {
     /// The module whose code runs in this frame: the author of what it creates.
     pub module: ModuleHash,
     pub kind: FrameKind,
+    /// The handles holding a record value this frame's action was handed, rather than a
+    /// resource it names: what it reads, and what a change to fails there ([`Frames::hand`]).
+    handed: HashSet<i32>,
 }
 
 #[derive(Default)]
@@ -246,6 +249,7 @@ impl Frames {
             vals: Vec::new(),
             module,
             kind,
+            handed: HashSet::new(),
         });
     }
 
@@ -288,6 +292,23 @@ impl Frames {
         frame.vals.push(v);
         let handle = frame.serial.wrapping_mul(INDEX_RANGE).wrapping_add(index);
         i32::try_from(handle).map_err(|_| "handle out of range".to_owned())
+    }
+
+    /// Mark `h` as holding a record value the frame's action was handed: one the action reads,
+    /// whose change is refused rather than written to a copy the frame drops.
+    ///
+    /// # Errors
+    ///
+    /// A message when no guest frame is running.
+    pub fn hand(&mut self, h: i32) -> Result<(), String> {
+        self.top_mut()?.handed.insert(h);
+        Ok(())
+    }
+
+    /// Whether `h` holds a record value the frame's action was handed.
+    pub fn handed(&self, h: i32) -> bool {
+        self.slot(h)
+            .is_ok_and(|(frame, _)| frame.handed.contains(&h))
     }
 
     fn slot(&self, h: i32) -> Result<(&Frame, usize), String> {

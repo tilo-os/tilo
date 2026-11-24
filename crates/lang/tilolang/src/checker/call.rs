@@ -446,7 +446,7 @@ impl Checker<'_> {
         span: Span,
         sig: &str,
     ) -> Vec<Ex> {
-        self.bind_args_or_default(name, params, args, span, sig, false, false)
+        self.bind_args_or_default(name, params, args, span, sig, false)
             .into_iter()
             .map(|s| s.unwrap_or_else(Ex::error))
             .collect()
@@ -461,7 +461,6 @@ impl Checker<'_> {
         span: Span,
         sig: &str,
         at_press: bool,
-        tilolang_action: bool,
     ) -> Vec<Option<Ex>> {
         // Taken before the arguments are: a call inside one is run as it is written.
         let job_done = std::mem::take(&mut self.st.job_done);
@@ -519,17 +518,6 @@ impl Checker<'_> {
             } else {
                 self.expr_as(&a.value, &p.ty)
             };
-            if tilolang_action && Self::resource_ty(&p.ty) && self.ex_is_record_value(&v) {
-                let t = self.show(&p.ty);
-                self.err(
-                    "E020",
-                    a.value.span,
-                    format!(
-                        "`{name}` takes a resource for `{}`, and this is a record value: it has no id until the store makes one. Insert it first and give what the store made (`let made = collection.insert({t}(…))`), or give the action the text it was read from and `json.decode<{t}>(text)` inside it",
-                        p.name
-                    ),
-                );
-            }
             match slots.get_mut(i) {
                 Some(slot @ None) => *slot = Some(v),
                 _ => self.err(
@@ -791,16 +779,7 @@ impl Checker<'_> {
         // arguments are ordinary expressions, computed now.
         let job_done = c.kind == CKind::Action && std::mem::take(&mut self.st.job_done);
         self.st.job_done = job_done;
-        let tilolang_action = c.kind == CKind::Action && !self.env.is_native(&c.app);
-        let bound = self.bind_args_or_default(
-            &c.name,
-            &c.params,
-            args,
-            span,
-            &sig,
-            at_press,
-            tilolang_action,
-        );
+        let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
         if job_done {
             return self.job_done_value(c, bound, span);
         }
@@ -838,17 +817,8 @@ impl Checker<'_> {
         let sig = c.signature(&self.env.app);
         let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
         let rest = c.params.get(1..).unwrap_or_default();
-        let tilolang_action = c.kind == CKind::Action && !self.env.is_native(&c.app);
         let bound = std::iter::once(Some(on))
-            .chain(self.bind_args_or_default(
-                &c.name,
-                rest,
-                args,
-                span,
-                &sig,
-                at_press,
-                tilolang_action,
-            ))
+            .chain(self.bind_args_or_default(&c.name, rest, args, span, &sig, at_press))
             .collect();
         self.call_bound(c, bound, span)
     }

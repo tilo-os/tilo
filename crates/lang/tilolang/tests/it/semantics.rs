@@ -62,27 +62,24 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_record_value_is_no_resource_an_action_takes;
+    phase a_record_value_of_its_type_is_handed_to_an_action;
     // A record a decode answered, one built with its fields, or one taken out of a list of values
-    // is a value with no id: an action's record parameter is a resource, and an invocation given a
-    // value is refused at run time, so the checker refuses it where it is written.
+    // is a value of its declared type with no id. An action's parameter of that type takes it,
+    // and the action reads it; a write to its fields fails there, since it names no resource.
     {
         let types = "type P {\n    name: Text\n}\ntype Box {\n    ps: Collection<P>\n}\n";
         let action = "action adopt(b: Box, p: P) {\n    b.ps.insert(p)\n}\n";
         let decoded = "action keep(b: Box, t: Text) {\n    match json.decode<P>(t) {\n        .ok(p) => adopt(b, p),\n        .err(_) => {}\n    }\n}\n";
-        assert_eq!(codes(&format!("{types}{action}{decoded}")), vec!["E020"]);
-        // A record built here is one too.
-        let built = "action keep(b: Box) {\n    adopt(b, P(name: \"x\"))\n}\n";
-        assert_eq!(codes(&format!("{types}{action}{built}")), vec!["E020"]);
-        // So is an item taken out of a list of values.
-        let listed = "action keep(b: Box, t: Text) {\n    let ps = [P(name: t)]\n    if let p = ps.first() {\n        adopt(b, p)\n    }\n}\n";
-        assert_eq!(codes(&format!("{types}{action}{listed}")), vec!["E020"]);
-        // A list handed to the code may hold resources, so what its items are is not known there.
-        let looped = "action keep(b: Box, ps: List<P>) {\n    for p in ps {\n        adopt(b, p)\n    }\n}\n";
         assert_eq!(
-            codes(&format!("{types}{action}{looped}")),
+            codes(&format!("{types}{action}{decoded}")),
             Vec::<String>::new()
         );
+        // A record built here is one too.
+        let built = "action keep(b: Box) {\n    adopt(b, P(name: \"x\"))\n}\n";
+        assert_eq!(codes(&format!("{types}{action}{built}")), Vec::<String>::new());
+        // So is an item taken out of a list of values.
+        let listed = "action keep(b: Box, t: Text) {\n    let ps = [P(name: t)]\n    if let p = ps.first() {\n        adopt(b, p)\n    }\n}\n";
+        assert_eq!(codes(&format!("{types}{action}{listed}")), Vec::<String>::new());
         // What the store holds passes: a parameter, what an insert made, and what it finds.
         let held = "action keep(b: Box, p: P) {\n    let made = b.ps.insert(P(name: \"x\"))\n    adopt(b, made)\n    adopt(b, p)\n    if let f = b.ps.find(x -> x.name == \"x\") {\n        adopt(b, f)\n    }\n}\n";
         assert_eq!(codes(&format!("{types}{action}{held}")), Vec::<String>::new());

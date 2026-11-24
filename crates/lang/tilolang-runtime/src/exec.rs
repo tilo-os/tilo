@@ -231,19 +231,36 @@ impl Core {
 
     /// Check a handle-represented argument before allocating it in the call frame.
     /// Called only from the `Repr::Handle` arm of [`Self::marshal`].
-    fn check_param(&self, ty: &Ty, v: &Value, into_action: bool) -> Result<(), String> {
+    fn check_param(&self, ty: &Ty, v: &Value, app: &str) -> Result<(), String> {
         debug_assert_eq!(ty.abi_repr(), Some(Repr::Handle));
         let ok = match (ty, v) {
             // A program's `host.Resource` is any resource.
             (Ty::Record(key), Value::Ref(_)) if *key == tilolang::resource_key() => true,
             (Ty::Record(key), Value::Ref(r)) => self.ref_fits(key, r),
-            // A record built in a view (`DockItem(...)`) is a value of its type where it is read:
-            // a view's or a function's parameter, as the shell's dock hands its running items to
-            // its tiles. It names no resource, so it never reaches an action: what an action
-            // changes in its record parameter must land in a resource, not in a copy that is
-            // dropped (`marshal` refuses it there).
-            (Ty::Record(key), Value::Rec(rec)) if !into_action => {
-                self.registry.borrow().type_for(key).as_deref() == Some(rec.ty.as_str())
+            // A record value (`DockItem(...)` built in a view, a record `json.decode` read, one
+            // taken out of a list of them) is a value of its declared type wherever that type's
+            // parameter takes it: a function's, a view's, or an action's, which reads it. It
+            // names no resource, so an action's write to it fails where it is written rather
+            // than landing in a copy that is dropped.
+            (Ty::Record(key), Value::Rec(rec)) => {
+                let registry = self.registry.borrow();
+                if registry.type_for(key).as_deref() == Some(rec.ty.as_str()) {
+                    true
+                } else {
+                    let held = registry
+                        .type_info(&rec.ty)
+                        .map_or_else(|| rec.ty.clone(), |(_, info)| info.name.clone());
+                    return Err(format!(
+                        "a record of `{held}` is no `{}`: a record value is a value of its own type",
+                        ty.display(app)
+                    ));
+                }
+            }
+            // A value of one of a union's types stands where the union's parameter does.
+            (Ty::Union(keys), Value::Rec(rec)) => {
+                let registry = self.registry.borrow();
+                keys.iter()
+                    .any(|key| registry.type_for(key).as_deref() == Some(rec.ty.as_str()))
             }
             (Ty::Union(keys), Value::Ref(r)) => keys.iter().any(|key| self.ref_fits(key, r)),
             // A host value (an action, a lens, a type's metadata) is held as its fields, and so
@@ -273,15 +290,16 @@ impl Core {
             Ok(())
         } else {
             Err(format!(
-                "a {} does not fit a parameter of type {ty:?}",
-                v.kind_name()
+                "a {} does not fit a parameter of type {}",
+                v.kind_name(),
+                ty.display(app)
             ))
         }
     }
 
-    /// Turn arguments into wasm values in the current frame. An action's export (`a_<id>`, the
-    /// ABI's name for an action) takes resources for its record parameters, never a record a
-    /// view built.
+    /// Turn arguments into wasm values in the current frame. A record parameter takes the
+    /// resource it names, or a record value of that type, which the code reads: an action's
+    /// frame marks the value as handed to it, so a change to it fails there.
     fn marshal(
         &self,
         pkg: &Package,
@@ -331,14 +349,19 @@ impl Core {
                         .map(|i| Wasm::I32(i32::from(i != 0)))
                         .ok_or_else(mismatch),
                     Some(Repr::Handle) => {
-                        self.check_param(&ty, v, into_action)
+                        self.check_param(&ty, v, &pkg.meta.app)
                             .map_err(|e| format!("argument `{}`: {e}", p.name))?;
-                        self.frames.borrow_mut().alloc(v.clone()).map(Wasm::I32)
+                        let handle = self.frames.borrow_mut().alloc(v.clone())?;
+                        if into_action && matches!(v, Value::Rec(_)) {
+                            self.frames.borrow_mut().hand(handle)?;
+                        }
+                        Ok(Wasm::I32(handle))
                     }
                     None => Err(format!(
-                        "argument `{}`: a {} does not fit a parameter of type {ty:?}",
+                        "argument `{}`: a {} does not fit a parameter of type {}",
                         p.name,
-                        v.kind_name()
+                        v.kind_name(),
+                        ty.display(&pkg.meta.app)
                     )),
                 }
             })
