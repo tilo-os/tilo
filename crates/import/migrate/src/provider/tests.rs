@@ -76,9 +76,15 @@ impl Device {
             .map(|(action, _)| {
                 action
                     .rsplit_once('#')
-                    .map_or(action.clone(), |(_, verb)| verb.to_owned())
+                    .map_or_else(|| action.clone(), |(_, verb)| verb.to_owned())
             })
             .collect()
+    }
+
+    /// What the Migrations app's record of the migration was told: each action and its
+    /// arguments.
+    fn told_whole(&self) -> Vec<(String, Value)> {
+        self.kept.told.lock().expect("told").clone()
     }
 }
 
@@ -354,7 +360,7 @@ fn a_profile_comes_over_through_the_devices_actions() {
         ],
         "{told:?}"
     );
-    let kept = device.kept.told.lock().expect("told");
+    let kept = device.told_whole();
     let (path, reviewed) = &kept[0];
     assert_eq!(path, "so.tilo.migrate#reviewed");
     assert_eq!(reviewed["source"], "thunderbird");
@@ -407,7 +413,7 @@ fn a_refused_start_is_what_the_migrations_record_says() {
         error.message.contains("Nothing of thunderbird is chosen"),
         "{error:?}"
     );
-    let kept = device.kept.told.lock().expect("told");
+    let kept = device.told_whole();
     let (action, why) = kept.last().expect("told");
     assert_eq!(action, "so.tilo.migrate/tl:so.tilo.migrate:m-1#refused");
     assert!(
@@ -417,7 +423,6 @@ fn a_refused_start_is_what_the_migrations_record_says() {
         "{why}"
     );
     // No source has no record to say it in.
-    drop(kept);
     let before = device.told().len();
     let unknown = run(&migrations, "start", json!({"source": "no such source"}));
     assert!(
@@ -453,9 +458,27 @@ fn cancelling_a_run_stops_it_and_start_resumes() {
         "{stopped:?}"
     );
     assert!(device.actions().is_empty());
+    // The migration's record says the run began and was stopped.
+    let told = |verb: &str| -> Vec<Value> {
+        device
+            .kept
+            .told
+            .lock()
+            .expect("told")
+            .iter()
+            .filter(|(action, _)| action.ends_with(&format!("#{verb}")))
+            .map(|(_, args)| args.clone())
+            .collect()
+    };
+    assert_eq!(told("ended")[0]["state"], "stopped", "{:?}", device.told());
+    let run_id = told("begun")[0]["run"].clone();
 
     let resumed = run(&migrations, "start", json!({"source": "thunderbird"}));
     assert_eq!(value(&resumed)["brought"]["contacts"], 2, "{resumed:?}");
+    // Resumed, it is the same run, and the record follows it to the end.
+    assert_eq!(told("begun")[1]["run"], run_id);
+    assert_eq!(told("landed")[0]["run"], run_id);
+    assert_eq!(told("ended")[1]["state"], "complete");
 }
 
 #[test]
@@ -817,6 +840,11 @@ fn the_person_and_their_agent_drive_one_migration_and_a_stopped_run_resumes_as_i
         json!({"source": "thunderbird"}),
     );
     assert_eq!(value(&back)["state"], "reviewed", "{back:?}");
+    // The migration's record forgets the run with it.
+    let kept = device.told_whole();
+    let (action, forgot) = kept.last().expect("told");
+    assert!(action.ends_with("#forgot_run"), "{action}");
+    assert_eq!(forgot["run"], json!(run_id));
 }
 
 #[test]
