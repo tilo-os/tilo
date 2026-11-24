@@ -6,7 +6,6 @@ use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, RuntimeServices, host};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    ffi::OsString,
     io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::Command,
@@ -1648,37 +1647,24 @@ pub fn connect(
 #[cfg(unix)]
 const LAUNCH: &str = "launch";
 
-/// How long a second start of the app's default presentation waits for the first to show its
-/// window before it is refused, as an app holding the launch's own lock waits today.
+/// How long a second start of an app's default presentation waits for the first to show its
+/// window before it is refused.
 #[cfg(unix)]
 const PRESENTATION_GRACE: Duration = Duration::from_secs(3);
 
-/// The most a launch request's arguments and environment may carry, decoded: a request is one
-/// line, read whole before it is answered, and its base64 fits that line.
-#[cfg(unix)]
-const LAUNCH_BYTES: usize = 40 * 1024;
-
-/// `{"native":"launch", ...}`: what a launcher asks its daemon, so the daemon makes the launch,
-/// records it, and the app the request starts is attested as the app it runs.
+/// `{"native":"launch", ...}`: a person's program asking this computer to start an app.
+///
+/// It names only the app, the workspace and whether it is the app's default presentation. What
+/// runs — the program, its sandbox, its grants and the records it reaches — is the installed
+/// package this computer resolves the name to: a program is never one the caller names.
 #[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LaunchRequest {
     native: String,
     app_id: String,
-    /// The workspace the app runs in, as the launcher read it from the daemon a moment before.
+    /// The workspace the caller read from this daemon a moment before.
     workspace: String,
-    /// The program to start, absolute.
-    executable: PathBuf,
-    /// The app's arguments: base64 of their lengths and bytes.
-    args: String,
-    /// Where the app runs, as the launcher's own directory.
-    cwd: PathBuf,
-    /// The environment the app runs with: base64 of the length-prefixed `name=value` entries.
-    env: String,
-    /// The profile whose launch lock the presentation's start takes, so a second start of the
-    /// app's default presentation waits for the first to show its window.
-    profile: PathBuf,
     /// Whether this starts the app's default presentation, which one already shown answers.
     presentation: bool,
 }
@@ -1690,8 +1676,9 @@ fn is_launch_request(request: &[u8]) -> bool {
         .is_ok_and(|request| request.get("native").and_then(Value::as_str) == Some(LAUNCH))
 }
 
-/// What answers a launcher's request: it starts the app on the daemon's own launch path, so the
-/// launch record exists before the app's connection does, and tells the launcher the pid.
+/// What answers a launcher's request: it starts the app this computer has installed, on the
+/// launch path a window takes, so the launch record exists before the app's connection does, and
+/// tells the caller it started.
 #[cfg(unix)]
 fn launch_take(session: &Arc<Daemon>) -> LaunchTake {
     let session = Arc::downgrade(session);
@@ -1707,15 +1694,14 @@ fn launch_take(session: &Arc<Daemon>) -> LaunchTake {
     })
 }
 
-/// Start what `request` names, as this computer's person asks: the app is one of the launches
-/// this daemon makes, so its connection is attested as the app it runs.
+/// Start the app `request` names, as this computer's person asks: the installed package decides
+/// what runs, and the launch path a window takes starts it and records the process.
 #[cfg(unix)]
 fn start_requested(
     session: &std::sync::Weak<Daemon>,
     request: &[u8],
     descriptors: Vec<runtime_portal::process_link::Descriptor>,
 ) -> io::Result<Value> {
-    use std::os::unix::ffi::OsStringExt as _;
     let request: LaunchRequest = serde_json::from_slice(request)
         .map_err(|error| invalid(format!("the launch request: {error}")))?;
     if request.native != LAUNCH {
@@ -1724,71 +1710,18 @@ fn start_requested(
     if request.app_id.trim().is_empty() || request.app_id.len() > 4096 {
         return Err(invalid("invalid application identity"));
     }
-    if !request.executable.is_absolute() {
-        return Err(invalid("a launch names an absolute program"));
-    }
     if request.workspace.trim().is_empty() || request.workspace.len() > 4096 {
         return Err(invalid("a launch names a workspace"));
     }
-    if !request.profile.is_absolute()
-        || request
-            .profile
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir))
-    {
-        return Err(invalid("a launch names an absolute profile"));
-    }
-    let args = unpacked(&request.args, "arguments")?
-        .into_iter()
-        .map(OsString::from_vec)
-        .collect::<Vec<_>>();
-    let mut command = Command::new(&request.executable);
-    command.args(&args);
-    command.current_dir(&request.cwd).env_clear();
-    for entry in unpacked(&request.env, "environment")? {
-        let at = entry.iter().position(|byte| *byte == b'=');
-        match at {
-            Some(at) if at > 0 => {
-                command.env(
-                    OsString::from_vec(entry.get(..at).unwrap_or_default().to_vec()),
-                    OsString::from_vec(
-                        entry
-                            .get(at.saturating_add(1)..)
-                            .unwrap_or_default()
-                            .to_vec(),
-                    ),
-                );
-            }
-            _ => return Err(invalid("a launch's environment entry names no variable")),
-        }
-    }
-    let mut descriptors = descriptors.into_iter();
-    match (descriptors.len(), descriptors.next()) {
-        (3, Some(stdin)) => {
-            // SAFETY: the descriptors rode this connection's first message and are owned here.
-            let stdout = descriptors
-                .next()
-                .ok_or_else(|| invalid("a launch needs three streams"))?;
-            let stderr = descriptors
-                .next()
-                .ok_or_else(|| invalid("a launch needs three streams"))?;
-            command
-                .stdin(std::process::Stdio::from(stdin))
-                .stdout(std::process::Stdio::from(stdout))
-                .stderr(std::process::Stdio::from(stderr));
-        }
-        (0, _) => {
-            command
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit());
-        }
-        _ => return Err(invalid("a launch carries its three streams or none")),
+    if !descriptors.is_empty() {
+        return Err(invalid(
+            "a launch of an app this computer has installed carries no streams",
+        ));
     }
     let daemon = session
         .upgrade()
         .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-    // The workspace the app runs in is the one this daemon serves now: a launcher that read
+    // The workspace the app runs in is the one this daemon serves now: a caller that read
     // another a moment ago is told, rather than starting an app into a workspace gone.
     let serving = daemon
         .workspace()
@@ -1804,235 +1737,70 @@ fn start_requested(
             request.workspace
         )));
     }
+    let apps = daemon.apps();
+    // What runs is the package this computer has installed: the request's name is a name, never
+    // a program.
+    let app = apps
+        .installed_here(&request.app_id)
+        .map_err(io::Error::other)?;
+    if !app.has_gui {
+        return Err(io::Error::other(format!(
+            "{} has no window to open",
+            app.app_id
+        )));
+    }
     // The app's default presentation is one: a second start shows the one running, and while the
-    // first has shown nothing the launch's own lock waits for it, as an app that took the lock does.
+    // first has shown nothing the launch's own lock waits for it, as a launch takes it.
     let guard = if request.presentation {
-        match default_launch_guard(&request.profile, &request.app_id, PRESENTATION_GRACE)? {
+        match default_launch_guard(apps.root(), &app.app_id, PRESENTATION_GRACE)? {
             Some(guard) => Some(guard),
             None => return Ok(json!({"activated": true})),
         }
     } else {
         None
     };
-    let child = RuntimeServices::launch(&*daemon, &request.app_id, command)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let pid = child.id();
-    // The launch's record and its lock live while the app runs: the daemon reaps the process it
-    // started, and only then may another start take the lock.
-    std::thread::Builder::new()
-        .name("tilo-app-start".into())
-        .spawn(move || {
-            let mut child = child;
-            let _ = child.wait();
-            drop(guard);
-        })?;
-    Ok(json!({"pid": pid}))
+    apps.start_watched_window(&app.app_id, &serving, guard)
+        .map_err(io::Error::other)?;
+    Ok(json!({"started": true}))
 }
 
-/// The bytes `encoded` carries, as the length-prefixed parts [`packed`] wrote.
-#[cfg(unix)]
-fn unpacked(encoded: &str, what: &str) -> io::Result<Vec<Vec<u8>>> {
-    use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|error| {
-            invalid(format!(
-                "the launch request's {what} are not base64: {error}"
-            ))
-        })?;
-    if bytes.len() > LAUNCH_BYTES {
-        return Err(invalid(format!("the launch request's {what} are too long")));
-    }
-    let mut parts = Vec::new();
-    let mut rest = bytes.as_slice();
-    while !rest.is_empty() {
-        let Some((length, after)) = rest.split_at_checked(4) else {
-            return Err(invalid(format!(
-                "the launch request's {what} end mid-entry"
-            )));
-        };
-        let length = u32::from_be_bytes([length[0], length[1], length[2], length[3]]) as usize;
-        let Some((part, after)) = after.split_at_checked(length) else {
-            return Err(invalid(format!(
-                "the launch request's {what} end mid-entry"
-            )));
-        };
-        parts.push(part.to_vec());
-        rest = after;
-    }
-    Ok(parts)
-}
-
-/// `parts` as the bytes [`unpacked`] reads: each part's length, then its bytes.
-#[cfg(unix)]
-fn packed(parts: impl IntoIterator<Item = Vec<u8>>) -> String {
-    use base64::Engine as _;
-    let mut bytes = Vec::new();
-    for part in parts {
-        let length = u32::try_from(part.len()).unwrap_or(u32::MAX);
-        bytes.extend_from_slice(&length.to_be_bytes());
-        bytes.extend_from_slice(&part);
-    }
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-/// The program `executable` names, as this computer finds it: an absolute path, one beside the
-/// launcher's directory, or one on the launcher's `PATH`.
-#[cfg(unix)]
-fn app_program(executable: &OsString) -> io::Result<PathBuf> {
-    let path = Path::new(executable);
-    if path.is_absolute() {
-        return Ok(path.to_owned());
-    }
-    if path.components().count() > 1 {
-        return Ok(std::env::current_dir()?.join(path));
-    }
-    let directories = std::env::var_os("PATH")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "this program has no PATH"))?;
-    for directory in std::env::split_paths(&directories) {
-        let candidate = directory.join(path);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("no {} on PATH", path.display()),
-    ))
-}
-
-/// A duplicate of this process's standard stream `fd`, or the null device for one it was started
-/// without, to hand the app this computer will start.
-#[cfg(unix)]
-fn stdio_descriptor(fd: i32) -> io::Result<std::os::fd::OwnedFd> {
-    use std::os::fd::FromRawFd as _;
-    // SAFETY: fcntl only duplicates an existing descriptor; it reads no memory of ours.
-    let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-    if duplicated >= 0 {
-        // SAFETY: fcntl returned a descriptor this process now owns.
-        return Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicated) });
-    }
-    Ok(std::os::fd::OwnedFd::from(std::fs::File::open(
-        "/dev/null",
-    )?))
-}
-
-/// Ask the daemon at `profile` to start an app, handing it this launcher's three standard
-/// streams, and answer what it said.
+/// Ask the daemon at `profile` to start an app, and answer what it said.
 #[cfg(unix)]
 fn ask_launch(profile: &Path, request: &Value) -> io::Result<Value> {
-    use std::os::fd::AsFd as _;
     let stream = std::os::unix::net::UnixStream::connect(native_socket(profile)?)?;
     stream.set_read_timeout(Some(ANSWERING))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-    let streams = [
-        stdio_descriptor(0)?,
-        stdio_descriptor(1)?,
-        stdio_descriptor(2)?,
-    ];
-    let line = format!("{request}\n");
-    runtime_portal::fd_transport::send_with_fds(
-        &stream,
-        line.as_bytes(),
-        &[streams[0].as_fd(), streams[1].as_fd(), streams[2].as_fd()],
-    )?;
+    (&stream).write_all(format!("{request}\n").as_bytes())?;
     let mut answer = String::new();
     BufReader::new(stream).read_line(&mut answer)?;
     serde_json::from_str(&answer)
         .map_err(|error| invalid(format!("the launch request's answer, {answer:?}: {error}")))
 }
 
-/// Start an app on this computer, through the daemon serving `profile`: what `--run-app` asks,
-/// so the daemon makes the launch and attests the app as it attests every launch it makes. A
-/// program that runs an app therefore runs as the app this computer started, never as a process
-/// that opened the app's services for itself.
+/// Start an app on this computer, through the daemon serving `profile`: the app this computer has
+/// installed, started the way a window is. The caller names an app and nothing else: what runs,
+/// with which program, sandbox and grants, is the installed package.
 ///
 /// # Errors
-/// The daemon does not run, the request is refused (with why), or the daemon answers nothing.
+/// The daemon does not run, the app is not installed, or the launcher refuses it.
 #[cfg(unix)]
-pub fn run_app(
-    profile: &Path,
-    app_id: &str,
-    workspace: Option<&str>,
-    executable: &OsString,
-    args: &[OsString],
-) -> io::Result<()> {
-    use std::os::unix::ffi::OsStrExt as _;
+pub fn run_app(profile: &Path, app_id: &str, workspace: Option<&str>) -> io::Result<()> {
     let status = running(profile)?;
-    let named_workspace = workspace.is_some();
     let workspace = workspace.unwrap_or(&status.workspace).to_owned();
     if workspace.is_empty() {
         return Err(io::Error::other(
             "this computer serves no workspace to start an app in yet",
         ));
     }
-    // Only the argument-free default presentation is interchangeable: app-specific arguments
-    // must run their own parser and are never discarded.
-    let presentation = args.is_empty() && workspace == status.workspace;
-    let executable = app_program(executable)?;
-    let cwd = std::env::current_dir()?;
-    let mut environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
-    // This launcher introduces the local runtime workspace. A launcher that already named a
-    // workspace keeps its participation, including fail-closed viewer. A personal attach names
-    // none, and the person who owns this runtime may edit their own app.
-    if !named_workspace
-        && std::env::var_os("TILO_WORKSPACE_ID").is_none()
-        && std::env::var_os("TILO_PARTICIPATION").is_none()
-    {
-        environment.retain(|(name, _)| name != "TILO_PARTICIPATION");
-        environment.push((
-            OsString::from("TILO_PARTICIPATION"),
-            OsString::from("author"),
-        ));
-    }
-    // The program the daemon starts runs the app itself, not this bootstrap: neither the markers
-    // of this process's own exec nor an ancestor's services reach it.
-    for name in [
-        "TILO_RUNTIME_CONNECTION_OWNER_PID",
-        "TILO_RUNTIME_RESUME_LIVE",
-        "TILO_RUNTIME_LAUNCH_GUARD_FD",
-        "TILO_SVC_COLLAB_FD",
-        "TILO_SVC_IDENTITY_FD",
-        "TILO_SVC_BLOBS_FD",
-    ] {
-        environment.retain(|(kept, _)| kept != name);
-    }
-    environment.push((
-        OsString::from("TILO_RUNTIME_PROFILE"),
-        profile.as_os_str().to_owned(),
-    ));
-    environment.push((
-        OsString::from("TILO_RUNTIME_NATIVE"),
-        sockets(profile)?
-            .join(tilo_paths::machine::DAEMON_NATIVE)
-            .into_os_string(),
-    ));
-    let entries = environment
-        .into_iter()
-        .map(|(name, value)| {
-            let mut entry = name.as_bytes().to_vec();
-            entry.push(b'=');
-            entry.extend_from_slice(value.as_bytes());
-            entry
-        })
-        .collect::<Vec<_>>();
+    // Starting the app of the workspace this computer serves is its default presentation: a
+    // second start shows the window already running.
+    let presentation = workspace == status.workspace;
     let request = json!({
         "native": LAUNCH,
         "app_id": app_id,
         "workspace": workspace,
-        "executable": executable,
-        "args": packed(args.iter().map(|arg| arg.as_bytes().to_vec())),
-        "cwd": cwd,
-        "env": packed(entries),
-        "profile": profile,
         "presentation": presentation,
     });
-    if request.to_string().len() >= FIRST_LINE as usize {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "this app's arguments and environment are too long to start it",
-        ));
-    }
     let answer = ask_launch(profile, &request)?;
     match answer.get("error").and_then(Value::as_str) {
         Some(error) => Err(io::Error::other(error.to_owned())),
@@ -2046,13 +1814,7 @@ pub fn run_app(
 /// # Errors
 /// Always [`io::ErrorKind::Unsupported`].
 #[cfg(windows)]
-pub fn run_app(
-    _profile: &Path,
-    _app_id: &str,
-    _workspace: Option<&str>,
-    _executable: &OsString,
-    _args: &[OsString],
-) -> io::Result<()> {
+pub fn run_app(_profile: &Path, _app_id: &str, _workspace: Option<&str>) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "--run-app attaches a Unix app to the daemon; a Windows app is handed its services by \

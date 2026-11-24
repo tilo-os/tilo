@@ -96,8 +96,6 @@ runtime-fs = { package = "tilo-runtime-fs", path = "../runtime-fs" }
 tilo-identity-client = { path = "../tilo-identity-client" }
 serde.workspace = true
 serde_json.workspace = true
-# A launcher's arguments and environment ride a launch request as the bytes they are.
-base64.workspace = true
 # The digests a check's receipt carries of what the host observed.
 sha2.workspace = true
 tilo-actions = { path = "../actions" }

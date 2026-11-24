@@ -1243,3 +1243,50 @@ fn a_daemon_with_no_session_starts_an_apps_origin_connector_and_refuses_one_it_m
         assert!(refused.contains(why), "{refused}");
     }
 }
+
+/// A launch starts the package this computer has installed, through the launcher and with the
+/// sandbox, grants and program its manifest declares — never a program the caller names.
+#[test]
+fn a_launch_starts_the_installed_packages_own_program() {
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    let installed = store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
+    let asked = root.join("launched");
+    // A stand-in launcher: it records what it was asked, reads its launch hold to the end, and
+    // ends, as the connector test's does.
+    let launcher = tilo_test_env::stand_in(
+        root.join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$*\" > '{asked}'\nexec cat >/dev/null\n",
+            asked = asked.display()
+        ),
+    )
+    .unwrap();
+    let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+    // The windowless start, as a device with no display takes it: the launch is the package's,
+    // through the same launcher a window goes through.
+    let launch = apps
+        .start_showing(VIEWER, WORKSPACE, Shows::Nothing, None)
+        .expect("the installed app starts");
+    let _ = launch.wait();
+    let asked = std::fs::read_to_string(&asked).unwrap();
+    assert!(
+        asked.starts_with("run ")
+            && asked.contains(&format!("--manifest {}", installed.manifest_path.display()))
+            && asked.contains(&format!("--payload-root {}", installed.payload_root.display()))
+            && asked.contains(&format!("--app-id {VIEWER}"))
+            && asked.contains(&format!("--workspace-id {WORKSPACE}")),
+        "the launcher starts the installed package's own program: {asked}"
+    );
+    assert!(
+        !asked.contains("/bin/sh"),
+        "no program of the caller's is started: {asked}"
+    );
+
+    let refused = apps.installed_here("so.tilo.passwords").unwrap_err();
+    assert!(
+        refused
+            .contains("so.tilo.passwords is not installed on this computer; install it first with `tilo app install so.tilo.passwords`"),
+        "{refused}"
+    );
+}

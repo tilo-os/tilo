@@ -473,8 +473,8 @@ pub(super) async fn authenticate_launcher_handoff(
         "collaboration launch cannot be attested: this broker has no launcher service"
     } else {
         "collaboration launch is not one this computer made: this computer recorded no launch \
-         of this live process, app or workspace; start it with `tilo-runtime --run-app <app> -- \
-         <program>`, so this computer launches it"
+         of this live process, app or workspace; start it with `tilo-runtime --run-app <app>`, \
+         so this computer launches it"
     };
     Err(LaunchRefusal {
         error: BrokerError::failed(error.into()),

@@ -23,8 +23,8 @@ impl AppConnection {
         } = record;
         let identity = self.identity.as_ref().ok_or_else(|| {
             BrokerError::failed(
-                "this connection was admitted as no app, and names no record; start the program \
-                 with `tilo-runtime --run-app <app> -- <program>`, so this computer launches it"
+                "this connection was admitted as no app, and names no record; start it with \
+                 `tilo-runtime --run-app <app>`, so this computer launches it"
                     .into(),
             )
         })?;

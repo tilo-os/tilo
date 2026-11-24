@@ -644,7 +644,7 @@ impl Apps {
         self.launched.forget(pid);
     }
 
-    fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
+    pub(crate) fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
         let app = self.installed_app(app_id)?;
         if !app.has_gui {
             return Err(format!("{app_id} has no window to open"));
@@ -652,8 +652,56 @@ impl Apps {
         Ok(app)
     }
 
+    /// The profile this runtime reads its apps and services in.
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The package `app_id` this computer has installed, and nothing for one it has not: what a
+    /// program's request to run an app resolves to, so what runs is decided here and never by
+    /// the program asking.
+    ///
+    /// # Errors
+    /// The app is not installed on this computer: how to install it.
+    pub(crate) fn installed_here(&self, app_id: &str) -> Result<InstalledApp, String> {
+        self.installed_app(app_id).map_err(|_| {
+            format!(
+                "{app_id} is not installed on this computer; install it first with \
+                 `tilo app install {app_id}`"
+            )
+        })
+    }
+
+    /// Start the app this computer has installed, as a window launch does, and watch its
+    /// process: the launch is recorded before the app's connections are made, and forgotten
+    /// when the process ends.
+    ///
+    /// # Errors
+    /// The app is not installed, has no window, or the launcher refuses it.
+    pub(crate) fn start_watched_window(
+        &self,
+        app_id: &str,
+        workspace: &str,
+        guard: Option<advisory_lock::FileLock>,
+    ) -> Result<u32, String> {
+        let launch = self.start(app_id, workspace)?;
+        let pid = launch.pid;
+        let launched = Arc::clone(&self.launched);
+        std::thread::Builder::new()
+            .name("tilo-app-reaper".into())
+            .spawn(move || {
+                launch.wait();
+                launched.forget(pid);
+                // The default presentation's launch lock lives while its app runs: a start
+                // during it waits, or shows the window this one published.
+                drop(guard);
+            })
+            .map_err(|error| format!("could not watch {app_id}: {error}"))?;
+        Ok(pid)
+    }
+
     /// The installed package `app_id`, window or none.
-    fn installed_app(&self, app_id: &str) -> Result<InstalledApp, String> {
+    pub(crate) fn installed_app(&self, app_id: &str) -> Result<InstalledApp, String> {
         self.installed()
             .into_iter()
             .find(|app| app.app_id == app_id)

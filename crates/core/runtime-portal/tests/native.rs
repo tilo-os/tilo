@@ -337,7 +337,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase bootstrap_exec_keeps_arguments_and_hides_ancestor_descriptors;
+    phase bootstrap_exec_names_only_the_app_and_hides_ancestor_descriptors;
     {
         {
             let root = std::env::temp_dir().join(format!("tilo-bootstrap-test-{}", std::process::id()));
@@ -352,14 +352,14 @@ tilo_test_env::scenario! {
                 .unwrap();
             assert!(output.status.success(), "case host exec");
             let stdout = String::from_utf8(output.stdout).unwrap();
+            // The host is asked for the app, and no program of this process's: what runs is the
+            // app this computer has installed.
             assert!(
-                stdout.contains("--run-app\ndev.tilo.bootstrap-test\n--\n"),
+                stdout.contains("--run-app\ndev.tilo.bootstrap-test"),
                 "{stdout}"
             );
-            assert!(
-                stdout.contains("--exact\nbootstrap_child\n--nocapture"),
-                "{stdout}"
-            );
+            assert!(!stdout.contains("\n--\n"), "{stdout}");
+            assert!(!stdout.contains("--exact"), "{stdout}");
             assert!(stdout.contains(root.to_str().unwrap()));
             assert!(!stdout.contains("RETURNED"));
             std::fs::remove_dir_all(root).unwrap();

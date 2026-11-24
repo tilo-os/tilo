@@ -371,8 +371,6 @@ tilo_test_env::scenario! {
             "so.tilo.photos",
             "--workspace",
             workspace,
-            "--",
-            "/bin/true",
         ])
         .unwrap();
         let Mode::RunApp {
@@ -391,8 +389,6 @@ tilo_test_env::scenario! {
             "so.tilo.photos",
             "--workspace",
             workspace,
-            "--",
-            "/bin/true",
         ])
         .unwrap();
         assert_eq!(old.mode, named.mode);
@@ -405,6 +401,18 @@ tilo_test_env::scenario! {
                 "so.tilo.photos",
                 "--workspace",
                 "not-a-workspace",
+            ])
+            .is_err()
+        );
+
+        // A program named after the app is refused: what runs is the app this computer has
+        // installed, never one the command line names.
+        assert!(
+            args(&[
+                "--profile",
+                "/tmp/profile",
+                "--run-app",
+                "so.tilo.photos",
                 "--",
                 "/bin/true",
             ])

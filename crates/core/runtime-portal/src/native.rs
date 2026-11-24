@@ -184,18 +184,9 @@ mod unix {
         }
         let executable = env::current_exe()?;
         let host = locate_host(&executable)?;
-        Err(Command::new(host)
-            .env("TILO_RUNTIME_RESUME_LIVE", app_id)
-            .env(
-                "TILO_RUNTIME_CONNECTION_OWNER_PID",
-                std::process::id().to_string(),
-            )
-            .arg("--run-app")
-            .arg(app_id)
-            .arg("--")
-            .arg(executable)
-            .args(env::args_os().skip(1))
-            .exec())
+        // The daemon this computer runs starts the app it has installed: this process names the
+        // app and nothing else, and the host's asking ends it.
+        Err(Command::new(host).arg("--run-app").arg(app_id).exec())
     }
 
     fn executable(path: &Path) -> bool {
