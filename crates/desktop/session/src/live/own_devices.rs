@@ -103,7 +103,9 @@ impl OwnDevices {
             state.to.remove(&to);
             return false;
         };
-        state.to.insert(to, Sending::Opening(VecDeque::from([body])));
+        state
+            .to
+            .insert(to, Sending::Opening(VecDeque::from([body])));
         drop(state);
         let (shared, sent) = (Arc::clone(&self.shared), Arc::clone(&self.state));
         runtime.spawn(async move {
@@ -215,7 +217,7 @@ async fn open(
             return None;
         }
         Err(error) => {
-            tracing::debug!(%error, "the person's own workspace's keys could not be read");
+            tracing::warn!(%error, "the person's own workspace's keys could not be read");
             return None;
         }
     };
@@ -224,7 +226,7 @@ async fn open(
     let grant = match shared.grant(workspace, &scope, epoch) {
         Ok(grant) => grant,
         Err(error) => {
-            tracing::debug!(%error, "this device has no grant for its person's devices");
+            tracing::warn!(%error, "this device has no grant for its person's devices");
             return None;
         }
     };
@@ -251,7 +253,7 @@ async fn open(
     match LiveSession::join_within(dial, &grant, join, ATTEMPT).await {
         Ok(session) => Some(session),
         Err(error) => {
-            tracing::debug!(device = %hex::encode(device), %error,
+            tracing::warn!(device = %hex::encode(device), %error,
                 "the scope of the person's device was not joined");
             None
         }

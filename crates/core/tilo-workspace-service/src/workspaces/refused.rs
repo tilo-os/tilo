@@ -108,36 +108,54 @@ impl Refusal {
         let heads = document.get_heads();
         let failing = |error: automerge::AutomergeError| error.to_string();
         document.put(ROOT, "kind", KIND).map_err(failing)?;
-        document.put(ROOT, "record", self.record.as_str()).map_err(failing)?;
-        document.put(ROOT, "hash", self.hash.as_str()).map_err(failing)?;
-        document.put(ROOT, "bytes", i64::try_from(self.bytes).unwrap_or(i64::MAX))
+        document
+            .put(ROOT, "record", self.record.as_str())
             .map_err(failing)?;
-        document.put(ROOT, "limit", self.limit.key()).map_err(failing)?;
-        document.put(
-            ROOT,
-            "allowed",
-            i64::try_from(self.allowed).unwrap_or(i64::MAX),
-        )
-        .map_err(failing)?;
-        document.put(
-            ROOT,
-            "member",
-            serde_json::to_string(&self.member).unwrap_or_default(),
-        )
-        .map_err(failing)?;
-        document.put(ROOT, "at", i64::try_from(self.at).unwrap_or(i64::MAX))
+        document
+            .put(ROOT, "hash", self.hash.as_str())
             .map_err(failing)?;
-        document.put(ROOT, "raise", self.raise.key()).map_err(failing)?;
-        document.put(ROOT, "withdrawn", self.withdrawn).map_err(failing)?;
+        document
+            .put(ROOT, "bytes", i64::try_from(self.bytes).unwrap_or(i64::MAX))
+            .map_err(failing)?;
+        document
+            .put(ROOT, "limit", self.limit.key())
+            .map_err(failing)?;
+        document
+            .put(
+                ROOT,
+                "allowed",
+                i64::try_from(self.allowed).unwrap_or(i64::MAX),
+            )
+            .map_err(failing)?;
+        document
+            .put(
+                ROOT,
+                "member",
+                serde_json::to_string(&self.member).unwrap_or_default(),
+            )
+            .map_err(failing)?;
+        document
+            .put(ROOT, "at", i64::try_from(self.at).unwrap_or(i64::MAX))
+            .map_err(failing)?;
+        document
+            .put(ROOT, "raise", self.raise.key())
+            .map_err(failing)?;
+        document
+            .put(ROOT, "withdrawn", self.withdrawn)
+            .map_err(failing)?;
         if founding {
             let readers = document
                 .put_object(ROOT, "readers", ObjType::List)
                 .map_err(failing)?;
             for (at, person) in self.readers.iter().enumerate() {
-                let reader = Actor::Member(MemberId::person(
-                    tilo_actions::PersonId::from_root(*person),
-                ));
-                document.insert(&readers, at, serde_json::to_string(&reader).unwrap_or_default())
+                let reader =
+                    Actor::Member(MemberId::person(tilo_actions::PersonId::from_root(*person)));
+                document
+                    .insert(
+                        &readers,
+                        at,
+                        serde_json::to_string(&reader).unwrap_or_default(),
+                    )
                     .map_err(failing)?;
             }
         }
@@ -195,14 +213,26 @@ impl Refusal {
                 .list_range(&list, ..)
                 .filter_map(|item| match item.value {
                     automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(text)) => {
-                        serde_json::from_str::<Actor>(&text).ok()
+                        match serde_json::from_str::<Actor>(&text) {
+                            Ok(actor) => Some(actor),
+                            Err(error) => {
+                                tracing::warn!(%error, "a refusal's stored reader is not an actor");
+                                None
+                            }
+                        }
                     }
                     _ => None,
                 })
                 .filter_map(|actor| actor.member_id()?.person_id().map(str::to_owned))
                 .filter_map(|person| {
                     let mut root = [0_u8; 32];
-                    hex::decode_to_slice(&person, &mut root).ok().map(|()| root)
+                    match hex::decode_to_slice(&person, &mut root) {
+                        Ok(()) => Some(root),
+                        Err(error) => {
+                            tracing::warn!(%error, "a refusal's stored reader names no person");
+                            None
+                        }
+                    }
                 })
                 .collect(),
             _ => Vec::new(),

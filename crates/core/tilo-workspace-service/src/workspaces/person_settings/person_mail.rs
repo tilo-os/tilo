@@ -300,12 +300,11 @@ impl Workspaces {
                 .await
                 .map_err(|_| "the calendar server check did not finish".to_owned())??;
         let mut kept = kept;
-        let before: Vec<accounts::calendar::RemoteCalendar> = kept
-            .config
-            .get("calendars")
-            .cloned()
-            .and_then(|calendars| serde_json::from_value(calendars).ok())
-            .unwrap_or_default();
+        let before: Vec<accounts::calendar::RemoteCalendar> = match kept.config.get("calendars") {
+            Some(calendars) => serde_json::from_value(calendars.clone())
+                .map_err(|error| format!("This account's kept calendars do not read: {error}"))?,
+            None => Vec::new(),
+        };
         let read_only = kept
             .config
             .get("read_only")

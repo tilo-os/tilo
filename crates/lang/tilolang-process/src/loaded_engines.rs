@@ -72,8 +72,8 @@ fn held() -> MutexGuard<'static, BTreeMap<&'static str, Result<EngineApi, String
 
 /// The engine answering `app`, opening its library the first time and never closing it.
 fn engine_of(app: &str) -> Result<EngineApi, String> {
-    let library = library_of(app)
-        .ok_or_else(|| format!("no engine of this device's runs for {app}"))?;
+    let library =
+        library_of(app).ok_or_else(|| format!("no engine of this device's runs for {app}"))?;
     let mut opened = held();
     if let Some(engine) = opened.get(library) {
         return engine.clone();
@@ -137,15 +137,20 @@ pub fn stream(
     let device = device(&context);
     let answer = (engine.stream)(&device, op, input, frames)?;
     // A stream is a job, answered as `{job}`: the app stops it by the id it read, so the engine
-    // that runs it is found again for `status` and `cancel`.
-    if let Some(job) = serde_json::from_str::<serde_json::Value>(&answer)
-        .ok()
-        .and_then(|answer| answer.get("job").and_then(|job| job.as_str()).map(str::to_owned))
-    {
-        jobs()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(job, app.to_owned());
+    // that runs it is found again for `status` and `cancel`. An answer that names no job cannot
+    // be stopped, so it is said rather than read as a job that never started.
+    match serde_json::from_str::<serde_json::Value>(&answer) {
+        Ok(answer) => {
+            if let Some(job) = answer.get("job").and_then(|job| job.as_str()) {
+                jobs()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(job.to_owned(), app.to_owned());
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, %app, %op, "a stream's answer names no job to stop");
+        }
     }
     Ok(answer)
 }

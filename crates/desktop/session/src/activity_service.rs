@@ -721,7 +721,10 @@ impl Key {
                     "this" => wire::Scope::ThisWorkspace,
                     _ => return None,
                 };
-                let changes = parts.next().and_then(|page| page.parse().ok()).unwrap_or(0);
+                let changes = match parts.next() {
+                    Some(page) => page.parse().ok()?,
+                    None => 0,
+                };
                 if parts.next().is_some() {
                     return None;
                 }
