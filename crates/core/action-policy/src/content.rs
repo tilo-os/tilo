@@ -79,8 +79,20 @@ impl KeptLimits {
     /// allowing any size.
     #[must_use]
     pub fn allows(&self, limit: ContentLimit, bytes: u64) -> bool {
-        self.allowed(limit)
-            .is_none_or(|allowed| bytes <= allowed)
+        self.allowed(limit).is_none_or(|allowed| bytes <= allowed)
+    }
+
+    /// Whether a refusal of content of `bytes` for `limit` still stands, as far
+    /// as the limits alone say: a file's size is what its own limit bounds, so a
+    /// raised cap lets it through; a member's share, their hourly intake and the
+    /// workspace's total are about content together, which takes the totals the
+    /// host that keeps it holds.
+    #[must_use]
+    pub fn refuses(&self, limit: ContentLimit, bytes: u64) -> bool {
+        match limit {
+            ContentLimit::File => !self.allows(limit, bytes),
+            ContentLimit::Member | ContentLimit::Hourly | ContentLimit::Workspace => true,
+        }
     }
 }
 
@@ -248,6 +260,26 @@ mod tests {
         assert!(limits.allows(ContentLimit::File, 1024));
         assert!(limits.allows(ContentLimit::Member, u64::MAX / 2));
         assert!(!limits.allows(ContentLimit::Workspace, 2049));
+    }
+
+    #[test]
+    fn a_refusal_stands_while_what_the_record_alone_says_refuses_it() {
+        let limits = KeptLimits::of(
+            &ContentPolicy {
+                file_bytes: Some(1_024),
+                member_bytes: Some(2_048),
+                hourly_bytes: Some(4_096),
+            },
+            None,
+        );
+        // A file's size is its own limit: a raised cap lets the file through.
+        assert!(limits.refuses(ContentLimit::File, 2_048));
+        assert!(!limits.refuses(ContentLimit::File, 1_024));
+        // A member's share, their hour and the workspace's total are about
+        // content together: the size a refusal names says nothing of them.
+        assert!(limits.refuses(ContentLimit::Member, 1));
+        assert!(limits.refuses(ContentLimit::Hourly, 1));
+        assert!(limits.refuses(ContentLimit::Workspace, 1));
     }
 
     #[test]

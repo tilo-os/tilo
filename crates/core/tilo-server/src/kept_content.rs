@@ -260,7 +260,9 @@ struct State {
     /// The content the host keeps by workspace and hash: the member whose
     /// answer it kept it from, and how many bytes it is.
     kept: BTreeMap<(String, String), ([u8; 32], u64)>,
-    /// What the host took in of each member's files, by workspace and device.
+    /// What the host took in of each member's files, by workspace and member
+    /// ([`KeptContent::member_of`]): the person a device belongs to, or the
+    /// device for one that belongs to nobody the workspace knows.
     taken: BTreeMap<String, BTreeMap<[u8; 32], Taken>>,
     /// What the content the host keeps of each workspace takes together.
     kept_bytes: BTreeMap<String, u64>,
@@ -536,14 +538,14 @@ impl KeptContent {
     /// what it allowed, and who can raise it, so the member who posted it
     /// reads why.
     pub async fn refusals(&self, workspace: &str) -> Vec<ContentRefusal> {
+        let kept = self.workspaces.refusals(workspace).await;
         let limits = self.limits_of(workspace);
-        self.workspaces
-            .refusals(workspace)
-            .await
+        let now = now_ms();
+        let mut state = self.state.lock_recover();
+        kept.into_iter()
             // A limit raised since refuses nothing: its record stays until the
             // content it refused is kept, and stands for no reader meanwhile.
-            .into_iter()
-            .filter(|refusal| !limits.allows(refusal.limit, refusal.bytes))
+            .filter(|refusal| Self::standing(&mut state, &limits, workspace, refusal, now))
             .map(|refusal| refusal.read())
             .collect()
     }
@@ -612,24 +614,43 @@ impl KeptContent {
     /// withdrawn once the content is kept. What the store no longer holds is
     /// not what the workspace keeps, so the totals count what stands.
     async fn limits_changed(&self) {
+        // What the store no longer holds is not what the workspace keeps, so
+        // the totals a refusal is weighed against count what stands.
+        self.recount_kept();
         let limits = self.limits.lock_recover().clone();
+        let now = now_ms();
         let mut reconsider = Vec::new();
         {
             let mut state = self.state.lock_recover();
-            for (workspace, refused) in &mut state.refused {
-                for refusal in refused.values_mut() {
-                    if refusal.withdrawn
-                        || !limits.of(workspace).allows(refusal.limit, refusal.bytes)
-                    {
-                        continue;
-                    }
-                    refusal.withdrawn = true;
-                    reconsider.push((
-                        workspace.clone(),
-                        refusal.record.clone(),
-                        refusal.hash.clone(),
-                    ));
+            let recorded: Vec<(String, ContentRefusalRecord)> = state
+                .refused
+                .iter()
+                .flat_map(|(workspace, refused)| {
+                    refused
+                        .values()
+                        .filter(|refusal| !refusal.withdrawn)
+                        .map(|refusal| (workspace.clone(), refusal.clone()))
+                })
+                .collect();
+            for (workspace, refusal) in recorded {
+                if Self::standing(
+                    &mut state,
+                    &limits.of(&workspace),
+                    &workspace,
+                    &refusal,
+                    now,
+                ) {
+                    continue;
                 }
+                let Some(held) = state
+                    .refused
+                    .get_mut(&workspace)
+                    .and_then(|refused| refused.get_mut(&refusal.hash))
+                else {
+                    continue;
+                };
+                held.withdrawn = true;
+                reconsider.push((workspace, refusal.record, refusal.hash));
             }
             for (workspace, record, hash) in reconsider {
                 // The content is asked for again: what refused it no longer
@@ -642,7 +663,6 @@ impl KeptContent {
                 }
             }
         }
-        self.recount_kept();
     }
 
     /// The limit `bytes` of `member`'s content goes over in `workspace`, with
@@ -680,6 +700,50 @@ impl KeptContent {
             return Some((ContentLimit::Workspace, workspace_bytes));
         }
         None
+    }
+
+    /// The member whose share and hourly intake `device`'s answer counts
+    /// against in `workspace`: the person it belongs to, as the workspace's
+    /// people last said, or the device itself for one that belongs to nobody it
+    /// knows. A member's devices post as one member.
+    fn member_of(state: &State, workspace: &str, device: &[u8; 32]) -> [u8; 32] {
+        state
+            .people
+            .get(workspace)
+            .and_then(|people| people.of_device.get(device).copied())
+            .unwrap_or(*device)
+    }
+
+    /// The member a refusal names, as the key [`Self::over`] counts against:
+    /// the person who posted it, or the visitor's own device.
+    fn refusal_member(actor: &Actor) -> Option<[u8; 32]> {
+        let key = match actor {
+            Actor::Member(member) => member.person_id()?,
+            Actor::Visitor(key) => key.as_str(),
+            Actor::Automation(_) | Actor::App(_) => return None,
+        };
+        <[u8; 32]>::try_from(hex::decode(key).ok()?).ok()
+    }
+
+    /// Whether the refusal `refusal` records still stands in `workspace` under
+    /// `limits`, which is whether the host would refuse the same content now. A
+    /// member's share and their hourly intake are about their files together,
+    /// and the workspace's total about every file it keeps, so only the totals
+    /// the host holds say whether a raised limit lets the content through. A
+    /// refusal that no longer stands is asked for again, and its record
+    /// withdrawn once that content is kept.
+    fn standing(
+        state: &mut State,
+        limits: &KeptLimits,
+        workspace: &str,
+        refusal: &ContentRefusalRecord,
+        now: u64,
+    ) -> bool {
+        // A poster this host counts against no share is one it cannot weigh:
+        // the refusal stands until the host keeps the content and withdraws it.
+        Self::refusal_member(&refusal.member).is_none_or(|member| {
+            Self::over(state, limits, workspace, &member, refusal.bytes, now).is_some()
+        })
     }
 
     /// Count `bytes` of the content `hash` the host kept for `workspace` from
@@ -1410,12 +1474,15 @@ impl ContentKeeper for KeptContent {
         {
             let total = *total;
             let hash = hash.to_ascii_lowercase();
-            if let Some(refusal) = state
+            let recorded = state
                 .refused
                 .get(workspace)
                 .and_then(|held| held.get(&hash))
-            {
-                if !refusal.withdrawn && !limits.allows(refusal.limit, refusal.bytes) {
+                .cloned();
+            if let Some(refusal) = recorded {
+                if !refusal.withdrawn
+                    && Self::standing(&mut state, &limits, workspace, &refusal, now)
+                {
                     return Ok(());
                 }
                 // The limit that refused it was raised: it is kept now, if its
@@ -1464,7 +1531,9 @@ impl ContentKeeper for KeptContent {
         };
         let mut state = self.state.lock_recover();
         let size = u64::try_from(arrived.bytes.len()).unwrap_or(u64::MAX);
-        if let Some((limit, allowed)) = Self::over(&mut state, &limits, workspace, &from, size, now)
+        let member = Self::member_of(&state, workspace, &from);
+        if let Some((limit, allowed)) =
+            Self::over(&mut state, &limits, workspace, &member, size, now)
         {
             refused.push(self.refuse(
                 &mut state,
@@ -1484,7 +1553,7 @@ impl ContentKeeper for KeptContent {
         // Counted as it is taken in, so what arrives while earlier content is
         // still being written stays within the limits too; a write that
         // fails is let go of when the host counts again what its store holds.
-        self.count_kept(&mut state, workspace, &arrived.hash, &from, size, now);
+        self.count_kept(&mut state, workspace, &arrived.hash, &member, size, now);
         state.storing.insert(arrived.hash.clone());
         state.arrivals.push((workspace.to_owned(), arrived));
         drop(state);
