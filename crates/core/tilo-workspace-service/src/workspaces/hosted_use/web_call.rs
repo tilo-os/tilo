@@ -953,6 +953,126 @@ mod tests {
         (items, call)
     }
 
+    /// A call's parts reach the service framed as one multipart body: each
+    /// part's field name, the filename and type of content, and the bytes
+    /// the workspace keeps, read by the vault from the store. Content it
+    /// does not keep is refused before anything is sent, and the key still
+    /// rides the request as its item says.
+    #[tokio::test]
+    async fn a_call_sends_its_parts_with_the_content_its_workspace_keeps() {
+        use test_http::{Reply, Responder};
+        use tilo_actions::remote::person_vault::WebCallPart;
+
+        let service = Responder::handle(|request| {
+            Some(Reply::status(200).body(format!(
+                "{}\n{}",
+                request.header("content-type").unwrap_or("none"),
+                request.body_text()
+            )))
+        });
+        let picture = b"\x89PNG the picture's bytes".to_vec();
+        let hash = blake3::hash(&picture).to_hex().to_string();
+        let (mut items, mut call) = kept_for(&service.url());
+        let item = item_of(&call).unwrap();
+        call.url = format!("{}/v1/upload", service.url());
+        call.method = "POST".to_owned();
+        call.body_parts = vec![
+            WebCallPart {
+                name: "payload_json".into(),
+                text: None,
+                json: Some(json!({"content": "hi"})),
+                content: None,
+            },
+            WebCallPart {
+                name: "files[0]".into(),
+                text: None,
+                json: None,
+                content: Some(ContentRef {
+                    app: "so.tilo.chat".into(),
+                    hash: hash.clone(),
+                    filename: "a.png".into(),
+                    content_type: "image/png".into(),
+                }),
+            },
+        ];
+        let keeps = |app: &str, asked: &str| {
+            (app == "so.tilo.chat" && asked == hash).then(|| picture.clone())
+        };
+        let (lookup, _) = answering(&["127.0.0.1"]);
+        let answer = send_through(
+            Destinations::Any,
+            lookup,
+            &mut items,
+            call.clone(),
+            "Scout",
+            None,
+            UsedFor::default(),
+            &keeps,
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer["status"], 200);
+        let sent = service.drain_requests();
+        assert_eq!(sent.len(), 1, "one request");
+        assert_eq!(
+            sent[0].header("authorization"),
+            Some(format!("Bearer {KEY}").as_str()),
+            "the key still rides the request"
+        );
+        let content_type = sent[0].header("content-type").unwrap_or_default();
+        let boundary = content_type
+            .strip_prefix("multipart/form-data; boundary=")
+            .unwrap_or_else(|| panic!("a multipart body: {content_type}"));
+        let body = sent[0].body_text();
+        for part in [
+            format!("--{boundary}\r\nContent-Disposition: form-data; name=\"payload_json\""),
+            "\"content\":\"hi\"".to_owned(),
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"files[0]\"; \
+                 filename=\"a.png\""
+            ),
+            "Content-Type: image/png".to_owned(),
+        ] {
+            assert!(body.contains(&part), "{part}: {body}");
+        }
+        assert!(
+            sent[0]
+                .body
+                .windows(picture.len())
+                .any(|at| at == picture.as_slice()),
+            "the content's bytes are there whole"
+        );
+        // What the key was used for says how much was sent, never what.
+        let uses = items.uses(&item).unwrap();
+        assert_eq!(uses.len(), 1);
+        assert_eq!(
+            uses[0].what,
+            format!("POST /v1/upload ({} bytes)", sent[0].body.len())
+        );
+
+        // Content this workspace keeps for no app it asks as is refused, and nothing is sent.
+        let mut unkept = call.clone();
+        if let Some(part) = unkept.body_parts.get_mut(1)
+            && let Some(content) = &mut part.content
+        {
+            content.app = "so.tilo.discord".into();
+        }
+        let (lookup, _) = answering(&["127.0.0.1"]);
+        let refused = send_through(
+            Destinations::Any,
+            lookup,
+            &mut items,
+            unkept,
+            "Scout",
+            None,
+            UsedFor::default(),
+            &keeps,
+        )
+        .await;
+        assert_eq!(refused, Err(NOT_KEPT.to_owned()));
+        assert!(service.drain_requests().is_empty(), "nothing was sent");
+    }
+
     /// The name of a call is looked up once, every address the lookup
     /// answers is checked, and the connection goes to exactly what was
     /// checked. A name that answers an address inside this server's own

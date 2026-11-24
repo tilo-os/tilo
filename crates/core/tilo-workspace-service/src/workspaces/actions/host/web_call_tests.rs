@@ -944,11 +944,17 @@ async fn a_call_sends_the_workspace_content_it_names() {
     ]});
     let first = called(parts);
     asks(dispatched(workspaces, &turn, &first).await);
+    let (lines, guard) = logged();
     let answer = made(dispatched(workspaces, &turn, &approved(&first, &workspace)).await);
+    drop(guard);
     assert_eq!(answer["status"], 200);
     assert!(
         !answer.to_string().contains(KEY),
         "the key is struck: {answer}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&lines.0.lock().unwrap()).contains(KEY),
+        "no log line names the key"
     );
     let sent = upload.drain_requests();
     assert_eq!(sent.len(), 1);
