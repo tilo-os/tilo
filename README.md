@@ -57,5 +57,5 @@ Development happens on [code.tilo.so/tilo/tilo](https://code.tilo.so/tilo/tilo);
 
 ## License and security
 
-Everything you need to build and publish an app is MIT; the rest is AGPL-3.0 ([LICENSING.md](LICENSING.md)).
+The UI toolkit, the app SDK and tilolang are MIT; the rest is AGPL-3.0 ([LICENSING.md](LICENSING.md)).
 Report vulnerabilities privately per [SECURITY.md](SECURITY.md), not in a public issue.

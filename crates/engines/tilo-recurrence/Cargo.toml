@@ -2,9 +2,11 @@
 name = "tilo-recurrence"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
-license.workspace = true
+publish = true
+license = "MIT"
 description = "RFC 5545 recurrence rules shared by Tilo apps and the language runtime: RRULE/EXDATE text, expansion in a named zone, and the repeat presets a picker shows."
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 jiff.workspace = true

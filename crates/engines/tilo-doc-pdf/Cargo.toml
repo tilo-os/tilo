@@ -2,13 +2,15 @@
 name = "tilo-doc-pdf"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
-license.workspace = true
+publish = true
+license = "MIT"
 description = "Paginated PDF export for tilo-doc DocSnapshot documents (Tilo)"
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-tilo-doc = { path = "../../sdk/tilo-doc" }
-tilo-content = { path = "../../core/content", default-features = false }
+tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
+tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 # Image decode for `image` blocks. PDF export supports PNG/JPEG; disabling
 # defaults avoids pulling every codec into the shared graph.
 image = { workspace = true, default-features = false, features = ["jpeg", "png"] }

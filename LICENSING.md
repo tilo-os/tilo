@@ -1,11 +1,14 @@
 # Licensing
 
 - **Tilo shell, OS and host runtime etc.: [AGPL-3.0-only](LICENSE).**
-- **The SDK for developing and distributing your own apps: [MIT](LICENSE-MIT).**
-  This includes `tilo-app`, its app-facing clients and required support
-  libraries, and the lexer of the app language (`tilolang-lex`), which the
-  toolkit's editor colours a program with exactly as the compiler reads it.
-  Your own standalone Windows/macOS app can be open source or nonfree.
+- **What you build apps with: [MIT](LICENSE-MIT).** This is the UI toolkit
+  (`tilo-ui`), the Rust app SDK (`tilo-app` with `tilo-resource`, `tilo-view`,
+  `tilo-history` and `tilo-doc`), and tilolang: its compiler (`tilolang`,
+  `tilolang-lex`), its runtime (`tilolang-runtime`), the `tilolang` command and
+  its browser build. Everything those crates need is MIT too, such as the
+  calendar recurrence rules, the spreadsheet engine and the document formats a
+  tilolang program reads. They are published on crates.io, and you can use them
+  in your own program or app, open source or nonfree, inside Tilo or without it.
 - **The client side you reach a workspace by: [MIT](LICENSE-MIT).** A program
   that acts on a person's workspaces from outside Tilo — entering one over iroh
   as one of their devices, with their key, and asking its host for records and
@@ -27,7 +30,7 @@
   [vendored code](vendor/), [spelling dictionaries](apps/osk/data/), and
   [Unicode emoji data](crates/ui/emoji/data/LICENSE-UNICODE.txt).
 
-The MIT SDK and the MIT client side do not grant permission to incorporate
+The MIT crates you build with and the MIT client side do not grant permission to incorporate
 additional AGPL code into a nonfree app. In particular, the shared
 `runtime-dylib` used by thin Tilo OS apps still contains AGPL components and
 remains AGPL.
