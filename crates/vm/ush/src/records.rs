@@ -270,7 +270,7 @@ impl Records {
             match self.command(&Command::RecordChange {
                 record: Some(record.clone()),
                 changes: Bytes(run.to_vec()),
-                more: index + 1 < runs.len(),
+                more: index < runs.len().saturating_sub(1),
                 commit: None,
             })? {
                 Reply::Written => {}
