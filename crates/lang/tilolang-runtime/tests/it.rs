@@ -70,6 +70,8 @@ mod e2e_std;
 mod e2e_tool_context;
 #[path = "e2e_todo.rs"]
 mod e2e_todo;
+#[path = "e2e_git_client.rs"]
+mod e2e_git_client;
 #[path = "e2e_video_editor.rs"]
 mod e2e_video_editor;
 

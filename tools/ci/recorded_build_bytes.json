@@ -71,7 +71,6 @@
   "fs-content": {"libraries": 2046367, "tests": 3744472},
   "fs-native": {"libraries": 10939574, "tests": 13829464},
   "fs-protocol": {"libraries": 10451128, "tests": 27943336},
-  "git-client": {"libraries": 24251809, "tests": 803892088},
   "greetd-client": {"libraries": 1633789, "tests": 5084968},
   "greeter": {"libraries": 9655269, "tests": 349710496},
   "hello": {"libraries": 0, "tests": 2856368},

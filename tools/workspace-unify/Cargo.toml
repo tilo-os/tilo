@@ -394,9 +394,6 @@ doc = false
 "gimli-0_32_3" = { package = "gimli", version = "^0.32.3", default-features = false, features = ["read", "read-core"] }
 "gimli-0_33_0" = { package = "gimli", version = "^0.33.0", default-features = false, features = ["read", "read-core", "std", "write"] }
 "gio-sys-0_21_5" = { package = "gio-sys", version = "^0.21.5", default-features = false, features = [] }
-"git-client" = { path = "../../apps/git-client", default-features = false, features = ["samples"] }
-"git-client-model" = { path = "../../apps/git-client-model", default-features = false, features = [] }
-"git-client-model-wasm" = { path = "../../apps/git-client-model-wasm", default-features = false, features = [] }
 "git2-0_21_0" = { package = "git2", version = "^0.21.0", default-features = false, features = ["cred", "vendored-libgit2"] }
 "glib-0_21_5" = { package = "glib", version = "^0.21.5", default-features = false, features = ["default", "gio", "gio-sys"] }
 "glib-sys-0_21_5" = { package = "glib-sys", version = "^0.21.5", default-features = false, features = [] }
@@ -3197,9 +3194,6 @@ doc = false
 "gimli-0_32_3" = { package = "gimli", version = "^0.32.3", default-features = false, features = ["read", "read-core"] }
 "gimli-0_33_0" = { package = "gimli", version = "^0.33.0", default-features = false, features = ["read", "read-core", "std", "write"] }
 "gio-sys-0_21_5" = { package = "gio-sys", version = "^0.21.5", default-features = false, features = [] }
-"git-client" = { path = "../../apps/git-client", default-features = false, features = ["samples"] }
-"git-client-model" = { path = "../../apps/git-client-model", default-features = false, features = [] }
-"git-client-model-wasm" = { path = "../../apps/git-client-model-wasm", default-features = false, features = [] }
 "git2-0_21_0" = { package = "git2", version = "^0.21.0", default-features = false, features = ["cred", "vendored-libgit2"] }
 "glib-0_21_5" = { package = "glib", version = "^0.21.5", default-features = false, features = ["default", "gio", "gio-sys"] }
 "glib-sys-0_21_5" = { package = "glib-sys", version = "^0.21.5", default-features = false, features = [] }

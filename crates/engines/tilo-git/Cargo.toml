@@ -1,0 +1,36 @@
+[package]
+name = "tilo-git"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The Git app's engine, with no UI: reads a repository into what its window shows, stages, commits, branches, stashes and works over HTTPS and SSH."
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+tilo-paths = { path = "../../platform/tilo-paths" }
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2", "cred"] }
+reqwest = { workspace = true, features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+russh = { version = "0.65.1", default-features = false, features = ["ring", "flate2"] }
+ssh-agent-client = { path = "../../integrations/ssh-agent-client" }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time"] }
+url.workspace = true
+rustls.workspace = true
+zeroize.workspace = true
+bounded-command = { path = "../../platform/bounded-command" }
+shlex = "1.3"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

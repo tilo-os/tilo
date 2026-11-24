@@ -26,7 +26,6 @@ exclude = [
     "discord",
     "file-explorer",
     "firewall",
-    "git-client",
     "hex-editor",
     "mail",
     "maps",

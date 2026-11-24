@@ -1,0 +1,1773 @@
+app so.tilo.git-client "Git" (
+    icon: .git_branch,
+    category: .development,
+    tagline: "Change, commit and share a repository",
+    keywords: ["git", "repository", "commit", "branch", "merge", "diff", "stage", "stash", "remote", "version control", "quellcode", "versionierung", "zweig"],
+)
+
+/// Where a change stands: in the next commit, still in the working tree, or not tracked yet.
+enum ChangeArea {
+    staged
+    unstaged
+    untracked
+}
+
+/// What became of a file.
+enum ChangeKind {
+    added
+    modified
+    deleted
+    renamed
+    untracked
+    conflicted
+}
+
+/// What a ref on a commit is.
+enum RefKind {
+    head
+    local_branch
+    remote_branch
+    tag
+}
+
+/// How a diff reads.
+enum DiffLayout {
+    unified
+    split
+}
+
+/// One hunk of a diff, which can be staged or discarded on its own.
+type Hunk {
+    index: Int = 0
+    header: Text = ""
+    old_start: Int = 0
+    new_start: Int = 0
+}
+
+/// One changed file: where it stands, what became of it and its diff. A change is a resource
+/// because the actions a person takes on it act on the file it names.
+type Change (title: path) {
+    path: Text = ""
+    old_path: Option<Text> = .none
+    area: ChangeArea = .unstaged
+    kind: ChangeKind = .modified
+    additions: Int = 0
+    deletions: Int = 0
+    binary: Bool = false
+    /// What keeping each side of a conflict would discard, in lines.
+    ours: Int = 0
+    theirs: Int = 0
+    /// The file's language token (`rust`, `json`, ...), for the code view's colouring.
+    language: Text = "plain"
+    /// The change in one column: each line's old and new number, its marker and its words.
+    unified: Text = ""
+    /// The old side of a side-by-side reading, aligned row for row with `right`.
+    left: Text = ""
+    /// The new side of a side-by-side reading.
+    right: Text = ""
+    /// Its hunks, each as its own JSON text.
+    hunks: Text = ""
+}
+
+/// One ref that points at a commit.
+type RefLabel {
+    name: Text = ""
+    kind: RefKind = .local_branch
+}
+
+/// One commit of the repository.
+type Commit (title: summary) {
+    id: Text = ""
+    summary: Text = ""
+    body: Text = ""
+    author_name: Text = ""
+    author_email: Text = ""
+    /// When it was made, in seconds since the epoch.
+    time: Int = 0
+    /// How long ago that was, in seconds.
+    age: Int = 0
+    /// When it was made, as a machine reads it.
+    date: Text = ""
+    parents: List<Text>
+    refs: List<WireRef>
+    column: Int = 0
+}
+
+/// One branch of the repository.
+type Branch (title: name) {
+    name: Text = ""
+    is_head: Bool = false
+    is_remote: Bool = false
+    upstream: Option<Text> = .none
+    ahead: Int = 0
+    behind: Int = 0
+    tip: Text = ""
+}
+
+/// One tag of the repository.
+type Tag (title: name) {
+    name: Text = ""
+    target: Text = ""
+    message: Option<Text> = .none
+}
+
+/// One stash of the working tree.
+type Stash (title: message) {
+    index: Int = 0
+    message: Text = ""
+    branch: Text = ""
+}
+
+/// One remote the repository fetches from and pushes to.
+type Remote (title: name) {
+    name: Text = ""
+    url: Text = ""
+}
+
+/// One working directory linked to the repository.
+type Worktree (title: path) {
+    name: Text = ""
+    path: Text = ""
+    head: Text = ""
+    current: Bool = false
+}
+
+/// One file a commit changed, with its diff.
+type CommitFile {
+    path: Text = ""
+    old_path: Option<Text> = .none
+    kind: ChangeKind = .modified
+    additions: Int = 0
+    deletions: Int = 0
+    binary: Bool = false
+    language: Text = "plain"
+    unified: Text = ""
+    left: Text = ""
+    right: Text = ""
+}
+
+/// One folder the repository picker listed.
+type BrowseEntry (title: name) {
+    name: Text = ""
+    path: Text = ""
+    folder: Bool = false
+}
+
+/// One person's window on the repository: the repository they opened here, its working tree, and
+/// how they read diffs. It is the reader's own, so two people's pages never turn under each other.
+type Session (readers: author) {
+    /// The path of the repository this person opened here; empty until they open one.
+    path: Text = ""
+    changes: Collection<Change>
+    layout: DiffLayout = .unified
+    highlight: Bool = true
+    whitespace: Bool = false
+    wrap: Bool = true
+    /// The branch a switch waits on, while the working tree holds uncommitted work.
+    pending_switch: Text = ""
+    /// The picker's folder and entries, while the person chooses where a repository is.
+    browsing: Bool = false
+    folder: Text = ""
+    entries: Collection<BrowseEntry>
+    /// The commit whose changed files were read, and those files as a JSON list of texts.
+    commit_id: Text = ""
+    commit_files: Text = ""
+    /// What the last action did, said once; what went wrong, said until it is put away.
+    notice: Text = ""
+    trouble: Text = ""
+}
+
+/// The workspace's Git: the repository it opens and what members see of it, and one window per
+/// person on it.
+type Repository {
+    /// Where the repository is on this device.
+    path: Text = ""
+    name: Text = ""
+    head: Text = ""
+    workdir: Text = ""
+    author_name: Text = ""
+    author_email: Text = ""
+    /// Everything the device answered about the repository, as the text it wrote: its commits,
+    /// branches, tags, stashes, remotes and working directories. The window reads it as the
+    /// records it draws.
+    snapshot: Text = ""
+    sessions: Collection<Session>
+}
+
+root git: Repository
+
+default view changes for Repository
+
+views changes (icon: .git_commit_horizontal), history (icon: .history), branches (icon: .git_branch) for Repository
+
+/// Opening the app gives the person their window on it, though they open no repository yet.
+opened action arrive(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    if s.path == "" and g.path != "" {
+        s.path = g.path
+    }
+}
+
+// ---------------------------------------------------------------- what the device answers
+type Loaded {
+    /// What the op that answered it made, in a few words: a commit's or stash's short id.
+    answer: Text = ""
+    name: Text = ""
+    head: Text = ""
+    workdir: Text = ""
+    author_name: Text = ""
+    author_email: Text = ""
+    /// Each collection as a list of JSON texts, one an item.
+    changes: List<Text>
+    commits: List<Text>
+    branches: List<Text>
+    tags: List<Text>
+    stashes: List<Text>
+    remotes: List<Text>
+    worktrees: List<Text>
+    worktree_error: Option<Text> = .none
+}
+
+type WireChange {
+    path: Text = ""
+    old_path: Option<Text> = .none
+    area: ChangeArea = .unstaged
+    kind: ChangeKind = .modified
+    additions: Int = 0
+    deletions: Int = 0
+    binary: Bool = false
+    ours: Int = 0
+    theirs: Int = 0
+    language: Text = "plain"
+    unified: Text = ""
+    left: Text = ""
+    right: Text = ""
+    hunks: List<Text>
+}
+
+type WireCommit {
+    id: Text = ""
+    summary: Text = ""
+    body: Text = ""
+    author_name: Text = ""
+    author_email: Text = ""
+    time: Int = 0
+    age: Int = 0
+    date: Text = ""
+    parents: List<Text>
+    refs: List<Text>
+    column: Int = 0
+}
+
+type WireRef {
+    name: Text = ""
+    kind: RefKind = .local_branch
+}
+
+type WireBranch {
+    name: Text = ""
+    is_head: Bool = false
+    is_remote: Bool = false
+    upstream: Option<Text> = .none
+    ahead: Int = 0
+    behind: Int = 0
+    tip: Text = ""
+}
+
+type WireTag {
+    name: Text = ""
+    target: Text = ""
+    message: Option<Text> = .none
+}
+
+type WireStash {
+    index: Int = 0
+    message: Text = ""
+    branch: Text = ""
+}
+
+type WireRemote {
+    name: Text = ""
+    url: Text = ""
+}
+
+type WireWorktree {
+    name: Text = ""
+    path: Text = ""
+    head: Text = ""
+    current: Bool = false
+}
+
+type WireFile {
+    path: Text = ""
+    old_path: Option<Text> = .none
+    kind: ChangeKind = .modified
+    additions: Int = 0
+    deletions: Int = 0
+    binary: Bool = false
+    language: Text = "plain"
+    unified: Text = ""
+    left: Text = ""
+    right: Text = ""
+}
+
+type PathAsk {
+    path: Text
+    /// Whether a diff shows the whitespace at the end of its lines.
+    whitespace: Bool = false
+}
+
+type FileAsk {
+    path: Text
+    file: Text
+}
+
+type HunkAsk {
+    path: Text
+    file: Text
+    hunk: Int
+    unstage: Bool = false
+}
+
+type CommitAsk {
+    path: Text
+    message: Text
+}
+
+type BranchAsk {
+    path: Text
+    name: Text
+    checkout: Bool = false
+}
+
+type CheckoutAsk {
+    path: Text
+    name: Text
+    stash: Bool = false
+}
+
+type CommitFilesAsk {
+    path: Text
+    commit: Text
+}
+
+type WorktreeAsk {
+    path: Text
+    destination: Text
+    branch: Text
+    start: Text
+}
+
+type StashSaveAsk {
+    path: Text
+    message: Text = ""
+}
+
+type StashApplyAsk {
+    path: Text
+    index: Int
+}
+
+type ResolveAsk {
+    path: Text
+    file: Text
+    ours: Bool
+}
+
+type RemoteAsk {
+    path: Text
+    remote: Text = ""
+}
+
+fn texts(text: Text) -> List<Text> {
+    if text == "" {
+        []
+    } else {
+        match json.decode<List<Text>>(text) {
+            .ok(items) => items,
+            .err(_) => [],
+        }
+    }
+}
+
+fn changes_of(items: List<Text>) -> List<WireChange> {
+    items.flat_map(
+        t -> match json.decode<WireChange>(t) {
+            .ok(w) => [w],
+            .err(_) => [],
+        },
+    )
+}
+
+fn hunks_of(items: List<Text>) -> List<Hunk> {
+    items.flat_map(
+        t -> match json.decode<Hunk>(t) {
+            .ok(h) => [h],
+            .err(_) => [],
+        },
+    )
+}
+
+fn refs_of(items: List<Text>) -> List<RefLabel> {
+    items
+        .flat_map(
+            t -> match json.decode<WireRef>(t) {
+                .ok(r) => [r],
+                .err(_) => [],
+            },
+        )
+        .map(r -> RefLabel(name: r.name, kind: r.kind))
+}
+
+fn commits_of(items: List<Text>) -> List<WireCommit> {
+    items.flat_map(
+        t -> match json.decode<WireCommit>(t) {
+            .ok(w) => [w],
+            .err(_) => [],
+        },
+    )
+}
+
+fn branches_of(items: List<Text>) -> List<WireBranch> {
+    items.flat_map(
+        t -> match json.decode<WireBranch>(t) {
+            .ok(w) => [w],
+            .err(_) => [],
+        },
+    )
+}
+
+fn tags_of(items: List<Text>) -> List<WireTag> {
+    items.flat_map(
+        t -> match json.decode<WireTag>(t) {
+            .ok(w) => [w],
+            .err(_) => [],
+        },
+    )
+}
+
+fn stashes_of(items: List<Text>) -> List<WireStash> {
+    items.flat_map(
+        t -> match json.decode<WireStash>(t) {
+            .ok(w) => [w],
+            .err(_) => [],
+        },
+    )
+}
+
+fn remotes_of(items: List<Text>) -> List<WireRemote> {
+    items.flat_map(
+        t -> match json.decode<WireRemote>(t) {
+            .ok(w) => [w],
+            .err(_) => [],
+        },
+    )
+}
+
+fn worktrees_of(items: List<Text>) -> List<WireWorktree> {
+    items.flat_map(
+        t -> match json.decode<WireWorktree>(t) {
+            .ok(w) => [w],
+            .err(_) => [],
+        },
+    )
+}
+
+fn files_of(items: List<Text>) -> List<CommitFile> {
+    items.flat_map(
+        t -> match json.decode<WireFile>(t) {
+            .ok(w) => [
+                CommitFile(path: w.path, kind: w.kind, additions: w.additions, binary: w.binary),
+            ],
+            .err(_) => [],
+        },
+    )
+}
+
+/// The repository the device last answered, read as the window draws it.
+fn shown(g: Repository) -> Option<Loaded> {
+    if g.snapshot == "" {
+        .none
+    } else {
+        match json.decode<Loaded>(g.snapshot) {
+            .ok(loaded) => .some(loaded),
+            .err(_) => .none,
+        }
+    }
+}
+
+fn committed(g: Repository) -> List<WireCommit> {
+    if let loaded = shown(g) { commits_of(loaded.commits) } else { [] }
+}
+
+fn branched(g: Repository) -> List<WireBranch> {
+    if let loaded = shown(g) { branches_of(loaded.branches) } else { [] }
+}
+
+fn tagged(g: Repository) -> List<WireTag> {
+    if let loaded = shown(g) { tags_of(loaded.tags) } else { [] }
+}
+
+fn stashed(g: Repository) -> List<WireStash> {
+    if let loaded = shown(g) { stashes_of(loaded.stashes) } else { [] }
+}
+
+fn remoted(g: Repository) -> List<WireRemote> {
+    if let loaded = shown(g) { remotes_of(loaded.remotes) } else { [] }
+}
+
+fn worked(g: Repository) -> List<WireWorktree> {
+    if let loaded = shown(g) { worktrees_of(loaded.worktrees) } else { [] }
+}
+
+fn worktree_error(g: Repository) -> Text {
+    if let loaded = shown(g) {
+        if let why = loaded.worktree_error { why } else { "" }
+    } else { "" }
+}
+
+fn full_id(c: Option<WireCommit>) -> Text {
+    if let one = c { one.id } else { "" }
+}
+
+fn made(g: Repository) -> Text {
+    if let loaded = shown(g) { loaded.answer } else { "" }
+}
+
+// ---------------------------------------------------------------- the repository on disk
+fn area_key(a: ChangeArea) -> Text {
+    if a == .staged { "staged" } else if a == .unstaged { "unstaged" } else { "untracked" }
+}
+
+fn change_key(c: Change) -> Text {
+    "{area_key(c.area)}:{c.path}"
+}
+
+fn change_key_of(w: WireChange) -> Text {
+    "{area_key(w.area)}:{w.path}"
+}
+
+/// Reads the repository on disk into the app's records, for this person's window.
+action refresh(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    if s.path == "" {
+        return
+    }
+    asks(g, s, "load", json.encode(PathAsk(path: s.path, whitespace: s.whitespace)))
+}
+
+/// Opens the repository at `path` on this device.
+// ---------------------------------------------------------------- opening a repository
+action open_repository(g: Repository, path: Text) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    let typed = path.trim()
+    if typed == "" {
+        s.trouble = "Type the path of a repository"
+        return
+    }
+    s.path = typed
+    asks(g, s, "load", json.encode(PathAsk(path: typed, whitespace: s.whitespace)))
+    if s.trouble == "" {
+        s.notice = "Opened the repository {typed}"
+    } else {
+        s.path = g.path
+    }
+}
+
+/// Starts choosing a repository's folder, listing this device's home folder.
+action choose_repository(g: Repository) uses files {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    s.browsing = true
+    s.trouble = ""
+    read_folder(s, "~")
+}
+
+/// Lists `folder` in the repository picker.
+action read_folder(s: Session, folder: Text) uses files {
+    match File.list(folder) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(listed) => {
+            let old = s.entries
+            for e in old {
+                s.entries.remove(e)
+            }
+            for e in listed.filter(x -> x.folder) {
+                let entry = s.entries.insert(BrowseEntry())
+                entry.name = e.name
+                entry.path = e.path
+                entry.folder = true
+            }
+            s.folder = folder
+            s.trouble = ""
+        }
+    }
+}
+
+/// Opens the folder the picker shows as a repository.
+action open_browsed(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    s.browsing = false
+    open_repository(g, s.folder)
+}
+
+/// Puts the picker away.
+action close_picker(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    s.browsing = false
+    s.trouble = ""
+}
+
+/// Stages one changed file.
+// ---------------------------------------------------------------- the working tree
+action stage_file(g: Repository, c: Change) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "stage_file", json.encode(FileAsk(path: s.path, file: c.path)))
+}
+
+/// Takes one staged file back out of the next commit.
+action unstage_file(g: Repository, c: Change) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "unstage_file", json.encode(FileAsk(path: s.path, file: c.path)))
+}
+
+/// Discards the working tree's edits to one file, or deletes it when it was never tracked.
+destructive action discard_file(g: Repository, c: Change) (
+    icon: .undo_2,
+    label: "Discard file changes",
+) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    let file = c.path
+    asks(g, s, "discard_file", json.encode(FileAsk(path: s.path, file: file)))
+    if s.trouble == "" {
+        s.notice = "Discarded the changes to {file}"
+    }
+}
+
+/// Stages every change.
+action stage_all(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "stage_all", json.encode(PathAsk(path: s.path)))
+}
+
+/// Takes every staged change back out of the next commit.
+action unstage_all(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "unstage_all", json.encode(PathAsk(path: s.path)))
+}
+
+/// Stages one hunk of a file.
+action stage_hunk(g: Repository, c: Change, hunk: Int) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(
+        g,
+        s,
+        "apply_hunk",
+        json.encode(HunkAsk(path: s.path, file: c.path, hunk: hunk, unstage: false)),
+    )
+}
+
+/// Takes one staged hunk back out of the next commit.
+action unstage_hunk(g: Repository, c: Change, hunk: Int) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(
+        g,
+        s,
+        "apply_hunk",
+        json.encode(HunkAsk(path: s.path, file: c.path, hunk: hunk, unstage: true)),
+    )
+}
+
+/// Discards one hunk of a file's working tree edits.
+destructive action discard_hunk(g: Repository, c: Change, hunk: Int) (
+    icon: .undo_2,
+    label: "Discard this change",
+) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "discard_hunk", json.encode(HunkAsk(path: s.path, file: c.path, hunk: hunk)))
+}
+
+/// Creates a commit from what is staged.
+action commit(g: Repository, message: Text) (
+    icon: .git_commit_horizontal,
+    label: "Commit staged changes",
+    key: "Ctrl+Enter",
+) {
+    require message.trim() != "" "A commit has a message"
+    require staged_ready(g) "There are no staged changes to commit"
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "commit", json.encode(CommitAsk(path: s.path, message: message)))
+    if s.trouble == "" {
+        s.notice = "Committed {made(g)}"
+    }
+}
+
+/// Keeps one side of a conflicted file and stages it as resolved.
+action resolve_conflict(g: Repository, c: Change, ours: Bool) (label: "Keep a side") {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    let file = c.path
+    asks(g, s, "resolve_conflict", json.encode(ResolveAsk(path: s.path, file: file, ours: ours)))
+    if s.trouble == "" {
+        s.notice = if ours {
+            "Kept our side of {file}"
+        } else {
+            "Kept their side of {file}"
+        }
+    }
+}
+
+/// Creates a branch and switches to it.
+// ---------------------------------------------------------------- branches, stashes and worktrees
+action create_branch(g: Repository, name: Text) (icon: .git_branch, label: "Create branch") {
+    require name.trim() != "" "A branch has a name"
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(
+        g,
+        s,
+        "create_branch",
+        json.encode(BranchAsk(path: s.path, name: name.trim(), checkout: true)),
+    )
+}
+
+/// Switches to a branch, asking what becomes of uncommitted work when there is any.
+action checkout_branch(g: Repository, name: Text) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    if s.changes.len() > 0 {
+        s.pending_switch = name
+        return
+    }
+    switch_to(g, name, false)
+}
+
+/// Answers the switch question by parking the uncommitted work on the stash first.
+action switch_stashing(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    let name = s.pending_switch
+    s.pending_switch = ""
+    switch_to(g, name, true)
+}
+
+/// Answers the switch question by carrying the uncommitted work along.
+action switch_carrying(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    let name = s.pending_switch
+    s.pending_switch = ""
+    switch_to(g, name, false)
+}
+
+/// Puts the switch question away.
+action cancel_switch(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    s.pending_switch = ""
+}
+
+/// Switches to `name`, parking the uncommitted work when `stash` says so.
+action switch_to(g: Repository, name: Text, stash: Bool) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "checkout_branch", json.encode(CheckoutAsk(path: s.path, name: name, stash: stash)))
+    if s.trouble == "" {
+        let carried = made(g)
+        s.notice = if carried == "" {
+            "Switched to {name}"
+        } else {
+            "Switched to {name}; the changes are stashed as {carried}"
+        }
+    }
+}
+
+/// Deletes a local branch.
+destructive action delete_branch(g: Repository, name: Text) (icon: .trash, label: "Delete branch") {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "delete_branch", json.encode(BranchAsk(path: s.path, name: name)))
+    if s.trouble == "" {
+        s.notice = "Deleted the branch {name}"
+    }
+}
+
+/// Stashes the working tree's changes, with a message.
+action save_stash(g: Repository, message: Text = "") (
+    icon: .archive,
+    label: "Stash working changes",
+) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "stash_save", json.encode(StashSaveAsk(path: s.path, message: message)))
+    if s.trouble == "" {
+        s.notice = "Stashed the changes as {made(g)}"
+    }
+}
+
+/// Applies a stash, leaving it in the list.
+action apply_stash(g: Repository, index: Int) (icon: .corner_down_left, label: "Apply stash") {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "stash_apply", json.encode(StashApplyAsk(path: s.path, index: index)))
+    if s.trouble == "" {
+        s.notice = "Applied the stash"
+    }
+}
+
+/// Makes a new branch at `start` and a working directory of its own.
+action create_worktree(g: Repository, path: Text, branch: Text, start: Text) (
+    icon: .folder_plus,
+    label: "Create worktree",
+) {
+    require branch.trim() != "" "A worktree branch has a name"
+    require path.trim() != "" "A worktree has a destination path"
+    require start.trim() != "" "A worktree starts somewhere"
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(
+        g,
+        s,
+        "create_worktree",
+        json.encode(
+            WorktreeAsk(
+                path: s.path,
+                destination: path.trim(),
+                branch: branch.trim(),
+                start: start.trim(),
+            ),
+        ),
+    )
+    if s.trouble == "" {
+        s.notice = "Created the worktree {path}"
+    }
+}
+
+/// Fetches from a remote.
+// ---------------------------------------------------------------- remotes
+action fetch(g: Repository, remote: Text = "") (icon: .cloud_download, label: "Fetch from remote") {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "fetch", json.encode(RemoteAsk(path: s.path, remote: remote)))
+    if s.trouble == "" {
+        s.notice = "Fetched from {remote}"
+    }
+}
+
+/// Fetches, then fast-forwards the current branch to its upstream.
+action pull(g: Repository, remote: Text = "") (icon: .arrow_down, label: "Pull from remote") {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "pull", json.encode(RemoteAsk(path: s.path, remote: remote)))
+    if s.trouble == "" {
+        s.notice = "Pulled from {remote}"
+    }
+}
+
+/// Pushes the current branch to a like-named branch on a remote.
+action push(g: Repository, remote: Text = "") (icon: .arrow_up, label: "Push to remote") {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    asks(g, s, "push", json.encode(RemoteAsk(path: s.path, remote: remote)))
+    if s.trouble == "" {
+        s.notice = "Pushed to {remote}"
+    }
+}
+
+/// Reads a commit's changed files and their diffs when it is opened.
+// ---------------------------------------------------------------- history
+action read_commit(g: Repository, id: Text) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    if s.commit_id == id and s.commit_files != "" {
+        return
+    }
+    match engine.call("commit_detail", json.encode(CommitFilesAsk(path: s.path, commit: id))) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => {
+            s.trouble = ""
+            s.commit_id = id
+            s.commit_files = text
+        }
+    }
+}
+
+/// Switches how this person reads diffs: one column or two.
+// ---------------------------------------------------------------- diff preferences
+action toggle_layout(
+    g: Repository,
+    s: Session,
+    layout: DiffLayout = if s.layout == .unified { .split } else { .unified },
+) (label: "Diff layout") {
+    s.layout = layout
+}
+
+/// Turns syntax colouring on or off for this person.
+action toggle_syntax(g: Repository, s: Session, on: Bool = not s.highlight) (
+    label: "Syntax highlighting",
+) {
+    s.highlight = on
+}
+
+/// Shows or hides the whitespace at the end of diff lines for this person.
+action toggle_whitespace(g: Repository, s: Session, on: Bool = not s.whitespace) (
+    label: "Show whitespace",
+) {
+    s.whitespace = on
+    refresh(g)
+}
+
+/// Wraps long diff lines or lets them run wider than the pane, for this person.
+action toggle_wrap(g: Repository, s: Session, wrap: Bool = not s.wrap) (label: "Wrap long lines") {
+    s.wrap = wrap
+}
+
+/// Puts the trouble banner away.
+action clear_trouble(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    s.trouble = ""
+}
+
+/// Puts the notice banner away.
+action clear_notice(g: Repository) {
+    let s = g.sessions.first() ?? g.sessions.insert(Session())
+    s.notice = ""
+}
+
+/// Runs `op` with `ask` and keeps the answer: the repository as it now stands, and the working
+/// tree as the device read it.
+// ---------------------------------------------------------------- the one way an answer is kept
+action asks(g: Repository, s: Session, op: Text, ask: Text) {
+    match engine.call(op, ask) {
+        .err(why) => {
+            s.trouble = why
+        }
+        .ok(text) => match json.decode<Loaded>(text) {
+            .err(why) => {
+                s.trouble = why
+            }
+            .ok(loaded) => {
+                s.trouble = ""
+                g.path = s.path
+                g.snapshot = text
+                g.name = loaded.name
+                g.head = loaded.head
+                g.workdir = loaded.workdir
+                g.author_name = loaded.author_name
+                g.author_email = loaded.author_email
+                let wire = changes_of(loaded.changes)
+                let old = s.changes
+                for c in old {
+                    if not wire.any(w -> change_key_of(w) == change_key(c)) { s.changes.remove(c) }
+                }
+                for w in wire {
+                    let c = s.changes.find(x -> change_key(x) == change_key_of(w))
+                        ?? s.changes.insert(Change())
+                    c.path = w.path
+                    c.old_path = w.old_path
+                    c.area = w.area
+                    c.kind = w.kind
+                    c.additions = w.additions
+                    c.deletions = w.deletions
+                    c.binary = w.binary
+                    c.ours = w.ours
+                    c.theirs = w.theirs
+                    c.language = w.language
+                    c.unified = w.unified
+                    c.left = w.left
+                    c.right = w.right
+                    c.hunks = json.encode(w.hunks)
+                }
+            }
+        },
+    }
+}
+
+/// Whether this person's working tree has something staged for the next commit.
+fn staged_ready(g: Repository) -> Bool {
+    if let s = g.sessions.first() { s.changes.any(c -> c.area == .staged) } else { false }
+}
+
+// ---------------------------------------------------------------- what the window reads
+fn badge(k: ChangeKind) -> Text {
+    if k == .added {
+        "A"
+    } else if k == .modified {
+        "M"
+    } else if k == .deleted {
+        "D"
+    } else if k == .renamed { "R" } else if k == .untracked { "U" } else { "C" }
+}
+
+fn area_word(a: ChangeArea) -> Text {
+    if a == .staged { "Staged" } else if a == .unstaged { "Not staged" } else { "Untracked" }
+}
+
+fn file_name(path: Text) -> Text {
+    path.split("/").last() ?? path
+}
+
+fn lines_changed(additions: Int, deletions: Int) -> Text {
+    if additions == 0 and deletions == 0 {
+        ""
+    } else if deletions == 0 {
+        "+{additions}"
+    } else if additions == 0 { "−{deletions}" } else { "+{additions} −{deletions}" }
+}
+
+fn short(id: Text) -> Text {
+    if id.len() > 7 { id.slice(0, 7) } else { id }
+}
+
+fn repo_title(g: Repository) -> Text {
+    if g.name == "" { "Git" } else { g.name }
+}
+
+fn tracking(b: WireBranch) -> Text {
+    if let up = b.upstream {
+        if b.ahead == 0 and b.behind == 0 {
+            "Up to date with {up}"
+        } else if b.behind == 0 {
+            "{b.ahead} ahead of {up}"
+        } else if b.ahead == 0 {
+            "{b.behind} behind {up}"
+        } else {
+            "{b.ahead} ahead, {b.behind} behind {up}"
+        }
+    } else { "No upstream branch" }
+}
+
+fn stash_title(st: WireStash) -> Text {
+    let message = st.message
+    for prefix in ["WIP on ", "On "] {
+        if message.starts_with(prefix) {
+            let rest = message.slice(prefix.len(), message.len())
+            let at = rest.find(": ")
+            if let colon = at {
+                return rest.slice(colon + 2, rest.len())
+            }
+        }
+    }
+    message
+}
+
+fn reflow(body: Text) -> Text {
+    body
+        .split("\n\n")
+        .map(p -> p.split("\n").map(l -> l.trim()).filter(l -> l != "").join(" "))
+        .filter(p -> p != "")
+        .join("\n\n")
+}
+
+fn said_ago(seconds: Int) -> Text {
+    if seconds < 60 {
+        "just now"
+    } else if seconds < 3600 {
+        "{seconds / 60} min ago"
+    } else if seconds < 86400 { "{seconds / 3600} h ago" } else { "{seconds / 86400} d ago" }
+}
+
+fn hunks_of_change(c: Change) -> List<Hunk> {
+    hunks_of(texts(c.hunks))
+}
+
+fn ref_names(c: WireCommit) -> Text {
+    let shown = refs_of(c.refs).filter(r -> r.kind != .head)
+    if shown.is_empty() { "" } else { shown.first()?.name ?? "" }
+}
+
+fn commit_files(g: Repository, s: Session) -> List<CommitFile> {
+    if s.commit_files == "" { [] } else { files_of(texts(s.commit_files)) }
+}
+
+fn language_of(s: Session, token: Text) -> Text {
+    if not s.highlight { "plain" } else { token }
+}
+
+// ---------------------------------------------------------------- the window
+view changes(g: Repository) {
+    state chosen: Option<Change> = .none
+    state message: Text = ""
+    if let s = g.sessions.first() {
+        ui.NavShell(
+            content_kind: .list,
+            title: repo_title(g),
+            overview_title: "Changes",
+            overview_count: s.changes.len(),
+            sidebar_title: "Git",
+        ) {
+            actions: {
+                ui.Button("Refresh", icon: .refresh_ccw) {
+                    on press: refresh(g)
+                }
+                ui.Button("Fetch", icon: .cloud_download) {
+                    on press: fetch(g, "")
+                }
+                ui.Button("Pull", icon: .arrow_down) {
+                    on press: pull(g, "")
+                }
+                ui.Button("Push", icon: .arrow_up) {
+                    on press: push(g, "")
+                }
+                ui.Button("Diff layout", icon: .columns_2) {
+                    on press: toggle_layout(g, s)
+                }
+                ui.Button("Syntax highlighting", icon: .code, toggled: s.highlight) {
+                    on press: toggle_syntax(g, s)
+                }
+                ui.Button("Show whitespace", icon: .ruler, toggled: s.whitespace) {
+                    on press: toggle_whitespace(g, s)
+                }
+                ui.Button("Wrap long lines", icon: .arrow_up_down, toggled: s.wrap) {
+                    on press: toggle_wrap(g, s)
+                }
+                ui.Button("Stash changes", icon: .archive) {
+                    on press: save_stash(g, "")
+                }
+            }
+            overview_actions: {
+                if s.changes.any(c -> c.area != .staged) {
+                    ui.Button("Stage all", icon: .plus) {
+                        on press: stage_all(g)
+                    }
+                }
+                if s.changes.any(c -> c.area == .staged) {
+                    ui.Button("Unstage all", icon: .minus) {
+                        on press: unstage_all(g)
+                    }
+                }
+            }
+            overview: {
+                if s.path == "" {
+                    open_page(g)
+                } else if s.browsing {
+                    picker(g, s)
+                } else {
+                    ui.Docked {
+                        foot: {
+                            commit_box(g, s, message)
+                        }
+                        stack {
+                            if s.trouble != "" {
+                                ui.Banner(title: s.trouble, kind: .error, icon: .circle_alert) {
+                                    on dismiss: clear_trouble(g)
+                                }
+                            }
+                            if s.notice != "" {
+                                ui.Banner(title: s.notice, kind: .success) {
+                                    on dismiss: clear_notice(g)
+                                }
+                            }
+                            changes_list(g, s, chosen)
+                        }
+                    }
+                }
+            }
+            content: {
+                if let c = chosen ?? s.changes.first() {
+                    change_detail(g, s, c)
+                } else if s.path != "" and not s.browsing {
+                    ui.EmptyState("Select a file to see its changes", icon: .file_code)
+                }
+            }
+        }
+        if s.pending_switch != "" {
+            ui.ModalDialog(
+                title: "Switch to {s.pending_switch}?",
+                icon: .git_branch,
+                description: "You have uncommitted changes. Stash them and switch, or keep them; switching fails when a change would be overwritten.",
+                open: true,
+                primary: "Stash and switch",
+                secondary: "Cancel",
+                tertiary: "Keep my changes",
+            ) {
+                on act_primary: switch_stashing(g)
+                on act_secondary: cancel_switch(g)
+                on act_tertiary: switch_carrying(g)
+                on dismiss: cancel_switch(g)
+            }
+        }
+    } else {
+        open_page(g)
+    }
+}
+
+view changes_list(g: Repository, s: Session, chosen: State<Option<Change>>) {
+    if s.changes.is_empty() {
+        ui.EmptyState("Your working tree is clean", icon: .check)
+    } else {
+        ui.VirtualList(selection_follows_focus: true, in_column: true, narrow: space.compact) {
+            on select(x: Change): set(chosen, .some(x))
+            for c in s.changes {
+                ui.ListItem(item: c, group: .some(area_word(c.area))) {
+                    change_row(g, c)
+                    menu: {
+                        if c.area == .staged {
+                            ui.MenuItem("Unstage file", icon: .minus) {
+                                on choose: unstage_file(g, c)
+                            }
+                        } else {
+                            ui.MenuItem("Stage file", icon: .plus) {
+                                on choose: stage_file(g, c)
+                            }
+                        }
+                        if c.area != .staged and c.kind != .conflicted {
+                            ui.MenuItem("Discard file changes", icon: .undo_2, destructive: true) {
+                                on choose: discard_file(g, c)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+view change_row(g: Repository, c: Change) {
+    ui.ListRow(
+        title: file_name(c.path),
+        prefix: badge(c.kind),
+        secondary: c.path,
+        meta: lines_changed(c.additions, c.deletions),
+        meta_tone: if c.kind == .conflicted { .danger } else { .neutral },
+        icon: if c.kind == .conflicted { .circle_alert } else { .file_code },
+        tone: if c.kind == .conflicted { .danger } else { .neutral },
+    ) {
+        trailing: {
+            if c.area == .staged {
+                ui.Button(
+                    "Unstage",
+                    icon: .minus,
+                    icon_only: true,
+                    size: .small,
+                    description: "Unstage {c.path}",
+                ) {
+                    on press: unstage_file(g, c)
+                }
+            } else {
+                ui.Button(
+                    "Stage",
+                    icon: .plus,
+                    icon_only: true,
+                    size: .small,
+                    description: "Stage {c.path}",
+                ) {
+                    on press: stage_file(g, c)
+                }
+            }
+        }
+    }
+}
+
+view commit_box(g: Repository, s: Session, message: State<Text>) {
+    stack(padding: .section, gap: .related) {
+        ui.TextInput(bind: message, placeholder: "Commit message", entry: true)
+        ui.Button(
+            if g.head == "" { "Commit" } else { "Commit to {g.head}" },
+            icon: .git_commit_horizontal,
+            role: .primary,
+        ) {
+            on press: commit(g, message)
+        }
+    }
+}
+
+view change_detail(g: Repository, s: Session, c: Change) {
+    ui.Scroll {
+        stack(padding: .section, gap: .related) {
+            row(gap: .related, align: .center, wrap: true) {
+                ui.Text(file_name(c.path), role: .label)
+                if c.additions > 0 {
+                    ui.Badge("+{c.additions}", tone: .success)
+                }
+                if c.deletions > 0 {
+                    ui.Badge("−{c.deletions}", tone: .danger)
+                }
+                if let old = c.old_path {
+                    ui.Text("Renamed from {old}", role: .caption, secondary: true)
+                }
+                spacer
+                if c.kind != .conflicted {
+                    if c.area == .staged {
+                        ui.Button("Unstage file", icon: .minus, size: .small) {
+                            on press: unstage_file(g, c)
+                        }
+                    } else {
+                        ui.Button("Stage file", icon: .plus, size: .small) {
+                            on press: stage_file(g, c)
+                        }
+                    }
+                }
+                if c.area != .staged and c.kind != .conflicted {
+                    ui.Button("Discard file", icon: .undo_2, role: .destructive, size: .small) {
+                        on press: discard_file(g, c)
+                    }
+                }
+            }
+            if c.kind == .conflicted {
+                ui.Banner(
+                    title: "Both sides changed this file",
+                    message: "Keeping ours drops {c.theirs} lines of theirs; keeping theirs drops {c.ours} lines of yours.",
+                    kind: .warning,
+                    icon: .circle_alert,
+                )
+                row(gap: .related) {
+                    ui.Button("Take ours") {
+                        on press: resolve_conflict(g, c, true)
+                    }
+                    ui.Button("Take theirs") {
+                        on press: resolve_conflict(g, c, false)
+                    }
+                }
+            }
+            change_code(s, c)
+            if c.hunks != "" and c.kind != .conflicted {
+                for h in hunks_of_change(c) {
+                    row(gap: .related, align: .center) {
+                        ui.Text(h.header, role: .code, secondary: true, truncate: true)
+                        spacer
+                        if c.area == .staged {
+                            ui.Button("Unstage hunk", icon: .minus, size: .small) {
+                                on press: unstage_hunk(g, c, h.index)
+                            }
+                        } else {
+                            ui.Button("Stage hunk", icon: .plus, size: .small) {
+                                on press: stage_hunk(g, c, h.index)
+                            }
+                            ui.Button(
+                                "Discard hunk",
+                                icon: .undo_2,
+                                role: .destructive,
+                                size: .small,
+                            ) {
+                                on press: discard_hunk(g, c, h.index)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+view change_code(s: Session, c: Change) {
+    if c.binary {
+        ui.EmptyState("Binary file", message: "There is no text to compare.")
+    } else if c.unified == "" {
+        ui.EmptyState("No changes to show", message: "Only the file's permissions changed.")
+    } else if s.layout == .split and not space.compact {
+        row(gap: .related, fill) {
+            code_column(s, c, true)
+            code_column(s, c, false)
+        }
+    } else if s.wrap {
+        ui.CodeEditor(
+            bind: c.unified,
+            read_only: true,
+            gutter: false,
+            language: if language_of(s, c.language) == "rust" {
+                .rust
+            } else if language_of(s, c.language) == "sql" {
+                .sql
+            } else if language_of(s, c.language) == "json" {
+                .json
+            } else if language_of(s, c.language) == "tilolang" {
+                .tilolang
+            } else if language_of(s, c.language) == "typst" { .typst } else { .plain_text },
+        )
+    } else {
+        ui.Scroll(across: true) {
+            stack(min: 160rem) {
+                ui.CodeEditor(
+                    bind: c.unified,
+                    read_only: true,
+                    gutter: false,
+                    language: if language_of(s, c.language) == "rust" {
+                        .rust
+                    } else if language_of(s, c.language) == "sql" {
+                        .sql
+                    } else if language_of(s, c.language) == "json" {
+                        .json
+                    } else if language_of(s, c.language) == "tilolang" {
+                        .tilolang
+                    } else if language_of(s, c.language) == "typst" { .typst } else { .plain_text },
+                )
+            }
+        }
+    }
+}
+
+view code_column(s: Session, c: Change, old: Bool) {
+    if s.wrap {
+        if old {
+            ui.CodeEditor(
+                bind: c.left,
+                read_only: true,
+                gutter: false,
+                language: if language_of(s, c.language) == "rust" {
+                    .rust
+                } else if language_of(s, c.language) == "sql" {
+                    .sql
+                } else if language_of(s, c.language) == "json" {
+                    .json
+                } else if language_of(s, c.language) == "tilolang" {
+                    .tilolang
+                } else if language_of(s, c.language) == "typst" { .typst } else { .plain_text },
+            )
+        } else {
+            ui.CodeEditor(
+                bind: c.right,
+                read_only: true,
+                gutter: false,
+                language: if language_of(s, c.language) == "rust" {
+                    .rust
+                } else if language_of(s, c.language) == "sql" {
+                    .sql
+                } else if language_of(s, c.language) == "json" {
+                    .json
+                } else if language_of(s, c.language) == "tilolang" {
+                    .tilolang
+                } else if language_of(s, c.language) == "typst" { .typst } else { .plain_text },
+            )
+        }
+    } else if old {
+        ui.Scroll(across: true) {
+            stack(min: 80rem) {
+                ui.CodeEditor(bind: c.left, read_only: true, gutter: false, language: .plain_text)
+            }
+        }
+    } else {
+        ui.Scroll(across: true) {
+            stack(min: 80rem) {
+                ui.CodeEditor(bind: c.right, read_only: true, gutter: false, language: .plain_text)
+            }
+        }
+    }
+}
+
+view open_page(g: Repository) {
+    state typed: Text = ""
+    stack(padding: .group, gap: .related, max: 40rem) {
+        ui.Text("Open a repository", role: .title)
+        ui.Text(
+            "Enter the path of a git repository on this computer.",
+            role: .body,
+            secondary: true,
+        )
+        ui.TextInput(bind: typed, placeholder: "/home/you/project", entry: true) {
+            on submit: open_repository(g, typed)
+        }
+        row(gap: .related) {
+            ui.Button("Open", icon: .git_branch, role: .primary) {
+                on press: open_repository(g, typed)
+            }
+            ui.Button("Choose…", icon: .folder_open) {
+                on press: choose_repository(g)
+            }
+        }
+    }
+}
+
+view picker(g: Repository, s: Session) {
+    stack(padding: .section, gap: .related, fill) {
+        row(gap: .related, align: .center) {
+            ui.Text(s.folder, role: .label, truncate: true)
+            spacer
+            ui.Button("Open this folder", icon: .git_branch, role: .primary) {
+                on press: open_browsed(g)
+            }
+            ui.Button("Cancel") {
+                on press: close_picker(g)
+            }
+        }
+        if s.trouble != "" {
+            ui.Banner(title: s.trouble, kind: .error, icon: .circle_alert)
+        }
+        ui.VirtualList {
+            for e in s.entries {
+                ui.ListItem(item: e) {
+                    ui.ListRow(title: e.name, icon: .folder) {
+                        on activate: read_folder(s, e.path)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The window's History: the commits, and the page of the commit chosen.
+view history(g: Repository) {
+    state chosen: Text = ""
+    let s = g.sessions.first()
+    let commits = committed(g)
+    let reading = commits.find(x -> x.id == chosen) ?? commits.first()
+    let read = if let w = s { w.commit_id == full_id(reading) } else { false }
+    let files = if let w = s { commit_files(g, w) } else { [] }
+    ui.NavShell(
+        content_kind: .document,
+        title: "History",
+        overview_title: "History",
+        overview_count: commits.len(),
+        sidebar_title: "Git",
+    ) {
+        overview: {
+            if commits.is_empty() {
+                ui.EmptyState("No commits yet", icon: .git_commit_horizontal)
+            } else {
+                ui.VirtualList(
+                    selection_follows_focus: true,
+                    in_column: true,
+                    narrow: space.compact,
+                ) {
+                    on select_value(id: Text): set(chosen, id).then(read_commit(g, id))
+                    for c in commits {
+                        ui.ListItem(value: c.id) {
+                            commit_row(c)
+                        }
+                    }
+                }
+            }
+        }
+        content: {
+            if let found = reading {
+                commit_page(found, read, files)
+            } else {
+                ui.EmptyState("No commits yet", icon: .git_commit_horizontal)
+            }
+        }
+    }
+}
+
+view commit_row(c: WireCommit) {
+    ui.ListRow(
+        title: c.summary,
+        prefix: ref_names(c),
+        secondary: "{c.author_name}, {said_ago(c.age)}",
+        meta: short(c.id),
+        icon: .git_commit_horizontal,
+    )
+}
+
+view commit_page(c: WireCommit, read: Bool, files: List<CommitFile>) {
+    ui.Scroll {
+        stack(padding: .group, gap: .section, max: 60rem) {
+            ui.Text(c.summary, role: .title)
+            row(gap: .related, align: .center) {
+                ui.Avatar(name: c.author_name)
+                stack(gap: .tight) {
+                    ui.Text(c.author_name, role: .body)
+                    ui.Text(c.author_email, role: .caption, secondary: true)
+                }
+            }
+            stack(gap: .tight) {
+                row(gap: .related) {
+                    ui.Text("Commit", role: .caption, secondary: true)
+                    ui.Text(c.id, role: .code)
+                }
+                row(gap: .related) {
+                    ui.Text("Date", role: .caption, secondary: true)
+                    ui.Text(c.date, role: .body)
+                }
+                if not c.parents.is_empty() {
+                    row(gap: .related) {
+                        ui.Text("Parents", role: .caption, secondary: true)
+                        ui.Text(c.parents.map(p -> short(p)).join(", "), role: .code)
+                    }
+                }
+                let refs = refs_of(c.refs).filter(r -> r.kind != .head)
+                if not refs.is_empty() {
+                    row(gap: .related, wrap: true) {
+                        ui.Text("Branches and tags", role: .caption, secondary: true)
+                        for r in refs {
+                            ui.Chip(r.name, icon: if r.kind == .tag { .tag } else { .git_branch })
+                        }
+                    }
+                }
+            }
+            let body = reflow(c.body)
+            if body != "" {
+                ui.Text(body, role: .body)
+            }
+            if read and not files.is_empty() {
+                ui.Text("Changed files", role: .subheading)
+                for f in files {
+                    commit_file(f)
+                }
+            }
+        }
+    }
+}
+
+view commit_file(f: CommitFile) {
+    stack(gap: .related) {
+        ui.ListRow(
+            title: file_name(f.path),
+            prefix: badge(f.kind),
+            secondary: f.path,
+            meta: lines_changed(f.additions, f.deletions),
+            icon: .file_code,
+        )
+        if f.binary {
+            ui.EmptyState("Binary file", message: "There is no text to compare.")
+        } else if f.unified == "" {
+            ui.EmptyState("No changes to show", message: "Only the file's permissions changed.")
+        } else {
+            ui.CodeEditor(
+                bind: f.unified,
+                read_only: true,
+                gutter: false,
+                language: if f.language == "rust" {
+                    .rust
+                } else if f.language == "sql" {
+                    .sql
+                } else if f.language == "json" {
+                    .json
+                } else if f.language == "tilolang" {
+                    .tilolang
+                } else if f.language == "typst" { .typst } else { .plain_text },
+            )
+        }
+    }
+}
+
+/// The window's Branches: local and remote branches, working directories, tags, stashes and
+/// remotes, each a section with its rows and the form that makes another.
+view branches(g: Repository) {
+    state new_branch: Text = ""
+    state wt_branch: Text = ""
+    state wt_path: Text = ""
+    state wt_start: Text = "HEAD"
+    ui.NavShell(content_kind: .page, title: "Branches", sidebar_title: "Git") {
+        content: {
+            ui.Scroll {
+                stack(padding: .group, gap: .group, max: 64rem) {
+                    ui.Section("Branches") {
+                        for b in branched(g).filter(x -> not x.is_remote) {
+                            branch_row(g, b)
+                        }
+                        row(gap: .related) {
+                            ui.TextInput(
+                                bind: new_branch,
+                                placeholder: "New branch name",
+                                entry: true,
+                            ) {
+                                on submit: create_branch(g, new_branch)
+                            }
+                            ui.Button("Create branch", icon: .git_branch) {
+                                on press: create_branch(g, new_branch)
+                            }
+                        }
+                    }
+                    let remote_branches = branched(g).filter(x -> x.is_remote)
+                    if not remote_branches.is_empty() {
+                        ui.Section("Remote branches") {
+                            for b in remote_branches {
+                                branch_row(g, b)
+                            }
+                        }
+                    }
+                    ui.Section("Working directories") {
+                        if worktree_error(g) != "" {
+                            ui.Text(worktree_error(g), role: .caption, secondary: true)
+                        }
+                        for t in worked(g) {
+                            ui.ListRow(
+                                title: t.head,
+                                secondary: t.path,
+                                icon: .folder,
+                                selected: t.current,
+                            )
+                        }
+                        ui.TextInput(bind: wt_branch, placeholder: "New worktree branch")
+                        ui.TextInput(bind: wt_path, placeholder: "Absolute destination path")
+                        ui.TextInput(
+                            bind: wt_start,
+                            placeholder: "Start point (branch, tag or commit)",
+                        )
+                        ui.Button("Create worktree", icon: .folder_plus) {
+                            on press: create_worktree(g, wt_path, wt_branch, wt_start)
+                        }
+                    }
+                    let tags = tagged(g)
+                    if not tags.is_empty() {
+                        ui.Section("Tags") {
+                            for t in tags {
+                                ui.ListRow(
+                                    title: t.name,
+                                    secondary: t.message ?? "",
+                                    meta: short(t.target),
+                                    icon: .tag,
+                                )
+                            }
+                        }
+                    }
+                    let stashes = stashed(g)
+                    if not stashes.is_empty() {
+                        ui.Section("Stashes") {
+                            for st in stashes {
+                                ui.ListRow(
+                                    title: stash_title(st),
+                                    secondary: st.branch,
+                                    icon: .archive,
+                                ) {
+                                    on activate: apply_stash(g, st.index)
+                                }
+                            }
+                        }
+                    }
+                    let remotes = remoted(g)
+                    if not remotes.is_empty() {
+                        ui.Section("Remotes") {
+                            for r in remotes {
+                                ui.ListRow(title: r.name, secondary: r.url, icon: .server) {
+                                    trailing: {
+                                        row(gap: .tight) {
+                                            ui.Button(
+                                                "Fetch",
+                                                icon: .cloud_download,
+                                                icon_only: true,
+                                                size: .small,
+                                            ) {
+                                                on press: fetch(g, r.name)
+                                            }
+                                            ui.Button(
+                                                "Pull",
+                                                icon: .arrow_down,
+                                                icon_only: true,
+                                                size: .small,
+                                            ) {
+                                                on press: pull(g, r.name)
+                                            }
+                                            ui.Button(
+                                                "Push",
+                                                icon: .arrow_up,
+                                                icon_only: true,
+                                                size: .small,
+                                            ) {
+                                                on press: push(g, r.name)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+view branch_row(g: Repository, b: WireBranch) {
+    ui.ListRow(
+        title: b.name,
+        secondary: if b.is_remote { short(b.tip) } else { tracking(b) },
+        meta: short(b.tip),
+        icon: .git_branch,
+        selected: b.is_head,
+    ) {
+        on activate: checkout_branch(g, b.name)
+        trailing: {
+            if not b.is_head and not b.is_remote {
+                ui.Button(
+                    "Delete",
+                    icon: .trash,
+                    icon_only: true,
+                    role: .destructive,
+                    size: .small,
+                    description: "Delete {b.name}",
+                ) {
+                    on press: delete_branch(g, b.name)
+                }
+            }
+        }
+    }
+}

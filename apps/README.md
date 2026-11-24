@@ -205,7 +205,7 @@ touch. Expanded neighbouring targets must not overlap.
 | Crate         | What it is                                                                                                                           |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `terminal`    | GPU-accelerated terminal: portable-pty + vte; embeddable as a tile widget in the shell.                                              |
-| `git-client`  | Graphical git client ("Git"): libgit2 via `git2`; changes with per-hunk staging, commit-graph history, branches/remotes.             |
+| `code-editor` | Code editor / light IDE ("Code"): file-tree, editor tabs, syntect highlighting, command palette, problems panel.                     |
 | `diffmerge`   | Diff + 3-way merge tool ("Diff"): `similar` line diff, per-hunk conflict resolution, editable merged output.                         |
 | `db-client`   | Database client ("Database"): PostgreSQL/MySQL/SQLite, bundled SQLite sample (rusqlite), schema browser + SQL editor + results grid. |
 | `hex-editor`  | Hex editor ("Hex"): CRDT byte buffer, data inspector, hex/text search, goto-offset.                                                  |

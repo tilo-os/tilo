@@ -2566,6 +2566,7 @@ class Walk:
         folder = self.session.state / "home"
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
         return {"file": str(self.session.own(path))}
 

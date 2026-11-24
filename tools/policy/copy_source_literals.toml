@@ -49,11 +49,6 @@ text = "What this holds as typed data: the items of its parts, the newest part f
 reason = "What a chain's read answers an agent: what the item of a part holds, and how the parts page."
 
 [[allow]]
-file = "apps/git-client/src/app.rs"
-text = "Flush the blur pass before presenting"
-reason = "A capture label a frame-timing harness paints."
-
-[[allow]]
 file = "crates/ui/ui-core/src/widget/replaced_tripwire.rs"
 text = "Tripwire"
 reason = "A sample label in the widget that trips on a replaced widget."

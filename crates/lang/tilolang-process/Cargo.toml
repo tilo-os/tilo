@@ -34,6 +34,7 @@ app-launch = [
     "dep:video-edit",
     "dep:video-picture",
     "dep:passwords-engine",
+    "dep:tilo-git",
 ]
 # The toolkit and `libstd` linked from the Tilo runtime's one shared library, as every thin app
 # links them: the runtime bundle's build, and `tilolang dev`'s, whose window maps a rebuild of this
@@ -108,6 +109,8 @@ image = { workspace = true, features = ["png"] }
 # The archives a package makes of its folder's entries and unpacks again, in pure Rust.
 tilo-archive = { version = "0.1.0", path = "../../engines/tilo-archive" }
 tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
+# The Git app's engine: a repository read, staged, committed and transferred over HTTPS and SSH.
+tilo-git = { path = "../../engines/tilo-git", optional = true }
 tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The person's clipboard, over the connection the session opens for each instance: what an app
 # copies and pastes, since its process holds no display of its own.

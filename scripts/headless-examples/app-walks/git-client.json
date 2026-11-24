@@ -1,0 +1,240 @@
+{
+  "app": "git-client",
+  "said": "Git",
+  "tl": {
+    "id": "so.tilo.git-client",
+    "package": "git-client"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Git with no repository opened yet",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "wait_for": "Open a repository"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "a-project",
+      "said": "The person has a project in their home folder, and it is a git repository",
+      "ops": [
+        {
+          "file": {
+            "name": "garden/.git/HEAD",
+            "text": "ref: refs/heads/main\n"
+          }
+        },
+        {
+          "file": {
+            "name": "garden/.git/config",
+            "text": "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n"
+          }
+        },
+        {
+          "file": {
+            "name": "garden/.git/objects/.keep",
+            "text": ""
+          }
+        },
+        {
+          "file": {
+            "name": "garden/.git/refs/heads/.keep",
+            "text": ""
+          }
+        },
+        {
+          "file": {
+            "name": "garden/README.md",
+            "text": "# Garden planner\n\nPlan beds.\n"
+          }
+        },
+        {
+          "file": {
+            "name": "garden/notes/todo.md",
+            "text": "- Add frost dates for Leipzig\n"
+          }
+        }
+      ]
+    },
+    {
+      "id": "choose",
+      "said": "Choose the project's folder in the app's own picker",
+      "ops": [
+        {
+          "press_any": [
+            "Choose…"
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "garden"
+            }
+          }
+        },
+        {
+          "press_any": [
+            {
+              "prefix": "garden"
+            }
+          ]
+        },
+        {
+          "wait_for": "Open this folder"
+        },
+        {
+          "press": "Open this folder"
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "README.md"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "see-the-change",
+      "said": "The untracked files are listed beside the diff of the first one",
+      "ops": [
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "notes/todo.md"
+            }
+          }
+        },
+        {
+          "wait_for": "Stage hunk"
+        },
+        {
+          "must": {
+            "see": [
+              "Untracked"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage-a-hunk",
+      "said": "Stage one hunk of the file the window shows",
+      "ops": [
+        {
+          "press": "Stage hunk"
+        },
+        {
+          "wait_for": "Unstage hunk"
+        }
+      ]
+    },
+    {
+      "id": "commit-message",
+      "said": "Write the commit message",
+      "ops": [
+        {
+          "click_any": [
+            {
+              "prefix": "Commit message"
+            }
+          ]
+        },
+        {
+          "type": "Start the garden planner"
+        }
+      ]
+    },
+    {
+      "id": "commit",
+      "said": "Commit what is staged, and read that the working tree is clean",
+      "ops": [
+        {
+          "press_any": [
+            {
+              "prefix": "Commit"
+            }
+          ]
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "Committed"
+            }
+          }
+        },
+        {
+          "wait_for": "Your working tree is clean"
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "said": "Read the commit in History",
+      "ops": [
+        {
+          "press": "History"
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "Start the garden planner"
+            }
+          }
+        },
+        {
+          "press": {
+            "prefix": "Start the garden planner"
+          }
+        },
+        {
+          "wait_for": "Changed files"
+        }
+      ]
+    },
+    {
+      "id": "branches",
+      "said": "Make a branch",
+      "ops": [
+        {
+          "press": "Branches"
+        },
+        {
+          "wait_for": "Branches"
+        },
+        {
+          "click": "New branch name"
+        },
+        {
+          "type": "spring-layout"
+        },
+        {
+          "press": "Create branch"
+        },
+        {
+          "wait_for": {
+            "shown": {
+              "prefix": "Created the branch"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

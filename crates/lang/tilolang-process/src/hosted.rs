@@ -694,6 +694,9 @@ impl Platform for HostPlatform {
             return crate::print_centre_engine::call(self, app, op, input);
         }
         crate::feed_engine::register();
+        if app == crate::git_engine::APP {
+            return crate::git_engine::call(app, op, input);
+        }
         tilolang_tilo::engine::answer(app, op, input)
     }
 
@@ -712,6 +715,9 @@ impl Platform for HostPlatform {
             return crate::print_centre_engine::start(self, app, op, input);
         }
         crate::feed_engine::register();
+        if app == crate::git_engine::APP {
+            return crate::git_engine::start(app, op, input);
+        }
         tilolang_tilo::engine::begin(app, op, input)
     }
 
@@ -720,11 +726,13 @@ impl Platform for HostPlatform {
         if let Ok(state) = tilo_api_client::status(job) {
             return Ok(state);
         }
-        crate::video_engine::status(self, job).or_else(|unknown| {
-            crate::containers_engine::status(job).or_else(|_| {
-                crate::print_centre_engine::status(self, job).or_else(|_| {
-                    crate::feed_engine::register();
-                    tilolang_tilo::engine::progress(job).map_err(|_| unknown)
+        crate::git_engine::status(job).or_else(|unknown| {
+            crate::video_engine::status(self, job).or_else(|_| {
+                crate::containers_engine::status(job).or_else(|_| {
+                    crate::print_centre_engine::status(self, job).or_else(|_| {
+                        crate::feed_engine::register();
+                        tilolang_tilo::engine::progress(job).map_err(|_| unknown)
+                    })
                 })
             })
         })
@@ -733,7 +741,8 @@ impl Platform for HostPlatform {
     #[cfg(feature = "app-launch")]
     fn engine_cancel(&self, job: &str) -> bool {
         crate::feed_engine::register();
-        tilo_api_client::cancel(job)
+        crate::git_engine::cancel(job)
+            || tilo_api_client::cancel(job)
             || crate::video_engine::cancel(job)
             || crate::containers_engine::cancel(job)
             || crate::print_centre_engine::cancel(job)

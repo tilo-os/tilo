@@ -5393,63 +5393,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "git-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bounded-command",
- "futures-util",
- "git-client",
- "git-client-model",
- "git2",
- "hex",
- "jiff",
- "rcgen",
- "reqwest",
- "runtime-dylib",
- "russh",
- "rustls",
- "serde",
- "serde_json",
- "settings-model",
- "shlex",
- "ssh-agent-client",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-net",
- "tilo-paths",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tokio",
- "url",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
-name = "git-client-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "git-client-model-wasm"
-version = "0.1.0"
-dependencies = [
- "git-client-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "git2"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18360,6 +18303,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-git"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bounded-command",
+ "git2",
+ "hex",
+ "jiff",
+ "reqwest",
+ "russh",
+ "rustls",
+ "serde",
+ "serde_json",
+ "shlex",
+ "ssh-agent-client",
+ "tempfile",
+ "tilo-net",
+ "tilo-paths",
+ "tokio",
+ "url",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
@@ -19083,7 +19051,6 @@ dependencies = [
  "diffmerge-model-wasm",
  "disk-usage-model-wasm",
  "firewall-model-wasm",
- "git-client-model-wasm",
  "hex-editor-model-wasm",
  "logs-model-wasm",
  "maps-model-wasm",
@@ -22640,6 +22607,7 @@ dependencies = [
  "tilo-feeds",
  "tilo-files",
  "tilo-formats",
+ "tilo-git",
  "tilo-history",
  "tilo-media",
  "tilo-net",
@@ -27065,9 +27033,6 @@ dependencies = [
  "gimli 0.32.3",
  "gimli 0.33.0",
  "gio-sys",
- "git-client",
- "git-client-model",
- "git-client-model-wasm",
  "git2",
  "gl_generator",
  "glib",

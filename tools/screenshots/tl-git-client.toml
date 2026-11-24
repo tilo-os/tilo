@@ -1,0 +1,6 @@
+# Git: a small project with changes waiting, built from the repository's own scenario
+# (tools/screenshots/run.py). The changes are listed beside the diff of the file chosen.
+[[situation]]
+name = "a-week-of-changes"
+title = "A repository's changes beside the diff of the file chosen"
+scenario = "a week of changes"
