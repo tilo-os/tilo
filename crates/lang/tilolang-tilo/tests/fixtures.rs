@@ -54,6 +54,12 @@ pub const TASKS: (&str, &str) = (
 /// package compiles against the ones loaded before it.
 pub const TASKS_SET: &[(&str, &str)] = &[CONTACTS, DISCUSSION, NOTES, TASKS];
 
+/// The Weather package (`apps/tl/weather`), and the places it follows.
+pub const WEATHER: (&str, &str) = (
+    include_str!("../../../../apps/tl/weather/app.tl"),
+    include_str!("../../../../apps/tl/weather/app.ids"),
+);
+
 /// The Mail package (`apps/tl/mail`), and the Contacts package it reads an address as.
 pub const MAIL: (&str, &str) = (
     include_str!("../../../../apps/tl/mail/app.tl"),

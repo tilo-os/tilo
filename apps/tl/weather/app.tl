@@ -207,8 +207,9 @@ action reading_for(r: Readings, place: Place) -> PlaceReading {
 
 /// Saves a place a person follows. A place near one already saved is that place, not a second
 /// entry, and a new place is the one windows show first.
-// ---------------------------------------------------------------- the places
-primary action save_place(
+// A place is added through the app's own search ("Add place"), which is the window's primary
+// action; the action that writes one stays callable by scripts and agents.
+action save_place(
     w: Locations,
     name: Text,
     latitude: Float,
@@ -267,8 +268,8 @@ action rename_place(w: Locations, place: Place, name: Text) (
 /// Removes a place from the list; what was read of it goes with it. Undo brings it back.
 destructive action remove_place(w: Locations, place: Place) (
     icon: .trash_2,
-    label: "Remove place",
-    did: "removed a place",
+    label: "Delete place",
+    did: "deleted a place",
 ) {
     let was_default = w.default == .some(place)
     let mine = readings
@@ -1089,7 +1090,7 @@ fn search_words(reader: Searching) -> Text {
 /// The tile of one hour: its clock, its sky, its temperature and how likely rain is.
 // ---------------------------------------------------------------- the window
 view hour_tile(hour: Hour, imperial: Bool, now_at: Text) {
-    stack(gap: .tight, align: .center) {
+    stack(gap: .tight, align: .center, min: 3.5rem) {
         ui.Text(
             if hour.at == now_at { "Now" } else { hhmm(hour.at) },
             role: .caption,
@@ -1129,7 +1130,9 @@ view day_row(day: Day, low: Float, high: Float, imperial: Bool, today: Text, tom
     let span = (high - low).max(0.1)
     let from = ((day.low - low) / span).clamp(0.0, 1.0)
     let width = ((day.high - low) / span - from).clamp(0.02, 1.0)
-    row(gap: .related, align: .center) {
+    // The day's name, its sky and its span of temperatures stand on one line where they fit; on
+    // a phone the span and the highs wrap under the name rather than reaching past the row.
+    row(gap: .related, align: .center, wrap: true) {
         ui.Text(day_name(day, today, tomorrow), role: .body, min: 5rem)
         ui.Icon(day.icon, description: condition(day.code))
         ui.Text(condition(day.code), role: .body, secondary: true, truncate)
@@ -1177,7 +1180,7 @@ view hero(place: Place, here: PlaceReading, imperial: Bool) {
             ui.Text(subtitle(place), role: .caption, secondary: true)
             row(gap: .tight, align: .center) {
                 if let fetched = here.fetched {
-                    ui.Time(fetched, role: .caption, secondary: true)
+                    ui.Time(fetched, role: .caption, past: true, secondary: true)
                 }
                 if here.stale {
                     ui.Icon(.triangle_alert, size: .small, tone: .warning)
@@ -1197,7 +1200,7 @@ view hero(place: Place, here: PlaceReading, imperial: Bool) {
 /// The readings beside the hero's temperature.
 view readings(reading: Reading, imperial: Bool) {
     ui.StatGroup {
-        ui.StatTile("Feels like", "{degrees(reading.apparent, imperial)}", unit: "°")
+        ui.StatTile("Feels like", degree_words(reading.apparent, imperial))
         ui.StatTile(
             "Wind",
             "{speed(reading.wind, imperial)}",
@@ -1286,83 +1289,63 @@ view update_bar(w: Locations) {
     }
 }
 
-/// The shown place's own commands: update it, show it first, move it to the top, or remove it.
-view place_bar(w: Locations, place: Place) {
-    row(gap: .tight, wrap: true) {
-        ui.Button("Refresh", icon: .refresh) {
-            on press: refresh(w, place: .some(place))
-        }
-        ui.Button("Show first", icon: .pin) {
-            on press: use_as_default(w, place)
-        }
-        ui.Button("Move to top", icon: .arrow_up) {
-            on press: move_to_top(w, place)
-        }
-        ui.Button("Rename", icon: .pencil) {
-            on press: rename_place(w, place)
-        }
-        ui.Button("Remove place", icon: .trash_2, role: .destructive) {
-            on press: remove_place(w, place)
-        }
-    }
-}
-
 /// One place's forecast: its hero, its readings, the hours, the week and the air, or what stands
 /// in their place while the device reads it.
 view forecast(w: Locations, place: Place, imperial: Bool) {
     let here = reading_of(readings, place)
-    page {
-        stack(gap: .group) {
-            update_bar(w)
-            place_bar(w, place)
-            if here.trouble != "" {
-                ui.Banner(
-                    "Couldn't update this forecast",
-                    message: here.trouble,
-                    kind: .warning,
-                    icon: .cloud_off,
-                    action: "Try again",
-                ) {
-                    on act: retry_place(w, place)
-                }
-            }
-            if here.read {
-                hero(place, here, imperial)
-                readings(here.current, imperial)
-                if let today = here.days.first() {
-                    if let fraction = daylight_fraction(here.current.at, today) {
-                        ui.BarGauge(
-                            fraction,
-                            label: "Daylight",
-                            readout: "{hhmm(today.rise)} – {hhmm(today.set)}",
-                            neutral: true,
-                            compact: true,
-                        )
+    ui.Scroll {
+        page {
+            stack(gap: .group) {
+                update_bar(w)
+                if here.trouble != "" {
+                    ui.Banner(
+                        "Couldn't update this forecast",
+                        message: here.trouble,
+                        kind: .warning,
+                        icon: .cloud_off,
+                        action: "Try again",
+                    ) {
+                        on act: retry_place(w, place)
                     }
                 }
-                ui.Section("Next 24 hours") {
-                    hours_strip(here, imperial, here.current.at)
-                }
-                ui.Section("The week ahead") {
-                    let lows = here.days.map(d -> d.low).sort_by(x -> x)
-                    let highs = here.days.map(d -> d.high).sort_by(x -> x)
-                    let low = lows.first() ?? 0.0
-                    let high = highs.last() ?? 1.0
-                    stack(gap: .related) {
-                        for day in here.days {
-                            day_row(day, low, high, imperial, w.today, w.tomorrow)
+                if here.read {
+                    hero(place, here, imperial)
+                    readings(here.current, imperial)
+                    if let today = here.days.first() {
+                        if let fraction = daylight_fraction(here.current.at, today) {
+                            ui.BarGauge(
+                                fraction,
+                                label: "Daylight",
+                                readout: "{hhmm(today.rise)} – {hhmm(today.set)}",
+                                neutral: true,
+                                compact: true,
+                            )
                         }
                     }
-                }
-                if here.has_air {
-                    ui.Section("Air quality") {
-                        air_quality(here.air)
+                    ui.Section("Next 24 hours") {
+                        hours_strip(here, imperial, here.current.at)
                     }
-                }
-            } else if here.trouble == "" {
-                stack(gap: .group) {
-                    ui.Skeleton(shape: .page)
-                    ui.Text("Reading the forecast…", role: .caption, secondary: true)
+                    ui.Section("The week ahead") {
+                        let lows = here.days.map(d -> d.low).sort_by(x -> x)
+                        let highs = here.days.map(d -> d.high).sort_by(x -> x)
+                        let low = lows.first() ?? 0.0
+                        let high = highs.last() ?? 1.0
+                        stack(gap: .related) {
+                            for day in here.days {
+                                day_row(day, low, high, imperial, w.today, w.tomorrow)
+                            }
+                        }
+                    }
+                    if here.has_air {
+                        ui.Section("Air quality") {
+                            air_quality(here.air)
+                        }
+                    }
+                } else if here.trouble == "" {
+                    stack(gap: .group) {
+                        ui.Skeleton(shape: .page)
+                        ui.Text("Reading the forecast…", role: .caption, secondary: true)
+                    }
                 }
             }
         }
@@ -1397,14 +1380,24 @@ view weather_window(w: Locations) {
     let place = shown_place(w, chosen)
     ui.NavShell(content_kind: .page, sidebar_title: "Weather", title: place?.name ?? "Weather") {
         actions: {
-            row(gap: .tight) {
-                ui.Button("Add place", icon: .plus) {
-                    on press: set(adding, true).then(begin_search(w))
+            ui.Button("Add place", icon: .plus, role: .primary) {
+                on press: set(adding, true).then(begin_search(w))
+            }
+            // What stands on the place the window shows: its forecast read again, its place in
+            // the window kept first, and its way out of the list. The bar keeps three in its row
+            // and the rest in its More menu.
+            if let shown = place {
+                ui.Button("Refresh", icon: .refresh) {
+                    on press: refresh(w, place: .some(shown))
                 }
-                if place != .none {
-                    ui.Button("Refresh", icon: .refresh) {
-                        on press: refresh(w)
-                    }
+                ui.Button("Show first", icon: .pin) {
+                    on press: use_as_default(w, shown)
+                }
+                ui.Button("Rename", icon: .pencil) {
+                    on press: rename_place(w, shown)
+                }
+                ui.Button("Delete place", icon: .trash_2, role: .destructive) {
+                    on press: remove_place(w, shown)
                 }
             }
         }

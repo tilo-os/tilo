@@ -327,13 +327,6 @@ d-jyf2fgwu = Aktualisierungsleiste
     .w-what-was-read-before-still-stands = Was zuvor gelesen war, gilt weiter; versuche es später erneut.
     .w-try-again = Erneut versuchen
 
-d-53e2mq4f = Ortsleiste
-    .w-refresh = Aktualisierung
-    .w-show-first = Zuerst zeigen
-    .w-move-to-top = Nach oben
-    .w-rename = Umbenennen
-    .w-remove-place = Ort entfernen
-
 d-gbetzns2 = Vorhersage
     .w-couldn-t-update-this-forecast = Diese Vorhersage konnte nicht aktualisiert werden
     .w-try-again = Erneut versuchen
@@ -347,6 +340,8 @@ d-b52eh6m4 = Wetterfenster
     .w-weather = Wetter
     .w-add-place = Ort hinzufügen
     .w-refresh = Aktualisierung
+    .w-show-first = Zuerst zeigen
+    .w-delete-place = Ort löschen
     .w-places = Orte
     .w-no-places-yet = Noch keine Orte
     .w-follow-a-city-or-town-to = Folge einer Stadt, um hier ihre Vorhersage zu sehen.
@@ -383,15 +378,15 @@ d-sqjw6zx2 = Zuerst zeigen
 
 d-sqjw6zx2-place = Ort
 
-d-nf7ixh7u = Nach oben
+d-gnll3uce = Nach oben
     .doc = Schiebt einen Ort an die Spitze der Liste.
     .w-this-place-is-already-at-the = Dieser Ort steht schon ganz oben
 
-d-nf7ixh7u-place = Ort
+d-gnll3uce-place = Ort
 
-d-3a546tol = Ort entfernen
+d-3a546tol = Ort löschen
     .doc = Entfernt einen Ort aus der Liste; was davon gelesen wurde, geht mit ihm.
-    .did = entfernte einen Ort
+    .did = löschte einen Ort
 
 d-3a546tol-place = Ort
 
@@ -443,7 +438,7 @@ d-uekzr2wm-choice = Auswahl
 
 d-lh3eadxk = Ort speichern
 
-d-q62lxozz = Nach oben
+d-g7qnijbi = Nach oben
 
 d-b7ir6734 = Aktualisieren
 
