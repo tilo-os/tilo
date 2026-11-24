@@ -77,10 +77,11 @@ pub enum Request {
     },
     /// Original authenticated actor and exact channel route; no caller claims.
     ConnectionSnapshot,
-    /// The caller reads no more on this channel: give up its place in the
-    /// broker's byte budget queue (after a [`Reply::Busy`]), and the place
-    /// it was granted, so reads behind it are served. Answered
-    /// [`Reply::Cancelled`]; an active capture is untouched.
+    /// The caller ends its read of the record: its place in the broker's byte budget queue
+    /// (after a [`Reply::Busy`]) and the place it was granted go, so reads behind it are served,
+    /// and so does any capture it has not acknowledged and a read closed for an expired one. The
+    /// host decides the connection's admission to the record again first; a reader renewing its
+    /// read starts the next with this. Answered [`Reply::Cancelled`].
     Leave,
     /// How this channel's writes travel: answered [`Reply::Writes`].
     Writes,

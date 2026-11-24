@@ -345,11 +345,6 @@ impl Slot {
         }
         reservation
     }
-    /// The reader reads no more on this channel: give up its place in the
-    /// byte budget's queue, or the workspace its turn was granted.
-    fn leave(&mut self) {
-        self.queued = None;
-    }
     /// Close the channel once an unacknowledged capture outlived its
     /// deadline; refuse every request on a closed channel.
     fn expire(&mut self) -> Result<(), String> {
@@ -624,6 +619,16 @@ impl JoinedChannel {
                 sealed: self.seals_documents(),
             });
         }
+        // The reader ends its read: decided again for the connection's identity, as the next
+        // read's admission, then everything of the last one goes, a read closed for a capture
+        // that outlived its deadline included.
+        if matches!(request, Request::Leave) {
+            self.state
+                .revalidate_admission(&self.resource_route(), &self.verified_identity)
+                .map_err(|error| error.to_string())?;
+            *self.committed_read.borrow_mut() = Slot::default();
+            return Ok(Reply::Cancelled);
+        }
         // A chain's head is a name for whichever of the chain's parts is the newest,
         // not a document: opening it asks the workspace for that part, and is answered
         // with it on the part's own route, or with nothing when the chain has none.
@@ -644,10 +649,7 @@ impl JoinedChannel {
             Request::Await { .. } => Err("a committed read wait is answered asynchronously".into()),
             Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding { instance: None }),
             Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
-            Request::Leave => {
-                slot.leave();
-                Ok(Reply::Cancelled)
-            }
+            Request::Leave => Err("the end of a read was not answered".into()),
             Request::Open { known_revision } => {
                 self.open_committed_document(&mut slot, *known_revision, None)
             }

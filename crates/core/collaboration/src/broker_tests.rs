@@ -216,8 +216,12 @@ pub struct Captures {
     pub refuse_terminals: usize,
     pub terminal_updates: usize,
     pub invocation_updates: Vec<(u64, tilo_actions::InvocationUpdate)>,
-    /// Each record the connection's calls named, in the order first named.
+    /// Each admission of a record on the connection, in order: the first call naming it, and
+    /// each renewal of its committed read after that.
     pub joined: Vec<String>,
+    /// The records whose committed read has been bound to its window once: a later binding is a
+    /// renewal's.
+    pub committed_bound: std::collections::HashSet<String>,
     /// Each stream subscribed to, by its route, in the order asked.
     pub subscribed: Vec<(String, Topic)>,
     pub joined_resource_types: Vec<String>,
@@ -343,6 +347,33 @@ fn committed_answer(
             return Ok((encode(Read::Writes { sealed: false })?, None));
         }
         let mut captures = captures.lock().unwrap();
+        // The end of a read, which a renewal starts with: nothing of it is kept here.
+        if request == Ask::Leave {
+            return Ok((encode(Read::Cancelled)?, None));
+        }
+        // A renewal binds its read to the window again: the host admits the connection to the
+        // record once more, held or refused as the test asks, as a join was.
+        let mut renewal = None;
+        if request == Ask::PrivateWindowBinding
+            && !captures.committed_bound.insert(channel_id.to_owned())
+        {
+            captures.joined.push(channel_id.to_owned());
+            let kind = captures
+                .joined
+                .iter()
+                .zip(captures.joined_resource_types.iter())
+                .rev()
+                .find(|(key, _)| key.as_str() == channel_id)
+                .map(|(_, kind)| kind.clone())
+                .unwrap_or_default();
+            captures.joined_resource_types.push(kind);
+            renewal = captures.join_holds.pop_front();
+            if renewal.is_none()
+                && let Some(error) = captures.join_refusal.clone()
+            {
+                return Err(error);
+            }
+        }
         captures.committed_reads.push(request.clone());
         let changes = captures.committed_changes.clone();
         let opens = matches!(request, Ask::Open { .. } | Ask::OpenChanges { .. });
@@ -420,7 +451,9 @@ fn committed_answer(
                 _ => return Err("fixture read continuation refused".into()),
             },
         };
-        let hold = if matches!(reply, Read::Unchanged { .. }) {
+        let hold = if renewal.is_some() {
+            renewal
+        } else if matches!(reply, Read::Unchanged { .. }) {
             captures.committed_recheck_hold.take()
         } else if matches!(reply, Read::Cancelled) {
             captures.committed_ack_hold.take().map(|(entered, hold)| {

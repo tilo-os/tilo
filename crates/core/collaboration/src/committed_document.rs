@@ -1739,6 +1739,12 @@ impl NativeReadJoin {
         let expected_instance = reads.private_window(&key);
         tokio::time::timeout(Duration::from_secs(2), async {
             let channel = self.client.record(&key, &self.resource_type);
+            // The record stays open for the route; ending the read on it is what the host
+            // decides again, and what starts the next read with nothing of the last.
+            channel
+                .committed_document(&Request::Leave)
+                .await
+                .map_err(|error| format!("renewed committed read refused: {error}"))?;
             let binding = channel
                 .committed_document(&Request::PrivateWindowBinding)
                 .await
@@ -2171,9 +2177,8 @@ pub(super) async fn install(
                     break;
                 };
                 ready = next_ready;
-                if std::mem::take(&mut queued) {
-                    leave_queue(&channel);
-                }
+                // The renewal's own end of the read leaves the queue too.
+                queued = false;
                 let mut turn = Some(turn);
                 loop {
                     match join.renew(&spec, &inbound.state.document_reads).await {
