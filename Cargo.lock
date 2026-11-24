@@ -3751,23 +3751,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "discord"
+name = "discord-bridge"
 version = "0.1.0"
 dependencies = [
- "data-encoding",
- "discord",
  "discord-wire",
- "rand 0.10.3",
- "runtime-dylib",
  "serde",
  "serde_json",
- "tilo-app",
- "tilo-automation",
- "tilo-net",
- "tilo-reference",
+ "tilo-actions",
+ "tilo-resource",
  "tilo-test-env",
- "tilo-workspace-service",
- "workspace-hack",
 ]
 
 [[package]]
@@ -3778,7 +3770,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "tilo-app",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -3789,7 +3781,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "davey",
- "discord",
  "discord-wire",
  "fake-discord",
  "futures-util",
@@ -16304,7 +16295,6 @@ dependencies = [
  "chip-design",
  "collab-types",
  "diffmerge",
- "discord",
  "fs-content",
  "fs-protocol",
  "hex-editor",
@@ -20535,7 +20525,6 @@ dependencies = [
  "collab-types",
  "collaboration",
  "crc32fast",
- "discord",
  "ed25519-dalek 3.0.0",
  "feed-rs",
  "fs-content",
@@ -26959,7 +26948,7 @@ dependencies = [
  "digest 0.11.3",
  "dirs",
  "dirs-sys",
- "discord",
+ "discord-bridge",
  "discord-wire",
  "discord-worker",
  "disk-usage",
