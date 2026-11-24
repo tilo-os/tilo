@@ -15,6 +15,7 @@ use serde::Deserialize;
 
 use tilo_resource::{Keyed, Ordered};
 use tilolang_tilo::instance::Platform;
+use tilolang_tilo::runtime::host_work::{Frame as LiveFrame, Push};
 use video_edit::model;
 use video_edit::param::{ClipAnimation, Interp, Param};
 use video_picture::export::{Container, ExportSettings, FrameRate, Resolution};
@@ -37,6 +38,8 @@ pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result
         "thumb" => thumb(platform, input),
         "waveform" => waveform(platform, input),
         "sample" => sample(platform, input),
+        "scrub" => scrub(platform, input),
+        "cut" => recut(platform, input),
         other => Err(format!("`{other}` is no op this device runs for {app}")),
     }
 }
@@ -53,6 +56,28 @@ pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Resul
     match op {
         "render" => render(platform, input),
         other => Err(format!("`{other}` is no op this device runs for {app}")),
+    }
+}
+
+/// One `engine.stream`: the cut composited as it plays, its frames and its sound reaching the
+/// window without the app asking for any of them.
+///
+/// # Errors
+///
+/// Not this device's app, an op that is no stream, or a cut that does not read.
+pub fn stream(
+    platform: &dyn Platform,
+    app: &str,
+    op: &str,
+    input: &str,
+    push: Arc<dyn Push>,
+) -> Result<String, String> {
+    if app != APP {
+        return Err(format!("`{op}` is no stream this device runs for {app}"));
+    }
+    match op {
+        "play" => play(platform, input, push),
+        other => Err(format!("`{other}` is no stream this device runs for {app}")),
     }
 }
 
@@ -111,19 +136,31 @@ pub fn cancel(job: &str) -> bool {
     true
 }
 
-/// One render in flight, and what it made when it is done.
+/// One job in flight — a render or a live play — and what it made when it is done.
 struct Job {
     cancel: Arc<AtomicBool>,
     finished: AtomicBool,
     done: AtomicU64,
     total: AtomicU64,
-    /// The file the render writes, until the answer puts it in the content store.
-    path: PathBuf,
-    /// The name its bytes are kept under.
-    name: String,
+    /// What the job makes when it ends: a render's file, or nothing for a stream of frames.
+    made: Made,
+    /// The cut a live play is showing now, replaced when the app hands over an edited one.
+    cut: Mutex<Option<Arc<model::Project>>>,
     error: Mutex<Option<String>>,
     /// The address of the finished file, once `status` has kept it.
     url: Mutex<Option<String>>,
+}
+
+/// What a job leaves behind.
+enum Made {
+    /// A file the render writes, until the answer puts it in the content store.
+    Render {
+        path: PathBuf,
+        /// The name its bytes are kept under.
+        name: String,
+    },
+    /// Frames a window showed as they arrived: nothing to keep.
+    Frames,
 }
 
 fn jobs() -> &'static Mutex<BTreeMap<String, Arc<Job>>> {
@@ -131,7 +168,8 @@ fn jobs() -> &'static Mutex<BTreeMap<String, Arc<Job>>> {
     JOBS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-/// Keep a finished render as the answer's file, once: what `status` hands the app.
+/// Keep a finished render as the answer's file, once: what `status` hands the app. A stream of
+/// frames answers no address, and its own state is that it has ended.
 fn set_done(state: &Job, platform: &dyn Platform) -> Option<String> {
     if !state.finished.load(Ordering::Relaxed) {
         return None;
@@ -139,18 +177,21 @@ fn set_done(state: &Job, platform: &dyn Platform) -> Option<String> {
     if let Some(url) = state.url.lock().ok().and_then(|u| u.clone()) {
         return Some(url);
     }
-    let bytes = std::fs::read(&state.path).ok()?;
-    let media = match state.path.extension().and_then(std::ffi::OsStr::to_str) {
+    let Made::Render { path, name } = &state.made else {
+        return Some(String::new());
+    };
+    let bytes = std::fs::read(path).ok()?;
+    let media = match path.extension().and_then(std::ffi::OsStr::to_str) {
         Some("webm") => "video/webm",
         Some("mov") => "video/quicktime",
         _ => "video/mp4",
     };
-    let kept = platform.keep_content(&state.name, media, &bytes).ok()?;
+    let kept = platform.keep_content(name, media, &bytes).ok()?;
     let url = format!("tilo-blob://{}", kept.hash);
     if let Ok(mut slot) = state.url.lock() {
         *slot = Some(url.clone());
     }
-    let _ = std::fs::remove_file(&state.path);
+    let _ = std::fs::remove_file(path);
     Some(url)
 }
 
@@ -357,8 +398,8 @@ fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
         finished: AtomicBool::new(false),
         done: AtomicU64::new(0),
         total: AtomicU64::new(0),
-        path,
-        name,
+        made: Made::Render { path, name },
+        cut: Mutex::new(None),
         error: Mutex::new(None),
         url: Mutex::new(None),
     });
@@ -375,10 +416,13 @@ fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
             let report_done = Arc::clone(&done);
             let report_total = Arc::new(AtomicU64::new(0));
             let report_total_in = Arc::clone(&report_total);
+            let Made::Render { ref path, .. } = worker.made else {
+                return;
+            };
             let outcome = video_picture::export::render_to(
                 &project,
                 settings,
-                &worker.path,
+                path,
                 cancel,
                 move |done_frames, total| {
                     report_done.store(done_frames, Ordering::Relaxed);
@@ -406,9 +450,375 @@ fn render(platform: &dyn Platform, input: &str) -> Result<String, String> {
     Ok(serde_json::json!({ "job": id }).to_string())
 }
 
+/// The width a live frame is composited at before the window shows it: enough for the preview,
+/// small enough to keep at the rate a transport plays.
+const LIVE_WIDTH: u32 = 640;
+
+/// The most a transport shuttles at, forward or backward.
+const MAX_RATE: f64 = 16.0;
+
+/// How often a running play says where it has got, in frames: often enough for a playhead to
+/// move smoothly, rarely enough that a window is not drawn again for every frame.
+const SAY_EVERY_FRAMES: u64 = 4;
+
+/// How one play runs: where it starts, how fast, the frame it draws and whether its sound is
+/// played.
+struct Playing {
+    from: f64,
+    rate: f64,
+    width: u32,
+    height: u32,
+    sound: bool,
+}
+
+/// The cut played live: each frame composited as the playhead reaches it, with the sound mixed
+/// for the same moment, both from the cut as the app wrote it.
+///
+/// The frames are the window's, pushed as they are drawn and shown by `tilo-live://<job>`; the
+/// sound is the device's, mixed ahead of the playhead, so an edit is heard almost at once.
+fn play(platform: &dyn Platform, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        /// The cut, as `json.encode(shot(p))` writes it.
+        project: String,
+        /// Where the playhead starts, in timeline seconds.
+        #[serde(default)]
+        from: f64,
+        /// Timeline seconds a second of wall time: 1 is normal speed, negative is backwards.
+        #[serde(default = "one_f")]
+        rate: f64,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+        /// Whether the device plays the cut's sound as a preview does.
+        #[serde(default = "yes")]
+        sound: bool,
+    }
+    let ask: Ask = reads(input)?;
+    let project = reads::<Shot>(&ask.project)?.into_project(Some(platform))?;
+    let rate = if ask.rate.abs() < 1e-9 {
+        1.0
+    } else {
+        ask.rate.clamp(-MAX_RATE, MAX_RATE)
+    };
+    let width = ask.width.unwrap_or(LIVE_WIDTH).clamp(64, 1920);
+    let height = ask.height.map_or_else(
+        || {
+            let by_shape = u64::from(width) * u64::from(project.height.max(1))
+                / u64::from(project.width.max(1));
+            u32::try_from(by_shape).unwrap_or(u32::MAX).clamp(64, 1920)
+        },
+        |height| height.clamp(64, 1920),
+    );
+    let playing = Playing {
+        from: ask.from.max(0.0),
+        rate,
+        width,
+        height,
+        sound: ask.sound,
+    };
+    let id = next_job_id();
+    let state = Arc::new(Job {
+        cancel: Arc::new(AtomicBool::new(false)),
+        finished: AtomicBool::new(false),
+        done: AtomicU64::new(0),
+        total: AtomicU64::new(0),
+        made: Made::Frames,
+        cut: Mutex::new(Some(Arc::new(project))),
+        error: Mutex::new(None),
+        url: Mutex::new(None),
+    });
+    jobs()
+        .lock()
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .insert(id.clone(), Arc::clone(&state));
+    let slot = id.clone();
+    let worker = Arc::clone(&state);
+    let spawned = std::thread::Builder::new()
+        .name("video-editor-play".to_owned())
+        .spawn(move || {
+            let outcome = run_play(&playing, &worker, &push, &slot);
+            if let Err(error) = outcome
+                && let Ok(mut slot) = worker.error.lock()
+            {
+                *slot = Some(error);
+            }
+            worker.finished.store(true, Ordering::Relaxed);
+        });
+    if spawned.is_err() {
+        return Err("could not start playing the cut".to_owned());
+    }
+    Ok(serde_json::json!({ "job": id }).to_string())
+}
+
+/// One play's loop: composite, hand over, mix, pace, and stop where the cut ends. Answers the
+/// timeline second it reached.
+///
+/// The cut is read from the job each frame, so an edit made while it plays is shown and heard
+/// from the next frame on.
+fn run_play(
+    playing: &Playing,
+    worker: &Job,
+    push: &Arc<dyn Push>,
+    slot: &str,
+) -> Result<f64, String> {
+    let Playing {
+        from,
+        rate,
+        width,
+        height,
+        sound,
+    } = *playing;
+    let mut cut = taken(worker)?;
+    let mut compositor = video_picture::gpu::HeadlessCompositor::new()
+        .map_err(|error| format!("this device cannot draw the cut as it plays: {error}"))?;
+    let mut media = video_picture::gpu::media_signature(&cut);
+    let mut sources =
+        video_picture::gpu::MediaFrameSource::new(&cut, video_picture::gpu::Fetch::Responsive)
+            .with_timeout(std::time::Duration::from_millis(500));
+    let mut monitor = sound.then(|| {
+        video_edit::audio::AudioMonitor::new(
+            &cut,
+            video_edit::audio::open_output(),
+            Box::new(video_edit::audio::DecodedPcm::new(&cut)),
+            Arc::new(video_edit::audio::MixMeters::new()),
+        )
+    });
+    let began = std::time::Instant::now();
+    let mut frames: u64 = 0;
+    let mut generation: u64 = 0;
+    let mut reached = from;
+    loop {
+        if worker.cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Some(edited) = swapped(worker) {
+            let its_media = video_picture::gpu::media_signature(&edited);
+            if its_media != media {
+                media = its_media;
+                sources = video_picture::gpu::MediaFrameSource::new(
+                    &edited,
+                    video_picture::gpu::Fetch::Responsive,
+                )
+                .with_timeout(std::time::Duration::from_millis(500));
+            }
+            if let Some(monitor) = monitor.as_mut() {
+                monitor.set_project(&edited);
+            }
+            cut = edited;
+        }
+        let period = 1.0 / cut.fps.clamp(1.0, 60.0);
+        let end = cut.duration().max(0.0);
+        let at = from + began.elapsed().as_secs_f64() * rate;
+        let ended = if rate < 0.0 { at <= 0.0 } else { at >= end };
+        let now = at.clamp(0.0, end);
+        reached = now;
+        let rgba = compositor.frame(&cut, now, width, height, &mut sources);
+        generation = generation.wrapping_add(1);
+        push.frame(LiveFrame {
+            slot: slot.to_owned(),
+            generation,
+            width,
+            height,
+            pixels: Arc::new(rgba),
+        });
+        if let Some(monitor) = monitor.as_mut() {
+            // The device's monitor keeps its own clock from the samples it played, so it is
+            // started once and let run, and brought back to the playhead only when the two
+            // drift apart or the picture is shuttled. Backwards there is nothing to play: the
+            // mix is cut forward only.
+            if rate < 0.0 {
+                if monitor.is_playing() {
+                    monitor.pause();
+                }
+            } else if !monitor.is_playing() {
+                monitor.play(now);
+            } else if (monitor.position() - now).abs() > 0.35 {
+                monitor.seek(now);
+            }
+        }
+        if frames % SAY_EVERY_FRAMES == 0 {
+            worker.done.store(frames, Ordering::Relaxed);
+            push.state(slot, &format!("{now:.2}"));
+        }
+        frames = frames.saturating_add(1);
+        if ended {
+            break;
+        }
+        frames_due(began, period, frames);
+    }
+    if let Some(monitor) = monitor.as_mut() {
+        monitor.pause();
+    }
+    // Where the play left the playhead, so a window that reads the stream's word after it ends
+    // stands where the picture did.
+    push.state(slot, &format!("{reached:.2}"));
+    worker.done.store(frames, Ordering::Relaxed);
+    worker.total.store(frames, Ordering::Relaxed);
+    Ok(reached)
+}
+
+/// Waits until frame `frames` is due, so a play runs at the cut's rate rather than as fast as the
+/// device can draw.
+fn frames_due(began: std::time::Instant, period: f64, frames: u64) {
+    let due = began + std::time::Duration::from_secs_f64(period * ui_core::num::f64_of_u64(frames));
+    let now = std::time::Instant::now();
+    if due > now {
+        std::thread::sleep(due - now);
+    }
+}
+
+/// The cut a live play starts from, which the app handed over with the play.
+fn taken(worker: &Job) -> Result<Arc<model::Project>, String> {
+    worker
+        .cut
+        .lock()
+        .map_err(|_| "the play's cut is unreadable".to_owned())?
+        .take()
+        .ok_or_else(|| "the play has no cut".to_owned())
+}
+
+/// The cut the app handed over since the last frame, when it edited one as it played.
+fn swapped(worker: &Job) -> Option<Arc<model::Project>> {
+    worker.cut.lock().ok().and_then(|mut cut| cut.take())
+}
+
+/// The cut a live play shows, replaced by an edit: what makes an edit seen as it is made rather
+/// than at the next play.
+fn recut(platform: &dyn Platform, input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        /// The live play to change.
+        job: String,
+        /// The cut, as `json.encode(shot(p))` writes it.
+        project: String,
+    }
+    let ask: Ask = reads(input)?;
+    let cut = Arc::new(reads::<Shot>(&ask.project)?.into_project(Some(platform))?);
+    let state = jobs()
+        .lock()
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .get(&ask.job)
+        .cloned()
+        .ok_or_else(|| format!("no job `{}` runs on this device", ask.job))?;
+    if !matches!(state.made, Made::Frames) {
+        return Err(format!("`{}` is no live play", ask.job));
+    }
+    *state
+        .cut
+        .lock()
+        .map_err(|_| "the play's cut is unreadable".to_owned())? = Some(cut);
+    Ok(String::new())
+}
+
+/// The device's one scrubbing output: a sink kept between drags, and the thread that pushes each
+/// drag's short piece of the mix to it.
+///
+/// The sink blocks while its queue is full, which is what paces a mix; that wait is the scrub
+/// thread's, never the action's, so a drag is never held up by the sound it makes.
+struct Scrubbing {
+    asked: std::sync::mpsc::Sender<ScrubAsk>,
+}
+
+/// One drag's piece of the mix.
+struct ScrubAsk {
+    project: Arc<model::Project>,
+    at: f64,
+    seconds: f64,
+}
+
+/// The scrubbing output, made the first time a playhead is dragged.
+fn scrubber() -> &'static Mutex<Option<Scrubbing>> {
+    static SCRUB: OnceLock<Mutex<Option<Scrubbing>>> = OnceLock::new();
+    SCRUB.get_or_init(|| Mutex::new(None))
+}
+
+/// A short piece of the cut's sound at `at`: what dragging the playhead sounds like.
+fn scrub(platform: &dyn Platform, input: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Ask {
+        /// The cut, as `json.encode(shot(p))` writes it.
+        project: String,
+        at: f64,
+        /// How much of the mix to play, in seconds.
+        #[serde(default = "snippet")]
+        seconds: f64,
+    }
+    let ask: Ask = reads(input)?;
+    let project = Arc::new(reads::<Shot>(&ask.project)?.into_project(Some(platform))?);
+    let mut held = scrubber()
+        .lock()
+        .map_err(|_| "the scrubbing output is unreadable".to_owned())?;
+    if held.is_none() {
+        *held = Some(open_scrubbing()?);
+    }
+    let asked = ScrubAsk {
+        project,
+        at: ask.at.max(0.0),
+        seconds: ask.seconds,
+    };
+    let Some(scrubbing) = held.as_ref() else {
+        return Ok(String::new());
+    };
+    scrubbing
+        .asked
+        .send(asked)
+        .map_err(|_| "the scrubbing output has gone".to_owned())?;
+    Ok(String::new())
+}
+
+/// The scrubbing thread: the device's output opened once, and the newest piece of the mix pushed
+/// as soon as the last one has played, so a fast drag stays close behind the playhead rather than
+/// queueing up behind it.
+fn open_scrubbing() -> Result<Scrubbing, String> {
+    let (asked, heard) = std::sync::mpsc::channel::<ScrubAsk>();
+    std::thread::Builder::new()
+        .name("video-editor-scrub".to_owned())
+        .spawn(move || {
+            let mut sink = video_edit::audio::open_output();
+            let mut pcm: Option<(u64, video_edit::audio::DecodedPcm)> = None;
+            let Ok(mut ask) = heard.recv() else {
+                return;
+            };
+            loop {
+                while let Ok(newer) = heard.try_recv() {
+                    ask = newer;
+                }
+                let mix = video_edit::audio::mix_signature(&ask.project);
+                if pcm.as_ref().map(|(signature, _)| *signature) != Some(mix) {
+                    pcm = Some((mix, video_edit::audio::DecodedPcm::new(&ask.project)));
+                }
+                if let Some((_, source)) = pcm.as_mut() {
+                    let frames = ui_core::num::usize_of_f64(
+                        (ask.seconds.clamp(0.02, 0.4) * f64::from(video_edit::audio::SAMPLE_RATE))
+                            .round(),
+                    )
+                    .max(1);
+                    let (block, _report) =
+                        video_edit::audio::mix_block_metered(&ask.project, ask.at, frames, source);
+                    if !sink.push(&block) {
+                        break;
+                    }
+                }
+                let Ok(next) = heard.recv() else {
+                    break;
+                };
+                ask = next;
+            }
+        })
+        .map_err(|error| format!("this device cannot play the scrub: {error}"))?;
+    Ok(Scrubbing { asked })
+}
+
+/// How much of the mix one move of a dragged playhead plays.
+fn snippet() -> f64 {
+    0.12
+}
+
 fn next_job_id() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    format!("render-{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    format!("job-{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 /// Where a render writes its file before the answer keeps it: one directory per process.
@@ -618,6 +1028,11 @@ struct ShotClip {
     pos_y: Option<f64>,
     #[serde(default)]
     rotation: Option<f64>,
+    /// The point of the picture scaling and turning go around, a fraction of it.
+    #[serde(default)]
+    anchor_x: Option<f64>,
+    #[serde(default)]
+    anchor_y: Option<f64>,
     #[serde(default)]
     crop_left: Option<f64>,
     #[serde(default)]
@@ -914,8 +1329,8 @@ fn clip_of(clip: ShotClip) -> Result<model::Clip, String> {
             pos_x: clip.pos_x.unwrap_or(0.0),
             pos_y: clip.pos_y.unwrap_or(0.0),
             rotation: clip.rotation.unwrap_or(0.0),
-            anchor_x: 0.5,
-            anchor_y: 0.5,
+            anchor_x: clip.anchor_x.unwrap_or(0.5).clamp(0.0, 1.0),
+            anchor_y: clip.anchor_y.unwrap_or(0.5).clamp(0.0, 1.0),
             crop_left: clip.crop_left.unwrap_or(0.0),
             crop_right: clip.crop_right.unwrap_or(0.0),
             crop_top: clip.crop_top.unwrap_or(0.0),
@@ -979,6 +1394,19 @@ mod tests {
     }
 
     #[test]
+    fn a_clip_written_before_anchors_turns_around_its_middle() {
+        let shot: Shot = serde_json::from_str(
+            r#"{
+                "clips": ["{\"id\":\"c1\",\"track\":\"t1\",\"media\":\"m1\"}"]
+            }"#,
+        )
+        .expect("a cut without an anchor still reads");
+        let project = shot.into_project(None).expect("it is a cut");
+        assert_eq!(project.clips[0].transform.anchor_x, 0.5);
+        assert_eq!(project.clips[0].transform.anchor_y, 0.5);
+    }
+
+    #[test]
     fn a_cut_itself_reads_into_the_model() {
         let shot: Shot = serde_json::from_str(r#"{
                 "name": "Cut",
@@ -987,7 +1415,7 @@ mod tests {
                 "height": 1080,
                 "media": ["{\"id\":\"m1\",\"name\":\"a.mp4\",\"kind\":\"video\",\"duration\":10.0,\"width\":1920,\"height\":1080,\"path\":\"/media/a.mp4\"}"],
                 "tracks": ["{\"id\":\"t1\",\"name\":\"V1\",\"kind\":\"video\"}"],
-                "clips": ["{\"id\":\"c1\",\"track\":\"t1\",\"media\":\"m1\",\"start\":0.0,\"out_point\":4.0,\"transition\":\"dissolve\",\"keys\":[\"{\\\"param\\\":\\\"opacity\\\",\\\"t\\\":0.0,\\\"v\\\":0.2}\",\"{\\\"param\\\":\\\"opacity\\\",\\\"t\\\":2.0,\\\"v\\\":1.0}\"]}"],
+                "clips": ["{\"id\":\"c1\",\"track\":\"t1\",\"media\":\"m1\",\"start\":0.0,\"out_point\":4.0,\"transition\":\"dissolve\",\"anchor_x\":0.0,\"anchor_y\":1.0,\"keys\":[\"{\\\"param\\\":\\\"opacity\\\",\\\"t\\\":0.0,\\\"v\\\":0.2}\",\"{\\\"param\\\":\\\"opacity\\\",\\\"t\\\":2.0,\\\"v\\\":1.0}\"]}"],
                 "markers": ["{\"id\":\"k1\",\"t\":1.0,\"name\":\"Beat\"}"]
             }"#,
         )
@@ -1002,11 +1430,155 @@ mod tests {
         assert_eq!(project.markers[0].name, "Beat");
         assert_eq!(project.media[0].path, "/media/a.mp4");
         assert!(project.clips[0].anim.is_animated(Param::Opacity));
+        assert_eq!(
+            (
+                project.clips[0].transform.anchor_x,
+                project.clips[0].transform.anchor_y
+            ),
+            (0.0, 1.0),
+            "a clip's anchor is where its own cut puts it"
+        );
         // Halfway between 0.2 and 1.0: interpolation rounds the last bits, so compare near it.
         let opacity = project.clips[0].anim.sample(Param::Opacity, 1.0);
         assert!(
             opacity.is_some_and(|value| (value - 0.6).abs() < 1e-6),
             "{opacity:?}"
         );
+    }
+    /// What a live play handed the window: the frames it drew, by number, and what it said of
+    /// itself.
+    #[derive(Default)]
+    struct Recording {
+        frames: Mutex<Vec<u64>>,
+        states: Mutex<Vec<String>>,
+    }
+
+    impl Push for Recording {
+        fn frame(&self, frame: LiveFrame) {
+            let want = usize::try_from(frame.width)
+                .unwrap_or(0)
+                .saturating_mul(usize::try_from(frame.height).unwrap_or(0))
+                .saturating_mul(4);
+            assert_eq!(frame.pixels.len(), want, "a frame is its whole picture");
+            self.frames
+                .lock()
+                .expect("the recorder")
+                .push(frame.generation);
+        }
+
+        fn state(&self, _slot: &str, state: &str) {
+            self.states
+                .lock()
+                .expect("the recorder")
+                .push(state.to_owned());
+        }
+    }
+
+    /// A cut of one palette source, `seconds` long: a picture no decoder is needed for.
+    fn cut(seconds: f64) -> model::Project {
+        let mut project = model::Project::new("live");
+        project.set_frame_size(160, 90);
+        project.fps = 10.0;
+        let media = model::MediaItem {
+            id: uuid::Uuid::from_u128(1),
+            name: "palette".to_owned(),
+            kind: model::MediaKind::Video,
+            duration: seconds,
+            width: 160,
+            height: 90,
+            fps: 10.0,
+            palette: 1,
+            path: video_edit::media::workspace_path("live.mp4"),
+            ..Default::default()
+        };
+        let track = model::Track {
+            id: uuid::Uuid::from_u128(2),
+            kind: model::TrackKind::Video,
+            index: 1,
+            ..Default::default()
+        };
+        let clip = model::Clip {
+            id: uuid::Uuid::from_u128(3),
+            track: track.id,
+            media: media.id,
+            start: 0.0,
+            in_point: 0.0,
+            out_point: seconds,
+            ..Default::default()
+        };
+        project.media.push(media);
+        project.tracks.push(track);
+        project.clips.push(clip);
+        project
+    }
+
+    fn playing(cut: model::Project) -> Job {
+        Job {
+            cancel: Arc::new(AtomicBool::new(false)),
+            finished: AtomicBool::new(false),
+            done: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+            made: Made::Frames,
+            cut: Mutex::new(Some(Arc::new(cut))),
+            error: Mutex::new(None),
+            url: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn a_live_play_draws_the_cut_as_it_goes_and_says_where_it_has_got() {
+        let job = playing(cut(1.5));
+        let heard = Arc::new(Recording::default());
+        let push: Arc<dyn Push> = Arc::clone(&heard) as Arc<dyn Push>;
+        let playing = Playing {
+            from: 0.0,
+            rate: 1.0,
+            width: 64,
+            height: 36,
+            sound: false,
+        };
+        let ended_at =
+            run_play(&playing, &job, &push, "live-test").expect("a cut of a palette source plays");
+        assert!(ended_at >= 1.49, "it played to the cut's end: {ended_at}");
+        let frames = heard.frames.lock().expect("the recorder").clone();
+        assert!(
+            frames.len() >= 3,
+            "the window was handed frames: {frames:?}"
+        );
+        assert!(
+            frames.windows(2).all(|pair| pair[1] == pair[0] + 1),
+            "each frame is numbered after the one before: {frames:?}"
+        );
+        let states = heard.states.lock().expect("the recorder").clone();
+        let at: Vec<f64> = states
+            .iter()
+            .map(|state| {
+                state
+                    .parse::<f64>()
+                    .unwrap_or_else(|_| panic!("a play says where it is, not {state:?}"))
+            })
+            .collect();
+        assert!(
+            at.windows(2).all(|pair| pair[1] >= pair[0]),
+            "it never goes back: {at:?}"
+        );
+        assert!(
+            at.last().is_some_and(|last| (last - ended_at).abs() < 0.01),
+            "its last word is where it ended: {at:?} at {ended_at}"
+        );
+    }
+
+    #[test]
+    fn an_edit_handed_over_as_the_cut_plays_is_taken_once() {
+        let job = playing(cut(0.3));
+        let edited = Arc::new(cut(0.2));
+        *job.cut.lock().expect("the job's cut") = Some(Arc::clone(&edited));
+        let taken = swapped(&job).expect("the edit reaches the play");
+        assert_eq!(
+            taken.clips[0].end(),
+            0.2,
+            "the play draws the cut as it now is"
+        );
+        assert!(swapped(&job).is_none(), "and keeps it until the next edit");
     }
 }

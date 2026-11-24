@@ -129,6 +129,10 @@ type Clip (title: name, untitled: "Clip") {
     pos_x: Float = 0.0
     pos_y: Float = 0.0
     rotation: Float = 0.0
+    /// The point of the picture that scaling and turning go around and that a position moves,
+    /// as a fraction of it: 0.5, 0.5 is its middle, 0.0, 0.0 its top-left corner.
+    anchor_x: Float = 0.5
+    anchor_y: Float = 0.5
     crop_left: Float = 0.0
     crop_right: Float = 0.0
     crop_top: Float = 0.0
@@ -194,11 +198,13 @@ type Project (title: name, untitled: "Untitled project") {
     /// The frame the preview shows at `still_at`, drawn by the engine.
     still: Text = ""
     still_at: Float = -1.0
-    /// The cut rendered small for playing in the window.
-    proxy: Text = ""
+    /// The live play running in the window, by its engine stream: the device composites the cut
+    /// as it plays, and the window shows each frame by `tilo-live://{live}`.
+    live: Text = ""
+    /// How fast that play runs: 1 at normal speed, more to shuttle, negative backwards.
+    live_rate: Float = 0.0
     /// The render this cut has running, and how far it has got.
     job: Text = ""
-    job_kind: Text = ""
     job_done: Int = 0
     job_total: Int = 0
     /// The finished file an export made.
@@ -283,6 +289,34 @@ type JobState {
     error: Text = ""
 }
 
+/// A cut played live: the device composites it from the playhead and mixes the sound for the
+/// same moment, and the window shows each frame as it arrives.
+type LiveAsk {
+    /// The cut, as `json.encode(shot(p))` writes it.
+    project: Text
+    /// Where the playhead starts, in timeline seconds.
+    from: Float
+    /// Timeline seconds a second; 1 is normal speed and a negative rate runs backwards.
+    rate: Float
+    width: Int
+    height: Int
+    /// Whether the device plays the cut's sound as well as its picture.
+    sound: Bool
+}
+
+/// The cut as it now is, for a live play already running: an edit is seen as it is made.
+type CutAsk {
+    job: Text
+    project: Text
+}
+
+/// A short piece of the cut's sound where the playhead was dragged.
+type ScrubAsk {
+    project: Text
+    at: Float
+    seconds: Float
+}
+
 /// The cut as the device reads it: plain values, with the names the engine knows.
 type Shot {
     name: Text
@@ -359,6 +393,8 @@ type ShotClip {
     pos_x: Float
     pos_y: Float
     rotation: Float
+    anchor_x: Float
+    anchor_y: Float
     crop_left: Float
     crop_right: Float
     crop_top: Float
@@ -502,6 +538,8 @@ type SavedClip {
     pos_x: Float = 0.0
     pos_y: Float = 0.0
     rotation: Float = 0.0
+    anchor_x: Float = 0.5
+    anchor_y: Float = 0.5
     crop_left: Float = 0.0
     crop_right: Float = 0.0
     crop_top: Float = 0.0
@@ -579,6 +617,21 @@ fn track_form(f: Form) -> Text {
 
 fn align_name(a: Align) -> Text {
     if a == .left { "Left" } else if a == .right { "Right" } else { "Center" }
+}
+
+/// Where a fraction of a picture sits among the anchor's stops: 0, 1 or 2 across or down, and
+/// -1 when it is none of them.
+fn anchor_stop(at: Float) -> Int {
+    if (at - 0.0).abs() < 0.01 {
+        0
+    } else if (at - 0.5).abs() < 0.01 { 1 } else if (at - 1.0).abs() < 0.01 { 2 } else { -1 }
+}
+
+/// Which stop of the anchor's grid row `row` is chosen, or 3 for none: the value the
+/// inspector's three rows of segments take.
+fn anchor_row(c: Clip, row: Int) -> Int {
+    let column = anchor_stop(c.anchor_x)
+    if anchor_stop(c.anchor_y) != row or column < 0 { 3 } else { column }
 }
 
 fn align_of(name: Text) -> Align {
@@ -663,6 +716,8 @@ fn shot_clip(c: Clip) -> ShotClip {
         pos_x: c.pos_x,
         pos_y: c.pos_y,
         rotation: c.rotation,
+        anchor_x: c.anchor_x,
+        anchor_y: c.anchor_y,
         crop_left: c.crop_left,
         crop_right: c.crop_right,
         crop_top: c.crop_top,
@@ -777,6 +832,8 @@ fn saved_clip(p: Project, c: Clip) -> SavedClip {
         pos_x: c.pos_x,
         pos_y: c.pos_y,
         rotation: c.rotation,
+        anchor_x: c.anchor_x,
+        anchor_y: c.anchor_y,
         crop_left: c.crop_left,
         crop_right: c.crop_right,
         crop_top: c.crop_top,
@@ -847,6 +904,8 @@ action restore_clip(
             pos_x: c.pos_x,
             pos_y: c.pos_y,
             rotation: c.rotation,
+            anchor_x: c.anchor_x,
+            anchor_y: c.anchor_y,
             crop_left: c.crop_left,
             crop_right: c.crop_right,
             crop_top: c.crop_top,
@@ -1115,6 +1174,7 @@ action adopt_probe(p: Project, m: Media, said: Text) {
             }
         }
     }
+    ""
 }
 
 /// Checks that a source's bytes are here: reads what they are again, draws its swatch and
@@ -1238,6 +1298,8 @@ fn one_source(m: Media) -> Shot {
                     pos_x: 0.0,
                     pos_y: 0.0,
                     rotation: 0.0,
+                    anchor_x: 0.5,
+                    anchor_y: 0.5,
                     crop_left: 0.0,
                     crop_right: 0.0,
                     crop_top: 0.0,
@@ -1311,9 +1373,8 @@ fn export_name(p: Project, container: Text) -> Text {
     "{p.name}.{suffix}"
 }
 
-/// Starts a render: `preview` keeps the cut small for the window to play, `export` writes the
-/// file a person saves.
-action begin_render(p: Project, render_kind: Text, resolution: Text, container: Text, fps: Int) {
+/// Starts the render a person saves.
+action begin_render(p: Project, resolution: Text, container: Text, fps: Int) {
     if p.job != "" {
         return
     }
@@ -1332,7 +1393,6 @@ action begin_render(p: Project, render_kind: Text, resolution: Text, container: 
         .ok(text) => match json.decode<JobAnswer>(text) {
             .ok(answer) => {
                 p.job = answer.job
-                p.job_kind = render_kind
                 p.job_done = 0
                 p.job_total = 0
                 p.format = container
@@ -2111,6 +2171,14 @@ action set_look(c: Clip, look: Look, value: Float) {
     redraw_clip(c)
 }
 
+/// Moves the point a clip's scaling and turning go around: a corner, an edge or the middle,
+/// which is where a picture is pinned when it is made half the frame, turned or grown.
+action set_anchor(c: Clip, x: Float, y: Float) {
+    c.anchor_x = x.clamp(0.0, 1.0)
+    c.anchor_y = y.clamp(0.0, 1.0)
+    redraw_clip(c)
+}
+
 /// Sets which shape limits where a clip shows: `off`, `rect` or `ellipse`.
 action set_mask(c: Clip, shape: Text) {
     require shape == "off" or shape == "rect" or shape == "ellipse" "{shape} is not a mask shape"
@@ -2217,6 +2285,13 @@ fn cut_of_media(m: Media) -> Option<Project> {
 /// Draws the frame the preview last showed again, so an edit made after it is seen at once. A
 /// cut whose frame the window never showed draws nothing: there is no place to draw it at.
 action redraw(p: Project) {
+    if p.live != "" {
+        if play_moving(p) {
+            refresh_live(p)
+            return
+        }
+        stop_cut(p)
+    }
     if p.still_at >= 0.0 { draw_still(p, p.still_at) }
 }
 
@@ -2531,27 +2606,6 @@ action split_audio(p: Project, c: Clip) {
     c.sound_split = true
 }
 
-/// Puts two clips side by side: each half the frame, one left and one right.
-action place_side_by_side(p: Project, left: Clip, right: Clip) {
-    left.scale_x = 0.5
-    left.scale_y = 1.0
-    left.pos_x = -0.25
-    left.pos_y = 0.0
-    right.scale_x = 0.5
-    right.scale_y = 1.0
-    right.pos_x = 0.25
-    right.pos_y = 0.0
-    redraw(p)
-}
-
-action unplace_side_by_side(c: Clip) {
-    c.scale_x = 1.0
-    c.scale_y = 1.0
-    c.pos_x = 0.0
-    c.pos_y = 0.0
-    redraw_clip(c)
-}
-
 action add_effect(c: Clip, form: Text) {
     c.effects.insert(Effect(form: form, amount: 1.0))
     redraw_clip(c)
@@ -2602,14 +2656,166 @@ action preview(p: Project, at: Float) {
     draw_still(p, at)
 }
 
-/// Renders the cut small, so the window plays it.
-action preview_cut(p: Project) {
-    begin_render(p, "preview", "720", "mp4", 30)
+/// The width a live frame is drawn at before the window shows it, and the height that gives the
+/// cut's own shape.
+fn live_width() -> Int {
+    640
 }
 
-/// Renders the cut to a file.
+fn live_height(p: Project) -> Int {
+    (640.0 * p.height.to_float() / p.width.to_float().max(1.0)).round().max(64)
+}
+
+/// Plays the cut from `at`: the device composites each frame as the playhead reaches it and
+/// mixes the sound for the same moment, so the window shows the cut itself rather than a render
+/// of it. A negative rate plays the footage and its sound backwards.
+action play_cut(p: Project, at: Float, rate: Float) {
+    stop_cut(p)
+    // A play goes somewhere: a rate of nothing is normal speed.
+    let rate = if rate.abs() < 0.01 { 1.0 } else { rate }
+    let end = total(p)
+    let from = if at >= end { 0.0 } else { at.max(0.0) }
+    match engine.stream(
+        "play",
+        json.encode(
+            LiveAsk(
+                project: json.encode(shot(p)),
+                from: from,
+                rate: rate,
+                width: live_width(),
+                height: live_height(p),
+                sound: true,
+            ),
+        ),
+    ) {
+        .ok(text) => match json.decode<JobAnswer>(text) {
+            .ok(answer) => {
+                p.live = answer.job
+                p.live_rate = rate
+                p.still_at = from
+                p.trouble = ""
+            }
+            .err(why) => trouble(p, why),
+        },
+        .err(why) => trouble(p, why),
+    }
+}
+
+/// Stops the live play: the device stops compositing and the sound stops with the picture.
+action stop_cut(p: Project) {
+    if p.live != "" {
+        engine.cancel(p.live)
+        p.live = ""
+        p.live_rate = 0.0
+    }
+}
+
+/// Stops the live play where it stands, and draws that frame: what pause does.
+action pause_cut(p: Project) {
+    if p.live == "" {
+        return
+    }
+    let at = live_at(p)
+    stop_cut(p)
+    draw_still(p, snap_time(p, if at >= 0.0 { at } else { p.still_at }))
+}
+
+/// One press of a shuttle control: the same way doubles the speed up to sixteen times, the
+/// other way starts again at normal speed that way.
+action shuttle(p: Project, at: Float, way: Float) {
+    let faster = if p.live_rate * way > 0.0 { p.live_rate * 2.0 } else { way }
+    play_cut(p, at, faster.clamp(-16.0, 16.0))
+}
+
+/// Stops the live play and draws the frame `at` in its place: what a jump or a frame step does.
+action jump_to(p: Project, at: Float) {
+    stop_cut(p)
+    preview(p, at)
+}
+
+/// What the transport says the playhead is doing, which is nothing while it stands.
+fn motion_words(p: Project) -> Text {
+    if p.live == "" {
+        ""
+    } else if p.live_rate < 0.0 {
+        std.say("Backwards {p.live_rate.abs().round()}×")
+    } else if p.live_rate > 1.0 {
+        std.say("Forwards {p.live_rate.round()}×")
+    } else { std.say("Playing") }
+}
+
+/// Where the live play has the playhead now, or -1 when nothing plays.
+action live_at(p: Project) -> Float {
+    if p.live == "" {
+        return -1.0
+    }
+    engine.state(p.live).to_float() ?? -1.0
+}
+
+/// Scrubs to the second `at`: the live play stops, the frame under the playhead is drawn,
+/// and a short piece of the sound there is played. A drag runs this at every move.
+action scrub_to(p: Project, at: Float) {
+    stop_cut(p)
+    draw_still(p, snap_time(p, at))
+    hear_scrub(p, snap_time(p, at))
+}
+
+/// Whether the live play is still running: a word of nowhere means it is just starting, and a
+/// word at either end means it has stopped there.
+action play_moving(p: Project) -> Bool {
+    let at = live_at(p)
+    if at < 0.0 {
+        return true
+    }
+    at < total(p) and (p.live_rate >= 0.0 or at > 0.0)
+}
+
+/// Hands the device the cut as it now is: an edit made while the cut plays is seen as it is
+/// made, rather than at the next play.
+action refresh_live(p: Project) {
+    if p.live == "" {
+        return
+    }
+    match engine.call("cut", json.encode(CutAsk(job: p.live, project: json.encode(shot(p))))) {
+        .ok(_) => {}
+        .err(why) => trouble(p, why),
+    }
+}
+
+/// The cut's sound where the playhead was dragged: a short snippet, not the timeline's running
+/// sound.
+action hear_scrub(p: Project, at: Float) {
+    match engine.call(
+        "scrub",
+        json.encode(ScrubAsk(project: json.encode(shot(p)), at: at.max(0.0), seconds: 0.12)),
+    ) {
+        .ok(_) => {}
+        .err(_) => {}
+    }
+}
+
+/// Renders the cut to a file, refusing when a source this device cannot read would leave the
+/// film missing its footage.
 action export_cut(p: Project, resolution: Text, container: Text, fps: Int) {
-    begin_render(p, "export", resolution, container, fps)
+    let missing = missing_sources(p)
+    if not missing.is_empty() {
+        trouble(
+            p,
+            std.say(
+                "Cannot export: {missing.join(", ")} is not on this device, so the film would miss that footage",
+            ),
+        )
+        return
+    }
+    begin_render(p, resolution, container, fps)
+}
+
+/// The sources the render's range reaches for that this device does not have, by name.
+fn missing_sources(p: Project) -> List<Text> {
+    let from = render_from(p)
+    let to = render_to(p)
+    let reached = p.clips.filter(c -> c.start + shown(c) > from and c.start < to)
+    p.media.filter(m -> m.missing and reached.any(c -> c.media == m)).map(m -> m.name)
 }
 
 /// Asks how far the running render has got.
@@ -2625,12 +2831,7 @@ action poll_render(p: Project) {
                 p.job_done = state.done
                 p.job_total = state.total
                 if state.state == "done" {
-                    if p.job_kind == "preview" {
-                        p.proxy = state.url
-                        p.format = "mp4"
-                    } else {
-                        p.exported = state.url
-                    }
+                    p.exported = state.url
                     p.job = ""
                     p.trouble = ""
                     draw_still(p, render_from(p))
@@ -2832,9 +3033,25 @@ view window(e: Editor) {
     state resolution: Text = "1080"
     state container: Text = "mp4"
     state rate: Text = "30"
-    state playing: Bool = false
     let p = shown_project(e)
     if let p = p {
+        // What the live play says of itself: the timeline second it has reached, in the word
+        // the device pushes with every few frames it draws.
+        let live_word = if p.live != "" { engine.state(p.live).to_float() } else { .none }
+        // The playhead as the toolbar, the ruler and the clock draw it: the live play's own
+        // word while the cut plays, so the head moves with the picture rather than once a second,
+        // and the frame that stands otherwise.
+        let head = live_word ?? if p.still_at >= 0.0 { p.still_at } else { playhead }
+        // A play that reached the cut's end has stopped: the picture stands where it stopped,
+        // and the transport offers the play again.
+        let ended = match live_word {
+            .some(at) => at >= total(p) or p.live_rate < 0.0 and at <= 0.0,
+            .none => false,
+        }
+        let live = p.live != "" and not ended
+        if live {
+            every 1s: set(playhead, engine.state(p.live).to_float() ?? playhead)
+        }
         let chosen = p.clips.filter(c -> selected.contains(c.id()))
         let clip = clip_named(p, selected.last() ?? "")
         let media = p.media.find(m -> m.id() == picked_media)
@@ -2917,21 +3134,17 @@ view window(e: Editor) {
                         }
                     }
                     stack(gap: .related, fill) {
-                        // The preview: the frame at the playhead, or the cut playing once it is
-                        // rendered small.
+                        // The preview: the cut playing live as the device composites it, or the
+                        // frame at the playhead while it stands.
                         ui.Section(p.name) {
-                            if p.proxy != "" and playing {
-                                ui.VideoPlayer(
-                                    title: p.name,
-                                    source: p.proxy,
-                                    playing: true,
-                                    position: playhead,
-                                    duration: total(p),
-                                ) {
-                                    on set_playing(on_now): set(playing, on_now)
-                                    on seek(place): set(playhead, place)
-                                    on fail(why): trouble(p, why)
-                                }
+                            if p.live != "" {
+                                ui.Image(
+                                    "tilo-live://{p.live}",
+                                    alt: p.name,
+                                    fit: .contain,
+                                    min: 10rem,
+                                    max: 26rem,
+                                )
                             } else if p.still != "" {
                                 ui.Image(
                                     p.still,
@@ -2958,7 +3171,7 @@ view window(e: Editor) {
                                     accessible_name: std.say("Jump to the start"),
                                     key: "Home",
                                 ) {
-                                    on press: preview(p, 0.0).then(set(playhead, 0.0))
+                                    on press: jump_to(p, 0.0).then(set(playhead, 0.0))
                                 }
                                 ui.Button(
                                     "",
@@ -2969,7 +3182,7 @@ view window(e: Editor) {
                                         .some("Shift+Left")
                                     } else { .none },
                                 ) {
-                                    on press: preview(p, (playhead - 1.0).max(0.0))
+                                    on press: jump_to(p, (playhead - 1.0).max(0.0))
                                         .then(
                                             set(playhead, (playhead - 1.0).max(0.0)),
                                         )
@@ -2981,12 +3194,25 @@ view window(e: Editor) {
                                     accessible_name: std.say("Back a frame"),
                                     key: if selected.is_empty() { .some("Left") } else { .none },
                                 ) {
-                                    on press: preview(p, stepped(p, playhead, -1))
+                                    on press: jump_to(p, stepped(p, playhead, -1))
                                         .then(
                                             set(playhead, stepped(p, playhead, -1)),
                                         )
                                 }
-                                if playing {
+                                // Shuttle: each press the same way doubles the speed, and the
+                                // other way starts again at normal speed that way.
+                                ui.Button(
+                                    "",
+                                    icon: .rewind,
+                                    icon_only: true,
+                                    accessible_name: std.say(
+                                        "Play backwards, faster with each press",
+                                    ),
+                                    key: "j",
+                                ) {
+                                    on press: session(e).then(shuttle(p, playhead, -1.0))
+                                }
+                                if live {
                                     ui.Button(
                                         "",
                                         icon: .pause,
@@ -2994,9 +3220,9 @@ view window(e: Editor) {
                                         accessible_name: std.say("Pause"),
                                         key: "Space",
                                     ) {
-                                        on press: set(playing, false)
+                                        on press: pause_cut(p)
                                     }
-                                } else if p.proxy != "" {
+                                } else {
                                     ui.Button(
                                         "",
                                         icon: .play,
@@ -3004,18 +3230,17 @@ view window(e: Editor) {
                                         accessible_name: std.say("Play the cut"),
                                         key: "Space",
                                     ) {
-                                        on press: session(e).then(set(playing, true))
+                                        on press: session(e).then(play_cut(p, playhead, 1.0))
                                     }
-                                } else {
-                                    ui.Button(
-                                        "",
-                                        icon: .play,
-                                        icon_only: true,
-                                        accessible_name: std.say("Render and play the cut"),
-                                        key: "Space",
-                                    ) {
-                                        on press: preview_cut(p)
-                                    }
+                                }
+                                ui.Button(
+                                    "",
+                                    icon: .fast_forward,
+                                    icon_only: true,
+                                    accessible_name: std.say("Play faster with each press"),
+                                    key: "l",
+                                ) {
+                                    on press: session(e).then(shuttle(p, playhead, 1.0))
                                 }
                                 ui.Button(
                                     "",
@@ -3024,7 +3249,7 @@ view window(e: Editor) {
                                     accessible_name: std.say("Forward a frame"),
                                     key: if selected.is_empty() { .some("Right") } else { .none },
                                 ) {
-                                    on press: preview(p, stepped(p, playhead, 1))
+                                    on press: jump_to(p, stepped(p, playhead, 1))
                                         .then(
                                             set(playhead, stepped(p, playhead, 1)),
                                         )
@@ -3038,7 +3263,7 @@ view window(e: Editor) {
                                         .some("Shift+Right")
                                     } else { .none },
                                 ) {
-                                    on press: preview(p, playhead + 1.0)
+                                    on press: jump_to(p, playhead + 1.0)
                                         .then(
                                             set(playhead, playhead + 1.0),
                                         )
@@ -3050,9 +3275,12 @@ view window(e: Editor) {
                                     accessible_name: std.say("Jump to the end"),
                                     key: "End",
                                 ) {
-                                    on press: preview(p, total(p)).then(set(playhead, total(p)))
+                                    on press: jump_to(p, total(p)).then(set(playhead, total(p)))
                                 }
-                                ui.Text(clock(playhead), role: .caption, numeric: true)
+                                if live {
+                                    ui.Text(motion_words(p), role: .caption, secondary: true)
+                                }
+                                ui.Text(clock(head), role: .caption, numeric: true)
                                 ui.Text(
                                     "/ {clock(total(p))}",
                                     role: .caption,
@@ -3078,7 +3306,7 @@ view window(e: Editor) {
                                         ui.LevelMeter(
                                             source: out.device,
                                             output: true,
-                                            running: playing,
+                                            running: live,
                                             label: std.say("What the cut plays through"),
                                         )
                                     }
@@ -3091,16 +3319,10 @@ view window(e: Editor) {
                                             p.job_done.to_float() / p.job_total.to_float()
                                         } else { 0.0 },
                                     ),
-                                    label: if p.job_kind == "preview" {
-                                        std.say("Rendering a preview")
-                                    } else { std.say("Rendering the film") },
+                                    label: std.say("Rendering the film"),
                                 )
                                 ui.Button(std.say("Stop the render"), icon: .x) {
                                     on press: cancel_render(p)
-                                }
-                            } else if p.proxy != "" and not playing {
-                                ui.Button(std.say("Play the cut"), icon: .play) {
-                                    on press: session(e).then(set(playing, true))
                                 }
                             }
                             if p.trouble != "" {
@@ -3178,12 +3400,12 @@ view window(e: Editor) {
                                 label: std.say("The timeline"),
                                 span: span,
                                 scroll: scroll,
-                                playhead: playhead,
+                                playhead: head,
                                 length: total(p),
                                 step: frame(p),
                             ) {
-                                on scrub(t: Float): set(playhead, t)
-                                on seek(t: Float): set(playhead, t).then(preview(p, t))
+                                on scrub(t: Float): set(playhead, t).then(scrub_to(p, t))
+                                on seek(t: Float): set(playhead, t).then(jump_to(p, t))
                                 on zoomed(s: Float): set(span, s)
                                 on scrolled(s: Float): set(scroll, s)
                                 on press(t: Float): set(selected, []).then(set(playhead, t))
@@ -3224,7 +3446,7 @@ view window(e: Editor) {
                                 container,
                                 rate,
                                 playhead,
-                                playing,
+                                live,
                             )
                         }
                     }
@@ -3517,6 +3739,49 @@ template view inspector(
                 shows_value: true,
             ) {
                 on change(v): set_look(c, .rotation, v)
+            }
+            // Where a clip is pinned: the corner, edge or middle that scaling and turning go
+            // around. Nine places, chosen as a grid, because anything else is a picture drawn
+            // off its own frame.
+            ui.Section(std.say("Anchor")) {
+                ui.Text(
+                    std.say("Width, height and turning go around this point of the picture"),
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.ToggleGroup(selected: anchor_row(c, 0)) {
+                    ui.Segment(std.say("Top left")) {
+                        on press: set_anchor(c, 0.0, 0.0)
+                    }
+                    ui.Segment(std.say("Top")) {
+                        on press: set_anchor(c, 0.5, 0.0)
+                    }
+                    ui.Segment(std.say("Top right")) {
+                        on press: set_anchor(c, 1.0, 0.0)
+                    }
+                }
+                ui.ToggleGroup(selected: anchor_row(c, 1)) {
+                    ui.Segment(std.say("Left")) {
+                        on press: set_anchor(c, 0.0, 0.5)
+                    }
+                    ui.Segment(std.say("Centre")) {
+                        on press: set_anchor(c, 0.5, 0.5)
+                    }
+                    ui.Segment(std.say("Right")) {
+                        on press: set_anchor(c, 1.0, 0.5)
+                    }
+                }
+                ui.ToggleGroup(selected: anchor_row(c, 2)) {
+                    ui.Segment(std.say("Bottom left")) {
+                        on press: set_anchor(c, 0.0, 1.0)
+                    }
+                    ui.Segment(std.say("Bottom")) {
+                        on press: set_anchor(c, 0.5, 1.0)
+                    }
+                    ui.Segment(std.say("Bottom right")) {
+                        on press: set_anchor(c, 1.0, 1.0)
+                    }
+                }
             }
             ui.Section(std.say("Crop")) {
                 ui.Slider(
@@ -4068,6 +4333,16 @@ template view export_controls(
         ui.Dropdown(options: ["mp4", "webm", "mov"], bind: container, caption: std.say("Format"))
         ui.Dropdown(options: ["24", "30", "60"], bind: rate, caption: std.say("Frames"))
     }
+    let missing = missing_sources(p)
+    if not missing.is_empty() {
+        ui.Banner(
+            std.say("This film needs sources this device does not have"),
+            message: std.say(
+                "{missing.join(", ")}: relink it in the bin, or export on the device that has it",
+            ),
+            kind: .warning,
+        )
+    }
     row(gap: .tight, align: .center, wrap: true) {
         if p.job != "" {
             ui.Button(std.say("Stop the render"), icon: .x) {
@@ -4077,9 +4352,6 @@ template view export_controls(
             ui.Button(std.say("Render the film"), icon: .play) {
                 on press: export_cut(p, resolution, container, rate.to_int() ?? 30)
             }
-        }
-        if p.job_kind == "preview" and p.proxy != "" {
-            ui.Text(std.say("The cut plays in the window"), role: .caption, secondary: true)
         }
         if p.exported != "" {
             ui.Button(std.say("Save the film"), icon: .download) {

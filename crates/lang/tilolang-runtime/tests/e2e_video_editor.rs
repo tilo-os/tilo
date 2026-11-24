@@ -13,7 +13,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::clipboard::ClipboardHost;
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::host_work::{EngineHost, Push};
     use tilolang_runtime::{
         AmStore, EnumValue, Held, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance,
     };
@@ -35,6 +35,10 @@ mod cases {
         /// What this device cannot read: an ask whose input names one of these is refused as
         /// bytes it does not hold.
         unreadable: Rc<RefCell<Vec<String>>>,
+        /// What each stream was handed: where a test says the play has got to.
+        streams: Rc<RefCell<Vec<(String, std::sync::Arc<dyn Push>)>>>,
+        /// The jobs a stream started, in order.
+        live: Rc<RefCell<Vec<String>>>,
     }
 
     impl Engine {
@@ -52,6 +56,29 @@ mod cases {
                 .iter()
                 .map(|(op, _)| op.clone())
                 .collect()
+        }
+
+        /// The input of the last ask of `op`.
+        fn input_of(&self, op: &str) -> String {
+            self.asked
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(asked, _)| asked == op)
+                .map(|(_, input)| input.clone())
+                .unwrap_or_else(|| panic!("the device was never asked `{op}`"))
+        }
+
+        /// Says the live play reached `at`, as the device pushes it with every few frames.
+        fn reached(&self, job: &str, at: f64) {
+            let push = self
+                .streams
+                .borrow()
+                .iter()
+                .find(|(started, _)| started == job)
+                .map(|(_, push)| std::sync::Arc::clone(push))
+                .expect("the stream the job names");
+            push.state(job, &format!("{at:.2}"));
         }
     }
 
@@ -73,6 +100,8 @@ mod cases {
                 "still" => Ok(format!(r#"{{"url":"{STILL}"}}"#)),
                 "thumb" => Ok(format!(r#"{{"url":"{SWATCH}"}}"#)),
                 "sample" => Ok(r#"{"red":0.25,"green":0.5,"blue":0.75}"#.to_owned()),
+                "scrub" => Ok(String::new()),
+                "cut" => Ok(String::new()),
                 "waveform" => Ok(r#"{"peaks":[0.2,0.6,0.4,0.9]}"#.to_owned()),
                 other => Err(format!("`{other}` is no op this device runs")),
             }
@@ -102,8 +131,27 @@ mod cases {
             }
         }
 
+        fn stream(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            push: std::sync::Arc<dyn Push>,
+        ) -> Result<String, String> {
+            self.asked
+                .borrow_mut()
+                .push((op.to_owned(), input.to_owned()));
+            if op != "play" {
+                return Err(format!("`{op}` is no stream this device runs"));
+            }
+            let job = format!("live-{}", self.live.borrow().len() + 1);
+            self.live.borrow_mut().push(job.clone());
+            self.streams.borrow_mut().push((job.clone(), push));
+            Ok(format!(r#"{{"job":"{job}"}}"#))
+        }
+
         fn cancel(&self, job: &str) -> bool {
-            job == "job-1"
+            job == "job-1" || job.starts_with("live-")
         }
     }
 
@@ -323,6 +371,21 @@ mod cases {
         }
     }
 
+    /// A `Look` case, as the inspector's sliders name it.
+    fn look_case(s: &Studio, case: &str) -> Value {
+        Value::Enum(EnumValue {
+            ty: s.app.compiled.ids.get("Look").expect("Look").to_owned(),
+            variant: s
+                .app
+                .compiled
+                .ids
+                .get(&format!("Look.{case}"))
+                .unwrap_or_else(|| panic!("Look.{case}"))
+                .to_owned(),
+            fields: std::collections::BTreeMap::default(),
+        })
+    }
+
     tilo_test_env::scenario! {
         fn the_editor_cuts_a_film_and_shows_it;
 
@@ -513,22 +576,18 @@ mod cases {
             assert_eq!(s.text(&p, "job"), "", "the job is over");
         }
 
-        phase a_preview_render_is_the_cut_small_and_can_be_stopped;
-        {
-            let s = Studio::new();
-            let (p, _, _) = s.placed();
-            s.call("preview_cut", vec![Value::resource(&p)]);
-            assert_eq!(s.text(&p, "job_kind"), "preview");
-            let ask: serde_json::Value = serde_json::from_str(&s.engine.last_input()).unwrap();
-            assert_eq!(ask["resolution"], "720");
-            s.call("cancel_render", vec![Value::resource(&p)]);
-            assert_eq!(s.text(&p, "job"), "");
-        }
-
         phase a_projects_sources_and_their_places_are_a_file_a_person_keeps;
         {
             let s = Studio::new();
-            let (p, _, _) = s.placed();
+            let (p, _, clip) = s.placed();
+            s.call(
+                "set_anchor",
+                vec![
+                    Value::resource(&clip),
+                    Value::Float(0.0),
+                    Value::Float(1.0),
+                ],
+            );
             let file = match s.call("save_project", vec![Value::resource(&p)]) {
                 InvokeOutcome::Done(Value::File(file)) => (*file).clone(),
                 other => panic!("save_project answers a file: {other:?}"),
@@ -543,6 +602,9 @@ mod cases {
             assert_eq!(s.text(&opened, "name"), "Untitled project");
             assert_eq!(s.media(&opened).len(), 1, "its sources came with it");
             assert_eq!(s.clips(&opened).len(), 1, "and their places");
+            let reopened = s.clips(&opened).into_iter().next().expect("a clip");
+            assert_eq!(s.number(&reopened, "anchor_x"), 0.0, "the anchor came with it");
+            assert_eq!(s.number(&reopened, "anchor_y"), 1.0);
         }
 
         phase keys_colours_filmstrips_and_notes_are_a_clip_s_own;
@@ -874,6 +936,251 @@ mod cases {
             assert!(matches!(dragged, Ok(InvokeOutcome::Done(_))), "{dragged:?}");
             let marked = s.records(&p, "markers");
             assert_eq!(s.number(&marked[0], "t"), 2.5);
+        }
+
+        phase a_clip_turns_around_its_anchor;
+        {
+            let s = Studio::new();
+            let (p, media, clip) = s.placed();
+            assert_eq!(s.number(&clip, "anchor_x"), 0.5, "a clip starts pinned at its middle");
+            assert_eq!(s.number(&clip, "anchor_y"), 0.5);
+            s.call(
+                "set_anchor",
+                vec![
+                    Value::resource(&clip),
+                    Value::Float(0.0),
+                    Value::Float(1.0),
+                ],
+            );
+            assert_eq!(s.number(&clip, "anchor_x"), 0.0);
+            assert_eq!(s.number(&clip, "anchor_y"), 1.0);
+            // The engine draws the frame turned around the point the clip names.
+            s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
+            let ask: serde_json::Value =
+                serde_json::from_str(&s.engine.input_of("still")).expect("the still's ask");
+            let cut: serde_json::Value =
+                serde_json::from_str(ask["project"].as_str().expect("a cut")).expect("a cut");
+            let placed: serde_json::Value =
+                serde_json::from_str(cut["clips"][0].as_str().expect("a clip")).expect("a clip");
+            assert_eq!(placed["anchor_x"], 0.0);
+            assert_eq!(placed["anchor_y"], 1.0);
+            // Two clips side by side hang each from the edge it takes, so what it shows fills
+            // its half: the anchor is what makes that a half-width scale about an edge rather
+            // than about the middle.
+            for (side, anchor) in [(-0.25, 0.0), (0.25, 1.0)] {
+                s.call(
+                    "set_anchor",
+                    vec![
+                        Value::resource(&clip),
+                        Value::Float(anchor),
+                        Value::Float(0.5),
+                    ],
+                );
+                s.call(
+                    "set_look",
+                    vec![
+                        Value::resource(&clip),
+                        look_case(&s, "scale_x"),
+                        Value::Float(0.5),
+                    ],
+                );
+                s.call(
+                    "set_look",
+                    vec![
+                        Value::resource(&clip),
+                        look_case(&s, "pos_x"),
+                        Value::Float(side),
+                    ],
+                );
+                assert_eq!(s.number(&clip, "anchor_x"), anchor);
+                assert_eq!(s.number(&clip, "pos_x"), side);
+            }
+            s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
+            let ask: serde_json::Value =
+                serde_json::from_str(&s.engine.input_of("still")).expect("the still's ask");
+            let cut: serde_json::Value =
+                serde_json::from_str(ask["project"].as_str().expect("a cut")).expect("a cut");
+            let placed: serde_json::Value =
+                serde_json::from_str(cut["clips"][0].as_str().expect("a clip")).expect("a clip");
+            assert_eq!(placed["scale_x"], 0.5);
+            assert_eq!(placed["anchor_x"], 1.0, "half the frame, hung from the edge it takes");
+        }
+
+        phase a_cut_plays_live_and_stops_where_it_is_paused;
+        {
+            let s = Studio::new();
+            let (p, _, _) = s.placed();
+            s.call(
+                "play_cut",
+                vec![
+                    Value::resource(&p),
+                    Value::Float(2.0),
+                    Value::Float(1.0),
+                ],
+            );
+            assert_eq!(s.text(&p, "live"), "live-1");
+            let ask: serde_json::Value =
+                serde_json::from_str(&s.engine.input_of("play")).expect("the play's ask");
+            assert_eq!(ask["from"], 2.0, "it plays from the playhead");
+            assert_eq!(ask["rate"], 1.0, "at normal speed");
+            assert_eq!(ask["sound"], true, "and the device plays its sound");
+            assert_eq!(ask["width"], 640, "a frame the window can show at once");
+            // The window shows the stream's own frame, not a render of the cut.
+            s.engine.reached("live-1", 5.0);
+            let window = s.window();
+            assert!(
+                of_kind(window.tree(), "ui.Image").iter().any(|image| {
+                    image.props.get("src").and_then(Value::as_text)
+                        == Some("tilo-live://live-1")
+                }),
+                "the preview is the live play:\n{}",
+                dump(window.tree())
+            );
+            assert!(
+                of_kind(window.tree(), "ui.Text").iter().any(|text| {
+                    text.props.get("value").and_then(Value::as_text) == Some("0:05.0")
+                }),
+                "the transport reads where the play has got:\n{}",
+                dump(window.tree())
+            );
+            // Pause stops the device's play and stands on the frame it reached.
+            s.call("pause_cut", vec![Value::resource(&p)]);
+            assert_eq!(s.text(&p, "live"), "", "the play is over");
+            let still: serde_json::Value =
+                serde_json::from_str(&s.engine.input_of("still")).expect("the still's ask");
+            assert_eq!(still["at"], 5.0, "the frame it stopped on");
+        }
+
+        phase the_transport_shuttles_and_runs_backwards;
+        {
+            let s = Studio::new();
+            let (p, _, _) = s.placed();
+            let rate = || -> f64 {
+                let ask: serde_json::Value =
+                    serde_json::from_str(&s.engine.input_of("play")).expect("the play's ask");
+                ask["rate"].as_f64().unwrap_or_default()
+            };
+            s.call(
+                "shuttle",
+                vec![Value::resource(&p), Value::Float(0.0), Value::Float(1.0)],
+            );
+            assert_eq!(rate(), 1.0);
+            assert_eq!(s.number(&p, "live_rate"), 1.0);
+            s.call(
+                "shuttle",
+                vec![Value::resource(&p), Value::Float(0.0), Value::Float(1.0)],
+            );
+            assert_eq!(rate(), 2.0, "the same way again doubles it");
+            s.call(
+                "shuttle",
+                vec![Value::resource(&p), Value::Float(0.0), Value::Float(1.0)],
+            );
+            assert_eq!(rate(), 4.0);
+            s.call(
+                "shuttle",
+                vec![Value::resource(&p), Value::Float(3.0), Value::Float(-1.0)],
+            );
+            assert_eq!(
+                rate(),
+                -1.0,
+                "the other way starts again at normal speed, backwards"
+            );
+            assert_eq!(s.number(&p, "live_rate"), -1.0);
+        }
+
+        phase a_scrub_draws_the_frame_and_plays_the_sound_there;
+        {
+            let s = Studio::new();
+            let (p, _, _) = s.placed();
+            s.call(
+                "play_cut",
+                vec![Value::resource(&p), Value::Float(0.0), Value::Float(1.0)],
+            );
+            // Dragged to the tenth second.
+            s.call(
+                "scrub_to",
+                vec![Value::resource(&p), Value::Float(10.0)],
+            );
+            assert_eq!(s.text(&p, "live"), "", "dragging the playhead stops the play");
+            let scrub: serde_json::Value =
+                serde_json::from_str(&s.engine.input_of("scrub")).expect("the scrub's ask");
+            assert_eq!(scrub["at"], 10.0, "the sound where the playhead was dragged");
+            let still: serde_json::Value =
+                serde_json::from_str(&s.engine.input_of("still")).expect("the still's ask");
+            assert_eq!(still["at"], 10.0, "and the frame under it");
+        }
+
+        phase a_film_whose_footage_is_missing_is_refused;
+        {
+            let s = Studio::new();
+            let (p, media, _) = s.placed();
+            s.engine
+                .unreadable
+                .borrow_mut()
+                .push("Harbour.mp4".to_owned());
+            s.call(
+                "refresh_source",
+                vec![Value::resource(&p), Value::resource(&media)],
+            );
+            assert!(s.flag(&media, "missing"));
+            let renders = || {
+                s.engine
+                    .ops()
+                    .iter()
+                    .filter(|op| *op == "render")
+                    .count()
+            };
+            let before = renders();
+            s.call(
+                "export_cut",
+                vec![
+                    Value::resource(&p),
+                    Value::text("1080"),
+                    Value::text("mp4"),
+                    Value::Int(30),
+                ],
+            );
+            assert_eq!(renders(), before, "no render is started");
+            assert_eq!(s.text(&p, "job"), "");
+            assert!(
+                s.text(&p, "trouble").contains("Harbour.mp4"),
+                "the refusal names the source: {:?}",
+                s.text(&p, "trouble")
+            );
+            // The export controls say it before the person tries.
+            let window = s.window();
+            assert!(
+                of_kind(window.tree(), "ui.Banner").iter().any(|banner| {
+                    banner
+                        .props
+                        .get("message")
+                        .and_then(Value::as_text)
+                        .is_some_and(|message| message.contains("Harbour.mp4"))
+                }),
+                "the export section names the source it lacks:\n{}",
+                dump(window.tree())
+            );
+            // Relinking the source lets the film be made.
+            s.engine.unreadable.borrow_mut().clear();
+            s.call(
+                "relink",
+                vec![
+                    Value::resource(&p),
+                    Value::resource(&media),
+                    Studio::file("Harbour-found.mp4"),
+                ],
+            );
+            s.call(
+                "export_cut",
+                vec![
+                    Value::resource(&p),
+                    Value::text("1080"),
+                    Value::text("mp4"),
+                    Value::Int(30),
+                ],
+            );
+            assert_eq!(renders(), before + 1, "the film is rendered once the source is here");
+            assert_eq!(s.text(&p, "job"), "job-1");
         }
 
         phase pressing_a_clip_opens_what_its_place_shows;

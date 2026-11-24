@@ -967,6 +967,10 @@ impl Platform for HostPlatform {
                 .insert(answer.clone(), Arc::clone(&frames));
             return Ok(answer);
         }
+        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
+        if app == crate::video_engine::APP {
+            return crate::video_engine::stream(self, app, op, input, frames);
+        }
         tilolang_tilo::engine::stream(app, op, input, frames)
     }
 
