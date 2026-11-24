@@ -231,6 +231,7 @@ tilo_test_env::scenario! {
             iroh_listen: SocketAddr::from(([0, 0, 0, 0], 4919)),
             packet_relay: None,
             packet_relay_url: None,
+            kept: Vec::new(),
             trust_policy: TrustPolicy::AllowList {
                 users: vec!["ab".repeat(32)],
             },

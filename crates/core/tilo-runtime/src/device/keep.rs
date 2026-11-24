@@ -268,7 +268,7 @@ impl Keeping {
 /// no certificate yet, serves only the install route until one arrives.
 const INSTALL_TOKEN_ENV: &str = "TILO_SERVER_INSTALL_TOKEN_FILE";
 /// Names the session device key a node certifies beside itself, as its unit's session
-/// environment file ([`TILO_NODE_SESSION_DEVICE`]) does.
+/// environment file (`TILO_NODE_SESSION_DEVICE`) does.
 const SESSION_DEVICE_ENV: &str = "TILO_NODE_SESSION_DEVICE";
 /// Names the session's identity tree, where the install writes its certificate and the
 /// person's user key.
