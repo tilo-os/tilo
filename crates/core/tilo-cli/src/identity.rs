@@ -135,9 +135,14 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     let name = name.map(str::trim).filter(|name| !name.is_empty());
     if made {
         login::ensure_daemon()?;
-        tilo_api::daemon::this_computer()
-            .and_then(|place| place.found(name))
-            .map_err(anyhow::Error::msg)?;
+        // The daemon makes this account's person as it starts, and then answers `devices` as
+        // theirs: a person it made is served, whatever the found call says.
+        let found = tilo_api::daemon::this_computer().and_then(|place| place.found(name));
+        if let Err(why) = found
+            && held()?.is_none()
+        {
+            return Err(anyhow::Error::msg(why));
+        }
     }
     let mut person =
         held()?.context("this computer's daemon made no person it holds the root of")?;
