@@ -1487,11 +1487,16 @@ view home(t: Tasks) {
         "New task in {p.name}"
     } else if in_today { "New task for today" } else { "New task" }
     let labels = labels_in_use(t.items)
+    // The places, the tasks of one, and the opened task beside them: the list is the window's
+    // overview, so the open task's page stands in the content column and the list keeps its
+    // place left of it, rather than the page growing out of the row under the list's foot.
     ui.NavShell(
-        content_kind: .list,
+        content_kind: .document,
         sidebar_title: "Tasks",
-        title: title,
-        count: header_count,
+        overview_title: title,
+        overview_count: header_count,
+        title: if let x = opened { meta(x).title } else { title },
+        nothing_listed: t.items.is_empty(),
         actions: [new_task, clear_done],
     ) {
         on search(q: Text): set(searched, q)
@@ -1527,7 +1532,7 @@ view home(t: Tasks) {
                 }
             }
         }
-        content: {
+        overview: {
             ui.Docked {
                 foot: {
                     stack {
@@ -1554,6 +1559,17 @@ view home(t: Tasks) {
                 } else {
                     task_list(shown, by_day, done_place, folds, opened, project)
                 }
+            }
+        }
+        content: {
+            if let x = opened {
+                std.document_page {
+                    task_body(x)
+                }
+            } else if t.items.is_empty() {
+                ui.EmptyState("No tasks here", icon: .list_checks)
+            } else {
+                ui.EmptyState(phrase("tilolang-nothing-open"), icon: .list_checks, inline: true)
             }
         }
     }
@@ -1689,10 +1705,9 @@ view task_item(
         ],
     ) {
         // The row leaves out the project the window is of, and the day its group is headed by.
+        // It opens no page of its own: the task's page is the window's content column, beside
+        // the list the row stands in, so the list never continues under it.
         task_row(t, project, group != .none, t.parent)
-        detail: {
-            task_body(t)
-        }
         menu: {
             ui.MenuItem("Open as page", icon: .arrow_up_right) {
                 on choose: open(t, view: task_page)

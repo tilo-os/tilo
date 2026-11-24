@@ -683,15 +683,26 @@ template view header(extra: View) {
 view document<R>(of: R, content: View) {
     ui.NavShell(content_kind: .document, title: meta(of).title) {
         content: {
-            ui.Scroll {
-                page {
-                    // A document's blocks are groups of their own: the gutter between groups
-                    // stands over each section's heading, which keeps its content a step under
-                    // it, so a heading reads with what it opens.
-                    stack(gap: .group) {
-                        content
-                    }
-                }
+            std.document_page {
+                content
+            }
+        }
+    }
+}
+
+/// A document's page as the content column of a window that shows it beside a list: the page's
+/// scroll, its gutters and the group gutter under each block, without a shell of its own. A
+/// window of the document alone wraps it in one (`std.document`); a window that lists its type
+/// beside it gives it the content column of its own shell, so the list stays beside the page
+/// instead of the page growing out of the row it was opened from.
+template view document_page(content: View) {
+    ui.Scroll {
+        page {
+            // A document's blocks are groups of their own: the gutter between groups stands
+            // over each section's heading, which keeps its content a step under it, so a
+            // heading reads with what it opens.
+            stack(gap: .group) {
+                content
             }
         }
     }
@@ -1838,7 +1849,7 @@ fn picker_size(bytes: Int) -> Text {
 }
 
 /// Reads a JSON document's own shape.
-
+///
 /// The value at `key` of a JSON object, and nothing for anything else.
 fn json_field(value: json.Value, key: Text) -> Option<json.Value> {
     match value {
@@ -1908,16 +1919,17 @@ fn json_number(value: json.Value, key: Text) -> Int {
 
 /// The numbers of the JSON list at `key`, in order.
 fn json_numbers(value: json.Value, key: Text) -> List<Int> {
-    json_list(value, key).map(
-        item -> match item {
-            .number(number) => number.to_int(),
-            .object(fields) => 0,
-            .array(items) => 0,
-            .string(text) => 0,
-            .bool(flag) => 0,
-            .null => 0,
-        },
-    )
+    json_list(value, key)
+        .map(
+            item -> match item {
+                .number(number) => number.to_int(),
+                .object(fields) => 0,
+                .array(items) => 0,
+                .string(text) => 0,
+                .bool(flag) => 0,
+                .null => 0,
+            },
+        )
 }
 
 /// The flag at `key`, and false when it holds none.

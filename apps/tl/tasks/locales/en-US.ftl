@@ -910,16 +910,6 @@ d-i2mhsb3h = Home
     .w-projects = Projects
     .w-labels = Labels
     .w-no-tasks-here = No tasks here
-
-d-mikudv5u = Board
-    .w-tasks = Tasks
-    .w-new-task = New task
-
-d-q4eq7oqv = To do
-    .w-new-task = New task
-    .w-nothing-to-do = Nothing to do
-
-d-doqleehr = Task item
     .w-what-to-do = What to do
     .w-from = From { $source } { $r }
     .w-from-2 = From { $source }
@@ -945,6 +935,16 @@ d-doqleehr = Task item
     .w-subtasks = Subtasks
     .w-no-subtasks-yet = No subtasks yet
     .w-add-a-subtask = Add a subtask
+
+d-mikudv5u = Board
+    .w-tasks = Tasks
+    .w-new-task = New task
+
+d-q4eq7oqv = To do
+    .w-new-task = New task
+    .w-nothing-to-do = Nothing to do
+
+d-doqleehr = Task item
     .w-open-as-page = Open as page
 
 d-7froalwb = Project list

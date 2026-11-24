@@ -1791,6 +1791,81 @@ fn pick_the_assignee(ada: &Replica, page: &mut ViewInstance, key: &str, pick: &V
     page.poll_patches().unwrap();
 }
 
+/// A task opened from the list stands beside it, in the window's content column: the list is the
+/// window's overview, so its rows never continue under the page and the discussion it ends in.
+#[test]
+fn an_opened_task_stands_beside_the_list_not_under_its_discussion() {
+    let (ada, root) = workspace();
+    let milk = call(&ada, "new_task", create(&root, "milk"));
+    let _eggs = call(&ada, "new_task", create(&root, "eggs"));
+    ada.commit();
+    let mut view = ada.view(APP);
+    assert!(
+        !view.tree().of_kind("ui.NavItem").is_empty(),
+        "the window offers its places: {}",
+        fixture_dump(&view)
+    );
+    // Neither task names a day, so both wait in the inbox to be sorted.
+    go_to(&mut view, "Inbox");
+    assert_eq!(home_list_titles(&ada, &mut view), ["milk", "eggs"]);
+    let overview = part(&view, "overview");
+    assert!(
+        overview
+            .of_kind("ui.ListItem")
+            .iter()
+            .all(|item| item
+                .children
+                .iter()
+                .all(|child| !(child.kind == "part"
+                    && child.props.get("name") == Some(&Value::text("detail"))))),
+        "a row holds its line, not the whole page of the task: {overview:?}"
+    );
+
+    // Opening the task shows it in the content column, beside the list that keeps both rows: the
+    // page's title field edits that task.
+    let Value::Ref(milk) = &milk else {
+        panic!("a task: {milk:?}")
+    };
+    view.show(&milk.target).unwrap();
+    view.poll_patches().unwrap();
+    let content = part(&view, "content");
+    let title = content
+        .of_kind("ui.TextInput")
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no task page in\n{}", fixture_dump(&view)));
+    let (of, field) = title
+        .binding
+        .as_ref()
+        .and_then(tilolang_runtime::Binding::field)
+        .unwrap_or_else(|| panic!("the page edits the task it shows: {title:?}"));
+    assert_eq!(of.id_string(), milk.target.id_string());
+    let title_field = {
+        let meta = &ada.host.package(APP).unwrap().meta;
+        crate::fixtures::field_id(meta, "Task", "title")
+    };
+    assert_eq!(field, &title_field);
+    assert_eq!(
+        home_list_titles(&ada, &mut view),
+        ["milk", "eggs"],
+        "the list still stands beside the page"
+    );
+}
+
+/// The window's part `name`: what the shell draws in it.
+fn part<'a>(view: &'a ViewInstance, name: &str) -> &'a UiNode {
+    view.tree()
+        .of_kind("part")
+        .into_iter()
+        .find(|part| part.props.get("name") == Some(&Value::text(name)))
+        .unwrap_or_else(|| panic!("no {name} in the window: {}", fixture_dump(view)))
+}
+
+/// The tree of `view`, for a failing assertion to read.
+fn fixture_dump(view: &ViewInstance) -> String {
+    format!("{:#?}", view.tree())
+}
+
 tilo_test_env::scenario! {
     fn a_tasks_assignee_priority_and_copy_are_single_fields_and_steps;
 
