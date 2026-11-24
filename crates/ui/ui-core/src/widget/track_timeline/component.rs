@@ -140,9 +140,9 @@ pub struct TimelineSpanProps {
     pub keys: Vec<f64>,
     /// How long the transition into it lasts, in seconds from its start.
     pub lead_in: f64,
-    /// It was pressed: carries what it stands for and the modifiers held (`shift`, `ctrl`, `alt`, `meta`,
-    /// and `command` when the platform's command key is among them).
-    #[component(event(value = String, at = Vec<String>))]
+    /// It was pressed, by the pointer or by Enter or Space with it focused: carries its place
+    /// among its track's spans, which a view reads as a `host.Press` with the modifier keys held.
+    #[component(event(value = i64))]
     pub pressed: Event,
     /// It was dragged along its track or onto another: carries the moment it starts at now and
     /// what the track it stands on stands for.

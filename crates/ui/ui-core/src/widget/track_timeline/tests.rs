@@ -200,7 +200,7 @@ tilo_test_env::scenario! {
         assert_eq!(got, vec![1.0, 5.0], "it starts at the playhead, its end where it was");
     }
 
-    phase a_press_on_a_span_carries_its_key_and_the_modifiers;
+    phase a_press_on_a_span_carries_its_place_on_the_track;
     {
         let queue = crate::Intents::default();
         let mut timeline = laid(cut(&queue));
@@ -210,13 +210,7 @@ tilo_test_env::scenario! {
         let fired = queue.take();
         assert_eq!(fired.len(), 1, "{fired:?}");
         assert_eq!((fired[0].key.as_str(), fired[0].event.as_str()), ("b", "pressed"));
-        assert_eq!(
-            fired[0].value,
-            Some(Value::List(vec![
-                Value::Text("b".into()),
-                Value::List(vec![Value::Text("shift".into())]),
-            ]))
-        );
+        assert_eq!(fired[0].value, Some(Value::Int(1)), "b is the second span on V1");
     }
 
     phase the_ruler_seeks_and_a_drag_along_it_scrubs;

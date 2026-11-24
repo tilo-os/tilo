@@ -17,7 +17,6 @@ use crate::component::{Event, Value};
 use crate::icons::Icon;
 use crate::motion::{Direction, MotionValue};
 use crate::paint::{PaintCtx, with_alpha_scaled};
-use crate::platform::PlatformConventions;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{MotionSource, TextRole};
@@ -162,7 +161,6 @@ struct Drag {
     origin: Point,
     current: Point,
     active: bool,
-    modifiers: ModifiersState,
 }
 
 /// Where what is held lands if the hand lets go now, and what it lined up with.
@@ -229,7 +227,6 @@ pub struct TrackTimeline {
     modifiers: ModifiersState,
     drag: Option<Drag>,
     focus: Option<Focus>,
-    platform: PlatformConventions,
     /// A span let go of, by its key, held where it was dropped until the view says where it
     /// stands, or until this moment passes with no answer: then it glides back.
     pending: Option<(String, crate::time::Instant)>,
@@ -260,7 +257,6 @@ impl TrackTimeline {
             modifiers: ModifiersState::empty(),
             drag: None,
             focus: None,
-            platform: PlatformConventions::default(),
             pending: None,
         };
         timeline.retarget(tracks, markers);
@@ -613,7 +609,7 @@ impl TrackTimeline {
         f64::from(self.theme().tokens.spacing.s1).max(2.0)
     }
 
-    fn begin(&mut self, point: Point, modifiers: ModifiersState) -> bool {
+    fn begin(&mut self, point: Point) -> bool {
         let Some(hold) = self.hold_at(point) else {
             return false;
         };
@@ -624,7 +620,6 @@ impl TrackTimeline {
             origin: point,
             current: point,
             active,
-            modifiers,
         });
         if active {
             self.report_scrub();
@@ -693,7 +688,7 @@ impl TrackTimeline {
         match drag.hold {
             Hold::Span { track, index, .. } => {
                 self.focus = Some(Focus::Span { track, index });
-                self.press_span(track, index, drag.modifiers);
+                self.press_span(track, index);
             }
             Hold::Marker { index, .. } => {
                 if let Some(marker) = self.markers.get(index) {
@@ -802,30 +797,14 @@ impl TrackTimeline {
         true
     }
 
-    fn press_span(&self, track: usize, index: usize, modifiers: ModifiersState) {
+    /// Report a press on span `index` of track `track`: it carries its place on the track, which a
+    /// view reads as a `host.Press` with the modifier keys the window says are held.
+    fn press_span(&self, track: usize, index: usize) {
         let Some(span) = self.tracks.get(track).and_then(|t| t.spans.get(index)) else {
             return;
         };
-        let mut held = Vec::new();
-        if modifiers.shift_key() {
-            held.push(Value::Text("shift".into()));
-        }
-        if modifiers.control_key() {
-            held.push(Value::Text("ctrl".into()));
-        }
-        if modifiers.alt_key() {
-            held.push(Value::Text("alt".into()));
-        }
-        if modifiers.super_key() {
-            held.push(Value::Text("meta".into()));
-        }
-        if self.platform.command_modifier_down(modifiers) {
-            held.push(Value::Text("command".into()));
-        }
-        span.pressed.fire(Some(Value::List(vec![
-            Value::Text(span.key.clone()),
-            Value::List(held),
-        ])));
+        #[allow(clippy::cast_possible_wrap, reason = "a track holds far fewer spans than i64::MAX")]
+        span.pressed.fire(Some(Value::Int(index as i64)));
     }
 
     /// Zoom by `notches` of the wheel about the moment at `x`, keeping that moment under it.
@@ -1000,7 +979,7 @@ impl TrackTimeline {
             }
             Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 if let Some(Focus::Span { track, index }) = self.focus {
-                    self.press_span(track, index, modifiers);
+                    self.press_span(track, index);
                     return true;
                 }
                 false
@@ -1648,7 +1627,7 @@ impl TrackTimeline {
                 self.focus = Some(Focus::Span { track: row, index });
                 self.dirty = true;
                 match action {
-                    Action::Activate => self.press_span(row, index, ModifiersState::empty()),
+                    Action::Activate => self.press_span(row, index),
                     Action::Increment => self.nudge(self.key_step(false), false),
                     Action::Decrement => self.nudge(-self.key_step(false), false),
                     Action::Focus => {}
@@ -1682,7 +1661,8 @@ impl TrackTimeline {
     #[cfg(test)]
     pub(crate) fn press_at_for_test(&mut self, point: Point, modifiers: ModifiersState) -> bool {
         self.pointer = point;
-        self.begin(point, modifiers)
+        self.modifiers = modifiers;
+        self.begin(point)
     }
 
     #[cfg(test)]
@@ -1826,7 +1806,7 @@ impl Widget for TrackTimeline {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.begin(self.pointer, self.modifiers) {
+                if self.begin(self.pointer) {
                     *ctx.handled = true;
                 }
             }

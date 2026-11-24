@@ -11530,11 +11530,8 @@
       "events": [
         {
           "name": "pressed",
-          "doc": "It was pressed: carries what it stands for and the modifiers held (`shift`, `ctrl`, `alt`, `meta`, and `command` when the platform's command key is among them).",
-          "value": "text",
-          "at": {
-            "list": "text"
-          }
+          "doc": "It was pressed, by the pointer or by Enter or Space with it focused: carries its place among its track's spans, which a view reads as a `host.Press` with the modifier keys held.",
+          "value": "int"
         },
         {
           "name": "moved",
