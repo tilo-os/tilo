@@ -327,7 +327,7 @@ d-jyf2fgwu = Aktualisierungsleiste
     .w-what-was-read-before-still-stands = Was zuvor gelesen war, gilt weiter; versuche es später erneut.
     .w-try-again = Erneut versuchen
 
-d-gbetzns2 = Vorhersage
+d-dg52uuxd = Vorhersage
     .w-couldn-t-update-this-forecast = Diese Vorhersage konnte nicht aktualisiert werden
     .w-try-again = Erneut versuchen
     .w-daylight = Tageslicht
@@ -335,6 +335,8 @@ d-gbetzns2 = Vorhersage
     .w-the-week-ahead = Die Woche voraus
     .w-air-quality = Luftqualität
     .w-reading-the-forecast = Die Vorhersage wird gelesen…
+
+d-jifwgrup = Ortszeile
 
 d-b52eh6m4 = Wetterfenster
     .w-weather = Wetter
