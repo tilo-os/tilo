@@ -818,6 +818,7 @@ impl ResourceService {
                 by: None,
                 to: None,
                 step: None,
+                chosen: None,
             } => {
                 let mut undone = 0_u32;
                 while undone < steps.unwrap_or(1) && store.undo_last(Some(by)).map_err(failed)? {

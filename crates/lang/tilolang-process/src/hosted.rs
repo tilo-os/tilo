@@ -2723,6 +2723,7 @@ impl Hosted {
                 by: None,
                 to: None,
                 step: None,
+                chosen: None,
             },
             HistoryAsk::Redo => HistoryEdit::Redo { steps: Some(1) },
             HistoryAsk::UndoStep(step) | HistoryAsk::UndoRun(step) => HistoryEdit::Undo {
@@ -2731,6 +2732,7 @@ impl Hosted {
                 by: None,
                 to: None,
                 step: Some(step.clone()),
+                chosen: None,
             },
         };
         let by = tilolang_tilo::runtime::Actor::Member(MemberId::person(self.spec.person.as_str()));

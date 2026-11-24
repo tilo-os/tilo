@@ -253,6 +253,60 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().title, "Plan");
     }
 
+    phase chosen_changes_are_taken_back_together_as_one_move;
+    {
+        let mut app = TestApp::<BoardApp>::new().unwrap();
+        app.call("add", json!({"text": "milk"})).unwrap();
+        app.call("add", json!({"text": "tea"})).unwrap();
+        app.call("add", json!({"text": "eggs"})).unwrap();
+        let change_of = |app: &mut TestApp<BoardApp>, text: &str| {
+            history(app)["versions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|version| version["what"]["args"]["text"] == text)
+                .and_then(|version| version["change"].as_str())
+                .unwrap()
+                .to_owned()
+        };
+        let chosen = [change_of(&mut app, "milk"), change_of(&mut app, "eggs")];
+
+        app.call("undo", json!({"chosen": chosen})).unwrap();
+        assert_eq!(cards(&app), ["tea"]);
+        // A change for each step, newest first, each naming the invocation it took back.
+        let moved = last_move(&app);
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert!(moved.iter().all(|(op, verb, _)| op == "undo" && verb == "add"), "{moved:?}");
+        assert_ne!(moved[0].2, moved[1].2, "one invocation each: {moved:?}");
+
+        // History lists them as the one move the person made.
+        let listed = history(&mut app);
+        let undos: Vec<&Value> = listed["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|version| version["what"]["did"] == "history" && version["what"]["op"] == "undo")
+            .collect();
+        assert_eq!(undos.len(), 1, "{listed}");
+        assert_eq!(undos[0]["sentence"], "Undid 2 steps", "{listed}");
+        assert_eq!(undos[0]["changes"].as_array().map(Vec::len), Some(2), "{listed}");
+
+        // One redo brings both back.
+        let redone = app.call("redo", json!({})).unwrap().unwrap();
+        assert_eq!(redone["redone"].as_array().unwrap().len(), 2, "{redone}");
+        assert_eq!(cards(&app), ["milk", "tea", "eggs"]);
+
+        // Chosen changes are given alone, and must still be in effect.
+        app.call("add", json!({"text": "bread"})).unwrap();
+        let bread = [change_of(&mut app, "bread")];
+        let mixed = refusal(app.call("undo", json!({"chosen": bread, "steps": 1})));
+        assert!(mixed.contains("alone"), "{mixed}");
+        app.call("undo", json!({"chosen": bread})).unwrap();
+        assert_eq!(cards(&app), ["milk", "tea", "eggs"]);
+        let again = refusal(app.call("undo", json!({"chosen": bread})));
+        assert!(again.contains("no longer in effect"), "{again}");
+    }
+
     phase a_restore_takes_back_each_step_since_and_brings_back_what_stood_then;
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
