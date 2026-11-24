@@ -65,6 +65,15 @@ SCOPES = (
     Path("crates/core/session-client"),
     Path("crates/desktop/session/src/sync"),
     Path("crates/core/tilo-workspace-service"),
+    # tilolang's compiler, runtime and window also run in a browser page
+    # (wasm32-unknown-unknown), where the standard clock has no time and a read
+    # of it panics: the page has only the clock a host lends through `tilo_clock`.
+    # Their examples and benches run natively only.
+    Path("crates/lang/tilolang/src"),
+    Path("crates/lang/tilolang-runtime/src"),
+    Path("crates/lang/tilolang-tilo/src"),
+    Path("crates/lang/tilolang-window/src"),
+    Path("crates/lang/tilolang-web/src"),
 )
 
 # A clock read: `Instant::now()`, `std::time::Instant::now()`,
