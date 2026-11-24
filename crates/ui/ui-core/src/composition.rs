@@ -159,6 +159,10 @@ pub fn css(style: &taffy::Style) -> String {
             out.push_str("flex-wrap:wrap;");
         }
     }
+    if style.display == Display::Grid {
+        grid_css(style, &mut out);
+    }
+    grid_placement_css(style, &mut out);
     let gap = (length(style.gap.height), length(style.gap.width));
     if gap != ("0px".into(), "0px".into()) {
         let _ = write!(out, "gap:{} {};", gap.0, gap.1);
@@ -212,6 +216,131 @@ pub fn css(style: &taffy::Style) -> String {
         }
     }
     out
+}
+
+/// A grid's tracks, how it places what it does not name a place for, and how it packs its rows
+/// and columns: what a browser needs to lay its children out where the layout did.
+fn grid_css(style: &taffy::Style, out: &mut String) {
+    use std::fmt::Write as _;
+    use taffy::{GridAutoFlow, GridTemplateComponent, RepetitionCount};
+    let template = |tracks: &[GridTemplateComponent<_>]| {
+        tracks
+            .iter()
+            .map(|component| match component {
+                GridTemplateComponent::Single(track) => track_css(*track),
+                GridTemplateComponent::Repeat(repeat) => {
+                    let count = match repeat.count {
+                        RepetitionCount::AutoFill => "auto-fill".to_owned(),
+                        RepetitionCount::AutoFit => "auto-fit".to_owned(),
+                        RepetitionCount::Count(count) => count.to_string(),
+                    };
+                    let tracks: Vec<String> = repeat.tracks.iter().copied().map(track_css).collect();
+                    format!("repeat({count},{})", tracks.join(" "))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let auto = |tracks: &[taffy::TrackSizingFunction]| {
+        tracks.iter().copied().map(track_css).collect::<Vec<_>>().join(" ")
+    };
+    for (name, value) in [
+        ("grid-template-columns", template(&style.grid_template_columns)),
+        ("grid-template-rows", template(&style.grid_template_rows)),
+        ("grid-auto-columns", auto(&style.grid_auto_columns)),
+        ("grid-auto-rows", auto(&style.grid_auto_rows)),
+    ] {
+        if !value.is_empty() {
+            let _ = write!(out, "{name}:{value};");
+        }
+    }
+    let flow = match style.grid_auto_flow {
+        GridAutoFlow::Row => None,
+        GridAutoFlow::Column => Some("column"),
+        GridAutoFlow::RowDense => Some("row dense"),
+        GridAutoFlow::ColumnDense => Some("column dense"),
+    };
+    if let Some(flow) = flow {
+        let _ = write!(out, "grid-auto-flow:{flow};");
+    }
+    if let Some(align) = style.align_content {
+        let _ = write!(out, "align-content:{};", align_content_name(align));
+    }
+    if let Some(justify) = style.justify_items {
+        let _ = write!(out, "justify-items:{};", align_name(justify));
+    }
+}
+
+/// Where a grid's child stands in its grid, when it names a place rather than being placed in
+/// turn.
+fn grid_placement_css(style: &taffy::Style, out: &mut String) {
+    use std::fmt::Write as _;
+    use taffy::GridPlacement;
+    fn line(placement: &GridPlacement) -> Option<String> {
+        match placement {
+            GridPlacement::Auto => None,
+            GridPlacement::Line(line) => Some(line.as_i16().to_string()),
+            GridPlacement::Span(span) => Some(format!("span {span}")),
+            GridPlacement::NamedLine(name, index) => Some(format!("{name} {index}")),
+            GridPlacement::NamedSpan(name, span) => Some(format!("span {name} {span}")),
+        }
+    }
+    for (name, placement) in [("grid-row", &style.grid_row), ("grid-column", &style.grid_column)] {
+        match (line(&placement.start), line(&placement.end)) {
+            (None, None) => {}
+            (start, end) => {
+                let _ = write!(
+                    out,
+                    "{name}:{}/{};",
+                    start.as_deref().unwrap_or("auto"),
+                    end.as_deref().unwrap_or("auto")
+                );
+            }
+        }
+    }
+    if let Some(justify) = style.justify_self {
+        let _ = write!(out, "justify-self:{};", align_name(justify));
+    }
+}
+
+/// One grid track's size as CSS: a fixed length, a share of the free space, its content's size,
+/// or a range between two of those.
+fn track_css(track: taffy::TrackSizingFunction) -> String {
+    fn compact(raw: taffy::CompactLength) -> String {
+        match raw.tag() {
+            taffy::CompactLength::LENGTH_TAG => format!("{}px", raw.value()),
+            taffy::CompactLength::PERCENT_TAG => format!("{}%", raw.value() * 100.0),
+            taffy::CompactLength::FR_TAG => format!("{}fr", raw.value()),
+            taffy::CompactLength::MIN_CONTENT_TAG => "min-content".to_owned(),
+            taffy::CompactLength::MAX_CONTENT_TAG => "max-content".to_owned(),
+            taffy::CompactLength::FIT_CONTENT_PX_TAG => format!("fit-content({}px)", raw.value()),
+            taffy::CompactLength::FIT_CONTENT_PERCENT_TAG => {
+                format!("fit-content({}%)", raw.value() * 100.0)
+            }
+            _ => "auto".to_owned(),
+        }
+    }
+    let (min, max) = (compact(track.min.into_raw()), compact(track.max.into_raw()));
+    if max.starts_with("fit-content") {
+        max
+    } else if min == max {
+        min
+    } else {
+        format!("minmax({min},{max})")
+    }
+}
+
+fn align_content_name(align: taffy::AlignContent) -> &'static str {
+    use taffy::AlignContent;
+    match align {
+        AlignContent::Start | AlignContent::FlexStart => "start",
+        AlignContent::End | AlignContent::FlexEnd => "end",
+        AlignContent::Center => "center",
+        AlignContent::Stretch => "stretch",
+        AlignContent::SpaceBetween => "space-between",
+        AlignContent::SpaceAround => "space-around",
+        AlignContent::SpaceEvenly => "space-evenly",
+    }
 }
 
 fn align_name(align: taffy::AlignItems) -> &'static str {

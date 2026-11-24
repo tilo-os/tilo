@@ -10,7 +10,9 @@
 //! names and with what it holds that acts (a toolbar's tools) as elements over it where they stand.
 //!
 //! A container whose children stand where its layout node's style puts them is a CSS flex or
-//! grid box with that style; one that places its children itself places them at their bounds.
+//! grid box with that style, and one whose children tile it (a shell's columns) a grid of the
+//! tracks their edges make; one that places its children anywhere else places them at their
+//! bounds.
 //!
 //! Every element the page acts on carries `data-p`, a short number that [`Page`] keeps for a
 //! widget's path from one render to the next. What the person does on it comes back as that
@@ -1295,6 +1297,9 @@ fn sizing(layout: &str) -> String {
                     | "margin-bottom"
                     | "margin-left"
                     | "align-self"
+                    | "justify-self"
+                    | "grid-row"
+                    | "grid-column"
                     | "padding"
             )
         })

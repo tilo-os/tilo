@@ -111,13 +111,12 @@ impl<'a> Walk<'a> {
 
     fn flows(&self, node: NodeId, origin: (f64, f64), children: &[Composed]) -> bool {
         let nodes = self.taffy.children(node).unwrap_or_default();
-        // A page lays out a flex container's children the way the layout did; a grid's tracks
-        // are the layout's own, so its children stand at their rects.
-        let flex = self
-            .taffy
-            .style(node)
-            .is_ok_and(|style| style.display == taffy::Display::Flex);
-        flex && !children.is_empty()
+        // A page lays out a flex or grid container's children from its style, with the grid's
+        // tracks and each child's place in them, the way the layout did.
+        let laid = self.taffy.style(node).is_ok_and(|style| {
+            matches!(style.display, taffy::Display::Flex | taffy::Display::Grid)
+        });
+        laid && !children.is_empty()
             && nodes.iter().zip(children).all(|(&child, composed)| {
                 self.taffy
                     .style(child)
@@ -159,9 +158,19 @@ impl<'a> Walk<'a> {
                 .into_iter()
                 .map(|child| self.compose(child, (x, y), &mut inner, &path))
                 .collect();
+            let mut children = children;
             let mut composed = Composed::new(path, "", [x, y, size.0, size.1]);
             composed.flows = self.flows(node, (x, y), &children);
-            composed.layout = css;
+            let tiled = if composed.flows {
+                None
+            } else {
+                tiles(composed.rect, 0.0, &mut children)
+            };
+            composed.flows |= tiled.is_some();
+            composed.layout = match tiled {
+                Some(grid) => Some(format!("{}{grid}", css.unwrap_or_default())),
+                None => css,
+            };
             composed.children = children;
             return composed;
         };
@@ -196,7 +205,7 @@ impl<'a> Walk<'a> {
             && rect.height() > 0.0;
         self.open.borrow_mut().extend(at);
         let mut inner = 0;
-        let children: Vec<Composed> = if pictured {
+        let mut children: Vec<Composed> = if pictured {
             Vec::new()
         } else {
             children_nodes
@@ -213,10 +222,25 @@ impl<'a> Walk<'a> {
             [rect.x0, rect.y0, rect.width(), rect.height()],
         );
         composed.flows = self.flows(node, base, &children);
+        // A widget that places its children by hand (a shell's columns, a list's rows, a field's
+        // button beside its text, a banner's buttons over its body) lays out on a page as the
+        // grid their edges make.
+        let tiled = if composed.flows {
+            None
+        } else {
+            let scrolled = widget
+                .primary_vertical_scroll()
+                .map_or(0.0, |region| region.metrics.offset);
+            tiles(composed.rect, scrolled, &mut children)
+        };
+        composed.flows |= tiled.is_some();
         composed.clip = widget
             .child_clip_rect()
             .map(|r| [r.x0, r.y0, r.width(), r.height()]);
-        composed.layout = css;
+        composed.layout = match tiled {
+            Some(grid) => Some(format!("{}{grid}", css.unwrap_or_default())),
+            None => css,
+        };
         composed.scroll = widget.primary_vertical_scroll().map(|region| {
             [
                 region.metrics.offset,
@@ -466,4 +490,90 @@ fn hand_pictures(node: &mut Composed, shown: &HashMap<String, (u64, Arc<str>)>) 
     for child in &mut node.children {
         hand_pictures(child, shown);
     }
+}
+
+/// The grid that lays out `children` where they stand in a box at `rect` whose content is
+/// scrolled `scrolled` down: the tracks between every edge any of them has, and each child's
+/// lines in them. Children that overlap share tracks and stand over one another in the order
+/// they are drawn, as a banner's buttons over its body do. What lies past the box's far edges
+/// extends the grid, as a list's rows past its end do. `None` when it shows no children.
+fn tiles(rect: [f64; 4], scrolled: f64, children: &mut [Composed]) -> Option<String> {
+    use std::fmt::Write as _;
+    let [x, y, width, height] = rect;
+    // The content's corner: a child's rect is where scrolling put it.
+    let y = y - scrolled;
+    let shown = |child: &&mut Composed| child.rect[2] > 0.0 && child.rect[3] > 0.0;
+    let placed: Vec<&mut Composed> = children.iter_mut().filter(shown).collect();
+    if placed.is_empty() {
+        return None;
+    }
+    // The edges past the box's start are the first track's: a child there reaches back from it.
+    let edges = |start: f64, length: f64, of: &dyn Fn(&Composed) -> [f64; 2]| {
+        let mut edges = vec![0.0, length];
+        for child in &placed {
+            let [from, to] = of(child);
+            edges.extend([(from - start).max(0.0), (to - start).max(0.0)]);
+        }
+        edges.sort_by(f64::total_cmp);
+        edges.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        edges
+    };
+    let columns = edges(x, width, &|child| [child.rect[0], child.rect[0] + child.rect[2]]);
+    let rows = edges(y, height, &|child| [child.rect[1], child.rect[1] + child.rect[3]]);
+    let line = |edges: &[f64], at: f64| {
+        edges
+            .iter()
+            .position(|edge| (edge - at).abs() < 0.5)
+            .map_or(1, |index| index + 1)
+    };
+    if columns.len() < 2 || rows.len() < 2 {
+        return None;
+    }
+    let tracks = |edges: &[f64]| {
+        edges
+            .windows(2)
+            .map(|pair| format!("{}px", pair[1] - pair[0]))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // A child's lines: from the edge it starts at to the one it ends at, the first track when
+    // it stands wholly before the box's start.
+    let lines = |edges: &[f64], from: f64, to: f64| {
+        let start = line(edges, from.max(0.0));
+        (start, line(edges, to.max(0.0)).max(start + 1))
+    };
+    for child in placed {
+        let [cx, cy, cw, ch] = child.rect;
+        let (left, top) = (cx - x, cy - y);
+        let mut place = child.layout.take().unwrap_or_else(|| {
+            if child.children.is_empty() {
+                String::new()
+            } else {
+                "display:flex;flex-direction:column;".to_owned()
+            }
+        });
+        let (column, row) = (lines(&columns, left, left + cw), lines(&rows, top, top + ch));
+        let _ = write!(
+            place,
+            "grid-column:{}/{};grid-row:{}/{};margin:0;",
+            column.0, column.1, row.0, row.1
+        );
+        // What stands before the box's start (rows a list scrolled up, a part reaching past its
+        // wrapper) reaches back from the first track by as much, at the size it was laid out at.
+        if left < -0.5 || top < -0.5 {
+            let _ = write!(
+                place,
+                "margin:{}px 0 0 {}px;width:{cw}px;height:{ch}px;min-width:0;min-height:0;\
+                 max-width:none;max-height:none;",
+                top.min(0.0),
+                left.min(0.0),
+            );
+        }
+        child.layout = Some(place);
+    }
+    Some(format!(
+        "display:grid;grid-template-columns:{};grid-template-rows:{};gap:0;padding:0;",
+        tracks(&columns),
+        tracks(&rows)
+    ))
 }

@@ -90,37 +90,36 @@ fn every_place_is_picked_and_patched_on_the_page() {
     }
 }
 
-/// A tree's row that holds others is a column on the page as tall as both: its own line first,
-/// the rows under it below that line, never beside it.
+/// A tree's rows stand one under another on the page, each below the one before it, never beside
+/// it: the page lays them out in the tree's rows, it does not place them.
 fn rows_under_a_row_stand_below_it(composition: &Composition) {
-    let mut holding = 0_usize;
-    for node in nodes(composition) {
-        let Some(notes) = node
-            .children
-            .iter()
-            .find(|child| child.widget == "TreeNotes")
-        else {
-            continue;
-        };
-        holding = holding.saturating_add(1);
+    let tree = nodes(composition)
+        .into_iter()
+        .find(|node| node.widget == "TreeView")
+        .expect("the Data page shows a tree");
+    assert!(tree.flows, "{}: the page lays out the tree's rows", tree.path);
+    let rows: Vec<&Composed> = tree
+        .children
+        .iter()
+        .filter(|row| row.rect[2] > 0.0 && row.rect[3] > 0.0)
+        .collect();
+    assert!(rows.len() > 1, "the Data page's tree shows its rows: {rows:?}");
+    for pair in rows.windows(2) {
+        let [above, below] = [pair[0].rect, pair[1].rect];
         assert!(
-            node.flows
-                && node
-                    .layout
-                    .as_deref()
-                    .is_some_and(|css| css.contains("flex-direction:column")),
-            "{}: a row holding others lays them out down the page: {:?}",
-            node.path,
-            node.layout
-        );
-        assert_eq!(
-            node.children.last().map(|child| child.path.as_str()),
-            Some(notes.path.as_str()),
-            "{}: the rows under it come after its own line",
-            node.path
+            below[1] >= above[1] + above[3] - 0.5,
+            "{}: a row stands below the one before it, never beside it: {above:?} then {below:?}",
+            pair[1].path
         );
     }
-    assert!(holding > 0, "the Data page's tree holds rows under rows");
+    for row in &rows {
+        assert!(
+            row.layout.as_deref().is_some_and(|css| css.contains("grid-row:")),
+            "{}: the page lays the row out in the tree's rows: {:?}",
+            row.path,
+            row.layout
+        );
+    }
 }
 
 /// Every part the page shows as a picture (a chart's marks, a sparkline's line) is sent drawn: the
