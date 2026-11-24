@@ -870,9 +870,6 @@ impl Platform for HostPlatform {
         if app == crate::containers_engine::APP {
             return crate::containers_engine::call(self, app, op, input);
         }
-        if app == crate::git_engine::APP {
-            return crate::git_engine::call(app, op, input);
-        }
         // YouTube's Grayjay link, whose exchanges touch the network and whose key is the app's
         // own secret.
         crate::grayjay_engine::register();
@@ -900,9 +897,6 @@ impl Platform for HostPlatform {
         }
         if app == crate::containers_engine::APP {
             return crate::containers_engine::start(self, app, op, input);
-        }
-        if app == crate::git_engine::APP {
-            return crate::git_engine::start(app, op, input);
         }
         crate::grayjay_engine::register();
         tilolang_tilo::engine::begin(app, op, input)
@@ -949,7 +943,7 @@ impl Platform for HostPlatform {
             crate::backups_engine::register();
             crate::feed_engine::register();
         }
-        if app == crate::containers_engine::APP || app == crate::git_engine::APP {
+        if app == crate::containers_engine::APP {
             return self.engine_start(app, op, input);
         }
         tilolang_tilo::engine::begin_held(app, op, input, record)
@@ -1027,9 +1021,8 @@ impl Platform for HostPlatform {
                 return Ok(status);
             }
         }
-        crate::git_engine::status(job).or_else(|unknown| {
-            crate::containers_engine::status(job)
-                .or_else(|_| tilolang_tilo::engine::progress(job).map_err(|_| unknown))
+        crate::containers_engine::status(job).or_else(|unknown| {
+            tilolang_tilo::engine::progress(job).map_err(|_| unknown)
         })
     }
 
@@ -1055,8 +1048,7 @@ impl Platform for HostPlatform {
         // A stream's last frame goes with its job: the window shows the session closed, not a
         // frozen screen.
         ui_core::live_pictures::forget(job);
-        crate::git_engine::cancel(job)
-            || crate::containers_engine::cancel(job)
+        crate::containers_engine::cancel(job)
             || crate::photos_engine::cancel(job)
             || tilolang_tilo::engine::stop(job)
     }

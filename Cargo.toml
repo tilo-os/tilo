@@ -376,6 +376,7 @@ members = [
     "crates/engines/loadable/chip-design",
     "crates/engines/loadable/contact-directory",
     "crates/engines/loadable/diffmerge",
+    "crates/engines/loadable/git",
     "crates/engines/loadable/emoji",
     "crates/engines/loadable/highlight",
     "crates/engines/loadable/theme-painter",

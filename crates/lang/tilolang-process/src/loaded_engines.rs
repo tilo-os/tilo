@@ -34,6 +34,9 @@ pub const DIFFMERGE_APP: &str = "so.tilo.diffmerge";
 /// The app whose pictures, codes, pages and clips `libtilo_camera_engine.so` answers.
 pub const CAMERA_APP: &str = "so.tilo.camera";
 
+/// The app whose repositories `libtilo_git_engine.so` answers.
+pub const GIT_APP: &str = "so.tilo.git-client";
+
 /// The library that answers `app`, when this device ships an engine for it.
 fn library_of(app: &str) -> Option<&'static str> {
     match app {
@@ -41,6 +44,7 @@ fn library_of(app: &str) -> Option<&'static str> {
         CHIP_DESIGN_APP => Some("libtilo_chip_engine.so"),
         DIFFMERGE_APP => Some("libtilo_diffmerge_engine.so"),
         CAMERA_APP => Some("libtilo_camera_engine.so"),
+        GIT_APP => Some("libtilo_git_engine.so"),
         _ => None,
     }
 }

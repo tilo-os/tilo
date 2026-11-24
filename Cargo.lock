@@ -17527,6 +17527,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-git-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-engine-loader",
+ "tilo-git",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
@@ -22137,7 +22150,6 @@ dependencies = [
  "tilo-feeds",
  "tilo-files",
  "tilo-formats",
- "tilo-git",
  "tilo-history",
  "tilo-image-codec",
  "tilo-media",
