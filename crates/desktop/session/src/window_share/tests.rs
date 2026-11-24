@@ -93,7 +93,7 @@ struct LiveSessions {
     runtime: tokio::runtime::Runtime,
     relay: Arc<Relay>,
     keys: key_group::ContentKeys,
-    joined: Mutex<Vec<([u8; 32], crate::live::Sessions)>>,
+    joined: Mutex<Vec<([u8; 32], Arc<LiveSession>)>>,
 }
 
 /// The relay the test's live sessions meet on: in-process, with no one to admit, since a local live session is
@@ -2916,7 +2916,7 @@ fn a_shared_windows_pictures_reach_a_viewer_within_a_few_frames() {
         }
         for encoded in share.pump(Instant::now()) {
             encoding.push(wall_us().saturating_sub(share.captured_at_us(&encoded)));
-            let _ = super::send_picture(&sharing, TAB, &share, encoded);
+            let _ = super::send_picture(sharing.as_ref(), TAB, &share, encoded);
         }
         std::thread::sleep(Duration::from_millis(1));
     }
