@@ -128,7 +128,7 @@ mod cases {
             )
         }
 
-        fn comment(&self, key: &str, video_key: &str, text: &str) {
+        fn comment(&self, key: &str, video_key: &str, text: &str) -> ResourceRef {
             seed_origin(
                 &self.rt,
                 "youtube.comment",
@@ -143,7 +143,7 @@ mod cases {
                     ("likes", Value::Int(3)),
                     ("published", Value::text("2026-11-02T08:00:00Z")),
                 ],
-            );
+            )
         }
 
         fn open(&self, view: &str, args: Vec<Value>) -> ViewInstance {
@@ -215,6 +215,37 @@ mod cases {
                 .collect();
             assert!(buttons.iter().any(|b| b == "1.5×"), "a speed is offered: {buttons:?}");
             assert!(buttons.iter().any(|b| b == "1080p"), "a quality is offered: {buttons:?}");
+        }
+
+        phase a_comment_is_liked_and_the_heart_says_so;
+        {
+            let w = Watch::new();
+            w.channel("mkbhd", "MKBHD");
+            let video = w.video("v1", "A week on one charge", "mkbhd", "MKBHD");
+            let comment = w.comment("c1", "v1", "The ferry was late");
+            w.call("like_comment", vec![Value::resource(&w.yt), Value::resource(&comment)]);
+            let liked = match w.rt.read(&w.yt, "liked_comments").unwrap() {
+                Value::List(items) => items,
+                other => panic!("liked_comments reads {other:?}"),
+            };
+            assert_eq!(liked, vec![Value::text("c1")], "the person liked it");
+            // The page's heart is on for the comment the person liked.
+            let page = w.open("video_page", vec![Value::resource(&video)]);
+            let heart = of_kind(page.tree(), "ui.Button")
+                .into_iter()
+                .find(|b| b.props.get("icon") == Some(&Value::text("heart")))
+                .expect("the comment offers a heart");
+            assert_eq!(heart.props.get("toggled"), Some(&Value::Int(1)));
+            // Pressing it again takes the like back.
+            w.call(
+                "like_comment",
+                vec![Value::resource(&w.yt), Value::resource(&comment), Value::Bool(false)],
+            );
+            let liked = match w.rt.read(&w.yt, "liked_comments").unwrap() {
+                Value::List(items) => items,
+                other => panic!("liked_comments reads {other:?}"),
+            };
+            assert!(liked.is_empty(), "the like is taken back");
         }
 
         phase a_comments_switch_decides_what_the_video_page_shows;

@@ -324,7 +324,18 @@ d-yh23kjna = Kanalseite
     .w-videos-2 = Videos
     .w-no-videos-here-yet = Noch keine Videos hier
 
+d-mygihjop = Kommentar gefällt mir
+    .doc = Gefällt einen Kommentar oder nimmt das Gefallen zurück: das eigene der Person, beim Arbeitsbereich behalten, da YouTube keine App als die Person handeln lässt.
+
+d-mygihjop-c = Kommentar
+
+d-mygihjop-liked = Gefällt
+
+d-5oxdbju7 = Gefällt mir
+    .doc = Die Kommentare, denen die Person gefällt, nach dem Schlüssel des Kommentars: ihre eigenen, beim Arbeitsbereich behalten.
+
 d-w7mpbzm4 = Videoseite
+    .w-like-the-comment = Kommentar gefällt mir
     .w-play = Abspielen
     .w-unsubscribe = Abonnement beenden
     .w-subscribe = Abonnieren
@@ -604,6 +615,8 @@ d-tfnkfs2w = Nach Länge filtern
 d-tfnkfs2w-length = Länge
 
 d-thwdswkk-filter-history_cleared = Verlauf gelöscht
+
+d-thwdswkk-filter-liked_comments = Gefällt mir
 
 d-tmf5hovn = Angepinnt
     .doc = Der Ersteller des Videos hat es oben angepinnt.

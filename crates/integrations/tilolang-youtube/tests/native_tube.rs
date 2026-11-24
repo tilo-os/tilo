@@ -75,6 +75,15 @@ fn native_documents_with_a_position(
             )
             .unwrap();
             automerge::transaction::Transactable::put(doc, &positions, key, milliseconds).unwrap();
+            // The comments it liked, kept as a set: a map of flags by the comment's id.
+            let likes = automerge::transaction::Transactable::put_object(
+                doc,
+                automerge::ROOT,
+                "comment_likes",
+                automerge::ObjType::Map,
+            )
+            .unwrap();
+            automerge::transaction::Transactable::put(doc, &likes, "v1#c1", true).unwrap();
         }
     }
     documents
@@ -231,6 +240,19 @@ fn the_native_tubes_subscriptions_likes_queue_and_history_are_carried_over_once(
         before, after,
         "the native app's documents are left as they were"
     );
+}
+
+#[test]
+fn the_comments_a_person_liked_are_carried() {
+    let host = opened(&native_documents_with_a_position("jfKfPfyJRdk", 92_000));
+    let root = host.root_of(TUBE).expect("the root");
+    let Ok(Value::List(liked)) = host
+        .runtime()
+        .read(&root, &field_id(&host, "YouTube", "liked_comments"))
+    else {
+        panic!("the root holds the comments it liked");
+    };
+    assert_eq!(liked, vec![Value::text("v1#c1")], "the comment liked there");
 }
 
 #[test]

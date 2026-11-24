@@ -254,6 +254,8 @@ type YouTube (label: "YouTube", noun: "channel") {
     comments: Collection<Comment>
     /// The SponsorBlock segments the service answered with, by where each stands.
     segments: Collection<Segment>
+    /// The comments the person liked, by the comment's key: their own, kept with the workspace.
+    liked_comments: Set<Text>
     /// The replies members wrote to comments: the workspace's own, since YouTube lets no app post
     /// as the person.
     replies: Collection<Reply>
@@ -973,12 +975,23 @@ fn row_ms(value: json.Value) -> Option<Int> {
     json.encode(value).split(".").at(0)?.to_int()
 }
 
+/// Likes a comment, or takes the like back: the person's own, kept with the workspace, since
+/// YouTube lets no app act as them.
+action like_comment(yt: YouTube, c: Comment, liked: Bool = not yt.liked_comments.contains(c.key)) (
+    icon: .heart,
+    label: "Like the comment",
+) {
+    if liked { yt.liked_comments.add(c.key) } else { yt.liked_comments.remove(c.key) }
+}
+
 /// What the native Tube kept before this app took its id over, carried into this one once: the
 /// channels subscribed to, the videos liked, the watch queue, the watch history with when each
-/// video was watched, and the replies it wrote to comments. The native app kept a video by its key
+/// video was watched, the comments liked, and the replies it wrote to comments. The native app kept a video by its key
 /// alone, so each one carried is that key until the service answers with the rest. The history
 /// carried came before this app recorded who watched what, so its entries name no member and stay
-/// the workspace's until someone watches one of the videos again. Its replies are carried with no
+/// the workspace's until someone watches one of the videos again. Where an unfinished video was
+/// left is carried in milliseconds, and becomes a share of its length once the service answers
+/// with the length. Its replies are carried with no
 /// member named, so any member may take one back. The native app's own documents are left as they
 /// are.
 migration action carry_native_tube(yt: YouTube) uses time {
@@ -1002,6 +1015,11 @@ migration action carry_native_tube(yt: YouTube) uses time {
                 if not yt.videos.any(x -> x.key == key) { yt.videos.insert(Video(key: key)) }
                 yt.queue.insert(QueuedVideo(key: key))
             }
+        }
+        // The comments the person liked there.
+        let liked = kept.entries.get("comment_likes") ?? Map<Text>()
+        for key in liked.keys() {
+            yt.liked_comments.add(key)
         }
         // A history the person deleted there stays deleted: an earlier history is not imported
         // over it here either.
@@ -1658,6 +1676,15 @@ view comments_section(
                             spacer()
                             if c.likes > 0 {
                                 text(count_text(c.likes), role: .caption)
+                            }
+                            ui.Button(
+                                "",
+                                icon: .heart,
+                                icon_only: true,
+                                toggled: yt.liked_comments.contains(c.key),
+                                accessible_name: std.say("Like the comment"),
+                            ) {
+                                on press: like_comment(yt, c)
                             }
                             ui.Button("Reply", icon: .reply, icon_only: true) {
                                 on press: set(reply_to, c.key).then(set(reply_text, ""))

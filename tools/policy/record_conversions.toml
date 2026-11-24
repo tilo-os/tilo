@@ -110,7 +110,6 @@ kind = "tube.library"
 app = "tube"
 change = "removed"
 conversion = "apps/tl/tube/app.tl:carry_native_tube"
-lost = "The comments the person liked: the tilolang YouTube keeps no like of its own on a comment, so there is nowhere to carry them."
 
 [[change]]
 kind = "tube.watch-history"
