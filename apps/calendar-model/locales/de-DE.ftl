@@ -27,18 +27,4 @@ calendar-calendar-pulled = Abgerufene Änderungen erfassen
 
 ## What the model itself names
 
-calendar-view-month = Monat
-calendar-view-week = Woche
-calendar-view-day = Tag
-calendar-view-agenda = Agenda
-calendar-tasks-title = Aufgaben
-calendar-tasks-priority-none = Keine Priorität
-calendar-tasks-priority-low = Niedrige Priorität
-calendar-tasks-priority-medium = Mittlere Priorität
-calendar-tasks-priority-high = Hohe Priorität
-calendar-tasks-inbox = Posteingang
-calendar-tasks-today = Heute
-calendar-tasks-upcoming = Demnächst
-calendar-tasks-completed = Abgeschlossen
-calendar-project = Projekt
 calendar-untitled-event = Unbenannter Termin

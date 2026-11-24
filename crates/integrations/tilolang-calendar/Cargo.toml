@@ -28,6 +28,8 @@ tilo-resource = { path = "../../core/tilo-resource" }
 # comes back, followed on a thread of its own.
 tilo-net = { path = "../../platform/tilo-net", optional = true }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+# The stable hash a detached occurrence and its master share their resource identity by.
+fnv.workspace = true
 tokio = { workspace = true, features = ["rt"], optional = true }
 jiff.workspace = true
 serde = { workspace = true, features = ["derive"] }
