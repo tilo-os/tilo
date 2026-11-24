@@ -2042,6 +2042,38 @@ impl NotificationPrefs {
         self.per_app.entry(app).or_default().muted_until = until;
         Ok(())
     }
+
+    /// Set the quiet hours' clock times and the days they keep, as one
+    /// change: a start and an end in minutes after midnight, and the days as
+    /// a bitmask with Monday in bit zero, zero for every day.
+    #[action()]
+    pub fn set_quiet_hours(
+        &mut self,
+        #[param("Minutes after midnight the quiet starts")] start_minute: u32,
+        #[param("Minutes after midnight the quiet ends")] end_minute: u32,
+        #[param("The days it keeps, Monday in bit zero; zero for every day")] weekdays: u32,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let minute = |value: u32| {
+            u16::try_from(value)
+                .ok()
+                .filter(|minute| *minute < 24 * 60)
+                .ok_or_else(|| {
+                    ui::tilo_resource::Refusal::new(format!(
+                        "`{value}` is not a minute after midnight"
+                    ))
+                })
+        };
+        let days = u8::try_from(weekdays)
+            .ok()
+            .filter(|days| *days <= 0b111_1111)
+            .ok_or_else(|| {
+                ui::tilo_resource::Refusal::new("the quiet hours keep days of one week")
+            })?;
+        self.focus.start_minute = minute(start_minute)?;
+        self.focus.end_minute = minute(end_minute)?;
+        self.focus.weekdays = days;
+        Ok(())
+    }
 }
 
 impl Default for NotificationPrefs {

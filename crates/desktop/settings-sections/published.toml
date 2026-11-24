@@ -716,6 +716,15 @@ params = [
   { name = "duration", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "set-quiet-hours"
+kind = "undoable"
+params = [
+  { name = "start_minute", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "end_minute", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "weekdays", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+]
+
 [[resources.types]]
 name = "AppNotificationRule"
 fields = [
@@ -1091,7 +1100,7 @@ fields = [
 
 [[resources]]
 kind = "settings.agent-providers"
-label = "Agent providers"
+label = "Agent model providers"
 version = 1
 setters = true
 fields = [

@@ -28,6 +28,7 @@ settings-appearance = Erscheinungsbild
 settings-appearance-set-dark-mode = Dunkelmodus
 settings-notifications = Mitteilungen
 settings-notifications-mute-app = Eine App stummschalten
+settings-notifications-set-quiet-hours = Die Uhrzeiten der Ruhezeiten und ihre Tage einstellen
 settings-audio = Ton
 settings-audio-device = Ton auf diesem Gerät
 settings-display = Bildschirme

@@ -28,6 +28,7 @@ settings-appearance = Appearance
 settings-appearance-set-dark-mode = Dark mode
 settings-notifications = Notifications
 settings-notifications-mute-app = Mute an app
+settings-notifications-set-quiet-hours = Set the quiet hours' clock times and the days they keep
 settings-audio = Sound
 settings-audio-device = Sound on this device
 settings-display = Displays
