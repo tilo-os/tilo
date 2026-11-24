@@ -1224,6 +1224,7 @@ hung-app-wait = Wait
 hung-app-force-quit = Force quit
 shell-wait-window = Keep waiting for { $window }
 shell-force-quit-window = Force quit { $window }
+shell-reopen-window = Reopen { $window }
 activities-layer = Activities
 activity-collapse = Put away
 activity-close = Close

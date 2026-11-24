@@ -1051,6 +1051,11 @@ id = "force-quit-app"
 kind = "outside"
 params = []
 
+[[resources.verbs]]
+id = "reopen-window"
+kind = "outside"
+params = []
+
 [[resources]]
 instances = true
 kind = "applications.app"
