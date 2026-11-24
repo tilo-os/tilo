@@ -449,7 +449,9 @@ fn take_governance(
     }
     // The workspace's governance came with the answer this copy is taken in from: what this
     // device decides for others reads it, and whoever follows that is woken for it as the device
-    // keeping the workspace wakes them for its own writes.
+    // keeping the workspace wakes them for its own writes. Whoever follows it (the key pump,
+    // the apps' brokers) comes with the device's keys.
+    #[cfg(feature = "device-keys")]
     tilo_identity::policy_change::announce();
     Ok(())
 }

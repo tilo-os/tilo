@@ -22,7 +22,7 @@ agents = ["apps", "device-keys", "dep:tilolang-tilo", "dep:tilolang-service", "d
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
-device-keys = ["dep:tilo-workspace-keys"]
+device-keys = ["dep:tilo-workspace-keys", "dep:tilo-identity"]
 # Content a record references, reaching the devices that may read it: what a host serves
 # for its workspaces' records, with or without apps on top.
 content = ["dep:tilo-broker-core", "dep:tilo-search"]
