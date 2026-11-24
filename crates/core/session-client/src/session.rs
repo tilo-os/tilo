@@ -830,6 +830,10 @@ impl Task {
             if self.emptied && !self.asked_again(&mut commands).await {
                 return self.closed().await;
             }
+            // The next attempt dials each workspace's link again: a link of a connection that
+            // ended or failed dialling is no longer this session's, and its workspace's
+            // readiness goes with it.
+            self.drop_links("the session dials its workspaces again");
             attempt = attempt.saturating_add(1);
             if !self.wait_offline(attempt, &mut commands).await {
                 return self.closed().await;
@@ -995,9 +999,14 @@ impl Task {
                 Ok(())
             }
             Err(error) => {
-                self.reports.change(|status| {
-                    status.workspaces.entry(workspace_id).or_insert(false);
-                });
+                // The person's own workspace is read where the host holds it, beside the ones
+                // this session joined: it is no prerequisite this session waits to be admitted
+                // to, so a host that holds none leaves it out rather than waiting on it.
+                if self.joined(workspace_id) {
+                    self.reports.change(|status| {
+                        status.workspaces.entry(workspace_id).or_insert(false);
+                    });
+                }
                 Err(error)
             }
         }
@@ -1026,9 +1035,18 @@ impl Task {
             );
             return Ok(());
         }
-        let sync = self
-            .owner_link(workspace_id)
-            .map_err(LinkError::Unavailable)?;
+        // A workspace this session is told to join but does not hold here yet — a page's or a
+        // program's, whose records travel over this device's own copy of it: the device takes it
+        // in as a member of it first, and its link carries what the copy then holds.
+        let sync = match self.owner_link(workspace_id) {
+            Ok(sync) => sync,
+            Err(_) if !self.owner.contains_workspace(workspace_id) => {
+                self.take_in(workspace_id).await?;
+                self.owner_link(workspace_id)
+                    .map_err(LinkError::Unavailable)?
+            }
+            Err(error) => return Err(LinkError::Unavailable(error)),
+        };
         let link = self.reach(Purpose::Records).await?;
         let transport: Arc<dyn Transport> = Arc::new(link);
         let dialed = sync
@@ -1057,6 +1075,95 @@ impl Task {
             },
         );
         Ok(())
+    }
+
+    /// Hold `workspace_id` here, as a member of it, before its link opens: a session told to
+    /// join a workspace it does not hold yet asks its host's entry to let this device in, as the
+    /// entry answers every device of a person the workspace has in it, and takes in the
+    /// membership the host that answered its address admits it with.
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device or answered nothing, its answer does not read, or the
+    /// membership it answered does not hold here.
+    async fn take_in(&mut self, workspace_id: WorkspaceId) -> Result<(), LinkError> {
+        let entering = tilo_server_protocol::entering::Entering {
+            workspace: workspace_id.to_string(),
+            name: self.config.cert.device_label.clone(),
+            request_id: rand::random(),
+            through: tilo_server_protocol::entering::Through::Entry,
+        };
+        let answered = ask_entry(
+            self.actions.as_ref(),
+            Arc::clone(&self.signer),
+            self.config.cert.clone(),
+            self.config.server_cert.device_public_key,
+            &entering,
+        )
+        .await
+        .map_err(|failure| LinkError::Unavailable(failure.message))?;
+        let host = match answered {
+            tilo_server_protocol::entering::Entered::Admitted {
+                host: Some(host), ..
+            } => host,
+            // The entry said why the workspace does not have this device: asking again with the
+            // same certificate answers the same.
+            tilo_server_protocol::entering::Entered::Refused(refusal) => {
+                return Err(LinkError::Refused(refusal_code(&refusal).to_owned()));
+            }
+            // An admission with no address is a host that keeps no signed address for the
+            // workspace: there is nowhere to take it in from.
+            tilo_server_protocol::entering::Entered::Admitted { host: None, .. } => {
+                return Err(LinkError::Unavailable(
+                    "the host keeps no address for the workspace".into(),
+                ));
+            }
+        };
+        let hint: tilo_peer_state::join::TransportHint =
+            postcard::from_bytes(&host).map_err(|error| {
+                LinkError::Malformed(format!(
+                    "the host's address for the workspace does not read: {error}"
+                ))
+            })?;
+        if hint.host.device_public_key != self.config.server_cert.device_public_key {
+            return Err(LinkError::ServerChanged);
+        }
+        let served =
+            tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1::from_transport_hint(
+                &hint,
+            )
+            .map_err(|error| LinkError::Malformed(error.to_string()))?;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (served, hint);
+            Err(LinkError::Unavailable(
+                "a page holds no workspace but the ones it is lent".into(),
+            ))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let dialer = self.dial.dialer(&self.config, self.signer.as_ref()).await?;
+            let endpoint = dialer.endpoint().await?;
+            let bootstrap = tilo_peer_state::owner::enroll::prove_membership(
+                &tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint),
+                &served.endpoint_addr,
+                workspace_id,
+                &self.config.cert,
+                self.signer.as_ref(),
+            )
+            .await
+            .map_err(LinkError::Unavailable)?;
+            self.owner
+                .install_member(
+                    workspace_id,
+                    &bootstrap,
+                    hint,
+                    &self.config.cert,
+                    tilo_clock::wall(),
+                )
+                .map_err(LinkError::Unavailable)?;
+            Ok(())
+        }
     }
 
     /// The device's replica of `workspace_id`, as the link that owns it syncs it, taking its
@@ -1114,9 +1221,11 @@ impl Task {
     /// `workspace_id`'s link listens: whatever this device writes reaches it from now on.
     fn link_up(&mut self, workspace_id: WorkspaceId) {
         self.emptied = false;
-        self.reports.change(|status| {
-            status.workspaces.insert(workspace_id, true);
-        });
+        if self.joined(workspace_id) {
+            self.reports.change(|status| {
+                status.workspaces.insert(workspace_id, true);
+            });
+        }
         self.sent
             .retain(|(workspace, _)| *workspace != workspace_id);
         if let Ok(peer) =
@@ -1134,6 +1243,12 @@ impl Task {
         self.outbound_due = true;
         self.follow_governance(workspace_id);
         self.check_admission();
+    }
+
+    /// Whether `workspace_id` is one this session joined, and so waits to be admitted to: the
+    /// person's own workspace is read where its host holds it, beside them.
+    fn joined(&self, workspace_id: WorkspaceId) -> bool {
+        self.workspaces.contains(&workspace_id)
     }
 
     /// Let go of every link: the next connection dials them again.
@@ -1180,8 +1295,11 @@ impl Task {
         }
     }
 
-    /// The session is up: connected, its link failures cleared, every workspace waiting to be
-    /// admitted again.
+    /// The session is up: connected, its link failures cleared. Each workspace's readiness is its
+    /// link's to say, and is set as the link comes up ([`Self::link_up`]): the dialled links of
+    /// this connection are up already when this runs, so none is reported waiting here. A link
+    /// that is dropped or ends clears its workspace's readiness ([`Self::drop_links`],
+    /// [`Self::link_ended`]).
     fn connected(&self) {
         self.reports.change(|status| {
             status.phase = TransportPhase::Connected;
@@ -1192,9 +1310,6 @@ impl Task {
             status.failures.retain(|failure| {
                 !failure.code.starts_with("transport") && !failure.code.starts_with("certificate")
             });
-            for ready in status.workspaces.values_mut() {
-                *ready = false;
-            }
         });
     }
 
@@ -1660,9 +1775,11 @@ impl Task {
         self.links.remove(&workspace_id);
         self.sent
             .retain(|(workspace, _)| *workspace != workspace_id);
-        self.reports.change(|status| {
-            status.workspaces.insert(workspace_id, false);
-        });
+        if self.joined(workspace_id) {
+            self.reports.change(|status| {
+                status.workspaces.insert(workspace_id, false);
+            });
+        }
         match refusal {
             Some(tilo_server_protocol::refusal::Refusal::WorkspaceDeleted) => {
                 self.left(workspace_id, WORKSPACE_DELETED);
@@ -4474,7 +4591,6 @@ async fn ask_entry(
         )),
     }
 }
-
 
 #[cfg(test)]
 mod tests {
