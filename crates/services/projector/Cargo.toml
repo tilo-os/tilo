@@ -2,15 +2,19 @@
 name = "tilo-projector"
 version = "0.1.0"
 edition = "2024"
-license.workspace = true
-publish = false
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+description = "The projection wire contract and control client: casting a screen or a playback to a Miracast, Google Cast, AirPlay or FCast receiver through Tilo's projection broker."
+repository.workspace = true
+homepage.workspace = true
+publish = true
 
 [dependencies]
 postcard = { workspace = true, features = ["alloc"] }
 serde.workspace = true
-tilo-files = { path = "../../platform/tilo-files" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
-wire-frame = { path = "../../platform/wire-frame", features = ["postcard"] }
+wire-frame = { version = "0.1.0", path = "../../platform/wire-frame", features = ["postcard"] }
 zeroize.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
