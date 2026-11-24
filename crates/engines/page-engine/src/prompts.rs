@@ -7,7 +7,7 @@
 //! its own action, which the system keeps as an asked record for the person; this says when one
 //! starts waiting and when it stops, so a call is raised once and withdrawn once.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use tilo_webview::WebViewEvent;
 
@@ -75,7 +75,7 @@ pub enum PromptChange {
 /// The prompts a page waits on now, and what changed since the window last took them.
 #[derive(Default)]
 pub struct Prompts {
-    open: BTreeMap<PromptKey, ()>,
+    open: BTreeSet<PromptKey>,
     changes: Vec<PromptChange>,
 }
 
@@ -159,13 +159,13 @@ impl Prompts {
 
     fn raise(&mut self, prompt: Prompt) {
         // One request is raised once, however often the engine reports it.
-        if self.open.insert(prompt.key, ()).is_none() {
+        if self.open.insert(prompt.key) {
             self.changes.push(PromptChange::Raised(prompt));
         }
     }
 
     fn end(&mut self, key: PromptKey) {
-        if self.open.remove(&key).is_some() {
+        if self.open.remove(&key) {
             self.changes.push(PromptChange::Ended(key));
         }
     }
