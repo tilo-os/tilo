@@ -594,8 +594,10 @@ impl Core {
         }
         if imp == Imp::MapPutValue || imp == Imp::MapRemoveValue {
             let key = Value::Text(self.text(a.h(1)?)?);
+            // The compiler boxes a scalar with `some_i`/`some_f` to hand it over, and `get`
+            // answers the value in an option of its own: the entry keeps the scalar itself.
             let value = if imp == Imp::MapPutValue {
-                Some(self.val(a.h(2)?)?)
+                Some(crate::host_res::unboxed(self.val(a.h(2)?)?))
             } else {
                 None
             };

@@ -48,6 +48,32 @@ action greet() -> Text {
 }
 ";
 
+    /// A map a function fills while it runs, holding numbers: a scalar is boxed to be handed
+    /// over, and `get` answers it in an option of its own.
+    const TALLY: &str = "app so.tilo.tally \"Tally\"
+
+type Tally {
+    seen: Float
+    missing: Float
+}
+
+root Tally
+
+default view card for Tally
+
+action tally(t: Tally) {
+    let scores = Map<Float>()
+    scores.put(\"a\", 2.5)
+    scores.put(\"b\", 1.5)
+    t.seen = scores.get(\"a\") ?? 0.0
+    t.missing = scores.get(\"z\") ?? -1.0
+}
+
+view card(t: Tally) {
+    text(\"{t.seen}\")
+}
+";
+
     fn runtime() -> Runtime {
         Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap()
     }
@@ -90,6 +116,26 @@ action greet() -> Text {
             rt.read(&w, "tag").unwrap(),
             Value::text("🎉"),
             "and the key's emoji reads as the emoji it names"
+        );
+    }
+
+    #[test]
+    fn a_number_put_in_a_map_the_code_holds_reads_back_as_that_number() {
+        let app = App::compile(TALLY, &[]);
+        let rt = runtime();
+        app.load(&rt);
+        let t = rt.create_root("Tally").unwrap();
+        rt.invoke_action(&me(), (app.action("tally"), vec![res(&t)]))
+            .unwrap();
+        assert_eq!(
+            rt.read(&t, "seen").unwrap(),
+            Value::Float(2.5),
+            "a number put in and read back is the number, not a box around it"
+        );
+        assert_eq!(
+            rt.read(&t, "missing").unwrap(),
+            Value::Float(-1.0),
+            "a key the map does not hold answers the fallback"
         );
     }
 
