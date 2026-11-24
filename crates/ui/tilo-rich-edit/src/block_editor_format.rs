@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn tracked_changes_are_taken_or_rejected() {
         let changed = || {
-            let block = Block::paragraph("keepadded");
+            let mut block = Block::paragraph("keepadded");
             block.line.set_marks(vec![
                 MarkSpan::new(0..4, Mark::Deletion("c1".into())),
                 MarkSpan::new(4..9, Mark::Insertion("c2".into())),

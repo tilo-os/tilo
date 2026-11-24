@@ -8013,7 +8013,7 @@
       "state": [
         {
           "name": "format",
-          "doc": "The formatting a view asks for, as a toolbar beside the document asks it: `bold`, `italic`, `underline`, `strike`, `super`, `sub`, `size:<points>`, `font:<sans|serif|mono>`, `color:#rrggbb`, `highlight:#rrggbb`, `align:<left|center|right|justify>`, `before:<points>`, `after:<points>`, `indent:<points>`, `hanging:<points>`, `style:<name>`, `bullets`, `numbers`, `heading:<level>` or `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice is two commands. Formatting a message is a command of the shared editor's, never a control of the app's own.",
+          "doc": "The formatting a view asks for, as a toolbar beside the document asks it: `bold`, `italic`, `underline`, `strike`, `super`, `sub`, `size:<points>`, `font:<sans|serif|mono>`, `color:#rrggbb`, `highlight:#rrggbb`, `align:<left|center|right|justify>`, `before:<points>`, `after:<points>`, `indent:<points>`, `hanging:<points>`, `style:<name>`, `changes:accept`, `changes:reject`, `bullets`, `numbers`, `heading:<level>` or `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice is two commands. Formatting a message is a command of the shared editor's, never a control of the app's own.",
           "type": {
             "option": "text"
           }

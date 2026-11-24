@@ -84,7 +84,8 @@ pub struct BlockEditorProps {
     /// `italic`, `underline`, `strike`, `super`, `sub`, `size:<points>`,
     /// `font:<sans|serif|mono>`, `color:#rrggbb`, `highlight:#rrggbb`, `align:<left|center|right|justify>`,
     /// `before:<points>`, `after:<points>`, `indent:<points>`, `hanging:<points>`,
-    /// `style:<name>`, `bullets`, `numbers`, `heading:<level>` or `link:<address>`, then a count
+    /// `style:<name>`, `changes:accept`, `changes:reject`, `bullets`, `numbers`,
+    /// `heading:<level>` or `link:<address>`, then a count
     /// the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice
     /// is two commands. Formatting a message is a command of the shared editor's, never a
     /// control of the app's own.

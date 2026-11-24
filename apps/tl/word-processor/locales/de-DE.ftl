@@ -257,6 +257,10 @@ d-xxexkmsk = Writer
     .w-centre = Zentriert
     .w-justified = Blocksatz
     .w-indent = Einzug
+    .w-tracked-changes = Nachverfolgte Änderungen
+    .w-accept-all-changes = Alle Änderungen annehmen
+    .w-reject-all-changes = Alle Änderungen ablehnen
+    .w-a-person-or-agent-that-suggests = Eine Person oder ein Agent, die oder der eine Änderung an den Worten vorschlägt, legt sie hier ab, damit Sie sie annehmen.
     .w-face = Schriftart
     .w-sans = Serifenlos
     .w-serif = Serifen
@@ -297,9 +301,6 @@ d-qgcdvpjd = Dateimenü
     .w-start-from-a-report = Mit einem Bericht beginnen
     .w-start-from-a-r-sum = Mit einem Lebenslauf beginnen
     .w-start-from-meeting-notes = Mit Besprechungsnotizen beginnen
-
-d-m6f4uc6u = Prüfbereich
-    .w-a-person-or-agent-that-suggests = Eine Person oder ein Agent, die oder der eine Änderung an den Worten vorschlägt, legt sie hier ab, damit Sie sie annehmen.
 
 d-aeni6cqw = Statusleiste
     .w-words = { $words ->

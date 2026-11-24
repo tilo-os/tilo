@@ -270,6 +270,10 @@ d-xxexkmsk = Writer
     .w-size = Size
     .w-text-colour = Text colour
     .w-highlight = Highlight
+    .w-tracked-changes = Tracked changes
+    .w-accept-all-changes = Accept all changes
+    .w-reject-all-changes = Reject all changes
+    .w-a-person-or-agent-that-suggests = A person or agent that suggests a change to the words leaves it here for you to accept.
     .w-margins-in-points = Margins in points
     .w-body = Body
     .w-bulleted = Bulleted
@@ -298,9 +302,6 @@ d-qgcdvpjd = File menu
     .w-start-from-a-report = Start from a report
     .w-start-from-a-r-sum = Start from a résumé
     .w-start-from-meeting-notes = Start from meeting notes
-
-d-m6f4uc6u = Review panel
-    .w-a-person-or-agent-that-suggests = A person or agent that suggests a change to the words leaves it here for you to accept.
 
 d-aeni6cqw = Status band
     .w-words = { $words } words
