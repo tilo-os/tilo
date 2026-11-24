@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
     {
         let w = NoOpWidget;
         assert!(tilo_ui::presence::capability::presence_key(&w).is_none());
-        assert!(tilo_ui::permissions::capability::permission_scope(&w).is_none());
+        assert!(tilo_ui::widget::permission::permission_scope(&w).is_none());
     }
 
     phase guarded_widget_fires_only_when_its_scope_is_granted;
@@ -326,7 +326,7 @@ struct GuardedButton {
 }
 
 impl tilo_ui::widget::Widget for GuardedButton {
-    tilo_ui::provides!(dyn tilo_ui::permissions::capability::PermissionGuarded);
+    tilo_ui::provides!(dyn tilo_ui::widget::permission::PermissionGuarded);
 
     #[allow(
         clippy::unimplemented,
@@ -353,7 +353,7 @@ impl tilo_ui::widget::Widget for GuardedButton {
     }
 }
 
-impl tilo_ui::permissions::capability::PermissionGuarded for GuardedButton {
+impl tilo_ui::widget::permission::PermissionGuarded for GuardedButton {
     fn permission_scope(&self) -> Option<PS> {
         Some(self.scope.clone())
     }

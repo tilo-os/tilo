@@ -9,8 +9,8 @@
 //! opens.
 
 use serde::{Deserialize, Serialize};
-use ui::search::FieldWeight;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
+use ui::text_match::FieldWeight;
 
 use crate::model::{Hit, LaunchPlace, Source, Target};
 
@@ -153,9 +153,9 @@ impl Continue {
     /// puts its own name in the window bar, and listing that again would
     /// list "Notes" instead of the notes.
     fn names_a_place(&self, place: &Place) -> bool {
-        let label = ui::search::fold_search_text(place.label.trim());
+        let label = ui::text_match::fold_search_text(place.label.trim());
         !label.is_empty()
-            && label != ui::search::fold_search_text(&(self.app_name)(&place.app))
+            && label != ui::text_match::fold_search_text(&(self.app_name)(&place.app))
             && !crate::names::is_apps_own_name(&place.app, &place.label)
     }
 

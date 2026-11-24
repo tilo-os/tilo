@@ -1425,7 +1425,7 @@ impl SearchCache {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::widget::WindowHistory, dyn ui_core::collaboration::presences::Presences; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::widget::WindowHistory, dyn ui_core::widget::presence_topology::Presences; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {
@@ -2208,7 +2208,7 @@ impl RootPublishes for ResourceRoot {
         // never a document action: those are the resource's own. One naming
         // the resource joins it rather than publishing it twice.
         let mut extras = Vec::new();
-        for extra in ui_core::resources::resources_for(self.app_view(), member, doc) {
+        for extra in ui_core::widget::resources::resources_for(self.app_view(), member, doc) {
             let extra = outside_document(extra);
             if extra.id == resource.id {
                 join(&mut resource, extra);
@@ -2362,7 +2362,7 @@ impl RootPublishes for ResourceRoot {
         // Last, what the content resolves by id beyond what it publishes (a
         // place, a record past the published page), without a document
         // action: those are the resource's own.
-        ui_core::resources::resource_for(self.app_view(), None, doc, id)
+        ui_core::widget::resources::resource_for(self.app_view(), None, doc, id)
             .map(super::rows::resolved_outside_document)
     }
     fn published_action(
@@ -2409,7 +2409,7 @@ impl RootPublishes for ResourceRoot {
                 .typed
                 .answer(doc, &address.action, changes)
                 .or_else(|| {
-                    ui_core::resources::document_action_result(
+                    ui_core::widget::resources::document_action_result(
                         self.app_view(),
                         doc,
                         address,
@@ -2426,7 +2426,7 @@ impl RootPublishes for ResourceRoot {
                 None => Some(serde_json::json!({ "minted": minted })),
             };
         }
-        ui_core::resources::document_action_result(self.app_view(), doc, address, changes)
+        ui_core::widget::resources::document_action_result(self.app_view(), doc, address, changes)
     }
 }
 
@@ -2526,18 +2526,18 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
 /// The view's own presences, and every other presence where its last action
 /// left it: a presence answered in its own view (an agent shown a row) is seen
 /// there by the person at this window.
-impl ui_core::collaboration::presences::Presences for ResourceRoot {
+impl ui_core::widget::presence_topology::Presences for ResourceRoot {
     fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
-        ui_core::collaboration::presences::join_presence(self.content.as_mut(), presence)
+        ui_core::widget::presence_topology::join_presence(self.content.as_mut(), presence)
     }
 
     fn leave_presence(&mut self, presence: &tilo_actions::PresenceId) {
         self.typed.forget(presence);
-        ui_core::collaboration::presences::leave_presence(self.content.as_mut(), presence);
+        ui_core::widget::presence_topology::leave_presence(self.content.as_mut(), presence);
     }
 
     fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
-        ui_core::collaboration::presences::set_presence_label(
+        ui_core::widget::presence_topology::set_presence_label(
             self.content.as_mut(),
             presence,
             label,
@@ -2548,7 +2548,7 @@ impl ui_core::collaboration::presences::Presences for ResourceRoot {
         &self,
         doc: &ui_core::automerge::AutoCommit,
     ) -> Vec<ui_core::widget::ViewPresence> {
-        let mut shown = ui_core::collaboration::presences::presences(self.content.as_ref(), doc);
+        let mut shown = ui_core::widget::presence_topology::presences(self.content.as_ref(), doc);
         for landed in self.typed.landed_presences(self.dispatch.app_id()) {
             if !shown.iter().any(|view| view.presence == landed.presence) {
                 shown.push(landed);
@@ -2558,7 +2558,7 @@ impl ui_core::collaboration::presences::Presences for ResourceRoot {
     }
 
     fn set_remote_only(&mut self, remote_only: bool) {
-        ui_core::collaboration::presences::set_remote_only(self.content.as_mut(), remote_only);
+        ui_core::widget::presence_topology::set_remote_only(self.content.as_mut(), remote_only);
     }
 }
 

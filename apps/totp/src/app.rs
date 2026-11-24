@@ -1701,7 +1701,7 @@ pub(crate) mod tests {
             "canonical provider reports no matches"
         );
         app.harness()
-            .open_search(&ui::search::SearchRequest::this_app())
+            .open_search(&ui::widget::search_request::SearchRequest::this_app())
             .unwrap();
         settle(&mut app);
         assert_eq!(
@@ -1945,7 +1945,7 @@ pub(crate) mod tests {
         );
         assert!(
             app.harness()
-                .open_search(&ui::search::SearchRequest::this_app())
+                .open_search(&ui::widget::search_request::SearchRequest::this_app())
                 .is_err(),
             "modal isolates platform search"
         );
@@ -1953,7 +1953,7 @@ pub(crate) mod tests {
         app.harness().key("Escape");
         settle(&mut app);
         app.harness()
-            .open_search(&ui::search::SearchRequest::this_app())
+            .open_search(&ui::widget::search_request::SearchRequest::this_app())
             .unwrap();
         settle(&mut app);
         assert_eq!(
@@ -1984,7 +1984,7 @@ pub(crate) mod tests {
         app.harness().key("Escape");
         settle(&mut app);
         app.harness()
-            .open_search(&ui::search::SearchRequest::this_app())
+            .open_search(&ui::widget::search_request::SearchRequest::this_app())
             .expect("Escape dismissed the preceding search");
         app.harness().key("Escape");
         settle(&mut app);

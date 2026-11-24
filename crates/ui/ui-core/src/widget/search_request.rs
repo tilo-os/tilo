@@ -7,7 +7,7 @@
 //! resources:
 //!
 //! ```
-//! use tilo_ui::search::{ScopeDecl, SearchRequest, search_button};
+//! use tilo_ui::widget::search_request::{ScopeDecl, SearchRequest, search_button};
 //!
 //! // The toolbar's magnifier: search this app.
 //! let search = search_button(SearchRequest::this_app());

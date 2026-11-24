@@ -114,7 +114,7 @@ impl PtyRoot {
 }
 impl Widget for PtyRoot {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
@@ -183,7 +183,7 @@ impl crate::widget::ResourceOperations for PtyRoot {
         )))
     }
 }
-impl crate::resources::PublishesResources for PtyRoot {
+impl crate::widget::resources::PublishesResources for PtyRoot {
     fn resources(&self, _: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new(TYPE, TYPE, "PTY")

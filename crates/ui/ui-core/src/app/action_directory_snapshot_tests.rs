@@ -103,7 +103,7 @@ struct DeclaredDirectory {
 }
 impl Widget for DeclaredDirectory {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         dyn crate::widget::ResourceOperations
     );
@@ -131,7 +131,7 @@ impl crate::search::capability::SearchSource for DeclaredDirectory {
     }
 }
 
-impl crate::resources::PublishesResources for DeclaredDirectory {
+impl crate::widget::resources::PublishesResources for DeclaredDirectory {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.calls.set(self.calls.get() + 1);
         let effect = doc.get(ROOT, "effect").unwrap().is_some();
@@ -695,7 +695,7 @@ impl ExtendedDirectory {
 }
 impl Widget for ExtendedDirectory {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -708,7 +708,7 @@ impl crate::widget::ResourceOperations for ExtendedDirectory {
     }
 }
 
-impl crate::resources::PublishesResources for ExtendedDirectory {
+impl crate::widget::resources::PublishesResources for ExtendedDirectory {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         vec![Self::resource_tree(false)]
     }
@@ -1280,7 +1280,7 @@ tilo_test_env::scenario! {
                             tilo_actions::ActionAddress::new("test.item:1", "open"),
                         ),
                     )
-                    .field("New record", crate::search::FieldWeight::UNRANKED),
+                    .field("New record", crate::text_match::FieldWeight::UNRANKED),
                 )
                 .unwrap();
             assert_ne!(app.action_directory_revision(), revision);

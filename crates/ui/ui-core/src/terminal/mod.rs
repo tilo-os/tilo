@@ -194,7 +194,6 @@ pub trait Session: Keys {
     /// The bytes of an image a placement names, by content hash; `None` when this device does
     /// not hold them.
     fn image_bytes(&self, hash: &str) -> Option<Vec<u8>>;
-    
 
     /// Everything the session reported after `since`, and the counter to ask from next.
     fn events(&self, since: u64) -> (Vec<SessionEvent>, u64);
@@ -255,11 +254,9 @@ pub fn take_window_session(id: &str) -> Option<SessionHandle> {
 pub fn text_color(color: CellColor, bold: bool, palette: &Palette) -> Color {
     match color {
         CellColor::Default => palette.foreground,
-        CellColor::Indexed(index) => palette.ansi_256(if bold && index < 8 {
-            index + 8
-        } else {
-            index
-        }),
+        CellColor::Indexed(index) => {
+            palette.ansi_256(if bold && index < 8 { index + 8 } else { index })
+        }
         CellColor::Rgb(r, g, b) => Color::from_rgba8(r, g, b, 255),
     }
 }

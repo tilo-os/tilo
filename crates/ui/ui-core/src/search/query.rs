@@ -128,7 +128,7 @@ impl SearchQuery {
     }
 
     /// Narrow the query to the resource anchored at `anchor` (see
-    /// [`ScopeDecl`](super::ScopeDecl)).
+    /// [`ScopeDecl`](crate::widget::search_request::ScopeDecl)).
     #[must_use]
     pub fn within(mut self, anchor: impl Into<String>) -> Self {
         self.scope = Some(anchor.into());
@@ -176,7 +176,7 @@ impl SearchQuery {
     pub fn in_scope(&self, anchor: &str) -> bool {
         self.scope
             .as_deref()
-            .is_none_or(|scope| super::request::scope_contains(scope, anchor))
+            .is_none_or(|scope| crate::widget::search_request::scope_contains(scope, anchor))
     }
 }
 

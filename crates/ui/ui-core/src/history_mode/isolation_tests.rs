@@ -190,7 +190,7 @@ impl Widget for LiveOwner {
         dyn crate::undo::UndoControl,
         dyn crate::undo::LocalUndo,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -286,7 +286,7 @@ impl crate::widget::ResourceOperations for LiveOwner {
     }
 }
 
-impl crate::resources::PublishesResources for LiveOwner {
+impl crate::widget::resources::PublishesResources for LiveOwner {
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if let Some(identity) = &self.mutable_identity {
             return mutable_identity_resources(self.resource_id, self.type_id, identity);

@@ -1633,8 +1633,8 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         // asks for the shell's search under the shell too: the shell draws that search, so the
         // request opens the launcher, and its query runs the shell's search as the shell's own
         // `search` verb does, its rows published for whoever reads them.
-        if ui::search::is_search_address(address) {
-            let query = ui::search::SearchRequest::from_arguments(arguments)
+        if ui::widget::search_request::is_search_address(address) {
+            let query = ui::widget::search_request::SearchRequest::from_arguments(arguments)
                 .query
                 .filter(|query| !query.is_empty());
             let started = match &query {
@@ -1673,7 +1673,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
-        if ui::search::is_search_address(address)
+        if ui::widget::search_request::is_search_address(address)
             || (address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE
                 && address.action == "search")
         {

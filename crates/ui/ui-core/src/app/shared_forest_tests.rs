@@ -98,7 +98,8 @@ fn a_shared_forest_derives_exactly_what_a_fresh_tree_does_after_any_edit() {
     let admitted = crate::a11y_tree::AdmittedNodeNames::default();
     let node_map = std::collections::HashMap::new();
     let controls = Rc::default();
-    let addresses = std::collections::HashSet::from([crate::search::search_address()]);
+    let addresses =
+        std::collections::HashSet::from([crate::widget::search_request::search_address()]);
     let mut kept = crate::a11y_tree::SemanticTree::new();
     let mut fresh = crate::a11y_tree::SemanticTree::new();
     let mut token = crate::published::fresh_token();

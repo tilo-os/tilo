@@ -18,7 +18,7 @@ impl FrameHarness {
     /// The APIs the window answers for the app, whatever its tree publishes: opening search, and
     /// History.
     pub(super) fn host_api_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        let mut resources = vec![crate::search::search_resource()];
+        let mut resources = vec![crate::widget::search_request::search_resource()];
         resources.push(self.history.as_ref().map_or_else(
             || crate::history_mode::api::history_resource(false, false),
             |history| history.api_resource(),

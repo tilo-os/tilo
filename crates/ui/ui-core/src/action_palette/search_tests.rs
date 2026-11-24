@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
                             tilo_actions::ActionAddress::new(&resource_id, "open"),
                         ),
                     )
-                    .field("abc c d", crate::search::FieldWeight::UNRANKED),
+                    .field("abc c d", crate::text_match::FieldWeight::UNRANKED),
                 )
                 .expect("valid broad candidate");
         }
@@ -83,7 +83,7 @@ tilo_test_env::scenario! {
                         tilo_actions::ActionAddress::new(target_id, "open"),
                     ),
                 )
-                .field("abc d", crate::search::FieldWeight::UNRANKED),
+                .field("abc d", crate::text_match::FieldWeight::UNRANKED),
             )
             .expect("valid exact target");
 

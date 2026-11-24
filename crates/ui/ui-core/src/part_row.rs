@@ -8,9 +8,9 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::search::SearchRequest;
 use crate::tokens::MotionSource;
 use crate::widget::DrawChild;
+use crate::widget::search_request::SearchRequest;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::widget::window_controls::{
     CONTROL_GAP, CONTROL_PX, ControlsState, WindowControl, WindowControls,

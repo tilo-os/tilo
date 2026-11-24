@@ -564,7 +564,7 @@ struct ProbeRoot {
 impl Widget for ProbeRoot {
     tilo_ui::provides!(
         dyn tilo_ui::widget::NativeViewLifecycle,
-        dyn tilo_ui::resources::PublishesResources,
+        dyn tilo_ui::widget::resources::PublishesResources,
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::view::capability::ViewState,
         dyn tilo_ui::undo::UndoPoints,
@@ -727,7 +727,7 @@ impl tilo_ui::search::capability::SearchSource for ProbeRoot {
     }
 }
 
-impl tilo_ui::resources::PublishesResources for ProbeRoot {
+impl tilo_ui::widget::resources::PublishesResources for ProbeRoot {
     #[allow(
         clippy::too_many_lines,
         reason = "one shared resource declares the runner action matrix"

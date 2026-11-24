@@ -15,7 +15,7 @@ use winit::window::Window;
 
 use super::super::App;
 use crate::part_row::{PartRow, PartRowHost, RowInput, RowPlace, WindowAction};
-use crate::search::SearchRequest;
+use crate::widget::search_request::SearchRequest;
 use crate::widget::{HistoryControl, InPlace, Widget};
 use crate::window_toolbar::{SearchOpening, ToolbarEvent};
 

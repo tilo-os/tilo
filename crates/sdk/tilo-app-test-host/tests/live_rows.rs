@@ -227,7 +227,7 @@ impl Widget for Jobs {
         self.rect
     }
 
-    tilo_app::provides!(dyn tilo_app::resources::PublishesResources);
+    tilo_app::provides!(dyn tilo_app::widget::resources::PublishesResources);
 }
 
 fn rogue() -> tilo_actions::ResourceSpec {
@@ -236,7 +236,7 @@ fn rogue() -> tilo_actions::ResourceSpec {
     )
 }
 
-impl tilo_app::resources::PublishesResources for Jobs {
+impl tilo_app::widget::resources::PublishesResources for Jobs {
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if RAW.get() == Raw::DocumentAction {
             return vec![rogue()];

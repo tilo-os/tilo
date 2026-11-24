@@ -54,9 +54,9 @@ pub struct AppEntry {
 pub struct Applications {
     entries: Vec<AppEntry>,
     /// Each app's searchable text, built once with the list.
-    fields: Vec<Vec<(String, ui::search::FieldWeight)>>,
+    fields: Vec<Vec<(String, ui::text_match::FieldWeight)>>,
     /// The apps' searchable text, indexed while it stays the same.
-    ranker: ui::search::ListIndex,
+    ranker: ui::text_match::ListIndex,
 }
 
 impl Applications {
@@ -74,7 +74,7 @@ impl Applications {
         Self {
             entries,
             fields,
-            ranker: ui::search::ListIndex::default()
+            ranker: ui::text_match::ListIndex::default()
                 .with_ranks(ui::search::system::application_ranks),
         }
     }
@@ -211,11 +211,11 @@ pub struct CommandSpec {
 pub struct Commands {
     specs: Vec<CommandSpec>,
     /// Each command's searchable text, built once with the list.
-    fields: Vec<Vec<(String, ui::search::FieldWeight)>>,
+    fields: Vec<Vec<(String, ui::text_match::FieldWeight)>>,
     /// The commands' searchable text, indexed while it stays the same: one
     /// index for the list, so a keystroke ranks every command at once rather
     /// than building an index per command.
-    ranker: ui::search::ListIndex,
+    ranker: ui::text_match::ListIndex,
 }
 
 impl Commands {
@@ -225,10 +225,10 @@ impl Commands {
             .iter()
             .map(|command| {
                 vec![
-                    (command.title.clone(), ui::search::FieldWeight::TITLE),
+                    (command.title.clone(), ui::text_match::FieldWeight::TITLE),
                     (
                         command.subtitle.clone().unwrap_or_default(),
-                        ui::search::FieldWeight::SUBTITLE,
+                        ui::text_match::FieldWeight::SUBTITLE,
                     ),
                 ]
             })
@@ -236,7 +236,7 @@ impl Commands {
         Self {
             specs: commands,
             fields,
-            ranker: ui::search::ListIndex::default(),
+            ranker: ui::text_match::ListIndex::default(),
         }
     }
 }
@@ -760,7 +760,7 @@ pub struct Content {
     providers: Vec<Box<dyn ui::search::SearchProvider>>,
     resources: Vec<ResourceSpec>,
     /// The part of the application a search it opened is narrowed to (a
-    /// [`ui::search::ScopeDecl`] anchor).
+    /// [`ui::widget::search_request::ScopeDecl`] anchor).
     scope: Option<String>,
     limit: usize,
     /// Whether nothing typed asks the providers for what they list unasked
@@ -1391,7 +1391,7 @@ pub struct Switches {
     /// what it says, worded once when the switches are built.
     rows: Vec<(String, String)>,
     /// What each switch is found by, in the order of `sources`.
-    fields: Vec<Vec<(String, ui::search::FieldWeight)>>,
+    fields: Vec<Vec<(String, ui::text_match::FieldWeight)>>,
 }
 
 impl Switches {
@@ -1421,9 +1421,9 @@ impl Switches {
             .iter()
             .map(|(title, detail)| {
                 vec![
-                    (title.clone(), ui::search::FieldWeight::TITLE),
-                    (detail.clone(), ui::search::FieldWeight::SUBTITLE),
-                    (keywords.clone(), ui::search::FieldWeight::KEYWORD),
+                    (title.clone(), ui::text_match::FieldWeight::TITLE),
+                    (detail.clone(), ui::text_match::FieldWeight::SUBTITLE),
+                    (keywords.clone(), ui::text_match::FieldWeight::KEYWORD),
                 ]
             })
             .collect();
@@ -1452,7 +1452,7 @@ impl Source for Switches {
             return Vec::new();
         }
         // One index over every switch, built where the search asks them.
-        let ranks = rank::rank_rows(&ui::search::ListIndex::default(), needle, &self.fields);
+        let ranks = rank::rank_rows(&ui::text_match::ListIndex::default(), needle, &self.fields);
         self.sources
             .iter()
             .zip(&self.rows)
@@ -2702,9 +2702,9 @@ mod tests {
         }
 
         fn query(&self, needle: &str) -> Vec<Hit> {
-            let typed = ui::search::fold_search_text(needle.trim());
+            let typed = ui::text_match::fold_search_text(needle.trim());
             let title = "Write a launch checklist note in Notes with five short items";
-            if typed.is_empty() || !ui::search::fold_search_text(title).contains(&typed) {
+            if typed.is_empty() || !ui::text_match::fold_search_text(title).contains(&typed) {
                 return Vec::new();
             }
             vec![Hit {

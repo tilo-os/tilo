@@ -242,7 +242,11 @@ mod tests {
         frame.invocation_results.as_mut().unwrap().remaining = 0;
         assert!(
             frame
-                .perform(&invoke(crate::search::search_address(), json!({}), None))
+                .perform(&invoke(
+                    crate::widget::search_request::search_address(),
+                    json!({}),
+                    None
+                ))
                 .is_err()
         );
         assert!(frame.action_palette.is_some(), "the operation really ran");

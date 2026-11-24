@@ -311,10 +311,10 @@ impl ShellDesktop {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Option<ui::host_operation::ResourceOperationStart> {
-        if !ui::search::is_search_address(address) {
+        if !ui::widget::search_request::is_search_address(address) {
             return None;
         }
-        let request = ui::search::SearchRequest::from_arguments(arguments);
+        let request = ui::widget::search_request::SearchRequest::from_arguments(arguments);
         let handle = self.desktop.borrow().policy.handle().clone();
         handle.open_search(ui::search::Scope::Workspace, request.query);
         Some(ui::host_operation::ResourceOperationStart::Completed(
@@ -417,7 +417,7 @@ impl tilo_session_core::surfaces::Published for ShellDesktop {
             .as_ref()
             .map(tilo_session_core::desktop::shell_verbs::ShellVerbs::resources)
             .unwrap_or_default();
-        resources.push(ui::search::search_resource());
+        resources.push(ui::widget::search_request::search_resource());
         resources
     }
 

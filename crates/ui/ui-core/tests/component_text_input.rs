@@ -543,7 +543,7 @@ impl AppWidget for WithdrawableResource {
 
 impl Widget for WithdrawableResource {
     tilo_ui::provides!(
-        dyn tilo_ui::resources::PublishesResources,
+        dyn tilo_ui::widget::resources::PublishesResources,
         dyn tilo_ui::host_operation::ResourceOperations
     );
     fn name(&self) -> &'static str {
@@ -581,7 +581,7 @@ impl tilo_ui::host_operation::ResourceOperations for WithdrawableResource {
     }
 }
 
-impl tilo_ui::resources::PublishesResources for WithdrawableResource {
+impl tilo_ui::widget::resources::PublishesResources for WithdrawableResource {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if self.published.load(std::sync::atomic::Ordering::SeqCst) {
             vec![self.resource.clone()]

@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
 
     phase application_identity_and_metadata_share_native_match_bands;
     {
-        let index = crate::search::ListIndex::default();
+        let index = crate::text_match::ListIndex::default();
         let score = |query: &str, name, id, category| {
             index.ranks(query, [application_fields(name, id, category)])[0].map(provider_score)
         };
@@ -441,12 +441,12 @@ fn every_builtin_kind_is_named_in_the_shells_language() {
 fn an_action_known_by_a_phrase_typed_whole_outranks_a_title_begun_by_it() {
     let keyword = action_ranks(
         crate::search::MatchTier::Exact,
-        crate::search::FieldWeight::KEYWORD,
+        crate::text_match::FieldWeight::KEYWORD,
     )
     .expect("a keyword typed whole names the action");
     let begun = action_ranks(
         crate::search::MatchTier::Prefix,
-        crate::search::FieldWeight::TITLE,
+        crate::text_match::FieldWeight::TITLE,
     )
     .expect("a title begun names the action");
     assert!(
@@ -457,7 +457,7 @@ fn an_action_known_by_a_phrase_typed_whole_outranks_a_title_begun_by_it() {
         Some(keyword),
         action_ranks(
             crate::search::MatchTier::Exact,
-            crate::search::FieldWeight::TITLE,
+            crate::text_match::FieldWeight::TITLE,
         ),
         "the phrase ranks as the action's title typed whole"
     );

@@ -365,7 +365,7 @@ impl ResourceRoot {
         views
     }
 
-    /// [`ui_core::resources::PublishesResources::resources_for`] as a shared
+    /// [`ui_core::widget::resources::PublishesResources::resources_for`] as a shared
     /// forest, when it is one: nothing the view adds touches the tree's
     /// children beyond what [`Self::published_children`] keeps per child (no
     /// surface, which alone publishes rows or binds edits to them, and no
@@ -412,7 +412,7 @@ impl ResourceRoot {
             (head, children, chains)
         };
         let mut extras = Vec::new();
-        for extra in ui_core::resources::resources_for(self.content.as_ref(), None, doc) {
+        for extra in ui_core::widget::resources::resources_for(self.content.as_ref(), None, doc) {
             if extra.id.as_str() == root.0.id.as_str() {
                 return None;
             }

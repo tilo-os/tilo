@@ -4,8 +4,9 @@
 //! provider is a "Search in" row.
 
 use super::*;
-use crate::search::{ScopeDecl, SearchRequest, SearchResult, search_button};
+use crate::search::SearchResult;
 use crate::widget::TaffyTreeExt;
+use crate::widget::search_request::{ScopeDecl, SearchRequest, search_button};
 use crate::widget::{Button, Widget};
 use automerge::AutoCommit;
 use std::collections::HashMap;
@@ -43,7 +44,7 @@ struct MailRoot {
 
 impl Widget for MailRoot {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource
     );
 
@@ -77,7 +78,7 @@ impl crate::search::capability::SearchSource for MailRoot {
     }
 }
 
-impl crate::resources::PublishesResources for MailRoot {
+impl crate::widget::resources::PublishesResources for MailRoot {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         let archive = |id: &str, label: &str| {
             ResourceSpec::new(id, "mail.folder", label).with_action(

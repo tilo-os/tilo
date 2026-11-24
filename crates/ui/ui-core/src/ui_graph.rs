@@ -1395,7 +1395,7 @@ fn filling() -> Style {
 
 impl Widget for LiveUi {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -1471,9 +1471,9 @@ impl crate::widget::ResourceOperations for LiveUi {
     }
 }
 
-impl crate::resources::PublishesResources for LiveUi {
+impl crate::widget::resources::PublishesResources for LiveUi {
     fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::ResourceSpec> {
-        let mut resources = crate::resources::resources(self.child.as_ref(), doc);
+        let mut resources = crate::widget::resources::resources(self.child.as_ref(), doc);
         resources.push(self.graph_resource());
         resources
     }

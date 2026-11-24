@@ -497,7 +497,7 @@ crate::testing::test_app_widget!(
 impl Widget for RetainedLifecycleProbe {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::resource::capability::ResourceScoped,
         dyn crate::widget::ResourceOperations
     );
@@ -653,7 +653,7 @@ impl crate::resource::capability::ResourceScoped for RetainedLifecycleProbe {
     }
 }
 
-impl crate::resources::PublishesResources for RetainedLifecycleProbe {
+impl crate::widget::resources::PublishesResources for RetainedLifecycleProbe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         vec![retained_lifecycle_resource(self.id)]
     }

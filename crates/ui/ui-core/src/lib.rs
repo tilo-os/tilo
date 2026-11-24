@@ -325,7 +325,6 @@ pub mod render_bump_recovery;
 pub mod render_thread;
 pub mod reorder;
 pub mod resource;
-pub mod resources;
 pub mod retained_present;
 pub mod retained_raster;
 pub mod richtext;
@@ -446,9 +445,9 @@ pub use local_state::{
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 // Paragraph composition is the document engine's, so the reader, the word processor and PDF
 // export lay text out by one policy.
+pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
 #[cfg(feature = "native")]
 pub use pictures::{lend_content, set_remote_fetcher};
-pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
 pub use platform::{
     DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,
     spell_shortcut_keycaps,
@@ -472,9 +471,7 @@ pub use resource::{
     DocumentCheckout, DocumentId, DocumentRef, ResourceRefusal, ResourceSet, ResourceStore,
     ResourceType,
 };
-pub use search::{
-    FnProvider, ListIndex, SearchGroup, SearchProvider, SearchRegistry, SearchResult,
-};
+pub use search::{FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult};
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{DocumentFrontier, State, UndoEntry, UndoLog};
 pub use text_break::discretionary_hyphen_breaks;

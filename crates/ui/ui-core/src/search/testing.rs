@@ -107,7 +107,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::{FieldWeight, SearchCatalog, SearchCursor, SearchItem, SearchPage};
+    use crate::search::{SearchCatalog, SearchCursor, SearchItem, SearchPage};
+    use crate::text_match::FieldWeight;
     use tilo_actions::ActionAddress;
 
     fn catalogue(corpus: Corpus, extra_text: &str) -> SearchCatalog {

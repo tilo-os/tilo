@@ -5,9 +5,9 @@
 use super::body::{BodyIndex, SearchBody};
 use super::ordinals;
 use super::query::{Facet, SearchQuery};
-use super::rank::FieldWeight;
 use super::row::SearchRow;
 use crate::icons::Icon;
+use crate::text_match::FieldWeight;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tilo_search::{Document, Page, SearchIndex};
@@ -950,8 +950,8 @@ pub trait SearchProvider {
     }
 
     /// The parts of the app this provider's hits can be narrowed to (see
-    /// [`ScopeDecl`](super::ScopeDecl)).
-    fn search_scopes(&self) -> Vec<super::ScopeDecl> {
+    /// [`ScopeDecl`](crate::widget::search_request::ScopeDecl)).
+    fn search_scopes(&self) -> Vec<crate::widget::search_request::ScopeDecl> {
         Vec::new()
     }
 
@@ -1015,7 +1015,7 @@ pub trait CatalogSearchProvider {
 
     /// As [`SearchProvider::search_scopes`]: the parts of the app this catalogue's hits
     /// can be narrowed to.
-    fn search_scopes(&self) -> Vec<super::ScopeDecl> {
+    fn search_scopes(&self) -> Vec<crate::widget::search_request::ScopeDecl> {
         Vec::new()
     }
 
@@ -1078,7 +1078,7 @@ impl<T: CatalogSearchProvider> SearchProvider for T {
         CatalogSearchProvider::facets(self)
     }
 
-    fn search_scopes(&self) -> Vec<super::ScopeDecl> {
+    fn search_scopes(&self) -> Vec<crate::widget::search_request::ScopeDecl> {
         CatalogSearchProvider::search_scopes(self)
     }
 
@@ -1103,7 +1103,8 @@ impl CatalogSearchProvider for SearchCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::{FieldWeight, SearchBody, SearchBodySource};
+    use crate::search::{SearchBody, SearchBodySource};
+    use crate::text_match::FieldWeight;
 
     fn text_resource(
         resource_id: impl Into<String>,

@@ -318,7 +318,7 @@ impl App {
     ) -> Vec<ControlBindingCoverage> {
         // Shared chrome invokes APIs served by this host, rather than by
         // the app's resource provider. Audit those exact declarations too.
-        let mut host_resources = vec![crate::search::search_resource()];
+        let mut host_resources = vec![crate::widget::search_request::search_resource()];
         if let Some(history) = &self.history {
             host_resources.push(history.api_resource());
         }
@@ -2355,7 +2355,7 @@ impl App {
     /// Open search the way `request` asks: this app, or one part of it, with
     /// the query already typed. A standalone window shows its own palette;
     /// inside the Tilo shell the component hands the request to the shell.
-    pub fn open_search(&mut self, request: crate::search::SearchRequest) {
+    pub fn open_search(&mut self, request: crate::widget::search_request::SearchRequest) {
         if self.hand_search_to_session(&request) {
             return;
         }
@@ -2377,7 +2377,7 @@ impl App {
     /// the request went to the session.
     pub(super) fn hand_search_to_session(
         &mut self,
-        request: &crate::search::SearchRequest,
+        request: &crate::widget::search_request::SearchRequest,
     ) -> bool {
         if self.floating.client.is_some() {
             self.floating.search_requests.push(request.clone());
@@ -2432,7 +2432,7 @@ impl App {
         {
             return false;
         }
-        self.open_search(crate::search::SearchRequest::this_app());
+        self.open_search(crate::widget::search_request::SearchRequest::this_app());
         true
     }
 
@@ -2580,8 +2580,8 @@ impl App {
     /// outside one. Whether it opened.
     #[cfg(feature = "native")]
     pub(super) fn open_search_at_action(&mut self, address: &tilo_actions::ActionAddress) -> bool {
-        let asked = crate::search::SearchRequest::asking(
-            crate::search::ScopeDecl::new(address.resource.clone(), String::new()),
+        let asked = crate::widget::search_request::SearchRequest::asking(
+            crate::widget::search_request::ScopeDecl::new(address.resource.clone(), String::new()),
             address.action.clone(),
         );
         if self.hand_search_to_session(&asked) {
@@ -3065,7 +3065,8 @@ impl crate::app_core::ControlCore for App {
         intent: &tilo_actions::ControlInvocation,
         owner: Option<&crate::bound_dispatch::CallbackBinding>,
     ) -> bool {
-        let Some(request) = crate::search::SearchRequest::from_invocation(intent) else {
+        let Some(request) = crate::widget::search_request::SearchRequest::from_invocation(intent)
+        else {
             return false;
         };
         match owner {

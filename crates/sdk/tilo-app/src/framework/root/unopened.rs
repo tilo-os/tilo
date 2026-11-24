@@ -56,7 +56,7 @@ impl Unopened {
 }
 
 impl Decorator for Unopened {
-    ui_core::provides!(dyn ui_core::resources::PublishesResources);
+    ui_core::provides!(dyn ui_core::widget::resources::PublishesResources);
 
     type Inner = ui_core::widget::EmptyState;
 
@@ -69,7 +69,7 @@ impl Decorator for Unopened {
     }
 }
 
-impl ui_core::resources::PublishesResources for Unopened {
+impl ui_core::widget::resources::PublishesResources for Unopened {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![self.resource.clone()]
     }

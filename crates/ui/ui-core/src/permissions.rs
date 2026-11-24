@@ -4,8 +4,6 @@
 
 pub use ::collaboration::permissions::*;
 
-pub mod capability;
-
 /// Wake `wake` whenever an outside authority permissions follow changes, for as long as its scope
 /// is open.
 #[cfg(feature = "native")]

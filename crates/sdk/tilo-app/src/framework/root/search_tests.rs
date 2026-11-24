@@ -69,7 +69,7 @@ impl ResourceApp for MailApp {
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
         cx.on_open(|anchor| OPENED.with_borrow_mut(|opened| opened.push(anchor.to_owned())));
         Box::new(Column::new().push(Box::new(
-            cx.search_button(ui_core::search::SearchRequest::this_app()),
+            cx.search_button(ui_core::widget::search_request::SearchRequest::this_app()),
         )))
     }
 }

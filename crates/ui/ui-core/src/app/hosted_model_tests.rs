@@ -382,7 +382,7 @@ tilo_test_env::scenario! {
                         tilo_actions::ActionAddress::new("test.item:1", "open"),
                     ),
                 )
-                .field("New record", crate::search::FieldWeight::UNRANKED),
+                .field("New record", crate::text_match::FieldWeight::UNRANKED),
             )
             .unwrap();
         app.pump_hosted_model();

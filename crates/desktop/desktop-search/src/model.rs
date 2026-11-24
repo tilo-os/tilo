@@ -164,7 +164,7 @@ impl Target {
 /// to a full stop is still the same line said twice.
 #[must_use]
 pub fn spoken(text: &str) -> String {
-    ui::search::fold_search_text(text.trim())
+    ui::text_match::fold_search_text(text.trim())
         .trim_end_matches(['.', ',', ';', ':', '!', '?', '\u{2026}', ' '])
         .to_owned()
 }
@@ -884,13 +884,13 @@ impl SearchStream {
                     && hit.kind != ResourceKind::Custom(crate::providers::WINDOWS_KIND.into())
                     && !hit.title.trim().is_empty()
             })
-            .map(|(hit, _)| ui::search::fold_search_text(&hit.title))
+            .map(|(hit, _)| ui::text_match::fold_search_text(&hit.title))
             .collect();
         self.merged
             .iter()
             .filter(|(hit, _)| {
                 !matches!(hit.thing(), Thing::Window(_))
-                    || !shown.contains(&ui::search::fold_search_text(&hit.title))
+                    || !shown.contains(&ui::text_match::fold_search_text(&hit.title))
             })
             .cloned()
             .collect()
@@ -1234,11 +1234,12 @@ mod tests {
         }
 
         fn query(&self, needle: &str) -> Vec<Hit> {
-            let typed = ui::search::fold_search_text(needle.trim());
+            let typed = ui::text_match::fold_search_text(needle.trim());
             self.hits
                 .iter()
                 .filter(|hit| {
-                    typed.is_empty() || ui::search::fold_search_text(&hit.title).contains(&typed)
+                    typed.is_empty()
+                        || ui::text_match::fold_search_text(&hit.title).contains(&typed)
                 })
                 .cloned()
                 .collect()
@@ -2164,12 +2165,12 @@ mod tests {
             }
 
             fn query(&self, needle: &str) -> Vec<Hit> {
-                let typed = ui::search::fold_search_text(needle.trim());
+                let typed = ui::text_match::fold_search_text(needle.trim());
                 self.hits
                     .iter()
                     .filter(|hit| {
                         typed.is_empty()
-                            || ui::search::fold_search_text(&hit.title).contains(&typed)
+                            || ui::text_match::fold_search_text(&hit.title).contains(&typed)
                     })
                     .cloned()
                     .collect()

@@ -83,7 +83,7 @@ pub(super) struct FloatingRuntime {
     /// Searches the app asked for (Ctrl+K, a search button, an action's
     /// arguments), for the session's one search to open
     /// ([`crate::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch`]).
-    pub search_requests: Vec<crate::search::SearchRequest>,
+    pub search_requests: Vec<crate::widget::search_request::SearchRequest>,
     /// Whether the app wants its windows withheld from captures.
     pub capture_protected: bool,
     /// Whether the frame currently being prepared paints a secret.
@@ -386,7 +386,10 @@ impl App {
 
     /// Run one message the shell would have written, as the window's own pump runs it.
     #[cfg(all(feature = "native", feature = "test-support"))]
-    pub fn test_deliver_host_message(&mut self, message: crate::floating_surface::FloatingSurfaceHostMessage) {
+    pub fn test_deliver_host_message(
+        &mut self,
+        message: crate::floating_surface::FloatingSurfaceHostMessage,
+    ) {
         self.apply_floating_host_messages(vec![message]);
     }
 
@@ -1791,9 +1794,19 @@ mod host_shell_allow_tests {
             self.container.apply_layout(taffy, node, origin);
         }
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, text, theme, mut env) = ctx.parts();
-            self.container.draw(&mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, text, theme, mut env) = ctx.parts();
+            self.container.draw(&mut crate::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
         fn name(&self) -> &str {
             "DeviceShellProbe"

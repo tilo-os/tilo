@@ -36,7 +36,7 @@ use tilo_sheets::SheetState as _;
 use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 
 /// The platform search action every window and the shell publish: what a window's search control, its
-/// toolbar's magnifier and Ctrl+K run (`tilo_ui::search::SearchRequest`).
+/// toolbar's magnifier and Ctrl+K run (`tilo_ui::widget::search_request::SearchRequest`).
 const HOST_SEARCH: &str = "tilo.host:search";
 
 type Arguments = serde_json::Map<String, serde_json::Value>;

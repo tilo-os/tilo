@@ -18,12 +18,14 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::search::{
-    Facet, FacetFilter, FieldWeight, ListIndex, PagePoll, PendingToken, ScopeDecl, SearchCursor,
-    SearchProvider, SearchQuery, SearchResult,
+    Facet, FacetFilter, PagePoll, PendingToken, SearchCursor, SearchProvider, SearchQuery,
+    SearchResult,
 };
+use crate::text_match::{FieldWeight, ListIndex};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::DrawChild;
+use crate::widget::search_request::ScopeDecl;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use tilo_actions::{
     ActionContext, ActionInput, EncodedAction, OperationKind, ResourceSpec, flatten,
@@ -897,7 +899,10 @@ impl ActionPalette {
     /// Show what `request` opens search on: one of the app's actions asking for its arguments, starting
     /// from the query, else the part of the app it narrows to with the query typed and the resource it
     /// names under the cursor.
-    pub(crate) fn open_on(&mut self, request: &crate::search::SearchRequest) -> bool {
+    pub(crate) fn open_on(
+        &mut self,
+        request: &crate::widget::search_request::SearchRequest,
+    ) -> bool {
         if let Some(address) = request.asked()
             && self.activate_address(&address.resource, &address.action)
         {
@@ -2956,8 +2961,8 @@ mod tests {
             ["Ada Lovelace", "Alan Turing"]
                 .into_iter()
                 .filter(|n| {
-                    crate::search::fold_search_text(n)
-                        .contains(&crate::search::fold_search_text(query))
+                    crate::text_match::fold_search_text(n)
+                        .contains(&crate::text_match::fold_search_text(query))
                 })
                 .map(|n| SearchResult::new("People", n, n.to_string()))
                 .collect()
@@ -2974,8 +2979,8 @@ mod tests {
         }
 
         fn search(&self, query: &str) -> Vec<SearchResult> {
-            if !crate::search::fold_search_text("Ada Lovelace")
-                .contains(&crate::search::fold_search_text(query))
+            if !crate::text_match::fold_search_text("Ada Lovelace")
+                .contains(&crate::text_match::fold_search_text(query))
             {
                 return Vec::new();
             }

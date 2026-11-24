@@ -9,13 +9,13 @@ use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::resource::ResourceSaveStatus;
-use ui_core::resources::PublishesResources;
 use ui_core::search::capability::SearchSource;
 use ui_core::view::ThawError;
 use ui_core::widget::capability::{Request, RequestMut};
 use ui_core::widget::controls::{ActionControls, AttributedControlInvocation};
 use ui_core::widget::decorator::Decorated;
 use ui_core::widget::empty_state::PaintedEmptyStates;
+use ui_core::widget::resources::PublishesResources;
 use ui_core::widget::{AppKind, AppModel, AppWidget, Decorator, IconDescriptor, ModelPath, Widget};
 
 /// What the root widget asks of the root of one resource type: the view it
@@ -156,7 +156,7 @@ pub(crate) trait RootPublishes {
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec>;
     /// An action of the resource `id` as this root publishes it now
-    /// ([`ui_core::resources::PublishesResources::published_action`]), built from the surfaces' own
+    /// ([`ui_core::widget::resources::PublishesResources::published_action`]), built from the surfaces' own
     /// statuses rather than a publication.
     fn published_action(
         &self,

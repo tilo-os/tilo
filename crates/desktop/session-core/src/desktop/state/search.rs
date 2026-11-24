@@ -31,7 +31,7 @@ pub fn search_asked(
     tree: &mut Layout,
     strip: StripId,
     new_tab: Option<GroupId>,
-    search_in: Option<(GroupId, ui::search::SearchRequest)>,
+    search_in: Option<(GroupId, ui::widget::search_request::SearchRequest)>,
 ) -> Option<SearchRequest> {
     let mut asked = new_tab.map(|group| SearchRequest::Open {
         scope: Scope::WindowGroup(Some(group)),
@@ -213,7 +213,7 @@ impl DesktopHandle {
     /// (`ui::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch`): inside a session
     /// there is one search, the shell's, and the app opens none of its own. A tab that shows no app
     /// searches nothing.
-    pub fn search_app(&self, tab: TabId, request: ui::search::SearchRequest) {
+    pub fn search_app(&self, tab: TabId, request: ui::widget::search_request::SearchRequest) {
         let mut shared = self.shared.borrow_mut();
         let Some(app) = shared
             .tree

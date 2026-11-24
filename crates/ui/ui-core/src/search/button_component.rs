@@ -3,7 +3,7 @@
 use crate::component::{Component, Described};
 use crate::widget::{Button, Decorator};
 
-use super::{SearchRequest, search_button};
+use crate::widget::search_request::{SearchRequest, search_button};
 
 /// The one search affordance an app puts in its chrome: an icon button that opens the
 /// platform search over the whole app. It never draws a field, and a window bar that

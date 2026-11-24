@@ -19,10 +19,10 @@ use std::rc::Rc;
 use tilo_actions::{ActionInvoker, InvocationId, InvocationUpdate, ResourceSpec};
 use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
-use ui_core::resources::PublishesResources;
 use ui_core::taffy::{NodeId, Style, TaffyTree};
 use ui_core::theme::Theme;
 use ui_core::vello::kurbo::{Point, Rect};
+use ui_core::widget::resources::PublishesResources;
 use ui_core::widget::{
     AppKind, AppModel, AppWidget, Edits, IconDescriptor, ModelPath, TaffyTreeExt as _, Widget,
 };

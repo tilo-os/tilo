@@ -6070,7 +6070,7 @@ impl FrameHarness {
         );
         resources.extend(semantics.action_resources());
         semantic.end();
-        resources.push(crate::search::search_resource());
+        resources.push(crate::widget::search_request::search_resource());
         resources
     }
 
@@ -8267,11 +8267,11 @@ impl FrameHarness {
                 reason: reason.clone(),
             });
         }
-        let result = if crate::search::request::is_search_address(address) {
+        let result = if crate::widget::search_request::is_search_address(address) {
             let encoded = spec
                 .build_json(arguments)
                 .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
-            let request = crate::search::SearchRequest::decode(&encoded.payload)
+            let request = crate::widget::search_request::SearchRequest::decode(&encoded.payload)
                 .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
             self.open_search(&request)
                 .map_err(tilo_actions::ApiError::Failed)?;
@@ -8965,7 +8965,8 @@ impl crate::app_core::ControlCore for FrameHarness {
         intent: &tilo_actions::ControlInvocation,
         owner: Option<&crate::bound_dispatch::CallbackBinding>,
     ) -> bool {
-        let Some(request) = crate::search::SearchRequest::from_invocation(intent) else {
+        let Some(request) = crate::widget::search_request::SearchRequest::from_invocation(intent)
+        else {
             return false;
         };
         match owner {
@@ -9975,7 +9976,7 @@ mod tests {
 
     impl Widget for RememberControl {
         crate::provides!(
-            dyn crate::resources::PublishesResources,
+            dyn crate::widget::resources::PublishesResources,
             dyn crate::widget::controls::ActionControls
         );
         crate::testing::delegate_widget_methods!(content: sync, build_layout, apply_layout, draw, handle_event, get_rect);
@@ -9993,7 +9994,7 @@ mod tests {
         }
     }
     impl crate::widget::controls::ActionControls for RememberControl {}
-    impl crate::resources::PublishesResources for RememberControl {
+    impl crate::widget::resources::PublishesResources for RememberControl {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             vec![self.resource.clone()]
         }
@@ -11695,7 +11696,7 @@ mod tests {
     }
     impl Widget for ResourceRootProbe {
         crate::provides!(
-            dyn crate::resources::PublishesResources,
+            dyn crate::widget::resources::PublishesResources,
             dyn crate::resource::capability::ResourceScoped
         );
 
@@ -11708,7 +11709,7 @@ mod tests {
         }
     }
 
-    impl crate::resources::PublishesResources for ResourceRootProbe {
+    impl crate::widget::resources::PublishesResources for ResourceRootProbe {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             vec![tilo_actions::ResourceSpec::new(
                 "probe.document:1",

@@ -8,7 +8,6 @@
 pub use ::collaboration::*;
 pub mod document_content;
 pub mod owner_view;
-pub mod presences;
 
 #[cfg(test)]
 #[cfg(feature = "broker-transport")]

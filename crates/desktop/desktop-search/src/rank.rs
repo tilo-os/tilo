@@ -1,8 +1,8 @@
 //! Desktop search's per-provider field scores on the shared ranker; the
 //! cross-provider merge and kind grouping live in [`ui::search::system`].
 
-use ui::search::FieldWeight;
 use ui::search::system::{RankField, provider_score, rank_fields};
+use ui::text_match::FieldWeight;
 
 /// An app's searchable fields: its name in every language and its identity,
 /// its kind, and every other word it is known by — the keywords its
@@ -35,7 +35,7 @@ thread_local! {
 /// rows are indexed once and kept while they stay the same, so a keystroke
 /// only searches.
 pub fn rank_rows(
-    ranker: &ui::search::ListIndex,
+    ranker: &ui::text_match::ListIndex,
     needle: &str,
     rows: &[Vec<(String, FieldWeight)>],
 ) -> Vec<Option<i32>> {
@@ -122,14 +122,14 @@ pub fn published_action_match_scores<'a>(
         actions
             .into_iter()
             .map(|(label, keywords, resource_label)| {
-                let mut fields = vec![(label, ui::search::FieldWeight::TITLE)];
+                let mut fields = vec![(label, ui::text_match::FieldWeight::TITLE)];
                 if let Some(resource_label) = resource_label {
-                    fields.push((resource_label, ui::search::FieldWeight::SUBTITLE));
+                    fields.push((resource_label, ui::text_match::FieldWeight::SUBTITLE));
                 }
                 fields.extend(
                     keywords
                         .iter()
-                        .map(|word| (word.as_str(), ui::search::FieldWeight::KEYWORD)),
+                        .map(|word| (word.as_str(), ui::text_match::FieldWeight::KEYWORD)),
                 );
                 fields
             }),
@@ -148,7 +148,7 @@ pub fn item_action_match_scores<'a>(
     needle: &str,
     labels: impl IntoIterator<Item = &'a str>,
 ) -> Vec<Option<i32>> {
-    ui::search::ListIndex::default()
+    ui::text_match::ListIndex::default()
         .ranks(
             needle,
             labels
@@ -174,7 +174,7 @@ mod tests {
         // `so.tilo.hex-editor` must outrank an incidental substring.
         {
             let ranker =
-                ui::search::ListIndex::default().with_ranks(ui::search::system::application_ranks);
+                ui::text_match::ListIndex::default().with_ranks(ui::search::system::application_ranks);
             let rows = [
                 application_fields("Sheets", "so.tilo.sheets", None),
                 application_fields("Hex Editor", "so.tilo.hex-editor", None),
@@ -197,7 +197,7 @@ mod tests {
         // tenth of the catalogue whose blurb mentions notes.
         {
             let ranker =
-                ui::search::ListIndex::default().with_ranks(ui::search::system::application_ranks);
+                ui::text_match::ListIndex::default().with_ranks(ui::search::system::application_ranks);
             let rows = [
                 application_fields("Notes", "so.tilo.notes", Some("Office")),
                 application_fields("Nodes", "so.tilo.nodes", None),

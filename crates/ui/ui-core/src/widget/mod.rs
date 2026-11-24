@@ -612,7 +612,7 @@ pub(crate) fn collect_widget_resources(
         inherited: Option<crate::bound_dispatch::CallbackBinding>,
         root: bool,
         resources: &mut Vec<tilo_actions::ResourceSpec>,
-        taken: &mut crate::resources::TakenResources,
+        taken: &mut crate::widget::resources::TakenResources,
     ) {
         if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
             return;
@@ -629,17 +629,19 @@ pub(crate) fn collect_widget_resources(
         if boundary.is_none() {
             let found = if let Some(binding) = &binding {
                 binding
-                    .read_document(doc, |doc, _| crate::resources::resources(widget, doc))
+                    .read_document(doc, |doc, _| {
+                        crate::widget::resources::resources(widget, doc)
+                    })
                     .unwrap_or_default()
             } else {
-                crate::resources::resources(widget, doc)
+                crate::widget::resources::resources(widget, doc)
             };
             let found = if root || binding.is_none() {
                 found
             } else {
                 found
                     .into_iter()
-                    .map(crate::resources::outside_document)
+                    .map(crate::widget::resources::outside_document)
                     .collect()
             };
             let fresh: Vec<_> = found
@@ -662,7 +664,7 @@ pub(crate) fn collect_widget_resources(
         None,
         true,
         resources,
-        &mut crate::resources::TakenResources::default(),
+        &mut crate::widget::resources::TakenResources::default(),
     );
 }
 
@@ -697,17 +699,19 @@ pub fn find_resource(
         if boundary.is_none() {
             let found = if let Some(binding) = &binding {
                 binding
-                    .read_document(doc, |doc, _| crate::resources::resource(widget, doc, id))
+                    .read_document(doc, |doc, _| {
+                        crate::widget::resources::resource(widget, doc, id)
+                    })
                     .ok()
                     .flatten()
             } else {
-                crate::resources::resource(widget, doc, id)
+                crate::widget::resources::resource(widget, doc, id)
             };
             if let Some(found) = found {
                 return Some(if root || binding.is_none() {
                     found
                 } else {
-                    crate::resources::outside_document(found)
+                    crate::widget::resources::outside_document(found)
                 });
             }
         }
@@ -725,7 +729,7 @@ pub fn find_resource(
 
 /// The item resources `widget`'s subtree leaves out of what it publishes
 /// past each collection's published page
-/// ([`crate::resources::PublishesResources::resources_past_page`]): those of
+/// ([`crate::widget::resources::PublishesResources::resources_past_page`]): those of
 /// the first widget that names any, read as [`find_resource`] reads them.
 pub fn resources_past_page(
     widget: &dyn Widget,
@@ -752,10 +756,10 @@ pub fn resources_past_page(
             let found = match &binding {
                 Some(binding) => binding
                     .read_document(doc, |doc, _| {
-                        crate::resources::resources_past_page(widget, doc)
+                        crate::widget::resources::resources_past_page(widget, doc)
                     })
                     .unwrap_or_default(),
-                None => crate::resources::resources_past_page(widget, doc),
+                None => crate::widget::resources::resources_past_page(widget, doc),
             };
             if !found.is_empty() {
                 return found;
@@ -772,27 +776,27 @@ pub fn resources_past_page(
     visit(widget, doc, None)
 }
 
-/// [`crate::resources::past_page_len`] of `widget`'s subtree: how many items
+/// [`crate::widget::resources::past_page_len`] of `widget`'s subtree: how many items
 /// the published pages leave out, counted without building them.
 pub fn past_page_len(widget: &dyn Widget, doc: &AutoCommit) -> usize {
     visit_past_page(widget, doc, None, &mut |widget, doc| {
-        let len = crate::resources::past_page_len(widget, doc);
+        let len = crate::widget::resources::past_page_len(widget, doc);
         (len > 0).then_some(len)
     })
     .unwrap_or(0)
 }
 
-/// [`crate::resources::past_page_labels`] of `widget`'s subtree: the items the
+/// [`crate::widget::resources::past_page_labels`] of `widget`'s subtree: the items the
 /// published pages leave out, by id and label, without building them.
 pub fn past_page_labels(widget: &dyn Widget, doc: &AutoCommit) -> Vec<(String, String)> {
     visit_past_page(widget, doc, None, &mut |widget, doc| {
-        let labels = crate::resources::past_page_labels(widget, doc);
+        let labels = crate::widget::resources::past_page_labels(widget, doc);
         (!labels.is_empty()).then_some(labels)
     })
     .unwrap_or_default()
 }
 
-/// [`crate::resources::past_page_range`] of `widget`'s subtree: the items the
+/// [`crate::widget::resources::past_page_range`] of `widget`'s subtree: the items the
 /// published pages leave out from `offset` on, built alone.
 pub fn past_page_range(
     widget: &dyn Widget,
@@ -801,10 +805,12 @@ pub fn past_page_range(
     take: usize,
 ) -> Vec<tilo_actions::ResourceSpec> {
     visit_past_page(widget, doc, None, &mut |widget, doc| {
-        if crate::resources::past_page_len(widget, doc) == 0 {
+        if crate::widget::resources::past_page_len(widget, doc) == 0 {
             return None;
         }
-        Some(crate::resources::past_page_range(widget, doc, offset, take))
+        Some(crate::widget::resources::past_page_range(
+            widget, doc, offset, take,
+        ))
     })
     .unwrap_or_default()
 }
@@ -898,7 +904,7 @@ pub(crate) fn resolve_widget_resource(
     id: &str,
 ) -> Option<tilo_actions::ResourceSpec> {
     resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
-        crate::resources::resource(widget, doc, id)
+        crate::widget::resources::resource(widget, doc, id)
     })
 }
 
@@ -991,7 +997,7 @@ pub(crate) fn action_directory_page_at(
                 (if let Some(binding) = &binding {
                     binding
                         .read_document(doc, |doc, _| {
-                            crate::resources::action_directory_resource_page(
+                            crate::widget::resources::action_directory_resource_page(
                                 widget,
                                 doc,
                                 cursor,
@@ -1001,7 +1007,7 @@ pub(crate) fn action_directory_page_at(
                         .ok()
                         .flatten()
                 } else {
-                    crate::resources::action_directory_resource_page(
+                    crate::widget::resources::action_directory_resource_page(
                         widget,
                         doc,
                         cursor,

@@ -18,8 +18,8 @@
 //! the device has, nothing blocked.
 
 use app_catalogue::{CatalogueEntry, Source as Origin};
-use ui::search::FieldWeight;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
+use ui::text_match::FieldWeight;
 
 use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
 
@@ -71,7 +71,7 @@ pub struct StoreCatalogue {
     entries: Vec<CatalogueEntry>,
     rows: Vec<Row>,
     fields: Vec<Vec<(String, FieldWeight)>>,
-    ranker: ui::search::ListIndex,
+    ranker: ui::text_match::ListIndex,
 }
 
 impl StoreCatalogue {
@@ -116,7 +116,7 @@ impl StoreCatalogue {
             entries: offered,
             rows,
             fields,
-            ranker: ui::search::ListIndex::default()
+            ranker: ui::text_match::ListIndex::default()
                 .with_ranks(ui::search::system::application_ranks),
         }
     }

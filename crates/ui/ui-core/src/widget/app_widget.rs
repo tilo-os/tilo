@@ -26,7 +26,7 @@ pub enum AppProcessIntent {
     /// `runtime_collab::task_run_group`), listed as one unit with Undo for each step and for the run.
     ShowTaskRun { group: String },
     /// Open the platform search scoped to this app (or one part of it), with the query already typed.
-    OpenSearch(crate::search::SearchRequest),
+    OpenSearch(crate::widget::search_request::SearchRequest),
     /// Terminal asks for the device's own shell, which the person has not allowed on this device yet.
     AllowHostShell {
         reply: Weak<RefCell<HostShellAllow>>,

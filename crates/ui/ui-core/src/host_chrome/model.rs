@@ -11,8 +11,8 @@ use super::edit::EDIT_RESOURCE;
 use crate::history_mode::api::{HISTORY_RESOURCE, encode_entry};
 use crate::i18n::I18nManager;
 use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
-use crate::search::request::SEARCH_RESOURCE;
 use crate::widget::HistoryEntryId;
+use crate::widget::search_request::SEARCH_RESOURCE;
 
 /// How many recent changes a History menu lists.
 pub(crate) const RECENT_CHANGES: usize = 8;

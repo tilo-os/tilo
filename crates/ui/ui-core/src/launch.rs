@@ -1141,7 +1141,9 @@ fn show_history_for_capture(
     }
     if let Some(query) = &args.search {
         driver
-            .open_search(&crate::search::SearchRequest::this_app().with_query(query.clone()))
+            .open_search(
+                &crate::widget::search_request::SearchRequest::this_app().with_query(query.clone()),
+            )
             .map_err(|error| LaunchError::Operation(format!("--search: {error}")))?;
     }
     Ok(())

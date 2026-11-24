@@ -134,7 +134,8 @@ pub struct ProcessContext {
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
-    search_requests: Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
+    search_requests:
+        Rc<RefCell<std::collections::VecDeque<crate::widget::search_request::SearchRequest>>>,
     control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
     services: crate::process::ProcessServices,
@@ -2086,7 +2087,7 @@ impl crate::search::SearchProvider for ComponentProvider {
     fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
         self.invoke(|provider| provider.open_action()).flatten()
     }
-    fn search_scopes(&self) -> Vec<crate::search::ScopeDecl> {
+    fn search_scopes(&self) -> Vec<crate::widget::search_request::ScopeDecl> {
         self.invoke(|provider| provider.search_scopes())
             .unwrap_or_default()
     }

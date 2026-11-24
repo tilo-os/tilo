@@ -48,8 +48,8 @@ mod status_action;
 mod swap;
 mod window_header;
 mod window_toolbar;
+use crate::widget::ContentKind;
 use crate::widget::OverflowButton;
-pub use crate::widget::content_kind::ContentKind;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
 use band::plan;
@@ -3524,7 +3524,7 @@ fn button_mut(action: &mut dyn Widget) -> Option<*mut Button> {
 
 /// Whether `action` is the button that opens the app's search, which the window's bar replaces.
 fn is_app_search(action: &dyn Widget) -> bool {
-    action.test_id() == Some(crate::search::APP_SEARCH_BUTTON_ID)
+    action.test_id() == Some(crate::widget::search_request::APP_SEARCH_BUTTON_ID)
 }
 
 /// Whether `body` shows, inside `region`, a text of its own that is the page's title and says

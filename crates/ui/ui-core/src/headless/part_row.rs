@@ -11,7 +11,7 @@ use crate::app_core::KeyCore as _;
 #[cfg(test)]
 use crate::part_row::WindowAction;
 use crate::part_row::{PartRow, PartRowHost, RowInput, RowPlace};
-use crate::search::SearchRequest;
+use crate::widget::search_request::SearchRequest;
 use crate::widget::{HistoryControl, InPlace, Widget};
 use crate::window_toolbar::{SearchOffer, SearchOpening, ToolbarEvent};
 
@@ -587,8 +587,8 @@ mod tests {
     /// every rebuild: nothing else on the page presents one.
     #[test]
     fn an_apps_own_bar_keeps_its_search() {
-        use crate::search::{SearchRequest, search_button};
         use crate::widget::NavShell;
+        use crate::widget::search_request::{SearchRequest, search_button};
         let shell = NavShell::new()
             .content_kind(crate::widget::ContentKind::Page)
             .sidebar(Box::new(crate::widget::Button::new("one", "One")))

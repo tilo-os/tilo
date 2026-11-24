@@ -429,14 +429,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// Open the platform search with `request`, narrowed to this app or one
     /// part of it. Usually a control does this ([`Self::search_button`]); a
     /// custom handler calls [`Dispatcher::open_search`] on its dispatcher.
-    pub fn open_search(&self, request: &ui_core::search::SearchRequest) {
+    pub fn open_search(&self, request: &ui_core::widget::search_request::SearchRequest) {
         self.dispatch.open_search(request);
     }
 
     /// The search launcher for this view's chrome: an icon button that opens
     /// the platform search with `request`. Apps never draw a search field.
-    pub fn search_button(&self, request: ui_core::search::SearchRequest) -> Button {
-        ui_core::search::search_button(request)
+    pub fn search_button(&self, request: ui_core::widget::search_request::SearchRequest) -> Button {
+        ui_core::widget::search_request::search_button(request)
     }
 
     /// Stage view state for a screenshot scenario: `stage` runs with the

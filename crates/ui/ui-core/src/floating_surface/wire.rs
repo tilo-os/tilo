@@ -267,11 +267,11 @@ pub enum FloatingSurfaceClientMessage {
         #[serde(default)]
         opening: crate::window_toolbar::SearchOpening,
     },
-    /// Open the session's search on this app, the way the app asked ([`crate::search::SearchRequest`]):
+    /// Open the session's search on this app, the way the app asked ([`crate::widget::search_request::SearchRequest`]):
     /// Ctrl+K, a search button, or one of its actions whose arguments the search asks for.
     OpenAppSearch {
         instance: Option<u64>,
-        request: crate::search::SearchRequest,
+        request: crate::widget::search_request::SearchRequest,
     },
     /// This app answers [`FloatingSurfaceHostMessage::ShareSelection`] and
     /// [`FloatingSurfaceHostMessage::PointAt`] (sent once). An app that never

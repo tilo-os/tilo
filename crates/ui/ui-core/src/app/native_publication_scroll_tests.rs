@@ -23,7 +23,7 @@ struct PublicationProbeRoot {
     edit_on_wheel: bool,
 }
 impl crate::widget::Decorator for PublicationProbeRoot {
-    crate::provides!(dyn crate::resources::PublishesResources, dyn crate::widget::ResourceOperations; inner = inner);
+    crate::provides!(dyn crate::widget::resources::PublishesResources, dyn crate::widget::ResourceOperations; inner = inner);
     type Inner = crate::widget::Scrollable;
     fn inner(&self) -> &Self::Inner {
         &self.inner
@@ -74,7 +74,7 @@ impl crate::widget::AppWidget for PublicationProbeRoot {
     }
 }
 
-impl crate::resources::PublishesResources for PublicationProbeRoot {
+impl crate::widget::resources::PublishesResources for PublicationProbeRoot {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.declarations.set(self.declarations.get() + 1);
         vec![

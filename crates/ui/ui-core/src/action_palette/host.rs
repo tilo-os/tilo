@@ -9,9 +9,8 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::platform::PlatformConventions;
-use crate::search::{
-    ActivationModifier, Facet, FacetFilter, FieldWeight, SearchGroup, SearchResult,
-};
+use crate::search::{ActivationModifier, Facet, FacetFilter, SearchGroup, SearchResult};
+use crate::text_match::FieldWeight;
 use crate::theme::Theme;
 use crate::widget::{SearchField, Widget};
 

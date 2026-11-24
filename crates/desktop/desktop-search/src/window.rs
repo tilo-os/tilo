@@ -166,7 +166,7 @@ impl WindowSearch {
     }
 
     /// Narrow every query to `scope`, one part of the app (a
-    /// [`ui::search::ScopeDecl`] anchor).
+    /// [`ui::widget::search_request::ScopeDecl`] anchor).
     #[must_use]
     pub fn within(mut self, scope: Option<String>) -> Self {
         self.content = self.content.within(scope);

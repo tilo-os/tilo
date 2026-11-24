@@ -97,7 +97,7 @@ fn found(
     let text = |rest: &str| {
         ui::search::system::rank_action_fields(
             rest,
-            &[(resource.label.as_str(), ui::search::FieldWeight::TITLE)],
+            &[(resource.label.as_str(), ui::text_match::FieldWeight::TITLE)],
         )
     };
     ui::search::system::type_match_score_with(&needle, ty, others, keywords, text).is_some()

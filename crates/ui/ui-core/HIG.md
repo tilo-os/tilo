@@ -355,7 +355,7 @@ answer:
 
 | The person wants to… | The app provides | The person sees |
 |---|---|---|
-| **find something the app holds** (a message, a video, a note) | a `SearchProvider` per findable kind, rows that say what a hit is (`SearchRow`), scopes (`ScopeDecl`), facets (`Facet`) | the one platform palette, opened by Ctrl+K, `/`, or the app's magnifier button (`search::search_button`) |
+| **find something the app holds** (a message, a video, a note) | a `SearchProvider` per findable kind, rows that say what a hit is (`SearchRow`), scopes (`ScopeDecl`), facets (`Facet`) | the one platform palette, opened by Ctrl+K, `/`, or the app's magnifier button (`widget::search_request::search_button`) |
 | **narrow the list already on screen** | `Filterable` on the list | `SearchField::filter()` in the navigation shell's filter slot (or `Filtered`), with a "3 of 120" count; Enter or "Search everywhere" escalates to the platform search |
 | **find in the document on screen** | `Findable` on the document view | the `FindBar` band at the top of the content region (`FindScope`), opened by Ctrl+F |
 | **narrow what the app holds** (a history, a library), as the app's own view | `Queryable` on the app widget, or `QueryView` around a view that is a function | the bar's field searches the app in place (“Search Activity”), with a “3 of 6” count; Enter or Down hands the keyboard to the results |
@@ -372,7 +372,7 @@ answer:
   gets the same over its shell-ui connection: the framework tells the bar
   what the window offers (`window_toolbar::WindowOffer`) and runs the bar's
   query, steps and History presses on the app's widgets; the app's header
-  drops its own whole-app search button (`search::APP_SEARCH_BUTTON_ID`) while
+  drops its own whole-app search button (`widget::search_request::APP_SEARCH_BUTTON_ID`) while
   the bar presents search. The `FindBar` band and the filter slot stay for
   windows the shell does not frame.
 - **An app whose view is a function is a query view.** A framework
@@ -387,7 +387,7 @@ answer:
   to the first row whose name begins with what was typed; a `VirtualList`
   does when its model names its rows (`ListModel::label`).
 - **The launcher is a button, not a field.** The toolbar's magnifier is
-  `search::search_button(SearchRequest::this_app())`; a part of the app gets
+  `widget::search_request::search_button(SearchRequest::this_app())`; a part of the app gets
   its own (`SearchRequest::within(ScopeDecl::new(anchor, "Inbox"))`, the scope
   pill reading "Only Inbox"). A pill that looks like a field but opens the
   palette is gone.

@@ -1855,7 +1855,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         let harness = self.harness();
         harness
             .with_widget_mut(|root: &mut ResourceRoot| {
-                ui_core::collaboration::presences::Presences::presences(root, &doc)
+                ui_core::widget::presence_topology::Presences::presences(root, &doc)
             })
             .unwrap_or_default()
     }

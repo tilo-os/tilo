@@ -441,7 +441,7 @@ pub(super) struct ActionRuntime {
     /// to that the provider is still answering, by broker request.
     pub(super) hosted_requests: std::collections::HashSet<u64>,
     /// Resolutions asked for a resource still being read, answered once its
-    /// read lands ([`crate::resources::PublishesResources::resource_pending`]).
+    /// read lands ([`crate::widget::resources::PublishesResources::resource_pending`]).
     pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
     /// Answers to broker invocations held, by wire id, until what they
     /// caused in the app has landed ([`crate::wake::WakeHandle::owe`]).

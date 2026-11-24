@@ -62,22 +62,26 @@ fn owned_resources_at<W: Widget + ?Sized>(
     resources: &mut Vec<ResourceSpec>,
 ) {
     let presence = crate::invocation_scope::current_presence();
-    let mut local = crate::resources::resources_for(widget, presence.as_ref(), doc);
+    let mut local = crate::widget::resources::resources_for(widget, presence.as_ref(), doc);
     if owner == Some(false) {
         local = local
             .into_iter()
-            .map(crate::resources::outside_document)
+            .map(crate::widget::resources::outside_document)
             .collect();
     }
     let eager_claim = address.is_some_and(|address| claims(&local, address) != 0);
     resources.extend(local);
     if let Some(address) = address
         && !eager_claim
-        && let Some(resource) =
-            crate::resources::resource_for(widget, presence.as_ref(), doc, &address.resource)
+        && let Some(resource) = crate::widget::resources::resource_for(
+            widget,
+            presence.as_ref(),
+            doc,
+            &address.resource,
+        )
     {
         resources.push(if owner == Some(false) {
-            crate::resources::resolved_outside_document(resource)
+            crate::widget::resources::resolved_outside_document(resource)
         } else {
             resource
         });
@@ -113,7 +117,7 @@ fn provider_at<W: Widget + ?Sized>(
             if owner {
                 resource
             } else {
-                crate::resources::resolved_outside_document(resource)
+                crate::widget::resources::resolved_outside_document(resource)
             }
         });
     widget.for_each_child(&mut |child| {

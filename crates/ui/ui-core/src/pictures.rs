@@ -97,7 +97,9 @@ impl Pictures {
     /// what a map draws of a coarser tile under one still on its way.
     #[must_use]
     pub fn loaded(&self, picture: &PictureSource) -> Option<PenikoImage> {
-        self.store.loaded(&picture.src).or_else(|| carried(&picture.src))
+        self.store
+            .loaded(&picture.src)
+            .or_else(|| carried(&picture.src))
     }
 
     /// Whether the picture at `picture`'s address has failed to load: its bytes are not here, or do not

@@ -14,7 +14,7 @@ struct HostedPumpProbe {
 }
 impl Widget for HostedPumpProbe {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -48,7 +48,7 @@ impl crate::widget::ResourceOperations for HostedPumpProbe {
     }
 }
 
-impl crate::resources::PublishesResources for HostedPumpProbe {
+impl crate::widget::resources::PublishesResources for HostedPumpProbe {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.calls.set(self.calls.get() + 1);
         let count = if doc.get(ROOT, "more").unwrap().is_some() {
@@ -803,7 +803,7 @@ mod input_publication {
 
     impl Widget for InputProbe {
         crate::provides!(
-            dyn crate::resources::PublishesResources,
+            dyn crate::widget::resources::PublishesResources,
             dyn crate::widget::ResourceOperations
         );
 
@@ -853,7 +853,7 @@ mod input_publication {
         }
     }
 
-    impl crate::resources::PublishesResources for InputProbe {
+    impl crate::widget::resources::PublishesResources for InputProbe {
         fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
             self.calls.set(self.calls.get() + 1);
             let hovered = doc.get(ROOT, "hovered").unwrap().is_some();

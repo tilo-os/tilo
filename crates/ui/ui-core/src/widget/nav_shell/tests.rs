@@ -1669,7 +1669,7 @@ tilo_test_env::scenario! {
             assert!(WindowHeader::set_window_presents_search(&mut shell, true));
             let mut h = harness(shell, 1280, 800, Theme::dark());
             settle(&mut h, 1280, 800);
-            assert!(!has_child(&h, crate::search::APP_SEARCH_BUTTON_ID));
+            assert!(!has_child(&h, crate::widget::search_request::APP_SEARCH_BUTTON_ID));
             assert!(has_child(&h, "note-menu"), "the app's other actions stay");
         }
 
@@ -1677,7 +1677,7 @@ tilo_test_env::scenario! {
             let mut h = harness(notes_shell_with_search(), 1280, 800, Theme::dark());
             settle(&mut h, 1280, 800);
             assert!(
-                has_child(&h, crate::search::APP_SEARCH_BUTTON_ID),
+                has_child(&h, crate::widget::search_request::APP_SEARCH_BUTTON_ID),
                 "outside a window bar the header keeps its search button"
             );
             assert!(WindowHeader::set_window_presents_search(
@@ -1685,7 +1685,7 @@ tilo_test_env::scenario! {
                 true
             ));
             settle(&mut h, 1280, 800);
-            assert!(!has_child(&h, crate::search::APP_SEARCH_BUTTON_ID));
+            assert!(!has_child(&h, crate::widget::search_request::APP_SEARCH_BUTTON_ID));
             assert!(has_child(&h, "note-menu"));
         }
 
@@ -1695,12 +1695,12 @@ tilo_test_env::scenario! {
             settle(&mut h, 1280, 800);
             h.root_mut::<NavShell>().set_content_header(
                 "Groceries",
-                vec![Box::new(crate::search::search_button(
-                    crate::search::SearchRequest::this_app(),
+                vec![Box::new(crate::widget::search_request::search_button(
+                    crate::widget::search_request::SearchRequest::this_app(),
                 ))],
             );
             settle(&mut h, 1280, 800);
-            assert!(!has_child(&h, crate::search::APP_SEARCH_BUTTON_ID));
+            assert!(!has_child(&h, crate::widget::search_request::APP_SEARCH_BUTTON_ID));
         }
     }
 
@@ -2454,8 +2454,8 @@ fn notes_shell_with_search() -> NavShell {
             crate::icons::Icon::MoreHorizontal,
             "Note actions",
         )),
-        Box::new(crate::search::search_button(
-            crate::search::SearchRequest::this_app(),
+        Box::new(crate::widget::search_request::search_button(
+            crate::widget::search_request::SearchRequest::this_app(),
         )),
     ];
     NavShell::new()

@@ -36,7 +36,8 @@ impl crate::search::SearchProvider for PeopleProvider {
         ["Ada Lovelace", "Grace Hopper"]
             .into_iter()
             .filter(|n| {
-                crate::search::fold_search_text(n).contains(&crate::search::fold_search_text(query))
+                crate::text_match::fold_search_text(n)
+                    .contains(&crate::text_match::fold_search_text(query))
             })
             .map(|n| crate::search::SearchResult::new("People", n, n.to_string()))
             .collect()
@@ -74,7 +75,7 @@ impl crate::search::SearchProvider for LazyProvider {
 struct Publisher;
 impl Widget for Publisher {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource
     );
 
@@ -108,7 +109,7 @@ impl crate::search::capability::SearchSource for Publisher {
     }
 }
 
-impl crate::resources::PublishesResources for Publisher {
+impl crate::widget::resources::PublishesResources for Publisher {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new("test.obj:1", "test.obj", "Widget Object").with_action(
@@ -147,7 +148,7 @@ struct Viewer(std::rc::Rc<std::cell::Cell<usize>>);
 
 impl Widget for Viewer {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -182,7 +183,7 @@ impl crate::widget::ResourceOperations for Viewer {
     }
 }
 
-impl crate::resources::PublishesResources for Viewer {
+impl crate::widget::resources::PublishesResources for Viewer {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new("test.view:1", "test.view", "Viewable").with_action(
@@ -205,7 +206,7 @@ impl crate::resources::PublishesResources for Viewer {
 struct CountingPublisher(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 impl Widget for CountingPublisher {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(dyn crate::widget::resources::PublishesResources);
 
     fn build_layout(
         &mut self,
@@ -220,7 +221,7 @@ impl Widget for CountingPublisher {
     }
 }
 
-impl crate::resources::PublishesResources for CountingPublisher {
+impl crate::widget::resources::PublishesResources for CountingPublisher {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         vec![ResourceSpec::new("test.cache:1", "test.cache", "Cached")]

@@ -9,7 +9,7 @@ use crate::widget::capability::capability;
 /// status: whether the effect can be used there, how it is named, the
 /// parameters it narrows) is not kept in the shared tree, so the target action
 /// is laid over as the widget publishes it
-/// ([`crate::resources::PublishesResources::published_action`]): a caller
+/// ([`crate::widget::resources::PublishesResources::published_action`]): a caller
 /// cannot invoke what the palette refuses, and no invocation builds a
 /// publication. `None` defers to the whole tree: the tree does not resolve the
 /// address itself (the unbound and provider fallbacks), or the action is not
@@ -23,9 +23,10 @@ pub(super) fn resolve_published_action(
     if widget.has_separate_document_owner() {
         return None;
     }
-    let forest = crate::resources::shared_resources(widget, doc);
+    let forest = crate::widget::resources::shared_resources(widget, doc);
     let mut found = shared_target(&forest, Some(binding), address)?;
-    let Some(publisher) = capability::<dyn crate::resources::PublishesResources>(widget) else {
+    let Some(publisher) = capability::<dyn crate::widget::resources::PublishesResources>(widget)
+    else {
         return Some(found);
     };
     for spec in found

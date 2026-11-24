@@ -17,8 +17,8 @@
 //! ([`Settings::changing_in_place`]).
 
 use settings_store::index;
-use ui::search::FieldWeight;
 use ui::search::system::{ResourceKind, provider_score};
+use ui::text_match::FieldWeight;
 
 use crate::model::{Hit, InvokeTarget, Source, Target};
 
@@ -122,7 +122,7 @@ pub struct Settings {
     workspace: String,
     rows: Vec<Row>,
     fields: Vec<Vec<(String, FieldWeight)>>,
-    ranker: ui::search::ListIndex,
+    ranker: ui::text_match::ListIndex,
 }
 
 impl Settings {
@@ -234,7 +234,7 @@ impl Settings {
             workspace: workspace.into(),
             rows,
             fields,
-            ranker: ui::search::ListIndex::default(),
+            ranker: ui::text_match::ListIndex::default(),
         }
     }
 

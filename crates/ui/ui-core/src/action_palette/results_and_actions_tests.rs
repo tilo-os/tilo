@@ -9,7 +9,7 @@ impl SearchProvider for OneHit {
         "Notes"
     }
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        if crate::search::fold_search_text(query).contains("note") {
+        if crate::text_match::fold_search_text(query).contains("note") {
             vec![
                 SearchResult::new("Notes", self.0, "ignore")
                     .with_subtitle("Message")

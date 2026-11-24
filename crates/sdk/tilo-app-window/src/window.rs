@@ -3089,8 +3089,8 @@ impl ui::widget::Decorator for AppWindow {
             request.provide::<dyn ui::widget::Queryable>(self);
             return;
         }
-        if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
+        if request.wants::<dyn ui::widget::resources::PublishesResources>() {
+            request.provide::<dyn ui::widget::resources::PublishesResources>(self);
             return;
         }
         if request.wants::<dyn ui::host_operation::ResourceOperations>() {
@@ -3129,8 +3129,8 @@ impl ui::widget::Decorator for AppWindow {
             request.provide::<dyn ui::widget::Queryable>(self);
             return;
         }
-        if request.wants::<dyn ui::resources::PublishesResources>() {
-            request.provide::<dyn ui::resources::PublishesResources>(self);
+        if request.wants::<dyn ui::widget::resources::PublishesResources>() {
+            request.provide::<dyn ui::widget::resources::PublishesResources>(self);
             return;
         }
         if request.wants::<dyn ui::host_operation::ResourceOperations>() {

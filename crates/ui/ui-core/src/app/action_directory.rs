@@ -30,7 +30,7 @@ impl App {
                 .collect();
             let observation = action_directory_snapshot::DirectoryObservation {
                 registry_generation: self.actions.action_registry_generation,
-                root_domain: crate::resources::action_directory_invocation_domain(
+                root_domain: crate::widget::resources::action_directory_invocation_domain(
                     self.root_widget.as_ref(),
                     &self.state.doc,
                 ),
@@ -40,7 +40,7 @@ impl App {
                 permission_generation: self.actions.permission_generation.get(),
                 route: self.bound_broker_route().cloned(),
                 owners,
-                root_revision: crate::resources::action_directory_revision(
+                root_revision: crate::widget::resources::action_directory_revision(
                     self.root_widget.as_ref(),
                     &self.state.doc,
                 ),
@@ -830,7 +830,7 @@ impl App {
 
     /// Whether `resource_id`, which resolves to nothing now, may resolve
     /// once what its widget reads lands
-    /// ([`crate::resources::PublishesResources::resource_pending`]).
+    /// ([`crate::widget::resources::PublishesResources::resource_pending`]).
     fn publication_resource_pending(&mut self, resource_id: &str, action_id: &str) -> bool {
         let address = tilo_actions::ActionAddress::new(resource_id, action_id);
         match self.actions.bound_publication.target(&address) {

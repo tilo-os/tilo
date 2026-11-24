@@ -66,7 +66,7 @@ impl PagedProbe {
                             tilo_actions::ActionAddress::new(&resource, "apply"),
                         ),
                     )
-                    .field("paged", crate::search::FieldWeight::UNRANKED),
+                    .field("paged", crate::text_match::FieldWeight::UNRANKED),
                 )
                 .unwrap();
         }
@@ -279,7 +279,7 @@ impl Widget for Probe {
     crate::provides!(
         dyn crate::undo::CommittedActions,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         dyn crate::semantic_document_read::SemanticReaders,
         dyn crate::widget::ResourceOperations
@@ -498,7 +498,7 @@ impl crate::search::capability::SearchSource for Probe {
     }
 }
 
-impl crate::resources::PublishesResources for Probe {
+impl crate::widget::resources::PublishesResources for Probe {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         DISCOVERY_COUNT.set(DISCOVERY_COUNT.get().saturating_add(1));
         let mut action = tilo_actions::ActionSpec::operation(
@@ -2672,7 +2672,7 @@ tilo_test_env::scenario! {
     // component's request to open it is handed to the host as an intent, and
     // the host's tile drains it.
     {
-        let request = crate::search::SearchRequest::within(crate::search::ScopeDecl::new(
+        let request = crate::widget::search_request::SearchRequest::within(crate::widget::search_request::ScopeDecl::new(
             "folder:inbox",
             "Inbox",
         ))
@@ -2682,7 +2682,7 @@ tilo_test_env::scenario! {
         fixture.bindings[0]
             .queued_controls
             .borrow_mut()
-            .push_back(crate::search::open_search_invocation(&request));
+            .push_back(crate::widget::search_request::open_search_invocation(&request));
         assert!(fixture.app.dispatch_control_invocations() > 0);
         assert!(
             fixture.app.action_palette().is_none(),

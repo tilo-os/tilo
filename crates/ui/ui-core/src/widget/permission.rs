@@ -5,8 +5,7 @@
 
 use super::Widget;
 use super::capability::capability;
-
-pub use ::collaboration::permissions::PermissionScope;
+use crate::permissions::PermissionScope;
 
 /// A widget whose input and actions are guarded by a permission scope.
 pub trait PermissionGuarded: Widget {

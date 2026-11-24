@@ -125,8 +125,12 @@ fn the_window_paints_no_caret_under_the_box_that_has_the_keys() {
             "caret-probe"
         }
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (_, _, _, _, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (_, _, _, _, mut env) = ctx.parts();
             self.0.set(Some(crate::caret_owner::shown()));
         }
     }

@@ -18,9 +18,9 @@
 //! the list a host collected, so it never reads a workspace's state itself.
 
 use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
-use ui::search::FieldWeight;
 use ui::search::index_publication::{IndexEntry, IndexWeight};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
+use ui::text_match::FieldWeight;
 
 use crate::model::{
     DESKTOP_APP, Hit, InvokeTarget, LaunchPlace, Source, Target, entry_opening, record_launch,
@@ -161,7 +161,7 @@ pub struct Records {
     /// What this workspace's records hold, as one row per entry: made at the first query
     /// and ranked from one index for every key typed after it, not indexed again each time.
     contents: std::sync::OnceLock<Vec<Vec<(String, FieldWeight)>>>,
-    ranker: ui::search::ListIndex,
+    ranker: ui::text_match::ListIndex,
 }
 
 impl Records {
@@ -171,7 +171,7 @@ impl Records {
             workspace: workspace.into(),
             held,
             contents: std::sync::OnceLock::new(),
-            ranker: ui::search::ListIndex::default(),
+            ranker: ui::text_match::ListIndex::default(),
         }
     }
 

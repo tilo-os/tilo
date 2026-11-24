@@ -603,7 +603,7 @@ impl SearchProvider for ResourceSearch {
             .min(result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT));
         let folded = format!(
             "{}\0{:?}",
-            ui_core::search::normalize_search_text(query.text()),
+            ui_core::text_match::normalize_search_text(query.text()),
             query.filters()
         );
         let indexed = self.indexed();
@@ -728,8 +728,8 @@ impl ResourceSearch {
                         !parent.facets.iter().any(|(key, _, value)| {
                             key.eq_ignore_ascii_case(&filter.key)
                                 && query.filter_values(&filter.key).any(|selected| {
-                                    ui_core::search::normalize_search_text(value)
-                                        == ui_core::search::normalize_search_text(selected)
+                                    ui_core::text_match::normalize_search_text(value)
+                                        == ui_core::text_match::normalize_search_text(selected)
                                 })
                         })
                     })

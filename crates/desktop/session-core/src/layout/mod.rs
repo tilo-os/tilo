@@ -339,12 +339,12 @@ pub fn found_place(
 /// that ask for an app ([`ui::search::system::APP_WORDS`]) around it. "Mail" and "open Mail" do;
 /// "my mails", "mails" and "my inbox" name what Mail holds.
 fn names_app(text: &str, title: &str) -> bool {
-    let title = ui::search::fold_search_text(title);
+    let title = ui::text_match::fold_search_text(title);
     let title: Vec<&str> = title.split_whitespace().collect();
     if title.is_empty() {
         return false;
     }
-    let text = ui::search::fold_search_text(text);
+    let text = ui::text_match::fold_search_text(text);
     let words: Vec<&str> = text
         .split_whitespace()
         .filter(|word| !ui::search::system::APP_WORDS.contains(word))

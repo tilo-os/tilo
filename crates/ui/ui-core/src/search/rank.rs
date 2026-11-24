@@ -4,9 +4,9 @@
 //! shows, so an exact visible title beats a weak match from another source.
 
 use super::provider::SearchResult;
-use tilo_search::fold;
+use tilo_search::{FieldWeight, fold};
 
-pub use tilo_search::{FieldWeight, MatchTier};
+pub use tilo_search::MatchTier;
 
 /// The tier at which folded `query` meets folded `text`, if it occurs: exact, prefix, a
 /// later word start, or (a script written without spaces, with no word starts) anywhere.

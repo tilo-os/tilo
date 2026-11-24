@@ -565,7 +565,7 @@ impl App {
                     if app.actions.action_palette.is_some() {
                         app.close_action_palette();
                     } else {
-                        app.open_search(crate::search::SearchRequest::this_app());
+                        app.open_search(crate::widget::search_request::SearchRequest::this_app());
                     }
                     handled = true;
                 }
@@ -780,7 +780,7 @@ impl App {
         }
 
         if app.root_widget.take_search_request() && app.actions.action_palette.is_none() {
-            app.open_search(crate::search::SearchRequest::this_app());
+            app.open_search(crate::widget::search_request::SearchRequest::this_app());
             app.layout.layout_dirty = true;
             window.request_redraw();
         }

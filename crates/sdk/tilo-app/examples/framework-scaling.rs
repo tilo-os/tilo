@@ -315,7 +315,7 @@ fn publication(tasks: u32) -> Result<Publication, Box<dyn std::error::Error>> {
             let before = HELD.load(Ordering::Relaxed);
             let start = Instant::now();
             let published =
-                tilo_app::resources::resources_for(app.harness().root_widget(), None, &doc);
+                tilo_app::widget::resources::resources_for(app.harness().root_widget(), None, &doc);
             let elapsed = millis(start);
             held = HELD.load(Ordering::Relaxed).saturating_sub(before);
             resources = count(&published);

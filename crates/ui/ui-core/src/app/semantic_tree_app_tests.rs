@@ -59,7 +59,7 @@ impl LargeDirectoryProvider {
                 )
                 .field(
                     format!("record {index} needle-{index}"),
-                    crate::search::FieldWeight::UNRANKED,
+                    crate::text_match::FieldWeight::UNRANKED,
                 )
             }))
             .expect("canonical synthetic directory rows");
@@ -357,7 +357,7 @@ impl CounterCard {
 }
 impl Widget for CounterCard {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         dyn crate::widget::controls::ActionControls,
         dyn crate::widget::ResourceOperations
@@ -499,7 +499,7 @@ impl crate::search::capability::SearchSource for CounterCard {
     }
 }
 
-impl crate::resources::PublishesResources for CounterCard {
+impl crate::widget::resources::PublishesResources for CounterCard {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.lazy_resource
             .is_none()

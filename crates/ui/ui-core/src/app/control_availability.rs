@@ -144,7 +144,7 @@ impl App {
                 cache.allowed.clone()
             });
         // Opening search is the host's, and this host always answers it.
-        allowed.insert(crate::search::search_address());
+        allowed.insert(crate::widget::search_request::search_address());
         // So is the window's History API, wherever History serves it.
         allowed.extend(history_api);
         crate::widget::controls::refresh_control_action_availability(

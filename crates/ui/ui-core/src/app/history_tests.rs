@@ -2551,7 +2551,7 @@ impl PaletteHistoryOwner {
 
 impl crate::widget::Widget for PaletteHistoryOwner {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -2639,7 +2639,7 @@ impl crate::widget::ResourceOperations for PaletteHistoryOwner {
     }
 }
 
-impl crate::resources::PublishesResources for PaletteHistoryOwner {
+impl crate::widget::resources::PublishesResources for PaletteHistoryOwner {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if self.state.authority.load(Ordering::SeqCst) == 1 {
             return vec![];
@@ -3130,7 +3130,7 @@ impl crate::widget::AppWidget for ComponentControlOwner {
 impl crate::widget::Widget for ComponentControlOwner {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -3241,7 +3241,7 @@ impl crate::widget::ResourceOperations for ComponentControlOwner {
     }
 }
 
-impl crate::resources::PublishesResources for ComponentControlOwner {
+impl crate::widget::resources::PublishesResources for ComponentControlOwner {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut resources = vec![self.resource()];
         let empty =
@@ -4670,7 +4670,7 @@ struct DomainControlsRoot {
 impl crate::widget::Widget for DomainControlsRoot {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::resource::capability::ResourceScoped,
         dyn crate::widget::ResourceOperations
     );
@@ -4805,7 +4805,7 @@ impl crate::resource::capability::ResourceScoped for DomainControlsRoot {
     }
 }
 
-impl crate::resources::PublishesResources for DomainControlsRoot {
+impl crate::widget::resources::PublishesResources for DomainControlsRoot {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.resources.clone()
     }

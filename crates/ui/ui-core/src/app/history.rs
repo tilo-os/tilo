@@ -9,8 +9,8 @@
 use super::*;
 use crate::history_mode::api::HISTORY_OPERATION;
 use crate::history_mode::frame::FrameworkInputFrame;
-use crate::search::request::SEARCH_OPERATION;
 use crate::widget::Widget;
+use crate::widget::search_request::SEARCH_OPERATION;
 
 impl App {
     /// # Errors
@@ -691,7 +691,7 @@ impl App {
         let mut resources = self.close_admission.resources();
         resources.extend(self.history.as_ref().map(|history| history.api_resource()));
         if self.search_presented {
-            resources.push(crate::search::search_resource());
+            resources.push(crate::widget::search_request::search_resource());
         }
         resources.extend(self.unsaved_changes_resources());
         #[cfg(feature = "native")]
@@ -733,7 +733,7 @@ impl App {
             if !self.search_presented {
                 return Err("Search host is unavailable".into());
             }
-            let request = crate::search::SearchRequest::decode(&encoded.payload)
+            let request = crate::widget::search_request::SearchRequest::decode(&encoded.payload)
                 .map_err(|_| "Invalid Search operation")?;
             self.open_search(request);
             return Ok(());

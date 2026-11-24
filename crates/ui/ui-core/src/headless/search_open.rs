@@ -4,7 +4,7 @@
 //! resources.
 
 use super::FrameHarness;
-use crate::search::SearchRequest;
+use crate::widget::search_request::SearchRequest;
 
 impl FrameHarness {
     /// Open search the way `request` asks: this app or one part of it, with the query already typed.
@@ -59,9 +59,9 @@ impl FrameHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::ScopeDecl;
     use crate::state::State;
     use crate::theme::Theme;
+    use crate::widget::search_request::ScopeDecl;
 
     #[test]
     fn a_search_launcher_opens_this_windows_palette_narrowed_and_prefilled() {
@@ -69,7 +69,7 @@ mod tests {
             SearchRequest::within(ScopeDecl::new("folder:inbox", "Inbox")).with_query("invoice");
         let mut frame = FrameHarness::new_with_controlled_inputs(
             State::new(),
-            Box::new(crate::search::search_button(request)),
+            Box::new(crate::widget::search_request::search_button(request)),
             (640, 480),
             Theme::dark(),
             crate::font_catalog::fixture_renderer(),
@@ -105,7 +105,7 @@ mod tests {
             crate::font_catalog::fixture_renderer(),
             crate::permissions::MemberId::person("fixture"),
         );
-        let address = crate::search::search_address();
+        let address = crate::widget::search_request::search_address();
         assert!(tilo_actions::api::resolve(&frame.resources(), &address).is_some());
         let bad = serde_json::json!({"query": 42})
             .as_object()
@@ -173,9 +173,12 @@ mod tests {
                 crate::widget::IconDescriptor::Named("search".into())
             }
         }
-        component.root = Some(Box::new(Launcher(crate::search::search_button(
-            SearchRequest::within(ScopeDecl::new("folder:inbox", "Inbox")).with_query("invoice"),
-        ))));
+        component.root = Some(Box::new(Launcher(
+            crate::widget::search_request::search_button(
+                SearchRequest::within(ScopeDecl::new("folder:inbox", "Inbox"))
+                    .with_query("invoice"),
+            ),
+        )));
         let mut frame =
             FrameHarness::from_component(component, (640, 480), probe::runner_inputs()).unwrap();
         assert!(frame.action_palette.is_none());

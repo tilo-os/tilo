@@ -42,7 +42,7 @@ impl MenuRows {
 
 impl Widget for MenuRows {
     crate::provides!(
-        dyn crate::resources::PublishesResources,
+        dyn crate::widget::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
 
@@ -96,7 +96,7 @@ impl Widget for MenuRows {
     }
 }
 
-impl crate::resources::PublishesResources for MenuRows {
+impl crate::widget::resources::PublishesResources for MenuRows {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut record = tilo_actions::ResourceSpec::new(MENU_ROW_RESOURCE, "test.menu", "Menu");
         for (index, label) in self.labels.iter().enumerate() {

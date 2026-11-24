@@ -7,9 +7,9 @@
 //! with nothing typed is [`super::happening`]'s.
 
 use ui::floating_surface::{Recipient, RecipientKind};
-use ui::search::FieldWeight;
 use ui::search::system::{ResourceKind, rank_fields};
 use ui::search::{CommandRow, RowFace, SearchRow};
+use ui::text_match::FieldWeight;
 
 use crate::model::{Hit, InvokeTarget, Source, Target};
 

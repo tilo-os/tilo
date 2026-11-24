@@ -1347,10 +1347,10 @@ impl<R: Resource> Dispatcher<R> {
     /// Open the platform search with `request`, narrowed to this app or one
     /// part of it (`SearchRequest::within`). Searching is a view, so a
     /// member who may only view can search too.
-    pub fn open_search(&self, request: &ui_core::search::SearchRequest) {
+    pub fn open_search(&self, request: &ui_core::widget::search_request::SearchRequest) {
         self.core.queue.borrow_mut().push_back((
             (
-                ui_core::search::open_search_invocation(request),
+                ui_core::widget::search_request::open_search_invocation(request),
                 super::effect::acting_for(),
             ),
             Origin::Person,

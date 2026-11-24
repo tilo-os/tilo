@@ -249,7 +249,7 @@ pub(crate) fn refresh_bound_controls(
                      _: &tilo_actions::ActionRegistry| {
         let owner = crate::history_mode::HistoryOwner::component(binding.clone());
         let mut addresses = host_apis.clone();
-        addresses.insert(crate::search::search_address());
+        addresses.insert(crate::widget::search_request::search_address());
         addresses.extend(
             tile_apis
                 .iter()
@@ -1141,7 +1141,7 @@ fn holds_resource(resource: &ResourceSpec, id: &str) -> bool {
 /// once what it reads arrives.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn any_resource_pending(widget: &dyn Widget, id: &str) -> bool {
-    let mut pending = crate::resources::resource_pending(widget, id);
+    let mut pending = crate::widget::resources::resource_pending(widget, id);
     widget.for_each_child(&mut |child| {
         pending = pending || any_resource_pending(child, id);
     });
@@ -1203,12 +1203,12 @@ pub(crate) fn publication_visibility(
             let found = if let Some(binding) = &binding {
                 binding
                     .read_document(doc, |doc, _| {
-                        crate::resources::action_directory_visibility(widget, doc, id)
+                        crate::widget::resources::action_directory_visibility(widget, doc, id)
                     })
                     .ok()
                     .flatten()
             } else {
-                crate::resources::action_directory_visibility(widget, doc, id)
+                crate::widget::resources::action_directory_visibility(widget, doc, id)
             };
             if found.is_some() {
                 return found;
@@ -1245,9 +1245,9 @@ pub(crate) fn publication_visibilities(
             return;
         };
         if boundary.is_none()
-            && crate::widget::capability::capability::<dyn crate::resources::PublishesResources>(
-                widget,
-            )
+            && crate::widget::capability::capability::<
+                dyn crate::widget::resources::PublishesResources,
+            >(widget)
             .is_some()
         {
             let mut answer = |doc: &AutoCommit| {
@@ -1261,7 +1261,8 @@ pub(crate) fn publication_visibilities(
                         _ => false,
                     };
                     if mine {
-                        *slot = crate::resources::action_directory_visibility(widget, doc, id);
+                        *slot =
+                            crate::widget::resources::action_directory_visibility(widget, doc, id);
                     }
                 }
             };
@@ -1406,7 +1407,9 @@ pub(crate) fn directory_observation(
                 observation.domains.push(
                     binding
                         .read_document(doc, |doc, _| {
-                            crate::resources::action_directory_invocation_domain(widget, doc)
+                            crate::widget::resources::action_directory_invocation_domain(
+                                widget, doc,
+                            )
                         })
                         .map_err(|error| format!("{error:?}"))?,
                 );
@@ -1415,7 +1418,7 @@ pub(crate) fn directory_observation(
                 observation.revisions.push(
                     binding
                         .read_document(doc, |doc, _| {
-                            crate::resources::action_directory_revision(widget, doc)
+                            crate::widget::resources::action_directory_revision(widget, doc)
                         })
                         .map_err(|error| format!("{error:?}"))?,
                 );
@@ -1658,7 +1661,7 @@ pub(crate) fn discover_cached_bound_resources(
         resources: &mut Vec<SharedResource>,
         revisions: &mut Vec<Option<String>>,
         declarations: bool,
-        taken: &mut crate::resources::TakenResources,
+        taken: &mut crate::widget::resources::TakenResources,
     ) {
         let boundary = widget.callback_binding();
         if boundary
@@ -1668,9 +1671,11 @@ pub(crate) fn discover_cached_bound_resources(
             return;
         }
         if boundary.is_none() {
-            revisions.push(crate::resources::action_directory_revision(widget, doc));
+            revisions.push(crate::widget::resources::action_directory_revision(
+                widget, doc,
+            ));
             if declarations {
-                let found = crate::resources::shared_resources(widget, doc);
+                let found = crate::widget::resources::shared_resources(widget, doc);
                 let fresh: Vec<_> = found
                     .into_iter()
                     .filter(|resource| !taken.holds(resource.id()))
@@ -1730,7 +1735,7 @@ pub(crate) fn discover_cached_bound_resources(
                         &mut Vec::new(),
                         &mut revisions,
                         false,
-                        &mut crate::resources::TakenResources::default(),
+                        &mut crate::widget::resources::TakenResources::default(),
                     );
                     revisions
                 })
@@ -1785,7 +1790,7 @@ pub(crate) fn discover_cached_bound_resources(
                                 &mut resources,
                                 &mut Vec::new(),
                                 true,
-                                &mut crate::resources::TakenResources::default(),
+                                &mut crate::widget::resources::TakenResources::default(),
                             );
                             resources
                                 .iter()
@@ -2031,7 +2036,7 @@ fn discover_bound_resources_with_filter(
         root: bool,
         address: Option<&tilo_actions::ActionAddress>,
         snapshots: &mut Vec<BoundResourceSnapshot>,
-        taken: &mut std::collections::HashMap<usize, crate::resources::TakenResources>,
+        taken: &mut std::collections::HashMap<usize, crate::widget::resources::TakenResources>,
         filtered: bool,
     ) -> Result<(), BoundDispatchError> {
         let boundary = widget.callback_binding();
@@ -2044,9 +2049,9 @@ fn discover_bound_resources_with_filter(
                 .iter()
                 .position(|snapshot| snapshot.binding.same_component(binding));
             let publishes = || {
-                crate::widget::capability::capability::<dyn crate::resources::PublishesResources>(
-                    widget,
-                )
+                crate::widget::capability::capability::<
+                    dyn crate::widget::resources::PublishesResources,
+                >(widget)
                 .is_some()
                     || (address.is_some()
                         && crate::widget::capability::capability::<
@@ -2063,7 +2068,7 @@ fn discover_bound_resources_with_filter(
                         && root
                         && presence.is_none()
                         && let Some(forest) = crate::widget::capability::capability::<
-                            dyn crate::resources::PublishesResources,
+                            dyn crate::widget::resources::PublishesResources,
                         >(widget)
                         .and_then(|publisher| publisher.shared_resources_for(None, doc))
                     {
@@ -2076,10 +2081,13 @@ fn discover_bound_resources_with_filter(
                         // published page) is resolved alone by id, as the
                         // tree would carry it: never by publishing every
                         // resource to look for it.
-                        if let Some(resource) =
-                            crate::resources::resource_for(widget, None, doc, &address.resource)
-                            && tilo_actions::api::resolve(std::slice::from_ref(&resource), address)
-                                .is_some()
+                        if let Some(resource) = crate::widget::resources::resource_for(
+                            widget,
+                            None,
+                            doc,
+                            &address.resource,
+                        ) && tilo_actions::api::resolve(std::slice::from_ref(&resource), address)
+                            .is_some()
                         {
                             return if filtered {
                                 filter_resource(binding, resource).into_iter().collect()
@@ -2089,16 +2097,16 @@ fn discover_bound_resources_with_filter(
                         }
                     }
                     let mut resources =
-                        crate::resources::resources_for(widget, presence.as_ref(), doc);
+                        crate::widget::resources::resources_for(widget, presence.as_ref(), doc);
                     if !root {
                         resources = resources
                             .into_iter()
-                            .map(crate::resources::outside_document)
+                            .map(crate::widget::resources::outside_document)
                             .collect();
                     }
                     if let Some(address) = address
                         && tilo_actions::api::resolve(&resources, address).is_none()
-                        && let Some(resource) = crate::resources::resource_for(
+                        && let Some(resource) = crate::widget::resources::resource_for(
                             widget,
                             presence.as_ref(),
                             doc,
@@ -2747,7 +2755,7 @@ fn perform_resource_operation(
                     before.as_ref().and_then(|before| {
                         let after = doc.get_heads();
                         let changes = doc.diff(before, &after);
-                        let value = crate::resources::document_action_result(
+                        let value = crate::widget::resources::document_action_result(
                             &*widget, doc, address, &changes,
                         );
                         // An answer names the text it wrote too: whoever's view shows that text
@@ -3168,7 +3176,7 @@ fn below_root(root: bool, resource: ResourceSpec) -> ResourceSpec {
     if root {
         resource
     } else {
-        crate::resources::resolved_outside_document(resource)
+        crate::widget::resources::resolved_outside_document(resource)
     }
 }
 
@@ -3202,11 +3210,11 @@ fn collect_published(
     presence: Option<&tilo_actions::PresenceId>,
     resources: &mut Vec<ResourceSpec>,
 ) {
-    let mut taken = crate::resources::TakenResources::default();
+    let mut taken = crate::widget::resources::TakenResources::default();
     for_each_published(widget, walk, &mut |widget, root| {
         let found = match presence {
-            Some(presence) => crate::resources::resources_for(widget, Some(presence), doc),
-            None => crate::resources::resources(widget, doc),
+            Some(presence) => crate::widget::resources::resources_for(widget, Some(presence), doc),
+            None => crate::widget::resources::resources(widget, doc),
         };
         let found: Vec<_> = found
             .into_iter()
@@ -3218,7 +3226,11 @@ fn collect_published(
         if root {
             resources.extend(found);
         } else {
-            resources.extend(found.into_iter().map(crate::resources::outside_document));
+            resources.extend(
+                found
+                    .into_iter()
+                    .map(crate::widget::resources::outside_document),
+            );
         }
     });
 }
@@ -3233,7 +3245,7 @@ fn resolve_published(
     let mut found = None;
     for_each_published(widget, walk, &mut |widget, root| {
         if found.is_none() {
-            found = crate::resources::resource_for(widget, presence.as_ref(), doc, id)
+            found = crate::widget::resources::resource_for(widget, presence.as_ref(), doc, id)
                 .map(|resource| below_root(root, resource));
         }
     });
@@ -3270,12 +3282,12 @@ pub(crate) fn resolve_unbound_resource(
 }
 
 /// Whether resource `id`, which `widget`'s subtree resolves to nothing now, may resolve once what it
-/// reads arrives ([`crate::resources::PublishesResources::resource_pending`]).
+/// reads arrives ([`crate::widget::resources::PublishesResources::resource_pending`]).
 pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
     if widget.has_separate_document_owner() {
         return false;
     }
-    let mut pending = crate::resources::resource_pending(widget, id);
+    let mut pending = crate::widget::resources::resource_pending(widget, id);
     widget.for_each_child(&mut |child| {
         pending = pending || unbound_resource_pending(child, id);
     });
@@ -3295,7 +3307,7 @@ pub struct CallbackBinding {
     /// Searches the component asked the process to open, drained as process intents by the shell that
     /// presents search.
     pub(crate) search_requests:
-        Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
+        Rc<RefCell<std::collections::VecDeque<crate::widget::search_request::SearchRequest>>>,
     pub(crate) instance_id: crate::application::InstanceId,
     pub(crate) app_id: String,
     /// Executing device supplied by the component's ProcessContext, never its caller.
@@ -4213,14 +4225,16 @@ impl CallbackBinding {
     /// Queue a search for the host presenting this component. Only the
     /// latest request matters: an older one the host has not shown yet is
     /// replaced.
-    pub(crate) fn request_search(&self, request: crate::search::SearchRequest) {
+    pub(crate) fn request_search(&self, request: crate::widget::search_request::SearchRequest) {
         let mut requests = self.search_requests.borrow_mut();
         requests.clear();
         requests.push_back(request);
     }
 
     /// The search this component asked for, once.
-    pub(crate) fn take_search_request(&self) -> Option<crate::search::SearchRequest> {
+    pub(crate) fn take_search_request(
+        &self,
+    ) -> Option<crate::widget::search_request::SearchRequest> {
         self.search_requests.borrow_mut().pop_front()
     }
 

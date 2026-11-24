@@ -16,7 +16,7 @@ use tilo_actions::{
 use ui::automerge::AutoCommit;
 use ui::collaboration::{SurfaceDelta, SurfacePublication, SurfaceTable};
 use ui::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
-use ui::resources::PublishesResources;
+use ui::widget::resources::PublishesResources;
 
 use crate::window::AppWindow;
 
@@ -241,7 +241,7 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
 
 impl PublishesResources for AppWindow {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
-        let mut all = ui::resources::resources(ui::widget::Decorator::inner(self), doc);
+        let mut all = ui::widget::resources::resources(ui::widget::Decorator::inner(self), doc);
         all.extend(self.catalogue().iter().cloned());
         all
     }

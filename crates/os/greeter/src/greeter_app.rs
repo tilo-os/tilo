@@ -2250,7 +2250,7 @@ impl ui::widget::FullscreenProvider for GreeterApp {
 impl Widget for GreeterApp {
     ui::provides!(
         dyn ui::widget::FullscreenProvider,
-        dyn ui::resources::PublishesResources,
+        dyn ui::widget::resources::PublishesResources,
         dyn ui::host_operation::ResourceOperations
     );
 

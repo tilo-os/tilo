@@ -2859,7 +2859,7 @@ pub(crate) mod control_fixture_tests {
     impl Widget for Fixture {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources,
+            dyn crate::widget::resources::PublishesResources,
             dyn crate::widget::ResourceOperations
         );
 
@@ -2913,7 +2913,7 @@ pub(crate) mod control_fixture_tests {
         }
     }
 
-    impl crate::resources::PublishesResources for Fixture {
+    impl crate::widget::resources::PublishesResources for Fixture {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             self.resources.borrow().clone()
         }
@@ -3106,7 +3106,9 @@ pub(crate) mod control_fixture_tests {
             .push(Box::new(widget))
             .push(Box::new(
                 crate::widget::Button::new("coverage-search", "Search").on_action(
-                    crate::search::open_search_binding(&crate::search::SearchRequest::this_app()),
+                    crate::widget::search_request::open_search_binding(
+                        &crate::widget::search_request::SearchRequest::this_app(),
+                    ),
                 ),
             ))
             .push(Box::new(crate::history_mode::api::history_control_button(

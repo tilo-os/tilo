@@ -245,7 +245,7 @@ impl Window {
     }
 
     /// Opens the window's own command palette on `request`, as its search key does.
-    fn open_search(&mut self, request: ui::search::SearchRequest) {
+    fn open_search(&mut self, request: ui::widget::search_request::SearchRequest) {
         match self {
             Self::Harness(window) => window.open_search(&request).expect("the palette opens"),
             Self::Live(app) => app.open_search(request),
@@ -2239,7 +2239,7 @@ fn offered(session: &mut Session) -> Vec<(String, Option<String>)> {
 fn choose(session: &mut Session, query: &str) {
     session
         .window
-        .open_search(ui::search::SearchRequest::this_app().with_query(query));
+        .open_search(ui::widget::search_request::SearchRequest::this_app().with_query(query));
     session.settle();
     session
         .window
@@ -2319,7 +2319,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
     );
     session
         .window
-        .open_search(ui::search::SearchRequest::this_app().with_query("New task"));
+        .open_search(ui::widget::search_request::SearchRequest::this_app().with_query("New task"));
     session.settle();
     assert!(
         session.window.harness().palette_shown(),
@@ -2413,7 +2413,7 @@ fn palette_shots() {
         for (what, query) in [("palette", ""), ("palette-search", "new")] {
             let mut session = Session::tasks();
             session.window.harness().set_theme(theme.clone());
-            let request = ui::search::SearchRequest::this_app();
+            let request = ui::widget::search_request::SearchRequest::this_app();
             let request = if query.is_empty() {
                 request
             } else {
@@ -2451,7 +2451,7 @@ fn palette_rows(session: &mut Session, query: &str) -> Vec<Shown> {
     }
     session
         .window
-        .open_search(ui::search::SearchRequest::this_app().with_query(query));
+        .open_search(ui::widget::search_request::SearchRequest::this_app().with_query(query));
     session.settle();
     session
         .window
