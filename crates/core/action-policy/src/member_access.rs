@@ -27,6 +27,12 @@ pub struct MemberAccess {
     /// its own node. `None` where the host does not hold its manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_kinds: Option<Vec<String>>,
+    /// The one workspace the device this access is reaches, by its id, when its person's root
+    /// confined it to one (a workspace's VM); `None` for a device that reaches every workspace
+    /// its person's grants let it. Written always, so no reader takes an access that says it for
+    /// one that does not.
+    #[serde(default)]
+    pub confined_to: Option<String>,
 }
 
 impl MemberAccess {
@@ -39,6 +45,7 @@ impl MemberAccess {
             acting,
             policy,
             app_kinds: None,
+            confined_to: None,
         }
     }
 
@@ -114,9 +121,14 @@ impl MemberAccess {
     /// device's certificate is what says whose it is ([`Self::acting`] is
     /// built from it); this decides the member against it, once for every
     /// receiver. A bot, an automation or an app acts for whoever runs it, and
-    /// is bounded by the signer as every member's change is.
+    /// is bounded by the signer as every member's change is. A device confined
+    /// to another workspace than this access's writes for no one here
+    /// ([`Self::confined_to`]).
     #[must_use]
     pub fn may_write_for(&self, invoker: &Acting) -> bool {
+        if !self.reaches_its_workspace() {
+            return false;
+        }
         let Some(person) = self.acting.people().first().copied() else {
             // A device acting as nobody (an app's own key) claims no member:
             // its grants decide, as they always did.
@@ -163,6 +175,23 @@ impl MemberAccess {
             // hands its agent the session it runs.
             None => invoker.handed && !self.acting.is_agent(),
         }
+    }
+
+    /// The same access, from a device its person's root confined to `workspace` alone (its id),
+    /// or to none.
+    #[must_use]
+    pub fn confined_to(mut self, workspace: Option<String>) -> Self {
+        self.confined_to = workspace;
+        self
+    }
+
+    /// Whether the device this access is reaches the workspace its policy governs: every device
+    /// does but one confined to another ([`Self::confined_to`]).
+    #[must_use]
+    pub fn reaches_its_workspace(&self) -> bool {
+        self.confined_to
+            .as_deref()
+            .is_none_or(|only| only.eq_ignore_ascii_case(&self.policy.workspace))
     }
 
     /// The same access, with the resource kinds the app in it declares.
@@ -249,5 +278,35 @@ impl MemberAccess {
     #[must_use]
     pub fn allows(&self, node: &TreePath, kind: ActionKind, now: SystemTime) -> bool {
         self.answer(node, kind, &Context::at_time(now)) == Answer::Allow
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OWN: &str = "11111111-1111-4111-8111-111111111111";
+    const OTHER: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    /// A device its person confined to one workspace writes for them there, and for no one, not
+    /// even them, in any other.
+    #[test]
+    fn a_confined_device_writes_for_no_one_outside_its_workspace() {
+        let person = Acting::person("ada");
+        let own = MemberAccess::person(WorkspacePolicy::new(OWN, "ada"), "ada")
+            .confined_to(Some(OWN.to_owned()));
+        assert!(own.may_write_for(&person));
+        assert!(own.invoked_by(&person).is_some());
+        let other = MemberAccess::person(WorkspacePolicy::new(OTHER, "ada"), "ada")
+            .confined_to(Some(OWN.to_owned()));
+        assert!(!other.reaches_its_workspace());
+        assert!(!other.may_write_for(&person));
+        assert!(other.invoked_by(&person).is_none());
+        let unconfined = MemberAccess::person(WorkspacePolicy::new(OTHER, "ada"), "ada");
+        assert!(unconfined.may_write_for(&person));
+        // What it is confined to travels with the access, so a reader of it refuses the same.
+        let read: MemberAccess =
+            serde_json::from_str(&serde_json::to_string(&other).unwrap()).unwrap();
+        assert!(!read.may_write_for(&person));
     }
 }

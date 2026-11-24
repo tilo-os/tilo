@@ -10,8 +10,8 @@ use std::time::Duration;
 use ed25519_dalek::{Signer as _, SigningKey};
 use serde_json::{Value, json};
 use tilo_device_identity::login::{
-    APPROVE, AgentAsked, Approved, Asked, CERTIFY, CertifyAnswer, FOLLOW, ISSUE, PENDING, Tab,
-    Ticket,
+    APPROVE, AgentAsked, Approved, Asked, CERTIFY, CertifyAnswer, FOLLOW, ISSUE, KeyFor, PENDING,
+    Tab, Ticket,
 };
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
 use tilo_session_client::session::TicketLink;
@@ -57,7 +57,7 @@ fn signed_for(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     let tab = Tab {
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
         label: label.to_owned(),
-        agent: None,
+        key_for: None,
     };
     let mut cert = tab
         .certificate(root.verifying_key().to_bytes(), tilo_clock::unix_now_ns())
@@ -432,13 +432,13 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
 
     let agent = new_key();
     let (ticket, mut certified) = laptop
-        .serve_agent_key(Tab {
+        .serve_key(Tab {
             device_public_key: hex::encode(agent.verifying_key().to_bytes()),
             label: "Claude Code".into(),
-            agent: Some(AgentAsked {
+            key_for: Some(KeyFor::Agent(AgentAsked {
                 workspace: workspace.clone(),
                 agent: "claude".into(),
-            }),
+            })),
         })
         .expect("the daemon serves the agent's key");
     let text = ticket.encode();
@@ -454,7 +454,7 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
     let tab: Tab = serde_json::from_value(json!({
         "device_public_key": hex::encode(agent.verifying_key().to_bytes()),
         "label": "Claude Code",
-        "agent": {"workspace": workspace, "agent": "claude"},
+        "for": {"agent": {"workspace": workspace, "agent": "claude"}},
     }))
     .unwrap();
     let mut cert = tab

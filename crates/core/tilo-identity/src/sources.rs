@@ -67,6 +67,14 @@ pub trait DeviceTrust: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Whether the record of `cert`'s person's devices lets its key reach the workspace
+    /// `workspace` names (its UUID): `false` for a key their root confined to another workspace
+    /// alone, as its entry there says; `None` where this host does not know their devices.
+    fn reaches(&self, cert: &DeviceCert, workspace: &str) -> Option<bool> {
+        let _ = (cert, workspace);
+        None
+    }
+
     /// A number that changes whenever what this answers changes: a cache of something derived
     /// from the person's devices is dropped when it moves.
     fn generation(&self) -> u64 {
@@ -104,6 +112,9 @@ pub struct DevicesSeen {
     /// The revocations their root signed, as the record holds them: the keys they name are the
     /// ones this host refuses.
     pub revocations: Vec<RevocationEntry>,
+    /// The keys their root confined to one workspace alone (a workspace's VM), each with that
+    /// workspace's id, as the certificate in the record's entry says: refused in every other.
+    pub confined: std::collections::BTreeMap<[u8; 32], [u8; 16]>,
 }
 
 impl DevicesSeen {
@@ -126,7 +137,26 @@ impl DevicesSeen {
                         && tilo_user_identity::verify_revocation_entry(entry).is_ok()
                 })
                 .collect(),
+            confined: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// The same, with the keys the record's entries confine to one workspace alone, each with
+    /// that workspace's id, as the certificates their root signed there say.
+    #[must_use]
+    pub fn confining(mut self, confined: impl IntoIterator<Item = ([u8; 32], [u8; 16])>) -> Self {
+        self.confined.extend(confined);
+        self
+    }
+
+    /// Whether the record lets `device` reach the workspace `workspace` names (its UUID): every
+    /// key reaches every workspace but one confined to another.
+    #[must_use]
+    pub fn reaches(&self, device: &[u8; 32], workspace: &str) -> bool {
+        self.confined.get(device).is_none_or(|only| {
+            tilo_user_identity::DeviceCapabilities::workspace_device(*only)
+                .reaches_workspace(workspace)
+        })
     }
 
     /// Whether the root of `person` took `device` back, as the entries the record holds say.
@@ -146,6 +176,11 @@ impl DevicesSeen {
         for key in &self.certified {
             hasher.update(b"certified");
             hasher.update(key);
+        }
+        for (key, workspace) in &self.confined {
+            hasher.update(b"confined");
+            hasher.update(key);
+            hasher.update(workspace);
         }
         // The host keeps revocations in whatever order it read them: what they say, not the
         // order, is what this number follows.
@@ -223,6 +258,14 @@ impl DeviceTrust for DevicesTrust {
             .filter(|seen| seen.person == *person)
             .map(|seen| seen.revocations)
             .unwrap_or_default()
+    }
+
+    fn reaches(&self, cert: &DeviceCert, workspace: &str) -> Option<bool> {
+        let seen = self.seen()?;
+        (seen.person == cert.user_public_key).then(|| {
+            cert.capabilities.reaches_workspace(workspace)
+                && seen.reaches(&cert.device_public_key, workspace)
+        })
     }
 
     fn generation(&self) -> u64 {
@@ -349,5 +392,84 @@ impl GroupKeySource for () {
         _known_generation: u64,
     ) -> Option<Result<GroupKeys, String>> {
         None
+    }
+}
+
+#[cfg(test)]
+mod confined_tests {
+    use super::{DeviceTrust as _, DevicesSeen, DevicesTrust};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+    const OWN: &str = "11111111-1111-4111-8111-111111111111";
+    const OTHER: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    fn own_id() -> [u8; 16] {
+        [
+            0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x41, 0x11, 0x81, 0x11, 0x11, 0x11, 0x11, 0x11,
+            0x11, 0x11,
+        ]
+    }
+
+    /// The VM's certificate, which the person's root signed for [`OWN`] alone.
+    fn vm_cert() -> DeviceCert {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: [9; 32],
+            device_label: "Workspace computer".into(),
+            capabilities: DeviceCapabilities::workspace_device(own_id()),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        cert
+    }
+
+    /// The person's devices as a host that holds their record answers, with the VM's entry
+    /// confining its key to its workspace: the key is refused in every other, whatever
+    /// certificate it shows, and the answer moves when the record does.
+    #[test]
+    fn the_record_keeps_a_confined_key_out_of_every_other_workspace() {
+        let cert = vm_cert();
+        let person = cert.user_public_key;
+        let trust = DevicesTrust::new();
+        let listed = DevicesSeen::of_host(person, [cert.device_public_key], []);
+        let unconfined = listed.generation();
+        let confined = listed.confining([(cert.device_public_key, own_id())]);
+        assert_ne!(
+            confined.generation(),
+            unconfined,
+            "a confinement moves the record's answer"
+        );
+        trust.reading(move || Some(confined.clone()));
+        assert_eq!(trust.reaches(&cert, OWN), Some(true));
+        assert_eq!(trust.reaches(&cert, OTHER), Some(false));
+        // The same key showing a certificate that claims no confinement is still the record's
+        // confined key.
+        let mut claimed = cert.clone();
+        claimed.capabilities.workspace = None;
+        assert_eq!(trust.reaches(&claimed, OTHER), Some(false));
+        // Another person's key is no question this record answers.
+        let mut stranger = cert;
+        stranger.user_public_key = [7; 32];
+        assert_eq!(trust.reaches(&stranger, OTHER), None);
+    }
+
+    /// Admission into a workspace refuses a confined device everywhere but its workspace, by its
+    /// certificate alone where the host knows nothing of the person's devices.
+    #[test]
+    fn admission_into_a_workspace_refuses_a_device_confined_to_another() {
+        let cert = vm_cert();
+        let person = cert.user_public_key;
+        assert!(crate::certificates::admitted(&person, &cert));
+        assert!(crate::certificates::admitted_in(OWN, &person, &cert));
+        assert!(!crate::certificates::admitted_in(OTHER, &person, &cert));
+        assert!(!crate::certificates::admitted_in(
+            "not a workspace",
+            &person,
+            &cert
+        ));
     }
 }

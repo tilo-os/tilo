@@ -193,7 +193,7 @@ pub(crate) const RENEW_WITHIN_NS: u64 = 7 * DAY_NS;
 const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
 /// What certifies an agent's key with the person's root and says when they took one back: the
-/// device's daemon, which keeps the root (`tilo.device#certifyAgent`). A device that keeps none
+/// device's daemon, which keeps the root (`tilo.device#certifyKey`). A device that keeps none
 /// hands the call on to one of theirs that does.
 pub trait AgentGrants: Send + Sync {
     /// The certificate the person's root gives `grant` for `agent` in `workspace`, named

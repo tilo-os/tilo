@@ -4,6 +4,7 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_policy::Change;
 
+mod confined;
 mod editor;
 mod holders;
 mod signed_invocations;

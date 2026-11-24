@@ -34,7 +34,7 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_AGENT, Device, Direction, ENROL_BOOT_KEY, FOUND,
+    ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction, ENROL_BOOT_KEY, FOUND,
     IDENTITIES, ISSUE, LOG_IN, PENDING, PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS,
     RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report,
     TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
@@ -229,14 +229,21 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
             &[],
         ))),
         row(Some(descriptor(
-            CERTIFY_AGENT,
-            "Certify an agent's key",
-            "Certify the key of an agent that acts for the person, with the root kept here.",
-            &[ActionParam::required(
-                "grant",
-                ParamType::Text,
-                "The agent's grant key, as hex.",
-            )],
+            CERTIFY_KEY,
+            "Certify a key",
+            "Certify a key with the root kept here: for one agent in one workspace, for a \
+             computer that reaches one workspace alone, or, naming nothing, as an agent's key in \
+             every workspace of the person's. The key is listed among their devices.",
+            &[
+                ActionParam::required("key", ParamType::Text, "The key, as hex."),
+                ActionParam::optional(
+                    "for",
+                    ParamType::Object,
+                    "What the key is for: {\"agent\": {\"workspace\", \"agent\"}} or \
+                     {\"workspace\": id}.",
+                ),
+                ActionParam::optional("name", ParamType::Text, "The name it is listed by."),
+            ],
         ))),
         row(Some(descriptor(
             ENROL_BOOT_KEY,
@@ -647,11 +654,11 @@ pub(crate) fn descriptor(
             .tags
             .push(tilo_actions::SECRET_ANSWER_TAG.to_owned());
     }
-    // Only the person's root certifies an agent's key, as it revokes one
+    // Only the person's root certifies a key, as it revokes one
     // ([`tilo_actions::ROOT_ONLY_TAG`]).
     if matches!(
         action,
-        CERTIFY_AGENT | ENROL_BOOT_KEY | RELEASE_HALF | ANSWER_SIGN_IN
+        CERTIFY_KEY | ENROL_BOOT_KEY | RELEASE_HALF | ANSWER_SIGN_IN
     ) {
         descriptor
             .contract
@@ -670,7 +677,7 @@ const SECRET_ANSWERS: [&str; 3] = [RECOVERY_WORDS, BACKUP, RELEASE_HALF];
 const ROOT_PERSON_SIGNED: [&str; 5] = [
     RECOVERY_WORDS,
     BACKUP,
-    CERTIFY_AGENT,
+    CERTIFY_KEY,
     RELEASE_HALF,
     ANSWER_SIGN_IN,
 ];
@@ -992,7 +999,7 @@ impl Tickets {
                         | UPDATE
                         | RECOVERY_WORDS
                         | BACKUP
-                        | CERTIFY_AGENT
+                        | CERTIFY_KEY
                         | ENROL_BOOT_KEY
                         | RELEASE_HALF
                         | ANSWER_SIGN_IN
@@ -1076,9 +1083,9 @@ impl Tickets {
                     .map(|backup| json!({ "backup": hex::encode(backup) }))
                     .map_err(Into::into)
                 }
-                CERTIFY_AGENT => {
-                    let (_, root) = rooted.expect("the caller's root certifies its agent");
-                    self.certify_agent(&args, root)
+                CERTIFY_KEY => {
+                    let (_, root) = rooted.expect("the caller's root certifies its key");
+                    self.certify_key(&args, root)
                 }
                 ENROL_BOOT_KEY => {
                     let (_, root) = match rooted {
@@ -1553,11 +1560,11 @@ impl Tickets {
             .map_err(|error| anyhow!("the tab the ticket waits with: {error}"))?;
         let cert: Option<tilo_user_identity::DeviceCert> = match &tab {
             Some(tab) if super::services::device_root_record().is_ok() => {
-                Some(super::signing::sign_tab(tab)?)
+                Some(super::signing::sign_tab(self.0.workspaces.as_ref(), tab).await?)
             }
-            Some(tab) if tab.agent.is_some() => bail!(
-                "This computer does not hold your identity, so it cannot approve a key for your \
-                 agent: run `tilo device add` with the ticket on the one that does."
+            Some(tab) if tab.key_for.is_some() => bail!(
+                "This computer does not hold your identity, so it cannot approve this key: run \
+                 `tilo device add` with the ticket on the one that does."
             ),
             _ => args
                 .get("cert")
@@ -1578,18 +1585,6 @@ impl Tickets {
                 }),
             )
             .await?;
-        // A key approved for an agent is one of the person's keys like every other: listed with
-        // their devices, and revoked as one is (`devices#revoke`).
-        if let (Some(cert), Some(workspaces)) = (&cert, &self.0.workspaces)
-            && cert.capabilities.agent.is_some()
-            && let Err(error) = tilo_workspace_service::workspaces::person_workspace::devices::keep(
-                workspaces.copies(),
-                cert,
-            )
-            .await
-        {
-            tracing::warn!(%error, "an agent's approved key is not listed among the person's devices");
-        }
         Ok(match &cert {
             Some(cert) => json!({
                 "label": cert.device_label,

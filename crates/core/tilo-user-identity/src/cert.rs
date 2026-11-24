@@ -112,22 +112,41 @@ const EXTENDED_BROWSER_PAGES: u8 = 64;
 /// The key is a device's own workspace service (see
 /// [`DeviceCapabilities::workspace_service`]).
 const EXTENDED_WORKSPACE_SERVICE: u8 = 128;
+/// First byte of a device's capabilities in binary encodings when its
+/// certificate reaches one workspace alone
+/// ([`DeviceCapabilities::workspace`]): the workspace's 16 bytes follow, then
+/// the capabilities in any of the forms above. It is what [`BINARY_LAYOUT`] 2
+/// added. A build of layout 1 reads this byte as a capability flag, which may
+/// only be 0 or 1, so it refuses such a certificate whole rather than reading
+/// it as one that reaches every workspace.
+const WORKSPACE_BINARY_MARKER: u8 = 4;
 const SCOPE_ALL: u8 = 0;
 const SCOPE_WORKSPACE: u8 = 1;
 const SCOPE_AGENT: u8 = 2;
 
 /// The version of the binary certificate layout this build reads and writes:
 /// the fields in [`DeviceCert`]'s order, the capabilities as four flags after
-/// an optional [`FOREIGN_BINARY_MARKER`] or [`EXTENDED_BINARY_MARKER`]. Each
-/// device's identity files, every host's stores and every signature hold
-/// certificates in it, so the layout only changes with a new version: a new
-/// first capabilities byte above the markers names it, and a step brings the
-/// files of this one up (`persist::DEVICE_CERT`).
-pub const BINARY_LAYOUT: u32 = 1;
+/// an optional [`FOREIGN_BINARY_MARKER`] or [`EXTENDED_BINARY_MARKER`], the
+/// whole after [`WORKSPACE_BINARY_MARKER`] and a workspace for a certificate
+/// that reaches that workspace alone. Each device's identity files, every
+/// host's stores and every signature hold certificates in it, so the layout
+/// only changes with a new version: a new first capabilities byte above the
+/// markers names it (`persist::DEVICE_CERT`).
+///
+/// Layout 2 added [`WORKSPACE_BINARY_MARKER`]. Every certificate layout 1
+/// wrote reads in layout 2 as the same certificate and writes back to the same
+/// bytes, so its signature holds and the files people's devices keep are
+/// current as they are. A certificate that reaches one workspace alone exists
+/// only in layout 2, and a build of layout 1 refuses it: as newer than it
+/// reads, where it asks [`binary_layout_of`], and as a capability flag that is
+/// neither 0 nor 1 where it decodes it, so no build can take it for a device
+/// that reaches every workspace.
+pub const BINARY_LAYOUT: u32 = 2;
 
 /// The binary layout version of the certificate encoded in `bytes`: what its
-/// first capabilities byte names. A byte above the markers this layout knows
-/// names a later layout than [`BINARY_LAYOUT`].
+/// first capabilities byte names, which is [`BINARY_LAYOUT`] for every
+/// certificate this build reads, those layout 1 wrote included. A byte above
+/// the markers this layout knows names a later layout than [`BINARY_LAYOUT`].
 ///
 /// # Errors
 ///
@@ -136,7 +155,7 @@ pub fn binary_layout_of(bytes: &[u8]) -> Result<u32, CanonicalError> {
     let (_, rest) = postcard::take_from_bytes::<([u8; 32], [u8; 32], String)>(bytes)
         .map_err(|error| CanonicalError::Deserialize(error.to_string()))?;
     match rest.first() {
-        Some(0..=EXTENDED_BINARY_MARKER) => Ok(BINARY_LAYOUT),
+        Some(0..=WORKSPACE_BINARY_MARKER) => Ok(BINARY_LAYOUT),
         Some(_) => Ok(BINARY_LAYOUT.saturating_add(1)),
         None => Err(CanonicalError::Deserialize(
             "a device certificate ends before its capabilities".into(),
@@ -299,6 +318,28 @@ fn uuid_bytes(text: &str) -> Option<[u8; 16]> {
     (bytes != [0; 16]).then_some(bytes)
 }
 
+/// A confined device's workspace as JSON names it: its canonical UUID.
+#[derive(Clone, Copy)]
+struct WorkspaceOnly([u8; 16]);
+
+impl Serialize for WorkspaceOnly {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&uuid_text(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkspaceOnly {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        uuid_bytes(&text).map(Self).ok_or_else(|| {
+            serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(&text),
+                &"a canonical workspace UUID",
+            )
+        })
+    }
+}
+
 impl Serialize for AgentScope {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.name())
@@ -402,6 +443,16 @@ pub struct DeviceCapabilities {
     /// service. It is part of the signed encoding.
     pub workspace_service: bool,
 
+    /// The one workspace this device reaches, by its id (a UUID's 16 bytes),
+    /// or `None` for a device that reaches every workspace its person's
+    /// grants let it. A workspace's own VM is such a device: one of the
+    /// person's, listed with the rest and revoked like them, whose key is
+    /// refused in every other workspace and holds no workspace's keys. Such
+    /// a certificate grants nothing else but being foreign, is signed by the
+    /// person's root itself, and issues nothing. It is part of the signed
+    /// encoding ([`WORKSPACE_BINARY_MARKER`]), so a certificate cannot lose it.
+    pub workspace: Option<[u8; 16]>,
+
     /// Grants a certificate signed before they were retired may carry, which mean nothing now
     /// (see [`RetiredFlags`]). New certificates set none.
     pub retired: RetiredFlags,
@@ -450,6 +501,11 @@ struct CapabilitiesJson {
     browser_pages: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     workspace_service: bool,
+    /// Written only when set: a reader that does not know it refuses the
+    /// whole certificate (`deny_unknown_fields`), never reads it as one that
+    /// reaches every workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<WorkspaceOnly>,
     /// Retired ([`RetiredFlags`]): read from certificates signed with them, written only when set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     can_act_as_host: bool,
@@ -469,6 +525,7 @@ impl Serialize for DeviceCapabilities {
                 server_key: self.server_key,
                 browser_pages: self.browser_pages,
                 workspace_service: self.workspace_service,
+                workspace: self.workspace.map(WorkspaceOnly),
                 can_act_as_host: self.retired.act_as_host,
                 can_read_all_workspaces: self.retired.read_all_workspaces,
             }
@@ -521,7 +578,15 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
     } else {
         4
     };
+    let workspace = capabilities.workspace;
+    let len = len.saturating_add(if workspace.is_some() { 17 } else { 0 });
     let mut tuple = serializer.serialize_tuple(len)?;
+    if let Some(id) = &workspace {
+        tuple.serialize_element(&WORKSPACE_BINARY_MARKER)?;
+        for byte in id {
+            tuple.serialize_element(byte)?;
+        }
+    }
     if extended_form {
         tuple.serialize_element(&EXTENDED_BINARY_MARKER)?;
         tuple.serialize_element(&extended)?;
@@ -550,6 +615,7 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 server_key: json.server_key,
                 browser_pages: json.browser_pages,
                 workspace_service: json.workspace_service,
+                workspace: json.workspace.map(|WorkspaceOnly(id)| id),
                 retired: RetiredFlags {
                     act_as_host: json.can_act_as_host,
                     read_all_workspaces: json.can_read_all_workspaces,
@@ -577,12 +643,54 @@ impl<'de> Deserialize<'de> for BinaryCapabilitiesOf {
         // Postcard reads only the elements the visitor asks for, so the upper
         // bound admits the four native flags, marker + four flags, and the
         // extended marker + its byte + an agent's scope (up to 49 bytes) +
-        // four flags.
-        deserializer.deserialize_tuple(55, BinaryCapabilities)
+        // four flags, each after the workspace marker and a workspace's 16
+        // bytes.
+        deserializer.deserialize_tuple(72, BinaryCapabilities)
     }
 }
 
 struct BinaryCapabilities;
+
+/// Reads a workspace's 16 bytes, refusing the nil UUID: no workspace has it,
+/// so a certificate naming it would name nothing.
+fn workspace_id<E: serde::de::Error>(
+    next: &mut impl FnMut() -> Result<u8, E>,
+) -> Result<[u8; 16], E> {
+    let mut id = [0u8; 16];
+    for byte in &mut id {
+        *byte = next()?;
+    }
+    if id == [0; 16] {
+        return Err(E::invalid_value(
+            serde::de::Unexpected::Bytes(&id),
+            &"a workspace id other than the nil UUID",
+        ));
+    }
+    Ok(id)
+}
+
+/// Reads an agent grant's scope: its tag, then the workspace and agent it
+/// names.
+fn agent_scope<E: serde::de::Error>(
+    next: &mut impl FnMut() -> Result<u8, E>,
+) -> Result<AgentScope, E> {
+    match next()? {
+        SCOPE_ALL => Ok(AgentScope::AllWorkspaces),
+        SCOPE_WORKSPACE => Ok(AgentScope::Workspace(workspace_id(next)?)),
+        SCOPE_AGENT => {
+            let workspace = workspace_id(next)?;
+            let mut agent = [0u8; 32];
+            for byte in &mut agent {
+                *byte = next()?;
+            }
+            Ok(AgentScope::Agent { workspace, agent })
+        }
+        other => Err(E::invalid_value(
+            serde::de::Unexpected::Unsigned(other.into()),
+            &"an agent scope of all workspaces, one, or one agent in one",
+        )),
+    }
+}
 
 impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
     type Value = BinaryCapabilitiesOf;
@@ -603,7 +711,20 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
             seq.next_element::<u8>()?
                 .ok_or_else(|| A::Error::invalid_length(index, &"four capability flags"))
         };
-        let first = next()?;
+        let mut first = next()?;
+        let workspace = if first == WORKSPACE_BINARY_MARKER {
+            let id = workspace_id::<A::Error>(&mut next)?;
+            first = next()?;
+            if first == WORKSPACE_BINARY_MARKER {
+                return Err(A::Error::invalid_value(
+                    serde::de::Unexpected::Unsigned(first.into()),
+                    &"one workspace a device reaches",
+                ));
+            }
+            Some(id)
+        } else {
+            None
+        };
         let (extended, agent, flags) = match first {
             FOREIGN_BINARY_MARKER => (EXTENDED_FOREIGN, None, [next()?, next()?, next()?, next()?]),
             EXTENDED_BINARY_MARKER => {
@@ -631,39 +752,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 let agent = if extended & EXTENDED_AGENT == 0 {
                     None
                 } else {
-                    match next()? {
-                        SCOPE_ALL => Some(AgentScope::AllWorkspaces),
-                        tag @ (SCOPE_WORKSPACE | SCOPE_AGENT) => {
-                            let mut id = [0u8; 16];
-                            for byte in &mut id {
-                                *byte = next()?;
-                            }
-                            if id == [0; 16] {
-                                return Err(A::Error::invalid_value(
-                                    serde::de::Unexpected::Bytes(&id),
-                                    &"a workspace id other than the nil UUID",
-                                ));
-                            }
-                            if tag == SCOPE_WORKSPACE {
-                                Some(AgentScope::Workspace(id))
-                            } else {
-                                let mut agent = [0u8; 32];
-                                for byte in &mut agent {
-                                    *byte = next()?;
-                                }
-                                Some(AgentScope::Agent {
-                                    workspace: id,
-                                    agent,
-                                })
-                            }
-                        }
-                        other => {
-                            return Err(A::Error::invalid_value(
-                                serde::de::Unexpected::Unsigned(other.into()),
-                                &"an agent scope of all workspaces, one, or one agent in one",
-                            ));
-                        }
-                    }
+                    Some(agent_scope::<A::Error>(&mut next)?)
                 };
                 (extended, agent, [next()?, next()?, next()?, next()?])
             }
@@ -687,6 +776,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 server_key: extended & EXTENDED_SERVER_KEY != 0,
                 browser_pages: extended & EXTENDED_BROWSER_PAGES != 0,
                 workspace_service: extended & EXTENDED_WORKSPACE_SERVICE != 0,
+                workspace,
                 retired: RetiredFlags {
                     act_as_host: flag(flags[2])?,
                     read_all_workspaces: flag(flags[3])?,
@@ -711,11 +801,41 @@ impl DeviceCapabilities {
             server_key: false,
             browser_pages: false,
             workspace_service: false,
+            workspace: None,
             retired: RetiredFlags {
                 act_as_host: false,
                 read_all_workspaces: false,
             },
         }
+    }
+
+    /// The capabilities of a device that reaches `workspace` (its id, a
+    /// UUID's 16 bytes) alone: a workspace's own VM (see [`Self::workspace`]).
+    #[must_use]
+    pub const fn workspace_device(workspace: [u8; 16]) -> Self {
+        Self {
+            workspace: Some(workspace),
+            ..Self::nothing()
+        }
+    }
+
+    /// Whether a device with these capabilities reaches the workspace
+    /// `workspace` names (its canonical UUID): every one, unless it is
+    /// confined to one ([`Self::workspace`]); then that one alone. A name
+    /// that is no canonical UUID is no workspace a confined device reaches.
+    #[must_use]
+    pub fn reaches_workspace(&self, workspace: &str) -> bool {
+        match self.workspace {
+            None => true,
+            Some(id) => uuid_bytes(workspace).is_some_and(|named| named == id),
+        }
+    }
+
+    /// The canonical UUID of the one workspace a confined device reaches
+    /// ([`Self::workspace`]); `None` for one that reaches every workspace.
+    #[must_use]
+    pub fn workspace_name(&self) -> Option<String> {
+        self.workspace.as_ref().map(uuid_text)
     }
 
     /// Whether these capabilities grant nothing `held` does not: a renewal
@@ -732,6 +852,7 @@ impl DeviceCapabilities {
             && self.server_key == held.server_key
             && within(self.browser_pages, held.browser_pages)
             && self.workspace_service == held.workspace_service
+            && self.workspace == held.workspace
     }
 
     /// The capabilities of an agent's grant reaching `scope`: nothing but
@@ -794,6 +915,7 @@ impl DeviceCapabilities {
                 || self.foreign
                 || self.stand_in
                 || self.workspace_service
+                || self.workspace.is_some()
                 || self.retired.any())
     }
 
@@ -1185,12 +1307,14 @@ impl DeviceCert {
     }
 
     /// Whether the person's root signed this certificate itself, for one of
-    /// their devices: no issuer, and no agent's grant, workspace service or
-    /// stand-in. The root's own statement that the key is a device of theirs,
-    /// which is the authority to add another.
+    /// their devices: no issuer, and no agent's grant, workspace service,
+    /// stand-in or device confined to one workspace. The root's own statement
+    /// that the key is a device of theirs, which is the authority to add
+    /// another.
     #[must_use]
     pub fn is_root_signed_device(&self) -> bool {
         self.issuer.is_none()
+            && self.capabilities.workspace.is_none()
             && self.capabilities.agent.is_none()
             && !self.capabilities.stand_in
             && !self.capabilities.workspace_service
@@ -1266,6 +1390,14 @@ pub enum DeviceCertError {
     /// root-signed and valid when it issued.
     #[error("a certificate exceeds what its issuer may issue")]
     InvalidIssuer,
+
+    /// A certificate that reaches one workspace alone grants more than that
+    /// (and being foreign), names an issuer, or certifies the root's own key.
+    #[error(
+        "a device that reaches one workspace alone must grant nothing more and be certified by \
+         its person's root"
+    )]
+    InvalidWorkspaceDevice,
 
     /// Canonical-encoding failure. Effectively unreachable but
     /// propagated for hygiene.
@@ -1362,6 +1494,7 @@ fn check_issued(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
         && issuer_valid_then
         && lifetime_bounded
         && cert.capabilities.grants_no_more_than(&browser.ceiling)
+        && cert.capabilities.workspace.is_none()
         && cert.device_public_key != issuer.device_public_key
         && cert.device_public_key != cert.user_public_key
     {
@@ -1429,11 +1562,34 @@ fn check_minted(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
     }
 }
 
+/// Whether a device confined to one workspace holds its shape: that and
+/// being foreign, nothing more, signed by its person's root for a key that is
+/// not the root's.
+fn check_workspace_device(cert: &DeviceCert) -> Result<(), DeviceCertError> {
+    let Some(workspace) = cert.capabilities.workspace else {
+        return Ok(());
+    };
+    let shape = DeviceCapabilities {
+        foreign: cert.capabilities.foreign,
+        ..DeviceCapabilities::workspace_device(workspace)
+    };
+    if cert.capabilities == shape
+        && workspace != [0; 16]
+        && cert.issuer.is_none()
+        && cert.device_public_key != cert.user_public_key
+    {
+        Ok(())
+    } else {
+        Err(DeviceCertError::InvalidWorkspaceDevice)
+    }
+}
+
 /// Every shape rule a certificate's signer is held to before it signs and a
 /// verifier before it checks the signature.
 fn check_shape(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     check_agent_grant(&cert.capabilities, cert.issued_at_ns, cert.expires_at_ns)?;
     check_stand_in(cert)?;
+    check_workspace_device(cert)?;
     match &cert.issuer {
         Some(issuer) => check_issued(cert, issuer),
         // A workspace service is always its device's: the device issues it.

@@ -1668,6 +1668,9 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionCal
         MembershipError::NoMembership => ActionCallError::Refused {
             reason: "the person is not a member of this workspace".into(),
         },
+        MembershipError::OtherWorkspace => ActionCallError::Refused {
+            reason: "this device reaches another workspace alone".into(),
+        },
         MembershipError::UnreadableAccess => ActionCallError::Refused {
             reason: "your access to this workspace could not be read".into(),
         },

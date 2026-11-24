@@ -122,7 +122,7 @@ async fn main() {
             let tab = tilo_device_identity::login::Tab {
                 device_public_key: asked.device.clone(),
                 label: asked.label.clone(),
-                agent: None,
+                key_for: None,
             };
             let Ok(mut cert) = tab.certificate(user, tilo_clock::unix_now_ns()) else {
                 continue;

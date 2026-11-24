@@ -323,6 +323,12 @@ impl PeerGovernance<'_> {
     /// it names as a store of its ciphertext, whoever's device that is. The
     /// workspace's one MLS group follows this set, so a holder named a store
     /// leaves the group, and the commit that removes it rotates the keys.
+    ///
+    /// A device its person's root confined to one workspace (a workspace's
+    /// VM) holds no workspace's keys, this one's included: what it reads
+    /// reaches it as its person's records do on a session, never as the
+    /// group's keys, so a page that escapes it on that machine opens nothing
+    /// sealed to the group.
     pub fn key_holders(self, now: SystemTime) -> Result<BTreeSet<[u8; 32]>, String> {
         let access = self.peer.governance().governed_access(now)?;
         let mut holders: BTreeSet<[u8; 32]> = BTreeSet::new();
@@ -335,6 +341,7 @@ impl PeerGovernance<'_> {
             if super::holder_role(&hint) == super::CopyRole::Store {
                 stores.insert(cert.device_public_key);
             } else if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
+                && cert.capabilities.workspace.is_none()
                 && !self.peer.core.revocations.refuses(cert)
                 && !self.revoked_key(&cert.device_public_key)
             {
@@ -342,9 +349,16 @@ impl PeerGovernance<'_> {
             }
         }
         holders.extend(access.member_devices);
+        let confined = |device: &[u8; 32]| {
+            self.peer
+                .core
+                .certificates
+                .get(device)
+                .is_some_and(|cert| cert.capabilities.workspace.is_some())
+        };
         Ok(holders
             .into_iter()
-            .filter(|device| !stores.contains(device))
+            .filter(|device| !stores.contains(device) && !confined(device))
             .collect())
     }
 

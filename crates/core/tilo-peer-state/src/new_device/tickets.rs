@@ -41,7 +41,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
     ANSWER, APPROVE, Approval, Approved, Approver, Asked, CERTIFY, Declined, Direction, Entry,
-    FOLLOW, ISSUE, PENDING, PROVIDER, REPORTED, RESOURCE, Reached, Report, SigningIn, Step,
+    FOLLOW, ISSUE, KeyFor, PENDING, PROVIDER, REPORTED, RESOURCE, Reached, Report, SigningIn, Step,
     TICKET_LIFETIME_NS, Tab, Ticket, tab_capability,
 };
 use tilo_lock::MutexRecover as _;
@@ -158,11 +158,12 @@ impl SignIn {
         SigningIn {
             device: self.tab.device_public_key.clone(),
             label: self.tab.fitted_label(),
-            capability: self.tab.agent.as_ref().map_or_else(
-                || tab_capability().to_owned(),
-                |agent| format!("{} in your workspace, for 30 days", agent.agent),
-            ),
-            agent: self.tab.agent.clone(),
+            capability: self
+                .tab
+                .key_for
+                .as_ref()
+                .map_or_else(|| tab_capability().to_owned(), KeyFor::capability),
+            key_for: self.tab.key_for.clone(),
         }
     }
 }
@@ -290,27 +291,28 @@ impl Tickets {
         let _ = self.0.serving_host.set(host);
     }
 
-    /// Serve a sign-in ticket at `issuer` for `tab`, an agent's key, asking the person's root to
-    /// certify it as the agent's grant in its one workspace. It lasts until it is spent, or until
-    /// a ticket for the same agent replaces it. The receiver hears the certificate once a device
-    /// that holds the root approved it.
+    /// Serve a sign-in ticket at `issuer` for `tab`, a key asked for what [`Tab::key_for`] names
+    /// (an agent in its one workspace, or a device of that workspace alone), asking the person's
+    /// root to certify it so. It lasts until it is spent, or until a ticket for the same thing
+    /// replaces it. The receiver hears the certificate once a device that holds the root approved
+    /// it.
     ///
     /// # Errors
-    /// `tab` names no key, or no agent in a workspace.
-    pub fn serve_agent_key(
+    /// `tab` names no key, or nothing it is for in a workspace.
+    pub fn serve_key(
         &self,
         tab: Tab,
         issuer: Reached,
     ) -> Result<(Ticket, watch::Receiver<Option<DeviceCert>>), String> {
         tab.key()
-            .map_err(|_| "the agent's key is not a device key".to_owned())?;
-        let agent = tab
-            .agent
+            .map_err(|_| "the key asked for is not a device key".to_owned())?;
+        let key_for = tab
+            .key_for
             .clone()
-            .ok_or_else(|| "a ticket for an agent's key names the agent".to_owned())?;
-        agent
-            .scope()
-            .map_err(|_| "the agent's workspace is not a workspace's id".to_owned())?;
+            .ok_or_else(|| "a ticket for a key names what it is for".to_owned())?;
+        key_for
+            .capabilities()
+            .map_err(|_| "the key's workspace is not a workspace's id".to_owned())?;
         let ticket = new_ticket(Direction::SignIn, issuer)?;
         let (certified, heard) = watch::channel(None);
         let sign_in = Arc::new(SignIn {
@@ -323,7 +325,7 @@ impl Tickets {
             certified,
         });
         let mut sign_ins = self.0.sign_ins.lock_recover();
-        sign_ins.retain(|_, kept| kept.tab.agent.as_ref() != Some(&agent));
+        sign_ins.retain(|_, kept| kept.tab.key_for.as_ref() != Some(&key_for));
         sign_ins.insert(sign_in.secret(), sign_in);
         drop(sign_ins);
         Ok((ticket, heard))
@@ -810,7 +812,7 @@ impl Tickets {
                 .clone()
                 .filter(|label| !label.trim().is_empty())
                 .unwrap_or_else(|| "Browser".to_owned()),
-            agent: None,
+            key_for: None,
         };
         // The name it asks to be listed by is one a certificate carries.
         tab.certificate(device, now)
@@ -1053,10 +1055,10 @@ fn check_signed_in(tab: &Tab, person: [u8; 32], cert: &DeviceCert) -> Result<(),
         || cert.capabilities != want.capabilities
         || cert.expires_at_ns != want.expires_at_ns
     {
-        return Err(match &tab.agent {
-            Some(agent) => format!(
-                "the certificate gives the agent's key more or other than {} in its workspace",
-                agent.agent
+        return Err(match &tab.key_for {
+            Some(key_for) => format!(
+                "the certificate gives the key more or other than {}",
+                key_for.capability()
             ),
             None => "the certificate gives the key more or other than a browser of the person's"
                 .to_owned(),

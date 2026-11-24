@@ -20,8 +20,8 @@ use tilo_workspace_service::workspaces::{Workspaces, person_workspace};
 use super::services::device_root_record;
 use super::workspaces::{ServiceWorkspaces, block_on_owned};
 
-/// How long an agent's grant this daemon certifies lasts, and how much of it may be left when it
-/// is certified again.
+/// How long an agent's grant this daemon certifies for every workspace lasts, and how much of a
+/// key's certificate may be left when it is certified again.
 const AGENT_GRANT_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 const AGENT_GRANT_RENEW_WITHIN_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
 
@@ -65,18 +65,48 @@ fn person() -> io::Result<Rooted> {
     Rooted::at(&device_root_record()?)
 }
 
-/// The certificate the person's root signs for a browser or agent `tab` a sign-in ticket waits
-/// with, as it signs one for any device of theirs.
+/// The certificate the person's root signs for `tab`, a key a sign-in ticket waits with, as it
+/// signs one for any device of theirs: a browser's, or, for a key asked for something narrower
+/// ([`tilo_device_identity::login::Tab::key_for`]), what [`certify_key_in`] certifies, listed
+/// among the person's devices before it is answered.
 ///
 /// # Errors
-/// This daemon keeps no root, or the tab is not one a certificate is signed for.
-pub(crate) fn sign_tab(tab: &tilo_device_identity::login::Tab) -> io::Result<DeviceCert> {
+/// This daemon keeps no root, the tab is not one a certificate is signed for, or the person
+/// revoked the key.
+pub(crate) async fn sign_tab(
+    workspaces: Option<&Arc<ServiceWorkspaces>>,
+    tab: &tilo_device_identity::login::Tab,
+) -> io::Result<DeviceCert> {
     // A browser approved as another account's is signed with that account's own root where this
     // computer keeps it; the person this device serves signs with the device's.
     let rooted = match super::services::root_caller() {
         Some(person) => Rooted::at(&super::services::root_record_for_person(person)?)?,
         None => person()?,
     };
+    if let Some(key_for) = &tab.key_for {
+        let key = tab
+            .key()
+            .map_err(|error| io::Error::other(format!("the tab's certificate: {error}")))?;
+        let copies = workspaces
+            .ok_or_else(|| io::Error::other("this daemon holds no workspaces"))?
+            .copies()
+            .clone();
+        let certified = certify_key_in(
+            &copies,
+            key,
+            Some((key_for.clone(), tab.fitted_label())),
+            rooted,
+        )
+        .await?;
+        if certified.revoked {
+            return Err(io::Error::other(
+                "the person removed this key from their devices",
+            ));
+        }
+        return certified
+            .cert
+            .ok_or_else(|| io::Error::other("the person's root gave no certificate for the key"));
+    }
     let mut cert = tab
         .certificate(rooted.person, tilo_clock::unix_now_ns())
         .map_err(|error| io::Error::other(format!("the tab's certificate: {error}")))?;
@@ -86,39 +116,57 @@ pub(crate) fn sign_tab(tab: &tilo_device_identity::login::Tab) -> io::Result<Dev
 }
 
 /// A key this daemon certified with the person's root: its certificate, the person it belongs to,
-/// and the time the certificate ends.
+/// and the time the certificate ends (`None`: until revoked).
 #[derive(Debug)]
-pub(crate) struct AgentCertified {
+pub(crate) struct KeyCertified {
     pub identity: String,
-    pub expires_at_ns: u64,
+    pub expires_at_ns: Option<u64>,
     pub cert: Option<DeviceCert>,
     pub revoked: bool,
 }
 
-/// Certify `grant`, an agent's grant key, with the person's root: for `ask`'s agent in its
-/// workspace where one is named, else for every workspace. A key the person revoked is answered as
-/// revoked; one certified for long enough already is answered as it stands. The certificate is
-/// kept among the person's devices.
-pub(crate) async fn certify_agent_in(
+/// Certify `key` with the person's root for what `asked` names, listed by its name
+/// ([`tilo_device_identity::login::KeyFor`]: one agent in one workspace, or a device that reaches
+/// one workspace alone), or, asked for nothing, as an agent's grant in every workspace of theirs.
+/// A key the person revoked is answered as revoked; one certified for the same thing for long
+/// enough already is answered as it stands. The certificate is kept among the person's devices
+/// before it is answered: the one record that lists it, says what it reaches, and revokes it.
+///
+/// This is the one place the person's root certifies a key that is neither a browser's nor a
+/// computer's they log in: every caller asks it, whatever the key is for.
+pub(crate) async fn certify_key_in(
     copies: &Workspaces,
-    grant: [u8; 32],
-    ask: Option<(WorkspaceId, String, String)>,
+    key: [u8; 32],
+    asked: Option<(tilo_device_identity::login::KeyFor, String)>,
     rooted: Rooted,
-) -> io::Result<AgentCertified> {
+) -> io::Result<KeyCertified> {
     let Rooted {
         person,
         identity,
         root,
     } = rooted;
+    let (capabilities, lifetime_ns, label) = match asked {
+        Some((key_for, name)) => {
+            let (capabilities, lifetime_ns) = key_for
+                .capabilities()
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            (capabilities, lifetime_ns, name)
+        }
+        None => (
+            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+            Some(AGENT_GRANT_LIFETIME_NS),
+            "Agent key".to_owned(),
+        ),
+    };
     let devices = person_workspace::devices::of(copies, &person).await;
     let listed = devices.listed(&person);
     if listed
         .iter()
-        .any(|listed| listed.cert.device_public_key == grant && listed.device.revoked(&listed.cert))
+        .any(|listed| listed.cert.device_public_key == key && listed.device.revoked(&listed.cert))
     {
-        return Ok(AgentCertified {
+        return Ok(KeyCertified {
             identity,
-            expires_at_ns: 0,
+            expires_at_ns: None,
             cert: None,
             revoked: true,
         });
@@ -127,39 +175,28 @@ pub(crate) async fn certify_agent_in(
     let lasting = listed
         .iter()
         .map(|listed| &listed.cert)
-        .filter(|cert| cert.device_public_key == grant)
-        .filter_map(|cert| cert.expires_at_ns.map(|expires| (expires, cert)))
-        .max_by_key(|(expires, _)| *expires)
-        .filter(|(expires, _)| expires.saturating_sub(now) > AGENT_GRANT_RENEW_WITHIN_NS);
-    if let Some((expires_at_ns, cert)) = lasting {
-        return Ok(AgentCertified {
+        .filter(|cert| cert.device_public_key == key && cert.capabilities == capabilities)
+        .max_by_key(|cert| cert.expires_at_ns.unwrap_or(u64::MAX))
+        .filter(|cert| {
+            cert.expires_at_ns
+                .is_none_or(|expires| expires.saturating_sub(now) > AGENT_GRANT_RENEW_WITHIN_NS)
+        });
+    if let Some(cert) = lasting {
+        return Ok(KeyCertified {
             identity,
-            expires_at_ns,
+            expires_at_ns: cert.expires_at_ns,
             cert: Some(cert.clone()),
             revoked: false,
         });
     }
-    let (capabilities, label) = match ask {
-        Some((workspace, agent, name)) => (
-            DeviceCapabilities::agent_grant(AgentScope::agent_in(
-                *workspace.as_uuid().as_bytes(),
-                &agent,
-            )),
-            name,
-        ),
-        None => (
-            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
-            "Agent key".to_owned(),
-        ),
-    };
-    let expires_at_ns = now.saturating_add(AGENT_GRANT_LIFETIME_NS);
+    let expires_at_ns = lifetime_ns.map(|lifetime| now.saturating_add(lifetime));
     let mut cert = DeviceCert {
         user_public_key: person,
-        device_public_key: grant,
+        device_public_key: key,
         device_label: label,
         capabilities,
         issued_at_ns: now,
-        expires_at_ns: Some(expires_at_ns),
+        expires_at_ns,
         signature: [0; 64],
         issuer: None,
     };
@@ -170,7 +207,7 @@ pub(crate) async fn certify_agent_in(
     person_workspace::devices::keep(copies, &cert)
         .await
         .map_err(io::Error::other)?;
-    Ok(AgentCertified {
+    Ok(KeyCertified {
         identity,
         expires_at_ns,
         cert: Some(cert),
@@ -178,41 +215,46 @@ pub(crate) async fn certify_agent_in(
     })
 }
 
-/// The daemon's `devices#certifyAgent` answer for `args`.
+/// The daemon's `devices#certifyKey` answer for `args`
+/// ([`tilo_device_identity::login::CERTIFY_KEY`]).
 ///
 /// # Errors
-/// This daemon keeps no root, or it did not certify the key.
-pub fn certify_agent(
+/// This daemon keeps no root, `args` name no key or nothing it can be for, or it did not certify
+/// the key.
+pub fn certify_key(
     workspaces: Option<&Arc<ServiceWorkspaces>>,
     args: &Value,
     rooted: Rooted,
 ) -> io::Result<Value> {
-    let grant = args
-        .get("grant")
+    let key = args
+        .get("key")
         .and_then(Value::as_str)
-        .and_then(|grant| hex::decode(grant).ok())
-        .and_then(|grant| <[u8; 32]>::try_from(grant).ok())
-        .ok_or_else(|| io::Error::other("an agent's grant is named by its key, as hex"))?;
-    let ask = match (
-        args.get("workspace").and_then(Value::as_str),
-        args.get("agent").and_then(Value::as_str),
-    ) {
-        (Some(workspace), Some(agent)) => Some((
-            WorkspaceId::parse(workspace)
-                .ok_or_else(|| io::Error::other("the workspace is not one"))?,
-            agent.to_owned(),
-            args.get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(agent)
-                .to_owned(),
-        )),
-        _ => None,
-    };
+        .and_then(|key| hex::decode(key).ok())
+        .and_then(|key| <[u8; 32]>::try_from(key).ok())
+        .ok_or_else(|| io::Error::other("the key is named by its public key, as hex"))?;
+    let asked = args
+        .get("for")
+        .cloned()
+        .map(serde_json::from_value::<tilo_device_identity::login::KeyFor>)
+        .transpose()
+        .map_err(|error| io::Error::other(format!("what the key is for: {error}")))?
+        .map(|key_for| {
+            let name = args.get("name").and_then(Value::as_str).map_or_else(
+                || match &key_for {
+                    tilo_device_identity::login::KeyFor::Agent(agent) => agent.agent.clone(),
+                    tilo_device_identity::login::KeyFor::Workspace(_) => {
+                        "Workspace computer".to_owned()
+                    }
+                },
+                str::to_owned,
+            );
+            (key_for, name)
+        });
     let workspaces =
         workspaces.ok_or_else(|| io::Error::other("this daemon holds no workspaces"))?;
     let copies = workspaces.copies().clone();
     let certified =
-        block_on_owned(async move { certify_agent_in(&copies, grant, ask, rooted).await })?;
+        block_on_owned(async move { certify_key_in(&copies, key, asked, rooted).await })?;
     if certified.revoked {
         return Ok(json!({ "revoked": true }));
     }
@@ -449,7 +491,8 @@ pub fn answer_sign_in(
 
 /// The person's devices as this daemon holds them for `tilo-identity`
 /// ([`tilo_identity::sources::DeviceTrust`]): the record's entries, each revocation verified against
-/// the root that signed it, as the workspace service read them.
+/// the root that signed it, and the keys an entry confines to one workspace alone, as the workspace
+/// service read them.
 pub(crate) fn devices_seen(workspaces: &ServiceWorkspaces) -> tilo_identity::sources::DevicesSeen {
     let copies = workspaces.copies();
     let person = copies.serving_certificate().user_public_key;
@@ -459,6 +502,7 @@ pub(crate) fn devices_seen(workspaces: &ServiceWorkspaces) -> tilo_identity::sou
         keys.certified_keys().copied(),
         keys.revocations().iter().cloned(),
     )
+    .confining(keys.confined_keys())
 }
 
 /// What certifies this device's agents' keys for the workspace service
@@ -488,9 +532,14 @@ impl tilo_workspace_service::agents::agent_keys::AgentGrants for GrantsOf {
         )
         .map_err(|error| error.to_string())?;
         let copies = workspaces.copies().clone();
-        let (agent, name) = (agent.to_owned(), name.to_owned());
+        let asked =
+            tilo_device_identity::login::KeyFor::Agent(tilo_device_identity::login::AgentAsked {
+                workspace: workspace.to_string(),
+                agent: agent.to_owned(),
+            });
+        let name = name.to_owned();
         let certified = block_on_owned(async move {
-            certify_agent_in(&copies, grant, Some((workspace, agent, name)), rooted).await
+            certify_key_in(&copies, grant, Some((asked, name)), rooted).await
         })
         .map_err(|error| error.to_string())?;
         if certified.revoked {

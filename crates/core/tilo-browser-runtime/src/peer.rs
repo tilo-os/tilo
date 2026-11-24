@@ -673,7 +673,7 @@ pub async fn sign_in_certificate(
     let tab = tilo_device_identity::login::Tab {
         device_public_key: device,
         label,
-        agent: None,
+        key_for: None,
     };
     let mut cert = tab
         .certificate(root.device_public_key(), tilo_clock::unix_now_ns())

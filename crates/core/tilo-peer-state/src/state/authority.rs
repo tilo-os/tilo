@@ -118,15 +118,19 @@ fn allowing<'a>(
     }
 }
 
+/// Who a device is, apart from the workspace's policy: its person, whether
+/// its device is foreign, the delegation it holds, and the one workspace its
+/// person's root confined it to, if any.
+type MemberOf = (String, bool, Option<crate::state::ActingAs>, Option<String>);
+
 /// `person`'s access under `policy`, held to the foreign-device bound on a
-/// `foreign` device and to `delegate`'s bound on a delegate's.
+/// `foreign` device, to `delegate`'s bound on a delegate's, and to the one
+/// workspace a device is `confined` to.
 fn access_of(
     policy: impl Into<std::sync::Arc<WorkspacePolicy>>,
-    person: String,
-    foreign: bool,
-    delegate: Option<crate::state::ActingAs>,
+    (person, foreign, delegate, confined): MemberOf,
 ) -> MemberAccess {
-    let mut access = MemberAccess::person(policy, person);
+    let mut access = MemberAccess::person(policy, person).confined_to(confined);
     if foreign {
         access = access.on_foreign_device();
     }
@@ -492,8 +496,7 @@ impl StatePeer {
             .ok_or(MembershipError::RulesMissing)?
             .workspace_policy(&self.core.workspace)
             .clone();
-        let (person, foreign, delegate) = self.member_of(&source, now)?;
-        Ok(access_of(policy, person, foreign, delegate).granted(self.approved_keys(now)))
+        Ok(access_of(policy, self.member_of(&source, now)?).granted(self.approved_keys(now)))
     }
     /// The access of the device `source` under `policy`, the workspace's
     /// own: [`Self::permissions`]'s access, sharing the policy every
@@ -505,16 +508,11 @@ impl StatePeer {
         approved: &[tilo_action_policy::Grant],
         now: SystemTime,
     ) -> Result<MemberAccess, MembershipError> {
-        let (person, foreign, delegate) = self.member_of(&source, now)?;
-        Ok(access_of(policy, person, foreign, delegate).granted(approved.iter().cloned()))
+        Ok(access_of(policy, self.member_of(&source, now)?).granted(approved.iter().cloned()))
     }
-    /// Who the device `source` is at `now`, apart from the workspace's policy:
-    /// its person, whether its device is foreign, and the delegation it holds.
-    fn member_of(
-        &self,
-        source: &[u8; 32],
-        now: SystemTime,
-    ) -> Result<(String, bool, Option<crate::state::ActingAs>), MembershipError> {
+    /// Who the device `source` is at `now`, apart from the workspace's policy
+    /// ([`MemberOf`]).
+    fn member_of(&self, source: &[u8; 32], now: SystemTime) -> Result<MemberOf, MembershipError> {
         // A key its person revoked here is nobody's member: every read, write and action it
         // would make is refused, as the workspace's governance calls refuse it.
         if self.governance().revoked_key(source) {
@@ -528,6 +526,7 @@ impl StatePeer {
                     person,
                     backend::member::foreign(cert, &self.core.origin),
                     delegate,
+                    cert.capabilities.workspace_name(),
                 ))
             }
             Err(error) => Err(error),
@@ -556,9 +555,12 @@ impl StatePeer {
             .map_err(MembershipError::from)?;
         Ok(access_of(
             policy,
-            hex::encode(cert.user_public_key),
-            backend::member::foreign(cert, &self.core.origin),
-            delegate,
+            (
+                hex::encode(cert.user_public_key),
+                backend::member::foreign(cert, &self.core.origin),
+                delegate,
+                cert.capabilities.workspace_name(),
+            ),
         )
         .granted(self.approved_keys(now)))
     }

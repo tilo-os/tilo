@@ -118,6 +118,9 @@ pub struct BlockedKeys {
     /// The root-signed revocations the record of the person's devices holds, each checked
     /// against the root that certified the device it names.
     revocations: Vec<RevocationEntry>,
+    /// The keys the record's entries confine to one workspace alone, with its id: their
+    /// certificates, which the root signed, say so.
+    confined: std::collections::BTreeMap<[u8; 32], [u8; 16]>,
 }
 
 impl BlockedKeys {
@@ -136,6 +139,7 @@ impl BlockedKeys {
             users: keys(&state.users),
             certified: BTreeSet::new(),
             revocations: Vec::new(),
+            confined: std::collections::BTreeMap::new(),
         }
     }
 
@@ -151,8 +155,25 @@ impl BlockedKeys {
                 .map(|listed| listed.cert.device_public_key)
                 .collect(),
             revocations: record.revocations(person),
+            confined: listed
+                .iter()
+                .filter_map(|listed| {
+                    Some((
+                        listed.cert.device_public_key,
+                        listed.cert.capabilities.workspace?,
+                    ))
+                })
+                .collect(),
             ..Self::default()
         }
+    }
+
+    /// The keys the record of the person's devices confines to one workspace alone, each with
+    /// that workspace's id.
+    pub fn confined_keys(&self) -> impl Iterator<Item = ([u8; 32], [u8; 16])> + '_ {
+        self.confined
+            .iter()
+            .map(|(key, workspace)| (*key, *workspace))
     }
 
     /// The keys the record of the person's devices holds, as their root certified them.
@@ -187,7 +208,8 @@ impl BlockedKeys {
         let mut generation = (self.devices.len() as u64)
             ^ ((self.users.len() as u64) << 8)
             ^ ((self.certified.len() as u64) << 16)
-            ^ ((self.revocations.len() as u64) << 24);
+            ^ ((self.revocations.len() as u64) << 24)
+            ^ ((self.confined.len() as u64) << 32);
         for key in self.certified.iter().chain(
             self.revocations
                 .iter()
@@ -224,9 +246,11 @@ impl BlockedKeys {
 /// `text` as 32 bytes in lowercase hex, or `None`.
 pub(crate) fn key_bytes(text: &str) -> Option<[u8; 32]> {
     let mut bytes = [0; 32];
-    hex::decode_to_slice(text, &mut bytes)
-        .ok()
-        .filter(|()| text == hex::encode(bytes))?;
+    tilo_failure::ignored!(
+        "text that is not a key's hex names no key, which is the answer asked for",
+        hex::decode_to_slice(text, &mut bytes).ok()
+    )
+    .filter(|()| text == hex::encode(bytes))?;
     Some(bytes)
 }
 
@@ -270,7 +294,8 @@ impl Workspaces {
         }
         if let Ok(record) = devices {
             let of = BlockedKeys::revoking(&record, &self.serving_certificate().user_public_key);
-            (next.certified, next.revocations) = (of.certified, of.revocations);
+            (next.certified, next.revocations, next.confined) =
+                (of.certified, of.revocations, of.confined);
         }
         self.keep_blocked(next);
     }
@@ -331,5 +356,59 @@ impl Workspaces {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_user_identity::{
+        DeviceCapabilities, DeviceCert, RevocationReason, sign_device_cert, sign_revocation_entry,
+    };
+
+    /// The person's devices record, holding the VM their root confined to one workspace, says
+    /// so to every host that reads it, and says it is taken back once their root revokes it.
+    #[test]
+    fn the_devices_record_says_a_vm_reaches_its_workspace_alone_until_it_is_revoked() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let person = root.verifying_key().to_bytes();
+        let workspace = [0x11; 16];
+        let mut vm = DeviceCert {
+            user_public_key: person,
+            device_public_key: [9; 32],
+            device_label: "Workspace computer".into(),
+            capabilities: DeviceCapabilities::workspace_device(workspace),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut vm, &root).unwrap();
+        let mut record = tilo_resource::Replica::<Devices>::new();
+        record.apply(Devices::keeping(&vm).unwrap()).unwrap();
+        let read = BlockedKeys::revoking(&record.state().unwrap(), &person);
+        assert!(read.certified(&vm.device_public_key));
+        assert_eq!(
+            read.confined_keys().collect::<Vec<_>>(),
+            vec![(vm.device_public_key, workspace)]
+        );
+        assert!(!read.revokes(&vm));
+
+        let mut entry = RevocationEntry {
+            user_public_key: person,
+            revoked_device_public_key: vm.device_public_key,
+            revoked_at_ns: 2,
+            reason: RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, &root).unwrap();
+        record
+            .apply(Devices::REVOKE_DEVICE.with((
+                hex::encode(vm.device_public_key),
+                hex::encode(postcard::to_allocvec(&entry).unwrap()),
+            )))
+            .unwrap();
+        let read = BlockedKeys::revoking(&record.state().unwrap(), &person);
+        assert!(read.revokes(&vm), "the person's root took the VM back");
     }
 }

@@ -78,25 +78,15 @@ impl Tickets {
         });
     }
 
-    /// Certify the agent's grant `args` names with the caller's root kept here.
-    pub(super) fn certify_agent(
+    /// Certify the key `args` names, for what they name, with the caller's root kept here.
+    pub(super) fn certify_key(
         &self,
         args: &Value,
         root: super::super::signing::Rooted,
     ) -> Result<Value> {
-        let grant = args
-            .get("grant")
-            .and_then(Value::as_str)
-            .and_then(|grant| hex::decode(grant).ok())
-            .and_then(|grant| <[u8; 32]>::try_from(grant).ok())
-            .ok_or_else(|| anyhow!("an agent's grant is named by its key, as hex"))?;
-        let mut args = args.clone();
-        if args.get("grant").is_none() {
-            args["grant"] = Value::String(hex::encode(grant));
-        }
-        Ok(super::super::signing::certify_agent(
+        Ok(super::super::signing::certify_key(
             self.0.workspaces.as_ref(),
-            &args,
+            args,
             root,
         )?)
     }

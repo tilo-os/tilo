@@ -1255,10 +1255,22 @@ pub const DEVICE_CERT: Format = Format {
     name: "device certificate",
     // The identity crate owns the layout number ([`tilo_user_identity::cert::BINARY_LAYOUT`]);
     // a test beside the golden bytes keeps this in step with it.
-    version: 1,
+    version: 2,
     oldest: 1,
-    steps: &[],
+    steps: &[layout_one_is_layout_two],
 };
+
+/// Layout 2 only added a certificate that reaches one workspace alone: what layout 1 wrote is
+/// the same certificate in layout 2, byte for byte, and its signature covers those bytes. So
+/// [`tilo_user_identity::cert::binary_layout_of`] names such a file layout 2 already, and this
+/// step leaves the bytes as they are.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a migration step's signature, which every step has"
+)]
+fn layout_one_is_layout_two(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    Ok(bytes)
+}
 
 /// Write a signed device cert to disk. Public metadata, with
 /// [`PUBLIC_FILE_MODE`].
@@ -1572,12 +1584,70 @@ mod tests {
         hex::decode(text.split_whitespace().collect::<String>()).unwrap()
     }
 
+    /// `device/cert.bin` of a workspace's VM: a device certificate that reaches one workspace
+    /// alone, which only layout 2 writes.
+    fn kept_v2() -> Vec<u8> {
+        let text = include_str!("../golden/device-certificate/v2.hex");
+        hex::decode(text.split_whitespace().collect::<String>()).unwrap()
+    }
+
+    #[test]
+    fn a_confined_device_certificate_reads_verifies_and_writes_as_it_was() {
+        let kept = kept_v2();
+        assert_eq!(
+            tilo_user_identity::cert::binary_layout_of(&kept).unwrap(),
+            2
+        );
+        let dir = identity_tempdir();
+        let path = dir.path().join("cert.bin");
+        let read = std::cell::RefCell::new(None);
+        tilo_files::native::migration::assert_golden_bytes(
+            DEVICE_CERT.name,
+            &kept,
+            |bytes| {
+                fs::write(&path, bytes).unwrap();
+                let cert = read_device_cert(&path).unwrap();
+                verify_device_cert(&cert).unwrap();
+                assert_eq!(
+                    cert.capabilities,
+                    DeviceCapabilities::workspace_device([0x11; 16])
+                );
+                assert_eq!(
+                    fs::read(&path).unwrap(),
+                    bytes,
+                    "a current file is read as it is"
+                );
+                *read.borrow_mut() = Some(cert);
+            },
+            || {
+                let written = dir.path().join("written.bin");
+                write_device_cert(&written, read.borrow().as_ref().unwrap()).unwrap();
+                fs::read(written).unwrap()
+            },
+        );
+    }
+
+    #[test]
+    fn the_step_from_layout_one_leaves_its_certificate_as_it_was() {
+        tilo_files::native::migration::assert_step_reads_previous(
+            &DEVICE_CERT,
+            &kept_v1(),
+            |migrated| {
+                assert_eq!(migrated, kept_v1().as_slice());
+                let cert: DeviceCert =
+                    tilo_user_identity::canonical::from_canonical_bytes(migrated).unwrap();
+                verify_device_cert(&cert).unwrap();
+            },
+        );
+    }
+
     #[test]
     fn a_device_certificate_an_older_build_wrote_reads_verifies_and_writes_as_it_was() {
         let kept = kept_v1();
+        // Layout 2 reads every certificate layout 1 wrote as it is: the file is current.
         assert_eq!(
             tilo_user_identity::cert::binary_layout_of(&kept).unwrap(),
-            1
+            2
         );
         assert_eq!(
             DEVICE_CERT.version,

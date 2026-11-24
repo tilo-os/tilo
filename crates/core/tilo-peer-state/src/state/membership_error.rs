@@ -20,6 +20,10 @@ pub enum MembershipError {
     /// The workspace's root has revoked the device.
     #[error("device revoked by workspace")]
     Revoked,
+    /// The device's person confined it to another workspace alone: it is
+    /// nothing here.
+    #[error("this device reaches another workspace alone")]
+    OtherWorkspace,
     /// The workspace's rules (its members, roles and grants) are not here
     /// to decide against yet.
     #[error("the workspace's rules are not here yet")]
@@ -70,7 +74,9 @@ impl MembershipError {
             | Self::Revocation(_)
             | Self::UnreadableAccess
             | Self::MalformedIdentity(_) => RefusalReason::Malformed,
-            Self::Delegate(_) | Self::NoMembership => RefusalReason::Forbidden,
+            Self::Delegate(_) | Self::NoMembership | Self::OtherWorkspace => {
+                RefusalReason::Forbidden
+            }
         }
     }
 }
@@ -81,6 +87,7 @@ impl From<backend::CertificateLookupError> for MembershipError {
             backend::CertificateLookupError::Missing => Self::UnknownDevice,
             backend::CertificateLookupError::Validity(error) => Self::Certificate(error),
             backend::CertificateLookupError::Revoked => Self::Revoked,
+            backend::CertificateLookupError::OtherWorkspace => Self::OtherWorkspace,
         }
     }
 }

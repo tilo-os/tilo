@@ -4441,9 +4441,17 @@ impl Certificates {
         self.held()?.recheck_executions(workspace)
     }
 
-    /// Whether `workspace`'s member list, as this device holds it, admits `cert`'s device.
+    /// Whether `workspace`'s member list, as this device holds it, admits `cert`'s device. A
+    /// device its person's root confined to another workspace alone is refused before the list
+    /// is asked, by its certificate and by its entry among the person's devices.
     fn admitted(&self, workspace: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
-        let id = WorkspaceId::parse(&workspace.to_string()).ok_or("invalid exact workspace")?;
+        let name = workspace.to_string();
+        if !cert.capabilities.reaches_workspace(&name)
+            || !super::signing::devices_seen(&*self.held()?).reaches(&cert.device_public_key, &name)
+        {
+            return Err("this device reaches another workspace alone".to_owned());
+        }
+        let id = WorkspaceId::parse(&name).ok_or("invalid exact workspace")?;
         let peer = self
             .held()?
             .peer(id)

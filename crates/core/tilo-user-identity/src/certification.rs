@@ -272,6 +272,9 @@ impl CertificationPolicy {
             // A device's workspace service is issued by that device, never
             // asked for by a device being enrolled.
             workspace_service: false,
+            // A device confined to one workspace is certified for it by its
+            // person's root, never enrolled through a device's request.
+            workspace: None,
         }
     }
 

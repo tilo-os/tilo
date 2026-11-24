@@ -156,7 +156,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     login::ensure_daemon()?;
     let runtime = login::runtime()?;
     let text = parsed.encode();
-    let (device, label, capability, agent) = runtime.block_on(async {
+    let (device, label, capability, key_for) = runtime.block_on(async {
         let client = Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await?;
         let workspace = here.workspace.clone();
         let answer = client
@@ -184,17 +184,24 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
             .and_then(Value::as_str)
             .unwrap_or("a browser of yours")
             .to_owned();
-        let agent = result
-            .get("agent")
+        let key_for = result
+            .get("for")
             .cloned()
-            .map(serde_json::from_value::<tilo_device_identity::login::AgentAsked>)
+            .map(serde_json::from_value::<tilo_device_identity::login::KeyFor>)
             .transpose()
-            .map_err(|error| anyhow!("the agent the ticket asks for: {error}"))?;
-        Ok::<_, anyhow::Error>((device, label, capability, agent))
+            .map_err(|error| anyhow!("what the ticket asks the key for: {error}"))?;
+        Ok::<_, anyhow::Error>((device, label, capability, key_for))
     })?;
     if !json {
-        match &agent {
-            Some(_) => println!("A device asks to run your agent: \"{label}\" ({capability})."),
+        match &key_for {
+            Some(tilo_device_identity::login::KeyFor::Agent(_)) => {
+                println!("A device asks to run your agent: \"{label}\" ({capability}).");
+            }
+            Some(tilo_device_identity::login::KeyFor::Workspace(_)) => {
+                println!(
+                    "A workspace's computer asks to be one of yours: \"{label}\" ({capability})."
+                );
+            }
             None => {
                 println!(
                     "This browser asks to be one of your devices: \"{label}\" ({capability})."
@@ -205,7 +212,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     let tab = tilo_device_identity::login::Tab {
         device_public_key: device.clone(),
         label: label.clone(),
-        agent: agent.clone(),
+        key_for: key_for.clone(),
     };
     let answer = runtime.block_on(async {
         let client = Calls::open_with(Reach::default(), crate::mcp::reach_daemon).await?;
@@ -223,8 +230,15 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     })?;
     if json {
         println!("{}", json!({"label": label, "device": device}));
-    } else if agent.is_some() {
-        println!("Approved: \"{label}\" runs your agent from now on.");
+    } else if let Some(key_for) = &key_for {
+        match key_for {
+            tilo_device_identity::login::KeyFor::Agent(_) => {
+                println!("Approved: \"{label}\" runs your agent from now on.");
+            }
+            tilo_device_identity::login::KeyFor::Workspace(_) => {
+                println!("Approved: \"{label}\" is one of your devices, in that workspace alone.");
+            }
+        }
     } else if answer
         .get("signed")
         .and_then(Value::as_bool)

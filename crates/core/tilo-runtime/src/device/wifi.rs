@@ -73,11 +73,15 @@ impl Wifi {
         let own = self.key.verifying_key().to_bytes();
         // Sealed to every device of the person's their workspace holds, this one included: a
         // device certified later opens it once a device that knows the passphrase shares it again.
+        // A device confined to one workspace (a workspace's VM) is no machine of theirs that
+        // joins their networks, and opens none.
         let recipients = self
             .personal
             .kept_devices()
             .into_iter()
-            .filter(|cert| KeyKind::of(cert) == KeyKind::Device)
+            .filter(|cert| {
+                KeyKind::of(cert) == KeyKind::Device && cert.capabilities.workspace.is_none()
+            })
             .map(|cert| cert.device_public_key)
             .chain(std::iter::once(own));
         let credential = Credential::seal(

@@ -527,6 +527,9 @@ pub(super) enum CertificateLookupError {
     Missing,
     Validity(tilo_user_identity::DeviceCertError),
     Revoked,
+    /// The device reaches another workspace alone
+    /// ([`tilo_user_identity::DeviceCapabilities::workspace`]).
+    OtherWorkspace,
 }
 impl std::fmt::Display for CertificateLookupError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -534,6 +537,7 @@ impl std::fmt::Display for CertificateLookupError {
             Self::Missing => formatter.write_str("certified identity missing"),
             Self::Validity(error) => error.fmt(formatter),
             Self::Revoked => formatter.write_str("device revoked"),
+            Self::OtherWorkspace => formatter.write_str("device reaches another workspace alone"),
         }
     }
 }
@@ -557,16 +561,26 @@ impl PeerCore {
     /// removed it since: the certificate a write of its history is decided
     /// with ([`crate::removals`]). Never an answer to what the device may do
     /// now.
+    ///
+    /// A device its person's root confined to one workspace (a workspace's
+    /// VM) holds no certificate in any other: every read, write, action and
+    /// key this workspace would give it asks this, so it is refused here
+    /// whatever its person may do.
     pub(super) fn certificate_held(
         &self,
         source: &[u8; 32],
         now: SystemTime,
     ) -> Result<&DeviceCert, CertificateLookupError> {
-        self.certificates
+        let certificate = self
+            .certificates
             .get(source)
             .ok_or(CertificateLookupError::Missing)?
             .current_typed(now_ns(now))
-            .map_err(CertificateLookupError::Validity)
+            .map_err(CertificateLookupError::Validity)?;
+        if !certificate.capabilities.reaches_workspace(&self.workspace) {
+            return Err(CertificateLookupError::OtherWorkspace);
+        }
+        Ok(certificate)
     }
 }
 

@@ -115,6 +115,7 @@ tilo_test_env::scenario! {
                 server_key: false,
                 browser_pages: false,
                 workspace_service: false,
+                workspace: None,
             },
             issued_at_ns: 1_000_000,
             expires_at_ns: None,
@@ -1464,5 +1465,160 @@ tilo_test_env::scenario! {
         // Even what the service signed before the device was revoked.
         assert!(revocations.refuses(&service));
         assert!(revocations.refuses_at(&service, 3_000));
+    }
+}
+
+/// The workspace a confined device's tests certify it for, and another of its person's.
+const VM_WORKSPACE: [u8; 16] = [0x11; 16];
+const OTHER_WORKSPACE: [u8; 16] = [0x22; 16];
+
+tilo_test_env::scenario! {
+    fn a_device_confined_to_one_workspace_reaches_it_alone;
+
+    phase it_round_trips_and_verifies_in_the_current_layout;
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let cert = root_signed_device(
+            &root,
+            &key,
+            DeviceCapabilities::workspace_device(VM_WORKSPACE),
+            None,
+        );
+        verify_device_cert(&cert).unwrap();
+        let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
+        assert_eq!(binary_layout_of(&bytes).unwrap(), BINARY_LAYOUT);
+        let read: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
+        assert_eq!(read, cert);
+        verify_device_cert(&read).unwrap();
+        let json: DeviceCert =
+            serde_json::from_str(&serde_json::to_string(&cert).unwrap()).unwrap();
+        assert_eq!(json, cert);
+        let vm = uuid_text(&VM_WORKSPACE);
+        assert_eq!(cert.capabilities.workspace_name().as_deref(), Some(vm.as_str()));
+        assert!(cert.capabilities.reaches_workspace(&vm));
+        assert!(!cert.capabilities.reaches_workspace(&uuid_text(&OTHER_WORKSPACE)));
+        assert!(!cert.capabilities.reaches_workspace("not a workspace"));
+        // It is a device of its person's, but none that adds devices, holds a workspace's keys
+        // or is a personal device.
+        assert!(!cert.is_root_signed_device());
+        assert!(!cert.capabilities.holds_workspace_keys());
+        assert!(!cert.capabilities.is_personal_device());
+    }
+
+    phase the_restriction_cannot_be_stripped_or_moved;
+    // The restriction is inside the signed bytes: a certificate that drops it, or names
+    // another workspace, no longer verifies.
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let cert = root_signed_device(
+            &root,
+            &key,
+            DeviceCapabilities::workspace_device(VM_WORKSPACE),
+            None,
+        );
+        let mut stripped = cert.clone();
+        stripped.capabilities.workspace = None;
+        assert_eq!(
+            verify_device_cert(&stripped),
+            Err(DeviceCertError::BadSignature)
+        );
+        let mut moved = cert.clone();
+        moved.capabilities.workspace = Some(OTHER_WORKSPACE);
+        assert_eq!(verify_device_cert(&moved), Err(DeviceCertError::BadSignature));
+        // The bytes a build of layout 1 would be handed: the capabilities' first byte is the
+        // workspace marker, which that build reads as a capability flag of neither 0 nor 1.
+        let bytes = crate::canonical::canonical_bytes(&cert).unwrap();
+        let (_, rest) =
+            postcard::take_from_bytes::<([u8; 32], [u8; 32], String)>(&bytes).unwrap();
+        assert_eq!(rest.first(), Some(&WORKSPACE_BINARY_MARKER));
+        assert!(rest.first().is_some_and(|byte| *byte > 1));
+        assert_eq!(rest.get(1..17), Some(&VM_WORKSPACE[..]));
+        // Cutting the workspace out of the bytes reads an unrestricted device whose signature
+        // does not hold.
+        let mut cut = bytes[..bytes.len() - rest.len()].to_vec();
+        cut.extend_from_slice(&rest[17..]);
+        let cut: DeviceCert = crate::canonical::from_canonical_bytes(&cut).unwrap();
+        assert_eq!(cut.capabilities.workspace, None);
+        assert_eq!(verify_device_cert(&cut), Err(DeviceCertError::BadSignature));
+    }
+
+    phase it_grants_nothing_else_and_issues_nothing;
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        for wider in [
+            DeviceCapabilities {
+                can_own_workspaces: true,
+                ..DeviceCapabilities::workspace_device(VM_WORKSPACE)
+            },
+            DeviceCapabilities {
+                can_admit_devices: true,
+                ..DeviceCapabilities::workspace_device(VM_WORKSPACE)
+            },
+            DeviceCapabilities {
+                workspace: Some(VM_WORKSPACE),
+                ..DeviceCapabilities::agent_grant(AgentScope::Workspace(VM_WORKSPACE))
+            },
+        ] {
+            let mut cert = root_signed_device(&root, &key, DeviceCapabilities::member(), None);
+            cert.capabilities = wider;
+            assert!(sign_device_cert(&mut cert, &root).is_err());
+            assert!(verify_device_cert(&forced(cert, &root)).is_err());
+        }
+        // Foreign narrows it further, and is allowed.
+        root_signed_device(
+            &root,
+            &key,
+            DeviceCapabilities {
+                foreign: true,
+                ..DeviceCapabilities::workspace_device(VM_WORKSPACE)
+            },
+            None,
+        );
+        // It signs no browser in as a device of its person's.
+        let vm = root_signed_device(
+            &root,
+            &key,
+            DeviceCapabilities::workspace_device(VM_WORKSPACE),
+            None,
+        );
+        let mut tab = DeviceCert {
+            user_public_key: vm.user_public_key,
+            device_public_key: [9; 32],
+            device_label: "Browser".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 2_000,
+            expires_at_ns: Some(3_000),
+            signature: [0; 64],
+            issuer: Some(Box::new(vm.clone())),
+        };
+        assert_eq!(
+            sign_device_cert(&mut tab, &key),
+            Err(DeviceCertError::InvalidIssuer)
+        );
+        // Nor a workspace service.
+        let service = prepare_service_cert(&vm, [9; 32], "service", 2_000);
+        assert!(verify_device_cert(&forced(service, &key)).is_err());
+        // A renewal keeps it to its workspace.
+        let unconfined = root_signed_device(&root, &key, DeviceCapabilities::nothing(), None);
+        assert!(!unconfined.capabilities.grants_no_more_than(&vm.capabilities));
+        assert!(!vm.capabilities.grants_no_more_than(&unconfined.capabilities));
+    }
+
+    phase a_certificate_the_previous_layout_wrote_reads_verifies_and_writes_as_it_was;
+    // Every person's device holds certificates layout 1 wrote: each reads in this layout as the
+    // same certificate, verifies, and writes back to the very bytes its signature covers.
+    {
+        let kept = hex::decode(GOLDEN_V1_POSTCARD).unwrap();
+        assert_eq!(binary_layout_of(&kept).unwrap(), BINARY_LAYOUT);
+        let read: DeviceCert = crate::canonical::from_canonical_bytes(&kept).unwrap();
+        verify_device_cert(&read).unwrap();
+        assert_eq!(read.capabilities.workspace, None);
+        assert!(read.capabilities.reaches_workspace(&uuid_text(&OTHER_WORKSPACE)));
+        assert_eq!(crate::canonical::canonical_bytes(&read).unwrap(), kept);
+        let json: DeviceCert = serde_json::from_str(GOLDEN_V1_JSON).unwrap();
+        assert_eq!(serde_json::to_string(&json).unwrap(), GOLDEN_V1_JSON);
     }
 }

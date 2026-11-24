@@ -316,27 +316,33 @@ fn now_ns() -> u64 {
 }
 
 /// Have this computer's daemon certify `grant` as an agent's grant of its person, with the root
-/// it keeps (`devices#certifyAgent`), or find it certified for long enough already, or revoked:
+/// it keeps (`devices#certifyKey`), or find it certified for long enough already, or revoked:
 /// on a device that keeps none, once the person answered at one that does. Where it stands, and
 /// the person whose root certified it.
 fn certify(grant: [u8; 32]) -> Certified {
     let answer = tilo_api::daemon::this_computer()?.act_followed(
-        tilo_device_identity::login::CERTIFY_AGENT,
-        serde_json::json!({ "grant": hex::encode(grant) }),
+        tilo_device_identity::login::CERTIFY_KEY,
+        serde_json::json!({ "key": hex::encode(grant) }),
     )?;
     if answer.get("revoked").and_then(serde_json::Value::as_bool) == Some(true) {
         return Ok((GrantState::Revoked, None));
     }
+    // A certificate the daemon answers that does not read is its fault, not one to pass over.
     let cert = answer
         .get("cert")
         .and_then(serde_json::Value::as_str)
-        .and_then(|cert| hex::decode(cert).ok())
-        .and_then(|cert| {
+        .map(|cert| {
+            let bytes = hex::decode(cert).map_err(|err| {
+                format!("this computer's daemon answered a certificate that is not hex: {err}")
+            })?;
             tilo_user_identity::canonical::from_canonical_bytes::<tilo_user_identity::DeviceCert>(
-                &cert,
+                &bytes,
             )
-            .ok()
-        });
+            .map_err(|err| {
+                format!("this computer's daemon answered a certificate that does not read: {err}")
+            })
+        })
+        .transpose()?;
     // Every device of the person's lists it among their keys, as an agent's.
     if let Some(cert) = &cert
         && let Ok(keys) = tilo_workspace_service::agents::agent_keys::this_device()

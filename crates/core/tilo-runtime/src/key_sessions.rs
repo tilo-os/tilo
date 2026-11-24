@@ -132,6 +132,7 @@ impl KeySessions {
             .capabilities
             .agent
             .is_some_and(|scope| !scope.reaches(&workspace))
+            || !key.capabilities.reaches_workspace(&workspace)
         {
             return Err(ActionCallError::Refused {
                 reason: Refusal::OutOfScope.reason(),

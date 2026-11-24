@@ -233,6 +233,7 @@ mod tests {
                 server_key,
                 browser_pages,
                 workspace_service: false,
+                workspace: None,
             },
             issued_at_ns: 5_000_000_000,
             expires_at_ns: Some(9_000_000_000),

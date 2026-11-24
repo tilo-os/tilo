@@ -50,10 +50,13 @@ pub const RECOVERY_WORDS: &str = "recoveryWords";
 /// The action a daemon that holds the person's root answers the person: their root sealed with
 /// `passphrase` into a portable backup, answered as `backup`, hex, for them to keep.
 pub const BACKUP: &str = "backup";
-/// The action a daemon that holds the person's root answers the person: certify the grant key of
-/// an agent that acts for them (`grant`, hex) with that root, unless it is revoked or certified
-/// for long enough already. Answers `{identity, expires_at_ns, cert?}`, or `{revoked: true}`.
-pub const CERTIFY_AGENT: &str = "certifyAgent";
+/// The action a daemon that holds the person's root answers the person: certify `key` (hex) with
+/// that root for what `for` names ([`KeyFor`]: one agent in one workspace, or a device that
+/// reaches one workspace alone), or, naming nothing, as an agent's grant in every workspace of
+/// theirs; unless it is revoked or certified for long enough already. The certificate is listed
+/// among the person's devices before it is answered. Answers `{identity, expires_at_ns?, cert?}`,
+/// or `{revoked: true}`.
+pub const CERTIFY_KEY: &str = "certifyKey";
 /// The action a daemon that holds the person's root answers: certify a device's boot key with
 /// that root and seal its sibling half to the person's secret-sync key.
 pub const ENROL_BOOT_KEY: &str = "enrolBootKey";
@@ -153,9 +156,9 @@ pub struct NotATicket;
 
 /// A tab asking to be signed in ([`Direction::SignIn`]): its device key, and the name it asks the
 /// person's devices to list it by. The person's root signs it one of their member devices'
-/// certificates, as it signs one for any device of theirs. A device asking to run one of the
-/// person's agents asks the same way, naming the agent (`agent`): its key is certified for that
-/// agent alone.
+/// certificates, as it signs one for any device of theirs. A key asked for something narrower
+/// asks the same way, naming what it is for (`for`): one of the person's agents, certified for
+/// that agent alone, or a workspace's VM, certified as a device that reaches that workspace alone.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tab {
@@ -163,9 +166,74 @@ pub struct Tab {
     pub device_public_key: String,
     /// The name it asks to be listed by, within what a certificate's label carries.
     pub label: String,
-    /// The agent the key is asked for, where a device asks to run one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<AgentAsked>,
+    /// What the key is asked for, where it is no browser's.
+    #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
+    pub key_for: Option<KeyFor>,
+}
+
+/// What a key is certified for when it is no browser of the person's: what a sign-in ticket asks
+/// for it ([`Tab::key_for`]) and what the person's root certifies it as ([`CERTIFY_KEY`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum KeyFor {
+    /// One of the person's agents, in one workspace: the key is that agent's grant there alone.
+    Agent(AgentAsked),
+    /// A device of the person's that reaches this one workspace alone, by its id: the
+    /// workspace's VM. It is listed with their devices and revoked like them, and every other
+    /// workspace refuses its key.
+    Workspace(String),
+}
+
+impl KeyFor {
+    /// The capabilities the person's root certifies a key with for this, and how long they last
+    /// (`None`: until revoked).
+    ///
+    /// # Errors
+    /// It names no workspace by its id.
+    pub fn capabilities(
+        &self,
+    ) -> Result<(tilo_user_identity::DeviceCapabilities, Option<u64>), TabCertError> {
+        Ok(match self {
+            Self::Agent(agent) => (
+                tilo_user_identity::DeviceCapabilities::agent_grant(agent.scope()?),
+                Some(AGENT_KEY_LIFETIME_NS),
+            ),
+            Self::Workspace(workspace) => (
+                tilo_user_identity::DeviceCapabilities::workspace_device(workspace_id(workspace)?),
+                None,
+            ),
+        })
+    }
+
+    /// The workspace it reaches, as its id was asked.
+    #[must_use]
+    pub fn workspace(&self) -> &str {
+        match self {
+            Self::Agent(agent) => &agent.workspace,
+            Self::Workspace(workspace) => workspace,
+        }
+    }
+
+    /// What certifying a key for this makes it, as the approval prompt says it.
+    #[must_use]
+    pub fn capability(&self) -> String {
+        match self {
+            Self::Agent(agent) => format!("{} in your workspace, for 30 days", agent.agent),
+            Self::Workspace(_) => {
+                "a device of yours that reaches one workspace alone, until you remove it".to_owned()
+            }
+        }
+    }
+}
+
+/// The 16 bytes of the workspace id `workspace` names: a UUID, its hex in groups.
+fn workspace_id(workspace: &str) -> Result<[u8; 16], TabCertError> {
+    let digits: String = workspace.trim().chars().filter(|c| *c != '-').collect();
+    hex::decode(digits)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .filter(|bytes| *bytes != [0; 16])
+        .ok_or(TabCertError::Workspace)
 }
 
 impl Tab {
@@ -194,15 +262,16 @@ impl Tab {
 
     /// The certificate the person's root signs for this tab, as it signs one for any device of
     /// theirs: a member of the person's, for a browser's lifetime
-    /// ([`tilo_user_identity::CertificationPolicy::browser`]), issued now. Where it asks for an
-    /// agent, it is that agent's grant reaching its workspace and the agent alone, for
-    /// [`AGENT_KEY_LIFETIME_NS`]. Sign it with the root
+    /// ([`tilo_user_identity::CertificationPolicy::browser`]), issued now. Where it asks for
+    /// something narrower, it is what [`KeyFor::capabilities`] says: an agent's grant reaching
+    /// its workspace and the agent alone, for [`AGENT_KEY_LIFETIME_NS`], or a device reaching its
+    /// workspace alone, until revoked. Sign it with the root
     /// ([`tilo_user_identity::sign_device_cert`]); it names no issuer, since the person's own
     /// root signed it.
     ///
     /// # Errors
-    /// The key is not 32 bytes hex, the label is not one a certificate carries, or the agent
-    /// names no workspace.
+    /// The key is not 32 bytes hex, the label is not one a certificate carries, or what it is
+    /// asked for names no workspace.
     pub fn certificate(
         &self,
         user_public_key: [u8; 32],
@@ -212,12 +281,9 @@ impl Tab {
         let label = self.fitted_label();
         let label = tilo_user_identity::display_name(&label)?;
         let policy = tilo_user_identity::CertificationPolicy::browser();
-        let (capabilities, lifetime_ns) = match &self.agent {
-            Some(agent) => (
-                tilo_user_identity::DeviceCapabilities::agent_grant(agent.scope()?),
-                AGENT_KEY_LIFETIME_NS,
-            ),
-            None => (policy.ceiling.clone(), policy.lifetime_ns),
+        let (capabilities, lifetime_ns) = match &self.key_for {
+            Some(key_for) => key_for.capabilities()?,
+            None => (policy.ceiling.clone(), Some(policy.lifetime_ns)),
         };
         Ok(DeviceCert {
             user_public_key,
@@ -225,7 +291,7 @@ impl Tab {
             device_label: label.to_owned(),
             capabilities,
             issued_at_ns,
-            expires_at_ns: Some(issued_at_ns.saturating_add(lifetime_ns)),
+            expires_at_ns: lifetime_ns.map(|lifetime| issued_at_ns.saturating_add(lifetime)),
             signature: [0; 64],
             issuer: None,
         })
@@ -253,42 +319,13 @@ pub struct AgentAsked {
 }
 
 impl AgentAsked {
-    /// The certificate the person's root signs for `tab`'s key, asked for this agent
-    /// ([`Tab::certificate`] with this agent named).
-    ///
-    /// # Errors
-    /// As [`Tab::certificate`].
-    pub fn certificate(
-        &self,
-        tab: &Tab,
-        user_public_key: [u8; 32],
-        issued_at_ns: u64,
-    ) -> Result<DeviceCert, TabCertError> {
-        Tab {
-            agent: Some(self.clone()),
-            ..tab.clone()
-        }
-        .certificate(user_public_key, issued_at_ns)
-    }
-
     /// What a key certified for this agent reaches: the agent in its workspace alone.
     ///
     /// # Errors
     /// The workspace is not a workspace's id.
     pub fn scope(&self) -> Result<tilo_user_identity::AgentScope, TabCertError> {
-        // A workspace id is a UUID: its 16 bytes in hex, in groups.
-        let digits: String = self
-            .workspace
-            .trim()
-            .chars()
-            .filter(|c| *c != '-')
-            .collect();
-        let workspace: [u8; 16] = hex::decode(digits)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or(TabCertError::Workspace)?;
         Ok(tilo_user_identity::AgentScope::agent_in(
-            workspace,
+            workspace_id(&self.workspace)?,
             &self.agent,
         ))
     }
@@ -303,8 +340,8 @@ pub enum TabCertError {
     /// Its label is not one a certificate carries.
     #[error("the tab's name is not one a device may be listed by")]
     Label(#[from] tilo_user_identity::DisplayNameError),
-    /// The agent it asks for names no workspace.
-    #[error("the agent asked for names no workspace")]
+    /// What it is asked for names no workspace.
+    #[error("the key is asked for no workspace by its id")]
     Workspace,
 }
 
@@ -324,9 +361,9 @@ pub struct SigningIn {
     pub label: String,
     /// What the certificate makes it, as the approval prompt says it.
     pub capability: String,
-    /// The agent the key is asked for, where a device asks to run one ([`Tab::agent`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<AgentAsked>,
+    /// What the key is asked for, where it is no browser's ([`Tab::key_for`]).
+    #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
+    pub key_for: Option<KeyFor>,
 }
 
 /// What a tab is certified as: a member of the person's, for a browser's lifetime
@@ -808,6 +845,58 @@ mod tests {
             relay: Some("https://relay.example./".into()),
             direct: vec!["192.0.2.1:4433".parse().unwrap()],
         })
+    }
+
+    /// What a key is asked for decides the one certificate the person's root signs for it: a
+    /// workspace's VM is a device of theirs that reaches its workspace alone, until revoked; an
+    /// agent's key is that agent's grant there, for 30 days; a browser is a member for its
+    /// lifetime.
+    #[test]
+    fn a_key_is_certified_for_what_it_is_asked_for() {
+        let workspace = "11111111-1111-4111-8111-111111111111";
+        let tab = |key_for| Tab {
+            device_public_key: hex::encode([9; 32]),
+            label: "Workspace computer".into(),
+            key_for,
+        };
+        let vm = tab(Some(KeyFor::Workspace(workspace.into())));
+        let cert = vm.certificate([1; 32], 5).unwrap();
+        let mut id = [0x11; 16];
+        (id[6], id[8]) = (0x41, 0x81);
+        assert_eq!(
+            cert.capabilities,
+            tilo_user_identity::DeviceCapabilities::workspace_device(id)
+        );
+        assert_eq!(
+            cert.capabilities.workspace_name().as_deref(),
+            Some(workspace)
+        );
+        assert_eq!(cert.expires_at_ns, None);
+        let json = serde_json::to_value(&vm).unwrap();
+        assert_eq!(json["for"], serde_json::json!({ "workspace": workspace }));
+        assert_eq!(serde_json::from_value::<Tab>(json).unwrap(), vm);
+
+        let agent = tab(Some(KeyFor::Agent(AgentAsked {
+            workspace: workspace.into(),
+            agent: "claude".into(),
+        })));
+        let cert = agent.certificate([1; 32], 5).unwrap();
+        assert!(
+            cert.capabilities
+                .agent
+                .is_some_and(|scope| scope.is_agent("claude"))
+        );
+        assert_eq!(cert.capabilities.workspace, None);
+        assert_eq!(cert.expires_at_ns, Some(5 + AGENT_KEY_LIFETIME_NS));
+
+        let browser = tab(None).certificate([1; 32], 5).unwrap();
+        assert_eq!(browser.capabilities.workspace, None);
+        assert!(browser.capabilities.agent.is_none());
+
+        assert_eq!(
+            tab(Some(KeyFor::Workspace("not a workspace".into()))).certificate([1; 32], 5),
+            Err(TabCertError::Workspace)
+        );
     }
 
     #[test]

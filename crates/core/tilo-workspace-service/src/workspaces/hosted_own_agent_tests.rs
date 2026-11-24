@@ -92,10 +92,12 @@ impl Tickets {
         let tab = tilo_device_identity::login::Tab {
             device_public_key: hex::encode(ask.key),
             label: ask.label.clone(),
-            agent: Some(tilo_device_identity::login::AgentAsked {
-                workspace: ask.workspace.to_string(),
-                agent: ask.agent.clone(),
-            }),
+            key_for: Some(tilo_device_identity::login::KeyFor::Agent(
+                tilo_device_identity::login::AgentAsked {
+                    workspace: ask.workspace.to_string(),
+                    agent: ask.agent.clone(),
+                },
+            )),
         };
         let mut cert = tab
             .certificate(root.verifying_key().to_bytes(), tilo_clock::unix_now_ns())

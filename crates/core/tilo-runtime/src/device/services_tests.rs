@@ -811,6 +811,26 @@ tilo_test_env::scenario! {
                 .is_err(),
             "a workspace this device does not hold admits nobody here"
         );
+        // The same device, confined by its person's root to another of their workspaces (a
+        // workspace's VM): this workspace refuses it before its member list is asked, though the
+        // list names its key.
+        let mut confined = cert.clone();
+        confined.capabilities = tilo_user_identity::DeviceCapabilities::workspace_device(
+            *uuid::Uuid::from_u128(8).as_bytes(),
+        );
+        assert_eq!(
+            certificates.authorize(workspace, &confined),
+            Err("this device reaches another workspace alone".to_owned())
+        );
+        assert!(certificates.authorize_join(workspace, &confined).is_err());
+        let mut at_home = cert.clone();
+        at_home.capabilities =
+            tilo_user_identity::DeviceCapabilities::workspace_device(*workspace.as_bytes());
+        assert_eq!(
+            certificates.authorize(workspace, &at_home),
+            Ok(()),
+            "its own workspace admits it"
+        );
         let mut stranger = cert;
         stranger.device_public_key = [3; 32];
         assert!(

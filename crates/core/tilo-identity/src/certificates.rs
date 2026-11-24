@@ -15,6 +15,20 @@ pub fn admitted(person: &[u8; 32], cert: &DeviceCert) -> bool {
             .unwrap_or(false)
 }
 
+/// Whether `cert` is a device of `person`'s that their root did not take back ([`admitted`]) and
+/// that reaches the workspace `workspace` names (its UUID): every device does but one their root
+/// confined to another workspace alone (a workspace's VM), as its certificate says and as the
+/// record of their devices says of its key. The check every admission into a workspace passes, so
+/// such a device is refused everywhere but its workspace, whichever side of it is asked.
+#[must_use]
+pub fn admitted_in(workspace: &str, person: &[u8; 32], cert: &DeviceCert) -> bool {
+    admitted(person, cert)
+        && cert.capabilities.reaches_workspace(workspace)
+        && crate::sources::device_trust()
+            .and_then(|trust| trust.reaches(cert, workspace))
+            .unwrap_or(true)
+}
+
 /// [`admitted`], and the record of the person's devices holds the key `cert` names. A host that
 /// keeps no answer for their devices has no record saying so, and takes nothing: a device is
 /// enrolled only where a source installed by the host that holds the record says it is.
@@ -50,11 +64,17 @@ mod host {
         let profile = crate::store::identity_for_workspace(workspace)
             .map_err(|error| error.to_string())?
             .ok_or("workspace identity unavailable")?;
-        if super::admitted(&profile.user_public_key, cert) {
-            return Ok(());
+        if !super::admitted(&profile.user_public_key, cert) {
+            return Err("device revoked or identity mismatched".into());
         }
-        Err("device revoked or identity mismatched".into())
+        if !super::admitted_in(workspace, &profile.user_public_key, cert) {
+            return Err(OTHER_WORKSPACE.into());
+        }
+        Ok(())
     }
+
+    /// What a device confined to another workspace is refused with.
+    const OTHER_WORKSPACE: &str = "this device reaches another workspace alone";
 
     /// [`authorize`], and the person's devices record holds this device.
     pub fn authorize_join(workspace: &str, cert: &DeviceCert) -> Result<(), String> {
@@ -63,6 +83,9 @@ mod host {
             .ok_or("workspace identity unavailable")?;
         if !super::admitted(&profile.user_public_key, cert) {
             return Err("device revoked or identity mismatched".into());
+        }
+        if !super::admitted_in(workspace, &profile.user_public_key, cert) {
+            return Err(OTHER_WORKSPACE.into());
         }
         if super::enrolled(&profile.user_public_key, cert) {
             return Ok(());

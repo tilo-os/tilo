@@ -175,7 +175,7 @@ impl Ada {
         let tab_key = tilo_device_identity::login::Tab {
             device_public_key: device.clone(),
             label: label.to_owned(),
-            agent: None,
+            key_for: None,
         };
         let mut cert = tab_key
             .certificate(user, tilo_clock::unix_now_ns())
@@ -738,11 +738,8 @@ async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier
         },
     };
     let (from, heard) = wait_for("the page's key press at the laptop", || {
-        page.send(Cmd::Share(
-            crate::support::workspace(),
-            vec![press.clone()],
-        ))
-        .unwrap();
+        page.send(Cmd::Share(crate::support::workspace(), vec![press.clone()]))
+            .unwrap();
         let events = events.drain();
         async move {
             events.into_iter().find_map(|event| match event {
