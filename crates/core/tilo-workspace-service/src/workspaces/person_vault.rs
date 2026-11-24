@@ -588,8 +588,15 @@ pub(super) fn add(
         ItemKind::Value => vault_items::ItemKind::Value,
     };
     let code = if kind == vault_items::ItemKind::CodeGenerator {
+        // A code generator that names no hash makes its codes with SHA1, as a setup key that
+        // says nothing of its hash does.
+        let algorithm = if algorithm.trim().is_empty() {
+            vault_items::Algorithm::default().word()
+        } else {
+            algorithm.as_str()
+        };
         vault_items::CodeParams::checked(
-            &algorithm,
+            algorithm,
             digits.unwrap_or(vault_items::CODE_DIGITS),
             period.unwrap_or(vault_items::CODE_SECS),
         )?

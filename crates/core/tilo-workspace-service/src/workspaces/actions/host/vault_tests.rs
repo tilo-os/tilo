@@ -1960,3 +1960,28 @@ async fn a_code_generators_code_reads_where_its_seed_is() {
         "reading a code is no use"
     );
 }
+
+/// A code generator kept without naming its hash, its digits or how long a code stands is kept
+/// as a setup key that says none of them means: SHA1, 6 digits, 30 seconds.
+#[tokio::test]
+async fn a_code_generator_that_names_no_hash_makes_its_codes_with_sha1() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let kept = ask(
+        &service,
+        workspace_id,
+        (&ada, &caller(&ada)),
+        person_vault::ADD,
+        json!({"kind": "code-generator", "belongsTo": [], "secret": SEED}),
+    )
+    .await
+    .expect("a seed that names no hash is kept");
+    assert_eq!(kept["algorithm"], json!("SHA1"), "{kept}");
+    assert_eq!(kept["digits"], json!(6), "{kept}");
+    assert_eq!(kept["period"], json!(30), "{kept}");
+    server.shutdown().await;
+}
