@@ -6,6 +6,7 @@ kind = "app"
 optional-runtimes = ["bun/1+bun"]
 
 [entrypoint]
+type = "cli"
 runtime = "bun/1+bun"
 bin = "bin/bun"
 script = "main.js"
@@ -18,8 +19,9 @@ native = "required@40"
 [capabilities]
 required = ["network.http", "secrets"]
 
-# The token item's own places name where the token may be sent: the gateway and the REST
-# origins. Voice's *.discord.media hosts wait on vault places that can name a domain.
+# The bridge's network, enforced with the workspace's grant. The token item's places only say
+# where web-call may send its secret, so the origins the token really goes to are listed there
+# too. Voice's *.discord.media hosts come from the package grant's domain entries.
 [sandbox.net]
 mode = "allowlist"
 hosts = [

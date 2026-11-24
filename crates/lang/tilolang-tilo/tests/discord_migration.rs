@@ -203,3 +203,75 @@ fn the_lounges_server_is_carried_whole_and_a_second_carry_adds_nothing() {
     assert_eq!(items(&later.host, &held, "channels").len(), 2);
     assert_eq!(text(&later.host, &held, "guild_id"), "123");
 }
+
+/// The bridge guard admits exactly the app, never another whose id merely starts the same: an
+/// app process that is not this one cannot report the server's layout.
+#[test]
+fn only_the_discord_apps_own_process_carries_the_bridge() {
+    use tilolang_runtime::ids::AppId;
+
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
+    ada.host.runtime().set_members(
+        vec![tilolang_runtime::members::Member::person(
+            "ada",
+            tilo_actions::policy::Role::Owner,
+        )],
+        None,
+    );
+    let root = ada.host.root_of("so.tilo.discord.preview").unwrap();
+    let package = ada.host.package("so.tilo.discord.preview").unwrap();
+    let action = |name: &str| {
+        package
+            .meta
+            .actions
+            .iter()
+            .find(|a| a.name == name)
+            .unwrap_or_else(|| panic!("no action {name}"))
+            .id
+            .clone()
+    };
+    let begin = action("begin_setup");
+    let discord = match ada
+        .host
+        .runtime()
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (begin.as_str(), vec![Value::resource(&root)]),
+        )
+        .unwrap()
+    {
+        InvokeOutcome::Done(value) => value,
+        other => panic!("the owner starts the account: {other:?}"),
+    };
+    ada.commit();
+
+    let layout = action("observe_layout");
+    let layout_args = || {
+        vec![
+            discord.clone(),
+            Value::text("1"),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+        ]
+    };
+    let own = ada.host.runtime().invoke_action(
+        &Actor::App(AppId::from("so.tilo.discord.preview")),
+        (layout.as_str(), layout_args()),
+    );
+    assert!(matches!(own, Ok(InvokeOutcome::Done(_))), "{own:?}");
+    for other in ["so.tilo.discord.evil", "so.tilo.discordx", "so.tilo.chat"] {
+        let refused = ada.host.runtime().invoke_action(
+            &Actor::App(AppId::from(other)),
+            (layout.as_str(), layout_args()),
+        );
+        assert!(
+            !matches!(refused, Ok(InvokeOutcome::Done(_))),
+            "{other} is not the bridge: {refused:?}"
+        );
+        assert!(
+            format!("{refused:?}").contains("Only the bridge keeps the server's layout"),
+            "{other}: with the reason: {refused:?}"
+        );
+    }
+}

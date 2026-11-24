@@ -434,7 +434,7 @@ fn moderates(who: Actor) -> Bool {
 /// Whether `who` is the bridge's own program, carrying the workspace's changes to Discord: the
 /// app's process the daemon attested, which the invoker names in `app`.
 fn the_bridge(who: Actor) -> Bool {
-    (who.app() ?? "").starts_with("so.tilo.discord")
+    (who.app() ?? "") == "so.tilo.discord.preview"
 }
 
 /// Whether `who` may change the bridge's own setup and server on Discord: the workspace's
