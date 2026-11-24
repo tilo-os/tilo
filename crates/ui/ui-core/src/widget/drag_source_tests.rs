@@ -325,7 +325,7 @@ fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
                 crate::component::Value::Resource("notes.pages:page_1".to_owned()),
                 crate::component::Value::List(vec![
                     crate::component::Value::Int(60),
-                    crate::component::Value::Int(120),
+                    crate::component::Value::Int(80),
                 ]),
             ])),
             gesture: None,
