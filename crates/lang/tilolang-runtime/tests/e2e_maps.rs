@@ -369,6 +369,31 @@ mod cases {
         assert!(m.saved().is_empty());
     }
 
+    phase a_found_place_keeps_its_name_and_position_across_searches;
+    {
+        let m = Maps::new();
+        m.search("Marienplatz");
+        m.search("Marienplatz");
+        let place = m
+            .places()
+            .into_iter()
+            .find(|p| m.text(p, "name") == "Marienplatz")
+            .expect("the place the geocoder answered is on the map");
+        assert_eq!(
+            m.text(&place, "name"),
+            "Marienplatz",
+            "the place's name is its own field"
+        );
+        assert!(
+            (m.float(&place, "latitude") - 48.1374).abs() < 1e-6,
+            "the place's latitude is its own field"
+        );
+        assert!(
+            (m.float(&place, "longitude") - 11.5755).abs() < 1e-6,
+            "the place's longitude is its own field"
+        );
+    }
+
     phase a_search_replaces_the_last_ones_and_keeps_what_was_saved;
     {
         let m = Maps::new();

@@ -395,27 +395,27 @@ fn category_of(class: Text, kind: Text) -> Category {
 }
 
 /// What a geocoder's answer holds: the places it found, or why it has none.
-// Reading what a map service answers, as records the map holds.
+// Reading what a map service answers, into the values the map holds.
 type Places {
-    found: List<json.Value>
+    found: List<Place>
     why: Text
 }
 
 /// What a routing service's answer holds: the routes it found, or why it has none.
 type Routes {
-    found: List<json.Value>
+    found: List<Route>
     why: Text
 }
 
 /// What a transit service's answer holds: the journeys it found, or why it has none.
 type Journeys {
-    found: List<json.Value>
+    found: List<Journey>
     why: Text
 }
 
 /// What a map opened on a place holds: the points of interest around it, or why it has none.
 type Pois {
-    found: List<json.Value>
+    found: List<Poi>
     why: Text
 }
 
@@ -600,40 +600,22 @@ fn place_name_of(value: json.Value) -> Text {
     if number == "" { road } else { "{road} {number}" }
 }
 
-/// The name a geocoder's answer gives its place.
-fn place_name(value: json.Value) -> Text {
-    place_name_of(value)
+/// The place a geocoder's answer describes.
+fn place_of(value: json.Value) -> Place {
+    Place(
+        name: place_name_of(value),
+        key: "osm-{text_of(value, "osm_type")}-{id_at(value, "osm_id")}",
+        category: category_of(text_of(value, "class"), text_of(value, "type")),
+        address: text_of(value, "display_name"),
+        latitude: number_of(field_of(value, "lat")),
+        longitude: number_of(field_of(value, "lon")),
+    )
 }
 
-/// The key a geocoder's answer gives its place.
-fn place_key(value: json.Value) -> Text {
-    "osm-{text_of(value, "osm_type")}-{id_at(value, "osm_id")}"
-}
-
-/// The category a geocoder's answer gives its place.
-fn place_category(value: json.Value) -> Category {
-    category_of(text_of(value, "class"), text_of(value, "type"))
-}
-
-/// The address a geocoder's answer gives its place.
-fn place_address(value: json.Value) -> Text {
-    text_of(value, "display_name")
-}
-
-/// The latitude a geocoder's answer gives its place.
-fn place_latitude(value: json.Value) -> Float {
-    number_of(field_of(value, "lat"))
-}
-
-/// The longitude a geocoder's answer gives its place.
-fn place_longitude(value: json.Value) -> Float {
-    number_of(field_of(value, "lon"))
-}
-
-/// The places a geocoder's answer holds, as the service wrote them.
+/// The places a geocoder's answer holds, each read into a Place.
 fn places_of(body: Text, status: Int) -> Places {
     match json.parse(body) {
-        .ok(value) => Places(found: items_of(value), why: ""),
+        .ok(value) => Places(found: items_of(value).map(item -> place_of(item)), why: ""),
         .err(why) => Places(found: [], why: connection_word(status)),
     }
 }
@@ -685,8 +667,18 @@ fn turn_words(kind: Text, modifier: Text, road: Text) -> Text {
     }
 }
 
-/// The routes a routing service's answer holds, as the service wrote them, with its own
-/// reasons when it offers none.
+/// The route a routing service's answer describes, as far, as long, its line and its turns.
+fn route_of(value: json.Value) -> Route {
+    Route(
+        distance_m: number_at(value, "distance"),
+        duration_s: number_at(value, "duration"),
+        geometry: route_points(value),
+        steps: route_steps(value),
+    )
+}
+
+/// The routes a routing service's answer holds, each read into a Route, with its own reasons
+/// when it offers none.
 fn routes_of(body: Text, status: Int) -> Routes {
     if status < 200 or status >= 300 {
         return Routes(found: [], why: connection_word(status))
@@ -696,7 +688,9 @@ fn routes_of(body: Text, status: Int) -> Routes {
             let offered = list_at(value, "routes")
             if offered.is_empty() {
                 Routes(found: [], why: "The routing service offered no route between those places.")
-            } else { Routes(found: offered, why: "") }
+            } else {
+                Routes(found: offered.map(item -> route_of(item)), why: "")
+            }
         }
         .err(why) => Routes(
             found: [],
@@ -778,7 +772,18 @@ fn hex_of(colour: Text) -> Text {
     } else if bare.len() == 6 { bare } else { "" }
 }
 
-/// The journeys a transit service's answer holds, as the service wrote them.
+/// The journey a transit service's answer describes, with its legs.
+fn journey_of(value: json.Value) -> Journey {
+    Journey(
+        dep: clock_of(text_of(value, "startTime")),
+        arr: clock_of(text_of(value, "endTime")),
+        duration_min: (number_at(value, "duration") / 60.0).round(),
+        transfers: number_at(value, "transfers").round(),
+        legs: legs_of(value),
+    )
+}
+
+/// The journeys a transit service's answer holds, each read into a Journey.
 fn journeys_of(body: Text, status: Int) -> Journeys {
     if status < 200 or status >= 300 {
         return Journeys(found: [], why: connection_word(status))
@@ -788,7 +793,9 @@ fn journeys_of(body: Text, status: Int) -> Journeys {
             let offered = list_at(value, "itineraries")
             if offered.is_empty() {
                 Journeys(found: [], why: "No public transport goes there at this time.")
-            } else { Journeys(found: offered, why: "") }
+            } else {
+                Journeys(found: offered.map(item -> journey_of(item)), why: "")
+            }
         }
         .err(why) => Journeys(
             found: [],
@@ -826,37 +833,33 @@ fn legs_of(value: json.Value) -> List<Leg> {
 }
 
 /// One Overpass element as a point of interest, when it has a name and a place.
-fn poi_like(value: json.Value) -> List<Poi> {
+fn poi_of(value: json.Value) -> Option<Poi> {
     let tags = field_of(value, "tags")
     let name = if let held = tags { text_of(held, "name") } else { "" }
     if name == "" {
-        return []
+        return .none
     }
-    let lat = number_at(value, "lat")
-    let lon = number_at(value, "lon")
-    if lat == 0.0 and lon == 0.0 {
-        let centre = field_of(value, "center")
-        if let held = centre {
-            lat = number_at(held, "lat")
-            lon = number_at(held, "lon")
-        }
+    let at = if number_at(value, "lat") != 0.0 or number_at(value, "lon") != 0.0 {
+        value
+    } else if let centre = field_of(value, "center") { centre } else { value }
+    let latitude = number_at(at, "lat")
+    let longitude = number_at(at, "lon")
+    if latitude == 0.0 and longitude == 0.0 {
+        return .none
     }
-    if lat == 0.0 and lon == 0.0 {
-        return []
-    }
-    let class = "highway"
+    let class = ""
     let kind = ""
-    if let held = tags {
-        for candidate in ["amenity", "tourism", "shop", "leisure", "railway", "public_transport"] {
-            let named = text_of(held, candidate)
-            if named != "" {
-                class = candidate
-                kind = named
-            }
-        }
-    }
     let address = ""
     if let held = tags {
+        for candidate in ["amenity", "tourism", "shop", "leisure", "railway", "public_transport"] {
+            if class == "" {
+                let named = text_of(held, candidate)
+                if named != "" {
+                    class = candidate
+                    kind = named
+                }
+            }
+        }
         let street = text_of(held, "addr:street")
         let number = text_of(held, "addr:housenumber")
         let city = text_of(held, "addr:city")
@@ -865,30 +868,37 @@ fn poi_like(value: json.Value) -> List<Poi> {
             address = if address == "" { city } else { "{address}, {city}" }
         }
     }
-    [
+    .some(
         Poi(
             name: name,
             key: "osm-{text_of(value, "type")}-{id_at(value, "id")}",
             category: category_of(class, kind),
-            latitude: lat,
-            longitude: lon,
+            latitude: latitude,
+            longitude: longitude,
             address: address,
             hours: if let held = tags { text_of(held, "opening_hours") } else { "" },
             website: if let held = tags { text_of(held, "website") } else { "" },
             phone: if let held = tags { text_of(held, "phone") } else { "" },
             kind: if let held = tags { text_of(held, "cuisine") } else { "" },
         ),
-    ]
+    )
 }
 
-/// The points of interest an Overpass answer holds.
-/// The points of interest an Overpass answer holds, as the service wrote them.
+/// The points of interest an Overpass answer holds, each read into a Poi.
 fn pois_of(body: Text, status: Int) -> Pois {
     if status < 200 or status >= 300 {
         return Pois(found: [], why: connection_word(status))
     }
     match json.parse(body) {
-        .ok(value) => Pois(found: list_at(value, "elements"), why: ""),
+        .ok(value) => {
+            let found: List<Poi> = []
+            for element in list_at(value, "elements") {
+                if let poi = poi_of(element) {
+                    found = found + [poi]
+                }
+            }
+            Pois(found: found, why: "")
+        }
         .err(why) => Pois(found: [], why: "The map service answered something that is not a place."),
     }
 }
@@ -918,33 +928,18 @@ action search(a: Atlas, query: Text) uses web, time (
         a.status = found.why
         return
     }
-    for item in found.found {
-        let found_key = place_key(item)
-        let found_name = place_name(item)
-        let found_category = place_category(item)
-        let found_address = place_address(item)
-        let found_lat = place_latitude(item)
-        let found_lon = place_longitude(item)
-        if found_lat != 0.0 or found_lon != 0.0 {
-            if let known = a.places.find(p -> p.key == found_key and found_key != "") {
-                known.name = found_name
-                known.address = found_address
-                known.category = found_category
-                known.latitude = found_lat
-                known.longitude = found_lon
+    for place in found.found {
+        if place.latitude != 0.0 or place.longitude != 0.0 {
+            if let known = a.places.find(p -> p.key == place.key and place.key != "") {
+                known.name = place.name
+                known.address = place.address
+                known.category = place.category
+                known.latitude = place.latitude
+                known.longitude = place.longitude
                 known.found = true
             } else {
-                a.places.insert(
-                    Place(
-                        name: found_name,
-                        key: found_key,
-                        category: found_category,
-                        address: found_address,
-                        latitude: found_lat,
-                        longitude: found_lon,
-                        found: true,
-                    ),
-                )
+                let added = a.places.insert(place)
+                added.found = true
             }
         }
     }
@@ -1128,14 +1123,7 @@ action directions(a: Atlas, from_words: Text, to_words: Text) uses web, time (
                     return
                 }
                 match found.found.first() {
-                    .some(item) => Place(
-                        name: place_name(item),
-                        key: place_key(item),
-                        category: place_category(item),
-                        address: place_address(item),
-                        latitude: place_latitude(item),
-                        longitude: place_longitude(item),
-                    ),
+                    .some(place) => place,
                     .none => {
                         a.status = "No place is called “{words}”."
                         return
@@ -1156,14 +1144,7 @@ action directions(a: Atlas, from_words: Text, to_words: Text) uses web, time (
                 return
             }
             match found.found.first() {
-                .some(item) => Place(
-                    name: place_name(item),
-                    key: place_key(item),
-                    category: place_category(item),
-                    address: place_address(item),
-                    latitude: place_latitude(item),
-                    longitude: place_longitude(item),
-                ),
+                .some(place) => place,
                 .none => {
                     a.status = "No place is called “{end_words}”."
                     return
@@ -1186,16 +1167,8 @@ action directions(a: Atlas, from_words: Text, to_words: Text) uses web, time (
         for old in a.journeys {
             a.journeys.remove(old)
         }
-        for item in trips.found {
-            a.journeys.insert(
-                Journey(
-                    dep: clock_of(text_of(item, "startTime")),
-                    arr: clock_of(text_of(item, "endTime")),
-                    duration_min: (number_at(item, "duration") / 60.0).round(),
-                    transfers: number_at(item, "transfers").round(),
-                    legs: legs_of(item),
-                ),
-            )
+        for journey in trips.found {
+            a.journeys.insert(journey)
         }
         a.journey_at = 0
         a.mode = .transit
@@ -1222,22 +1195,15 @@ action directions(a: Atlas, from_words: Text, to_words: Text) uses web, time (
     for old in a.routes {
         a.routes.remove(old)
     }
-    for item in tours.found {
-        a.routes.insert(
-            Route(
-                mode: a.mode,
-                distance_m: number_at(item, "distance"),
-                duration_s: number_at(item, "duration"),
-                geometry: route_points(item),
-                steps: route_steps(item),
-                from_name: from.name,
-                to_name: to.name,
-                from_latitude: from.latitude,
-                from_longitude: from.longitude,
-                to_latitude: to.latitude,
-                to_longitude: to.longitude,
-            ),
-        )
+    for route in tours.found {
+        let added = a.routes.insert(route)
+        added.mode = a.mode
+        added.from_name = from.name
+        added.to_name = to.name
+        added.from_latitude = from.latitude
+        added.from_longitude = from.longitude
+        added.to_latitude = to.latitude
+        added.to_longitude = to.longitude
     }
     a.route_at = 0
     a.navigating = false
@@ -1269,16 +1235,8 @@ action plan_transit(a: Atlas, from: Place, to: Place) uses web, time (
     for old in a.journeys {
         a.journeys.remove(old)
     }
-    for item in trips.found {
-        a.journeys.insert(
-            Journey(
-                dep: clock_of(text_of(item, "startTime")),
-                arr: clock_of(text_of(item, "endTime")),
-                duration_min: (number_at(item, "duration") / 60.0).round(),
-                transfers: number_at(item, "transfers").round(),
-                legs: legs_of(item),
-            ),
-        )
+    for journey in trips.found {
+        a.journeys.insert(journey)
     }
     a.journey_at = 0
     a.mode = .transit
@@ -1298,9 +1256,9 @@ action accept_route(a: Atlas, routes: List<Route>, from_name: Text, to_name: Tex
         a.routes.remove(old)
     }
     for found in routes {
-        found.from_name = from_name
-        found.to_name = to_name
-        a.routes.insert(found)
+        let added = a.routes.insert(found)
+        added.from_name = from_name
+        added.to_name = to_name
     }
     a.route_at = 0
     a.navigating = false
@@ -1391,55 +1349,6 @@ action end_navigation(a: Atlas) (icon: .x, label: "End navigation") {
     a.navigating = false
 }
 
-/// The text an Overpass element's tags give `key`, or empty.
-fn poi_tag(value: json.Value, key: Text) -> Text {
-    if let tags = field_of(value, "tags") { text_of(tags, key) } else { "" }
-}
-
-/// The latitude an Overpass element stands at, from its own point or the centre of its shape.
-fn poi_latitude(value: json.Value) -> Float {
-    let lat = number_at(value, "lat")
-    if lat != 0.0 {
-        lat
-    } else if let centre = field_of(value, "center") { number_at(centre, "lat") } else { 0.0 }
-}
-
-/// The longitude an Overpass element stands at.
-fn poi_longitude(value: json.Value) -> Float {
-    let lon = number_at(value, "lon")
-    if lon != 0.0 {
-        lon
-    } else if let centre = field_of(value, "center") { number_at(centre, "lon") } else { 0.0 }
-}
-
-/// What an Overpass element is, from the first class its tags name.
-fn poi_category(value: json.Value) -> Category {
-    if let tags = field_of(value, "tags") {
-        for candidate in ["amenity", "tourism", "shop", "leisure", "railway", "public_transport"] {
-            let kind = text_of(tags, candidate)
-            if kind != "" {
-                return category_of(candidate, kind)
-            }
-        }
-    }
-    .other
-}
-
-/// The address an Overpass element's tags give, as a street and number and a city.
-fn poi_address(value: json.Value) -> Text {
-    if let tags = field_of(value, "tags") {
-        let street = text_of(tags, "addr:street")
-        let number = text_of(tags, "addr:housenumber")
-        let city = text_of(tags, "addr:city")
-        let street_address = if street != "" and number != "" {
-            "{street} {number}"
-        } else { street }
-        if city != "" {
-            if street_address == "" { city } else { "{street_address}, {city}" }
-        } else { street_address }
-    } else { "" }
-}
-
 /// Shows what stands around the map, from OpenStreetMap.
 // What stands around the map.
 action find_nearby(a: Atlas) uses web (
@@ -1460,26 +1369,8 @@ action find_nearby(a: Atlas) uses web (
     for old in a.pois {
         a.pois.remove(old)
     }
-    for item in found.found {
-        let name = poi_tag(item, "name")
-        let lat = poi_latitude(item)
-        let lon = poi_longitude(item)
-        if name != "" and (lat != 0.0 or lon != 0.0) {
-            a.pois.insert(
-                Poi(
-                    name: name,
-                    key: "osm-{text_of(item, "type")}-{id_at(item, "id")}",
-                    category: poi_category(item),
-                    latitude: lat,
-                    longitude: lon,
-                    address: poi_address(item),
-                    hours: poi_tag(item, "opening_hours"),
-                    website: poi_tag(item, "website"),
-                    phone: poi_tag(item, "phone"),
-                    kind: poi_tag(item, "cuisine"),
-                ),
-            )
-        }
+    for poi in found.found {
+        a.pois.insert(poi)
     }
     if found.found.is_empty() {
         a.status = "No places found"
@@ -1567,11 +1458,11 @@ action download_place(a: Atlas, query: Text, least_zoom: Int = 10, most_zoom: In
         return
     }
     if let first = found.found.first() {
-        let name = place_name(first)
-        let north = place_latitude(first) + 0.05
-        let south = place_latitude(first) - 0.05
-        let east = place_longitude(first) + 0.07
-        let west = place_longitude(first) - 0.07
+        let name = first.name
+        let north = first.latitude + 0.05
+        let south = first.latitude - 0.05
+        let east = first.longitude + 0.07
+        let west = first.longitude - 0.07
         let area = OfflineArea(
             name: name,
             north: north,
@@ -1692,35 +1583,20 @@ action open_link(a: Atlas, link: Text) -> host.Resource uses web, time (
             if found.why != "" {
                 a.status = found.why
             } else {
-                for item in found.found {
-                    let key = place_key(item)
-                    let name = place_name(item)
-                    let category = place_category(item)
-                    let address = place_address(item)
-                    let lat = place_latitude(item)
-                    let lon = place_longitude(item)
-                    if lat != 0.0 or lon != 0.0 {
-                        if let known = a.places.find(p -> p.key == key and key != "") {
-                            known.name = name
-                            known.address = address
-                            known.category = category
-                            known.latitude = lat
-                            known.longitude = lon
+                for place in found.found {
+                    if place.latitude != 0.0 or place.longitude != 0.0 {
+                        if let known = a.places.find(p -> p.key == place.key and place.key != "") {
+                            known.name = place.name
+                            known.address = place.address
+                            known.category = place.category
+                            known.latitude = place.latitude
+                            known.longitude = place.longitude
                             if not known.saved {
                                 known.found = true
                             }
                         } else {
-                            a.places.insert(
-                                Place(
-                                    name: name,
-                                    key: key,
-                                    category: category,
-                                    address: address,
-                                    latitude: lat,
-                                    longitude: lon,
-                                    found: true,
-                                ),
-                            )
+                            let added = a.places.insert(place)
+                            added.found = true
                         }
                     }
                 }
