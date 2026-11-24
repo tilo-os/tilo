@@ -29,9 +29,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::component::{Component, Described, Event, PartType, PartViews, Source, Value};
 use crate::theme::Theme;
 use crate::widget::composition_parts::Parts;
-use crate::widget::{
-    DrawChild, Element, Manual, MeasureConstraint, Widget, WidgetLayoutError,
-};
+use crate::widget::{DrawChild, Element, Manual, MeasureConstraint, Widget, WidgetLayoutError};
 
 /// How close to a place's trailing or bottom edge a press grabs it, in logical pixels: the same
 /// reach a canvas's places keep, so the pips of a slide are as easy to hit as a window's edge.
@@ -142,6 +140,12 @@ pub struct StageProps {
     /// removes it.
     #[component(event(value = String))]
     pub delete: Event,
+    /// The stage stands the page where the view puts it and takes nothing of its own: the wheel
+    /// and a pinch do not zoom it, no pan moves it, the keys that walk and move its places do
+    /// not reach it, and a dragged place does not line up with the page's margins. A stage laid
+    /// over a page another view draws sets this, so the page under it keeps its own zoom and
+    /// its own keys and its places move only where the hand puts them.
+    pub still: bool,
 }
 
 impl PartType for Vec<StagePinProps> {
@@ -279,6 +283,8 @@ pub struct Stage {
     editing: Option<usize>,
     /// What a place being dragged lines up with, while it moves: drawn across the page.
     guides: RefCell<Vec<crate::snap::Guide>>,
+    /// The page stands where the view puts it, taking no zoom, pan or keys of its own.
+    still: bool,
 }
 
 impl Stage {
@@ -315,9 +321,9 @@ impl Stage {
     /// The place the view chose, by its item or key.
     fn chosen_index(&self) -> Option<usize> {
         let chosen = self.chosen.as_deref()?;
-        self.pins
-            .iter()
-            .position(|(key, _, _)| key == chosen || self.items.get(key).map(String::as_str) == Some(chosen))
+        self.pins.iter().position(|(key, _, _)| {
+            key == chosen || self.items.get(key).map(String::as_str) == Some(chosen)
+        })
     }
 
     /// The place at `index`, and its item as the view names it.
@@ -335,7 +341,10 @@ impl Stage {
             return;
         };
         let at = match self.chosen_index() {
-            Some(index) => isize::try_from(index).unwrap_or(0).saturating_add(step).rem_euclid(count),
+            Some(index) => isize::try_from(index)
+                .unwrap_or(0)
+                .saturating_add(step)
+                .rem_euclid(count),
             None if step < 0 => count - 1,
             None => 0,
         };
@@ -388,7 +397,10 @@ impl Stage {
     /// one or the person zoomed, times the zoom they chose.
     fn fit(&self, box_rect: Rect) -> (f64, Vec2) {
         let scale = self.effective_scale(box_rect);
-        (scale, self.centred(box_rect, scale) + self.clamped_pan(box_rect, scale))
+        (
+            scale,
+            self.centred(box_rect, scale) + self.clamped_pan(box_rect, scale),
+        )
     }
 
     /// What one page coordinate takes: the zoom the person chose, or the size that fits the
@@ -444,7 +456,11 @@ impl Stage {
         self.scale = scale;
         self.offset = offset;
         self.invalidate();
-        let zoom = if self.chosen_zoom.is_some() { scale } else { 0.0 };
+        let zoom = if self.chosen_zoom.is_some() {
+            scale
+        } else {
+            0.0
+        };
         self.zoomed.fire(Some(Value::Float(zoom)));
         self.panned.fire(Some(Value::List(vec![
             Value::Float(self.chosen_pan.x),
@@ -573,10 +589,7 @@ impl Stage {
                     .size;
                 let rect = Rect::from_origin_size(
                     (place.x, place.y),
-                    (
-                        place.w,
-                        place.h.max(f64::from(size.height)).max(LEAST_SIDE),
-                    ),
+                    (place.w, place.h.max(f64::from(size.height)).max(LEAST_SIDE)),
                 );
                 cx.place(index, rect)?;
                 out.push(rect);
@@ -628,11 +641,19 @@ impl Stage {
             (grab.place.x + dx, grab.place.y + dy),
             (grab.place.w, grab.place.h),
         );
-        let reach = SNAP_REACH / self.scale.max(f64::EPSILON);
-        let snap = crate::snap::snap_rect(moving, &self.snap_targets(grab.index), reach);
-        let x = (moving.x0 + snap.offset.x).round();
-        let y = (moving.y0 + snap.offset.y).round();
-        *self.guides.borrow_mut() = snap.guides;
+        // A stage that takes nothing of its own moves the place exactly where the hand goes: a
+        // page another view draws has no slide's margins for a place to line up with.
+        let (x, y) = if self.still {
+            (moving.x0.round(), moving.y0.round())
+        } else {
+            let reach = SNAP_REACH / self.scale.max(f64::EPSILON);
+            let snap = crate::snap::snap_rect(moving, &self.snap_targets(grab.index), reach);
+            *self.guides.borrow_mut() = snap.guides;
+            (
+                (moving.x0 + snap.offset.x).round(),
+                (moving.y0 + snap.offset.y).round(),
+            )
+        };
         let item = self.item_of(grab.index);
         self.moved.fire_in_gesture(
             Some(Value::List(vec![
@@ -683,6 +704,7 @@ impl Described for Stage {
             panned,
             open,
             delete,
+            still,
         } = props;
         let mut stage = Self {
             parts: Parts::default(),
@@ -702,9 +724,7 @@ impl Described for Stage {
             }),
             platform: crate::platform::PlatformConventions::default(),
             focused: false,
-            background: background
-                .as_deref()
-                .and_then(crate::color::parse_hex),
+            background: background.as_deref().and_then(crate::color::parse_hex),
             chosen: chosen.filter(|chosen| !chosen.is_empty()),
             laid: Rc::default(),
             places: Rc::default(),
@@ -730,6 +750,7 @@ impl Described for Stage {
             delete,
             editing: None,
             guides: RefCell::new(Vec::new()),
+            still,
         };
         for pin in pins {
             let place = Place {
@@ -769,6 +790,7 @@ impl Described for Stage {
             panned,
             open,
             delete,
+            still,
         } = props;
         if pins.len() != self.pins.len()
             || pins
@@ -805,9 +827,7 @@ impl Described for Stage {
             self.chosen_pan = pan;
             self.layout_dirty = true;
         }
-        self.background = background
-            .as_deref()
-            .and_then(crate::color::parse_hex);
+        self.background = background.as_deref().and_then(crate::color::parse_hex);
         let chosen = chosen.filter(|chosen| !chosen.is_empty());
         if chosen != self.chosen {
             self.chosen = chosen;
@@ -822,6 +842,7 @@ impl Described for Stage {
         self.panned = panned;
         self.open = open;
         self.delete = delete;
+        self.still = still;
         self.items.clear();
         for (pin, (key, held, _)) in pins.into_iter().zip(self.pins.iter_mut()) {
             if let Some(item) = pin.item.filter(|item| !item.is_empty()) {
@@ -969,7 +990,11 @@ impl Widget for Stage {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.parts.children.iter().map(|child| child.as_ref()).collect()
+        self.parts
+            .children
+            .iter()
+            .map(|child| child.as_ref())
+            .collect()
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
@@ -1047,7 +1072,13 @@ impl Widget for Stage {
         let viewport = self.rect;
         let clips = viewport.width() > 0.0 && viewport.height() > 0.0;
         if clips {
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &viewport);
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                transform,
+                &viewport,
+            );
         }
         // The page itself, in the colour the view gave it.
         let page = self.screen_rect(Rect::from_origin_size(
@@ -1059,18 +1090,22 @@ impl Widget for Stage {
         }
         // Everything on the page, drawn through the one scale the page is shown at: a text box
         // laid out at the slide's size, drawn small in a thumbnail and large on a projector.
-        let page_transform = transform
-            * Affine::translate(self.offset)
-            * Affine::scale(self.scale);
+        let page_transform = transform * Affine::translate(self.offset) * Affine::scale(self.scale);
         // What the place being dragged lines up with, across the page.
         let guides = self.guides.borrow();
         if !guides.is_empty() {
             let hairline = 1.0 / self.scale.max(f64::EPSILON);
             for guide in guides.iter() {
                 let (from, to) = if guide.vertical {
-                    (Point::new(guide.at, guide.from), Point::new(guide.at, guide.to))
+                    (
+                        Point::new(guide.at, guide.from),
+                        Point::new(guide.at, guide.to),
+                    )
                 } else {
-                    (Point::new(guide.from, guide.at), Point::new(guide.to, guide.at))
+                    (
+                        Point::new(guide.from, guide.at),
+                        Point::new(guide.to, guide.at),
+                    )
                 };
                 scene.stroke(
                     &vello::kurbo::Stroke::new(hairline),
@@ -1085,7 +1120,9 @@ impl Widget for Stage {
             let Some(region) = self.parts.children.first_mut() else {
                 break;
             };
-            let Some(region) = region.as_any_mut().and_then(|any| any.downcast_mut::<Manual>())
+            let Some(region) = region
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<Manual>())
             else {
                 break;
             };
@@ -1115,7 +1152,9 @@ impl Widget for Stage {
                 && let Some(rect) = self.laid.borrow().get(index).copied()
             {
                 let frame = self.screen_rect(rect);
-                let radius = (4.0 * self.scale).min(frame.width() / 2.0).min(frame.height() / 2.0);
+                let radius = (4.0 * self.scale)
+                    .min(frame.width() / 2.0)
+                    .min(frame.height() / 2.0);
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.5),
                     transform,
@@ -1146,7 +1185,8 @@ impl Widget for Stage {
             // The hand's place is read in page coordinates: a drag keeps moving the place it
             // holds past the stage's edge, as it would past the page's.
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(mut edge) = self.edge {
                     edge.now = self.page_point(self.cursor);
                     self.edge = Some(edge);
@@ -1227,7 +1267,9 @@ impl Widget for Stage {
         // pinch) zoom it about the pointer, and the keys that zoom it reach it while it holds
         // the keyboard. A fitted page has nowhere to move, so its wheel is the view's.
         match event {
-            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
+            WindowEvent::MouseWheel { delta, .. }
+                if !self.still && self.rect.contains(self.cursor) =>
+            {
                 let notches = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         Vec2::new(f64::from(*x), f64::from(*y))
@@ -1256,7 +1298,9 @@ impl Widget for Stage {
                     return;
                 }
             }
-            WindowEvent::PinchGesture { delta, .. } if self.rect.contains(self.cursor) => {
+            WindowEvent::PinchGesture { delta, .. }
+                if !self.still && self.rect.contains(self.cursor) =>
+            {
                 if *delta != 0.0 {
                     self.zoom_about(1.0 + *delta);
                     *ctx.handled = true;
@@ -1264,7 +1308,7 @@ impl Widget for Stage {
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
-                if self.focused && event.state == ElementState::Pressed =>
+                if !self.still && self.focused && event.state == ElementState::Pressed =>
             {
                 let plain = !ctx.modifiers.state().control_key()
                     && !ctx.modifiers.state().super_key()
@@ -1272,7 +1316,11 @@ impl Widget for Stage {
                 if plain {
                     match &event.logical_key {
                         Key::Named(NamedKey::Tab) => {
-                            let step = if ctx.modifiers.state().shift_key() { -1 } else { 1 };
+                            let step = if ctx.modifiers.state().shift_key() {
+                                -1
+                            } else {
+                                1
+                            };
                             self.choose_along(step);
                             *ctx.handled = true;
                             return;
@@ -1291,8 +1339,17 @@ impl Widget for Stage {
                                 return;
                             }
                         }
-                        Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::ArrowUp | NamedKey::ArrowDown) => {
-                            let by = if ctx.modifiers.state().shift_key() { 1.0 } else { 10.0 };
+                        Key::Named(
+                            NamedKey::ArrowLeft
+                            | NamedKey::ArrowRight
+                            | NamedKey::ArrowUp
+                            | NamedKey::ArrowDown,
+                        ) => {
+                            let by = if ctx.modifiers.state().shift_key() {
+                                1.0
+                            } else {
+                                10.0
+                            };
                             let (dx, dy) = match &event.logical_key {
                                 Key::Named(NamedKey::ArrowLeft) => (-by, 0.0),
                                 Key::Named(NamedKey::ArrowRight) => (by, 0.0),
@@ -1344,8 +1401,11 @@ impl Widget for Stage {
                 ..
             } if self.rect.contains(self.cursor) => {
                 // A press in the page puts the keyboard in it, so the keys that zoom it reach
-                // it without the person looking for a field to take them.
-                *ctx.focus_target = Some(ctx.node_id);
+                // it without the person looking for a field to take them. A stage that takes
+                // nothing of its own leaves the keyboard where it was.
+                if !self.still {
+                    *ctx.focus_target = Some(ctx.node_id);
+                }
                 // A place's edge or corner first: dragging it sizes the place.
                 if let Some((index, trailing, bottom)) = self.edge_at(local) {
                     let laid = self.laid.borrow();
@@ -1412,7 +1472,7 @@ impl Widget for Stage {
     }
 
     fn is_focusable(&self) -> bool {
-        true
+        !self.still
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -1426,10 +1486,7 @@ impl Widget for Stage {
         self.focused
     }
 
-    fn set_platform_conventions(
-        &mut self,
-        conventions: crate::platform::PlatformConventions,
-    ) {
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         self.platform = conventions;
     }
 

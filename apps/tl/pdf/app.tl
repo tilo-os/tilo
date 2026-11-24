@@ -816,6 +816,32 @@ action place_signature(
     made
 }
 
+/// Puts a placed signature at another point of its page: its top-leading corner as fractions of
+/// the page's box. It is a change like any other, so everyone looking sees it move and one undo
+/// takes the move back.
+action move_signature(d: Document, s: Signature, x: Float, y: Float) (
+    label: "Move a signature",
+    did: "moved a signature",
+) {
+    s.x = x.clamp(0.0, 1.0) * s.page.width
+    s.y = y.clamp(0.0, 1.0) * s.page.height
+}
+
+/// Moves the signature `who` names, as the place over its page reports it: its new corner as
+/// whole points of the page.
+action move_placed_signature(d: Document, p: Page, who: Text, at: List<Int>) (
+    label: "Move a signature",
+    did: "moved a signature",
+) {
+    if p.width > 0.0 and p.height > 0.0 {
+        if let s = d.signatures.find(x -> x.id == who) {
+            let x = (at.at(0) ?? 0).to_float() / p.width
+            let y = (at.at(1) ?? 0).to_float() / p.height
+            move_signature(d, s, x, y)
+        }
+    }
+}
+
 /// Signs a page with a typed name, in its lower right corner: for the palette, a script and an
 /// agent.
 action sign_with_name(d: Document, p: Page, signer: Text) uses time (

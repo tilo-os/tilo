@@ -1,5 +1,6 @@
 //! [`PageSidebar`] as a described component: a rail of page thumbnails. The rail is a list of
-//! pages: each thumbnail is the page's shape and its number, the page open lifted.
+//! pages: each thumbnail is the page's picture, where the view gives one, and its number, the
+//! page open lifted.
 
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
@@ -361,27 +362,27 @@ impl Described for DeclaredRail {
 }
 
 /// Paint the page's picture at `address` on the tile `rect`, whole and centred, cut at the
-/// tile's rounded corners. `false`, painting nothing, while its bytes are on their way or it
-/// names nothing: the tile stays the placeholder.
+/// tile's rounded corners. Nothing is painted while its bytes are on their way or it names
+/// nothing: the tile stays the placeholder.
 fn paint_page_picture(
     scene: &mut vello::Scene,
     base: Affine,
     rect: Rect,
     radius: f64,
     address: &str,
-) -> bool {
+) {
     if address.is_empty() {
-        return false;
+        return;
     }
     let source = crate::widget::PictureSource {
         src: address.to_owned(),
     };
     let Some(image) = crate::pictures::Pictures::window().get(&source) else {
-        return false;
+        return;
     };
     let (wide, tall) = (f64::from(image.width), f64::from(image.height));
     if wide <= 0.0 || tall <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return false;
+        return;
     }
     let scale = (rect.width() / wide).min(rect.height() / tall);
     let (drawn_w, drawn_h) = (wide * scale, tall * scale);
@@ -402,7 +403,6 @@ fn paint_page_picture(
     let placement = Affine::translate((dest.x0, dest.y0)) * Affine::scale_non_uniform(scale, scale);
     scene.fill(Fill::NonZero, base, &brush, Some(placement), &dest);
     scene.pop_layer();
-    true
 }
 
 #[cfg(test)]

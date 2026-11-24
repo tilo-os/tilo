@@ -747,7 +747,6 @@ mod cases {
                 .iter()
                 .map(|item| match item {
                     Value::Float(value) => *value,
-                    Value::Int(value) => *value as f64,
                     other => panic!("{field} holds {other:?}"),
                 })
                 .collect(),
@@ -820,5 +819,140 @@ mod cases {
                 "{label} marks the selected words:\n{said}"
             );
         }
+    }
+
+    /// A whole-number prop of a node, as the view gave it.
+    fn whole(node: &UiNode, name: &str) -> i64 {
+        match node.props.get(name) {
+            Some(Value::Int(value)) => *value,
+            other => panic!("{name} of {} is {other:?}", node.kind),
+        }
+    }
+
+    /// A text prop of a node, as the view gave it.
+    fn words(node: &UiNode, name: &str) -> String {
+        match node.props.get(name) {
+            Some(Value::Text(value)) => value.clone(),
+            other => panic!("{name} of {} is {other:?}", node.kind),
+        }
+    }
+
+    /// A number a resource holds.
+    fn number(reader: &Reader, at: &ResourceRef, field: &str) -> f64 {
+        match reader.rt.read(at, field).unwrap() {
+            Value::Float(value) => value,
+            other => panic!("{field} reads {other:?}"),
+        }
+    }
+
+    #[test]
+    fn form_fields_stand_at_their_boxes_and_a_signature_moves_through_the_view() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        reader.call("read_fields", vec![Value::resource(&doc)]);
+        reader.call(
+            "sign_as",
+            vec![Value::resource(&reader.lib), Value::text("Ada")],
+        );
+        let first = reader.page(&doc, 0);
+        let signed = returned_ref(reader.call(
+            "place_signature",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::Float(120.0),
+                Value::Float(240.0),
+            ],
+        ));
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        window.set_lazy_rows(false).unwrap();
+        let (places, stage) = {
+            let tree = window.tree();
+            let places: Vec<(String, (i64, i64, i64, i64))> =
+                crate::common::of_kind(tree, "ui.StagePin")
+                    .into_iter()
+                    .map(|node| {
+                        (
+                            words(node, "name"),
+                            (
+                                whole(node, "x"),
+                                whole(node, "y"),
+                                whole(node, "width"),
+                                whole(node, "height"),
+                            ),
+                        )
+                    })
+                    .collect();
+            let stage = crate::common::of_kind(tree, "ui.Stage")
+                .into_iter()
+                .next()
+                .map(|node| node.key.clone());
+            (places, stage)
+        };
+        assert_eq!(
+            places,
+            vec![
+                ("Signed by".to_owned(), (72, 700, 180, 14)),
+                ("Date".to_owned(), (72, 680, 120, 14)),
+                ("Ada".to_owned(), (120, 240, 218, 74)),
+            ],
+            "each field and the signature stand where the file puts them"
+        );
+
+        // Dragging the signature reports its new point to the view, whose action moves it.
+        let stage = stage.expect("the page's places stand in a stage");
+        window
+            .fire_with(
+                &stage,
+                "moved",
+                Some(&Value::List(vec![
+                    Value::text(&signed.id_string()),
+                    Value::List(vec![Value::Int(300), Value::Int(400)]),
+                ])),
+            )
+            .expect("the place reports its move to the view");
+        assert!(
+            (number(&reader, &signed, "x") - 300.0).abs() < 0.01,
+            "the signature moved across its page: {}",
+            number(&reader, &signed, "x")
+        );
+        assert!((number(&reader, &signed, "y") - 400.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_signature_moves_by_fractions_of_its_page() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        reader.call(
+            "sign_as",
+            vec![Value::resource(&reader.lib), Value::text("Ada")],
+        );
+        let first = reader.page(&doc, 0);
+        let signed = returned_ref(reader.call(
+            "place_signature",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&first),
+                Value::Float(0.0),
+                Value::Float(0.0),
+            ],
+        ));
+        reader.call(
+            "move_signature",
+            vec![
+                Value::resource(&doc),
+                Value::resource(&signed),
+                Value::Float(0.25),
+                Value::Float(0.5),
+            ],
+        );
+        assert!(
+            (number(&reader, &signed, "x") - 153.0).abs() < 0.01,
+            "a quarter across"
+        );
+        assert!(
+            (number(&reader, &signed, "y") - 396.0).abs() < 0.01,
+            "halfway down"
+        );
     }
 }

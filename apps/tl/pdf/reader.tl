@@ -474,6 +474,9 @@ view page_sheet(
                     .then(set(sel_from, picked_from(p, from, to)))
                     .then(set(sel_to, picked_to(p, from, to)))
             }
+            // The fields and signatures the file places, standing over the picture where it puts
+            // them rather than in a column under it.
+            page_placements(d, p)
         }
         row(gap: .related, align: .center) {
             ui.Text("Page {at + 1} of {d.pages.len()}", role: .caption, secondary: true)
@@ -548,9 +551,50 @@ view page_sheet(
             }
         }
         for f in d.fields.filter(f -> f.page == p.source_page) {
-            field_row(d, f)
+            field_note(d, f)
         }
     }
+}
+
+/// The page's form fields and signatures, standing over its picture where the file puts them: a
+/// field at its box, a signature at its own, moved by dragging it to a new place.
+view page_placements(d: Document, p: Page) {
+    ui.Stage(
+        name: "Page {p.source_page}, its fields and signatures",
+        canvas: [p.width.round(), p.height.round()],
+        still: true,
+    ) {
+        for f in d.fields.filter(f -> f.page == p.source_page) {
+            ui.StagePin(
+                name: f.name,
+                x: field_box(f, 0).round(),
+                y: field_box(f, 1).round(),
+                width: field_box(f, 2).round(),
+                height: field_box(f, 3).round(),
+            ) {
+                field_widget(d, f)
+            }
+        }
+        for s in d.signatures.filter(s -> s.page == p) {
+            ui.StagePin(
+                name: s.signer,
+                x: s.x.round(),
+                y: s.y.round(),
+                width: s.width.round(),
+                height: s.height.round(),
+                moves: true,
+                item: s.id,
+            ) {
+                signature_body(s)
+            }
+        }
+        on moved(who: Text, at: List<Int>): move_placed_signature(d, p, who, at)
+    }
+}
+
+/// One of a field's box measures, in points: its x, y, width or height, by `at`.
+fn field_box(f: Field, at: Int) -> Float {
+    f.rect.at(at) ?? 0.0
 }
 
 /// The first run a selection covers, counted in, or -1 when it covers none.
@@ -707,7 +751,6 @@ fn mark_shapes(
     let boxes = d.marks
         .filter(m -> m.page == p and (m.kind == .text or m.kind == .note))
         .flat_map(m -> box_shapes(m, p))
-    let signatures = d.signatures.filter(s -> s.page == p).flat_map(s -> signature_shapes(s, p))
     let selected = run_areas(p, sel_from, sel_to, "#60a5fa55")
     let found = if finding { run_hits(p, query) } else { [] }
     let picked = if let start = from {
@@ -716,7 +759,7 @@ fn mark_shapes(
     let drawn = if stroke.len() >= 2 {
         [ui.Shape.stroke(points: stroke, colour: "#1c212f", width: 0.004)]
     } else { [] }
-    [lines, ink, boxes, signatures, selected, found, picked, drawn].flat_map(x -> x)
+    [lines, ink, boxes, selected, found, picked, drawn].flat_map(x -> x)
 }
 
 /// The runs of `p` from `first` to `finish`, both counted in, as areas in the colour given.
@@ -836,53 +879,23 @@ fn box_shapes(m: Mark, p: Page) -> List<ui.Shape> {
     }
 }
 
-/// A signature's box: the signer's name, or the strokes they drew in it.
-fn signature_shapes(s: Signature, p: Page) -> List<ui.Shape> {
-    let x = if p.width > 0.0 { s.x / p.width } else { 0.0 }
-    let y = if p.height > 0.0 { s.y / p.height } else { 0.0 }
-    let w = if p.width > 0.0 { s.width / p.width } else { 0.0 }
-    let h = if p.height > 0.0 { s.height / p.height } else { 0.0 }
-    let drawn = s.strokes.map(
-        stroke -> ui.Shape.stroke(
-            points: stroke_in(stroke.points, x, y, w, h),
-            colour: "#1c212f",
-            width: 0.003,
-        ),
-    )
-    if drawn.is_empty() {
-        [
-            ui.Shape.label(
-                x: x + w / 2.0,
-                y: y + h / 2.0,
-                text: s.signer,
-                colour: "#1c212f",
-                size: 0.05,
-                anchor: .middle,
-            ),
-        ]
-    } else { drawn }
-}
-
-/// A stroke of a signature's own box, placed on its page's box.
-fn stroke_in(points: List<Float>, x: Float, y: Float, w: Float, h: Float) -> List<Float> {
-    stroke_in_from(points, x, y, w, h, 0)
-}
-
-/// The points of `points` from the pair `at` on, placed on the page's box.
-fn stroke_in_from(
-    points: List<Float>,
-    x: Float,
-    y: Float,
-    w: Float,
-    h: Float,
-    at: Int,
-) -> List<Float> {
-    if at + 1 >= points.len() {
-        return []
+/// One placed signature in its own box: the signer's name, or the strokes they drew.
+view signature_body(s: Signature) {
+    if s.strokes.is_empty() {
+        ui.Text(s.signer, role: .label)
+    } else {
+        ui.Drawing(
+            signature_ink(s),
+            meaning: .decoration,
+            label: "Signature of {s.signer}",
+            height: s.height,
+        )
     }
-    let px = x + (points.at(at) ?? 0.0) * w
-    let py = y + (points.at(at + 1) ?? 0.0) * h
-    [[px, py], stroke_in_from(points, x, y, w, h, at + 2)].flat_map(v -> v)
+}
+
+/// A drawn signature's strokes, in fractions of its own box: the places the person drew them.
+fn signature_ink(s: Signature) -> List<ui.Shape> {
+    s.strokes.map(stroke -> ui.Shape.stroke(points: stroke.points, colour: "#1c212f", width: 0.01))
 }
 
 /// The box a person is dragging over a page, while they drag.
@@ -894,9 +907,9 @@ fn selection_shape(p: Page, start: List<Float>, end: List<Float>) -> ui.Shape {
     ui.Shape.area(x: x, y: y, w: w, h: h, round: 0.0, colour: "#60a5fa55")
 }
 
-/// One form field of its page: its words as a field, its box as a switch, its choice as a
-/// menu, and what the file says of it — the one it locks, and the one it needs before it goes.
-view field_row(d: Document, f: Field) {
+/// One form field at its own box on its page: its words as a field, its box as a switch, its
+/// choice as a menu.
+view field_widget(d: Document, f: Field) {
     if f.kind == "checkbox" or f.kind == "radio" {
         ui.Button(
             f.name,
@@ -926,10 +939,15 @@ view field_row(d: Document, f: Field) {
             on submit(word: Text): fill_field(d, f.name, word)
         }
     }
+}
+
+/// What the file says of a field, under its page: the one it locks, and the one it needs before
+/// a copy goes.
+view field_note(d: Document, f: Field) {
     if f.read_only {
-        text("The document locks this field.", role: .caption, secondary: true)
+        ui.Text("{f.name}: The document locks this field.", role: .caption, secondary: true)
     } else if f.required and field_empty(d, f) {
-        text("The document needs this field filled.", role: .caption, secondary: true)
+        ui.Text("{f.name}: The document needs this field filled.", role: .caption, secondary: true)
     }
 }
 

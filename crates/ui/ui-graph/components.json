@@ -7000,6 +7000,11 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "still",
+          "doc": "The stage stands the page where the view puts it and takes nothing of its own: the wheel and a pinch do not zoom it, no pan moves it, the keys that walk and move its places do not reach it, and a dragged place does not line up with the page's margins. A stage laid over a page another view draws sets this, so the page under it keeps its own zoom and its own keys and its places move only where the hand puts them.",
+          "type": "bool"
         }
       ],
       "parts": [

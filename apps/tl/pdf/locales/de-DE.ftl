@@ -1107,6 +1107,39 @@ d-lfkj2ymr = Feldzeile
     .w-the-document-needs-this-field-filled = Das Dokument braucht dieses Feld ausgefüllt.
     .w-choose = Wählen
 
+d-krgcpooh = Feldhinweis
+    .w-the-document-locks-this-field = Das Dokument sperrt dieses Feld.
+    .w-the-document-needs-this-field-filled = Das Dokument braucht dieses Feld ausgefüllt.
+
+d-h24qeato = Formularfeld
+    .w-choose = Wählen
+
+d-thx26ajn = Eine Unterschrift verschieben
+    .doc = Setzt eine platzierte Unterschrift an einen anderen Punkt ihrer Seite: ihre obere führende Ecke als Bruchteile des Kastens der Seite. Es ist eine Änderung wie jede andere, sodass alle, die zusehen, sie sich bewegen sehen und ein Rückgängig die Bewegung zurücknimmt.
+    .did = hat eine Unterschrift verschoben
+
+d-thx26ajn-s = Unterschrift
+
+d-thx26ajn-x = X
+
+d-thx26ajn-y = Y
+
+d-3qlsbzv5 = Eine Unterschrift verschieben
+    .doc = Verschiebt die Unterschrift, die `who` nennt, so wie die Stelle über ihrer Seite sie meldet: ihre neue Ecke als ganze Punkte der Seite.
+    .did = hat eine Unterschrift verschoben
+
+d-3qlsbzv5-p = P
+
+d-3qlsbzv5-who = Wer
+
+d-3qlsbzv5-at = An
+
+d-6bvwmux3 = Seite, ihre Felder und Unterschriften
+    .w-page-its-fields-and-signatures = Seite { $source_page }, ihre Felder und Unterschriften
+
+d-2atauvni = Unterschrift
+    .w-signature-of = Unterschrift von { $signer }
+
 d-zcxne7qg = Kommentarbereich
     .w-nothing-is-said-about-this-pdf = Über dieses PDF ist noch nichts gesagt.
     .w-say-something-about-this-pdf = Sag etwas über dieses PDF
