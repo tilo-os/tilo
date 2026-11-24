@@ -51,7 +51,8 @@ fn mailbox() -> (Replica, ResourceRef) {
         || None,
     )
     .expect("a host");
-    let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform packages");
+    let platform =
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform packages");
     let directory = platform
         .iter()
         .find(|meta| meta.app == tilolang_tilo::platform_apps::CONTACTS_APP)
@@ -121,13 +122,7 @@ fn offers(view: &ViewInstance) -> Vec<(String, String, String)> {
     view.tree()
         .of_kind("ui.Suggestion")
         .into_iter()
-        .map(|row| {
-            (
-                text(row, "value"),
-                text(row, "label"),
-                text(row, "detail"),
-            )
-        })
+        .map(|row| (text(row, "value"), text(row, "label"), text(row, "detail")))
         .collect()
 }
 
@@ -144,7 +139,10 @@ fn offered(ada: &Replica, draft: &ResourceRef, typed: &str) -> Vec<(String, Stri
         field_id(&package.meta, "Draft", "to")
     };
     ada.edit(draft, &to, &Value::text(typed));
-    let view = ada.host.open_resource(draft, None).expect("the draft opens");
+    let view = ada
+        .host
+        .open_resource(draft, None)
+        .expect("the draft opens");
     offers(&view)
 }
 
@@ -265,4 +263,44 @@ fn a_sent_to_person_is_offered_above_one_who_wrote_and_the_books_name_names_them
         "the person the mail was written to stands above the one who wrote, under the name the \
          book keeps for them rather than the one the header wrote"
     );
+}
+
+/// What a field of a record says, as text.
+fn said(r: &Replica, at: &ResourceRef, field: &str) -> String {
+    match r.host.runtime().read(at, field).unwrap() {
+        Value::Text(text) => text,
+        other => panic!("{field} reads {other:?}"),
+    }
+}
+
+/// A `mailto:` link opens a message to whom it names, for the person to read and send; a link
+/// that names no address opens nothing.
+#[test]
+fn a_mailto_link_opens_a_draft_to_whom_it_names() {
+    let (ada, _) = mailbox();
+    let mail = ada.root(MAIL);
+    let opened = call(
+        &ada,
+        MAIL,
+        "open_link",
+        vec![
+            Value::resource(&mail),
+            Value::text("mailto:anna@northwind.example?subject=Hello"),
+        ],
+    );
+    let Value::Opt(Some(draft)) = opened else {
+        panic!("the link opens a draft: {opened:?}")
+    };
+    let draft = target(&draft);
+    assert_eq!(said(&ada, &draft, "to"), "anna@northwind.example");
+    let opened = call(
+        &ada,
+        MAIL,
+        "open_link",
+        vec![
+            Value::resource(&mail),
+            Value::text("https://example.org/no-address"),
+        ],
+    );
+    assert!(matches!(opened, Value::Opt(None)), "{opened:?}");
 }

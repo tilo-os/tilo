@@ -4,6 +4,7 @@ app so.tilo.mail "Mail" (
     tagline: "Email over IMAP and SMTP",
     keywords: ["email", "e-mail", "mail", "inbox", "mailbox", "gmail", "imap", "smtp", "apple mail", "evolution", "geary", "kmail", "kontact", "emails", "post", "posteingang", "briefe", "postfach", "mailprogramm", "elektronische post", "e-mails"],
     splash_budget: 250,
+    schemes: "mailto",
 )
 
 use so.tilo.contacts as contacts
@@ -476,6 +477,34 @@ fn native_draft(e: host.Earlier, at: Text, account: Text, answers: Text) -> List
 primary action new_draft(m: Mail) -> Draft (icon: .pencil, label: "New message") {
     let from = m.accounts.first()?.key ?? ""
     m.drafts.insert(Draft(from: from, body: signature_of(m, from)))
+}
+
+/// Opens a `mailto:` link: a message to whom it names, in Drafts, for the person to read and
+/// send. A link that names no address opens nothing, as it names nobody to write to. The
+/// host publishes this as the system's `open-link` on the mailbox, which is what a shell hands
+/// a link to.
+action open_link(m: Mail, link: Text) -> Option<Draft> {
+    let address = mailto_address(link)
+    if address.is_empty() {
+        return .none
+    }
+    let from = m.accounts.first()?.key ?? ""
+    let made = m.drafts.insert(Draft(from: from, to: address))
+    return .some(made)
+}
+
+/// The address a `mailto:` link names, before any query it carries, or empty when the link
+/// names none: what the app that takes a message opens a draft to.
+fn mailto_address(link: Text) -> Text {
+    if not link.lower().starts_with("mailto:") {
+        return ""
+    }
+    let rest = link.slice(7, link.len())
+    let end = rest.find("?") ?? rest.find(",") ?? rest.len()
+    let said = rest.slice(0, end).trim()
+    if said.contains("@") and not said.starts_with("@") and not said.ends_with("@") {
+        said
+    } else { "" }
 }
 
 /// Writes a message for the person to read and send: to whom, its subject and what it says,

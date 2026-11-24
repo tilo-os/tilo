@@ -854,3 +854,8 @@ d-zzpnzlp2 = Vertrauenswürdig
     .doc = Die Absender, deren Bilder ohne Nachfrage gezeigt werden, nach ihrer Adresse.
 
 d-agv4f5yf-address = Adresse
+
+d-dsurl5gh = Link öffnen
+    .doc = Öffnet einen `mailto:`-Link: eine Nachricht an den, den er nennt, in den Entwürfen, damit die Person sie liest und sendet. Ein Link, der keine Adresse nennt, öffnet nichts, da er niemanden zum Schreiben nennt. Der Host veröffentlicht dies als `open-link` des Systems am Postfach, wohin eine Shell einen Link gibt.
+
+d-dsurl5gh-link = Link
