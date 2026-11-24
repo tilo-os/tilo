@@ -98,7 +98,7 @@ fn main() -> std::process::ExitCode {
         .stdin(std::process::Stdio::from(
             service.as_fd().try_clone_to_owned().unwrap(),
         ))
-        .spawn()
+        .spawn_locked()
         .unwrap();
     drop(service);
     let ready = broker.recv::<FromService>().unwrap().message;

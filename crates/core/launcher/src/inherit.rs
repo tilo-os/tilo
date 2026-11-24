@@ -60,6 +60,8 @@ mod tests {
     /// answers the session.
     #[test]
     fn a_link_handed_as_stdin_reaches_the_sandbox() {
+        use tilo_test_env::SpawnUnderEnvLock as _;
+
         if std::env::var_os(TAKER).is_some() {
             let link = process_link::take().unwrap();
             let mut sandbox = Command::new("sh");
@@ -71,7 +73,7 @@ mod tests {
                 .stdin(Stdio::null());
             super::hand_down(&mut sandbox, vec![(link.as_raw_fd(), CHILD_FD)], false);
             assert!(
-                sandbox.status().unwrap().success(),
+                sandbox.status_locked().unwrap().success(),
                 "the link is at its slot, not stdin"
             );
             FromProcess::Serves.send(&link).unwrap();

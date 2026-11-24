@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 use crate::support::installed::{Installed, SYSTEM_PATH, plain};
 
 /// A `tilo` answering the lines `tilo mcp --as-me` answers, as `TILO_FAKE` picks: `signed-in`
@@ -68,7 +70,7 @@ fn built_app(installed: &Installed) -> (tempfile::TempDir, PathBuf) {
         .arg(&dist)
         .arg("--identity")
         .arg(&key)
-        .output()
+        .output_locked()
         .unwrap();
     assert!(
         built.status.success(),
