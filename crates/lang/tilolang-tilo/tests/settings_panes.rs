@@ -181,7 +181,12 @@ impl Invoker for Sent {
 /// limits in, and only an owner is offered to set them.
 #[test]
 fn the_content_pane_shows_what_the_host_keeps_in_mebibytes() {
-    let (host, _) = settings();
+    use tilo_action_policy::{Role, WorkspacePolicy};
+
+    // A member who is no owner of the workspace: they read its limits and change none.
+    let mut policy = WorkspacePolicy::new("team", "bo");
+    policy.members.insert("ada".to_owned(), Role::Editor);
+    let (host, _) = settings_with(Some(MemberAccess::person(policy, "ada")));
     limits(&host);
     invoke(&host, "open_pane", vec![Value::text("content")]);
     assert_eq!(pane(&host), "content");
