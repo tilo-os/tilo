@@ -929,14 +929,15 @@ fn accessories_profiles_the_hotspot_and_the_modem_act_from_their_children() {
         .invoke(BLUETOOTH, "set-bluetooth", &arguments(json!({"on": false})))
         .expect("taken");
     service.settle();
-    for (resource, action) in [(BLUETOOTH, "scan"), ("bluetooth-nearby:AA:CC", "pair")] {
-        let arguments = arguments(json!({"on": true}));
-        let refused = service.invoke(resource, action, &arguments);
-        assert!(
-            matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "bluetooth_off"),
-            "{action}: {refused:?}"
-        );
-    }
+    let refused = service.invoke(BLUETOOTH, "scan", &arguments(json!({"on": true})));
+    assert!(
+        matches!(&refused, Err(ApiError::Unavailable { code, .. }) if code == "bluetooth_off"),
+        "scan: {refused:?}"
+    );
+    assert!(
+        child_actions(&service, "bluetooth-nearby:AA:CC").is_empty(),
+        "with the radio off nothing is in reach to pair"
+    );
 
     // A VPN is added from a configuration's text and removed by its child;
     // the text never shows in a reading.
@@ -1068,7 +1069,6 @@ fn what_the_device_lacks_is_unavailable() {
         (NETWORK, "toggle-airplane-mode", json!({})),
         (BLUETOOTH, "set-bluetooth", json!({"on": true})),
         (BLUETOOTH, "scan", json!({"on": true})),
-        ("bluetooth-nearby:AA:CC", "pair", json!({})),
         (TETHERING, "set-hotspot", json!({"on": true})),
         (
             TETHERING,

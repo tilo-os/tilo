@@ -441,33 +441,16 @@ impl Connectivity {
         self.start(Part::Bluetooth, id, change)
     }
 
-    /// `action` on the Bluetooth device in reach whose hardware address is `address`: refused
-    /// while the radio is missing or off, when nothing is in reach to pair.
-    fn bluetooth_nearby(
-        &mut self,
-        address: &str,
-        action: BluetoothNearbyAction,
-    ) -> Result<Started, ApiError> {
+    /// `action` on the Bluetooth device in reach whose hardware address is `address`. A radio
+    /// that is missing or off has nothing in reach, so no row to call it on.
+    fn bluetooth_nearby(&mut self, address: &str, action: BluetoothNearbyAction) -> Started {
         let id = action.id();
-        let bluetooth = &self.readings.bluetooth;
-        if !bluetooth.available {
-            return Err(ApiError::Unavailable {
-                code: "no_adapter".into(),
-                reason: "This device has no Bluetooth".into(),
-            });
-        }
-        if !bluetooth.on {
-            return Err(ApiError::Unavailable {
-                code: "bluetooth_off".into(),
-                reason: "Bluetooth is off".into(),
-            });
-        }
         let change = match action {
             BluetoothNearbyAction::Pair => Change::Pair {
                 address: address.to_owned(),
             },
         };
-        Ok(self.start(Part::Bluetooth, id, change))
+        self.start(Part::Bluetooth, id, change)
     }
 
     fn vpn(&mut self, action: VpnAction) -> Started {
@@ -1138,7 +1121,7 @@ impl Service for Connectivity {
             BLUETOOTH_NEARBY => {
                 let action =
                     decode::<BluetoothNearbyAction>(&published, resource, action, arguments)?;
-                self.bluetooth_nearby(key, action)
+                Ok(self.bluetooth_nearby(key, action))
             }
             VPN => {
                 let action = decode::<VpnAction>(&published, resource, action, arguments)?;
