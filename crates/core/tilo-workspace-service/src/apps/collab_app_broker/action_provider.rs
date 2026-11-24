@@ -749,7 +749,16 @@ impl AppBrokerState {
             | RemoteActionMessage::ChangesRequest { .. }
             // Nor does it wait for another device's workspace to change.
             | RemoteActionMessage::ChangedRequest { .. }
-            | RemoteActionMessage::SurfaceRequest { .. } => None,
+            | RemoteActionMessage::SurfaceRequest { .. }
+            // An outside call is carried by the call lane of the connection the app holds, which
+            // takes these before any provider sees them; the broker carries none.
+            | RemoteActionMessage::CallCarryRequest { .. }
+            | RemoteActionMessage::CallCarryResponse { .. }
+            | RemoteActionMessage::CallReport { .. }
+            | RemoteActionMessage::CallReportResponse { .. }
+            | RemoteActionMessage::CallHeard(_)
+            | RemoteActionMessage::CallSaid(_)
+            | RemoteActionMessage::CallStatus(_) => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
