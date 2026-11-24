@@ -712,17 +712,21 @@ impl Opened {
             .into_iter()
             .map(std::rc::Rc::unwrap_or_clone)
             .collect();
-        let words = self.host.runtime().words();
-        for package in self.host.packages() {
-            if package.meta.app != self.app {
-                continue;
-            }
-            let resource = publish_package(&package.meta, planner, &*words);
-            if !resource.actions.is_empty() {
-                out.push(resource);
-            }
-        }
+        out.extend(self.own(planner));
         out
+    }
+
+    /// The resources of the app's own packages, published after the record's documents: what
+    /// carries the actions that take no resource.
+    fn own(&self, planner: &Arc<dyn Planner>) -> Vec<ResourceSpec> {
+        let words = self.host.runtime().words();
+        self.host
+            .packages()
+            .iter()
+            .filter(|package| package.meta.app == self.app)
+            .map(|package| publish_package(&package.meta, planner, &*words))
+            .filter(|resource| !resource.actions.is_empty())
+            .collect()
     }
 
     /// The events the changes of `doc`, the record's document `record` of `workspace`, made after
@@ -873,15 +877,50 @@ impl Opened {
     /// The page of [`Self::rows`] `query` asks for: the rows it admits from its cursor on, at
     /// most its page size, and a cursor past them while more follow. What a caller listing the
     /// record a level at a time is answered.
+    ///
+    /// A page publishes the level it lists and not the record: the resources directly under
+    /// `query`'s parent (or the top), and of them the ones whose rows it answers, so a page of
+    /// 40 rows under ten thousand tasks costs about 40 rows. A query that narrows by nothing a
+    /// row says counts the rows before its cursor by resource without publishing them; one that
+    /// narrows by its words, a resource's name or a view publishes each resource of the level
+    /// to ask, still never the rest of the record. Only a query for one exact action (`target`,
+    /// `action`) publishes the whole record: it finds the action under whichever parent holds it.
     #[must_use]
     pub fn page(&self, query: &CatalogueQuery) -> CataloguePage {
-        let mut admitted = self
-            .rows()
-            .into_iter()
-            .filter(|row| query.admits(row))
-            .skip(query.offset());
-        let rows: Vec<CatalogueRow> = admitted.by_ref().take(query.page_size()).collect();
-        let more = admitted.next().is_some();
+        let (offset, size) = (query.offset(), query.page_size());
+        if query.target.is_some() || query.action.is_some() {
+            let mut admitted = self
+                .rows()
+                .into_iter()
+                .filter(|row| query.admits(row))
+                .skip(offset);
+            let rows: Vec<CatalogueRow> = admitted.by_ref().take(size).collect();
+            let more = admitted.next().is_some();
+            return CataloguePage::window(String::new(), rows, query, more);
+        }
+        // Every row the record publishes is its app's.
+        if query.app_id.as_deref().is_some_and(|app| app != self.app) {
+            return CataloguePage::window(String::new(), Vec::new(), query, false);
+        }
+        let planner = self.planner(None);
+        // An empty parent names the top, as it does for the rows a query admits.
+        let parent = query
+            .parent_resource
+            .as_deref()
+            .filter(|parent| !parent.is_empty());
+        let mut level = Publications::new(&self.host).level(&self.host, &planner, parent);
+        if parent.is_none() {
+            for resource in self.own(&planner) {
+                level.then(resource);
+            }
+        }
+        let every = query.needle.is_empty()
+            && query.resource_name.is_none()
+            && query.view_resource.is_none();
+        let (rows, more) = level.page(&self.host, (offset, size), every, &mut |placed| {
+            let row = CatalogueRow::for_placed_action("", &self.app, placed);
+            query.admits(&row).then_some(row)
+        });
         CataloguePage::window(String::new(), rows, query, more)
     }
 

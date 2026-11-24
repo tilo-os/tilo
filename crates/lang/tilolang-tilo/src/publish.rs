@@ -19,10 +19,11 @@ use tilo_actions::{
 
 use crate::action::{BLOCK_EDITS, BlockEdit, BlockEditKind, DIRECT_EDITS, DirectEdit, DynAction};
 use crate::resources::{ResourceStore, Watch};
+use tilo_actions::api::{PlacedAction, survey_placed_level};
 use tilolang_runtime::ids::Actor;
 use tilolang_runtime::meta::{ActionMeta, FieldKind, Meta, Ty, TypeMeta};
 use tilolang_runtime::store::{
-    ANY_FIELD, ChangeNote, FieldSpec, FieldValue, Mutation, Scalar, Store as _,
+    ANY_FIELD, ChangeNote, FieldSpec, FieldValue, Listing, Mutation, Scalar, Store as _,
 };
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
@@ -1000,15 +1001,21 @@ impl Reader<'_> {
     /// The document `doc`, with what `reached` reaches of it, or every item when `None`. `None`
     /// when the store holds no such document, or no loaded type is its.
     fn document(&self, doc: &str, reached: Option<&Reached>) -> Option<ResourceSpec> {
-        let ty = self.store.type_of_id(doc)?;
-        let name = self.store.kinds().get(&ty)?.name.clone();
-        let at = ResourceRef::root(doc, ty);
-        let label = self.label(&at, &name);
-        let mut tree = publish_resource(self.types, &name, doc, &label);
+        let (at, mut tree) = self.document_alone(doc)?;
         for child in self.items(&at, reached) {
             tree = tree.with_child(child);
         }
         Some(tree)
+    }
+
+    /// The document `doc` published on its own, without its items, and where it is.
+    fn document_alone(&self, doc: &str) -> Option<(ResourceRef, ResourceSpec)> {
+        let ty = self.store.type_of_id(doc)?;
+        let name = self.store.kinds().get(&ty)?.name.clone();
+        let at = ResourceRef::root(doc, ty);
+        let label = self.label(&at, &name);
+        let tree = publish_resource(self.types, &name, doc, &label);
+        Some((at, tree))
     }
 
     /// What the resource `at` of the type `type_name` is called: its text, else what its
@@ -1032,14 +1039,7 @@ impl Reader<'_> {
                 .collect();
         }
         let mut out = Vec::new();
-        for (field, items) in collections_of(self.store, Some(self.types.meta()), &at.ty) {
-            let spec = FieldSpec {
-                id: field,
-                kind: FieldKind::Collection,
-            };
-            let Ok(listing) = self.store.listing(at, &spec) else {
-                continue;
-            };
+        for (listing, items) in self.collections(at) {
             for id in listing.iter() {
                 if let Some(item) = item_of(self.store, at, &id, &items) {
                     out.extend(self.item(&item, None));
@@ -1049,15 +1049,253 @@ impl Reader<'_> {
         out
     }
 
+    /// The collections of `at` its tree publishes the items of, in the order it publishes them,
+    /// each with its listing and the types of its items.
+    fn collections(&self, at: &ResourceRef) -> Vec<(Rc<Listing>, Vec<String>)> {
+        collections_of(self.store, Some(self.types.meta()), &at.ty)
+            .into_iter()
+            .filter_map(|(field, items)| {
+                let spec = FieldSpec {
+                    id: field,
+                    kind: FieldKind::Collection,
+                };
+                Some((self.store.listing(at, &spec).ok()?, items))
+            })
+            .collect()
+    }
+
+    /// Whether `at` holds an item its tree publishes: whether its resource has children, found
+    /// by the first of them rather than by publishing them.
+    fn holds_any(&self, at: &ResourceRef) -> bool {
+        self.collections(at).iter().any(|(listing, items)| {
+            listing.iter().any(|id| {
+                item_of(self.store, at, &id, items)
+                    .is_some_and(|item| self.store.kinds().get(&item.ty).is_some())
+            })
+        })
+    }
+
     /// The item `at`, published with its type's direct edits and actions, and its own items.
     fn item(&self, at: &ResourceRef, reached: Option<&Reached>) -> Option<ResourceSpec> {
-        let name = self.store.kinds().get(&at.ty)?.name.clone();
-        let label = self.label(at, &name);
-        let mut resource = self.types.resource(&name, &at.id_string(), label, false);
+        let mut resource = self.item_alone(at)?;
         for child in self.items(at, reached) {
             resource = resource.with_child(child);
         }
         Some(resource)
+    }
+
+    /// The item `at` published on its own, without its items.
+    fn item_alone(&self, at: &ResourceRef) -> Option<ResourceSpec> {
+        let name = self.store.kinds().get(&at.ty)?.name.clone();
+        let label = self.label(at, &name);
+        Some(self.types.resource(&name, &at.id_string(), label, false))
+    }
+}
+
+/// One level of what a workspace publishes ([`Publications::level`]): the resources directly
+/// under one, or the documents at the top, each published only when a page lists it.
+pub struct Level {
+    /// The published resource the level is under, empty at the top.
+    parent: String,
+    /// What the level holds, in the order the whole publication holds it.
+    runs: Vec<Run>,
+}
+
+/// A stretch of a level's resources.
+enum Run {
+    /// A document at the top, published with its package's action types.
+    Document {
+        doc: String,
+        types: Arc<ActionTypes>,
+    },
+    /// The items of one collection of `holder`, of the types `items`, published with the action
+    /// types of their document's package.
+    Items {
+        holder: ResourceRef,
+        listing: Rc<Listing>,
+        items: Vec<String>,
+        types: Arc<ActionTypes>,
+    },
+    /// A resource published beside the level's own ([`Level::then`]).
+    Given(Box<ResourceSpec>),
+}
+
+impl Level {
+    /// The published resource the level is under, empty at the top.
+    #[must_use]
+    pub fn parent(&self) -> &str {
+        &self.parent
+    }
+
+    /// Add `resource` after the level's own resources: one its publisher holds beside them, as
+    /// a record holds its package's own resource beside its documents.
+    pub fn then(&mut self, resource: ResourceSpec) {
+        self.runs.push(Run::Given(Box::new(resource)));
+    }
+
+    /// The rows `admit` admits of the level, from the `offset`th it admits on: at most `size`
+    /// of them, and whether more follow. A row is an action of a resource of the level, as
+    /// [`tilo_actions::api::survey_placed`] lists it in the whole publication: in the same order,
+    /// under the level's parent, and saying whether its own resource holds more.
+    ///
+    /// With `every`, `admit` admits every row: the rows before `offset` are then counted by the
+    /// resources holding them and never published, since every resource of one type publishes
+    /// the same actions ([`ActionTypes::resource`]), and a page costs its own rows wherever it
+    /// starts. Without it, each resource of the level from its start is published to put its
+    /// rows to `admit`: a page costs its level, never the rest of the workspace.
+    pub fn page<R>(
+        &self,
+        host: &crate::host::Host,
+        (offset, size): (usize, usize),
+        every: bool,
+        admit: &mut dyn FnMut(PlacedAction) -> Option<R>,
+    ) -> (Vec<R>, bool) {
+        let mut rows = Vec::new();
+        let mut more = false;
+        let mut admitted = 0usize;
+        self.walk(host, if every { offset } else { 0 }, &mut |at, placed| {
+            let Some(row) = admit(placed) else {
+                return true;
+            };
+            let index = if every { at } else { admitted };
+            admitted = admitted.saturating_add(1);
+            if index < offset {
+                true
+            } else if rows.len() < size {
+                rows.push(row);
+                true
+            } else {
+                more = true;
+                false
+            }
+        });
+        (rows, more)
+    }
+
+    /// Visit each row of the level with its place among them, from the resource holding the
+    /// `skip`th on: the resources wholly before it are counted by their type, once one of the
+    /// type was published, and not published. `false` when `visit` stopped it.
+    fn walk(
+        &self,
+        host: &crate::host::Host,
+        skip: usize,
+        visit: &mut dyn FnMut(usize, PlacedAction) -> bool,
+    ) -> bool {
+        let store = host.store();
+        // How many rows a resource publishes, by its package, its type and whether it is a
+        // document.
+        let mut weights: BTreeMap<(String, String, bool), usize> = BTreeMap::new();
+        let mut row = 0usize;
+        let past = |row: usize, weight: usize| row.saturating_add(weight) <= skip;
+        for run in &self.runs {
+            match run {
+                Run::Given(resource) => {
+                    if past(row, resource.actions.len()) {
+                        row = row.saturating_add(resource.actions.len());
+                        continue;
+                    }
+                    let holds = !resource.children.is_empty();
+                    if !self.visit(resource, holds, &mut row, visit) {
+                        return false;
+                    }
+                }
+                Run::Document { doc, types } => {
+                    let reader = Reader { store, types };
+                    let Some(name) = store
+                        .type_of_id(doc)
+                        .and_then(|ty| Some(store.kinds().get(&ty)?.name.clone()))
+                    else {
+                        continue;
+                    };
+                    let key = (types.meta().app.clone(), name, true);
+                    if let Some(&weight) = weights.get(&key)
+                        && past(row, weight)
+                    {
+                        row = row.saturating_add(weight);
+                        continue;
+                    }
+                    let Some((at, resource)) = reader.document_alone(doc) else {
+                        continue;
+                    };
+                    weights.insert(key, resource.actions.len());
+                    if !self.visit(&resource, reader.holds_any(&at), &mut row, visit) {
+                        return false;
+                    }
+                }
+                Run::Items {
+                    holder,
+                    listing,
+                    items,
+                    types,
+                } => {
+                    let reader = Reader { store, types };
+                    let len = listing.len();
+                    let mut index = 0usize;
+                    // A collection of one type whose length is known: every item publishes as
+                    // many rows as the first does, so the page starts at the item holding the
+                    // `skip`th row, found by counting.
+                    if let [_] = items.as_slice()
+                        && listing.len_is_exact()
+                        && let Some(first) = listing.first()
+                        && let Some(first) = item_of(store, holder, &first, items)
+                        && let Some(published) = reader.item_alone(&first)
+                        && let Some(weight) = std::num::NonZeroUsize::new(published.actions.len())
+                    {
+                        index = (skip.saturating_sub(row) / weight.get()).min(len);
+                        row = row.saturating_add(index.saturating_mul(weight.get()));
+                    }
+                    while index < len {
+                        let Some(id) = listing.get(index) else {
+                            break;
+                        };
+                        index = index.saturating_add(1);
+                        let Some(item) = item_of(store, holder, &id, items) else {
+                            continue;
+                        };
+                        let Some(name) = store.kinds().get(&item.ty).map(|kind| kind.name.clone())
+                        else {
+                            continue;
+                        };
+                        let key = (types.meta().app.clone(), name, false);
+                        if let Some(&weight) = weights.get(&key)
+                            && past(row, weight)
+                        {
+                            row = row.saturating_add(weight);
+                            continue;
+                        }
+                        let Some(resource) = reader.item_alone(&item) else {
+                            continue;
+                        };
+                        weights.insert(key, resource.actions.len());
+                        if !self.visit(&resource, reader.holds_any(&item), &mut row, visit) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Visit the rows of `resource`, one of the level, from `row` on: `holds` says whether it
+    /// has resources under it, which it is published without.
+    fn visit(
+        &self,
+        resource: &ResourceSpec,
+        holds: bool,
+        row: &mut usize,
+        visit: &mut dyn FnMut(usize, PlacedAction) -> bool,
+    ) -> bool {
+        survey_placed_level(
+            std::slice::from_ref(resource),
+            &self.parent,
+            &mut |mut placed| {
+                placed.has_children = holds;
+                let at = *row;
+                *row = at.saturating_add(1);
+                visit(at, placed)
+            },
+        )
     }
 }
 
@@ -1411,18 +1649,32 @@ impl Publications {
         doc: &str,
         reached: Option<&Reached>,
     ) -> Option<ResourceSpec> {
-        let ty = host.store().type_of_id(doc)?;
-        let app = host.store().kinds().get(&ty)?.app.clone();
-        let types = self.types_of(host, &app, planner)?;
-        if !types.meta().types.iter().any(|declared| declared.id == ty) {
-            return None;
-        }
+        let types = self.types_of_doc(host, planner, doc)?;
         self.visited = self.visited.saturating_add(1);
         Reader {
             store: host.store(),
             types: &types,
         }
         .document(doc, reached)
+    }
+
+    /// The action types the document `doc` is published with, its package's: `None` when the
+    /// store holds no such document or no loaded package declares its type.
+    fn types_of_doc(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        doc: &str,
+    ) -> Option<Arc<ActionTypes>> {
+        let ty = host.store().type_of_id(doc)?;
+        let app = host.store().kinds().get(&ty)?.app.clone();
+        let types = self.types_of(host, &app, planner)?;
+        types
+            .meta()
+            .types
+            .iter()
+            .any(|declared| declared.id == ty)
+            .then_some(types)
     }
 
     /// Every document of the workspace: the resources of the loaded packages that no collection
@@ -1536,6 +1788,101 @@ impl Publications {
         let reached = reached_by_doc(host.store(), app, &[address.to_owned()]);
         let (doc, reached) = reached.into_iter().next()?;
         self.read(host, planner, &doc, Some(&reached)).map(Rc::new)
+    }
+
+    /// One level of what [`Self::everything`] publishes: the documents at the top when `parent`
+    /// is `None`, else the resources directly under the published resource `parent`, in the
+    /// order the whole publication holds them. Nothing of it is published yet: a page of it
+    /// publishes the resources it lists ([`Level::page`]), whatever else the workspace holds. A
+    /// `parent` the whole publication holds no resource as has nothing under it.
+    pub fn level(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        parent: Option<&str>,
+    ) -> Level {
+        let Some(parent) = parent else {
+            let runs = Self::documents(host)
+                .into_iter()
+                .filter_map(|doc| {
+                    let types = self.types_of_doc(host, planner, &doc)?;
+                    Some(Run::Document { doc, types })
+                })
+                .collect();
+            return Level {
+                parent: String::new(),
+                runs,
+            };
+        };
+        let runs = self
+            .published_at(host, planner, parent)
+            .map(|(at, types)| {
+                Reader {
+                    store: host.store(),
+                    types: &types,
+                }
+                .collections(&at)
+                .into_iter()
+                .map(|(listing, items)| Run::Items {
+                    holder: at.clone(),
+                    listing,
+                    items,
+                    types: Arc::clone(&types),
+                })
+                .collect()
+            })
+            .unwrap_or_default();
+        Level {
+            parent: parent.to_owned(),
+            runs,
+        }
+    }
+
+    /// The resource the whole publication publishes as `published` (`tl:<app>:<doc>` or
+    /// `tl:<app>:<doc>/<item>`), as its tree holds it, with the action types of its document:
+    /// found from what the store records holds it, then followed down from its document as
+    /// [`Reader::items`] reaches it, collection by collection. `None` when no tree holds it.
+    fn published_at(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        published: &str,
+    ) -> Option<(ResourceRef, Arc<ActionTypes>)> {
+        let app = app_of(published)?;
+        let path = published.strip_prefix(resource_id(app, "").as_str())?;
+        let (doc, item) = tilolang_runtime::value::split_id(path)?;
+        let types = self.types_of_doc(host, planner, doc)?;
+        let store = host.store();
+        let mut at = ResourceRef::root(doc, store.type_of_id(doc)?);
+        if item.is_some() {
+            // The steps from the document down to it: each item, and the collection holding it.
+            let mut here = ResourceRef::parse_id(path, store.type_of_id(path)?)?;
+            let mut steps = Vec::new();
+            while let Some(id) = here.item.clone() {
+                let (holder, field) = store.container(&here).ok()??;
+                steps.push((id, field));
+                here = holder;
+            }
+            if here.doc != doc {
+                return None;
+            }
+            for (id, field) in steps.into_iter().rev() {
+                let (field, items) = collections_of(store, Some(types.meta()), &at.ty)
+                    .into_iter()
+                    .find(|(of, _)| *of == field)?;
+                let spec = FieldSpec {
+                    id: field,
+                    kind: FieldKind::Collection,
+                };
+                if store.listing(&at, &spec).ok()?.holds(&id) == Some(false) {
+                    return None;
+                }
+                let next = item_of(store, &at, &id, &items)?;
+                store.kinds().get(&next.ty)?;
+                at = next;
+            }
+        }
+        (resource_id(&types.meta().app, &at.id_string()) == published).then_some((at, types))
     }
 
     /// Publish nothing of `doc` any more: a document the window scrolled away from holds no part
