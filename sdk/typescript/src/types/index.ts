@@ -34,7 +34,6 @@ export * as diskUsage from "./disk_usage.ts";
 export * as disks from "./disks.ts";
 export * as feeds from "./feeds.ts";
 export * as fileExplorer from "./file_explorer.ts";
-export * as firewall from "./firewall.ts";
 export * as gitClient from "./git_client.ts";
 export * as hexEditor from "./hex_editor.ts";
 export * as logs from "./logs.ts";

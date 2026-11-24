@@ -11751,73 +11751,6 @@
         ],
         "description": ""
       },
-      "firewall.config.start.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "firewall.config.stop.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "firewall.config.enter-panic-mode.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "firewall.config.exit-panic-mode.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "firewall.config.delete-rule.Arguments": {
-        "type": "object",
-        "properties": {
-          "zone": {
-            "enum": [
-              "drop",
-              "block",
-              "public",
-              "external",
-              "dmz",
-              "work",
-              "home",
-              "internal",
-              "trusted"
-            ],
-            "type": "string"
-          },
-          "rule": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "zone",
-          "rule"
-        ],
-        "description": ""
-      },
-      "firewall.config.import.Arguments": {
-        "type": "object",
-        "properties": {
-          "config": {}
-        },
-        "required": [
-          "config"
-        ],
-        "description": ""
-      },
-      "firewall.config.read-blocked.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "git_client.repo.store-repository.Arguments": {
         "type": "object",
         "properties": {
@@ -39224,48 +39157,6 @@
       "resource": "files.workspace",
       "action": "download",
       "arguments": "#/components/schemas/files.workspace.download.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "firewall.config",
-      "action": "start",
-      "arguments": "#/components/schemas/firewall.config.start.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "firewall.config",
-      "action": "stop",
-      "arguments": "#/components/schemas/firewall.config.stop.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "firewall.config",
-      "action": "enter-panic-mode",
-      "arguments": "#/components/schemas/firewall.config.enter-panic-mode.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "firewall.config",
-      "action": "exit-panic-mode",
-      "arguments": "#/components/schemas/firewall.config.exit-panic-mode.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "firewall.config",
-      "action": "delete-rule",
-      "arguments": "#/components/schemas/firewall.config.delete-rule.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "firewall.config",
-      "action": "import",
-      "arguments": "#/components/schemas/firewall.config.import.Arguments"
-    },
-    {
-      "app": "so.tilo.firewall",
-      "resource": "firewall.config",
-      "action": "read-blocked",
-      "arguments": "#/components/schemas/firewall.config.read-blocked.Arguments"
     },
     {
       "app": "so.tilo.git-client",
