@@ -761,7 +761,7 @@ impl HostedBrowsers {
         }
         // A key whose person let it operate web pages needs no question about
         // one: this host answers for them, handing the key's own call to the
-        // window it placed carrying the confirmation their answer would have
+        // window it placed with the confirmation their answer would have
         // made. The window takes that word from this host's link alone
         // ([`tilo_actions::remote::browser::host_answered`]), so it runs the call
         // once and answers the caller itself.

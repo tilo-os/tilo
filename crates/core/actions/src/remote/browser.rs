@@ -211,38 +211,38 @@ pub struct Placement {
     pub workspace: String,
 }
 
-/// Whether `confirmation`, carried by `caller` to a window `placed` by its host, is the person's
-/// answer for the call. A key its person let operate web pages is answered for by the host that
-/// placed the window: that host hands the key's own signed call over its link carrying
+/// Whether `confirmation`, forwarded with `caller`'s call to a window `placed` by its host, is
+/// the person's answer for the call. A key its person let operate web pages is answered for by the host that
+/// placed the window: that host hands the key's own signed call over its link with
 /// [`Confirmation::Confirmed`](super::Confirmation::Confirmed), and only that host, for only
 /// the workspace it placed the window in, answers so. `Ok(false)` where the caller carries its
 /// own word, which the action's policy decides on.
 ///
 /// # Errors
 /// [`ActionCallError::NotPermitted`](super::ActionCallError::NotPermitted) for a confirmation
-/// another device carried, one carried for another workspace, or one reaching a window no host
+/// another device forwarded, one forwarded for another workspace, or one reaching a window no host
 /// placed: nobody else answers for the person here.
 pub fn host_answered(
     placed: Option<&Placement>,
     caller: &super::Caller,
     confirmation: Option<&super::Confirmation>,
 ) -> Result<bool, super::ActionCallError> {
-    let (Some(super::Confirmation::Confirmed), Some(carrier)) = (confirmation, caller.carrier())
+    let (Some(super::Confirmation::Confirmed), Some(forwarder)) = (confirmation, caller.forwarder())
     else {
         return Ok(false);
     };
     let Some(placed) = placed else {
         tracing::warn!(
-            carrier = %hex::encode(carrier),
-            "a confirmation another device carried reached a device no host placed, so it is refused"
+            forwarder = %hex::encode(forwarder),
+            "a confirmation another device forwarded reached a device no host placed, so it is refused"
         );
         return Err(super::ActionCallError::NotPermitted);
     };
-    let by_host = *carrier == placed.host;
+    let by_host = *forwarder == placed.host;
     let in_workspace = caller.workspace() == Some(placed.workspace.as_str());
     if !(by_host && in_workspace) {
         tracing::warn!(
-            carrier = %hex::encode(carrier),
+            forwarder = %hex::encode(forwarder),
             by_host,
             in_workspace,
             "a page action's confirmation came from another device than the host that placed this window, or for another workspace, so it is refused"
@@ -270,18 +270,18 @@ mod tests {
         let agent = Caller::authenticated([7; 32], [8; 32]).in_workspace("ws");
         let confirmed = Some(&Confirmation::Confirmed);
         assert_eq!(
-            host_answered(Some(&placed), &agent.clone().carried_by(host), confirmed),
+            host_answered(Some(&placed), &agent.clone().forwarded_by(host), confirmed),
             Ok(true)
         );
         for (caller, placed) in [
-            (agent.clone().carried_by([2; 32]), Some(&placed)),
+            (agent.clone().forwarded_by([2; 32]), Some(&placed)),
             (
                 Caller::authenticated([7; 32], [8; 32])
                     .in_workspace("other")
-                    .carried_by(host),
+                    .forwarded_by(host),
                 Some(&placed),
             ),
-            (agent.clone().carried_by(host), None),
+            (agent.clone().forwarded_by(host), None),
         ] {
             assert_eq!(
                 host_answered(placed, &caller, confirmed),
@@ -291,7 +291,7 @@ mod tests {
         }
         assert_eq!(host_answered(Some(&placed), &agent, confirmed), Ok(false));
         assert_eq!(
-            host_answered(Some(&placed), &agent.carried_by(host), None),
+            host_answered(Some(&placed), &agent.forwarded_by(host), None),
             Ok(false)
         );
     }

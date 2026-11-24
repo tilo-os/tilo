@@ -1528,7 +1528,7 @@ async fn a_confirmation_the_caller_brings_runs_no_page_action() {
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0, "nothing ran");
 }
 
-/// The frame the placing host hands its window, carrying its word for the
+/// The frame the placing host hands its window, with its word for the
 /// person, runs only over that host's link and for the workspace it placed
 /// the window in: the same frame from another of the workspace's devices,
 /// from another host, or for another workspace, is refused, and the window
@@ -1551,9 +1551,9 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
     };
 
     let other_host = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
-    for carrier in [fixture.agent.sk.clone(), other_host] {
-        let carrying = ActionService::new(
-            carrier,
+    for forwarder in [fixture.agent.sk.clone(), other_host] {
+        let forwarding = ActionService::new(
+            forwarder,
             Arc::new(WindowActions {
                 seen: Arc::new(Mutex::new(Vec::new())),
                 asks: Asks::Never,
@@ -1563,10 +1563,10 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
                 },
             }),
         );
-        let (carrier_end, window_end) = duplex(Some(window_device), None);
+        let (forwarder_end, window_end) = duplex(Some(window_device), None);
         window.serve_link(window_end);
-        carrying.reach_device_at(window_device, carrier_end);
-        let answer = carrying
+        forwarding.reach_device_at(window_device, forwarder_end);
+        let answer = forwarding
             .remote_held(window_device, WS_NAME)
             .expect("a link reaches the window")
             .ask_message(confirmed())

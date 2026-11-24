@@ -81,10 +81,10 @@ pub struct Caller {
     // The invitation a visitor redeems (`Self::invited`): it acts by its issuer's authority,
     // which the action checks against the issuer's grant when it runs.
     invited: Option<Invited>,
-    // The device whose link carried this caller's request, signed by the caller, where it is
-    // another device than the caller's own (`Self::carried_by`): a host handing a page action to
+    // The device whose link brought this caller's request, signed by the caller, where it is
+    // another device than the caller's own (`Self::forwarded_by`): a host handing a page action to
     // the window it placed.
-    carried_by: Option<[u8; 32]>,
+    forwarded_by: Option<[u8; 32]>,
 }
 
 /// The authority an invitation carries ([`Caller::invited`]): the signed invitation, and the
@@ -117,7 +117,7 @@ impl Caller {
             asked: None,
             system: false,
             invited: None,
-            carried_by: None,
+            forwarded_by: None,
         }
     }
 
@@ -655,19 +655,19 @@ impl Caller {
         Some(self.session_group(id))
     }
 
-    /// The request reached here over the link of `device`, which carried it for this caller,
+    /// The request reached here over the link of `device`, which forwarded it for this caller,
     /// who signed it. Set only by the transport that verified both, never from a payload.
     #[must_use]
-    pub const fn carried_by(mut self, device: [u8; 32]) -> Self {
-        self.carried_by = Some(device);
+    pub const fn forwarded_by(mut self, device: [u8; 32]) -> Self {
+        self.forwarded_by = Some(device);
         self
     }
 
-    /// The device that carried this caller's request, when another device than its own did
-    /// ([`Self::carried_by`]).
+    /// The device whose link brought this caller's request, when another device than its own
+    /// did ([`Self::forwarded_by`]).
     #[must_use]
-    pub const fn carrier(&self) -> Option<&[u8; 32]> {
-        self.carried_by.as_ref()
+    pub const fn forwarder(&self) -> Option<&[u8; 32]> {
+        self.forwarded_by.as_ref()
     }
 
     /// Confine the caller to one workspace: the connection was admitted to that
@@ -778,7 +778,7 @@ impl KeptCaller {
             system: self.system,
             // A redemption never waits for a person's yes, so no kept call carries one.
             invited: None,
-            carried_by: None,
+            forwarded_by: None,
         }
     }
 }

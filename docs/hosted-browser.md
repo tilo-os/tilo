@@ -306,7 +306,7 @@ Holding it, the server answers for the person on the page actions that
 operating a page is — `navigate`, `fill-page`, `select-page`, `click-page`,
 `press-page`, `scroll-page`, `drag-page` and `pointer-path`/`pointer-page` —
 handing the key's own signed call to the window over the link the window holds
-to it, carrying a confirmation. The session takes that word from the host that
+to it, with a confirmation. The session takes that word from the host that
 placed it alone — the server it was handed, over that server's link, for the
 workspace it was placed in — and refuses it from any other device, so the
 window runs the action at once, as that key's agent, and the server counts it. A hold is untouched by it: the

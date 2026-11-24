@@ -1341,12 +1341,12 @@ mod tests {
                 "an exact retry never dispatches twice"
             );
             request.invocation = tilo_actions::InvocationId::new();
-            // A confirmation another device carried here answers for nobody: no host placed a
+            // A confirmation another device forwarded here answers for nobody: no host placed a
             // window on this device to answer for its person.
             request.confirmation = Some(Confirmation::Confirmed);
             assert_eq!(
                 state
-                    .action_invoke(&agent.clone().carried_by([9; 32]), None, None, &request)
+                    .action_invoke(&agent.clone().forwarded_by([9; 32]), None, None, &request)
                     .wait_timeout(tilo_test_env::hang_bound())
                     .ok()
                     .flatten()

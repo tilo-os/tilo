@@ -87,11 +87,11 @@ pub(crate) fn person_approved(
 impl AppBrokerState {
     /// Whether `evidence`, which `caller` carries, is the person's own answer for the call: their
     /// approve of the asked record it was kept as, which only the dispatch sets, or the word of the
-    /// host that placed this device's window, carried over that host's link
+    /// host that placed this device's window, forwarded over that host's link
     /// ([`tilo_actions::remote::browser::host_answered`]).
     ///
     /// # Errors
-    /// A confirmation another device carried here, which answers for nobody.
+    /// A confirmation another device forwarded here, which answers for nobody.
     pub(super) fn answered_for_person(
         &self,
         caller: &Caller,
