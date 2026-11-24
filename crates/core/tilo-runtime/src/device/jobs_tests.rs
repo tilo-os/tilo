@@ -20,6 +20,7 @@ fn process() -> ProcessKey {
     ProcessKey {
         workspace: "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a".to_owned(),
         app: "so.tilo.video".to_owned(),
+        generation: 1,
     }
 }
 
@@ -194,10 +195,25 @@ async fn a_process_that_ended_leaves_its_unfinished_jobs_failed() {
     let other = ProcessKey {
         workspace: process().workspace,
         app: "so.tilo.video".to_owned(),
+        generation: process().generation,
     };
     assert_eq!(jobs.live(&other), 1, "one job had not ended");
+    // A later run of the same app in the same workspace is another process: its jobs are not
+    // the ended run's.
+    let again = ProcessKey {
+        workspace: process().workspace,
+        app: "so.tilo.video".to_owned(),
+        generation: process().generation + 1,
+    };
+    jobs.moved(&again, "render-3", json!({ "state": "running" }));
+    assert_eq!(jobs.live(&again), 1);
 
     jobs.ended_process(&other);
+    assert_eq!(
+        jobs.live(&again),
+        1,
+        "a later run's job does not end with this one"
+    );
     assert_eq!(jobs.live(&other), 0);
     assert_eq!(
         jobs.read(&caller, &device_job_address(&DEVICE, "render-1"))
@@ -316,6 +332,7 @@ fn the_daemon_holds_the_invocation_and_runs_the_progress_and_done_handlers() {
         vec!["1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a".to_owned()],
         "its last job ended: the invocation is released"
     );
+    drop(recorded);
 }
 
 #[test]

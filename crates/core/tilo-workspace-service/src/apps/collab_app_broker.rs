@@ -272,6 +272,8 @@ pub(crate) use approval::person_approved;
 mod cancel_tests;
 mod host_action_admission;
 mod invocation_update;
+pub use jobs::{JobEffects, JobHandlers};
+mod jobs;
 mod launchable;
 mod live_views;
 mod local_action_provider;
@@ -511,6 +513,11 @@ pub struct AppBrokerState {
     /// Work another thread hands the broker's turn (see [`TurnWork`]).
     turn_work: std::sync::Arc<TurnWork>,
     /// Told once this state is dropped and its journal's lock let go.
+    /// The invocations that hold a live engine job on this device, by invocation id: never
+    /// expired as idle while they do, and cancelling one cancels its jobs.
+    job_invocations: Mutex<std::collections::HashSet<String>>,
+    /// What cancels a held invocation's jobs, once the daemon runs them.
+    job_canceller: Mutex<Option<Arc<dyn Fn(&tilo_actions::InvocationId) + Send + Sync>>>,
     #[cfg(any(test, feature = "test-support"))]
     gone: BrokerGone,
 }

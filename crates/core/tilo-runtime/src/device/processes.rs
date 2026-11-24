@@ -344,8 +344,10 @@ impl Processes {
     }
 
     /// Keep the engine jobs these processes run in `jobs` from now on: each move a process
-    /// reports is written there as the device's record.
+    /// reports is written there as the device's record, and a job cancelled there is told to the
+    /// process that runs it.
     pub fn serving_jobs(self: &Arc<Self>, jobs: Arc<super::jobs::DeviceJobs>) -> Arc<Self> {
+        jobs.serve_processes(Arc::clone(self) as Arc<dyn super::jobs::JobProcesses>);
         let _ = self.jobs.set(jobs);
         Arc::clone(self)
     }
@@ -356,11 +358,12 @@ impl Processes {
     }
 
     /// Whether a job `key`'s process runs has not ended: such a process is never idle.
-    fn holds_jobs(&self, key: &HostKey) -> bool {
+    fn holds_jobs(&self, key: &HostKey, generation: u64) -> bool {
         self.jobs().is_some_and(|jobs| {
             jobs.live(&super::jobs::ProcessKey {
                 workspace: key.workspace.clone(),
                 app: key.app.clone(),
+                generation,
             }) > 0
         })
     }
@@ -1097,6 +1100,7 @@ impl Processes {
                             &super::jobs::ProcessKey {
                                 workspace: key.workspace.clone(),
                                 app: key.app.clone(),
+                                generation,
                             },
                             &job,
                             record,
@@ -1125,6 +1129,7 @@ impl Processes {
             jobs.ended_process(&super::jobs::ProcessKey {
                 workspace: key.workspace.clone(),
                 app: key.app.clone(),
+                generation,
             });
         }
         let clean = status.as_ref().is_ok_and(std::process::ExitStatus::success);
@@ -1194,7 +1199,7 @@ impl Processes {
                 // A process that runs a job is doing work, though it shows nothing: it is never
                 // idle while that job has not ended.
                 .filter(|(key, process)| {
-                    !self.holds_jobs(key)
+                    !self.holds_jobs(key, process.generation)
                         && process.instances.is_empty()
                         && process
                             .idle_since
@@ -1202,9 +1207,12 @@ impl Processes {
                 })
                 .map(|(key, _)| key.clone())
                 .collect();
-            idle.iter()
+            let closed: Vec<Host> = idle
+                .iter()
                 .filter_map(|key| processes.remove(key))
-                .collect()
+                .collect();
+            drop(processes);
+            closed
         };
         for process in closed {
             // The process lets its link go and ends once it runs nothing.
@@ -1477,6 +1485,32 @@ fn seen_end(status: &std::io::Result<std::process::ExitStatus>, last: &VecDeque<
     }
     let said: Vec<&str> = last.iter().map(String::as_str).collect();
     format!("{how}; it last wrote: {}", said.join(" | "))
+}
+
+impl super::jobs::JobProcesses for Processes {
+    /// Tell the process that reported `job` to stop running it: the call that started it was
+    /// cancelled.
+    fn cancel(&self, process: &super::jobs::ProcessKey, job: &str) {
+        let sent = {
+            let running = self.running();
+            running
+                .iter()
+                .find(|(key, host)| {
+                    key.workspace == process.workspace
+                        && key.app == process.app
+                        && host.generation == process.generation
+                })
+                .map(|(_, host)| {
+                    ToProcess::CancelJob {
+                        job: job.to_owned(),
+                    }
+                    .send(&host.socket)
+                })
+        };
+        if let Some(Err(error)) = sent {
+            tracing::warn!(%error, job, "the process running a cancelled job was not told");
+        }
+    }
 }
 
 #[cfg(test)]

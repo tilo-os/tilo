@@ -547,6 +547,7 @@ impl AppBrokerState {
         let pending = self.pending_invocations.lock().ok()?;
         pending
             .values()
+            .filter(|invocation| !self.held_by_job(&invocation.update.invocation()))
             .filter_map(|invocation| {
                 let idle_at = invocation
                     .last_activity
@@ -579,6 +580,9 @@ impl AppBrokerState {
             let ids = pending
                 .iter()
                 .filter(|(id, _)| !self.committing(**id))
+                // An invocation that holds a live engine job is doing work the app waits on:
+                // it is never expired as idle while its job runs.
+                .filter(|(_, invocation)| !self.held_by_job(&invocation.update.invocation()))
                 .filter_map(|(id, invocation)| {
                     let cancellation_expired =
                         invocation
@@ -766,6 +770,8 @@ impl AppBrokerState {
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),
                 committing_invocations: Mutex::new(HashSet::new()),
+                job_invocations: Mutex::new(std::collections::HashSet::new()),
+                job_canceller: Mutex::new(None),
                 local_report_receipts: Mutex::default(),
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_governance_peers: Mutex::new(HashMap::new()),

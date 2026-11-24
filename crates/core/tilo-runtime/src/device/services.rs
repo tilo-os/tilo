@@ -1739,9 +1739,7 @@ impl Daemon {
             broker.state().serve_invocations(Arc::clone(&invocations));
             // Another device's jobs are read there, over the same device action service this
             // device already serves: the read goes whole, its wait with it.
-            let other_jobs: Arc<
-                dyn Fn(&str) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> + Send + Sync,
-            > = {
+            let other_jobs: tilo_workspace_service::workspaces::OtherDeviceReads = {
                 let workspaces = Arc::clone(&workspaces);
                 let person_workspace = tilo_server_protocol::servers::person_workspace_id(
                     &identity.cert.user_public_key,
@@ -1764,6 +1762,17 @@ impl Daemon {
                 Arc::clone(&jobs) as Arc<dyn tilo_workspace_service::workspaces::DeviceJobReads>,
                 other_jobs,
             );
+            // A job's invocation runs the app's handlers through this same dispatch, is never
+            // expired as idle while the job runs, and is cancelled through the daemon.
+            jobs.serve_effects(
+                tilo_workspace_service::apps::collab_app_broker::JobHandlers::new(broker.state()),
+            );
+            let cancelling = Arc::clone(&jobs);
+            broker.state().serve_job_canceller(Arc::new(
+                move |invocation: &tilo_actions::InvocationId| {
+                    cancelling.cancel_invocation(&invocation.to_string());
+                },
+            ));
             broker.state().serve_records(Arc::clone(&reads) as _);
             search.serve(reads);
         }

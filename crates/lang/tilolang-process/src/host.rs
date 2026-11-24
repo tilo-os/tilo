@@ -266,6 +266,13 @@ fn take(host: &mut TilolangProcess, open: &Descriptor, message: ToProcess) {
                 tracing::error!(task = request.task, %error, "a task did not start");
             }
         }
+        ToProcess::CancelJob { job } => {
+            // The call that started the job was cancelled: its engine stops it, and the job
+            // reads cancelled over the link.
+            if !tilolang_tilo::engine::stop(&job) {
+                tracing::debug!(job, "a cancelled job had already ended");
+            }
+        }
         ToProcess::Finish => {}
         other @ (ToProcess::Window { .. } | ToProcess::Patch { .. }) => {
             tracing::error!(

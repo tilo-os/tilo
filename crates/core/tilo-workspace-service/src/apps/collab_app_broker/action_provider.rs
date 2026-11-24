@@ -3256,6 +3256,12 @@ impl AppBrokerState {
         let Some(job) = self.remote_job(caller, id) else {
             return Pending::ready(Err(ActionCallError::UnknownInvocation));
         };
+        // An invocation holding an engine job is cancelled through the daemon that runs it:
+        // its jobs read cancelled, their `done` handlers run once, and the invocation answers
+        // cancelled.
+        if self.cancel_held_jobs(id) {
+            return Pending::ready(Ok(()));
+        }
         if let Some(cancelled) = self.live_views.cancel(job, None) {
             return Pending::ready(
                 cancelled.map_err(|reason| ActionCallError::NotCancellable { reason }),

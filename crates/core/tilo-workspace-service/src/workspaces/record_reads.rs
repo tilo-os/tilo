@@ -101,6 +101,11 @@ pub trait DeviceJobReads: Send + Sync {
     ) -> Pending<RemoteActionMessage>;
 }
 
+/// Where another device's jobs are read, by the device record space its address names: the one
+/// record API carried to that device ([`ResourceReads::answer_read`]), so a held read waits
+/// there.
+pub type OtherDeviceReads = Arc<dyn Fn(&str) -> Option<Arc<dyn ResourceReads>> + Send + Sync>;
+
 /// The device's record reader.
 pub struct RecordReads {
     /// The workspaces this device holds, read for another device's certificate there.
@@ -121,7 +126,7 @@ pub struct RecordReads {
     jobs: Option<Arc<dyn DeviceJobReads>>,
     /// Where another device's jobs are read, by the device space it names: the one record API
     /// carried to that device, forwarded whole so a held read waits there.
-    other_devices: Option<Arc<dyn Fn(&str) -> Option<Arc<dyn ResourceReads>> + Send + Sync>>,
+    other_devices: Option<OtherDeviceReads>,
 }
 
 /// Whether a caller reads the invocations of a workspace through a dispatch: the dispatch's own
@@ -297,7 +302,7 @@ impl RecordReads {
         broker: &Arc<Broker>,
         admitted: Option<Admitted>,
         jobs: Arc<dyn DeviceJobReads>,
-        other_devices: Arc<dyn Fn(&str) -> Option<Arc<dyn ResourceReads>> + Send + Sync>,
+        other_devices: OtherDeviceReads,
     ) -> Arc<Self> {
         Arc::new(Self {
             workspaces: Some(WeakWorkspaces(Arc::downgrade(&workspaces.inner))),
@@ -1081,6 +1086,10 @@ impl ResourceReads for RecordReads {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "jobs_reads_tests.rs"]
+mod jobs_reads_tests;
 
 #[cfg(test)]
 #[path = "record_reads_tests.rs"]

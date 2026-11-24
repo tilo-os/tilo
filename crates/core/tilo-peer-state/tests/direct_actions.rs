@@ -5,6 +5,7 @@
 //! no longer act.
 
 use crate::common::{addr, device, localhost_endpoint, workspace};
+use serde_json::Value;
 use tilo_peer_state::join::WorkspaceId;
 
 use ed25519_dalek::SigningKey;
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
-    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, TestProvider,
+    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, ResourceReads, TestProvider,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, Bounds, RemoteDevice};
@@ -105,6 +106,16 @@ impl Engine {
         replica: Replica,
         key: SigningKey,
         dispatcher: Arc<TestProvider>,
+        bounds: Bounds,
+    ) -> Self {
+        Self::serving_provider(replica, key, dispatcher, bounds).await
+    }
+
+    /// [`Self::serving`] with any provider as the dispatcher.
+    async fn serving_provider(
+        replica: Replica,
+        key: SigningKey,
+        dispatcher: Arc<dyn ActionProvider + Send + Sync>,
         bounds: Bounds,
     ) -> Self {
         let endpoint = localhost_endpoint(&key).await;
@@ -1714,6 +1725,10 @@ fn naming(mut request: InvokeRequest, acting: &tilo_action_policy::Acting) -> In
 /// caller without their signature runs as nobody, and a device outside the workspace forwards
 /// nobody's call.
 #[tokio::test(flavor = "multi_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one forwarded call, from its signer to its answer"
+)]
 async fn a_forwarded_call_runs_as_the_one_who_signed_it() {
     let started = tilo_clock::wall();
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -1888,4 +1903,185 @@ async fn unproven_forwards_are_refused(
     );
     assert_eq!(dispatcher.asked().len(), before, "nothing ran");
     stranger_endpoint.close().await;
+}
+
+/// A device's engine jobs, as the device that runs them answers them: `running` until the job
+/// moves, `done` after.
+#[derive(Clone)]
+struct JobReads {
+    moved: Arc<tokio::sync::watch::Sender<u64>>,
+}
+
+impl JobReads {
+    /// The reading of `record` in `state`.
+    fn reading(record: &str, state: &str) -> String {
+        serde_json::json!({
+            "revision": state,
+            "records": [ { "record": record, "value": { "id": record, "state": state } } ]
+        })
+        .to_string()
+    }
+}
+
+impl ActionProvider for JobReads {
+    fn query(
+        &self,
+        _: &Caller,
+        _: CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<Result<tilo_actions::remote::CataloguePage, ActionCallError>>
+    {
+        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::CataloguePage::default()))
+    }
+
+    fn invoke(
+        &self,
+        _: &Caller,
+        request: InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
+    > {
+        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Rejected {
+                error: ActionCallError::UnknownAction,
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _: &Caller,
+        _: &InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &Caller,
+        _: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionCallError::UnknownInvocation))
+    }
+
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        Some(Arc::new(self.clone()))
+    }
+}
+
+impl tilo_actions::remote::ResourceReads for JobReads {
+    fn read(
+        &self,
+        _: &Caller,
+        _: &tilo_actions::remote::ResourceAddress,
+    ) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+        Err(ActionCallError::Unavailable {
+            reason: "this test answers held reads only".into(),
+        })
+    }
+
+    /// A held read waits here until the job moves: the wait is the device's, not the asker's.
+    fn answer_read(
+        self: Arc<Self>,
+        _: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::ResourceReadRequest,
+    ) -> tilo_actions::remote::Pending<RemoteActionMessage> {
+        let (complete, answer) = tilo_actions::remote::pending();
+        let mut moved = self.moved.subscribe();
+        let seen = *moved.borrow_and_update();
+        let held = read.after.as_deref() == Some("running") && read.wait_ms.is_some();
+        let record = read.record;
+        tokio::spawn(async move {
+            if held {
+                let _ = moved.changed().await;
+            }
+            let state = if *moved.borrow() > seen {
+                "done"
+            } else {
+                "running"
+            };
+            complete.complete(RemoteActionMessage::ResourceReading {
+                correlation,
+                result: Ok(JobReads::reading(&record, state)),
+            });
+        });
+        answer
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_jobs_read_from_another_device_is_answered_there_and_followed_to_its_end() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let roster = vec![a.1.clone(), b.1.clone()];
+    let moved = Arc::new(tokio::sync::watch::Sender::new(0_u64));
+    let engine = Engine::serving_provider(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        Arc::new(JobReads {
+            moved: Arc::clone(&moved),
+        }),
+        Bounds::default(),
+    )
+    .await;
+    let (b_endpoint, b_action_service) = asking(&b.0).await;
+    let remote = Arc::new(b_action_service.remote(&b_endpoint, &engine.addr(), WORKSPACE));
+    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
+    let address = tilo_actions::remote::device_job_address(&engine.device(), "render-1");
+
+    // A asks B for the job it runs: B answers with what the job says now.
+    let request = tilo_actions::remote::ResourceReadRequest {
+        workspace: address.workspace.clone(),
+        app: address.app.clone(),
+        record: address.record.clone(),
+        joined: false,
+        after: None,
+        wait_ms: None,
+        answer: tilo_actions::remote::ReadAnswer::Reading,
+    };
+    let answer = tokio::time::timeout(
+        PATIENCE,
+        Arc::clone(&remote).answer_read(&caller, 0, request),
+    )
+    .await
+    .expect("the device answers")
+    .expect("the asker is not dropped");
+    let RemoteActionMessage::ResourceReading { result, .. } = answer else {
+        panic!("a read is answered by a reading");
+    };
+    let reading: Value = serde_json::from_str(&result.expect("B reads its job")).unwrap();
+    assert_eq!(reading["records"][0]["value"]["state"], "running");
+
+    // A holds a read of it: when B's job moves to its end, B answers A with it.
+    let request = tilo_actions::remote::ResourceReadRequest {
+        workspace: address.workspace.clone(),
+        app: address.app.clone(),
+        record: address.record.clone(),
+        joined: false,
+        after: Some("running".to_owned()),
+        wait_ms: Some(10_000),
+        answer: tilo_actions::remote::ReadAnswer::Reading,
+    };
+    let held =
+        tokio::spawn(async move { Arc::clone(&remote).answer_read(&caller, 0, request).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    moved.send_modify(|seen| *seen = 1);
+    let answer = tokio::time::timeout(PATIENCE, held)
+        .await
+        .expect("the held read wakes")
+        .expect("the read ran")
+        .expect("the asker is not dropped");
+    let RemoteActionMessage::ResourceReading { result, .. } = answer else {
+        panic!("a read is answered by a reading");
+    };
+    let reading: Value = serde_json::from_str(&result.expect("B reads its job")).unwrap();
+    assert_eq!(
+        reading["records"][0]["value"]["state"], "done",
+        "B woke A's held read when its job ended"
+    );
+
+    engine.close().await;
+    b_endpoint.close().await;
 }

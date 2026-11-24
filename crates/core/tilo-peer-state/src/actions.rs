@@ -2271,7 +2271,7 @@ impl ResourceReads for RemoteDevice {
             RemoteActionMessage::ResourceReading { result, .. } => result,
             _ => Err(unexpected()),
         })
-        .then(move |answer| complete.complete(answer.unwrap_or(Err(unexpected()))));
+        .then(move |answer| complete.complete(answer.unwrap_or_else(|| Err(unexpected()))));
         let reading = answer
             .wait_timeout(RESOURCE_READ_DEADLINE)
             .ok()
@@ -2303,7 +2303,7 @@ impl ResourceReads for RemoteDevice {
             RemoteActionMessage::ResourceReading { result, .. } => result.map(|_| ()),
             _ => Err(unexpected()),
         })
-        .then(move |answer| complete.complete(answer.unwrap_or(Err(unexpected()))));
+        .then(move |answer| complete.complete(answer.unwrap_or_else(|| Err(unexpected()))));
         answer
     }
 
@@ -2331,7 +2331,7 @@ impl ResourceReads for RemoteDevice {
             RemoteActionMessage::ResourceReading { result, .. } => result,
             _ => Err(unexpected()),
         })
-        .then(move |answer| complete.complete(answer.unwrap_or(Err(unexpected()))));
+        .then(move |answer| complete.complete(answer.unwrap_or_else(|| Err(unexpected()))));
         let listing = answer
             .wait_timeout(RESOURCE_READ_DEADLINE)
             .ok()

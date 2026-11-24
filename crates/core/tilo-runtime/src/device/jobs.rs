@@ -50,36 +50,35 @@ pub struct DeviceJobs {
     workspaces: OnceLock<std::sync::Weak<ServiceWorkspaces>>,
     /// What the daemon does for a job's invocation, bound once the broker runs.
     effects: OnceLock<Arc<dyn JobEffects>>,
+    /// The processes that run the jobs, bound by the daemon: what a cancelled job is told.
+    processes: OnceLock<Arc<dyn JobProcesses>>,
 }
 
 /// One job as it stands, and the counter a reader following it wakes on.
 struct JobRecord {
     value: Value,
+    /// The process that reported it: which run of its app and workspace, so a later process of
+    /// the same app never inherits its jobs.
+    process: ProcessKey,
     revision: tokio::sync::watch::Sender<u64>,
 }
 
-/// The process a job runs in, as the socket that reported it names us: the app and the workspace
-/// it runs in, never what the job's own record says.
+/// The process a job runs in, as the socket that reported it names us: the app, the workspace
+/// and which run of them, never what the job's own record says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessKey {
     pub workspace: String,
     pub app: String,
+    /// The process's start generation: two runs of one app in one workspace are two processes.
+    pub generation: u64,
 }
 
-/// What the daemon does for a job's invocation: the handlers the app asked to run, and the
-/// invocation the job's start made, which the daemon holds open until the job ends.
-pub trait JobEffects: Send + Sync {
-    /// The job `record` moved and has not ended: run the `progress` handler the app asked for,
-    /// coalesced so at most one of them is in flight.
-    fn progress(&self, record: &Value);
-    /// The job `record` ended: run its `done` handler once, then end the invocation it started
-    /// with that handler's outcome (or the job's own, where it names none).
-    fn ended(&self, record: &Value);
-    /// The invocation `invocation` now runs a live job: it is never expired as idle while it
-    /// does.
-    fn hold(&self, invocation: &str);
-    /// The last live job of `invocation` ended.
-    fn release(&self, invocation: &str);
+pub use tilo_workspace_service::apps::collab_app_broker::JobEffects;
+
+/// The processes that run this device's jobs: what a job cancelled with its invocation is told.
+pub trait JobProcesses: Send + Sync {
+    /// Stop running job `job` in `process`: the process that reported it, which has not ended.
+    fn cancel(&self, process: &ProcessKey, job: &str);
 }
 
 /// Whether `state` is one a job does not leave: it ended.
@@ -126,6 +125,7 @@ impl DeviceJobs {
             revision: tokio::sync::watch::Sender::new(0),
             workspaces: OnceLock::new(),
             effects: OnceLock::new(),
+            processes: OnceLock::new(),
         })
     }
 
@@ -137,13 +137,18 @@ impl DeviceJobs {
 
     /// The workspaces this device holds, bound once the daemon runs: what decides whether a
     /// caller may read a job's app.
-    pub fn bind(&self, workspaces: &Arc<ServiceWorkspaces>) {
+    pub(crate) fn bind(&self, workspaces: &Arc<ServiceWorkspaces>) {
         let _ = self.workspaces.set(Arc::downgrade(workspaces));
     }
 
     /// What the daemon does for a job's invocation, bound once the broker runs.
     pub fn serve_effects(&self, effects: Arc<dyn JobEffects>) {
         let _ = self.effects.set(effects);
+    }
+
+    /// The processes that run the jobs, bound by the daemon: what a cancelled job is told.
+    pub fn serve_processes(&self, processes: Arc<dyn JobProcesses>) {
+        let _ = self.processes.set(processes);
     }
 
     /// The job `job` moved, as `process` reported it. A job never leaves an ended state, so a
@@ -206,11 +211,13 @@ impl DeviceJobs {
                         job.to_owned(),
                         JobRecord {
                             value: value.clone(),
+                            process: process.clone(),
                             revision: tokio::sync::watch::Sender::new(0),
                         },
                     );
                 }
             }
+            drop(records);
             (value, first, moved, ended)
         };
         self.created();
@@ -243,14 +250,7 @@ impl DeviceJobs {
             let mut records = self.records.lock_recover();
             let mut ended = Vec::new();
             for held in records.values_mut() {
-                let (workspace, app) = (
-                    held.value.get("workspace").and_then(Value::as_str),
-                    held.value.get("app").and_then(Value::as_str),
-                );
-                if workspace != Some(process.workspace.as_str())
-                    || app != Some(process.app.as_str())
-                    || ended_state(state_of(&held.value))
-                {
+                if held.process != *process || ended_state(state_of(&held.value)) {
                     continue;
                 }
                 let mut record = match held.value.clone() {
@@ -267,6 +267,7 @@ impl DeviceJobs {
                     .send_modify(|revision| *revision = revision.wrapping_add(1));
                 ended.push(held.value.clone());
             }
+            drop(records);
             ended
         };
         if let Some(effects) = self.effects.get() {
@@ -288,12 +289,7 @@ impl DeviceJobs {
         self.records
             .lock_recover()
             .values()
-            .filter(|held| {
-                held.value.get("workspace").and_then(Value::as_str)
-                    == Some(process.workspace.as_str())
-                    && held.value.get("app").and_then(Value::as_str) == Some(process.app.as_str())
-                    && !ended_state(state_of(&held.value))
-            })
+            .filter(|held| held.process == *process && !ended_state(state_of(&held.value)))
             .count()
     }
 
@@ -309,9 +305,10 @@ impl DeviceJobs {
     /// daemon does when the call that started them is cancelled. Each ends as `cancelled`, its
     /// `done` handler running once, and the invocation answers cancelled.
     pub fn cancel_invocation(&self, invocation: &str) -> usize {
-        let ended: Vec<Value> = {
+        let (ended, processes_running): (Vec<Value>, Vec<(ProcessKey, String)>) = {
             let mut records = self.records.lock_recover();
             let mut ended = Vec::new();
+            let mut running = Vec::new();
             for held in records.values_mut() {
                 if invocation_of(&held.value) != Some(invocation)
                     || ended_state(state_of(&held.value))
@@ -330,10 +327,19 @@ impl DeviceJobs {
                 held.value = Value::Object(record);
                 held.revision
                     .send_modify(|revision| *revision = revision.wrapping_add(1));
+                if let Some(job) = held.value.get("id").and_then(Value::as_str) {
+                    running.push((held.process.clone(), job.to_owned()));
+                }
                 ended.push(held.value.clone());
             }
-            ended
+            drop(records);
+            (ended, running)
         };
+        if let Some(processes) = self.processes.get() {
+            for (process, job) in &processes_running {
+                processes.cancel(process, job);
+            }
+        }
         if let Some(effects) = self.effects.get() {
             for record in &ended {
                 effects.ended(record);
@@ -354,9 +360,12 @@ impl DeviceJobs {
     pub fn decided_by(&self, job: &str) -> Option<ResourceAddress> {
         let records = self.records.lock_recover();
         let record = &records.get(job)?.value;
+        let workspace = record.get("workspace")?.as_str()?.to_owned();
+        let app = record.get("app")?.as_str()?.to_owned();
+        drop(records);
         Some(ResourceAddress {
-            workspace: record.get("workspace")?.as_str()?.to_owned(),
-            app: record.get("app")?.as_str()?.to_owned(),
+            workspace,
+            app,
             record: String::new(),
         })
     }
@@ -433,10 +442,10 @@ impl ResourceReads for DeviceJobs {
         caller: &Caller,
         address: &ResourceAddress,
     ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(if !self.names(address) {
-            Err(unavailable())
-        } else {
+        Pending::ready(if self.names(address) {
             self.admits(caller, &address.record)
+        } else {
+            Err(unavailable())
         })
     }
 
@@ -449,15 +458,18 @@ impl ResourceReads for DeviceJobs {
         if app != DEVICE_JOBS || workspace != device_record_space(&self.device) {
             return Err(unavailable());
         }
-        Ok(self
-            .records
-            .lock_recover()
-            .keys()
+        // The ids are taken before each is decided: deciding reads the job's record.
+        let jobs: Vec<String> = {
+            let records = self.records.lock_recover();
+            records.keys().cloned().collect()
+        };
+        Ok(jobs
+            .into_iter()
             .filter(|job| self.admits(caller, job).is_ok())
             .map(|job| ResourceAddress {
                 workspace: workspace.to_owned(),
                 app: DEVICE_JOBS.to_owned(),
-                record: job.clone(),
+                record: job,
             })
             .collect())
     }
@@ -481,12 +493,13 @@ impl ResourceReads for DeviceJobs {
             return Err(unavailable());
         }
         self.admits(caller, &address.record)?;
-        let mut seen = self
-            .records
-            .lock_recover()
-            .get(&address.record)
-            .map(|held| held.revision.subscribe())
-            .unwrap_or_else(|| self.revision.subscribe());
+        let mut seen = {
+            let records = self.records.lock_recover();
+            records.get(&address.record).map_or_else(
+                || self.revision.subscribe(),
+                |held| held.revision.subscribe(),
+            )
+        };
         let wake = wake.clone();
         tilo_rt::app().spawn(async move {
             if seen.changed().await.is_ok() {

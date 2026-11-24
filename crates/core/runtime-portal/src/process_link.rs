@@ -112,6 +112,9 @@ pub enum ToProcess {
     /// Nothing more comes: the process lets its link go and ends once it runs nothing. This
     /// is the session's half of closing the link, which a Windows pipe cannot close one way.
     Finish,
+    /// Stop running engine job `job`: the call that started it was cancelled, and the daemon
+    /// ends it. The process reports the job cancelled as its engine lets it go.
+    CancelJob { job: String },
 }
 
 impl Packet for ToProcess {
@@ -125,6 +128,7 @@ impl Packet for ToProcess {
             | Self::Locale(_)
             | Self::Access(_)
             | Self::MediaCommand { .. }
+            | Self::CancelJob { .. }
             | Self::Finish => false,
         };
         if over {
