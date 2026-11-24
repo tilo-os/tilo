@@ -3,12 +3,11 @@
 //!
 //! The session keeps none of their devices itself, but this device, which its own certificate
 //! names and which the record will list: that is admitted before the record answers, and by a
-//! session no daemon started at all. A session a daemon started reads the record from that daemon
-//! on its shell link, as every app's read of it is decided there; a session the
-//! host placed in a workspace's VM reads the record from the host that certified it; and a
-//! host placed in a workspace's VM reads the record from the host that certified it; and a
-//! session that keeps the workspaces itself ([`ServiceSlot`]) answers from their service, which
-//! is where its record lives. Each reads the same record, and each revocation in it, the root's
+//! session no daemon started at all. A session the host placed in a workspace's VM reads the
+//! record from the host that certified it; a session that keeps the workspaces itself
+//! ([`ServiceSlot`]) answers from their service, which is where its record lives. A session the
+//! device's daemon started asks that daemon instead: it keeps the record and answers every
+//! admission in its own process. Each reads the same record, and each revocation in it, the root's
 //! own signature, is checked against that root as it is read: one that does not verify refuses
 //! nothing. A device is admitted here wherever the host that holds the record says it is, and
 //! refused when that host cannot be asked.
@@ -22,7 +21,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_identity::sources::{DeviceTrust, DevicesSeen, DevicesTrust, install_device_trust};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::workspace_documents::DocumentRead;
-use tilo_session_client::daemon_documents::{DaemonShell, document_read};
+use tilo_session_client::daemon_documents::document_read;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::services::DeviceDaemon;
 use tilo_workspace_service::service::ServiceSlot;
@@ -48,8 +47,12 @@ fn trust() -> &'static Arc<DevicesTrust> {
 }
 
 /// Install the session's answer for the person's devices, before the broker or the identity
-/// authority decides anything: from the `daemon` it was started by, from the `vm` host that
-/// placed it, or from `service` when this session keeps the workspaces itself.
+/// authority decides anything: from the `vm` host that placed it, or from `service` when this
+/// session keeps the workspaces itself.
+///
+/// `daemon` is kept for the call site that builds a session's services: a session the device's
+/// daemon started has that daemon's own answer already installed in its process, and installs
+/// none here.
 ///
 /// `own` is this session's device certificate. It is admitted from the first call, whatever the
 /// record of the person's devices has answered yet: it is this device the record will list, and a
@@ -59,7 +62,7 @@ fn trust() -> &'static Arc<DevicesTrust> {
 /// A session with none of these knows no device of the person's, and installs an answer that
 /// admits none.
 pub(crate) fn install(
-    daemon: &DeviceDaemon,
+    _daemon: &DeviceDaemon,
     service: &ServiceSlot,
     own: Option<DeviceCert>,
     vm: Option<&Arc<HostedWorkspaces>>,
@@ -69,13 +72,6 @@ pub(crate) fn install(
         trust.reading(|| None);
         return;
     };
-    if let Ok(link) = daemon {
-        install_from_daemon(
-            DaemonShell::new(Ok(link.clone()), tilo_rt::app().handle().clone()),
-            own,
-        );
-        return;
-    }
     if let Some(hosted) = vm {
         follow_host(trust, Arc::clone(hosted), own);
         return;
@@ -133,32 +129,6 @@ impl Cached {
     }
 }
 
-/// Install the session's answer from `shell`, the daemon's own link, and follow the person's
-/// record on it from now on.
-fn install_from_daemon(shell: DaemonShell, own: DeviceCert) {
-    answer_from_daemon(trust(), shell, own);
-}
-
-/// [`install_from_daemon`], on the trust this process answers through.
-fn answer_from_daemon(trust: &Arc<DevicesTrust>, shell: DaemonShell, own: DeviceCert) {
-    let person = own.user_public_key;
-    let cache = Arc::new(Mutex::new(Cached::default()));
-    trust.reading({
-        let cache = Arc::clone(&cache);
-        let own = own.clone();
-        move || with_own(&own, cache.lock_recover().seen.clone())
-    });
-    // The daemon holds the record already: a session that served before its first reading would
-    // refuse this device, and every other of the person's, once.
-    if let Ok(readings) = shell.read_blocking(record_read(person, None)) {
-        cache.lock_recover().take(person, &readings);
-    }
-    let after = cache.lock_recover().revision.clone();
-    shell.runtime().clone().spawn(async move {
-        follow(cache, person, after, Follow::Daemon(shell)).await;
-    });
-}
-
 /// Answer from `hosted`, the host's read of the person's record, and follow it from now on.
 fn follow_host(trust: &Arc<DevicesTrust>, hosted: Arc<HostedWorkspaces>, own: DeviceCert) {
     let person = own.user_public_key;
@@ -168,37 +138,29 @@ fn follow_host(trust: &Arc<DevicesTrust>, hosted: Arc<HostedWorkspaces>, own: De
         move || with_own(&own, cache.lock_recover().seen.clone())
     });
     hosted.runtime().spawn(async move {
-        follow(cache, person, None, Follow::Host(hosted)).await;
+        follow(cache, person, None, hosted).await;
     });
 }
 
-/// Where a follow reads the person's devices record from.
-enum Follow {
-    Daemon(DaemonShell),
-    Host(Arc<HostedWorkspaces>),
-}
-
-impl Follow {
-    /// The person's devices record, once it moves past `after`.
-    async fn read(&self, person: [u8; 32], after: Option<String>) -> Result<Value, String> {
-        let read = record_read(person, after);
-        match self {
-            Self::Daemon(shell) => shell.read(read).await,
-            Self::Host(hosted) => {
-                let pending = hosted
-                    .read_record(&read.workspace, workspace_id(person), read)
-                    .ok_or("no host takes this device's work")?;
-                let answered = pending.await.unwrap_or_else(|| {
-                    Err(tilo_actions::remote::ActionCallError::Unavailable {
-                        reason: "the workspace's host did not answer".into(),
-                    })
-                });
-                let answered = answered.map_err(|error| error.to_string())?;
-                serde_json::from_str(&answered)
-                    .map_err(|error| format!("the host's reading does not read: {error}"))
-            }
-        }
-    }
+/// The person's devices record as the host that placed this session reads it, once it moves past
+/// `after`.
+async fn read_from_host(
+    hosted: &HostedWorkspaces,
+    person: [u8; 32],
+    after: Option<String>,
+) -> Result<Value, String> {
+    let read = record_read(person, after);
+    let pending = hosted
+        .read_record(&read.workspace, workspace_id(person), read)
+        .ok_or("no host takes this device's work")?;
+    let answered = pending.await.unwrap_or_else(|| {
+        Err(tilo_actions::remote::ActionCallError::Unavailable {
+            reason: "the workspace's host did not answer".into(),
+        })
+    });
+    let answered = answered.map_err(|error| error.to_string())?;
+    serde_json::from_str(&answered)
+        .map_err(|error| format!("the host's reading does not read: {error}"))
 }
 
 /// Keep the last reading of the person's devices, reading again from `after` whenever the record
@@ -207,10 +169,10 @@ async fn follow(
     cache: Arc<Mutex<Cached>>,
     person: [u8; 32],
     mut after: Option<String>,
-    feed: Follow,
+    hosted: Arc<HostedWorkspaces>,
 ) {
     loop {
-        match feed.read(person, after.clone()).await {
+        match read_from_host(&hosted, person, after.clone()).await {
             Ok(readings) => {
                 let moved = cache.lock_recover().take(person, &readings);
                 after = readings["revision"].as_str().map(str::to_owned);
@@ -327,62 +289,6 @@ mod tests {
             })
             .expect("the runtime runs")
             .expect("the person's own workspace");
-    }
-
-    /// A device is admitted while the record holds it and refused once the person's root's entry
-    /// taking it back is in the record, through the same install the session makes at its start.
-    #[test]
-    fn a_certified_device_is_admitted_and_a_revoked_one_is_refused() {
-        let _home = tilo_test_env::TestHome::new().expect("a home");
-        let daemon = crate::daemon_fixture::TestDaemon::start();
-        let cert = daemon.certificate();
-        let person = cert.user_public_key;
-        let workspaces = daemon.workspaces().clone();
-        person_workspace_of(&workspaces, person);
-        tilo_rt::app()
-            .block_on(async { workspaces.keep_issued_device(&cert, "").await })
-            .expect("the runtime runs");
-
-        // The install the session makes when a daemon started it: the daemon answers the record
-        // of the person's devices on the link it handed the session.
-        install_from_daemon(daemon.shell(), cert.clone());
-
-        assert_eq!(
-            tilo_identity::sources::device_trust()
-                .expect("the session installed its answer")
-                .enrolled(&cert),
-            Some(true),
-            "the record holds this device"
-        );
-        assert!(
-            tilo_identity::certificates::admitted(&person, &cert),
-            "a certified device acts for its person"
-        );
-        assert!(
-            tilo_identity::certificates::enrolled(&person, &cert),
-            "and joins with them"
-        );
-
-        // Their root takes it back, on another of their devices, and the record moves.
-        tilo_rt::app()
-            .block_on(async {
-                devices::revoke(&workspaces, &person, &revocation(cert.device_public_key)).await
-            })
-            .expect("the runtime runs")
-            .expect("the device's entry takes the root's revocation");
-        tilo_test_env::wait_until("the session refuses the revoked device", || {
-            !tilo_identity::certificates::admitted(&person, &cert)
-        });
-        let trust = tilo_identity::sources::device_trust().expect("the session's answer");
-        assert_eq!(
-            trust.revoked(&person, &cert.device_public_key),
-            Some(true),
-            "the record's entry is what the session refuses the device by"
-        );
-        assert!(
-            !tilo_identity::certificates::enrolled(&person, &cert),
-            "a revoked device does not join either"
-        );
     }
 
     /// A revocation the person's root did not sign refuses nothing: the entry a record holds is a

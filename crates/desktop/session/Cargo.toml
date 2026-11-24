@@ -256,8 +256,9 @@ tilo-server-client = { path = "../../core/tilo-server-client" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../core/endpoint-reachability" }
-# The device's certificate authority the broker admits a join with: the
-# identity store's selected identity and the devices it certifies now.
+# The device's certificate authority for the broker a session in a workspace's
+# VM keeps: the identity store's selected identity and the devices it certifies
+# now. A session the device's daemon started is admitted by that daemon instead.
 tilo-identity-authority = { path = "../../core/identity-authority" }
 # The person's accounts and the vault their secrets are sealed in: the session
 # is the only holder of either, and answers Browser, Settings and Mail from
