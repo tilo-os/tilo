@@ -344,19 +344,34 @@ pub fn install_rust(root: &Path, package: &str, bin: &str) {
             .bin,
     );
     std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    // A debug build is larger than any package may be, and the store's install refuses it, so the
+    // package is placed as an install leaves one; a copy keeps the build's mode, so it runs.
     std::fs::copy(tilo_test_env::sibling_binary(package, bin), &entry)
         .unwrap_or_else(|error| panic!("{package}'s binary: {error}"));
     std::fs::copy(dir.join("surface.toml"), payload.join("surface.toml"))
         .unwrap_or_else(|error| panic!("{package}'s surface: {error}"));
-    let packed = tilo_app_package::pack(&payload, &parsed, &publisher)
-        .unwrap_or_else(|error| panic!("{package} packs: {error}"));
-    let tapp = root.join("tapps").join(format!("{package}.tapp"));
-    std::fs::create_dir_all(tapp.parent().unwrap()).unwrap();
-    let options = tilo_app_package::tapp::WriteOptions {
-        size_limit: tilo_app_package::tapp::SizeLimit::LocalBuild,
-        ..tilo_app_package::tapp::WriteOptions::replace()
-    };
-    tilo_app_package::tapp::write_file(&tapp, &packed.meta, Some(&packed), options)
-        .unwrap_or_else(|error| panic!("{package}'s package is written: {error}"));
-    install_tapp(&root.join("apps"), &tapp);
+    let meta = tilo_app_package::pack(&payload, &parsed, &publisher)
+        .unwrap_or_else(|error| panic!("{package} packs: {error}"))
+        .meta;
+    let store = package_store::layout::Layout::new(root.join("apps"));
+    std::fs::create_dir_all(store.packages()).unwrap();
+    std::fs::rename(&payload, store.payload(meta.id)).unwrap();
+    let record = store.meta_dir(meta.id);
+    std::fs::create_dir_all(&record).unwrap();
+    std::fs::write(record.join(package_store::layout::SIGNED_ROOT_FILE), meta.signed_root_bytes()).unwrap();
+    std::fs::write(store.manifest(meta.id), &meta.manifest_bytes).unwrap();
+    std::fs::write(record.join(package_store::layout::COLLECTION_FILE), &meta.collection_bytes).unwrap();
+    let mut registry = std::fs::read_to_string(store.registry()).unwrap_or_default();
+    registry.push_str(&format!(
+        "[[entry]]\nid = {:?}\nversion = {:?}\npackage_id_hex = {:?}\npayload_root = {:?}\n\
+         manifest_path = {:?}\npublisher_key_hex = {:?}\nruntime = {:?}\n\n",
+        parsed.package.id,
+        parsed.package.version,
+        meta.id.to_hex(),
+        store.payload(meta.id).display().to_string(),
+        store.manifest(meta.id).display().to_string(),
+        hex::encode(publisher.public_key_bytes()),
+        parsed.package.runtime.clone().unwrap_or_default(),
+    ));
+    std::fs::write(store.registry(), registry).unwrap();
 }

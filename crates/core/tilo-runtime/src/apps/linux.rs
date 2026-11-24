@@ -113,8 +113,6 @@ fn command(
     let launcher = resolve_launcher(&apps.launcher_candidates)?;
     let runtime_dir = service_directory(&apps.root, sockets)
         .map_err(|error| format!("refusing to launch: the launcher's services: {error}"))?;
-    let identity = tilo_identity::store::selected_identity_path(workspace)
-        .map_err(|error| format!("refusing to launch: the workspace identity: {error}"))?;
     let mut command = Command::new(&launcher);
     command
         .arg("run")
@@ -128,9 +126,6 @@ fn command(
         .arg(app.app_id.as_str())
         .arg("--expected-package-hash")
         .arg(&original.package_hash);
-    if let Some(identity) = identity {
-        command.arg("--identity").arg(identity);
-    }
     // The person's grants for this app, in the file the launcher reads them
     // from: the same one a desktop session writes.
     let capabilities = launcher::capabilities::write_capability_file(
