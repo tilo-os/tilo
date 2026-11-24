@@ -281,6 +281,7 @@ impl ServiceSessions {
         .map_err(ServiceError::Workspaces)?;
         // The typed actions of the workspaces' built-in records (their agents, emoji, contacts,
         // the person's list), applied here for whichever device of a workspace asks.
+        #[cfg(feature = "agents")]
         crate::resource_actions::register(&workspaces);
         // The workspaces held here admit through their governance on this device's dispatch,
         // founded here or not.

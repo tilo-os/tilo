@@ -216,6 +216,7 @@ impl Workspaces {
     /// The agents that work in `workspace`, as its list of its agents names them, each with the
     /// person it acts for: whom a broker admits as an agent there. None while the list does not
     /// exist or cannot be read.
+    #[cfg(feature = "apps")]
     pub async fn listed_agents(&self, workspace: &str) -> Vec<crate::apps::services::ListedAgent> {
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let Ok(Some(agents)) = self
