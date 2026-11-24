@@ -257,7 +257,6 @@ begin_setup@Accounts = zl6ascoy
 begin_setup@Accounts~present = igfvovlh
 block_persona@Discord = oqytjrjj
 block_persona@Discord~present = u5rlyq7p
-bridge = pnjj66th
 bridge_server@Discord = 3y5zwmly
 bridge_server@Discord~present = zdsjcfdz
 by_discord = 4kknvm6s
@@ -359,6 +358,7 @@ shown_name = ntrqjqq3
 stands = b6ljujpa
 start_thread_there@Discord = 7m3iknds
 start_thread_there@Discord~present = 7bn6nqpj
+the_bridge = xplo4kmk
 trigger watch_discord = ycq5krbe
 unban@Discord = xf3g66fn
 unban@Discord~present = m6i6h62c
@@ -373,3 +373,6 @@ unreact_there@Discord = ckxzivok
 unreact_there@Discord~present = xp6r6bin
 valid_discord_emoji_name = sa7f5tyj
 voice_pairs = dgfcvq6s
+
+# retired
+bridge = pnjj66th

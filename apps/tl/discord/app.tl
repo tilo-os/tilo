@@ -1234,7 +1234,6 @@ action finish_import(d: Discord, tilo_only: List<Text>) {
     }
 }
 
-/// Sends a message through a channel's webhook, as the bridge plans it.
 // ---- the app it was ----
 
 /// The kind a mapping the app of old kept names.
@@ -1247,13 +1246,7 @@ fn mapped_kind(name: Text) -> MappedKind {
         .message
     } else if name == "webhook" {
         .webhook
-    } else if name == "role" {
-        .role
-    } else if name == "emoji" {
-        .emoji
-    } else {
-        .channel
-    }
+    } else if name == "role" { .role } else if name == "emoji" { .emoji } else { .channel }
 }
 
 /// Which side a mapping the app of old kept was made on.
@@ -1265,13 +1258,7 @@ fn origin_side(name: Text) -> OriginSide {
 fn channel_kind(name: Text) -> ChannelKind {
     if name == "voice" {
         .voice
-    } else if name == "category" {
-        .category
-    } else if name == "thread" {
-        .thread
-    } else {
-        .text
-    }
+    } else if name == "category" { .category } else if name == "thread" { .thread } else { .text }
 }
 
 /// A time the app of old kept as milliseconds since 1970, as the ISO text this app keeps.
@@ -1294,7 +1281,9 @@ migration action carry_native_discord(accounts: Accounts) {
             let account = if let d = existing {
                 d
             } else {
-                accounts.accounts.insert(Discord(name: if server == "" { "Discord" } else { server }))
+                accounts.accounts.insert(
+                    Discord(name: if server == "" { "Discord" } else { server }),
+                )
             }
             if account.guild_id == "" {
                 account.guild_id = guild_id
@@ -1305,9 +1294,7 @@ migration action carry_native_discord(accounts: Accounts) {
                 account.map_roles = (g.texts.get("map_roles") ?? "false") == "true"
                 account.ownership = if (g.texts.get("ownership") ?? "importing") == "adopted" {
                     .adopted
-                } else {
-                    .importing
-                }
+                } else { .importing }
                 account.bot_user = g.texts.get("bot_user") ?? ""
                 account.sign_in_page = g.texts.get("sign_in_page") ?? ""
             }
@@ -1320,53 +1307,62 @@ migration action carry_native_discord(accounts: Accounts) {
                 let kind = mapped_kind(m.texts.get("kind") ?? "")
                 let tilo = m.texts.get("tilo") ?? ""
                 let discord = m.texts.get("discord") ?? ""
-                if tilo != "" and discord != "" and not account.map.any(x -> x.kind == kind and x.tilo == tilo) {
-                    account.map.insert(Mapping(
-                        kind: kind,
-                        tilo: tilo,
-                        discord: discord,
-                        origin: origin_side(m.texts.get("origin") ?? ""),
-                        persona: m.texts.get("persona") ?? "",
-                        root: m.texts.get("root") ?? "",
-                        picture: m.texts.get("picture") ?? "",
-                    ))
+                if tilo != ""
+                    and discord != ""
+                    and not account.map.any(x -> x.kind == kind and x.tilo == tilo) {
+                    account.map.insert(
+                        Mapping(
+                            kind: kind,
+                            tilo: tilo,
+                            discord: discord,
+                            origin: origin_side(m.texts.get("origin") ?? ""),
+                            persona: m.texts.get("persona") ?? "",
+                            root: m.texts.get("root") ?? "",
+                            picture: m.texts.get("picture") ?? "",
+                        ),
+                    )
                 }
             }
             for l in earlier.filter(e -> e.of == "links") {
                 let user = l.texts.get("discord_user") ?? ""
                 let at = l.texts.get("linked_at")?.to_int() ?? 0
                 if user != "" and not account.links.any(x -> x.discord_user == user) {
-                    account.links.insert(Link(
-                        discord_user: user,
-                        person: l.texts.get("person") ?? "",
-                        linked_at: iso_of(at),
-                        user_name: l.texts.get("user_name") ?? "",
-                        display_name: l.texts.get("display_name") ?? "",
-                        avatar: l.texts.get("avatar") ?? "",
-                        interaction: l.texts.get("interaction") ?? "",
-                        photo: l.texts.get("photo") ?? "",
-                        photo_avatar: l.texts.get("photo_avatar") ?? "",
-                    ))
+                    account.links.insert(
+                        Link(
+                            discord_user: user,
+                            person: l.texts.get("person") ?? "",
+                            linked_at: iso_of(at),
+                            user_name: l.texts.get("user_name") ?? "",
+                            display_name: l.texts.get("display_name") ?? "",
+                            avatar: l.texts.get("avatar") ?? "",
+                            interaction: l.texts.get("interaction") ?? "",
+                            photo: l.texts.get("photo") ?? "",
+                            photo_avatar: l.texts.get("photo_avatar") ?? "",
+                        ),
+                    )
                 }
             }
             for c in earlier.filter(e -> e.of == "channels") {
                 let id = c.texts.get("id") ?? ""
                 let parent = c.texts.get("parent") ?? ""
                 if id != "" and not account.channels.any(x -> x.id == id) {
-                    account.channels.insert(DChannel(
-                        id: id,
-                        kind: channel_kind(c.texts.get("kind") ?? ""),
-                        name: c.texts.get("name") ?? "",
-                        parent: if parent == "" { .none } else { .some(parent) },
-                        position: c.texts.get("position")?.to_int() ?? 0,
-                        topic: c.texts.get("topic") ?? "",
-                    ))
+                    account.channels.insert(
+                        DChannel(
+                            id: id,
+                            kind: channel_kind(c.texts.get("kind") ?? ""),
+                            name: c.texts.get("name") ?? "",
+                            parent: if parent == "" { .none } else { .some(parent) },
+                            position: c.texts.get("position")?.to_int() ?? 0,
+                            topic: c.texts.get("topic") ?? "",
+                        ),
+                    )
                 }
             }
         }
     }
 }
 
+/// Sends a message through a channel's webhook, as the bridge plans it.
 // ---- messages and reactions --------------------------------------------------------------
 action send_there(d: Discord, op: SendOp) {
     require the_bridge(invoker) "The bridge carries messages to Discord"
