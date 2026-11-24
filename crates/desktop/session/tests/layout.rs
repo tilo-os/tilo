@@ -1457,7 +1457,7 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
     // Someone else is in the workspace the person moves the window to: it is another person's, and
     // this device holds no governance of it.
     let mut away = Workspace::new(WorkspaceId::new(), "Away");
-    away.set_owner("bb".repeat(32));
+    away.policy.set_owner("bb".repeat(32));
     let away_id = away.id().to_string();
     let workspace_ids = [session.handle().read(|tree| tree.active), away.id()];
     let mut layout = session.handle().read(Clone::clone);

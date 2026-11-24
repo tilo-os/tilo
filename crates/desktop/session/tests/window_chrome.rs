@@ -36,7 +36,6 @@ fn session_on(outputs: &[OutputConfig]) -> (Session, Vec<String>) {
         outputs,
         Options {
             person: PERSON.to_owned(),
-            shell: true,
             collab: false,
             services: vec![Box::new(notebook)],
             ..Options::default()
@@ -792,14 +791,15 @@ fn a_window_that_controls_the_desktop_offers_to_stop() {
 
     // The workspace lets the app arrange the desktop: its window offers to stop that.
     let mut tree = session.handle().read(Clone::clone);
-    let control = tree
-        .workspaces
-        .first()
-        .expect("a workspace")
-        .desktop_control_grant(&app, tilo_action_policy::Grantee::person(PERSON));
+    let control = tilo_desktop_model::commands::control_grant(
+        &tree.workspaces.first().expect("a workspace").policy,
+        &app,
+        tilo_action_policy::Grantee::person(PERSON),
+    );
     tree.workspaces
         .first_mut()
         .expect("a workspace")
+        .policy
         .grant(control);
     session.handle().replace_tree(tree);
     until(&mut session, "the app controls the desktop", |session| {

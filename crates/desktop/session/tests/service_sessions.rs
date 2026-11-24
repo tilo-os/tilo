@@ -115,7 +115,7 @@ fn fixture() -> Fixture {
 fn shell(keys: &Keys) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace, "Shell");
-    workspace.set_owner(actor(&keys.root));
+    workspace.policy.set_owner(actor(&keys.root));
     Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),

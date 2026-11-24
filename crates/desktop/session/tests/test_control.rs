@@ -225,7 +225,10 @@ impl StartedSession {
         };
         // A session is one of a computer's: this account's daemon serves it, and makes the
         // account's identity through `devices#found`.
-        let mut daemon = std::process::Command::new(tilo_test_env::package_binary!("tilo-runtime"));
+        let mut daemon = std::process::Command::new(tilo_test_env::sibling_binary(
+            "tilo-runtime",
+            "tilo-runtime",
+        ));
         configure(&mut daemon);
         let daemon = daemon
             .stdout(std::process::Stdio::null())

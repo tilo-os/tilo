@@ -43,7 +43,7 @@ use tilo_unlock_protocol::{
     BootId, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, SlotId, UNLOCK_ALPN, UnlockHello,
     UnlockRequest, decode_frame, encode_frame, frame_len, open_release,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 /// What the sheet lists a disk-unlock request as.
 const KIND: &str = "network.device-unlock";
@@ -141,9 +141,7 @@ impl Devices {
             signature: [0; 64],
             issuer: None,
         };
-        let digest = device_cert_signing_digest(&cert).expect("the boot key's certificate");
-        cert.signature = root_signer()
-            .sign_digest(&digest)
+        tilo_user_identity::sign_device_cert(&mut cert, &root_signer())
             .expect("the person's root signs the boot key");
         let (asks, questions): (AskSender, AskReceiver) = tilo_service::asks::channel();
         let runtime = tokio::runtime::Runtime::new().expect("a runtime");
@@ -158,7 +156,6 @@ impl Devices {
                     wake: Arc::new(|| {}),
                     relays: test_server::loopback(),
                     lan: None,
-                    records: tilo_session::platform::records::Changes::default(),
                 },
                 None,
                 Some(asks.clone()),
@@ -181,7 +178,6 @@ impl Devices {
                     wake: Arc::new(|| {}),
                     relays: test_server::loopback(),
                     lan: None,
-                    records: tilo_session::platform::records::Changes::default(),
                 },
                 None,
                 None,

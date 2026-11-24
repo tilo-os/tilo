@@ -90,7 +90,7 @@ fn install(device: &Device, app: &str) {
 /// carries them holds them: signed packages from the run's build, as `tilolang run` installs a
 /// development session's.
 fn install_tl(device: &Device) {
-    let installed = crate::common::dev_apps::install_named(device.store(), &TL_APPS);
+    let installed = crate::common::dev_apps::install_named(&device.store(), &TL_APPS);
     assert_eq!(
         installed.len(),
         TL_APPS.len(),

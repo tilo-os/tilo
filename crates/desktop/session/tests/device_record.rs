@@ -1,11 +1,11 @@
-//! Devices and access reads the person's record, not this device's fleet.
+//! Devices and access read the person's record: one list every device of theirs reads.
 //!
 //! The person's hosts keep the keys their root certified beside their
 //! workspace list, and every device of theirs lists those keys: a browser a
-//! page's root approved in its own tab, a phone paired on their desktop. A
-//! device's own fleet is not that list — a key the root certified elsewhere is
-//! in no fleet of theirs but the one that signed it — so Settings reads the
-//! record, and a pairing says the list again even though no workspace moved.
+//! page's root approved in its own tab, a phone paired on their desktop. That
+//! one record is the whole list — a key the root certified on one device is
+//! every device's to read — so Settings reads the record, and a pairing says
+//! the list again even though no workspace moved.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -164,14 +164,5 @@ fn a_paired_device_reaches_the_record_without_the_workspace_list_moving() {
         desktop.on_shell(),
         desktop.join_flow(),
         laptop.join_flow(),
-    );
-    assert!(
-        !fleet_of(&laptop, ada.public)
-            .load(&hex::encode(ada.public))
-            .expect("the laptop's fleet")
-            .certificates
-            .iter()
-            .any(|cert| cert.device_public_key == phone.cert.device_public_key),
-        "the laptop holds the phone's key in no fleet of its own"
     );
 }

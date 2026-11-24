@@ -165,7 +165,7 @@ fn workspace_settings_sets_each_members_role() {
     }
     let roles = session.handle().read(|tree| {
         let workspace = tree.active_workspace().expect("a workspace in front");
-        (workspace.role_of("ada"), workspace.role_of("bo"))
+        (workspace.policy.role_of("ada"), workspace.policy.role_of("bo"))
     });
     assert_eq!(
         roles,
@@ -334,7 +334,7 @@ fn the_people_tab_offers_the_owners_role_as_a_fact() {
     );
     let owner = session.handle().read(|tree| {
         tree.active_workspace()
-            .and_then(|workspace| workspace.owner().cloned())
+            .and_then(|workspace| workspace.policy.owner().map(str::to_owned))
     });
     let owner = owner.expect("the workspace has an owner");
     assert!(
@@ -556,7 +556,7 @@ fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
         Answer::Allow,
         Grantee::person(PERSON),
     );
-    workspace.grant(grant);
+    workspace.policy.grant(grant);
     let published = workspace.id().to_string();
     session.handle().replace_tree(tree);
     actions.0.borrow_mut().push(chat_posts(&published));
@@ -1017,7 +1017,11 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         image::ColorType::Rgba8,
     )
     .expect("a picture to add");
-    let mut session = session();
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        asks: Some(crate::common::person_asked()),
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &[]);
     let workspace = session.handle().read(|tree| {
@@ -1037,40 +1041,23 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         },
     );
 
-    // Add emoji asks the session's chooser for a picture.
+    // Add emoji asks the person for a picture: the file chooser's question, answered with the
+    // picture the test made, as the person choosing it in their own picker answers.
     press(&mut app, "ws-emoji-add");
     session.step(Duration::from_millis(1)).unwrap();
-    let picker = session.file_picker().expect("the file chooser").clone();
-    let request = picker.request().expect("the tab asks for a picture");
-    pump(&mut session, &mut [], |_, _| {
-        let listing = picker.listing();
-        !listing.reading && listing.entries.iter().any(|entry| entry.name == "wave.png")
-    });
-    let select = FilePickerEffect::SELECT.id;
-    // The chooser's own resource: "select" is a control of the sheet's tabs as well, and the action
-    // is taken by the app that publishes it.
-    let chooser = publishers(&session, select)
-        .into_iter()
-        .find(|resource| resource.starts_with("file-chooser"))
-        .expect("the chooser publishes choosing");
-    session
-        .invoke(
-            &chooser,
-            select,
-            &arguments(serde_json::json!({
-                "handle": request.handle,
-                "path": picture.to_string_lossy(),
-            })),
-        )
-        .expect("select");
-    pump(&mut session, &mut [], |_, _| picker.listing().can_confirm);
-    session
-        .invoke(
-            &chooser,
-            FilePickerEffect::CONFIRM.id,
-            &arguments(serde_json::json!({ "handle": request.handle })),
-        )
-        .expect("confirm");
+    let question = crate::common::person_asked_next(&mut session);
+    assert_eq!(
+        question.kind,
+        tilo_portal::file_chooser::FILE_CHOOSER_QUESTION,
+        "the tab asks for a picture"
+    );
+    crate::common::person_answers(
+        &mut session,
+        tilo_service::Answer {
+            uris: vec![format!("file://{}", picture.display())],
+            ..tilo_service::Answer::default()
+        },
+    );
 
     // The tab shows the emoji, and Chat's emoji document holds it: the store commits what a window changed
     // after a debounce, so what the device holds is read again until the emoji is in it.
@@ -1513,7 +1500,7 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
         front.policy.grants.push(tilo_action_policy::Grant::new(
             format!("agent-member:{agent}:observer"),
             tilo_action_policy::Grantee::agent(agent),
-            front.node(),
+            front.policy.node(),
             tilo_action_policy::KindSet::READ,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(admitted_by.to_owned()),

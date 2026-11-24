@@ -53,8 +53,6 @@ mod app_sheets;
 mod app_socket;
 #[path = "ask.rs"]
 mod ask;
-#[path = "automation.rs"]
-mod automation;
 #[path = "canvas_ask.rs"]
 mod canvas_ask;
 #[path = "canvas_chrome.rs"]

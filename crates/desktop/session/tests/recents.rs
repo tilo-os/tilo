@@ -18,7 +18,7 @@
 use serde_json::json;
 use tilo_session::Session;
 use tilo_session_core::layout::LayoutRecentReading;
-use tilo_shell_surface::shell_part::OVERLAYS;
+use tilo_session_core::shell::OVERLAYS;
 
 use crate::common::{layout, places, press, private_home, reached, seeded_session, until};
 

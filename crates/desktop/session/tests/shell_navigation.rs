@@ -57,7 +57,6 @@ fn session_with(asked: Rc<Asked>, apps: &[(&str, &str)]) -> Session {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
-            shell: true,
             lists: Lists::fixed(AppLists {
                 applications: apps
                     .iter()

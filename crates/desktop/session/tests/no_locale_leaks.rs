@@ -70,10 +70,10 @@ const WINDOWS: &[Window] = &[
     },
     Window {
         name: "another device's window",
-        source: catalogue!("/../../session/desktop-surface/locales/en-US.ftl"),
+        source: catalogue!("/../device-surfaces/locales/en-US.ftl"),
         german: Some((
             "de-DE",
-            catalogue!("/../../session/desktop-surface/locales/de-DE.ftl"),
+            catalogue!("/../device-surfaces/locales/de-DE.ftl"),
         )),
     },
     Window {

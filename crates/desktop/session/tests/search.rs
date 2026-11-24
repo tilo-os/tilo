@@ -32,6 +32,7 @@ use tilo_session::{AppActions, AppLists, Lists, Options, SearchOptions, Session}
 use tilo_session_core::desktop::verbs::{
     LAUNCHPAD_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE, launchpad_card_id,
 };
+use tilo_sheets::SheetState as _;
 use tilo_workspace_service::search::{AppContentIndex, IndexSearch};
 
 /// The platform search action every window and the shell publish: what a window's search control, its
@@ -657,7 +658,6 @@ fn the_empty_search_offers_the_shells_welcome_verbs_and_typing_finds_them_all() 
 /// the invite sheet, where the link is made.
 #[test]
 fn a_welcome_card_does_what_its_published_action_does() {
-    use tilo_sheets::SheetState as _;
     use ui::window_targets::TargetAction;
 
     let _settled = ui::motion::testing::settled();

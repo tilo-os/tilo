@@ -128,7 +128,6 @@ fn session(
     .expect("the throwaway identity");
     let mut session = crate::common::headless(Options {
         person: crate::common::PERSON.to_owned(),
-        shell: true,
         collab: true,
         state: Some(home.state().to_path_buf()),
         services: Vec::new(),
@@ -282,7 +281,7 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                             .wakes_in()
                             .map_or(50, |at| i32::try_from(at.as_millis().min(50)).unwrap_or(50));
                         WOKEN.store(false, Ordering::SeqCst);
-                        let _ = wait(None, wake.fd(), None, &host, timeout);
+                        let _ = wait(None, &wake, None, &host, timeout);
                         let _ = wake.consume();
                     }
                     let _ = ready.send(ran);

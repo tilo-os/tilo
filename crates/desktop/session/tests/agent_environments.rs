@@ -312,7 +312,7 @@ fn shell() -> Layout {
     let workspace = |id: &str, name: &str, owner: &str| {
         let id = WorkspaceId::parse(id).expect("a workspace id");
         let mut workspace = Workspace::new(id, name);
-        workspace.set_owner(owner);
+        workspace.policy.set_owner(owner);
         workspace
     };
     let garden = workspace(GARDEN, "Garden", PERSON);

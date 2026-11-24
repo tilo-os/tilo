@@ -1471,7 +1471,7 @@ impl Agent {
 thread_local! {
     /// The person's side of the questions the session on this test's thread is asked: what
     /// [`person_answers`] answers, as they would on the question's asked record.
-    static PERSON: std::cell::RefCell<Option<tilo_service::AskReceiver>> =
+    static ASKED: std::cell::RefCell<Option<tilo_service::AskReceiver>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1479,21 +1479,21 @@ thread_local! {
 /// answer: what [`Options::asks`] takes.
 pub fn person_asked() -> (tilo_service::AskSender, tilo_service::AskReceiver) {
     let (sender, receiver) = tilo_service::asks::channel();
-    PERSON.with(|person| *person.borrow_mut() = Some(receiver.clone()));
+    ASKED.with(|person| *person.borrow_mut() = Some(receiver.clone()));
     (sender, receiver)
 }
 
 /// The person on this thread is asked on `receiver`: the side of the questions a login's desktop
 /// services ask, which the session started beside them puts to the person.
 pub fn person_asked_on(receiver: &tilo_service::AskReceiver) {
-    PERSON.with(|person| *person.borrow_mut() = Some(receiver.clone()));
+    ASKED.with(|person| *person.borrow_mut() = Some(receiver.clone()));
 }
 
 /// The question the session on this thread asks the person next, once it is asked, running the
 /// session until it is.
 #[track_caller]
 pub fn person_asked_next(session: &mut Session) -> tilo_service::Question {
-    let person = PERSON
+    let person = ASKED
         .with(|person| person.borrow().clone())
         .expect("the session is started with `person_asked`");
     wait_for(session, "a question for the person", |_| {
@@ -1520,7 +1520,7 @@ pub fn allowed_for(nth: usize) -> tilo_service::Answer {
 
 /// What the session on this thread asks the person now, unanswered.
 pub fn person_asked_now() -> Vec<tilo_service::Question> {
-    PERSON
+    ASKED
         .with(|person| person.borrow().clone())
         .expect("the session is started with `person_asked`")
         .pending()
@@ -1530,7 +1530,7 @@ pub fn person_asked_now() -> Vec<tilo_service::Question> {
 #[track_caller]
 pub fn person_answers(session: &mut Session, answer: tilo_service::Answer) {
     let question = person_asked_next(session);
-    let person = PERSON
+    let person = ASKED
         .with(|person| person.borrow().clone())
         .expect("the session is started with `person_asked`");
     assert!(

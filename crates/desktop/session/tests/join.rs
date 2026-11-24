@@ -107,7 +107,7 @@ fn person() -> Person {
 fn layout(person: &Keys) -> Layout {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let mut workspace = Workspace::new(workspace, "Session");
-    workspace.set_owner(actor(&person.root));
+    workspace.policy.set_owner(actor(&person.root));
     Layout {
         workspaces: vec![workspace.clone()],
         active: workspace.id(),

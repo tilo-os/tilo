@@ -98,7 +98,6 @@ fn device_with(
             wake: Arc::new(|| {}),
             relays,
             lan,
-            records: tilo_session::platform::records::Changes::default(),
         },
         None,
         None,

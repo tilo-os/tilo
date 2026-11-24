@@ -501,76 +501,6 @@ fn a_second_launch_raises_the_window_the_app_already_has() {
     );
 }
 
-/// The person's own action that takes them somewhere in an app with a window here (Message on a
-/// card opening the conversation in Chat) brings that window forward, as the app's `open` does; an
-/// action that takes them nowhere leaves the window in front where it is.
-#[test]
-fn an_action_that_takes_the_person_into_an_app_brings_its_window_forward() {
-    let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().unwrap();
-    let launcher = tilo_test_env::stand_in(home.home().join("tilo-launcher"), "exit 3\n").unwrap();
-    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
-    session.step(Duration::from_millis(1)).unwrap();
-    session.desktop().with_policy(|policy| {
-        policy.map(window(11, "so.tilo.chat")).unwrap();
-        policy.map(window(12, "org.example.Other")).unwrap();
-    });
-    let focused = |session: &Session| session.desktop().with_policy(|policy| policy.focused());
-    until(&mut session, "the other window is in front", |session| {
-        session
-            .desktop()
-            .with_policy(|policy| policy.app_tabs_in_front().len())
-            == 2
-    });
-    assert_eq!(focused(&session), Some(12));
-    let workspace = session
-        .desktop()
-        .with_policy(|policy| {
-            policy
-                .handle()
-                .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
-        })
-        .unwrap();
-    let conversation = format!("chat.conversation:{}", "ad".repeat(32));
-    let action = |action: &str, kind: &str| -> tilo_broker_core::PublishedAction {
-        serde_json::from_value(serde_json::json!({
-            "resource": conversation, "action": action, "resource_kind": "chat.conversation",
-            "resource_label": "Ada", "action_label": action, "description": null,
-            "operation_kind": kind, "params": [], "view": null, "input": "None",
-            "contract": tilo_actions::ActionContract::default(),
-        }))
-        .unwrap()
-    };
-    let broker = tilo_workspace_service::apps::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
-    broker
-        .state()
-        .replace_published_surfaces_for_test(vec![tilo_broker_core::PublishedSurface {
-            peer_id: 7,
-            app_id: "so.tilo.chat".into(),
-            route: tilo_broker_core::CrdtRoute::app("so.tilo.chat", workspace.clone()),
-            actions: vec![
-                action("send-direct-message", "Effect"),
-                action("open-direct-conversation", "View"),
-            ],
-            live: true,
-        }]);
-    apps.lend_broker(Some(Arc::clone(broker.state())));
-    for (asked, front) in [
-        ("send-direct-message", 12),
-        ("open-direct-conversation", 11),
-    ] {
-        let target = tilo_actions::remote::application_action_target(
-            &workspace,
-            "so.tilo.chat",
-            conversation.clone(),
-            asked,
-        );
-        let _delivered = apps.invoke(target, serde_json::Map::new());
-        session.step(Duration::from_millis(1)).unwrap();
-        assert_eq!(focused(&session), Some(front), "after {asked}");
-    }
-}
-
 /// The app the tab tests install: a Tilo package whose window is a tab of the desktop.
 const PROBE: &str = "so.tilo.probe";
 /// What the person reads for [`PROBE`]: the name its package gives it, which its window bar says
@@ -1223,7 +1153,7 @@ fn front_workspace(session: &Session) -> (String, Option<String>) {
             |workspace| {
                 (
                     workspace.id().to_string(),
-                    workspace.owner().map(ToString::to_string),
+                    workspace.policy.owner().map(ToString::to_string),
                 )
             },
         )

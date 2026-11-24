@@ -294,6 +294,7 @@ fn a_hosted_windows_control_pressed_by_what_it_does_reaches_the_app() {
         role: "Button".to_owned(),
         identity: Some(identity),
         action: TargetAction::Activate,
+        after_input: None,
     };
     let told = host_frames(&mut session, &mut connection, |told| {
         told.contains(&pressed)

@@ -77,10 +77,11 @@ fn strips_are_made_stepped_shown_moved_and_named_by_verb() {
     until(&mut session, "back on the first strip", |session| {
         strips(session).1 == Some(first)
     });
+    let in_front = workspace(&session);
     verb(
         &mut session,
         "show-strip",
-        &json!({ "workspace": workspace(&session), "strip": made.0.to_string() }),
+        &json!({ "workspace": in_front, "strip": made.0.to_string() }),
     );
     until(&mut session, "the strip shown", |session| {
         strips(session).1 == Some(made)

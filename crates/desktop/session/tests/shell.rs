@@ -3323,6 +3323,7 @@ fn wireless_session() -> Session {
             id: "work".to_owned(),
             kind: "wireguard".to_owned(),
             connected: false,
+            ..tilo_connectivity_service::model::VpnProfile::default()
         }];
     }
     let mut connectivity =

@@ -156,7 +156,7 @@ fn press(session: &mut Session, name: &str) {
     crate::common::wait_for(session, format!("the control {name:?}"), |session| {
         session.settle_services();
         session.step(REFRESH).expect("step");
-        crate::common::on_screen_at(session, name, WIDTH, TALL).then_some(())
+        crate::common::on_screen_at(session, name, WIDTH, TALL).map(|_| ())
     });
     crate::common::press_at(session, name, WIDTH, TALL);
 }

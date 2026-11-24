@@ -541,26 +541,15 @@ fn part_showing(session: &mut Session, name: &str) -> usize {
     .unwrap_or_else(|| panic!("no display's part draws {name}: {:?}", shell_trees(session)))
 }
 
-/// The words the part on `output` shows as a page reads it: each element's text of its own, the
-/// face it shows, and what its semantics name or describe. What a display's part draws, read
-/// from that part alone.
+/// The words the part on `output` shows: what each element's semantics name, say or describe.
+/// What a display's part draws, read from that part alone.
 fn part_words(session: &Session, output: &str) -> Vec<String> {
     fn walk(node: &ui::composition::Composed, out: &mut Vec<String>) {
-        match &node.own {
-            Some(ui::composition::Own::Text(text)) => out.push(text.text.clone()),
-            Some(ui::composition::Own::Face(face)) => {
-                if let Some(label) = &face.label {
-                    out.push(label.text.clone());
-                }
-            }
-            _ => {}
-        }
         if let Some(semantics) = &node.semantics {
-            if let Some(name) = &semantics.name {
-                out.push(name.clone());
-            }
-            if let Some(description) = &semantics.description {
-                out.push(description.clone());
+            for said in semantics.nodes() {
+                out.extend(said.name.iter().cloned());
+                out.extend(said.value.iter().cloned());
+                out.extend(said.description.iter().cloned());
             }
         }
         for child in &node.children {

@@ -243,7 +243,7 @@ pub fn actor(root: &[u8; 32]) -> String {
 pub fn layout(workspace: &str, person: &str) -> Layout {
     let id = WorkspaceId::parse(workspace).expect("a workspace id");
     let mut held = Workspace::new(id, "Shell");
-    held.set_owner(person);
+    held.policy.set_owner(person);
     Layout {
         workspaces: vec![held.clone()],
         active: held.id(),

@@ -224,7 +224,7 @@ fn says_no_room(told: &str) {
 fn tree() -> Layout {
     let id = WorkspaceId::parse(STUDIO).expect("a workspace id");
     let mut studio = Workspace::new(id, "Studio");
-    studio.set_owner(PERSON);
+    studio.policy.set_owner(PERSON);
     Layout {
         active: studio.id(),
         workspaces: vec![studio],

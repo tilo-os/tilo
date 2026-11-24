@@ -219,7 +219,7 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
                 .map(|strip| strip.name.clone())
                 .collect::<Vec<_>>(),
             tree.active == made.id(),
-            made.owner().cloned(),
+            made.policy.owner().map(str::to_owned),
         )
     });
     let source_strips = session.handle().read(|tree| {
@@ -323,7 +323,7 @@ fn a_workspace_that_is_someone_elses_is_not_branched() {
     let mut tree = session.handle().read(Clone::clone);
     let mut theirs =
         tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Theirs");
-    theirs.set_owner("someone-else");
+    theirs.policy.set_owner("someone-else");
     tree.workspaces.push(theirs);
     session.handle().replace_tree(tree);
     session.step(Duration::from_millis(1)).expect("a frame");
