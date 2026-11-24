@@ -440,6 +440,10 @@ imports! {
     SheetRecords = "sheet_records" ([H, H] -> [H]);
     // The input to store for a typed entry, and the format it shows in.
     SheetEntry = "sheet_entry" ([H, H] -> [H]);
+    // A presentation file read as the deck it holds, and a deck written as a file of a format:
+    // `.presentation()`, `File.of_presentation(name, deck, format)`.
+    PresentationFile = "presentation_file" ([H] -> [H]);
+    PresentationOfFile = "presentation_of_file" ([H, H, H] -> [H]);
     // The device's own files, within what the app was granted: a folder's entries, one entry,
     // the bytes a path holds, and the watch that runs an action when a folder changes.
     FileList = "file_list" ([H] -> [H]);

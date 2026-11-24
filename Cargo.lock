@@ -18011,6 +18011,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-deck"
+version = "0.1.0"
+dependencies = [
+ "bounded-zip",
+ "quick-xml 0.41.0",
+ "serde",
+ "serde_json",
+ "tilo-content-types",
+ "tilo-test-env",
+ "workspace-hack",
+ "zip",
+]
+
+[[package]]
 name = "tilo-delivery-protocol"
 version = "0.1.0"
 dependencies = [
@@ -22999,6 +23013,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-content-types",
+ "tilo-deck",
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-doc-pdf",

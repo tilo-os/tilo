@@ -355,6 +355,10 @@ impl Core {
                 let file = self.file_arg(a.h(0)?)?;
                 self.result(self.sheet_import(&file).map(Value::text))
             }
+            Imp::PresentationFile => {
+                let file = self.file_arg(a.h(0)?)?;
+                self.result(self.presentation_import(&file).map(Value::text))
+            }
             Imp::FileFiles => {
                 let file = self.file_arg(a.h(0)?)?;
                 let answer = match self.blobs.borrow().as_ref() {
@@ -474,6 +478,14 @@ impl Core {
                 let workbook = self.text(a.h(1)?)?;
                 let format = self.text(a.h(2)?)?;
                 match self.sheet_export(&workbook, &format) {
+                    Ok(bytes) => Held::Bytes(bytes),
+                    Err(why) => return trap(why),
+                }
+            }
+            Imp::PresentationOfFile => {
+                let deck = self.text(a.h(1)?)?;
+                let format = self.text(a.h(2)?)?;
+                match self.presentation_export(&deck, &format) {
                     Ok(bytes) => Held::Bytes(bytes),
                     Err(why) => return trap(why),
                 }

@@ -368,6 +368,8 @@ imports! {
     (SheetNumbers, "sheet_numbers", "iii", "i"),
     (SheetRecords, "sheet_records", "ii", "i"),
     (SheetEntry, "sheet_entry", "ii", "i"),
+    (PresentationFile, "presentation_file", "i", "i"),
+    (PresentationOfFile, "presentation_of_file", "iii", "i"),
     (FileList, "file_list", "i", "i"),
     (FileStat, "file_stat", "i", "i"),
     (FileReadPath, "file_read_path", "i", "i"),

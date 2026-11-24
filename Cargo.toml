@@ -274,6 +274,7 @@ members = [
     "crates/engines/tilo-doc-codecs",
     "crates/sdk/tilo-document",
     "crates/engines/tilo-sheet",
+    "crates/engines/tilo-deck",
     "tools/tilo-docs",
     "crates/engines/tilo-doc-pdf",
     "crates/core/tilo-automerge",
