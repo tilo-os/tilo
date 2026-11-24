@@ -325,7 +325,14 @@ pub(super) async fn readable_now(
     } else {
         reading.opened.take(&route)
     };
-    let (opened, next) = held.opened_over(&mut keys.open(), prior)?;
+    let (opened, next) = match held.opened_over(&mut keys.open(), prior) {
+        Ok(opened) => opened,
+        // The writes the record's checkpoint stands in for are still on their way: the record is
+        // not whole yet, as a record whose writes are still arriving reads elsewhere, and no
+        // refusal of the reader.
+        Err(tilo_peer_state::OpenSealedError::Incomplete) => return Ok(None),
+        Err(tilo_peer_state::OpenSealedError::Failed(why)) => return Err(why),
+    };
     if !scoped && let Some(next) = next {
         reading.opened.keep(route, next);
     }
