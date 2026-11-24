@@ -443,14 +443,14 @@ view appearance_pane() {
     }
     ui.Section("Widgets") {
         widget_setting(
-            "music",
+            .music,
             "Music",
             "What is playing on this device or another of yours, with its own controls",
         )
-        widget_setting("team", "People here", "Who else is in this workspace")
-        widget_setting("calendar", "Calendar", "Today, and the month around it")
+        widget_setting(.team, "People here", "Who else is in this workspace")
+        widget_setting(.calendar, "Calendar", "Today, and the month around it")
         widget_setting(
-            "system_monitor",
+            .system_monitor,
             "System load",
             "This machine's processors, memory and heat",
         )
@@ -460,9 +460,11 @@ view appearance_pane() {
 /// One widget's choices: whether the shell keeps it, when it shows itself, and where it rests.
 /// Every change is the settings' own action, so the shell, Settings, a script and an agent keep
 /// the same record.
-view widget_setting(key: Text, name: Text, about: Text) {
-    let prefs = widget_prefs_of(key)
-    setting("Keep {name} on the shell", about) {
+view widget_setting(kind: ShellWidget, name: Text, about: Text) {
+    let key = shell_widget_key(kind)
+    let prefs = widget_prefs_of(kind)
+    ui.Text(name, role: .label, secondary: true)
+    setting("Keep it on the shell", about) {
         ui.Toggle(shown: prefs.enabled, label: "Keep {name} on the shell") {
             on check(on): settings.set_widget_enabled(
                 settings.widgets,
@@ -485,19 +487,25 @@ view widget_setting(key: Text, name: Text, about: Text) {
         }
     }
     setting("Where it rests", "The corner or edge you left it at; a drag from its header moves it") {
-        ui.Button("Back to its corner", icon: .undo, role: .plain) {
-            on press: reset_widget_place(key)
+        ui.Button("Back to its corner", icon: .undo_2, role: .plain) {
+            on press: settings.place_widget(
+                settings.widgets,
+                widget: key,
+                display: device.screen.output.to_text(),
+                x: widget_home_x(kind),
+                y: widget_home_y(kind),
+            )
         }
     }
 }
 
 /// A widget's choices as the person's settings hold them.
-fn widget_prefs_of(key: Text) -> settings.WidgetPrefs {
-    if key == "music" {
+fn widget_prefs_of(kind: ShellWidget) -> settings.WidgetPrefs {
+    if kind == .music {
         settings.widgets.music
-    } else if key == "team" {
+    } else if kind == .team {
         settings.widgets.team
-    } else if key == "calendar" {
+    } else if kind == .calendar {
         settings.widgets.calendar
     } else {
         settings.widgets.system_monitor
@@ -511,17 +519,37 @@ fn show_index(show: settings.ShowMode) -> Int {
     } else if show == .always { 1 } else { 2 }
 }
 
-/// Puts a widget back at the corner or edge it first rests in on this display.
-fn reset_widget_place(key: Text) -> Action {
-    settings.place_widget(
-        settings.widgets,
-        widget: key,
-        display: device.screen.output,
-        x: if key == "system_monitor" { 0.0 } else { 1.0 },
-        y: if key == "music" or key == "system_monitor" {
-            1.0
-        } else if key == "team" { 0.5 } else { 0.25 },
-    )
+/// How far across a widget first rests on a display, as a fraction of the room it moves in.
+fn widget_home_x(kind: ShellWidget) -> Float {
+    if kind == .system_monitor { 0.0 } else { 1.0 }
+}
+
+/// How far down a widget first rests on a display, as a fraction of the room it moves in.
+fn widget_home_y(kind: ShellWidget) -> Float {
+    if kind == .music or kind == .system_monitor {
+        1.0
+    } else if kind == .team { 0.5 } else { 0.25 }
+}
+
+/// The widgets the shell can keep, as Settings lists them.
+enum ShellWidget {
+    /// Music
+    music
+    /// People here
+    team
+    /// Calendar
+    calendar
+    /// System load
+    system_monitor
+}
+
+/// The key the person's settings keep a widget's choices under.
+fn shell_widget_key(kind: ShellWidget) -> Text {
+    if kind == .music {
+        "music"
+    } else if kind == .team {
+        "team"
+    } else if kind == .calendar { "calendar" } else { "system_monitor" }
 }
 
 /// What this device says and shows when something happens: the banners, the sounds, and the

@@ -9867,6 +9867,70 @@
           "readonly": true
         },
         {
+          "path": "year",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "month",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "day",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "weekday",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "week_start",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "month_name",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "days_in_month",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "first_weekday",
+          "stored": "value",
+          "type": "int",
+          "readonly": true
+        },
+        {
+          "path": "weekdays",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "weekday_names",
+          "stored": "value",
+          "type": {
+            "list": "text"
+          },
+          "readonly": true
+        },
+        {
           "path": "timer",
           "stored": "value",
           "type": "text",

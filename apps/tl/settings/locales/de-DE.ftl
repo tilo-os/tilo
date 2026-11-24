@@ -263,6 +263,15 @@ d-azovfqdu = Appearance pane
     .w-sunset = Sonnenuntergang
     .w-when-the-night-starts-as-a = Wann die Nacht beginnt, wie eine Uhr es zeigt; es gilt, wenn der Sonne nicht gefolgt werden kann
     .w-following-the-sun-today-s-times = Der Sonne folgend stammen die heutigen Zeiten vom Ort, den Ihre Zeitzone nennt. Ohne einen gelten die festen Zeiten oben.
+    .w-widgets = Widgets
+    .w-music = Musik
+    .w-what-is-playing-on-this-device = Was auf diesem oder einem anderen deiner Geräte läuft, mit eigener Steuerung
+    .w-people-here = Personen hier
+    .w-who-else-is-in-this-workspace = Wer sonst in diesem Arbeitsbereich ist
+    .w-calendar = Kalender
+    .w-today-and-the-month-around-it = Heute und der Monat darum
+    .w-system-load = Systemlast
+    .w-this-machine-s-processors-memory-and = Prozessoren, Speicher und Wärme dieses Rechners
 
 d-fv3yim6v = Notifications pane
     .w-do-not-disturb = Nicht stören
@@ -1246,3 +1255,26 @@ d-zlta5t4w = Users pane
     .w-create-the-account = Das Konto anlegen
     .w-this-computer-s-account-service-is = Der Kontodienst dieses Rechners läuft nicht; Konten lassen sich hier nicht ändern.
 
+d-pqgii63g = Shell-Widget
+    .doc = Die Widgets, die die Shell behalten kann, wie die Einstellungen sie auflisten.
+
+d-jr53aft7 = Musik
+
+d-mlpav45d = Personen hier
+
+d-ilaotm4m = Kalender
+
+d-kb2naxav = Systemlast
+
+d-hqy5br35 = Widget-Einstellung
+    .w-keep-it-on-the-shell = Auf der Shell behalten
+    .w-keep-on-the-shell = { $name } auf der Shell behalten
+    .w-when-it-shows = Wann es erscheint
+    .w-back-after-a-pause-always-or = Nach einer Pause zurück, immer oder nur wenn du fragst
+    .w-when-shows = Wann { $name } erscheint
+    .w-after-a-pause = Nach einer Pause
+    .w-always = Immer
+    .w-only-when-i-ask = Nur wenn ich frage
+    .w-where-it-rests = Wo es liegt
+    .w-the-corner-or-edge-you-left = Die Ecke oder Kante, an der du es gelassen hast; Ziehen an seiner Kopfzeile verschiebt es
+    .w-back-to-its-corner = Zurück in seine Ecke

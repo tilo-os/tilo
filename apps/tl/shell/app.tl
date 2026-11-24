@@ -252,6 +252,13 @@ view bar_part(part: BarPart) {
         row(gap: .related, align: .center) {
             if not space.compact and not frames_style() {
                 people_button()
+                // Someone new is one press from the faces, as the Rust bar's invite was: the
+                // launchpad's invite card, which the session's own action opens.
+                if space.width_class == .wide {
+                    ui.Button("Invite someone", icon: .user_plus, icon_only: true, role: .bar) {
+                        on press: session.launchpad(card: "invite")
+                    }
+                }
             }
             // Whose view this is while the person follows someone: their face and name where the
             // bar's glance value stands, with the way to stop.

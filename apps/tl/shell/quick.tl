@@ -643,20 +643,42 @@ view bluetooth_section() {
     }
 }
 
-/// The battery's charge and whether it is charging, on a device that has one.
+/// The battery's charge on a device that has one: how long it has left, or that it charges,
+/// and the way to what the device's own settings say of it.
 view battery_line() {
     let b = device.battery
     if b.present {
         row(gap: .tight, align: .center) {
-            ui.Icon(.battery)
-            ui.Text(battery_words(b.percentage, b.on_battery), role: .caption, secondary: true)
+            ui.Button("Battery settings", icon: .battery, icon_only: true, role: .plain) {
+                on press: session.open_settings(link: "settings://power")
+            }
+            ui.Text(battery_words(b), role: .caption, secondary: true, fill)
         }
     }
 }
 
-/// What the battery line says: the charge, and that it charges when it is plugged in.
-fn battery_words(percent: Int, on_battery: Bool) -> Text {
-    if on_battery { "{percent}%" } else { "{percent}%, charging" }
+/// What the battery line says: its charge, then the time it has left or the state it is in.
+fn battery_words(b: device.Battery) -> Text {
+    if let left = b.minutes_left {
+        "{b.percentage}%, {left} minutes left"
+    } else {
+        "{b.percentage}%, {battery_state(b.state)}"
+    }
+}
+
+/// The battery's state in the person's words.
+fn battery_state(state: Text) -> Text {
+    if state == "charging" {
+        "charging"
+    } else if state == "discharging" {
+        "on the battery"
+    } else if state == "empty" {
+        "empty"
+    } else if state == "full" or state == "fully-charged" {
+        "full"
+    } else if state == "pending-charge" {
+        "about to charge"
+    } else if state == "pending-discharge" { "about to drain" } else { "plugged in" }
 }
 
 /// Locking the screen, and the ways to leave the session or the device. What leaves the session

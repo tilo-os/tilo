@@ -463,6 +463,7 @@ d-pvl6wwx6 = Leistenteil
     .w-open-your-card = { $ask }: deine Karte öffnen
     .w-open-your-card-2 = { $person }: deine Karte öffnen
     .w-you-open-your-card = Du: deine Karte öffnen
+    .w-invite-someone = Jemanden einladen
 
 d-vidcax4k = Arbeitsbereichsmenü
     .w-workspaces = Arbeitsbereiche
@@ -872,6 +873,7 @@ d-zjz5sskl = Bluetooth-Bereich
     .w-no-devices-found = Keine Geräte gefunden
 
 d-lcjohgdk = Akkulinie
+    .w-battery-settings = Akku-Einstellungen
 
 d-ycck5awo = Ein/Aus-Zeile
     .w-lock = Sperren
@@ -1954,3 +1956,67 @@ d-ktt65xag = Teilen-Steuerung
     .w-stop-letting-them-control-it = Steuerung nicht mehr erlauben
     .w-let-them-control-it = Steuerung erlauben
     .w-share-this-window = Dieses Fenster teilen
+
+d-ltdydcpb = Widget-Art
+    .doc = Die Widgets, die jemand auf seiner Shell behalten kann.
+
+d-pbntwsxq = Musik
+
+d-lf7cacbm = Personen hier
+
+d-gw4nk6ha = Kalender
+
+d-3flqhgw3 = Systemlast
+
+d-6dc6ihf7 = Widget verschieben
+    .doc = Legt das Widget `kind` dort ab, wo ein Ziehen auf diesem Bildschirm bei `at` losließ: den Ort, an dem die Person es ließ, als Anteile des Raums, in dem es sich dort bewegen kann.
+
+d-6dc6ihf7-kind = Art
+
+d-6dc6ihf7-at = Bei
+
+d-6dc6ihf7-across = Breite
+
+d-6dc6ihf7-down = Höhe
+
+d-6dc6ihf7-display = Bildschirm
+
+d-vvqlyiwr = Widget-Name
+    .w-music = Musik
+    .w-people-here = Personen hier
+    .w-calendar = Kalender
+    .w-system-load = Systemlast
+
+d-tadzd3lm = Widget-Kurzform
+    .w-here = { $len } hier
+
+d-vlo5ghj4 = Lastangabe
+    .w-cpu-memory = { $to_int } % CPU · { $to_int2 } % Speicher
+
+d-3qxhd5dh = Widget-Ebene
+    .w-menu = Menü
+    .w-back-after-a-pause = Nach einer Pause zurück
+    .w-always-on-this-strip = Immer auf diesem Streifen
+    .w-only-when-i-ask = Nur wenn ich frage
+    .w-remove-from-the-shell = Von der Shell entfernen
+    .w-fold = Einklappen
+    .w-open = { $widget_name } öffnen
+    .w-removed = { $widget_name } entfernt
+    .w-undo = Rückgängig
+    .w-dismiss = Schließen
+
+d-fbr67wmc = Musik-Widget
+    .w-position-in = Position in { $live_name }
+    .w-open = { $source } öffnen
+
+d-wfzaobux = Personen-Widget
+    .w-show-who-is-here = Zeigen, wer hier ist
+
+d-7deyrm3z = Kalender-Widget
+
+d-6pn3zoo7 = Monatsraster
+
+d-zx3hotic = Last-Widget
+    .w-cpu = CPU
+    .w-processor-load = Prozessorlast
+    .w-of-gb-memory = { $to_int } von { $to_int2 } GB Speicher

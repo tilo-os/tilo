@@ -749,6 +749,40 @@ fields = [
   { path = "system_monitor.width", type = { option = "float" } },
 ]
 
+[[resources.verbs]]
+id = "set-widget-enabled"
+kind = "undoable"
+params = [
+  { name = "widget", type = "text", required = true, schema = { type = "string" } },
+  { name = "enabled", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-widget-show"
+kind = "undoable"
+params = [
+  { name = "widget", type = "text", required = true, schema = { type = "string" } },
+  { name = "show", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "place-widget"
+kind = "undoable"
+params = [
+  { name = "widget", type = "text", required = true, schema = { type = "string" } },
+  { name = "display", type = "text", required = true, schema = { type = "string" } },
+  { name = "x", type = "float", required = true, schema = { type = "number" } },
+  { name = "y", type = "float", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "resize-widget"
+kind = "undoable"
+params = [
+  { name = "widget", type = "text", required = true, schema = { type = "string" } },
+  { name = "width", type = "float", required = true, schema = { type = "number" } },
+]
+
 [[resources.types]]
 name = "Place"
 fields = [

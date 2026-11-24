@@ -9,8 +9,37 @@ scenario "the default shell" {
     let d = root Layout
     d.person = "Ada Lovelace"
     d.rows.insert(LayoutRow(key: "r-drafts", workspace: "studio", name: "Drafts", current: true))
-    stage(device.time, device.Time(clock: "4:28 PM"))
+    stage(
+        device.time,
+        device.Time(
+            clock: "4:28 PM",
+            year: 2026,
+            month: 11,
+            day: 24,
+            weekday: 2,
+            week_start: 1,
+            month_name: "November",
+            days_in_month: 30,
+            first_weekday: 7,
+            weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            weekday_names: [
+                "Monday",
+                "Tuesday",
+                "Wednesday",
+                "Thursday",
+                "Friday",
+                "Saturday",
+                "Sunday",
+            ],
+        ),
+    )
     stage(device.overlays, device.Overlays(here: "none"))
+    // A calendar the person keeps: the widget layer draws it in the shell's shots, and the
+    // layout check lays it out at every size.
+    stage(
+        settings.widgets,
+        settings.Widgets(calendar: settings.WidgetPrefs(enabled: true, show: .always)),
+    )
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
