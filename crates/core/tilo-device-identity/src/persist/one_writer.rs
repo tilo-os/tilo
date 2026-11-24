@@ -257,7 +257,8 @@ mod tests {
     /// The child this test starts takes the key under the root this names, says so, and keeps
     /// it until its standard input ends.
     const CHILD: &str = "TILO_TEST_TAKE_DEVICE_KEY_UNDER";
-    const TEST: &str = "persist::one_writer::tests::a_second_process_taking_the_key_is_refused_naming_the_first";
+    const TEST: &str =
+        "persist::one_writer::tests::a_second_process_taking_the_key_is_refused_naming_the_first";
 
     fn device_key_under(root: &Path) -> IdentityPaths {
         let paths = IdentityPaths::under(root);
@@ -290,6 +291,8 @@ mod tests {
             return;
         }
 
+        use tilo_test_env::SpawnUnderEnvLock as _;
+
         let root = tempfile::tempdir().unwrap();
         let paths = device_key_under(root.path());
         let mut child = Command::new(std::env::current_exe().unwrap())
@@ -298,7 +301,7 @@ mod tests {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         assert!(
