@@ -88,9 +88,6 @@ use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
 /// installed app, so it has no first-party app constant. It asks the fixed
 /// local image and face operations for every app, as Photos once did.
 const VISION_APP: &str = "so.tilo.vision";
-/// The desktop's report composer: its review asks a model which words of a
-/// report are personal, a completion without tools, as Chat's are.
-const FEEDBACK_APP: &str = "so.tilo.feedback-composer";
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant
