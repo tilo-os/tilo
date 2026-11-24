@@ -5,7 +5,7 @@
 //! its first frame, the frames it draws while what it shows moves, a strip carried under a hand,
 //! and the frames offered once it rests. `apps` is the same shell with a note window in each
 //! place, typed into. `activities` is the floating layer over it: three live activity cards, one
-//! ticking, and a place carried across the shell under them.
+//! ticking, and the strip carried under them.
 //!
 //! Every number is the production loop's ([`tilo_session::Session::step`]): the session builds
 //! its shell from the package the build carries, its services publish what the shell reads, and
@@ -967,9 +967,9 @@ fn run_apps(marks: &Marks, json_path: Option<String>, device: &str, tabs: usize)
 
 /// The `activities` profile: the floating layer over the shell. The cards a live activity shows
 /// dock at the shell's corner (the person does not drag them); the thing a person carries over
-/// the shell is a window's place, so that is what the drag measures.
+/// the shell is the strip's windows, so that is what the drag measures.
 fn run_activities(marks: &Marks, json_path: Option<String>, device: &str) {
-    let (notebook, notes) = notebook(&TITLES[..1]);
+    let (notebook, notes) = notebook(&TITLES[..6]);
     let (mut session, session_build_us) = session(vec![Box::new(notebook)]);
     let build_us = marks
         .phase_us("shell-build-start", "shell-build-done")
@@ -1008,68 +1008,13 @@ fn run_activities(marks: &Marks, json_path: Option<String>, device: &str) {
         show(session, CLOCKS, timer(1 + frame as u64));
     });
 
-    // The drag: a note's place, carried across the shell under the cards. Its ground is where it
-    // stands before and after the drag, and the pointer's own path between them.
+    // The drag: the strip carried under the cards. The live activity cards dock where the layer
+    // puts them and do not move under the pointer; what a person carries over the shell is the
+    // strip's windows, so three fingers pan them while the cards stand still.
     settle(&mut session);
-    session
-        .run_shell_action("show_style", vec![Value::from("so.tilo.shell:frames")])
-        .expect("the frames canvas");
+    open_notes(&mut session, &notes);
     settle(&mut session);
-    place(&mut session, &notes[0]);
-    until(&mut session, "the note on the canvas", |session| {
-        session.shell_says(TITLES[0])
-    });
-    settle(&mut session);
-    let title = session
-        .shell_control(TITLES[0])
-        .or_else(|| session.shell_text_bounds(TITLES[0]))
-        .expect("the note's place on the canvas");
-    // The person grabs the place's bar in its empty middle, clear of its title and its buttons,
-    // and carries it down the canvas.
-    let grab = (title.0 + title.2 / 2.0, title.1 + 12.0);
-    let mut pointer = grab;
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion {
-            x: pointer.0,
-            y: pointer.1,
-        })
-        .expect("the pointer moves");
-    session.step(REFRESH).expect("a turn of the session");
-    session
-        .compositor()
-        .input(InputEvent::PointerButton {
-            button: 0x110,
-            pressed: true,
-        })
-        .expect("the pointer presses");
-    session.step(REFRESH).expect("a turn of the session");
-    // What the carried place and the pointer may repaint: where the place stands, the room its
-    // body, shadow and the drag's travel reach, and the cards' own ground over it.
-    let drag_ground = union(
-        ground,
-        grown(title, 320.0, 200.0, WIDTH as f64, HEIGHT as f64),
-        (240, 120),
-        (WIDTH as u32, HEIGHT as u32),
-    );
-    let (drag, drag_damage) = measure_damage(&mut session, 120, drag_ground, 40, |session, _| {
-        pointer.0 += 2.0;
-        pointer.1 += 1.0;
-        session
-            .compositor()
-            .input(InputEvent::PointerMotion {
-                x: pointer.0,
-                y: pointer.1,
-            })
-            .expect("the pointer moves");
-    });
-    session
-        .compositor()
-        .input(InputEvent::PointerButton {
-            button: 0x110,
-            pressed: false,
-        })
-        .expect("the pointer lets go");
+    let (drag, drag_damage) = measure_strip_drag(&mut session, 120, &TITLES[..6]);
 
     println!("device {device}, profile activities");
     println!("build            {:>8.2} ms", build_us as f64 / 1000.0);
@@ -1141,26 +1086,90 @@ fn merge(value: &mut Value, extra: &Value) {
     }
 }
 
-/// The box `bounds` (a place's title: `x`, `y`, `width`, `height`) grows to where the place's
-/// body, shadow and its own room reach, kept on `width` by `height`.
-fn grown(
-    bounds: (f64, f64, f64, f64),
-    margin_x: f64,
-    margin_y: f64,
-    width: f64,
-    height: f64,
-) -> (u32, u32, u32, u32) {
-    let clamp = |value: f64, limit: f64| value.clamp(0.0, limit - 1.0);
-    (
-        clamp(bounds.0 - margin_x, width) as u32,
-        clamp(bounds.1 - margin_y, height) as u32,
-        clamp(bounds.0 + bounds.2 + margin_x, width) as u32,
-        clamp(bounds.1 + bounds.3 + margin_y, height) as u32,
-    )
+/// The box the places titled `titles` stand in, as the shell draws them, with a little room for
+/// their edges: what a frame that carries the strip may repaint.
+fn places_box(session: &Session, titles: &[&str]) -> Option<(u32, u32, u32, u32)> {
+    let mut shown: Option<(f64, f64, f64, f64)> = None;
+    for title in titles {
+        let Some((x, y, width, height)) = session.shell_control(title) else {
+            continue;
+        };
+        let (x0, y0, x1, y1) = (x - 16.0, y - 16.0, x + width + 16.0, y + height + 16.0);
+        shown = Some(match shown {
+            None => (x0, y0, x1, y1),
+            Some((ax, ay, bx, by)) => (ax.min(x0), ay.min(y0), bx.max(x1), by.max(y1)),
+        });
+    }
+    let (last_x, last_y) = (f64::from(WIDTH) - 1.0, f64::from(HEIGHT) - 1.0);
+    shown.map(|(x0, y0, x1, y1)| {
+        let clamp =
+            |value: f64, last: f64| u32::try_from(value.clamp(0.0, last) as i64).unwrap_or(0);
+        (
+            clamp(x0, last_x),
+            clamp(y0, last_y),
+            clamp(x1, last_x),
+            clamp(y1, last_y),
+        )
+    })
 }
 
-/// `a` and `b` together, with `b` also travelled `travel` the way the drag carries it, kept on
-/// `screen`: what the carried place and the cards over it may repaint.
+/// Three fingers carrying the strip under the cards: its windows move every frame, and a frame
+/// may repaint only where they were and where they are, with the cards standing still.
+fn measure_strip_drag(session: &mut Session, frames: usize, titles: &[&str]) -> (Phase, Damage) {
+    session
+        .compositor()
+        .input(InputEvent::Gesture(GestureEvent::SwipeBegin { fingers: 3 }))
+        .expect("the fingers land");
+    let mut phase = measure_start(session);
+    let mut previous = shot(session);
+    let mut previous_ground = places_box(session, titles);
+    assert!(
+        previous_ground.is_some(),
+        "a window of the strip stands on the shell to carry"
+    );
+    let mut damage = Damage {
+        violations: 0,
+        ratio: 0.0,
+    };
+    let start = Instant::now();
+    for frame in 0..frames {
+        let dx = if frame < frames / 2 { 9.0 } else { -9.0 };
+        session
+            .compositor()
+            .input(InputEvent::Gesture(GestureEvent::SwipeUpdate {
+                dx,
+                dy: 0.0,
+            }))
+            .expect("the fingers move");
+        session.step(REFRESH).expect("a turn of the session");
+        let ground_now = places_box(session, titles);
+        let now = shot(session);
+        if let (Some(before), Some(after)) = (previous_ground, ground_now) {
+            let ground = union(before, after, (0, 0), (WIDTH as u32, HEIGHT as u32));
+            let (outside, changed) = changed_outside(&previous, &now, ground, 8);
+            if let Some(changed) = changed_box(&previous, &now) {
+                damage.ratio = damage.ratio.max(area(changed) / area(ground).max(1.0));
+            }
+            if outside > 0 || changed == 0 {
+                damage.violations += 1;
+            }
+        }
+        previous = now;
+        previous_ground = ground_now;
+    }
+    session
+        .compositor()
+        .input(InputEvent::Gesture(GestureEvent::SwipeEnd {
+            cancelled: false,
+        }))
+        .expect("the fingers lift");
+    let wall_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    phase.finish(session, frames, wall_us);
+    (phase, damage)
+}
+
+/// `a` and `b` together, with `b` also travelled `travel` the way a drag carries it, kept on
+/// `screen`: what the carried windows may repaint.
 fn union(
     a: (u32, u32, u32, u32),
     b: (u32, u32, u32, u32),
