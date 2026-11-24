@@ -1472,7 +1472,7 @@ pub(super) fn open_sealed_after(
                 )
                 .map_err(|refusal| refusal.to_string())?;
                 read.refuse_in(&mut refused);
-                beside.extend(read.refused.iter().cloned());
+                beside.extend(read.named().iter().cloned());
                 writes.push((index, read.instead.unwrap_or(mutation)));
             }
             Ok(Some(mutation)) => match check(write, &mutation) {

@@ -803,7 +803,7 @@ fn open_history<'a>(
                     }
                 })?;
                 read.refuse_in(&mut opened.refusing);
-                opened.refused.extend(read.refused.iter().cloned());
+                opened.refused.extend(read.named().iter().cloned());
                 writes.push((index, read.instead.unwrap_or(mutation)));
                 fresh = fresh.saturating_add(1);
                 opened.count = index.saturating_add(1);

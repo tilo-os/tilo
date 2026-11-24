@@ -141,6 +141,17 @@ impl CheckpointRead {
         self.instead.is_none()
     }
 
+    /// The refused writes a reader names: none when the checkpoint holds exactly what its writes
+    /// merge to, which folded them away as any compaction folds a refused write, and those it
+    /// stands in for otherwise.
+    pub(super) fn named(&self) -> &[UnmergedWrite] {
+        if self.holds_its_writes() {
+            &[]
+        } else {
+            &self.refused
+        }
+    }
+
     /// Leave out, in `refusing`, the changes of the writes it stands in for that the workspace's
     /// rules refuse: a write after it built on one is left out with them.
     pub(super) fn refuse_in(&self, refusing: &mut RefusedChanges) {
