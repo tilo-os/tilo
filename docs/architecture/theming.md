@@ -158,30 +158,54 @@ a document but not installed is refused like an unknown field.
 
 #### A surface shader
 
-The `shader` set paints a role with the theme's own colour arithmetic: a
-WGSL function `fs_surface` that takes exactly the documented inputs, in
-order, and returns `vec4<f32>` (`tokens/shader.rs`, `INPUTS`): `backdrop`,
-`uv` (0–1 across the part), `size` and `position` (logical pixels),
-`fill`, `ink`, `ground`, `raised`, `accent`, `light` (linear sRGB),
-`params` (the finish's `tint`, `saturation`, `scale`, `phase`) and `time`
-(the static seconds the finish states, never a clock). The finish carries
-the source as `shader` and the value as `time`:
+The `shader` set paints a role with the theme's own material stage: a WGSL
+function `fs_surface(s: Surface) -> vec4<f32>` (`tokens/shader.rs`). The
+toolkit declares `Surface` and fills it per fragment (`FIELDS`): `uv` (0–1
+across the part), `size` and `position` (logical pixels), `distance` (signed
+distance to the rounded outline, negative inside), `radius`, `edge` (the
+outline's outward normal), `normal` (the normal of a slab whose rim curves
+down to the outline), `pointer` (`xy` in the part, `z` 1 while there is one),
+`light_dir` and `light` (the finish's `light_angle` and the theme's light),
+`fill`, `ink`, `ground`, `raised`, `accent` (linear sRGB), `params` (the
+finish's `tint`, `saturation`, `scale`, `phase`) and `time` (the static
+seconds the finish states, never a clock). One lookup,
+`backdrop(offset: vec2<f32>) -> vec4<f32>`, returns what lies behind the
+surface, blurred by the finish's `blur`, `offset` logical pixels from the
+fragment. The finish carries the source as `shader`:
 
 ```json
-"window": { "painter": "shader", "shader": "fn fs_surface(...) -> vec4<f32> { ... }" }
+"floating": { "painter": "shader", "tint": 0.1, "scale": 16.0, "blur": 1.0,
+              "shader": "fn fs_surface(s: Surface) -> vec4<f32> { ... }" }
 ```
 
-It declares no entry point, binding or global; the toolkit owns every
-input, so a shader reads nothing but what it is handed. The source is
-checked when the document is read (`Source::validate`: at most 16 KiB,
-parses with the WGSL front end wgpu uses, the signature above). A document
-whose shader fails is refused with the compiler's message and position
-(`Theme::refusal`, "material.window: surface shader does not parse: …
-(line 3, column 9)"); Theme Studio's import shows it, and a saved theme
-that fails is logged and does not apply. A shader is evaluated once per
-settled part into an image the part cache replays, so an idle surface
-draws nothing; `backdrop` is the part's ground today (no backdrop pass
-feeds it yet).
+It declares no entry point, binding, global or second function, and runs
+straight through: no loop, no branch (`select` chooses), no `var`, at most
+eight lookups. So it reads nothing but what it is handed and its cost per
+pixel is bounded. The source is checked when the document is read
+(`Source::validate`: at most 16 KiB, parses, the shape above, and the
+pipeline the toolkit wraps around it validates as the GPU compiles it). A
+document whose stage fails is refused with the compiler's message and its
+position in the theme's own source (`Theme::refusal`, "material.window:
+surface shader does not parse: … (line 3, column 9)").
+
+Where it runs:
+
+- **On the GPU**, as the last pass of the backdrop pass (`backdrop.rs`,
+  `Stage`): the region is blurred as any material's is, then the stage
+  draws the surface from that sample at one texel per target pixel. The
+  render service runs a client's stage too, and checks it again before it
+  compiles it. The legible band holds the result, as it holds every
+  material. A window showing a stage draws a new frame when the pointer
+  moves over it.
+- **On the CPU**, through the WGSL interpreter (`part_paint::shader`), once
+  per settled part, cached with it: over the backdrop a host provided, or
+  over the part's ground where there is none. The CPU path has no pointer.
+
+`crates/ui/themes/liquid-glass` and `liquid-glass-light` are theme bundles
+whose materials are such a stage: a clear slab that bends what lies behind it
+at its rim by the slab's normal, sets red and blue slightly apart there,
+reflects the light by Fresnel and a specular highlight, and lights a soft
+glow under the pointer.
 
 Built-in presets, distribution defaults, the user's themes and every file
 Theme Studio exports are this document. Unknown fields are refused. A new

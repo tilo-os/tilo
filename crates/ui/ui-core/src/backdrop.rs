@@ -130,6 +130,114 @@ impl Refraction {
     }
 }
 
+/// A theme's material stage as one region runs it (`crate::tokens::shader`): its WGSL, and the
+/// uniforms the pipeline around it reads, in the order `shader::wrap` declares them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stage {
+    pub wgsl: std::sync::Arc<str>,
+    pub uniforms: [f32; STAGE_FLOATS],
+}
+
+/// How many numbers a stage's uniforms hold: ten `vec4<f32>`.
+pub const STAGE_FLOATS: usize = 40;
+
+impl Stage {
+    /// The stage `source` runs for a part of `size` (logical pixels) with `tokens`, the pointer at
+    /// `pointer` in the part's coordinates (`z` 1 while there is one).
+    #[must_use]
+    pub(crate) fn of(
+        source: &crate::part_paint::ShaderSource,
+        tokens: &crate::part_paint::PartTokens,
+        size: vello::kurbo::Size,
+        pointer: [f32; 3],
+    ) -> Self {
+        let mut inputs = crate::part_paint::shader::Inputs::of(
+            tokens,
+            Rect::from_origin_size((0.0, 0.0), size),
+            source.time_centis,
+        );
+        inputs.pointer = pointer;
+        let mut uniforms = [0.0; STAGE_FLOATS];
+        let rows: [[f32; 4]; 10] = [
+            inputs.fill,
+            inputs.ink,
+            inputs.ground,
+            inputs.raised,
+            inputs.accent,
+            inputs.light,
+            inputs.params,
+            [inputs.size[0], inputs.size[1], inputs.radius, inputs.time],
+            [inputs.pointer[0], inputs.pointer[1], inputs.pointer[2], 0.0],
+            [
+                inputs.light_dir[0],
+                inputs.light_dir[1],
+                inputs.light_dir[2],
+                0.0,
+            ],
+        ];
+        for (row, values) in uniforms.chunks_exact_mut(4).zip(rows) {
+            row.copy_from_slice(&values);
+        }
+        Self {
+            wgsl: source.wgsl.as_str().into(),
+            uniforms,
+        }
+    }
+
+    fn key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.wgsl.hash(&mut hasher);
+        for value in self.uniforms {
+            value.to_bits().hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
+    fn source_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.wgsl.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+thread_local! {
+    /// Where the pointer is over this thread's window, in its physical pixels: what a material
+    /// stage reads as `pointer`.
+    static POINTER: std::cell::Cell<Option<(f64, f64)>> = const { std::cell::Cell::new(None) };
+    /// Whether the last recorded frame drew a material stage, which a moving pointer redraws.
+    static STAGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The pointer is at `at` over this thread's window, in its physical pixels, or has left it.
+pub fn set_pointer(at: Option<(f64, f64)>) {
+    POINTER.with(|pointer| pointer.set(at));
+}
+
+/// Whether the window shows a material stage, so a pointer that moves over it asks for a frame.
+#[must_use]
+pub fn follows_pointer() -> bool {
+    STAGED.with(std::cell::Cell::get)
+}
+
+/// The pointer in the coordinates of a part `transform` maps into the scene, from the part's
+/// `origin`; `z` 1 while there is one.
+fn pointer_in(transform: Affine, origin: vello::kurbo::Point) -> [f32; 3] {
+    let Some((x, y)) = POINTER.with(std::cell::Cell::get) else {
+        return [0.0; 3];
+    };
+    if transform.determinant().abs() <= f64::EPSILON {
+        return [0.0; 3];
+    }
+    let at = transform.inverse() * vello::kurbo::Point::new(x, y) - origin.to_vec2();
+    [
+        crate::num::f32_of_f64(at.x),
+        crate::num::f32_of_f64(at.y),
+        1.0,
+    ]
+}
+
 /// The luminance range what shows through a translucent surface is
 /// compressed into, so ink chosen against the surface's ground stays
 /// legible over anything below it: the material's band
@@ -427,7 +535,7 @@ pub(crate) fn fill_backdrop_sample(
         transform,
         path,
         (blur, lens, refraction, legible),
-        tint,
+        (tint, None),
     );
     let Some((image, brush_transform, provided)) = recorded else {
         return Shown::Fallback;
@@ -451,6 +559,74 @@ pub(crate) fn fill_backdrop_sample(
     } else {
         Shown::Compressed
     }
+}
+
+/// Fill `path` (part coordinates, the part's box `rect`) with a theme's material stage over what
+/// lies below it: under an active [`BackdropRecording`], a region the backdrop pass blurs by `blur`
+/// logical pixels and then runs the stage over on the GPU; where a host provided the backdrop
+/// ready-made, the stage evaluated on the CPU over it. `false`, and nothing drawn, where nothing may
+/// be translucent or nothing records: the caller evaluates the stage over the part's ground.
+/// What is drawn is then held in the material's band around `tokens.fill`.
+pub(crate) fn fill_stage(
+    scene: &mut Scene,
+    transform: Affine,
+    (path, rect): (&vello::kurbo::BezPath, Rect),
+    blur: f32,
+    (source, tokens): (
+        &crate::part_paint::ShaderSource,
+        &crate::part_paint::PartTokens,
+    ),
+    theme: &Theme,
+) -> bool {
+    if theme.reduce_transparency || theme.forced_colors || source.wgsl.trim().is_empty() {
+        return false;
+    }
+    let tint = tokens.fill;
+    let stage = Stage::of(
+        source,
+        tokens,
+        rect.size(),
+        pointer_in(transform, rect.origin()),
+    );
+    let recorded = record(
+        scene,
+        transform,
+        &rect,
+        (
+            blur,
+            Lens::default(),
+            Refraction::NONE,
+            Legible::of(theme, tint),
+        ),
+        (tint, Some(stage)),
+    );
+    let Some((image, brush_transform, provided)) = recorded else {
+        return false;
+    };
+    let (image, brush_transform) = if provided {
+        let behind = crate::part_paint::shader::Behind { image: &image };
+        let staged = crate::part_paint::shader::evaluate(source, rect, tokens, Some(&behind), tint);
+        let placed = Affine::translate(rect.origin().to_vec2())
+            * Affine::scale_non_uniform(
+                rect.width() / f64::from(staged.width.max(1)),
+                rect.height() / f64::from(staged.height.max(1)),
+            );
+        (staged, placed)
+    } else {
+        (image, brush_transform)
+    };
+    let brush = ImageBrush::new(image)
+        .with_extend(Extend::Pad)
+        .with_quality(ImageQuality::Medium);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        path,
+    );
+    settle(scene, transform, path, theme, tint);
+    true
 }
 
 /// How [`fill_backdrop_sample`] filled a backdrop brush.
@@ -525,7 +701,7 @@ pub(crate) fn fill_with_ground(
                     Refraction::NONE,
                     Legible::ANY,
                 ),
-                ground,
+                (ground, None),
             )
         {
             let brush = ImageBrush::new(image)
@@ -621,6 +797,8 @@ pub struct RecordedBackdrop {
     pub below: Scene,
     /// The opaque panel ground the material tints with.
     pub ground: Color,
+    /// The theme's material stage run over the blurred sample, if the surface's material has one.
+    pub stage: Option<Stage>,
 }
 
 impl RecordedBackdrop {
@@ -646,6 +824,7 @@ impl RecordedBackdrop {
             legible: self.legible,
             below: below(self.below),
             ground: self.ground,
+            stage: self.stage,
         }
     }
 
@@ -743,6 +922,9 @@ pub struct BackdropRecording {
 
 impl BackdropRecording {
     pub fn begin() -> Self {
+        if RECORDING.with(|slot| slot.borrow().is_none()) {
+            STAGED.with(|staged| staged.set(false));
+        }
         Self::continuing(Vec::new())
     }
 
@@ -889,7 +1071,7 @@ fn record(
     transform: Affine,
     shape: &impl Shape,
     (blur_px, lens, refraction, legible): (f32, Lens, Refraction, Legible),
-    ground: Color,
+    (ground, stage): (Color, Option<Stage>),
 ) -> Option<(ImageData, Affine, bool)> {
     RECORDING.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -916,6 +1098,11 @@ fn record(
         recording.next_slot = slot_index.saturating_add(1);
         let device_scale = transform.determinant().abs().sqrt();
         let (width, height) = match lens.sampling {
+            // A stage draws the surface's own light and edges: one texel per target pixel, so
+            // they stay as sharp as the scene around them.
+            crate::part_paint::Sampling::Smooth if stage.is_some() => {
+                (cells(bounds.width(), 1.0), cells(bounds.height(), 1.0))
+            }
             // One texel per cell, at most the placeholder edge: the
             // image is the cells themselves.
             crate::part_paint::Sampling::Blocky => {
@@ -957,7 +1144,11 @@ fn record(
                 below
             },
             ground,
+            stage,
         };
+        if surface.stage.is_some() {
+            STAGED.with(|staged| staged.set(true));
+        }
         if layer.is_some() {
             recording.surfaces.push(surface);
         } else {
@@ -1055,6 +1246,8 @@ pub struct BackdropRegion {
     /// The opaque panel ground: what the backdrop shows where nothing below covers it and the target is
     /// cleared to transparency.
     pub ground: Color,
+    /// The theme's material stage, run over the blurred sample on the GPU; `None` shows the sample.
+    pub stage: Option<Stage>,
 }
 
 /// The backdrops one frame draws its floating surfaces over.
@@ -1292,6 +1485,13 @@ pub struct BackdropBlur {
     /// What each region slot's output was taken of, so a region whose backdrop has not changed shows it
     /// again without a pass.
     taken: Vec<Option<Taken>>,
+    /// The blurred sample a region's material stage reads, one per region slot.
+    staged: Vec<Option<Texture>>,
+    /// Material stages compiled so far, by their source: `None` for one that does not validate,
+    /// which is never tried again.
+    stages: std::collections::HashMap<u64, Option<wgpu::RenderPipeline>>,
+    /// The layout of a stage's texture, sampler and uniforms.
+    stage_layout: wgpu::BindGroupLayout,
 }
 
 struct Taken {
@@ -1301,6 +1501,7 @@ struct Taken {
     target: (u32, u32),
     numbers: [u64; 12],
     colours: [[u32; 4]; 2],
+    stage: Option<u64>,
 }
 
 impl Taken {
@@ -1327,6 +1528,7 @@ impl Taken {
             ]
             .map(f64::to_bits),
             colours: [region.ground, base].map(|colour| colour.components.map(f32::to_bits)),
+            stage: region.stage.as_ref().map(Stage::key),
         }
     }
 
@@ -1336,6 +1538,7 @@ impl Taken {
             && self.target == other.target
             && self.numbers == other.numbers
             && self.colours == other.colours
+            && self.stage == other.stage
             && self.below.encoding_eq(&other.below)
     }
 }
@@ -1438,7 +1641,43 @@ impl BackdropBlur {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let stage_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("tilo-material-stage"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            crate::tokens::shader::UNIFORM_BYTES,
+                        ),
+                    },
+                    count: None,
+                },
+            ],
+        });
         Self {
+            stage_layout,
+            staged: Vec::new(),
+            stages: std::collections::HashMap::new(),
             layout,
             halve,
             blur,
@@ -1682,14 +1921,44 @@ impl BackdropBlur {
         );
         let output_view = output.view.clone();
         let output_texture = output.texture.clone();
-        self.draw(
-            device,
-            &mut encoder,
-            &self.blur,
-            &across,
-            pass,
-            &output_view,
-        );
+        if let Some(stage) = &region.stage {
+            let Some(pipeline) = self.stage_pipeline(device, stage) else {
+                return false;
+            };
+            if self.staged.len() <= slot {
+                self.staged.resize_with(slot.saturating_add(1), || None);
+            }
+            let Some(staged_slot) = self.staged.get_mut(slot) else {
+                return false;
+            };
+            let staged = ensure_texture(
+                device,
+                staged_slot,
+                (region.image.width, region.image.height),
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                None,
+            )
+            .view
+            .clone();
+            self.draw(device, &mut encoder, &self.blur, &across, pass, &staged);
+            self.draw_stage(
+                device,
+                &mut encoder,
+                &pipeline,
+                stage,
+                &staged,
+                &output_view,
+            );
+        } else {
+            self.draw(
+                device,
+                &mut encoder,
+                &self.blur,
+                &across,
+                pass,
+                &output_view,
+            );
+        }
         queue.submit([encoder.finish()]);
         renderer.override_image(
             &region.image,
@@ -1702,6 +1971,123 @@ impl BackdropBlur {
         );
         self.substituted.push(region.image.clone());
         true
+    }
+
+    /// The pipeline `stage` runs in, compiled the first time its source is seen. A source that does
+    /// not pass [`crate::tokens::shader::check`] (a client's frame carries what it likes) is never
+    /// compiled: its region keeps the opaque placeholder.
+    fn stage_pipeline(
+        &mut self,
+        device: &wgpu::Device,
+        stage: &Stage,
+    ) -> Option<wgpu::RenderPipeline> {
+        let layout = &self.stage_layout;
+        self.stages
+            .entry(stage.source_key())
+            .or_insert_with(|| {
+                if let Err(reason) = crate::tokens::shader::check(&stage.wgsl) {
+                    tracing::warn!(%reason, "a material stage was refused; the surface stays opaque");
+                    return None;
+                }
+                let source = crate::tokens::shader::wrap(&crate::tokens::SurfaceShader {
+                    wgsl: stage.wgsl.to_string(),
+                    time: 0.0,
+                });
+                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("tilo-material-stage"),
+                    source: wgpu::ShaderSource::Wgsl(source.into()),
+                });
+                let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("tilo-material-stage"),
+                    bind_group_layouts: &[Some(layout)],
+                    immediate_size: 0,
+                });
+                Some(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("tilo-material-stage"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        buffers: &[],
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("stage_main"),
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                }))
+            })
+            .clone()
+    }
+
+    fn draw_stage(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::RenderPipeline,
+        stage: &Stage,
+        behind: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+    ) {
+        use wgpu::util::DeviceExt as _;
+        let bytes: Vec<u8> = stage
+            .uniforms
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let uniforms = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("tilo-material-stage"),
+            contents: &bytes,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tilo-material-stage"),
+            layout: &self.stage_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(behind),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: uniforms.as_entire_binding(),
+                },
+            ],
+        });
+        let mut render = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("tilo-material-stage"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        render.set_pipeline(pipeline);
+        render.set_bind_group(0, &bind_group, &[]);
+        render.draw(0..3, 0..1);
     }
 
     fn draw(

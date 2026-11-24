@@ -1,8 +1,10 @@
-//! Evaluating a theme's surface shader (`crate::tokens::shader`). A surface shader is a straight-line
-//! WGSL function over the documented inputs (`shader::check` refuses loops, branches and mutable
-//! variables), so the toolkit evaluates it **once per settled part**: one call per texel of an image
-//! sized to the part, cached with the part until its size, state, theme or what it samples changes.
-//! What it cannot interpret is an error ([`EvalError`]) the caller draws as the part's fallback colour,
+//! Evaluating a theme's material stage (`crate::tokens::shader`) on the CPU: the fallback where no
+//! GPU runs the stage in the backdrop pass. A stage is a straight-line WGSL function over the
+//! documented `Surface` (`shader::check` refuses loops, branches and mutable variables), so the
+//! toolkit evaluates it **once per settled part**: one call per texel of an image sized to the part,
+//! cached with the part until its size, state, theme or what it samples changes. `backdrop(offset)`
+//! reads the backdrop a host provided, or the part's ground where there is none. What the
+//! interpreter cannot run is an error ([`EvalError`]) the caller draws as the part's fallback colour,
 //! never a blank part and never a panic.
 
 use vello::kurbo::Rect;
@@ -36,20 +38,60 @@ pub(crate) fn admit(wgsl: &str) -> Result<(), String> {
     probe(wgsl).map_err(|reason| format!("surface shader cannot be drawn: {reason}"))
 }
 
-/// The shader's image for the part `rect` (logical pixels) in `theme`, drawn with `tokens`; `fallback`
-/// is what a shader that cannot be evaluated is drawn as.
+/// What lies behind a part, for `backdrop(offset)`: an image covering the part's box.
+pub(crate) struct Behind<'a> {
+    pub image: &'a vello::peniko::ImageData,
+}
+
+impl Behind<'_> {
+    /// The colour at `uv` across the part's box, linear, clamped to its edge.
+    fn at(&self, uv: [f32; 2]) -> [f32; 4] {
+        let image = self.image;
+        let (width, height) = (image.width.max(1), image.height.max(1));
+        let texel = |value: f32, edge: u32| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to the image's edge before the cast"
+            )]
+            let at = (value.clamp(0.0, 1.0) * float(edge))
+                .floor()
+                .min(float(edge - 1)) as usize;
+            at
+        };
+        let (x, y) = (texel(uv[0], width), texel(uv[1], height));
+        let start = (y * width as usize + x) * 4;
+        let bytes = image.data.data();
+        let Some(rgba) = bytes.get(start..start + 4) else {
+            return [0.0, 0.0, 0.0, 1.0];
+        };
+        let channel = |byte: u8| linear(f32::from(byte) / 255.0);
+        [
+            channel(rgba[0]),
+            channel(rgba[1]),
+            channel(rgba[2]),
+            f32::from(rgba[3]) / 255.0,
+        ]
+    }
+}
+
+/// The stage's image for the part `rect` (logical pixels) in `theme`, drawn with `tokens`, over
+/// `behind` where a host provided what lies behind the part; `fallback` is what a stage that cannot be
+/// evaluated is drawn as.
 #[must_use]
 pub(crate) fn evaluate(
     source: &crate::part_paint::ShaderSource,
     rect: Rect,
     tokens: &PartTokens,
+    behind: Option<&Behind<'_>>,
     fallback: Color,
 ) -> vello::peniko::ImageData {
     #[cfg(test)]
     EVALUATED.with(|count| count.set(count.get() + 1));
     let (width, height) = rail(rect.width(), rect.height());
+    // A settled part is replayed while the pointer moves, so the CPU path draws it with none.
     let inputs = Inputs::of(tokens, rect, source.time_centis);
-    match run(&source.wgsl, &inputs, width, height) {
+    match run(&source.wgsl, &inputs, behind, width, height) {
         Ok(pixels) => crate::raster::rgba8(pixels, width, height),
         Err(error) => {
             tracing::warn!(
@@ -65,7 +107,7 @@ pub(crate) fn evaluate(
 /// interpreter cannot run, as the theme's author reads it.
 fn probe(wgsl: &str) -> Result<(), String> {
     let inputs = Inputs::of(&PartTokens::default(), Rect::new(0.0, 0.0, 1.0, 1.0), 0);
-    run(wgsl, &inputs, 1, 1)
+    run(wgsl, &inputs, None, 1, 1)
         .map(|_| ())
         .map_err(|error| error.0)
 }
@@ -100,75 +142,154 @@ fn fallback_pixels(color: Color, width: u32, height: u32) -> Vec<u8> {
         .repeat((width as usize).saturating_mul(height as usize))
 }
 
-struct Inputs {
-    backdrop: [f32; 4],
-    size: [f32; 2],
-    fill: [f32; 4],
-    ink: [f32; 4],
-    ground: [f32; 4],
-    raised: [f32; 4],
-    accent: [f32; 4],
-    light: [f32; 4],
-    params: [f32; 4],
-    time: f32,
+/// What a stage reads that is the same for every texel of a part.
+pub(crate) struct Inputs {
+    pub size: [f32; 2],
+    pub radius: f32,
+    pub pointer: [f32; 3],
+    pub light_dir: [f32; 3],
+    pub light: [f32; 4],
+    pub fill: [f32; 4],
+    pub ink: [f32; 4],
+    pub ground: [f32; 4],
+    pub raised: [f32; 4],
+    pub accent: [f32; 4],
+    pub params: [f32; 4],
+    pub time: f32,
+}
+
+/// An sRGB-encoded channel, linear.
+fn linear(value: f32) -> f32 {
+    if value <= 0.040_45 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// A token colour as a stage reads it: linear, straight alpha.
+pub(crate) fn linear_color(color: Color) -> [f32; 4] {
+    let [r, g, b, a] = color.components;
+    [linear(r), linear(g), linear(b), a]
+}
+
+/// The unit vector toward a light at `angle` degrees counter-clockwise from the right (90 from
+/// above, as the Liquid set's `light_angle`), raised 45 degrees off the surface, in part coordinates
+/// (`y` down).
+pub(crate) fn light_dir(angle: f32) -> [f32; 3] {
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let flat = std::f32::consts::FRAC_1_SQRT_2;
+    [cos * flat, -sin * flat, flat]
 }
 
 impl Inputs {
-    fn of(tokens: &PartTokens, rect: Rect, time_centis: u32) -> Self {
+    pub(crate) fn of(tokens: &PartTokens, rect: Rect, time_centis: u32) -> Self {
         let param =
             |index: usize, default: f32| tokens.param(shader::FINISH_PARAMS[index], default);
         Self {
-            // A shader's backdrop input is the part's own ground where no
-            // backdrop pass sampled what lies below it: the toolkit holds
-            // that sample in the band, and the shader gets the band's
-            // ground rather than a colour it might not have.
-            backdrop: tokens.ground.components,
             size: [
                 crate::num::f32_of_f64(rect.width()),
                 crate::num::f32_of_f64(rect.height()),
             ],
-            fill: tokens.fill.components,
-            ink: tokens.ink.components,
-            ground: tokens.ground.components,
-            raised: tokens.raised.components,
-            accent: tokens.accent.components,
-            light: tokens.light.components,
+            radius: tokens.radius,
+            pointer: [0.0; 3],
+            light_dir: light_dir(tokens.param("light_angle", 135.0)),
+            light: linear_color(tokens.light),
+            fill: linear_color(tokens.fill),
+            ink: linear_color(tokens.ink),
+            ground: linear_color(tokens.ground),
+            raised: linear_color(tokens.raised),
+            accent: linear_color(tokens.accent),
             params: [param(0, 0.0), param(1, 1.0), param(2, 1.0), param(3, 0.0)],
             time: float(time_centis) / 100.0,
         }
     }
+}
 
-    fn argument(&self, index: usize) -> Option<Value> {
+/// What a stage reads that changes from texel to texel: where it is, and the outline and slab there.
+/// The same arithmetic as the GPU pipeline's (`shader::wrap`).
+#[derive(Clone, Copy)]
+struct Texel {
+    uv: [f32; 2],
+    position: [f32; 2],
+    distance: f32,
+    radius: f32,
+    edge: [f32; 2],
+    normal: [f32; 3],
+}
+
+impl Texel {
+    fn at(uv: [f32; 2], inputs: &Inputs) -> Self {
+        let size = inputs.size;
+        let half = [size[0] * 0.5, size[1] * 0.5];
+        let shorter = half[0].min(half[1]);
+        let radius = inputs.radius.clamp(0.0, shorter.max(0.0));
+        let position = [uv[0] * size[0], uv[1] * size[1]];
+        let p = [position[0] - half[0], position[1] - half[1]];
+        let q = [
+            p[0].abs() - (half[0] - radius),
+            p[1].abs() - (half[1] - radius),
+        ];
+        let outside = [q[0].max(0.0), q[1].max(0.0)];
+        let reach = outside[0].hypot(outside[1]);
+        let distance = reach + q[0].max(q[1]).min(0.0) - radius;
+        let away = |v: f32| if v < 0.0 { -1.0 } else { 1.0 };
+        let edge = if q[0] > 0.0 && q[1] > 0.0 {
+            let length = reach.max(1e-6);
+            [
+                outside[0] / length * away(p[0]),
+                outside[1] / length * away(p[1]),
+            ]
+        } else if q[0] > q[1] {
+            [away(p[0]), 0.0]
+        } else {
+            [0.0, away(p[1])]
+        };
+        let rim = radius.max(6.0).clamp(1.0, shorter.max(1.0));
+        let k = (1.0 + distance / rim).clamp(0.0, 1.0);
+        Self {
+            uv,
+            position,
+            distance,
+            radius,
+            edge,
+            normal: [edge[0] * k, edge[1] * k, (1.0 - k * k).max(0.0).sqrt()],
+        }
+    }
+
+    /// The `Surface` field at `index` (`shader::FIELDS`).
+    fn field(&self, index: u32, inputs: &Inputs) -> Option<Value> {
         Some(match index {
-            0 => Value::Vec4(self.backdrop),
-            // `uv` and `position` are filled per texel by the caller.
-            1 | 3 => Value::Vec2(half(0.0)),
-            2 => Value::Vec2(self.size),
-            4 => Value::Vec4(self.fill),
-            5 => Value::Vec4(self.ink),
-            6 => Value::Vec4(self.ground),
-            7 => Value::Vec4(self.raised),
-            8 => Value::Vec4(self.accent),
-            9 => Value::Vec4(self.light),
-            10 => Value::Vec4(self.params),
-            11 => Value::Scalar(self.time),
+            0 => Value::Vec2(self.uv),
+            1 => Value::Vec2(inputs.size),
+            2 => Value::Vec2(self.position),
+            3 => Value::Scalar(self.distance),
+            4 => Value::Scalar(self.radius),
+            5 => Value::Vec2(self.edge),
+            6 => Value::Vec3(self.normal),
+            7 => Value::Vec3(inputs.pointer),
+            8 => Value::Vec3(inputs.light_dir),
+            9 => Value::Vec4(inputs.light),
+            10 => Value::Vec4(inputs.fill),
+            11 => Value::Vec4(inputs.ink),
+            12 => Value::Vec4(inputs.ground),
+            13 => Value::Vec4(inputs.raised),
+            14 => Value::Vec4(inputs.accent),
+            15 => Value::Vec4(inputs.params),
+            16 => Value::Scalar(inputs.time),
             _ => return None,
         })
     }
 }
 
-fn half(value: f32) -> [f32; 2] {
-    [value, value]
-}
-
-#[derive(Clone, Copy)]
-struct Texel {
-    uv: [f32; 2],
-    position: [f32; 2],
-}
-
-fn run(wgsl: &str, inputs: &Inputs, width: u32, height: u32) -> Result<Vec<u8>, EvalError> {
-    let module = naga::front::wgsl::parse_str(wgsl)
+fn run(
+    wgsl: &str,
+    inputs: &Inputs,
+    behind: Option<&Behind<'_>>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, EvalError> {
+    let module = naga::front::wgsl::parse_str(&shader::checked_module(wgsl))
         .map_err(|error| EvalError(format!("does not parse: {}", error.message())))?;
     let program = Program::new(&module)?;
     let mut pixels = Vec::with_capacity(
@@ -182,14 +303,23 @@ fn run(wgsl: &str, inputs: &Inputs, width: u32, height: u32) -> Result<Vec<u8>, 
                 (float(x) + 0.5) / float(width),
                 (float(y) + 0.5) / float(height),
             ];
-            let texel = Texel {
-                uv,
-                position: [uv[0] * inputs.size[0], uv[1] * inputs.size[1]],
-            };
-            let rgba = program.shade(inputs, texel)?;
-            for channel in rgba {
-                pixels.push(encode(channel));
+            let texel = Texel::at(uv, inputs);
+            let rgba = program.shade(inputs, behind, texel)?;
+            for channel in &rgba[..3] {
+                pixels.push(encode(*channel));
             }
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to 0..=1 before the cast"
+            )]
+            let alpha = (if rgba[3].is_finite() {
+                rgba[3].clamp(0.0, 1.0)
+            } else {
+                0.0
+            } * 255.0)
+                .round() as u8;
+            pixels.push(alpha);
         }
     }
     Ok(pixels)
@@ -229,12 +359,14 @@ enum Value {
     Vec3([f32; 3]),
     Vec4([f32; 4]),
     Bool(bool),
+    /// The stage's one input, whose fields are read per texel.
+    Surface,
 }
 
 impl Value {
     fn channels(&self) -> Option<&[f32]> {
         match self {
-            Self::Scalar(_) | Self::Bool(_) => None,
+            Self::Scalar(_) | Self::Bool(_) | Self::Surface => None,
             Self::Vec2(v) => Some(v),
             Self::Vec3(v) => Some(v),
             Self::Vec4(v) => Some(v),
@@ -255,7 +387,7 @@ impl Value {
             Self::Vec2(v) => out[..2].copy_from_slice(v),
             Self::Vec3(v) => out[..3].copy_from_slice(v),
             Self::Vec4(v) => out = *v,
-            Self::Bool(_) => return None,
+            Self::Bool(_) | Self::Surface => return None,
         }
         (self.channels().map_or(usize::MAX, <[f32]>::len) <= n || self.splat().is_some())
             .then_some(out)
@@ -267,20 +399,34 @@ impl Value {
 struct Program<'a> {
     expressions: &'a naga::Arena<naga::Expression>,
     body: &'a naga::Block,
+    /// The lookup's function, which a `Call` names.
+    lookup: Option<naga::Handle<naga::Function>>,
 }
 
 impl<'a> Program<'a> {
     fn new(module: &'a naga::Module) -> Result<Self, EvalError> {
-        let Some((_, function)) = module.functions.iter().next() else {
-            return Err(EvalError("declares no function".to_owned()));
+        let Some((_, function)) = module
+            .functions
+            .iter()
+            .find(|(_, function)| function.name.as_deref() == Some(shader::ENTRY))
+        else {
+            return Err(EvalError(format!("declares no `{}`", shader::ENTRY)));
         };
         Ok(Self {
             expressions: &function.expressions,
             body: &function.body,
+            lookup: module.functions.iter().find_map(|(handle, function)| {
+                (function.name.as_deref() == Some(shader::LOOKUP)).then_some(handle)
+            }),
         })
     }
 
-    fn shade(&self, inputs: &Inputs, texel: Texel) -> Result<[f32; 4], EvalError> {
+    fn shade(
+        &self,
+        inputs: &Inputs,
+        behind: Option<&Behind<'_>>,
+        texel: Texel,
+    ) -> Result<[f32; 4], EvalError> {
         let mut scope = Scope::new(self.expressions.len());
         let kept: Vec<(naga::Handle<naga::Expression>, naga::Expression)> = self
             .expressions
@@ -297,14 +443,14 @@ impl<'a> Program<'a> {
             let value = self.eval(&expression, inputs, texel, &scope)?;
             scope.put(handle, value);
         }
-        self.block(self.body, inputs, texel, &mut scope)
+        self.block(self.body, (inputs, behind), texel, &mut scope)
             .map(|value| value.widened(4).unwrap_or([0.0, 0.0, 0.0, 1.0]))
     }
 
     fn block(
         &self,
         block: &naga::Block,
-        inputs: &Inputs,
+        (inputs, behind): (&Inputs, Option<&Behind<'_>>),
         texel: Texel,
         scope: &mut Scope,
     ) -> Result<Value, EvalError> {
@@ -324,6 +470,28 @@ impl<'a> Program<'a> {
                         let value = self.eval(&expression, inputs, texel, scope)?;
                         scope.put(handle, value);
                     }
+                }
+                naga::Statement::Call {
+                    function,
+                    arguments,
+                    result: Some(result),
+                } if Some(*function) == self.lookup => {
+                    let offset = arguments
+                        .first()
+                        .map(|handle| self.value(*handle, scope))
+                        .transpose()?
+                        .and_then(|value| value.widened(2))
+                        .ok_or_else(|| {
+                            EvalError(format!("calls `{}` without an offset", shader::LOOKUP))
+                        })?;
+                    let seen = match behind {
+                        Some(behind) => behind.at([
+                            texel.uv[0] + offset[0] / inputs.size[0].max(1.0),
+                            texel.uv[1] + offset[1] / inputs.size[1].max(1.0),
+                        ]),
+                        None => inputs.ground,
+                    };
+                    scope.put(*result, Value::Vec4(seen));
                 }
                 naga::Statement::Return { value } => {
                     return match value {
@@ -361,14 +529,24 @@ impl<'a> Program<'a> {
     ) -> Result<Value, EvalError> {
         Ok(match expression {
             naga::Expression::Literal(literal) => Value::Scalar(literal_value(literal)?),
-            naga::Expression::FunctionArgument(index) => match *index {
-                1 => Value::Vec2(texel.uv),
-                3 => Value::Vec2(texel.position),
-                index => inputs
-                    .argument(usize::try_from(index).unwrap_or(usize::MAX))
-                    .ok_or_else(|| {
-                        EvalError("reads an input the toolkit does not hand it".to_owned())
-                    })?,
+            naga::Expression::FunctionArgument(0) => Value::Surface,
+            naga::Expression::FunctionArgument(_) => {
+                return Err(EvalError(
+                    "reads an input the toolkit does not hand it".to_owned(),
+                ));
+            }
+            naga::Expression::Select {
+                condition,
+                accept,
+                reject,
+            } => match self.value(*condition, scope)? {
+                Value::Bool(true) => self.value(*accept, scope)?,
+                Value::Bool(false) => self.value(*reject, scope)?,
+                _ => {
+                    return Err(EvalError(
+                        "selects on a value a single bool is not".to_owned(),
+                    ));
+                }
             },
             naga::Expression::ZeroValue(_) => Value::Scalar(0.0),
             naga::Expression::Compose { components, .. } => {
@@ -418,6 +596,11 @@ impl<'a> Program<'a> {
             }
             naga::Expression::AccessIndex { base, index } => {
                 let base = self.value(*base, scope)?;
+                if base == Value::Surface {
+                    return texel.field(*index, inputs).ok_or_else(|| {
+                        EvalError("reads a field `Surface` does not have".to_owned())
+                    });
+                }
                 let channels = base
                     .channels()
                     .ok_or_else(|| EvalError("indexes a value a vector is not".to_owned()))?;
@@ -633,15 +816,47 @@ fn math(fun: naga::MathFunction, args: &[Value]) -> Result<Value, EvalError> {
                 _ => return Err(EvalError("dots shapes that do not match".to_owned())),
             }
         }
-        M::Length => {
-            let channels = args[0].channels();
-            match channels {
-                Some(values) => Some(Value::Scalar(
-                    values.iter().map(|v| v * v).sum::<f32>().sqrt(),
-                )),
-                None => return Err(EvalError("measures a shape a vector is not".to_owned())),
-            }
+        M::Length => match (&args[0], args[0].channels()) {
+            (Value::Scalar(v), _) => Some(Value::Scalar(v.abs())),
+            (_, Some(values)) => Some(Value::Scalar(
+                values.iter().map(|v| v * v).sum::<f32>().sqrt(),
+            )),
+            _ => return Err(EvalError("measures a shape a vector is not".to_owned())),
+        },
+        M::Normalize => {
+            let length = args[0]
+                .channels()
+                .map(|values| values.iter().map(|v| v * v).sum::<f32>().sqrt())
+                .ok_or_else(|| EvalError("normalizes a shape a vector is not".to_owned()))?;
+            map(&args[0], &|v| if length > 0.0 { v / length } else { 0.0 })
         }
+        M::Reflect => match (args[0].channels(), args[1].channels()) {
+            (Some(i), Some(n)) if i.len() == n.len() => {
+                let d: f32 = i.iter().zip(n).map(|(a, b)| a * b).sum();
+                let mut out = [0.0; 4];
+                for (at, (a, b)) in i.iter().zip(n).enumerate() {
+                    out[at] = a - 2.0 * d * b;
+                }
+                Some(match i.len() {
+                    2 => Value::Vec2([out[0], out[1]]),
+                    3 => Value::Vec3([out[0], out[1], out[2]]),
+                    _ => Value::Vec4(out),
+                })
+            }
+            _ => return Err(EvalError("reflects shapes that do not match".to_owned())),
+        },
+        M::Cross => match (args[0], args[1]) {
+            (Value::Vec3(a), Value::Vec3(b)) => Some(Value::Vec3([
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ])),
+            _ => return Err(EvalError("crosses shapes a vec3 is not".to_owned())),
+        },
+        M::Asin => one(&f32::asin),
+        M::Acos => one(&f32::acos),
+        M::Atan => one(&f32::atan),
+        M::Atan2 => both(&f32::atan2),
         M::Distance => match (args[0].channels(), args[1].channels()) {
             (Some(a), Some(b)) if a.len() == b.len() => Some(Value::Scalar(
                 a.iter()
@@ -668,7 +883,7 @@ fn map(value: &Value, f: &dyn Fn(f32) -> f32) -> Option<Value> {
         Value::Vec2(v) => Value::Vec2([f(v[0]), f(v[1])]),
         Value::Vec3(v) => Value::Vec3([f(v[0]), f(v[1]), f(v[2])]),
         Value::Vec4(v) => Value::Vec4([f(v[0]), f(v[1]), f(v[2]), f(v[3])]),
-        Value::Bool(_) => return None,
+        Value::Bool(_) | Value::Surface => return None,
     })
 }
 
@@ -678,7 +893,7 @@ fn compose(values: &[Value]) -> Option<Value> {
     for value in values {
         match value {
             Value::Scalar(v) => out.push(*v),
-            Value::Bool(_) => return None,
+            Value::Bool(_) | Value::Surface => return None,
             other => out.extend_from_slice(other.channels()?),
         }
     }

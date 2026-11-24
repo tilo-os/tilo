@@ -1,0 +1,109 @@
+{
+  "schema_version": 8,
+  "id": "liquid-glass-light",
+  "name": "Liquid Glass Light",
+  "palette": {
+    "dark": false,
+    "hue": 260.0,
+    "chroma": 0.006,
+    "surfaces": {
+      "base": 0.9,
+      "content": 0.995,
+      "sidebar": 0.965,
+      "inspector": 0.965,
+      "raised": 0.95,
+      "overlay": 1.0
+    },
+    "ink": {
+      "primary": 0.18,
+      "secondary": 0.43,
+      "tertiary": 0.56
+    },
+    "status": {
+      "danger": {
+        "lightness": 0.52,
+        "chroma": 0.13
+      },
+      "warning": {
+        "lightness": 0.56,
+        "chroma": 0.12
+      },
+      "success": {
+        "lightness": 0.52,
+        "chroma": 0.12
+      },
+      "info": {
+        "lightness": 0.52,
+        "chroma": 0.11
+      }
+    }
+  },
+  "emphasis": {
+    "kind": "you"
+  },
+  "presence": {
+    "lightness": 0.58,
+    "chroma": 0.15
+  },
+  "shape": {
+    "window_radius": 24.0,
+    "border": {
+      "width": 1.0,
+      "ink": "hairline"
+    }
+  },
+  "density": {
+    "spacing": 1.0
+  },
+  "type": {
+    "face": "Default",
+    "reading": "New Computer Modern",
+    "base_size": 14.0
+  },
+  "motion": {
+    "character": 1.3,
+    "curve": "spring",
+    "duration_scale": 1.0
+  },
+  "material": {
+    "window": {
+      "painter": "shader",
+      "tint": 0.3,
+      "scale": 10.0,
+      "blur": 0.0,
+      "light_angle": 120.0,
+      "shader": "// Liquid glass: a clear slab whose rounded rim bends what lies behind it like a lens.\nfn fs_surface(s: Surface) -> vec4<f32> {\n    // The slab tips toward its rim; there it bends the backdrop inward, hardest at the edge.\n    let tilt = s.normal.xy;\n    let bend = -tilt * s.params.z * (1.0 + 0.5 * length(tilt));\n    // Glass bends blue further than red: a slight fringe where it bends most.\n    let red = backdrop(bend * 0.94).r;\n    let green = backdrop(bend).g;\n    let blue = backdrop(bend * 1.06).b;\n    let behind = vec3<f32>(red, green, blue);\n    // Fresnel (Schlick): the slab reflects more of the light the more steeply it is seen.\n    let facing = clamp(s.normal.z, 0.0, 1.0);\n    let fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);\n    // The theme's light, mirrored off the curved rim (Blinn-Phong).\n    let half_way = normalize(s.light_dir + vec3<f32>(0.0, 0.0, 1.0));\n    let specular = pow(max(dot(s.normal, half_way), 0.0), 60.0);\n    // A soft light follows the pointer across the glass.\n    let reach = s.pointer.xy - s.position;\n    let glow = s.pointer.z * exp(-dot(reach, reach) / 16200.0) * 0.16;\n    // A hairline where the slab meets its outline.\n    let hairline = smoothstep(-1.5, 0.0, s.distance) * 0.22;\n    let body = mix(behind, s.fill.rgb, s.params.x);\n    let lit = body + s.light.rgb * (fresnel * 0.5 + specular * 0.55 + glow + hairline);\n    return vec4<f32>(lit, 1.0);\n}\n"
+    },
+    "control": {
+      "painter": "liquid",
+      "tint": 0.55,
+      "edge_highlight": 0.4
+    },
+    "floating": {
+      "painter": "shader",
+      "tint": 0.1,
+      "scale": 16.0,
+      "blur": 1.0,
+      "light_angle": 120.0,
+      "shader": "// Liquid glass: a clear slab whose rounded rim bends what lies behind it like a lens.\nfn fs_surface(s: Surface) -> vec4<f32> {\n    // The slab tips toward its rim; there it bends the backdrop inward, hardest at the edge.\n    let tilt = s.normal.xy;\n    let bend = -tilt * s.params.z * (1.0 + 0.5 * length(tilt));\n    // Glass bends blue further than red: a slight fringe where it bends most.\n    let red = backdrop(bend * 0.94).r;\n    let green = backdrop(bend).g;\n    let blue = backdrop(bend * 1.06).b;\n    let behind = vec3<f32>(red, green, blue);\n    // Fresnel (Schlick): the slab reflects more of the light the more steeply it is seen.\n    let facing = clamp(s.normal.z, 0.0, 1.0);\n    let fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);\n    // The theme's light, mirrored off the curved rim (Blinn-Phong).\n    let half_way = normalize(s.light_dir + vec3<f32>(0.0, 0.0, 1.0));\n    let specular = pow(max(dot(s.normal, half_way), 0.0), 60.0);\n    // A soft light follows the pointer across the glass.\n    let reach = s.pointer.xy - s.position;\n    let glow = s.pointer.z * exp(-dot(reach, reach) / 16200.0) * 0.16;\n    // A hairline where the slab meets its outline.\n    let hairline = smoothstep(-1.5, 0.0, s.distance) * 0.22;\n    let body = mix(behind, s.fill.rgb, s.params.x);\n    let lit = body + s.light.rgb * (fresnel * 0.5 + specular * 0.55 + glow + hairline);\n    return vec4<f32>(lit, 1.0);\n}\n"
+    },
+    "bar": {
+      "painter": "shader",
+      "tint": 0.12,
+      "scale": 9.0,
+      "blur": 0.0,
+      "light_angle": 120.0,
+      "shader": "// Liquid glass: a clear slab whose rounded rim bends what lies behind it like a lens.\nfn fs_surface(s: Surface) -> vec4<f32> {\n    // The slab tips toward its rim; there it bends the backdrop inward, hardest at the edge.\n    let tilt = s.normal.xy;\n    let bend = -tilt * s.params.z * (1.0 + 0.5 * length(tilt));\n    // Glass bends blue further than red: a slight fringe where it bends most.\n    let red = backdrop(bend * 0.94).r;\n    let green = backdrop(bend).g;\n    let blue = backdrop(bend * 1.06).b;\n    let behind = vec3<f32>(red, green, blue);\n    // Fresnel (Schlick): the slab reflects more of the light the more steeply it is seen.\n    let facing = clamp(s.normal.z, 0.0, 1.0);\n    let fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);\n    // The theme's light, mirrored off the curved rim (Blinn-Phong).\n    let half_way = normalize(s.light_dir + vec3<f32>(0.0, 0.0, 1.0));\n    let specular = pow(max(dot(s.normal, half_way), 0.0), 60.0);\n    // A soft light follows the pointer across the glass.\n    let reach = s.pointer.xy - s.position;\n    let glow = s.pointer.z * exp(-dot(reach, reach) / 16200.0) * 0.16;\n    // A hairline where the slab meets its outline.\n    let hairline = smoothstep(-1.5, 0.0, s.distance) * 0.22;\n    let body = mix(behind, s.fill.rgb, s.params.x);\n    let lit = body + s.light.rgb * (fresnel * 0.5 + specular * 0.55 + glow + hairline);\n    return vec4<f32>(lit, 1.0);\n}\n"
+    },
+    "selector": {
+      "strip": "floating",
+      "rim_span": 0.6,
+      "rim_alpha": 0.3,
+      "hover_alpha": 0.75
+    }
+  },
+  "depth": {
+    "kind": "shadow",
+    "strength": 1.3
+  }
+}

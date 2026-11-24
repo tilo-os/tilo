@@ -910,6 +910,13 @@ fn encode(session: &mut Session, job: &FrameJob<'_>, sequence: u64) -> Result<Ve
             },
             legible: [region.legible.dark, region.legible.light].map(|value| value as f32),
             ground: region.ground.components,
+            stage: region
+                .stage
+                .as_ref()
+                .map(|stage| tilo_render_protocol::frame::BackdropStage {
+                    wgsl: stage.wgsl.to_string(),
+                    uniforms: stage.uniforms,
+                }),
             below: region.below.encoding().clone(),
         };
         writer.backdrop(&backdrop, session)?;

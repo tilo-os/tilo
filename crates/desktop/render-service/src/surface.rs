@@ -604,6 +604,12 @@ fn backdrop_frame(
                 },
                 below: Scene::from(backdrop.below),
                 ground: Color::new(backdrop.ground),
+                // Checked against the stage contract before the service compiles it
+                // (`BackdropBlur`): a client's frame carries what it likes.
+                stage: backdrop.stage.map(|stage| ui::backdrop::Stage {
+                    wgsl: stage.wgsl.into(),
+                    uniforms: stage.uniforms,
+                }),
             })
         })
         .collect::<Result<_, WireError>>()?;

@@ -253,7 +253,20 @@ fn encode(
                 brush: Brush::Shader { source, fallback },
                 brush_transform,
             } => {
-                let image = super::shader::evaluate(source, path.bounding_box(), tokens, *fallback);
+                let rect = path.bounding_box();
+                if sampled
+                    && crate::backdrop::fill_stage(
+                        out,
+                        transform,
+                        (path, rect),
+                        tokens.param("blur", 0.0),
+                        (source, tokens),
+                        theme,
+                    )
+                {
+                    continue;
+                }
+                let image = super::shader::evaluate(source, rect, tokens, None, *fallback);
                 let brush = ImageBrush::new(image)
                     .with_extend(Extend::Pad)
                     .with_quality(ImageQuality::Medium);

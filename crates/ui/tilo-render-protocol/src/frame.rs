@@ -144,9 +144,25 @@ pub struct Backdrop {
     pub legible: [f32; 2],
     /// What the backdrop shows where nothing below covers it.
     pub ground: [f32; 4],
+    /// The theme's material stage the service runs over the blurred backdrop: its WGSL, which the
+    /// service checks before it compiles it, and its uniforms. `None` shows the backdrop as it is.
+    pub stage: Option<BackdropStage>,
     /// Everything composed below the surface.
     pub below: Encoding,
 }
+
+/// A material stage as a frame carries it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackdropStage {
+    pub wgsl: String,
+    pub uniforms: [f32; STAGE_FLOATS],
+}
+
+/// How many numbers a stage's uniforms hold.
+pub const STAGE_FLOATS: usize = 40;
+
+/// The most WGSL a stage may carry, bytes.
+pub const MAX_STAGE_SOURCE: usize = 16 * 1024;
 
 /// A frame record, decoded.
 #[derive(Clone)]
@@ -345,6 +361,18 @@ impl<'a> FrameWriter<'a> {
             w.u8(backdrop.sampling);
             for value in backdrop.ground {
                 w.f32(value);
+            }
+            match &backdrop.stage {
+                Some(stage) => {
+                    let len = u32::try_from(stage.wgsl.len())
+                        .map_err(|_| WireError::Invalid("backdrop stage"))?;
+                    w.u32(len);
+                    w.bytes(stage.wgsl.as_bytes());
+                    for value in stage.uniforms {
+                        w.f32(value);
+                    }
+                }
+                None => w.u32(0),
             }
             scene::encode(&backdrop.below, ids, w.vec())?;
             Ok(())
@@ -626,6 +654,25 @@ fn read_backdrop(
     let legible = [r.f32()?, r.f32()?];
     let sampling = r.u8()?;
     let ground = [r.f32()?, r.f32()?, r.f32()?, r.f32()?];
+    let stage_len = r.u32()? as usize;
+    let stage = if stage_len == 0 {
+        None
+    } else {
+        if stage_len > MAX_STAGE_SOURCE {
+            return Err(WireError::Invalid("backdrop stage"));
+        }
+        let wgsl = std::str::from_utf8(r.take(stage_len)?)
+            .map_err(|_| WireError::Invalid("backdrop stage"))?
+            .to_owned();
+        let mut uniforms = [0.0; STAGE_FLOATS];
+        for value in &mut uniforms {
+            *value = r.f32()?;
+            if !value.is_finite() {
+                return Err(WireError::Invalid("backdrop stage"));
+            }
+        }
+        Some(BackdropStage { wgsl, uniforms })
+    };
     let valid = rect.valid()
         && blur_px.is_finite()
         && (0.0..=4096.0).contains(&blur_px)
@@ -654,6 +701,7 @@ fn read_backdrop(
             refraction,
             legible,
             ground,
+            stage,
             below,
         },
         cost,

@@ -434,7 +434,8 @@ impl PartPainter for Shader {
     }
 
     /// The four numbers a shader reads as `params.xyzw` (`crate::tokens::shader::FINISH_PARAMS`), each
-    /// with the value it has when a theme states none.
+    /// with the value it has when a theme states none, then the blur of what it looks behind and the
+    /// direction of its light.
     fn params(&self) -> Vec<ParamSpec> {
         let [tint, saturation, scale, phase] = crate::tokens::shader::FINISH_PARAMS;
         vec![
@@ -442,6 +443,10 @@ impl PartPainter for Shader {
             ParamSpec::new(saturation, Some(1.0), SATURATION_ADMITTED),
             ParamSpec::new(scale, Some(1.0), SHADER_SCALE_ADMITTED),
             ParamSpec::new(phase, Some(0.0), SHADER_PHASE_ADMITTED),
+            // What `backdrop(offset)` reads is blurred by this much, logical pixels.
+            ParamSpec::new("blur", Some(0.0), BLUR_ADMITTED),
+            // Where `Surface::light_dir` comes from, as the Liquid set's light does.
+            ParamSpec::new("light_angle", Some(135.0), LIGHT_ANGLE_ADMITTED),
         ]
     }
 }

@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use proptest::prelude::*;
-use tilo_render_protocol::frame::{self, Backdrop, FrameWriter, LayerUpdate, Rect, ScrollCopy};
+use tilo_render_protocol::frame::{
+    self, Backdrop, BackdropStage, FrameWriter, LayerUpdate, Rect, STAGE_FLOATS, ScrollCopy,
+};
 use tilo_render_protocol::scene::{self, ResourceIds, Resources};
 use tilo_render_protocol::validate::validate;
 use tilo_render_protocol::{FontId, ImageId, LayerId, Limits, SurfaceId, WireError};
@@ -340,6 +342,10 @@ fn a_frame_record_carries_layers_damage_copies_and_backdrops() {
                 refraction: [10.0, 25.0, 12.0, 0.1],
                 legible: [0.012, 0.03],
                 ground: [0.9, 0.9, 0.9, 1.0],
+                stage: Some(BackdropStage {
+                    wgsl: "fn fs_surface(s: Surface) -> vec4<f32> { return s.fill; }".to_owned(),
+                    uniforms: [0.25; STAGE_FLOATS],
+                }),
                 below: content.encoding().clone(),
             },
             &mut registry,
@@ -373,6 +379,15 @@ fn a_frame_record_carries_layers_damage_copies_and_backdrops() {
     assert_eq!(
         frame.backdrops[0].legible.map(f32::to_bits),
         [0.012_f32, 0.03].map(f32::to_bits)
+    );
+    // And the theme's material stage: a service that dropped it would draw the plain blur where
+    // the theme asked for its glass.
+    assert_eq!(
+        frame.backdrops[0]
+            .stage
+            .as_ref()
+            .map(|stage| stage.wgsl.as_str()),
+        Some("fn fs_surface(s: Surface) -> vec4<f32> { return s.fill; }")
     );
     assert!(checked.cost.paths > 20);
 }

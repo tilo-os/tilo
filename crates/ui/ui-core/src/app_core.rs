@@ -1103,10 +1103,12 @@ impl PointerPlace {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.at = Some(logical(position.x, position.y));
+                crate::backdrop::set_pointer(Some((position.x, position.y)));
                 false
             }
             WindowEvent::CursorLeft { .. } => {
                 self.at = None;
+                crate::backdrop::set_pointer(None);
                 false
             }
             WindowEvent::MouseInput {

@@ -186,6 +186,15 @@ impl App {
             // done with.
             self.dismiss_control_notice();
         }
+        // A material stage lights where the pointer is: it moving over the window is a new frame.
+        if crate::backdrop::follows_pointer()
+            && matches!(
+                &event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. }
+            )
+        {
+            window.request_redraw();
+        }
         // A tooltip goes when the person acts, or when the pointer or the
         // keyboard leaves the window, whatever then takes the event: History's
         // controls and the close dialog take some before the widgets do.
@@ -1880,8 +1889,12 @@ mod tests {
         }
         crate::rect_geometry!();
         fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
-        let (scene, transform, _text, theme, mut env) = ctx.parts();
+            #[allow(
+                unused_variables,
+                unused_mut,
+                reason = "a draw binds only the parts it uses"
+            )]
+            let (scene, transform, _text, theme, mut env) = ctx.parts();
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -2455,7 +2468,13 @@ mod tests {
         embedded.apply_layout(&taffy, node, Point::new(100.0, 50.0));
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
-        embedded.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::default(), PresenceCtx::empty().draw_env()));
+        embedded.draw(&mut crate::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::default(),
+            PresenceCtx::empty().draw_env(),
+        ));
         assert!(!scene.encoding().is_empty(), "the app paints in the host");
 
         let modifiers = winit::event::Modifiers::default();
@@ -2524,7 +2543,13 @@ mod tests {
             )
             .unwrap();
         embedded.apply_layout(&taffy, node, Point::new(100.0, 50.0));
-        embedded.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::default(), PresenceCtx::empty().draw_env()));
+        embedded.draw(&mut crate::draw::DrawCtx::new(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::default(),
+            PresenceCtx::empty().draw_env(),
+        ));
 
         fn find(node: &crate::a11y::AccessNode, name: &str) -> Option<crate::a11y::AccessNode> {
             if node.name.as_deref() == Some(name) {
