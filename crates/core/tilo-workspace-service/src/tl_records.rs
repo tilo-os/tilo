@@ -148,6 +148,37 @@ impl Packages {
         })
     }
 
+    /// Each package's surface file, as `tilolang build` writes it for an installed app: the
+    /// types and verbs a workspace's store judges the record's writes by, each package reading
+    /// those it uses.
+    fn surfaces(&self) -> Vec<(String, Vec<u8>)> {
+        self.0
+            .iter()
+            .filter_map(|package| {
+                let reads: Vec<_> = package
+                    .meta
+                    .uses
+                    .iter()
+                    .filter_map(|app| {
+                        self.0
+                            .iter()
+                            .map(|used| &used.meta)
+                            .chain(self.1.iter())
+                            .find(|meta| &meta.app == app)
+                            .cloned()
+                    })
+                    .collect();
+                let bytes = tilolang_tilo::surface::surface_toml_reading(
+                    &[&package.meta],
+                    &reads,
+                    &tilolang_tilo::runtime::SourceWords,
+                )
+                .ok()?;
+                Some((package.meta.app.clone(), bytes))
+            })
+            .collect()
+    }
+
     /// The name the app publishes the action whose declaration id is `id`: what a change it made
     /// is read as, since history keeps the id a rename does not disturb.
     #[must_use]
@@ -181,7 +212,11 @@ pub struct Declared {
 /// The sources of the packages built into this build, each app after those it uses.
 const BUILT_IN: &[&[(&str, &str)]] = &[
     &[(
-        include_str!("../../../../apps/tl/chat/app.tl"),
+        concat!(
+            include_str!("../../../../apps/tl/chat/app.tl"),
+            "\n",
+            include_str!("../../../../apps/tl/chat/discord.tl")
+        ),
         include_str!("../../../../apps/tl/chat/app.ids"),
     )],
     &[
@@ -236,6 +271,23 @@ pub fn built_in_apps() -> Vec<String> {
         .iter()
         .map(|packages| packages.app().to_owned())
         .collect()
+}
+
+/// Declare the types and verbs of every package built into this build in `surfaces`, the
+/// registry a workspace's store judges writes by: a record of a built-in app is written with no
+/// package installed, so nothing else names them.
+///
+/// # Panics
+/// A built-in package does not compile, which is a bug of this build.
+pub(crate) fn declare_built_in(surfaces: &collab_types::app_surface::Surfaces) {
+    for packages in compiled()
+        .as_ref()
+        .expect("the packages built into this build compile")
+    {
+        for (app, bytes) in packages.surfaces() {
+            surfaces.register_package(&app, &bytes);
+        }
+    }
 }
 
 /// The packages built into this build, compiled once.

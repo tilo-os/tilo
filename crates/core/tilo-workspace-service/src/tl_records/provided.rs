@@ -13,6 +13,8 @@
 
 use std::sync::{Arc, OnceLock};
 
+use tilo_lock::MutexRecover as _;
+
 use serde_json::Map;
 use tilo_actions::remote::admitted::settled;
 use tilo_actions::remote::{
@@ -28,12 +30,15 @@ use crate::workspaces::Workspaces;
 use crate::workspaces::providers::Reach;
 
 /// One built-in app's records, as this device serves them.
+#[derive(Clone)]
 pub(crate) struct BuiltInRecords {
     workspaces: Workspaces,
     /// The app, as its package and its records name it.
     app: &'static str,
     /// Where a write waits for the workspace to take it.
     runtime: tokio::runtime::Handle,
+    /// The workspaces whose record of the app has its root, as opening the app makes it.
+    rooted: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
 }
 
 /// The provider and app names of the built-in apps, made once: a registration keeps them for as
@@ -59,6 +64,7 @@ fn names() -> &'static [(&'static str, &'static str)] {
 /// Called outside a reactor: a record's writes wait on the one it was registered on.
 pub fn register(workspaces: &Workspaces) {
     let runtime = tokio::runtime::Handle::current();
+    crate::tl_records::declare_built_in(workspaces.surfaces());
     let providers = workspaces.providers();
     for (provider, app) in names() {
         providers.provide(
@@ -69,6 +75,7 @@ pub fn register(workspaces: &Workspaces) {
                 workspaces: workspaces.clone(),
                 app,
                 runtime: runtime.clone(),
+                rooted: Arc::default(),
             }),
         );
     }
@@ -102,13 +109,7 @@ impl BuiltInRecords {
             .ok_or("a record is changed in a workspace")?
             .to_owned();
         let person = person_of(caller).ok_or("a record is read as a person")?;
-        let address = &request.target.address;
-        let descriptor = self
-            .rows(caller)
-            .into_iter()
-            .filter_map(|row| row.action)
-            .find(|action| &action.address == address)
-            .ok_or_else(|| format!("{} publishes no {}", self.app, address.encode()))?;
+        let address = request.target.address.clone();
         let arguments = match &request.argument {
             InvokeArgument::Json(arguments) => arguments.clone(),
             InvokeArgument::None => Map::new(),
@@ -117,37 +118,94 @@ impl BuiltInRecords {
         let invoker =
             ActionInvoker::admitted(caller.acting()).named(caller.agent_name().map(str::to_owned));
         let context: ActionContext = request.context.clone().unwrap_or_default();
-        let read = descriptor.kind == OperationKind::View
-            || descriptor.contract.kind == tilo_actions::ActionKind::Read;
-        let (workspaces, app, caller) = (self.workspaces.clone(), self.app, caller.clone());
-        let viewer = super::member(tilo_actions::MemberId::person(person));
+        let (records, caller) = (self.clone(), caller.clone());
         let (done, outcome) = pending();
         self.runtime.spawn(async move {
-            let applied = workspaces
-                .apply_record_action(
+            let applied = records
+                .apply(
                     &workspace,
-                    RecordCall {
-                        app,
-                        viewer,
-                        invoker: &invoker,
-                        caller: &caller,
-                        context: &context,
-                        address: &descriptor.address,
-                        arguments: &arguments,
-                        read,
-                    },
+                    &person,
+                    &caller,
+                    (&address, &arguments),
+                    (&invoker, &context),
                 )
                 .await;
-            done.complete(applied.map_err(|error| {
+            done.complete(applied.map_err(|message| {
                 Box::new(ActionFailure {
                     code: "record_action_failed".into(),
-                    message: error.to_string(),
+                    message,
                     details: None,
                     retryable: false,
                 })
             }));
         });
         Ok(outcome)
+    }
+
+    /// Run the action at `address` with `arguments` as `caller`, who acts for `person`, once the
+    /// record has its root: what the record publishes is decided by the app's package.
+    async fn apply(
+        &self,
+        workspace: &str,
+        person: &str,
+        caller: &Caller,
+        (address, arguments): (
+            &tilo_actions::ActionAddress,
+            &Map<String, serde_json::Value>,
+        ),
+        (invoker, context): (&ActionInvoker, &ActionContext),
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        self.rooted(workspace, person).await?;
+        let descriptor = self
+            .rows(caller)
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|action| &action.address == address)
+            .ok_or_else(|| format!("{} publishes no {}", self.app, address.encode()))?;
+        let read = descriptor.kind == OperationKind::View
+            || descriptor.contract.kind == tilo_actions::ActionKind::Read;
+        self.workspaces
+            .apply_record_action(
+                workspace,
+                RecordCall {
+                    app: self.app,
+                    viewer: super::member(tilo_actions::MemberId::person(person.to_owned())),
+                    invoker,
+                    caller,
+                    context,
+                    address: &descriptor.address,
+                    arguments,
+                    read,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Make the app's root in `workspace`'s record where it has none yet, as a window of the app
+    /// makes it when it opens: what the app's actions on its whole (Chat's `write_to` on its
+    /// conversations) are invoked on, on a device where nobody opened the app.
+    ///
+    /// # Errors
+    /// The record could not be opened or written.
+    async fn rooted(&self, workspace: &str, person: &str) -> Result<(), String> {
+        if self.rooted.lock_recover().contains(workspace) {
+            return Ok(());
+        }
+        let packages = super::built_in(self.app)?.ok_or_else(|| super::runs_elsewhere(self.app))?;
+        let app = self.app;
+        let viewer = super::member(tilo_actions::MemberId::person(person.to_owned()));
+        self.workspaces
+            .with_tl_record(workspace, &packages, viewer, move |opened| {
+                opened
+                    .host()
+                    .root_of(app)
+                    .map(drop)
+                    .map_err(|error| format!("{app}'s root is not made: {error}"))
+            })
+            .await?;
+        self.rooted.lock_recover().insert(workspace.to_owned());
+        Ok(())
     }
 }
 
@@ -167,18 +225,29 @@ impl ActionProvider for BuiltInRecords {
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         // A page of what the record publishes, as the person the caller acts for reads it: the
-        // rows the query admits from its cursor on, never every row of the record at once.
-        let page = match (caller.workspace(), person_of(caller)) {
-            (Some(workspace), Some(person)) => {
-                self.workspaces
-                    .record_page(workspace, &self.route(workspace), &person, &query)
-            }
-            _ => None,
-        };
-        Pending::ready(Ok(page.unwrap_or_else(|| CataloguePage {
+        // rows the query admits from its cursor on, never every row of the record at once. The
+        // record has its root first, so what the app offers on its whole is offered.
+        let nothing = || CataloguePage {
             exhausted: true,
             ..CataloguePage::default()
-        })))
+        };
+        let (Some(workspace), Some(person)) =
+            (caller.workspace().map(str::to_owned), person_of(caller))
+        else {
+            return Pending::ready(Ok(nothing()));
+        };
+        let records = self.clone();
+        let (done, page) = pending();
+        self.runtime.spawn(async move {
+            if let Err(error) = records.rooted(&workspace, &person).await {
+                tracing::warn!(app = records.app, %workspace, %error, "a built-in app's record has no root");
+            }
+            let page = records
+                .workspaces
+                .record_page(&workspace, &records.route(&workspace), &person, &query);
+            done.complete(Ok(page.unwrap_or_else(nothing)));
+        });
+        page
     }
 
     fn invoke(
@@ -232,20 +301,27 @@ mod tests {
     const CHAT: &str = "so.tilo.chat";
 
     fn records(workspaces: &Workspaces) -> BuiltInRecords {
+        crate::tl_records::declare_built_in(workspaces.surfaces());
         BuiltInRecords {
             workspaces: workspaces.clone(),
             app: CHAT,
             runtime: tokio::runtime::Handle::current(),
+            rooted: Arc::default(),
         }
     }
 
     /// The `write_to` tl Chat offers `caller`, asked to tell `who` the words `body`.
-    fn write_to(
+    async fn write_to(
         records: &BuiltInRecords,
         caller: &Caller,
         who: &tilo_actions::MemberId,
         body: &str,
     ) -> InvokeRequest {
+        // What a caller is offered is read once the record has its root, as a query reads it.
+        records
+            .rooted(caller.workspace().unwrap(), &person_of(caller).unwrap())
+            .await
+            .expect("Chat's root is made");
         let offered: Vec<_> = records
             .rows(caller)
             .into_iter()
@@ -357,7 +433,8 @@ mod tests {
             &caller,
             &tilo_actions::MemberId::agent("scout"),
             "The plan is ready",
-        );
+        )
+        .await;
         let output = run(&workspaces, &caller, request)
             .await
             .expect("the write lands");
@@ -406,7 +483,7 @@ mod tests {
             Answer::Deny,
         )]);
         let to = tilo_actions::MemberId::person(person.clone());
-        let request = write_to(&records, &held, &to, "Sold the house");
+        let request = write_to(&records, &held, &to, "Sold the house").await;
         let refused = run(&workspaces, &held, request).await;
         assert!(
             refused.is_err(),
@@ -423,7 +500,7 @@ mod tests {
 
         // Within it, the write lands as the agent's.
         let delegated = scout(Vec::new());
-        let request = write_to(&records, &delegated, &to, "The plan is ready");
+        let request = write_to(&records, &delegated, &to, "The plan is ready").await;
         run(&workspaces, &delegated, request)
             .await
             .expect("an agent within its delegation writes");
@@ -482,7 +559,8 @@ mod tests {
             &ada,
             &tilo_actions::MemberId::agent("scout"),
             "The safe's code is 4711",
-        );
+        )
+        .await;
         run(&workspaces, &ada, request)
             .await
             .expect("Ada writes to her agent");

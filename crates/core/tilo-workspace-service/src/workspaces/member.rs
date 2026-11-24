@@ -532,6 +532,12 @@ impl Workspaces {
             .ok_or_else(|| "this service serves no device's member copies".to_owned())
     }
 
+    /// The app surfaces this service's stores judge writes by.
+    #[cfg(feature = "agents")]
+    pub(crate) fn surfaces(&self) -> &collab_types::app_surface::Surfaces {
+        &self.inner.host.surfaces
+    }
+
     /// The device this service signs its own roles' writes as: the device its member copies
     /// act as where its embedder keeps one, else this device itself, which governs the
     /// workspaces it serves.

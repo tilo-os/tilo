@@ -1334,8 +1334,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// [`RecordFailure::Refused`] when the store or the workspace refused a write, with why;
-    /// [`RecordFailure::Failed`] when the workspace is not held here or this service serves no
-    /// device's member copies.
+    /// [`RecordFailure::Failed`] when the workspace is not held here.
     #[cfg(feature = "agents")]
     pub async fn record_command(
         &self,
@@ -1343,7 +1342,7 @@ impl Workspaces {
         app: &str,
         command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, RecordFailure> {
-        let device = self.member_identity().map_err(RecordFailure::Failed)?;
+        let device = self.signing_device();
         let state = self
             .workspace(workspace)
             .await
