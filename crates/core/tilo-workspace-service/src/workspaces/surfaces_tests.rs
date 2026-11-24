@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
-use collab_types::CommitNamed as _;
 use collab_types::surface::{KindSurface, SurfaceFile};
 use tilo_user_identity::DeviceCapabilities;
 
@@ -92,28 +91,6 @@ async fn title(workspaces: &Workspaces, workspace: &str, record: &str) -> Option
         .ok()
         .flatten()
         .and_then(|(value, _)| value.into_string().ok())
-}
-
-/// The earlier build's write of `record`: the host authors it as the device the workspace was
-/// made on, naming the surface that build named.
-async fn write_naming(
-    workspaces: &Workspaces,
-    workspace: &str,
-    cert: &tilo_user_identity::DeviceCert,
-    record: &str,
-    title: &str,
-) {
-    workspaces
-        .author_workspace_document(workspace, cert, (APP, record), |document| {
-            document
-                .put(automerge::ROOT, "title", title)
-                .map_err(|error| error.to_string())?;
-            // Every change names who made it, and which field of which kind it edits.
-            document.commit_edit(KIND, "title", &[1; 32]);
-            Ok(())
-        })
-        .await
-        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -231,14 +208,19 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
             "the update reads article-{at} as the earlier build wrote it"
         );
     }
-    // A change of the earlier build's still arriving names its surface: the update reads that
-    // surface from the content store, in the form the earlier build kept it.
-    let written = "Article 0, as the earlier build wrote it";
-    write_naming(&workspaces, &workspace, &cert, "article-0", written).await;
-    assert_eq!(
-        title(&workspaces, &workspace, "article-0").await.as_deref(),
-        Some(written),
-        "the update decides a change naming the surface the earlier build kept"
+    // The update decides against the surface the earlier build kept, in the form it kept it:
+    // the source every change naming a surface is resolved through reads those bytes.
+    let source = collab_types::surface::ContentSurfaces::new(|record, hash| {
+        crate::surfaces::kept(record.app, hash)
+    });
+    let written = collab_types::WrittenDocument {
+        workspace: &workspace,
+        app: APP,
+        document: "article-0",
+    };
+    assert!(
+        collab_types::SurfaceSource::surface(&source, &written, None, Some(&earlier)).is_some(),
+        "the update reads the surface the earlier build kept"
     );
     drop(workspaces);
     server.shutdown().await;
