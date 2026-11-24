@@ -80,6 +80,14 @@ pub struct Window {
     /// The display it stands on, by the id [`WindowDisplay::id`] names, empty while no display
     /// shows it.
     pub display_id: String,
+    /// What the app calls what its window shows, as its bar's location: a note's title, a
+    /// folder's path. Empty when the app names nothing there.
+    pub bar_location: String,
+    /// The field its bar holds open: `location` (the app asked to edit what it shows), `rename`
+    /// (the person is naming the window), `find` or `replace` (the app's search), or empty.
+    pub bar_field: String,
+    /// Whether a field in its bar takes what is typed now, holding the keys off the window.
+    pub bar_typing: bool,
 }
 
 /// What a window with no title is called.
@@ -204,6 +212,23 @@ fn window_reading(
         ),
         controls_desktop,
         display_id: display,
+        bar_location: handle.window_name(tab.id).unwrap_or_default(),
+        bar_field: bar_field(handle.bar_field(tab.id)).to_owned(),
+        bar_typing: handle.bar_takes_typing() && handle.bar_field(tab.id).is_some(),
+    }
+}
+
+/// The bar field `field` as the reading spells it: the app's location, the tab's name, its search
+/// (`find` or `replace`), or empty for none.
+fn bar_field(field: Option<tilo_session_core::desktop::state::BarField>) -> &'static str {
+    use tilo_session_core::desktop::state::BarField;
+    use ui::window_toolbar::SearchOpening;
+    match field {
+        Some(BarField::Location) => "location",
+        Some(BarField::Rename) => "rename",
+        Some(BarField::Search(SearchOpening::Find)) => "find",
+        Some(BarField::Search(SearchOpening::Replace)) => "replace",
+        None => "",
     }
 }
 

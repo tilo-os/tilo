@@ -57,6 +57,7 @@ pub mod shortcuts;
 pub mod shown;
 pub mod tile_content;
 pub mod window_bars;
+pub use window_bars::BarField;
 pub mod window_menu;
 pub mod workspace_share;
 

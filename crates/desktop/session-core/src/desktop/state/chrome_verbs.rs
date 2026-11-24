@@ -8,6 +8,7 @@ use std::rc::Rc;
 use tilo_desktop_model::commands::DesktopCommand;
 use tilo_desktop_model::{Layout, Strip, StripId, Workspace, WorkspaceId};
 use ui::shortcut_table::{FixedAction, ShortcutAction};
+use ui::window_toolbar::ToolbarEvent;
 
 use super::DesktopHandle;
 use super::shortcuts::Performed;
@@ -15,6 +16,13 @@ use crate::desktop::host::contract::{DesktopAsk, JOIN_WORKSPACE, WORKSPACE_SETTI
 use crate::desktop::i18n::{t, t_args};
 use crate::desktop::navigation::ChromeEffect;
 use crate::desktop::{names, workspace_names};
+
+/// The window `tab` names, by its decimal id, or why it is no window.
+fn win(tab: &str) -> Result<u64, String> {
+    tab.trim()
+        .parse()
+        .map_err(|_| format!("{tab} is no window"))
+}
 
 /// What became of a chrome verb the desktop was asked to carry out.
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +126,54 @@ impl DesktopHandle {
                     .parse()
                     .map_err(|_| format!("{strip} is no strip"))?;
                 self.delete_strip(StripId(strip))?;
+                Carried::Done
+            }
+            ChromeEffect::RenameInBar { tab } => {
+                self.rename_in_bar_now(win(tab)?);
+                Carried::Done
+            }
+            ChromeEffect::CloseBarField { tab } => {
+                self.close_bar_field(win(tab)?);
+                Carried::Done
+            }
+            ChromeEffect::BarEdit { tab, text } => {
+                self.bar_event(
+                    win(tab)?,
+                    ToolbarEvent::Edit {
+                        text: text.clone(),
+                    },
+                );
+                Carried::Done
+            }
+            ChromeEffect::BarCommit { tab, text } => {
+                self.bar_event(
+                    win(tab)?,
+                    ToolbarEvent::Commit {
+                        text: text.clone(),
+                    },
+                );
+                self.close_bar_field(win(tab)?);
+                Carried::Done
+            }
+            ChromeEffect::BarSearch { tab, query } => {
+                self.bar_event(
+                    win(tab)?,
+                    ToolbarEvent::Search {
+                        query: query.clone(),
+                    },
+                );
+                Carried::Done
+            }
+            ChromeEffect::BarSearchStep { tab, forward } => {
+                self.bar_event(
+                    win(tab)?,
+                    ToolbarEvent::SearchStep { forward: *forward },
+                );
+                Carried::Done
+            }
+            ChromeEffect::BarSearchClose { tab } => {
+                self.bar_event(win(tab)?, ToolbarEvent::SearchClose);
+                self.close_bar_field(win(tab)?);
                 Carried::Done
             }
             ChromeEffect::NewWorkspace {

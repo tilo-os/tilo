@@ -3117,6 +3117,18 @@
             {
               "name": "display_id",
               "type": "text"
+            },
+            {
+              "name": "bar_location",
+              "type": "text"
+            },
+            {
+              "name": "bar_field",
+              "type": "text"
+            },
+            {
+              "name": "bar_typing",
+              "type": "bool"
             }
           ]
         },

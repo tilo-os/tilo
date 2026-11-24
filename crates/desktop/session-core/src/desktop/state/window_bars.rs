@@ -52,6 +52,9 @@ pub struct Bars {
     /// The parts each window's app declared for its bar, by tab, with the connection that declared
     /// them: what names the window ([`Self::names`]) and what the shell's bar reads.
     pub toolbars: std::collections::BTreeMap<u64, (u64, WindowToolbar)>,
+    /// The field each window's bar holds open, by tab: the person typing a name, a location, or a
+    /// search the app asked for.
+    pub open: std::collections::BTreeMap<u64, BarField>,
     /// What each window offers the bar's search and History control, by tab, with the connection
     /// that said it.
     pub offers: std::collections::BTreeMap<u64, (u64, WindowOffer)>,
@@ -71,6 +74,18 @@ pub struct TargetPress {
     pub role: String,
     pub identity: Option<String>,
     pub action: TargetAction,
+}
+
+/// The field a window's bar holds open: the person naming the tab, editing the app's location, or
+/// searching what the window shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BarField {
+    /// The app's own name for what the window shows, editable as its Ctrl+L asks.
+    Location,
+    /// The tab's name, opened by its menu's Rename or a double click on its tab.
+    Rename,
+    /// The window's search, as the app's Ctrl+F or Ctrl+H asks it to open.
+    Search(SearchOpening),
 }
 
 impl Bars {
@@ -165,10 +180,29 @@ impl DesktopHandle {
         let offered = std::mem::take(&mut bars.offered);
         let described = std::mem::take(&mut bars.declared_targets);
         let gone = std::mem::take(&mut bars.gone);
-        bars.edits.clear();
-        bars.searches.clear();
-        bars.renames.clear();
-        let mut changed = false;
+        // The bar's own controls the apps asked for open as fields the shell draws, and stay open
+        // until the person closes them.
+        let edits = std::mem::take(&mut bars.edits);
+        let searches = std::mem::take(&mut bars.searches);
+        let renames = std::mem::take(&mut bars.renames);
+        let tabs: std::collections::BTreeSet<u64> = shared.tree.tabs().map(|tab| tab.id).collect();
+        let before = bars.open.clone();
+        bars.open.retain(|tab, _| tabs.contains(tab));
+        for tab in edits {
+            bars.open.insert(tab, BarField::Location);
+        }
+        for tab in renames {
+            bars.open.insert(tab, BarField::Rename);
+        }
+        for (tab, opening) in searches {
+            bars.open.insert(tab, BarField::Search(opening));
+        }
+        let mut changed = before != bars.open;
+        let typing = !bars.open.is_empty();
+        if bars.typing != typing {
+            bars.typing = typing;
+            changed = true;
+        }
         for connection in gone {
             // What its app declared and described of a window goes with it.
             let before = (bars.targets.len(), bars.toolbars.len(), bars.offers.len());
@@ -247,6 +281,46 @@ impl DesktopHandle {
     pub fn bar_takes_typing(&self) -> bool {
         self.shared.borrow().bars.typing
     }
+    /// The field the window `tab`'s bar holds open, as the shell's views draw it.
+    #[must_use]
+    pub fn bar_field(&self, tab: TabId) -> Option<BarField> {
+        self.shared.borrow().bars.open.get(&tab).copied()
+    }
+
+    /// Close the field the window `tab`'s bar held open, as Escape or its Done does.
+    pub fn close_bar_field(&self, tab: TabId) {
+        self.queue_bar_ask(|bars| {
+            bars.open.remove(&tab);
+            bars.typing = !bars.open.is_empty();
+        });
+    }
+
+    /// Open the field that names the window `tab`: what its menu's Rename and a double click on
+    /// its tab ask for.
+    pub fn rename_in_bar_now(&self, tab: TabId) {
+        self.queue_bar_ask(|bars| {
+            bars.open.insert(tab, BarField::Rename);
+            bars.typing = true;
+        });
+    }
+
+    /// What the person did in the field the window `tab`'s bar holds open, for the app that asked
+    /// for it: written to its connection by the next pass. A field nothing else asked for (the
+    /// tab's own name) is the session's to act on, and sends nothing.
+    pub fn bar_event(&self, tab: TabId, event: ToolbarEvent) {
+        let connection = self
+            .shared
+            .borrow()
+            .bars
+            .toolbars
+            .get(&tab)
+            .map(|(connection, _)| *connection);
+        let Some(connection) = connection else {
+            return;
+        };
+        self.queue_bar_ask(|bars| bars.events.push((tab, connection, event)));
+    }
+
 
     /// `tab` 's app asked for its window's search in the bar to open, as its own Ctrl+F (or Ctrl+H,
     /// for `opening` ) does.
@@ -521,6 +595,76 @@ mod tests {
         };
         let tree = seed_tree(&mut minter, "Office", vec![tab]);
         DesktopHandle::new(tree, 7)
+    }
+
+    /// The fields the apps and the person ask for stay open across the shell's own passes, and
+    /// the shell reads which one each window's bar holds, with the keys held off the window while
+    /// one is: a search the app asked for is not lost to the next frame.
+    #[test]
+    fn a_bar_field_stays_open_until_it_is_closed() {
+        let handle = shell();
+        handle.open_bar_search(7, ui::window_toolbar::SearchOpening::Replace);
+        handle.follow_bars();
+        assert_eq!(
+            handle.bar_field(7),
+            Some(BarField::Search(ui::window_toolbar::SearchOpening::Replace))
+        );
+        assert!(handle.bar_takes_typing(), "the field takes what is typed");
+        handle.follow_bars();
+        assert_eq!(
+            handle.bar_field(7),
+            Some(BarField::Search(ui::window_toolbar::SearchOpening::Replace)),
+            "a pass of the shell's own leaves the field open"
+        );
+        handle.close_bar_field(7);
+        handle.follow_bars();
+        assert_eq!(handle.bar_field(7), None);
+        assert!(!handle.bar_takes_typing());
+
+        handle.rename_in_bar_now(7);
+        handle.follow_bars();
+        assert_eq!(handle.bar_field(7), Some(BarField::Rename));
+        handle.rename_in_bar(7);
+        handle.follow_bars();
+        assert_eq!(handle.bar_field(7), Some(BarField::Rename));
+        handle.edit_bar_location(7);
+        handle.follow_bars();
+        assert_eq!(handle.bar_field(7), Some(BarField::Location));
+    }
+
+    /// What the person does in a bar field goes to the app that declared the bar, and to no
+    /// other: a window whose app keeps its bar to itself sends nothing.
+    #[test]
+    fn bar_events_go_to_the_app_that_declared_the_bar() {
+        let handle = shell();
+        handle.bar_event(
+            7,
+            ToolbarEvent::Search {
+                query: "x".into(),
+            },
+        );
+        assert!(
+            handle.take_bar_events().is_empty(),
+            "no app declared a bar to hear it"
+        );
+        handle.declare_bar(7, 41, Some(WindowToolbar::default()));
+        handle.follow_bars();
+        handle.bar_event(
+            7,
+            ToolbarEvent::Search {
+                query: "y".into(),
+            },
+        );
+        assert_eq!(
+            handle.take_bar_events(),
+            vec![(
+                7,
+                41,
+                ToolbarEvent::Search {
+                    query: "y".into()
+                }
+            )]
+        );
     }
 
     /// What an app in a process of its own asks of its window's bar is shell work

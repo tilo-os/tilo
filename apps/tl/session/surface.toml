@@ -228,6 +228,89 @@ required = true
 type = "text"
 
 [[resources.verbs]]
+id = "rename-in-bar"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "close-bar-field"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "bar-edit"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "bar-commit"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "text"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "bar-search"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "query"
+required = true
+type = "text"
+
+[[resources.verbs]]
+id = "bar-search-step"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs.params]]
+name = "forward"
+required = true
+type = "bool"
+
+[[resources.verbs]]
+id = "bar-search-close"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "tab"
+required = true
+type = "text"
+
+[[resources.verbs]]
 id = "move-strip"
 kind = "outside"
 

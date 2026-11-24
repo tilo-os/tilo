@@ -508,6 +508,81 @@ pub enum ChromeEffect {
         #[param(decimal, "The strip, by its id")]
         strip: String,
     },
+    /// Rename a window in its bar
+    /// The tab's name field opens in the window's bar, holding the keys until it closes.
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    RenameInBar {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
+
+    /// Close the field a window's bar holds open
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    CloseBarField {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
+
+    /// What the person typed in the location a window's bar edits
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarEdit {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+        /// What the location holds now.
+        #[param("What the location holds now")]
+        text: String,
+    },
+
+    /// Commit the location a window's bar edits
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarCommit {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+        /// The location as typed.
+        #[param("The location as typed")]
+        text: String,
+    },
+
+    /// What the person searched for in a window's bar
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarSearch {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+        /// The query.
+        #[param("The query")]
+        query: String,
+    },
+
+    /// Step through what a window's bar searched for
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarSearchStep {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+        /// Whether it steps forward; back otherwise.
+        #[param("Whether it steps forward")]
+        forward: bool,
+    },
+
+    /// Close a window's bar search
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BarSearchClose {
+        /// The window, by its tab.
+        #[param(decimal, "The window, by its tab")]
+        tab: String,
+    },
 
     /// Move a strip
     #[effect(kind = "outside")]
@@ -1344,6 +1419,13 @@ fn admit_chrome(
         ChromeEffect::NewStrip { .. }
         | ChromeEffect::MoveToNewStrip { .. }
         | ChromeEffect::DeleteStrip { .. }
+        | ChromeEffect::RenameInBar { .. }
+        | ChromeEffect::CloseBarField { .. }
+        | ChromeEffect::BarEdit { .. }
+        | ChromeEffect::BarCommit { .. }
+        | ChromeEffect::BarSearch { .. }
+        | ChromeEffect::BarSearchStep { .. }
+        | ChromeEffect::BarSearchClose { .. }
         | ChromeEffect::MoveStrip { .. }
         | ChromeEffect::StepStrip { .. }
         | ChromeEffect::NewWorkspace { .. }
