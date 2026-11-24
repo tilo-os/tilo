@@ -236,38 +236,6 @@ fn a_computer_is_set_up() {
     .unwrap();
 }
 
-/// A project check configuration a device reads must be private: one a public file names is
-/// refused before the daemon serves anything.
-#[test]
-fn a_public_approved_check_configuration_refuses_the_daemon_start() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let root = tempfile::Builder::new()
-        .prefix("tilo-checks-")
-        .tempdir_in(std::fs::canonicalize("/tmp").context("resolving /tmp")?)
-        .context("creating the profile")?;
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .context("making the profile private")?;
-    let config = root.path().join("checks.json");
-    std::fs::write(&config, br#"{"version":1,"projects":[]}"#).context("writing the config")?;
-    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644))
-        .context("making the config public")?;
-    let output = host(root.path())
-        .arg("--approved-checks")
-        .arg(&config)
-        .stdin(Stdio::null())
-        .output()?;
-    ensure!(
-        !output.status.success(),
-        "a publicly readable check configuration never starts the daemon"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    ensure!(
-        stderr.contains("approved project check configuration refused"),
-        "the refusal names what was refused: {stderr}"
-    );
-    Ok(())
-}
-
 /// Who the daemon says it is, asked with a short bound: a daemon stuck admitting the person's
 /// call answers nothing at all.
 fn who_briefly(profile: &Path) -> String {

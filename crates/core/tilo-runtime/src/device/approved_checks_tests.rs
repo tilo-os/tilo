@@ -1,5 +1,5 @@
-//! The checks a device's private configuration approved: what it reads, what it refuses, and
-//! the job it keeps while one runs.
+//! The checks a device's setting approved: what it reads, what it refuses, and the job it
+//! keeps while one runs.
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, Mutex};
@@ -101,8 +101,27 @@ fn registered(workspace: &str, artifacts: &std::path::Path) -> Registered {
     }
 }
 
-fn registry(projects: Vec<Registered>) -> Arc<Registry> {
-    Arc::new(Registry(Arc::new(Definitions(projects))))
+/// The approvals a test gives: one project, or none once it is revoked.
+struct Given {
+    found: Mutex<Option<Arc<Registered>>>,
+}
+
+impl Approvals for Given {
+    fn find(
+        &self,
+        _app: &str,
+        _workspace: &str,
+        _record: &str,
+        _identity: &ResourceSemanticIdentity,
+    ) -> Result<Option<Arc<Registered>>, String> {
+        Ok(self.found.lock().unwrap().clone())
+    }
+}
+
+fn given(project: Option<Arc<Registered>>) -> Arc<Given> {
+    Arc::new(Given {
+        found: Mutex::new(project),
+    })
 }
 
 /// Never losing the turn: what a placement that took it answers.
@@ -174,7 +193,7 @@ fn an_approved_check_is_placed_kept_and_answered() {
         refusal: None,
     });
     let checks = NativeChecks::over(
-        registry(vec![registered(&workspace, artifacts.path())]),
+        given(Some(Arc::new(registered(&workspace, artifacts.path())))),
         Arc::clone(&placement) as Arc<dyn Placement>,
         Arc::clone(&jobs),
     );
@@ -225,7 +244,7 @@ fn a_check_no_project_approved_is_refused_and_names_why() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let jobs = jobs();
     let checks = NativeChecks::over(
-        registry(Vec::new()),
+        given(None),
         Arc::new(Placed {
             taken: Mutex::default(),
             refusal: None,
@@ -244,32 +263,11 @@ fn a_check_no_project_approved_is_refused_and_names_why() {
 }
 
 #[test]
-fn a_check_approved_for_another_record_is_refused() {
-    let workspace = uuid::Uuid::new_v4().to_string();
-    let artifacts = tempfile::tempdir().expect("a private artifacts directory");
-    let mut other = registered(&workspace, artifacts.path());
-    other.binding.record = "another-project".into();
-    let checks = NativeChecks::over(
-        registry(vec![other]),
-        Arc::new(Placed {
-            taken: Mutex::default(),
-            refusal: None,
-        }) as Arc<dyn Placement>,
-        jobs(),
-    );
-    let identity = identity();
-    let error = checks
-        .run_ask(&ask(&workspace, &identity), &|| Ok(()), &|_| {})
-        .expect_err("approval binds one record");
-    assert_eq!(error, "no approved checks for this exact project resource");
-}
-
-#[test]
 fn a_check_this_device_does_not_take_runs_nowhere() {
     let workspace = uuid::Uuid::new_v4().to_string();
     let artifacts = tempfile::tempdir().expect("a private artifacts directory");
     let checks = NativeChecks::over(
-        registry(vec![registered(&workspace, artifacts.path())]),
+        given(Some(Arc::new(registered(&workspace, artifacts.path())))),
         Arc::new(Placed {
             taken: Mutex::default(),
             refusal: Some(
@@ -285,43 +283,155 @@ fn a_check_this_device_does_not_take_runs_nowhere() {
     assert!(error.contains("does not run the check"), "{error}");
 }
 
-#[test]
-fn the_startup_configuration_is_one_private_absolute_file() {
-    let directory = tempfile::tempdir().expect("a fixture directory");
-    let path = directory.path().join("checks.json");
-    std::fs::write(&path, br#"{"version":1,"projects":[]}"#).expect("a fixture");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("a mode");
-    assert!(
-        load(&path).is_err(),
-        "a publicly readable grading configuration is refused"
-    );
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("a mode");
-    assert!(load(&path).expect("a private configuration").0.0.is_empty());
-    for bytes in [
-        br#"{"version":1,"version":2,"projects":[]}"#.as_slice(),
-        br#"{"version":1,"projects":[],"command":"id"}"#.as_slice(),
-    ] {
-        std::fs::write(&path, bytes).expect("a fixture");
-        assert!(
-            load(&path).is_err(),
-            "an ambiguous configuration is refused"
-        );
+/// A temporary device directory with every path an approved check names.
+fn device_directory() -> tempfile::TempDir {
+    let root = tempfile::tempdir().expect("a device directory");
+    for name in ["source", "source/target", "build", "image"] {
+        std::fs::create_dir(root.path().join(name)).expect("a directory");
     }
+    let scratch = root.path().join("scratch");
+    std::fs::create_dir(&scratch).expect("a private directory");
+    std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o700))
+        .expect("a private mode");
+    std::fs::write(root.path().join("runtime"), b"runtime").expect("a runtime file");
+    root
+}
 
-    let flag = std::ffi::OsString::from("--approved-checks");
-    assert!(argument_path([flag.clone()]).is_err());
-    assert!(argument_path([flag.clone(), "relative.json".into()]).is_err());
+/// The `checks` setting approving one project at `root`, for `workspace`.
+fn approved_setting(root: &std::path::Path, workspace: &str) -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "projects": [{
+            "app_id": APP,
+            "workspace": workspace,
+            "record": RECORD,
+            "resource_identity": { "kind": "git_client.repo", "key": RESOURCE },
+            "checks": [{
+                "id": "unit",
+                "checkout": root.join("source"),
+                "build": root.join("build"),
+                "scratch": root.join("scratch"),
+                "runtime_binary": root.join("runtime"),
+                "images": [{ "identity": format!("sha256:{}", "a".repeat(64)), "root": root.join("image") }],
+                "command": ["/usr/bin/true"],
+                "environment": [],
+                "limits": serde_json::to_value(limits()).expect("limits read"),
+            }],
+        }],
+    })
+}
+
+fn settings_approvals(
+    root: &std::path::Path,
+    device: [u8; 32],
+) -> (Arc<super::super::records::DeviceRecords>, SettingsApprovals) {
+    let records = Arc::new(super::super::records::DeviceRecords::under(root, device));
+    let approvals = SettingsApprovals {
+        records: Arc::clone(&records),
+        device,
+        root: root.to_path_buf(),
+    };
+    (records, approvals)
+}
+
+#[test]
+fn the_settings_record_approves_a_project_and_its_removal_refuses_the_next_check() {
+    let directory = device_directory();
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let device = [7; 32];
+    let (records, approvals) = settings_approvals(directory.path(), device);
+    records
+        .set(CHECKS, approved_setting(directory.path(), &workspace))
+        .expect("the person approves a project");
+
+    let identity = identity();
+    let project = approvals
+        .find(APP, &workspace, RECORD, &identity)
+        .expect("the setting reads")
+        .expect("the approved project is found");
+    assert_eq!(project.app_id, APP);
+    assert_eq!(project.binding.record, RECORD);
     assert!(
-        argument_path([
-            flag.clone(),
-            path.as_os_str().into(),
-            flag,
-            path.as_os_str().into()
-        ])
-        .is_err()
+        approvals
+            .find(APP, &workspace, "another-project", &identity)
+            .expect("the setting reads")
+            .is_none(),
+        "approval binds one record"
     );
-    assert_eq!(
-        argument_path(["--profile".into(), "native".into()]).expect("unrelated flags"),
-        None
+
+    assert!(
+        records.remove(CHECKS).expect("the person revokes it"),
+        "the approval was there"
+    );
+    assert!(
+        approvals
+            .find(APP, &workspace, RECORD, &identity)
+            .expect("an absent setting reads as no approval")
+            .is_none(),
+        "a revoked approval refuses the next check"
+    );
+}
+
+#[test]
+fn a_setting_that_does_not_read_is_refused_legibly() {
+    let directory = device_directory();
+    let device = [7; 32];
+    let (records, approvals) = settings_approvals(directory.path(), device);
+    records
+        .set(CHECKS, serde_json::json!({ "version": 1 }))
+        .expect("a setting is written");
+    let identity = identity();
+    let error = approvals
+        .find(APP, &uuid::Uuid::new_v4().to_string(), RECORD, &identity)
+        .err()
+        .expect("a setting with no projects does not read");
+    assert!(
+        error.contains("does not read"),
+        "the refusal says what is wrong: {error}"
+    );
+}
+
+#[test]
+fn an_entry_naming_a_path_this_device_lacks_is_refused() {
+    let directory = device_directory();
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let device = [7; 32];
+    let (records, approvals) = settings_approvals(directory.path(), device);
+    let mut setting = approved_setting(directory.path(), &workspace);
+    setting["projects"][0]["checks"][0]["checkout"] =
+        serde_json::json!(directory.path().join("missing"));
+    records.set(CHECKS, setting).expect("a setting is written");
+    let identity = identity();
+    let error = approvals
+        .find(APP, &workspace, RECORD, &identity)
+        .err()
+        .expect("a check whose source is not here cannot run");
+    assert!(!error.is_empty(), "the refusal says why");
+}
+
+#[test]
+fn only_the_devices_person_writes_the_checks_setting() {
+    let directory = device_directory();
+    let device = [7; 32];
+    let person = [9; 32];
+    let records = super::super::records::DeviceRecords::under(directory.path(), device);
+    records.carry_into(&person);
+    let args = |value: serde_json::Value| {
+        serde_json::json!({ "name": CHECKS, "value": value })
+            .as_object()
+            .cloned()
+            .expect("the setting action's arguments")
+    };
+    let setting = serde_json::json!({ "version": 1, "projects": [] });
+    let mine = Caller::authenticated(person, device);
+    records
+        .act(&mine, super::super::records::SET, &args(setting.clone()))
+        .expect("the device's person approves a setting");
+    let member = Caller::authenticated([8; 32], [6; 32]);
+    assert!(
+        records
+            .act(&member, super::super::records::SET, &args(setting))
+            .is_err(),
+        "a member the person granted nothing may not set the checks"
     );
 }

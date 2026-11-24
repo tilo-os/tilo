@@ -1,9 +1,11 @@
 //! The checks a project's host approved, run as this device's work.
 //!
-//! An app asks for a check by its id only. The commands, sources, images and bounds come from a
-//! private startup configuration this device reads before it admits anything, so an app chooses
-//! which approved check runs and never what it runs. A request naming a check, a project, a
-//! record or a resource identity the configuration does not register is refused with the reason.
+//! An app asks for a check by its id only. What runs, and the device's own paths it runs on,
+//! come from the device's setting `devices/<device>/settings/checks`: one entry per approved
+//! project, written and removed through the settings actions by the device's person or whoever
+//! they granted there. The daemon reads it again for every check, so a request naming a check,
+//! a project, a record or a resource identity the setting does not approve is refused, and so
+//! is the next run after the entry is removed.
 //!
 //! The check is work of this device, like a turn an offloaded action takes: [`takes_turn`]
 //! decides whether it runs here, the device keeps the job at `devices/<device>/jobs/<job>` while
@@ -12,10 +14,8 @@
 //! progress and answer.
 
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use runtime_collab::approved_checks::{
     Binding, Diagnostic, MAX_PREVIEW_BYTES, Outcome, Receipt, ReportObservation,
@@ -38,8 +38,12 @@ use ush::approved_checks::{
 /// The app a device's jobs are read under: the record `devices/<device>/jobs/<job>`.
 pub(crate) const JOBS: &str = "jobs";
 
-/// The longest private configuration this device reads, and the most projects it names.
-const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
+/// The device setting that approves checks: `devices/<device>/settings/checks`, one entry per
+/// project. The person sets and removes it through the settings actions; the daemon reads it
+/// again for every check, so a removal refuses the next run.
+pub(crate) const CHECKS: &str = "checks";
+
+/// The most projects one device may approve.
 const MAX_PROJECTS: usize = 32;
 
 #[derive(Deserialize)]
@@ -53,9 +57,10 @@ struct Config {
 #[serde(deny_unknown_fields)]
 struct ProjectConfig {
     app_id: String,
+    workspace: String,
+    record: String,
     resource_identity: ResourceIdentity,
-    artifacts: PathBuf,
-    checks: Vec<ApprovedCheck>,
+    checks: Vec<CheckConfig>,
 }
 
 #[derive(Clone, Deserialize, PartialEq, Eq)]
@@ -63,6 +68,24 @@ struct ProjectConfig {
 struct ResourceIdentity {
     kind: String,
     key: String,
+}
+
+/// One approved check, as the setting names it: what runs, and the device's own paths it runs
+/// on. Its binding is the project's, so the setting names it once.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckConfig {
+    id: String,
+    checkout: PathBuf,
+    build: PathBuf,
+    scratch: PathBuf,
+    runtime_binary: PathBuf,
+    images: Vec<ush::approved_checks::CheckImage>,
+    command: Vec<String>,
+    environment: Vec<(String, String)>,
+    limits: ush::approved_checks::CheckLimits,
+    #[serde(default)]
+    reported_phases: Vec<ush::approved_checks::ReportedCheckPhase>,
 }
 
 /// One approved project: what it is, and the checks its host approved for exactly it.
@@ -145,81 +168,37 @@ fn observation(event: ush::approved_checks::ReportedCheckEvent) -> ReportObserva
     }
 }
 
-#[derive(Default)]
-struct Definitions(Vec<Registered>);
-
-impl Definitions {
+/// What approves a check: the device's settings, read again for each request.
+trait Approvals: Send + Sync {
     /// The approved project exactly `app`, `workspace` and `record` name, whose resource
-    /// `identity` names too, or `None` when no project was approved for it.
+    /// `identity` names too, or `None` when the setting approves none for it.
+    ///
+    /// # Errors
+    /// The setting does not read, or an entry does not describe a check this device can run.
     fn find(
         &self,
         app: &str,
         workspace: &str,
         record: &str,
         identity: &ResourceSemanticIdentity,
-    ) -> Option<&Registered> {
-        self.0
-            .iter()
-            .find(|registered| registered.matches(app, workspace, record, identity))
-    }
+    ) -> Result<Option<Arc<Registered>>, String>;
 }
 
-/// The approved projects a device reads at startup: what it runs, and what it refuses.
-struct Registry(Arc<Definitions>);
-
-impl Registry {
-    fn find(
-        &self,
-        app: &str,
-        workspace: &str,
-        record: &str,
-        identity: &ResourceSemanticIdentity,
-    ) -> Option<&Registered> {
-        self.0.find(app, workspace, record, identity)
-    }
+/// The approvals kept in `devices/<device>/settings/checks`, as the setting actions write them.
+struct SettingsApprovals {
+    records: Arc<super::records::DeviceRecords>,
+    device: [u8; 32],
+    /// The device's profile, where each project's private receipts are kept.
+    root: PathBuf,
 }
 
-static DEFINITIONS: OnceLock<Arc<Registry>> = OnceLock::new();
-
-fn effective_uid() -> u32 {
-    rustix::process::geteuid().as_raw()
-}
-
-/// The configuration a startup flag named: an owned private regular file, never a link.
-fn load(path: &Path) -> Result<Registry, String> {
-    let mut file = tilo_files::native::private::read(path).map_err(|error| error.to_string())?;
-    if file.metadata().map_err(|error| error.to_string())?.len() > MAX_CONFIG_BYTES {
-        return Err("approved-check startup configuration exceeds bound".into());
-    }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_CONFIG_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    drop(file);
-    if u64::try_from(bytes.len()).map_err(|error| error.to_string())? > MAX_CONFIG_BYTES {
-        return Err("approved-check startup configuration grew beyond bound".into());
-    }
-    let config: Config = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    if config.version != 1 || config.projects.len() > MAX_PROJECTS {
-        return Err("unsupported or oversized approved-check startup configuration".into());
-    }
-    let mut definitions = Vec::<Registered>::new();
-    for project in config.projects {
+impl SettingsApprovals {
+    fn project(&self, project: ProjectConfig) -> Result<Registered, String> {
         let identity = ResourceSemanticIdentity::new(
             project.resource_identity.kind.clone(),
             project.resource_identity.key.clone(),
         )
         .ok_or("approved project semantic identity invalid")?;
-        let binding = project
-            .checks
-            .first()
-            .ok_or("approved project has no checks")?
-            .binding
-            .clone();
-        if identity.key != binding.resource {
-            return Err("approved fixed check resource must equal its semantic key".into());
-        }
         if project.app_id.is_empty()
             || project.app_id.len() > 128
             || project.app_id.starts_with('-')
@@ -230,98 +209,103 @@ fn load(path: &Path) -> Result<Registry, String> {
         {
             return Err("approved project app identity invalid".into());
         }
-        if binding.record.is_empty() || binding.record.len() > 1024 {
+        if project.record.is_empty() || project.record.len() > 1024 {
             return Err("approved project identity exceeds portable receipt vocabulary".into());
         }
-        if definitions.iter().any(|other: &Registered| {
-            other.app_id == project.app_id
-                && other.identity == identity
-                && other.binding.workspace == binding.workspace
-                && other.binding.record == binding.record
+        let workspace = uuid::Uuid::parse_str(&project.workspace)
+            .map_err(|_| "approved project workspace is not a workspace id".to_owned())?;
+        // The receipts are the device's own, kept in a private directory the setting never
+        // names and the checked source or its build output never contains.
+        let receipts = blake3::hash(
+            format!(
+                "{}/{}/{}/{}",
+                project.workspace, project.record, identity.kind, identity.key
+            )
+            .as_bytes(),
+        )
+        .to_hex();
+        let artifacts = self
+            .root
+            .join("state/approved-checks")
+            .join(receipts.as_str());
+        for directory in [
+            self.root.join("state"),
+            self.root.join("state/approved-checks"),
+            artifacts.clone(),
+        ] {
+            tilo_files::native::private::directory(&directory).map_err(|error| {
+                format!(
+                    "the device keeps no private place for a check's receipts, {}: {error}",
+                    directory.display()
+                )
+            })?;
+        }
+        if project.checks.iter().any(|check| {
+            artifacts.starts_with(&check.checkout)
+                || artifacts.starts_with(&check.build)
+                || check.checkout.starts_with(&artifacts)
+                || check.build.starts_with(&artifacts)
         }) {
-            return Err("duplicate approved project binding".into());
+            return Err("approved private receipts and the checked source are one tree".into());
         }
-        // The private artifacts directory is exact, owned and private, and never a tree the
-        // checked source or its build output is written into.
-        let metadata =
-            std::fs::symlink_metadata(&project.artifacts).map_err(|error| error.to_string())?;
-        if !project.artifacts.is_absolute()
-            || project
-                .artifacts
-                .canonicalize()
-                .map_err(|error| error.to_string())?
-                != project.artifacts
-            || !metadata.is_dir()
-            || metadata.uid() != effective_uid()
-            || metadata.mode() & 0o077 != 0
-            || project.checks.iter().any(|check| {
-                project.artifacts.starts_with(&check.checkout)
-                    || project.artifacts.starts_with(&check.build)
-                    || check.checkout.starts_with(&project.artifacts)
-                    || check.build.starts_with(&project.artifacts)
+        let binding = ProjectBinding {
+            workspace,
+            host: self.device,
+            record: project.record,
+            resource: identity.key.clone(),
+        };
+        let checks = project
+            .checks
+            .into_iter()
+            .map(|check| ApprovedCheck {
+                id: check.id,
+                binding: binding.clone(),
+                checkout: check.checkout,
+                build: check.build,
+                scratch: check.scratch,
+                runtime_binary: check.runtime_binary,
+                images: check.images,
+                command: check.command,
+                environment: check.environment,
+                limits: check.limits,
+                reported_phases: check.reported_phases,
             })
-        {
-            return Err("approved private artifacts directory is not owned/private".into());
-        }
-        let checks = ApprovedChecks::new(binding.clone(), project.checks)?;
-        definitions.push(Registered {
+            .collect();
+        let checks = ApprovedChecks::new(binding.clone(), checks)?;
+        Ok(Registered {
             app_id: project.app_id,
             identity,
             binding: binding.clone(),
-            artifacts: project.artifacts,
+            artifacts,
             checks: Box::new(ProjectChecks { binding, checks }),
-        });
+        })
     }
-    Ok(Registry(Arc::new(Definitions(definitions))))
 }
 
-/// The private configuration `arguments` names, if any: one flag, one absolute path.
-fn argument_path(
-    arguments: impl IntoIterator<Item = std::ffi::OsString>,
-) -> Result<Option<PathBuf>, String> {
-    let mut arguments = arguments.into_iter();
-    let mut selected = None;
-    while let Some(argument) = arguments.next() {
-        let path = if argument == "--approved-checks" {
-            Some(PathBuf::from(arguments.next().ok_or(
-                "--approved-checks requires a private configuration path",
-            )?))
-        } else {
-            argument
-                .to_str()
-                .and_then(|argument| argument.strip_prefix("--approved-checks="))
-                .map(PathBuf::from)
+impl Approvals for SettingsApprovals {
+    fn find(
+        &self,
+        app: &str,
+        workspace: &str,
+        record: &str,
+        identity: &ResourceSemanticIdentity,
+    ) -> Result<Option<Arc<Registered>>, String> {
+        let Some(setting) = self.records.get(CHECKS) else {
+            return Ok(None);
         };
-        if let Some(path) = path {
-            if selected.is_some() || !path.is_absolute() {
-                return Err("approved-check startup path must be unique and absolute".into());
-            }
-            selected = Some(path);
+        let config: Config = serde_json::from_value(setting)
+            .map_err(|error| format!("the approved checks setting does not read: {error}"))?;
+        if config.version != 1 || config.projects.len() > MAX_PROJECTS {
+            return Err("unsupported or oversized approved checks setting".into());
         }
+        for project in config.projects {
+            let registered = self.project(project)?;
+            if registered.matches(app, workspace, record, identity) {
+                return Ok(Some(Arc::new(registered)));
+            }
+        }
+        Ok(None)
     }
-    Ok(selected)
-}
-
-/// Load the immutable private configuration `arguments` names before the device admits anything.
-///
-/// # Errors
-/// Duplicate flags, a non-private or linked file, or a malformed or foreign registration.
-pub fn install_from_args(
-    arguments: impl IntoIterator<Item = std::ffi::OsString>,
-) -> Result<(), String> {
-    let definitions = argument_path(arguments)?
-        .map_or_else(|| Ok(Registry(Arc::default())), |path| load(&path))?;
-    DEFINITIONS
-        .set(Arc::new(definitions))
-        .map_err(|_| "approved-check definitions already installed".into())
-}
-
-/// The definitions this process installed, or none.
-fn installed() -> Arc<Registry> {
-    DEFINITIONS
-        .get()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(Registry(Arc::default())))
 }
 
 /// A claim on a check's turn of work, kept while the check runs.
@@ -403,10 +387,10 @@ pub(crate) struct Ask<'a> {
     pub invocation: &'a str,
 }
 
-/// The device's checks, as its dispatch asks for them: the approved definitions it read at
-/// startup, the device's turn of work, and the jobs it keeps.
+/// The device's checks, as its dispatch asks for them: the approval setting it reads again for
+/// every check, the device's turn of work, and the jobs it keeps.
 pub(crate) struct NativeChecks {
-    registry: Arc<Registry>,
+    approvals: Arc<dyn Approvals>,
     placement: Arc<dyn Placement>,
     jobs: Arc<CheckJobs>,
 }
@@ -414,10 +398,17 @@ pub(crate) struct NativeChecks {
 impl NativeChecks {
     pub(crate) fn new(
         workspaces: &Arc<super::workspaces::ServiceWorkspaces>,
+        records: Arc<super::records::DeviceRecords>,
+        root: PathBuf,
         jobs: Arc<CheckJobs>,
     ) -> Self {
+        let device = workspaces.copies().host_device();
         Self {
-            registry: installed(),
+            approvals: Arc::new(SettingsApprovals {
+                records,
+                device,
+                root,
+            }),
             placement: Arc::new(WorkspaceTurns {
                 workspaces: workspaces.copies().clone(),
             }),
@@ -425,11 +416,15 @@ impl NativeChecks {
         }
     }
 
-    /// The service over the definitions `registry` names and `placement` places, for a test.
+    /// The service over `approvals` and `placement`, for a test.
     #[cfg(test)]
-    fn over(registry: Arc<Registry>, placement: Arc<dyn Placement>, jobs: Arc<CheckJobs>) -> Self {
+    fn over(
+        approvals: Arc<dyn Approvals>,
+        placement: Arc<dyn Placement>,
+        jobs: Arc<CheckJobs>,
+    ) -> Self {
         Self {
-            registry,
+            approvals,
             placement,
             jobs,
         }
@@ -449,8 +444,8 @@ impl NativeChecks {
     ) -> Result<Receipt, String> {
         recheck()?;
         let registered = self
-            .registry
-            .find(ask.app, ask.workspace, ask.record, ask.identity)
+            .approvals
+            .find(ask.app, ask.workspace, ask.record, ask.identity)?
             .ok_or("no approved checks for this exact project resource")?;
         let taken = self.placement.take(
             ask.app,
@@ -470,7 +465,7 @@ impl NativeChecks {
         };
         let observed = registered.checks.run(ask.check_id, &authority, &report);
         match observed {
-            Ok(observed) => match receipt(ask, registered, observed) {
+            Ok(observed) => match receipt(ask, &registered, observed) {
                 Ok(receipt) => {
                     self.jobs.done(ask.invocation, &receipt);
                     Ok(receipt)

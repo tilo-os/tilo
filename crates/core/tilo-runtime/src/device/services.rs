@@ -2555,8 +2555,8 @@ fn broker_services(
         tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
     )));
     // The checks a project's host approved: this device's work, kept as its jobs at
-    // `devices/<device>/jobs` and read through the one record API. Their definitions are a
-    // private startup configuration, so a check an app names never brings its own commands.
+    // `devices/<device>/jobs` and read through the one record API. What runs comes from this
+    // device's own `checks` setting, so a check an app names never brings its own commands.
     #[cfg(unix)]
     let approved_checks = {
         let jobs = Arc::new(super::approved_checks::CheckJobs::at(
@@ -2570,6 +2570,10 @@ fn broker_services(
         );
         Some(Arc::new(super::approved_checks::NativeChecks::new(
             parts.workspaces,
+            parts.workspaces.device_records().cloned().ok_or_else(|| {
+                io::Error::other("the device's settings are not kept for its checks")
+            })?,
+            parts.root.to_path_buf(),
             jobs,
         ))
             as Arc<

@@ -194,9 +194,8 @@ tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agen
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-# The log a daemon keeps trims, the socket it stops taking connections at, and the user it
-# checks a private project-check configuration is owned by.
-rustix = { workspace = true, features = ["fs", "net", "process", "std"] }
+# The log a daemon keeps trims, and the socket it stops taking connections at.
+rustix = { workspace = true, features = ["fs", "net", "std"] }
 
 # Every tilolang process a Windows device starts runs in an AppContainer of its app's own.
 [target.'cfg(windows)'.dependencies]
