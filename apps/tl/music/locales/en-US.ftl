@@ -3,6 +3,8 @@
 
 d-so-tilo-music = Music
 
+d-so-tilo-music-keywords = music, musik, song, songs, titel, track, tracks, album, alben, artist, artists, künstler, kuenstler, playlist, playlists, wiedergabe, player, audio, listen, hören, hoeren, spotify, youtube music, lyrics, songtext, liedtext
+
 d-sxv3fcr6 = Track
     .doc = A song: one the person opened from a device, or one the catalogue named.
     .noun = { $count ->
@@ -122,6 +124,32 @@ d-ac7ep6rb = Found for
 
 d-lhfreres-filter-track_count = Track count
 
+d-iyodtvzu = Spotify device
+    .doc = A place Spotify plays on: a phone, a computer, a speaker or the person's browser.
+    .noun = { $count ->
+        [one] spotify device
+       *[other] spotify devices
+    }
+    .untitled = Unknown device
+
+d-4ruem7bk = Key
+    .doc = The device's id, as Spotify names it.
+
+d-fysa7usi = Name
+
+d-ajgkhxtc = Kind
+    .doc = `computer`, `smartphone`, `speaker`, `tv`, `cast` or another Spotify names.
+
+d-njju5rcv = Active
+    .doc = Whether what plays plays here.
+
+d-daqeango = Volume
+    .doc = How loud it is, `0..=100`, when Spotify says.
+
+d-iyodtvzu-filter-active = Active
+
+d-iyodtvzu-filter-volume = Volume
+
 d-isg2xifs = Section
     .doc = One titled section of the catalogue's home page.
     .noun = { $count ->
@@ -183,25 +211,23 @@ d-tkebe3bj = Taste
        *[other] tastes
     }
 
-d-biz2rcqc = Similar artists
-    .doc = Ask for albums by artists the person already likes.
-
 d-nhxvxvrt = Followed artists
     .doc = Ask for more by the artists followed.
 
 d-fygjzxca = Liked songs
-    .doc = Ask for songs like the ones liked.
+    .doc = Ask for other songs by an artist the person liked a song of.
 
 d-splmmoir = Saved albums
-    .doc = Ask for albums saved.
+    .doc = Ask for other songs from an album the person kept.
 
 d-gfhj3dh4 = Dismissed
     .doc = Artists the person said to leave out.
 
 d-oa6ryv4n = Preferred
-    .doc = Artists the person said to bring more of.
+    .doc = Artists the person said to bring more of: their songs come first.
 
-d-tkebe3bj-filter-similar_artists = Similar artists
+d-nsvv7dnn = Hidden
+    .doc = Songs the person hid from the suggestions.
 
 d-tkebe3bj-filter-followed_artists = Followed artists
 
@@ -212,6 +238,8 @@ d-tkebe3bj-filter-saved_albums = Saved albums
 d-tkebe3bj-filter-dismissed = Dismissed
 
 d-tkebe3bj-filter-preferred = Preferred
+
+d-tkebe3bj-filter-hidden = Hidden
 
 d-aymfw7yu = Library
     .doc = The workspace's music: the songs and the catalogue's pages, what the person made, what they like, what plays, and how the catalogue's fetch stands.
@@ -244,6 +272,30 @@ d-scejauac = Playing
 d-tnkopk2m = Sessions
     .doc = Every session this app made, kept as the resources they are; `playing` names the one.
 
+d-cjoykprs = Devices
+    .doc = The places Spotify plays on, and the person's sign-in to it.
+
+d-d6agrwhu = Spotify state
+    .doc = `off`, `connecting`, `connected` or `trouble`.
+
+d-wzbxwvai = Spotify account
+
+d-q6fvzfwi = Spotify product
+    .doc = `premium`, `free`, `open` or empty, as Spotify says.
+
+d-bnnshdna = Spotify trouble
+
+d-rwf7lfs6 = Connect url
+    .doc = The page the person signs in on, while `spotify_state` says `connecting`.
+
+d-gghnswba = Spotify active
+    .doc = The device Spotify plays on, as its key; empty when nothing does.
+
+d-sdkihe6k = Spotify now
+    .doc = What plays there, as people read it.
+
+d-22kwzmah = Spotify playing
+
 d-wout6rgv = Catalogue
     .doc = `youtube`, `spotify` or `off`: which catalogue the app asks.
 
@@ -263,6 +315,8 @@ d-fkvdcomi = Online
 d-aymfw7yu-filter-taste = Taste
 
 d-aymfw7yu-filter-playing = Playing
+
+d-aymfw7yu-filter-spotify_playing = Spotify playing
 
 d-aymfw7yu-filter-online = Online
 
@@ -299,6 +353,19 @@ d-uwlrca54-t = T
 
 d-b2wwy2bq = Lyrics now
     .doc = Asks for the words of what plays, keeping the session it asks for.
+
+d-qh2hecoe = Play rec
+    .doc = Plays a suggested song.
+
+d-deybznbt = Hide this suggestion
+    .doc = Hides a song from the suggestions.
+
+d-deybznbt-t = T
+
+d-324mqcom = Suggest this again
+    .doc = Brings a hidden song back into the suggestions.
+
+d-324mqcom-t = T
 
 d-dw5iplh4 = Queue moved
     .doc = Moves the dragged row where it was dropped: the two ids its reorder carries.
@@ -395,6 +462,40 @@ d-cul6iynf = Set catalogue
 
 d-cul6iynf-which = Which
 
+d-cpsa6nlq = Connect Spotify
+    .doc = Connects the person's Spotify: the page they sign in on is shown in the Spotify section.
+
+d-bgomdthz = I signed in
+    .doc = Takes the sign-in the person gave on Spotify's page.
+
+d-c3zailpi = Disconnect Spotify
+    .doc = Forgets this device's Spotify sign-in.
+
+d-lyxtlmu3 = Refresh devices
+    .doc = Reads the places Spotify plays on.
+
+d-s5u526ny = Transfer playback
+    .doc = Moves what plays to `d`, from the beginning.
+
+d-s5u526ny-d = D
+
+d-amt56qpq = Play on Spotify
+    .doc = Plays `uri` on Spotify, where it plays: empty plays what was playing.
+
+d-amt56qpq-uri = Uri
+
+d-7vrw7iss = Pause on Spotify
+    .doc = Pauses what plays on Spotify.
+
+d-y4ceqqvs = Next on Spotify
+    .doc = Plays what follows on Spotify.
+
+d-moryk2vk = Previous on Spotify
+    .doc = Plays what played before on Spotify.
+
+d-clxyvglt = What plays on Spotify
+    .doc = Reads what plays on Spotify now.
+
 d-ywyw4kwy = Update taste
     .doc = Turns one of the recommendations' switches.
 
@@ -446,12 +547,18 @@ d-4oohdtzr = Album
     .w-this-album-has-no-songs-yet = This album has no songs yet
 
 d-gpcmrwgr = Artist
+    .w-more-of-this-artist = More of this artist
+    .w-not-this-artist = Not this artist
     .w-songs = Songs
     .w-this-artist-has-no-songs-yet = This artist has no songs yet
     .w-albums = Albums
 
 d-uvzkg6uq = Playlist
     .w-this-playlist-has-no-songs-yet = This playlist has no songs yet
+
+d-sbgoce2w = Device
+    .w-playing-here = Playing here
+    .w-play-here = Play here
 
 d-sum4fpxx = Mixtape
     .w-cover = Cover
@@ -462,6 +569,9 @@ d-wnohn7ep = Home page
     .w-search-the-catalogue-or-open-an = Search the catalogue, or open an audio file from this device.
     .w-open-audio-file = Open audio file
     .w-refresh = Refresh
+    .w-made-from-your-library = Made from your library
+    .w-play = Play
+    .w-hide = Hide
 
 d-x2xe6gcf = Search page
     .w-search-youtube-music = Search YouTube Music
@@ -486,15 +596,19 @@ d-5hj6kcvh = Mixtape list
     .w-new-playlist = New playlist
 
 d-6tpcfsjw = Taste page
-    .w-recommendations = Recommendations
-    .w-similar-artists = Similar artists
+    .w-what-suggestions-may-draw-on = What suggestions may draw on
     .w-artists-followed = Artists followed
-    .w-more-like-the-songs-liked = More like the songs liked
-    .w-more-like-the-albums-saved = More like the albums saved
+    .w-songs-liked = Songs liked
+    .w-albums-kept = Albums kept
+    .w-suggestions-come-from-these-choices-alone = Suggestions come from these choices alone: no listening history, and nothing asked of a catalogue.
+    .w-more-of-these-artists = More of these artists
+    .w-stop-preferring = Stop preferring
+    .w-hidden-songs = Hidden songs
+    .w-suggest-this-again = Suggest this again
     .w-catalogue = Catalogue
     .w-youtube-music = YouTube Music
-    .w-off = Off
     .w-spotify = Spotify
+    .w-off = Off
     .w-sign-in-on-spotify = Sign in on Spotify
     .w-i-signed-in = I signed in
     .w-previous = Previous
@@ -518,86 +632,3 @@ d-pf6yvngz = Lyrics
     .w-nothing-playing = Nothing playing
 
 d-6oildalu = Search~present
-
-d-iyodtvzu = Spotify device
-    .doc = A place Spotify plays on: a phone, a computer, a speaker or the person's browser.
-    .noun = { $count ->
-        [one] device
-       *[other] devices
-    }
-    .untitled = Unknown device
-
-d-4ruem7bk = Key
-    .doc = The device's id, as Spotify names it.
-
-d-fysa7usi = Name
-
-d-ajgkhxtc = Kind
-    .doc = `computer`, `smartphone`, `speaker`, `tv`, `cast` or another Spotify names.
-
-d-njju5rcv = Active
-    .doc = Whether what plays plays here.
-
-d-daqeango = Volume
-    .doc = How loud it is, `0..=100`, when Spotify says.
-
-d-cjoykprs = Devices
-    .doc = The places Spotify plays on, and the person's sign-in to it.
-
-d-d6agrwhu = Spotify state
-    .doc = `off`, `connecting`, `connected` or `trouble`.
-
-d-wzbxwvai = Spotify account
-
-d-q6fvzfwi = Spotify product
-    .doc = `premium`, `free`, `open` or empty, as Spotify says.
-
-d-bnnshdna = Spotify trouble
-
-d-rwf7lfs6 = Connect URL
-    .doc = The page the person signs in on, while `spotify_state` says `connecting`.
-
-d-gghnswba = Spotify active
-    .doc = The device Spotify plays on, as its key; empty when nothing does.
-
-d-sdkihe6k = Spotify now
-    .doc = What plays there, as people read it.
-
-d-22kwzmah = Spotify playing
-
-d-sbgoce2w = Device
-
-d-cpsa6nlq = Connect Spotify
-    .doc = Connects the person's Spotify: the page they sign in on is shown in the Spotify section.
-
-d-bgomdthz = I signed in
-    .doc = Takes the sign-in the person gave on Spotify's page.
-
-d-c3zailpi = Disconnect Spotify
-    .doc = Forgets this device's Spotify sign-in.
-
-d-lyxtlmu3 = Refresh devices
-    .doc = Reads the places Spotify plays on.
-
-d-s5u526ny = Transfer playback
-    .doc = Moves what plays to `d`, from the beginning.
-
-d-amt56qpq = Play on Spotify
-    .doc = Plays `uri` on Spotify, where it plays: empty plays what was playing.
-
-d-7vrw7iss = Pause on Spotify
-    .doc = Pauses what plays on Spotify.
-
-d-y4ceqqvs = Next on Spotify
-    .doc = Plays what follows on Spotify.
-
-d-moryk2vk = Previous on Spotify
-    .doc = Plays what played before on Spotify.
-
-d-clxyvglt = What plays on Spotify
-    .doc = Reads what plays on Spotify now.
-
-d-s5u526ny-d = Device
-
-d-amt56qpq-uri = Address
-

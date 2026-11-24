@@ -128,19 +128,23 @@ type Mixtape (untitled: "New playlist") {
 }
 
 /// What the person likes and what the recommendations may draw on, shared by the workspace.
+///
+/// A suggestion is derived from the library alone: a song the person liked, an album they kept,
+/// an artist they follow. There is no listening history and no request to a catalogue, so what
+/// the person listens to elsewhere never shapes what is suggested here.
 type Taste {
-    /// Ask for albums by artists the person already likes.
-    similar_artists: Bool = true
     /// Ask for more by the artists followed.
     followed_artists: Bool = true
-    /// Ask for songs like the ones liked.
+    /// Ask for other songs by an artist the person liked a song of.
     liked_songs: Bool = true
-    /// Ask for albums saved.
+    /// Ask for other songs from an album the person kept.
     saved_albums: Bool = true
     /// Artists the person said to leave out.
     dismissed: Set<Text>
-    /// Artists the person said to bring more of.
+    /// Artists the person said to bring more of: their songs come first.
     preferred: Set<Text>
+    /// Songs the person hid from the suggestions.
+    hidden: Set<Text>
 }
 
 /// The workspace's music: the songs and the catalogue's pages, what the person made, what they
@@ -427,6 +431,16 @@ view artist(a: Artist) {
     std.page(a) {
         header: {
             button(follow_artist(a)) as follow_artist_button
+            ui.Button(
+                "More of this artist",
+                icon: .sparkles,
+                toggled: lib.taste.preferred.contains(a.key),
+            ) {
+                on press: prefer_artist(lib, a)
+            }
+            ui.Button("Not this artist", icon: .ban, toggled: lib.taste.dismissed.contains(a.key)) {
+                on press: dismiss_artist(lib, a)
+            }
             button(refresh_artist(a)) as refresh_button
         }
         stack(gap: .related) {
@@ -460,6 +474,26 @@ view playlist(pl: Playlist) {
     }
 }
 
+/// A place Spotify plays on: what it is, and the way to move what plays there.
+view device(d: SpotifyDevice) {
+    let lib = root Library
+    std.page(d) {
+        header: {
+            ui.Button(
+                if d.active { "Playing here" } else { "Play here" },
+                icon: .play,
+                toggled: d.active,
+            ) {
+                on press: transfer_playback(lib, d)
+            }
+        }
+        stack(gap: .related) {
+            text(d.name, role: .title)
+            text(device_line(d), role: .subheading)
+        }
+    }
+}
+
 /// A mixtape's page: the person's own songs, in their order.
 view mixtape(m: Mixtape) {
     let lib = root Library
@@ -483,7 +517,8 @@ view mixtape(m: Mixtape) {
 
 /// The home page: the catalogue's suggestions, in their sections.
 view home_page(lib: Library) {
-    if lib.suggestions.is_empty() {
+    let recs = recommendations(lib)
+    if lib.suggestions.is_empty() and recs.is_empty() {
         ui.EmptyState(
             "Find music",
             message: "Search the catalogue, or open an audio file from this device.",
@@ -503,6 +538,32 @@ view home_page(lib: Library) {
                 }
                 ui.Button("Refresh", icon: .refresh) {
                     on press: refresh(lib)
+                }
+            }
+            // What the library itself suggests, before the catalogue's own rows: each song names
+            // the choice of the person's that brought it here.
+            if not recs.is_empty() {
+                ui.Section("Made from your library") {
+                    stack(gap: .tight) {
+                        for t in recs {
+                            row(gap: .tight, align: .center) {
+                                ui.ListRow(
+                                    title: t.title,
+                                    secondary: rec_reason(lib, t),
+                                    icon: .music,
+                                    item: t,
+                                ) {
+                                    on activate: play_rec(t)
+                                }
+                                ui.Button("Play", icon: .play, icon_only: true) {
+                                    on press: play_rec(t)
+                                }
+                                ui.Button("Hide", icon: .eye_off, icon_only: true) {
+                                    on press: hide_rec(lib, t)
+                                }
+                            }
+                        }
+                    }
                 }
             }
             for section in lib.sections.sort_by(.order, asc) {
@@ -661,18 +722,46 @@ view taste_page(lib: Library) {
     let taste = lib.taste
     std.page(lib) {
         stack(gap: .related) {
-            ui.Section("Recommendations") {
-                ui.Button("Similar artists", toggled: taste.similar_artists) {
-                    on press: update_taste(lib, "similar_artists", not taste.similar_artists)
-                }
+            ui.Section("What suggestions may draw on") {
                 ui.Button("Artists followed", toggled: taste.followed_artists) {
                     on press: update_taste(lib, "followed_artists", not taste.followed_artists)
                 }
-                ui.Button("More like the songs liked", toggled: taste.liked_songs) {
+                ui.Button("Songs liked", toggled: taste.liked_songs) {
                     on press: update_taste(lib, "liked_songs", not taste.liked_songs)
                 }
-                ui.Button("More like the albums saved", toggled: taste.saved_albums) {
+                ui.Button("Albums kept", toggled: taste.saved_albums) {
                     on press: update_taste(lib, "saved_albums", not taste.saved_albums)
+                }
+                ui.Text(
+                    "Suggestions come from these choices alone: no listening history, and nothing asked of a catalogue.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            let preferred = lib.artists.filter(a -> taste.preferred.contains(a.key))
+            let hidden = lib.tracks.filter(t -> taste.hidden.contains(t.id))
+            if not preferred.is_empty() {
+                ui.Section("More of these artists") {
+                    for a in preferred {
+                        row(gap: .tight, align: .center) {
+                            ui.ListRow(title: a.name, icon: .users, item: a)
+                            ui.Button("Stop preferring", icon: .x, icon_only: true) {
+                                on press: prefer_artist(lib, a)
+                            }
+                        }
+                    }
+                }
+            }
+            if not hidden.is_empty() {
+                ui.Section("Hidden songs") {
+                    for t in hidden {
+                        row(gap: .tight, align: .center) {
+                            ui.ListRow(title: t.title, secondary: t.artist, icon: .music, item: t)
+                            ui.Button("Suggest this again", icon: .eye, icon_only: true) {
+                                on press: restore_rec(lib, t)
+                            }
+                        }
+                    }
                 }
             }
             ui.Section("Catalogue") {
@@ -919,6 +1008,62 @@ action lyrics_now(lib: Library) (icon: .quote) {
     lyrics_of(lib, p)
 }
 
+/// Why the library suggests `t`, in the person's own words, or empty where nothing they chose
+/// connects the song to the library.
+fn rec_reason(lib: Library, t: Track) -> Text {
+    let taste = lib.taste
+    if t.liked
+        or t.stream == ""
+        or taste.hidden.contains(t.id)
+        or taste.dismissed.contains(t.artist_key) {
+        return ""
+    }
+    if t.artist_key == "" {
+        return ""
+    }
+    if taste.followed_artists and lib.artists.any(a -> a.key == t.artist_key and a.followed) {
+        return "Because you follow {t.artist}."
+    }
+    if taste.saved_albums
+        and t.album_key != ""
+        and lib.albums.any(a -> a.key == t.album_key and a.in_library) {
+        return "From an album you kept."
+    }
+    if taste.liked_songs {
+        if let seed = lib.tracks.find(
+                x -> x.liked and x.artist_key == t.artist_key and x.id() != t.id(),
+            ) {
+            return "Because you liked {seed.title}."
+        }
+    }
+    ""
+}
+
+/// The songs the library suggests: what the person's likes, kept albums and followed artists
+/// connect to, the artists they asked more of first, at most eight. Every one names the choice
+/// that brought it, as [`rec_reason`] says it.
+fn recommendations(lib: Library) -> List<Track> {
+    let connected = lib.tracks.filter(t -> rec_reason(lib, t) != "")
+    let preferred = connected.filter(t -> lib.taste.preferred.contains(t.artist_key))
+    let rest = connected.filter(t -> not lib.taste.preferred.contains(t.artist_key))
+    [preferred, rest].flat_map(x -> x).take(8)
+}
+
+/// Plays a suggested song.
+action play_rec(t: Track) (icon: .play) {
+    play_song(t)
+}
+
+/// Hides a song from the suggestions. History can undo it, and the taste page brings it back.
+action hide_rec(lib: Library, t: Track) (icon: .eye_off, label: "Hide this suggestion") {
+    lib.taste.hidden.add(t.id)
+}
+
+/// Brings a hidden song back into the suggestions.
+action restore_rec(lib: Library, t: Track) (icon: .eye, label: "Suggest this again") {
+    lib.taste.hidden.remove(t.id)
+}
+
 /// The song that plays, while it plays, so a row marks it.
 fn now_playing(lib: Library) -> Text {
     if let p = lib.playing {
@@ -1133,9 +1278,7 @@ action spotify_now(lib: Library) (icon: .music, label: "What plays on Spotify") 
 
 /// Turns one of the recommendations' switches.
 action update_taste(lib: Library, which: Text, on: Bool) {
-    if which == "similar_artists" {
-        lib.taste.similar_artists = on
-    } else if which == "followed_artists" {
+    if which == "followed_artists" {
         lib.taste.followed_artists = on
     } else if which == "liked_songs" {
         lib.taste.liked_songs = on

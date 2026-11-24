@@ -183,8 +183,6 @@ d-tkebe3bj = Geschmack
        *[other] Geschmäcke
     }
 
-d-biz2rcqc = Ähnliche Künstler
-    .doc = Alben von Künstlern erfragen, die der Person schon gefallen.
 
 d-nhxvxvrt = Gefolgte Künstler
     .doc = Mehr von den gefolgten Künstlern erfragen.
@@ -201,7 +199,6 @@ d-gfhj3dh4 = Ausgeblendet
 d-oa6ryv4n = Bevorzugt
     .doc = Künstler, von denen die Person mehr haben will.
 
-d-tkebe3bj-filter-similar_artists = Ähnliche Künstler
 
 d-tkebe3bj-filter-followed_artists = Gefolgte Künstler
 
@@ -423,7 +420,6 @@ d-yyin4m4b = Bibliothek
     .w-playlists = Playlists
     .w-liked = Liked
     .w-downloads = Downloads
-    .w-recommendations = Recommendations
     .w-youtube-music = YouTube Music
     .w-can-t-save-what-fetched = Can't save what { $name } fetched
     .w-can-t-reach = Can't reach { $name }
@@ -431,6 +427,7 @@ d-yyin4m4b = Bibliothek
     .w-try-again = Try again
     .w-nothing-liked-yet = Nothing liked yet
     .w-nothing-kept-for-offline = Nothing kept for offline
+    .w-recommendations = Empfehlungen
 
 d-fl2vq3rn = Player
     .w-nothing-playing = Nothing playing
@@ -449,6 +446,8 @@ d-gpcmrwgr = Künstler
     .w-songs = Songs
     .w-this-artist-has-no-songs-yet = This artist has no songs yet
     .w-albums = Albums
+    .w-more-of-this-artist = Mehr von diesem Künstler
+    .w-not-this-artist = Diesen Künstler nicht
 
 d-uvzkg6uq = Playlist
     .w-this-playlist-has-no-songs-yet = This playlist has no songs yet
@@ -462,6 +461,9 @@ d-wnohn7ep = Startseite
     .w-search-the-catalogue-or-open-an = Search the catalogue, or open an audio file from this device.
     .w-open-audio-file = Open audio file
     .w-refresh = Refresh
+    .w-made-from-your-library = Aus deiner Bibliothek
+    .w-play = Abspielen
+    .w-hide = Ausblenden
 
 d-x2xe6gcf = Suche
     .w-search-youtube-music = Search YouTube Music
@@ -486,11 +488,7 @@ d-5hj6kcvh = Playlists
     .w-new-playlist = New playlist
 
 d-6tpcfsjw = Empfehlungen
-    .w-recommendations = Recommendations
-    .w-similar-artists = Similar artists
     .w-artists-followed = Artists followed
-    .w-more-like-the-songs-liked = More like the songs liked
-    .w-more-like-the-albums-saved = More like the albums saved
     .w-catalogue = Catalogue
     .w-youtube-music = YouTube Music
     .w-off = Off
@@ -499,13 +497,21 @@ d-6tpcfsjw = Empfehlungen
     .w-i-signed-in = I signed in
     .w-previous = Previous
     .w-pause = Pause
-    .w-play = Play
     .w-next = Next
     .w-refresh = Refresh
     .w-disconnect = Disconnect
-    .w-playing-here = Playing here
-    .w-play-here = Play here
     .w-connect-spotify = Connect Spotify
+    .w-what-suggestions-may-draw-on = Woraus Vorschläge schöpfen
+    .w-songs-liked = Songs, die du magst
+    .w-albums-kept = Alben, die du behalten hast
+    .w-suggestions-come-from-these-choices-alone = Vorschläge kommen allein aus diesen Entscheidungen: kein Hörverlauf und keine Anfrage an einen Katalog.
+    .w-more-of-these-artists = Mehr von diesen Künstlern
+    .w-stop-preferring = Nicht mehr bevorzugen
+    .w-hidden-songs = Verborgene Songs
+    .w-suggest-this-again = Wieder vorschlagen
+    .w-play = Abspielen
+    .w-playing-here = Spielt hier
+    .w-play-here = Hier abspielen
 
 d-osqkr7ab = Warteschlange
     .w-queue = Queue
@@ -566,6 +572,8 @@ d-sdkihe6k = Spotify jetzt
 d-22kwzmah = Spotify spielt
 
 d-sbgoce2w = Gerät
+    .w-playing-here = Spielt hier
+    .w-play-here = Hier abspielen
 
 d-cpsa6nlq = Spotify verbinden
     .doc = Verbindet das Spotify der Person: die Seite, auf der sie sich anmeldet, steht im Spotify-Abschnitt.
@@ -601,3 +609,29 @@ d-s5u526ny-d = Gerät
 
 d-amt56qpq-uri = Adresse
 
+
+d-nsvv7dnn = Verborgen
+    .doc = Songs, die die Person aus den Vorschlägen ausgeblendet hat.
+
+d-qh2hecoe = Vorschlag abspielen
+    .doc = Spielt einen vorgeschlagenen Song ab.
+
+d-deybznbt = Diesen Vorschlag ausblenden
+    .doc = Blendet einen Song aus den Vorschlägen aus.
+
+d-deybznbt-t = T
+
+d-324mqcom = Wieder vorschlagen
+    .doc = Holt einen verborgenen Song zurück in die Vorschläge.
+
+d-324mqcom-t = T
+
+d-iyodtvzu-filter-active = Aktiv
+
+d-iyodtvzu-filter-volume = Lautstärke
+
+d-tkebe3bj-filter-hidden = Verborgen
+
+d-aymfw7yu-filter-spotify_playing = Spielt auf Spotify
+
+d-so-tilo-music-keywords = music, musik, song, songs, titel, track, tracks, album, alben, artist, artists, künstler, kuenstler, playlist, playlists, wiedergabe, player, audio, listen, hören, hoeren, spotify, youtube music, lyrics, songtext, liedtext
