@@ -537,6 +537,31 @@ view member_row(p: Member) {
     }
 
     #[test]
+    fn a_column_added_then_a_row_keeps_the_table() {
+        let writer = Writer::new();
+        writer.one(
+            "insert_table",
+            vec![Value::resource(&writer.doc), Value::Int(2), Value::Int(2)],
+        );
+        writer.one("add_column", vec![Value::resource(&writer.doc)]);
+        writer.one("add_row", vec![Value::resource(&writer.doc)]);
+        let body = writer.markdown();
+        assert_eq!(
+            body.lines().filter(|l| l.starts_with('|')).count(),
+            5,
+            "the table still stands, its head, its rule and the rows: {body}"
+        );
+        assert_eq!(
+            body.lines()
+                .filter(|l| l.starts_with('|'))
+                .map(|l| l.matches('|').count())
+                .collect::<Vec<_>>(),
+            [4, 4, 4, 4, 4],
+            "every row holds the column added: {body}"
+        );
+    }
+
+    #[test]
     fn the_windows_toolbar_and_outline_are_there() {
         let writer = Writer::new();
         let window = writer

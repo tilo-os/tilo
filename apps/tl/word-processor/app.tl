@@ -184,7 +184,12 @@ action add_column(d: Document) (icon: .plus, label: "Add column", group: "Table"
     d.body = RichText.from_markdown(
         markdown_of(d)
             .split("\n")
-            .map(l -> if l.trim().starts_with("|") { "{l}  |" } else { l })
+            .map(
+                l -> if l.trim().starts_with("|") {
+                    // The rule row's new cell is a rule too: a blank one leaves the table a paragraph.
+                    if rule_row(l) { "{l} --- |" } else { "{l}  |" }
+                } else { l },
+            )
             .join("\n"),
     )
 }
