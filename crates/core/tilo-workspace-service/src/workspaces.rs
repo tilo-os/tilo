@@ -160,6 +160,9 @@ pub(crate) mod person_vault;
 // One vault item's secret handed to a process of an app's own that a turn placed here.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod vault_release;
+// The logins a page in a window of an app's own signs in with, kept in that same vault.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod page_logins;
 // The workspace's one vault, Passwords' document, as this device holds it.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod vault;

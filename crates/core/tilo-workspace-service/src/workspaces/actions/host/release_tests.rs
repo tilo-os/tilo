@@ -87,7 +87,7 @@ fn release_of(item: &ItemRef) -> InvokeRequest {
 }
 
 /// The person's "Approve and grant" of their asked record `record`.
-fn approve_and_grant(record: &RecordRef) -> InvokeRequest {
+pub(super) fn approve_and_grant(record: &RecordRef) -> InvokeRequest {
     let resolving = Resolve {
         resolution: Offer::ApproveAndGrant,
         ..Resolve::default()
@@ -116,7 +116,7 @@ fn approve_and_grant(record: &RecordRef) -> InvokeRequest {
 }
 
 /// The reason `taken` was refused with.
-fn refusal<T: std::fmt::Debug>(taken: Result<T, ActionCallError>) -> String {
+pub(super) fn refusal<T: std::fmt::Debug>(taken: Result<T, ActionCallError>) -> String {
     match taken {
         Err(ActionCallError::Refused { reason }) => reason,
         other => panic!("refused: {other:?}"),
@@ -143,7 +143,7 @@ async fn kept(
 }
 
 /// Everything the workspace's asked records keep, as text.
-fn asked_records(workspaces: &Workspaces, workspace: &str) -> String {
+pub(super) fn asked_records(workspaces: &Workspaces, workspace: &str) -> String {
     let store = workspaces.asked_store().unwrap();
     let mut text = String::new();
     for waiting in store.waiting_in(workspace) {

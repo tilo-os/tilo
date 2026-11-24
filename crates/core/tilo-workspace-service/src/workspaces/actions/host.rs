@@ -1703,6 +1703,8 @@ mod mail_turn_tests;
 #[cfg(test)]
 mod own_tests;
 #[cfg(all(test, feature = "agents"))]
+mod page_login_tests;
+#[cfg(all(test, feature = "agents"))]
 mod page_use_tests;
 #[cfg(test)]
 mod passwords_window_tests;

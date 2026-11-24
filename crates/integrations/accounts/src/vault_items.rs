@@ -276,6 +276,22 @@ impl ItemId {
     }
 }
 
+/// A login as a page at a site it belongs to is offered it: what is safe to say of it, and the
+/// name it signs in with, which only such a page is told. Its debug print leaves the name out.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SiteLogin {
+    pub facts: ItemFacts,
+    pub username: String,
+}
+
+impl std::fmt::Debug for SiteLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SiteLogin")
+            .field("facts", &self.facts)
+            .finish_non_exhaustive()
+    }
+}
+
 /// What is safe to say of an item: everything a listing carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ItemFacts {
@@ -870,6 +886,10 @@ fn canonical_seed(text: &str) -> Option<String> {
 /// the entry kept, the entry forgotten, or the uses of an entry. A use changes only an entry's
 /// uses, never the entry, so a use written while a member edits the entry loses neither.
 #[derive(Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "changes are written as they are made, a handful at a time; most are a kept entry"
+)]
 pub enum VaultChange {
     Keep(SecretItem),
     Forget(crate::SecretId),
@@ -1100,6 +1120,65 @@ impl VaultItems {
         sealed.code = code;
         self.write(id, &sealed);
         Ok(self.written(id, &sealed))
+    }
+
+    /// Every login that belongs to `site`, oldest first: what a page at that site is offered
+    /// to sign in with.
+    #[must_use]
+    pub fn logins_at(&self, site: &Place) -> Vec<SiteLogin> {
+        self.facts()
+            .into_iter()
+            .filter(|facts| facts.kind == ItemKind::Login && facts.places.contains(site))
+            .filter_map(|facts| {
+                let username = self.sealed(&facts.id).ok()?.username.clone();
+                Some(SiteLogin { facts, username })
+            })
+            .collect()
+    }
+
+    /// Keep `item` tagged with `tags`, which name the app that keeps it for itself and what for,
+    /// answering what is safe to say of it. Where `replacing` names a login the vault keeps,
+    /// `item` takes its place under the same id: its name and secret change, it belongs to
+    /// `item`'s places as well as its own, and it keeps its title, tags and uses. Any other
+    /// `replacing` is refused, so nothing kept elsewhere is overwritten by mistake.
+    pub fn keep_tagged(
+        &mut self,
+        tags: &[String],
+        replacing: Option<&ItemId>,
+        mut item: NewItem,
+    ) -> Result<ItemFacts, ItemError> {
+        let before = match replacing {
+            Some(id) => {
+                let before = self.sealed(id)?;
+                if before.kind != item.kind {
+                    return Err(ItemError::WrongKind);
+                }
+                item.places.extend(before.places.iter().cloned());
+                Some((id.clone(), before))
+            }
+            None => None,
+        };
+        let mut sealed = Sealed::checked(item)?;
+        let id = match before {
+            Some((id, before)) => {
+                sealed.added_unix = before.added_unix;
+                sealed.last_used_unix = before.last_used_unix;
+                sealed.uses.clone_from(&before.uses);
+                sealed.sent_in.clone_from(&before.sent_in);
+                sealed.account.clone_from(&before.account);
+                id
+            }
+            None => ItemId::new(),
+        };
+        self.write(&id, &sealed);
+        if let Some((entry, _)) = self.entries.get_mut(&id) {
+            entry.tags.extend(tags.iter().cloned());
+            let tagged = entry.clone();
+            if let Some(VaultChange::Keep(kept)) = self.changes.last_mut() {
+                *kept = tagged;
+            }
+        }
+        Ok(self.written(&id, &sealed))
     }
 
     /// [`Self::add`] for a key that says where it rides in a request to its
@@ -1338,6 +1417,78 @@ mod tests {
             code: CodeParams::default(),
             secret: Zeroizing::new(PASSWORD.into()),
         }
+    }
+
+    /// A login an app keeps for itself carries the tags that name the app and what it is for,
+    /// and a page at its site is offered it with its name and never its secret; replacing it
+    /// changes the secret under the same id, keeps its tags, and adds the new site to its own.
+    #[test]
+    fn an_apps_login_is_tagged_and_offered_at_its_site() {
+        let tags = [
+            "app:so.tilo.browser".to_owned(),
+            "purpose:sign-in".to_owned(),
+        ];
+        let mut items = VaultItems::default();
+        let kept = items
+            .keep_tagged(&tags, None, login(&["https://shop.example"]))
+            .unwrap();
+        assert_eq!(kept.tags, tags);
+        assert_eq!(kept.title, "shop.example");
+        let theirs = items.add(login(&["https://mail.example"])).unwrap();
+        assert!(theirs.tags.is_empty());
+        let at_shop = items.logins_at(&place("https://shop.example/login"));
+        assert_eq!(
+            at_shop.iter().map(|l| &l.facts.id).collect::<Vec<_>>(),
+            [&kept.id]
+        );
+        assert_eq!(at_shop[0].facts.tags, tags, "a listing names its tags");
+        assert_eq!(at_shop[0].username, "ada@example.test");
+        assert!(!format!("{at_shop:?}").contains("ada@"));
+        assert!(
+            items
+                .logins_at(&place("https://elsewhere.example"))
+                .is_empty()
+        );
+        let written = items.take_changes();
+        assert!(
+            written.iter().any(|change| matches!(
+                change,
+                VaultChange::Keep(entry) if entry.id.0 == kept.id.as_str() && entry.tags.len() == 2
+            )),
+            "the entry is written with its tags"
+        );
+
+        let mut again = login(&["https://www.shop.example"]);
+        again.username = "ada2@example.test".into();
+        again.secret = Zeroizing::new("a newer one".into());
+        let replaced = items.keep_tagged(&[], Some(&kept.id), again).unwrap();
+        assert_eq!(replaced.id, kept.id);
+        assert_eq!(replaced.tags, tags);
+        assert_eq!(
+            items.logins_at(&place("https://www.shop.example"))[0].username,
+            "ada2@example.test"
+        );
+        assert_eq!(
+            replaced.places,
+            [
+                place("https://shop.example"),
+                place("https://www.shop.example")
+            ]
+        );
+        let released = items
+            .use_as_kept(
+                &kept.id,
+                &[place("https://www.shop.example")],
+                "",
+                UsedFor::default(),
+            )
+            .unwrap();
+        assert_eq!(released.secret.as_str(), "a newer one");
+        let none = ItemId::parse("0123456789abcdef0123456789abcdef").unwrap();
+        assert!(matches!(
+            items.keep_tagged(&tags, Some(&none), login(&["https://a.example"])),
+            Err(ItemError::NotFound)
+        ));
     }
 
     /// A place has one spelling, whatever was typed: a page's address names
