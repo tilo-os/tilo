@@ -109,15 +109,18 @@ impl Service for Served {
 mod tests {
     use super::*;
     use crate::platform::fabric::{
-        AudioEndpoint, AudioEndpointKind, DeviceAbout, DeviceId, DeviceKind, EndpointSelector,
-        FabricCapabilities, FabricLink, PersonDevice, PersonDevices, PersonalFabricAction,
-        PersonalFabricSendError, SpeakerFabricState,
+        DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
+        PersonalFabricAction,
     };
+    use crate::platform::fabric::{FabricLink, PersonalFabricSendError};
+    use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
+    use tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint;
 
     /// This laptop's devices, with the one output it publishes.
     struct Fabric {
         local: DeviceId,
         converged: PersonDevices,
+        record: Devices,
     }
 
     impl Fabric {
@@ -137,23 +140,53 @@ mod tests {
             );
             device.online = true;
             device.last_seen_unix_ms = 1;
-            device.speakers = SpeakerFabricState {
-                endpoints: vec![AudioEndpoint {
-                    selector: EndpointSelector::mint(&local, "alsa_output.analog-stereo"),
-                    kind: AudioEndpointKind::Output,
-                    label: "Speakers".into(),
-                    is_default: true,
-                }],
-                ..SpeakerFabricState::default()
-            };
             let converged = PersonDevices::new([device]);
-            Self { local, converged }
+            let record = record_of(&local);
+            Self {
+                local,
+                converged,
+                record,
+            }
         }
+    }
+
+    /// The person's devices record with this device's one output.
+    fn record_of(local: &DeviceId) -> Devices {
+        use tilo_resource::Replica;
+        let mut record = Replica::<Devices>::new();
+        record
+            .apply(Devices::KEEP_DEVICE.with((local.as_str().to_owned(), "00".to_owned())))
+            .expect("the device is kept");
+        let endpoints = vec![SpeakerEndpoint {
+            selector: crate::platform::fabric::EndpointSelector::mint(
+                local,
+                "alsa_output.analog-stereo",
+            )
+            .to_hex(),
+            microphone: false,
+            label: "Speakers".into(),
+            is_default: true,
+        }];
+        record
+            .apply(Devices::SAY_SPEAKER_ENDPOINTS.with((
+                local.as_str().to_owned(),
+                hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
+            )))
+            .expect("the device offers its output");
+        record.state().expect("the record reads")
     }
 
     impl FabricLink for Fabric {
         fn devices(&self) -> PersonDevices {
             self.converged.clone()
+        }
+
+        fn person_devices(&self) -> Option<Devices> {
+            Some(self.record.clone())
+        }
+
+        fn apply_person_devices(&self, _: tilo_resource::Invoke<Devices>) -> Result<(), String> {
+            Ok(())
         }
 
         fn online_device_ids(&self) -> std::collections::BTreeSet<DeviceId> {
