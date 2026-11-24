@@ -221,6 +221,23 @@ impl Admission {
         self.recorded_person(uid).is_some()
     }
 
+    /// The account signed in as `person`, when one is: whose root this computer keeps for them.
+    #[must_use]
+    pub fn signed_in_account_for(&self, person: [u8; 32]) -> Option<u32> {
+        // The accounts are read out before the seats, as every other path takes them in that
+        // order, so the two never wait on each other.
+        let held: Vec<(u32, [u8; 32])> = self
+            .accounts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(uid, held)| (*uid, held.person))
+            .collect();
+        held.into_iter()
+            .find(|(uid, held)| *held == person && self.signed_in_now(*uid))
+            .map(|(uid, _)| uid)
+    }
+
     /// The account the device itself was set up from, whose person its own services serve.
     #[must_use]
     pub fn device_person_uid(&self) -> Option<u32> {

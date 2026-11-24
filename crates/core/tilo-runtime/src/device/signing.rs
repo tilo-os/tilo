@@ -25,23 +25,44 @@ use super::workspaces::{ServiceWorkspaces, block_on_owned};
 const AGENT_GRANT_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
 const AGENT_GRANT_RENEW_WITHIN_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
 
+/// A person whose root this computer keeps, and the identity it signs for: the one root a
+/// caller's person is, never another account's.
+pub(crate) struct Rooted {
+    pub person: [u8; 32],
+    pub identity: String,
+    pub root: tilo_identity::store::SigningIdentity,
+}
+
+impl Rooted {
+    /// The person whose root the record at `record` is, with the identity it signs for.
+    ///
+    /// # Errors
+    /// The root cannot be read, or its record is in no registry.
+    pub(crate) fn at(record: &std::path::Path) -> io::Result<Self> {
+        let dir = record
+            .parent()
+            .ok_or_else(|| io::Error::other("the root's record has no directory"))?;
+        let root = tilo_identity::store::load_from_path(record.to_path_buf())
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let person = root.group_public_key();
+        let identity = tilo_identity::store::IdentityRegistryStore::at(dir)
+            .load_reconciled()?
+            .identities
+            .into_values()
+            .find(|profile| profile.record_path == record)
+            .map(|profile| profile.id)
+            .ok_or_else(|| io::Error::other("the root's record is in no registry"))?;
+        Ok(Self {
+            person,
+            identity,
+            root,
+        })
+    }
+}
+
 /// The person's root as this daemon keeps it, and the identity it signs for.
-fn person() -> io::Result<([u8; 32], String, tilo_identity::store::SigningIdentity)> {
-    let record = device_root_record()?;
-    let dir = record
-        .parent()
-        .ok_or_else(|| io::Error::other("the root's record has no directory"))?;
-    let root = tilo_identity::store::load_from_path(record.clone())
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let person = root.group_public_key();
-    let id = tilo_identity::store::IdentityRegistryStore::at(dir)
-        .load_reconciled()?
-        .identities
-        .into_values()
-        .find(|profile| profile.record_path == record)
-        .map(|profile| profile.id)
-        .ok_or_else(|| io::Error::other("the root's record is in no registry"))?;
-    Ok((person, id, root))
+fn person() -> io::Result<Rooted> {
+    Rooted::at(&device_root_record()?)
 }
 
 /// The certificate the person's root signs for a browser or agent `tab` a sign-in ticket waits
@@ -50,11 +71,11 @@ fn person() -> io::Result<([u8; 32], String, tilo_identity::store::SigningIdenti
 /// # Errors
 /// This daemon keeps no root, or the tab is not one a certificate is signed for.
 pub(crate) fn sign_tab(tab: &tilo_device_identity::login::Tab) -> io::Result<DeviceCert> {
-    let (person, _identity, root) = person()?;
+    let rooted = person()?;
     let mut cert = tab
-        .certificate(person, tilo_clock::unix_now_ns())
+        .certificate(rooted.person, tilo_clock::unix_now_ns())
         .map_err(|error| io::Error::other(format!("the tab's certificate: {error}")))?;
-    tilo_user_identity::sign_device_cert(&mut cert, &root)
+    tilo_user_identity::sign_device_cert(&mut cert, &rooted.root)
         .map_err(|error| io::Error::other(format!("signing the tab's certificate: {error}")))?;
     Ok(cert)
 }
@@ -77,8 +98,13 @@ pub(crate) async fn certify_agent_in(
     copies: &Workspaces,
     grant: [u8; 32],
     ask: Option<(WorkspaceId, String, String)>,
+    rooted: Rooted,
 ) -> io::Result<AgentCertified> {
-    let (person, identity, root) = person()?;
+    let Rooted {
+        person,
+        identity,
+        root,
+    } = rooted;
     let devices = person_workspace::devices::of(copies, &person).await;
     let listed = devices.listed(&person);
     if listed
@@ -154,6 +180,7 @@ pub(crate) async fn certify_agent_in(
 pub fn certify_agent(
     workspaces: Option<&Arc<ServiceWorkspaces>>,
     args: &Value,
+    rooted: Rooted,
 ) -> io::Result<Value> {
     let grant = args
         .get("grant")
@@ -179,7 +206,8 @@ pub fn certify_agent(
     let workspaces =
         workspaces.ok_or_else(|| io::Error::other("this daemon holds no workspaces"))?;
     let copies = workspaces.copies().clone();
-    let certified = block_on_owned(async move { certify_agent_in(&copies, grant, ask).await })?;
+    let certified =
+        block_on_owned(async move { certify_agent_in(&copies, grant, ask, rooted).await })?;
     if certified.revoked {
         return Ok(json!({ "revoked": true }));
     }
@@ -202,11 +230,12 @@ pub fn certify_agent(
 ///
 /// # Errors
 /// This daemon keeps no root, the request does not read, or it could not sign.
-pub fn enrol_boot_key(
+pub fn certify_boot_key(
     workspaces: Option<&Arc<ServiceWorkspaces>>,
     args: &Value,
+    rooted: Rooted,
 ) -> io::Result<Value> {
-    let (person, _identity, _root) = person()?;
+    let person = rooted.person;
     let request: EnrolRequest = args
         .get("request")
         .and_then(Value::as_str)
@@ -308,7 +337,7 @@ pub fn enrol_boot_key(
 ///
 /// # Errors
 /// This daemon keeps no root, or the half is not one it sealed.
-pub fn release_half(args: &Value) -> io::Result<Value> {
+pub fn release_half(args: &Value, rooted: Rooted) -> io::Result<Value> {
     let entry = |field: &str| -> io::Result<&str> {
         args.get(field)
             .and_then(Value::as_str)
@@ -328,9 +357,8 @@ pub fn release_half(args: &Value) -> io::Result<Value> {
         .ok()
         .and_then(|ephemeral| ephemeral.try_into().ok())
         .ok_or_else(|| io::Error::other("the boot's ephemeral key is 32 bytes in hex"))?;
-    let root = tilo_identity::store::load_from_path(device_root_record()?)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let secret_sync = root
+    let secret_sync = rooted
+        .root
         .secret_sync_key()
         .map_err(|error| io::Error::other(error.to_string()))?;
     let half: Half = open_sibling_half(&secret_sync, &cert, &sealed)
@@ -350,6 +378,7 @@ pub fn release_half(args: &Value) -> io::Result<Value> {
 pub fn answer_sign_in(
     keys: &tilo_device_identity::IdentityPaths,
     args: &Value,
+    rooted: Rooted,
 ) -> io::Result<Value> {
     use tilo_server_client::certification::{GrantAsk, SignInAsk, answer_sign_in};
     let text = |field: &str| -> io::Result<String> {
@@ -395,8 +424,7 @@ pub fn answer_sign_in(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let root = tilo_identity::store::load_from_path(device_root_record()?)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let root = rooted.root;
     let device = tilo_device_identity::persist::load_device_key(keys)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let cert = tilo_device_identity::persist::read_device_cert(&keys.device_cert)
@@ -448,10 +476,16 @@ impl tilo_workspace_service::agents::agent_keys::AgentGrants for GrantsOf {
             .workspaces
             .upgrade()
             .ok_or("this computer's daemon holds no workspaces")?;
+        // The person the workspace asks for is the one whose root signs, where this computer
+        // keeps it: no other account's root signs an agent's key.
+        let rooted = Rooted::at(
+            &super::services::root_record_for_person(person).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
         let copies = workspaces.copies().clone();
         let (agent, name) = (agent.to_owned(), name.to_owned());
         let certified = block_on_owned(async move {
-            certify_agent_in(&copies, grant, Some((workspace, agent, name))).await
+            certify_agent_in(&copies, grant, Some((workspace, agent, name)), rooted).await
         })
         .map_err(|error| error.to_string())?;
         if certified.revoked {

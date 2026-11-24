@@ -317,6 +317,66 @@ pub fn holds_a_root(uid: u32) -> bool {
     root_record(uid).is_ok()
 }
 
+/// The record of the root this computer keeps for `person`, when their account is signed in
+/// here: what signs a call only their root signs, and never another account's.
+///
+/// # Errors
+/// This computer keeps no root for the person, or their account is not signed in.
+pub(crate) fn root_record_for_person(person: [u8; 32]) -> io::Result<std::path::PathBuf> {
+    // A daemon serving every account of the computer opens a root only while its account is
+    // signed in; a person's own service, which is no account's but its owner's, opens its own.
+    if let Some(admission) = tilo_api::daemon::admission::installed() {
+        let uid = admission.signed_in_account_for(person).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "this person's account is not signed in on this computer",
+            )
+        })?;
+        return root_record(uid);
+    }
+    if device_person() == Some(person) {
+        return device_root_record();
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "this computer keeps no root of this person's",
+    ))
+}
+
+/// The root this computer keeps for `person`, when their account is signed in here.
+///
+/// # Errors
+/// The identity store does not hand it over.
+pub(crate) fn root_for_person(
+    person: [u8; 32],
+) -> anyhow::Result<Option<tilo_identity::store::SigningIdentity>> {
+    match root_record_for_person(person) {
+        Ok(record) => Ok(Some(tilo_identity::store::load_from_path(record)?)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Whether this computer keeps `person`'s root while their account is signed in here.
+#[must_use]
+pub(crate) fn holds_root_for_person(person: [u8; 32]) -> bool {
+    root_record_for_person(person).is_ok()
+}
+
+/// The person this device's one identity store is: who a personal computer serves.
+pub(crate) fn device_person() -> Option<[u8; 32]> {
+    if let Some(admission) = tilo_api::daemon::admission::installed()
+        && let Some(uid) = admission.device_person_uid()
+        && let Some(held) = admission.recorded_person(uid)
+    {
+        return Some(held.person);
+    }
+    let dir = tilo_identity::store::identity_dir_from_env().ok()?;
+    let record = tilo_identity::store::held_root(&dir)?;
+    tilo_identity::store::load_metadata_from_path(&record)
+        .ok()
+        .map(|metadata| metadata.group_public_key)
+}
+
 /// Restore this computer's person from what `args` hold: their recovery words (`words`), or a
 /// backup Tilo wrote (`backup`, its bytes in hex) and the passphrase it was sealed with
 /// (`passphrase`). Their root is kept here, as a founded person's is, and certifies this device's
@@ -467,7 +527,15 @@ pub fn identity_step(action: &str, args: &Value) -> io::Result<Value> {
 /// # Errors
 /// It keeps none, or the secret store does not hand it over.
 pub fn recovery_words() -> io::Result<String> {
-    Ok(tilo_identity::store::recovery_words(device_root_record()?)?
+    recovery_words_in(&device_root_record()?)
+}
+
+/// The 24 recovery words of the root at `record`.
+///
+/// # Errors
+/// It is not a root, or the secret store does not hand it over.
+pub fn recovery_words_in(record: &std::path::Path) -> io::Result<String> {
+    Ok(tilo_identity::store::recovery_words(record)?
         .as_str()
         .to_owned())
 }
@@ -477,14 +545,21 @@ pub fn recovery_words() -> io::Result<String> {
 /// # Errors
 /// It keeps none, or the backup cannot be written.
 pub fn backup(passphrase: &str) -> io::Result<Vec<u8>> {
-    let record = device_root_record()?;
+    backup_in(&device_root_record()?, passphrase)
+}
+
+/// A backup of the root at `record`, sealed with `passphrase`: its bytes.
+///
+/// # Errors
+/// The backup cannot be written.
+pub fn backup_in(record: &std::path::Path, passphrase: &str) -> io::Result<Vec<u8>> {
     let dir = record
         .parent()
         .ok_or_else(|| io::Error::other("the root's record has no directory"))?;
     let file = passing_through(dir, "backup");
     drop(std::fs::remove_file(&file));
     let written =
-        tilo_identity::store::export_portable_backup(&record, &file, passphrase.as_bytes())
+        tilo_identity::store::export_portable_backup(record, &file, passphrase.as_bytes())
             .and_then(|_| std::fs::read(&file));
     drop(std::fs::remove_file(&file));
     written
@@ -3171,21 +3246,26 @@ pub(crate) fn device_action(
     if !Tickets::root_only(&request) {
         return run_device_action(invocations, tickets, caller, request, workspace);
     }
+    // What only the calling person's root signs runs here when this computer keeps their root
+    // and they are signed in; otherwise it waits in its record for a device of theirs that does.
+    let person = caller
+        .acting()
+        .person_id()
+        .and_then(|person| hex::decode(person).ok())
+        .and_then(|person| <[u8; 32]>::try_from(person).ok());
+    if caller.is_system() || person.is_some_and(holds_root_for_person) {
+        return run_device_action(invocations, tickets, caller, request, workspace);
+    }
     let (done, answer) = tilo_actions::remote::pending();
-    let (invocations, asked, ran) = (Arc::clone(invocations), asked.cloned(), tickets.clone());
-    let (caller, workspace) = (caller.clone(), workspace.to_owned());
+    let (asked, caller, workspace) = (asked.cloned(), caller.clone(), workspace.to_owned());
     let invocation = request.invocation;
-    tickets.root_only_call(workspace.clone(), invocation, move |marked, kept| {
-        let answered = if marked {
-            run_device_action(&invocations, &ran, &caller, request, &workspace)
-        } else {
-            Pending::ready(hand_on_to_root(
-                asked.as_deref(),
-                &caller,
-                &request,
-                (workspace, kept),
-            ))
-        };
+    tickets.root_only_call(workspace.clone(), invocation, move |_marked, kept| {
+        let answered = Pending::ready(hand_on_to_root(
+            asked.as_deref(),
+            &caller,
+            &request,
+            (workspace, kept),
+        ));
         answered.then(move |answered| {
             done.complete(answered.unwrap_or(Err(ActionCallError::Unavailable {
                 reason: "the device action ended unanswered".into(),

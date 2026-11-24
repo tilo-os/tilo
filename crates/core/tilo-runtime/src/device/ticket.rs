@@ -665,19 +665,27 @@ pub(crate) fn descriptor(
 /// the person once, and kept nowhere here.
 const SECRET_ANSWERS: [&str; 3] = [RECOVERY_WORDS, BACKUP, RELEASE_HALF];
 
-/// The device actions only the person's root this computer keeps signs: no other account's call
-/// reaches that root.
-const ROOT_SIGNED: [&str; 9] = [
+/// The device actions the root of the account calling them signs: each account's root signs its
+/// own calls and no other's.
+const ROOT_PERSON_SIGNED: [&str; 5] = [
     RECOVERY_WORDS,
     BACKUP,
     CERTIFY_AGENT,
     RELEASE_HALF,
     ANSWER_SIGN_IN,
-    ISSUE,
-    APPROVE,
-    RENAME,
-    REVOKE,
 ];
+
+/// The device actions only the root of the person this computer was set up from signs: the
+/// tickets it issues, the computers it approves, and the devices it names or revokes.
+const ROOT_DEVICE_SIGNED: [&str; 4] = [ISSUE, APPROVE, RENAME, REVOKE];
+
+/// The person `caller` acts as, when it is a person: their root key.
+fn caller_person(caller: &tilo_actions::remote::Caller) -> Option<[u8; 32]> {
+    hex::decode(caller.acting().person_id()?)
+        .ok()?
+        .try_into()
+        .ok()
+}
 
 /// The device actions as the device's one dispatch runs them: it admitted the caller, recorded the
 /// invocation, and follows it here.
@@ -934,19 +942,35 @@ impl Tickets {
         self.0.logged_in.subscribe()
     }
 
-    /// Whether `caller` is the person whose root this computer keeps: what only their root signs
+    /// Whether `caller` is the person this computer was set up from: what only their root signs
     /// is answered for them alone.
-    fn the_root_holders(&self, caller: &tilo_actions::remote::Caller) -> bool {
+    fn the_device_person(&self, caller: &tilo_actions::remote::Caller) -> bool {
         if caller.is_system() {
             return true;
         }
-        let Some(person) = caller.acting().person_id() else {
+        let Some(person) = caller_person(caller) else {
             return false;
         };
-        match super::services::root() {
-            Ok(Some(root)) => hex::encode(root.group_public_key()) == person,
-            _ => false,
+        super::services::device_person() == Some(person)
+    }
+
+    /// The record of the root the calling account's person keeps here, with the identity it
+    /// signs for: root-only calls are signed with it and no other account's.
+    fn rooted_for(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Result<(std::path::PathBuf, super::signing::Rooted), String> {
+        let record = if caller.is_system() {
+            super::services::device_root_record()
+        } else {
+            let person = caller_person(caller).ok_or_else(|| {
+                "only a person's root signs this, and this caller acts for nobody".to_owned()
+            })?;
+            super::services::root_record_for_person(person)
         }
+        .map_err(|error| error.to_string())?;
+        let rooted = super::signing::Rooted::at(&record).map_err(|error| error.to_string())?;
+        Ok((record, rooted))
     }
 
     /// Where this device enters its person's workspaces, once it knows.
@@ -1029,13 +1053,23 @@ impl Tickets {
         };
         let args = Value::Object(argument.clone());
         let action = request.target.address.action.clone();
-        // What only this computer's person's root signs is never answered for another account's
-        // call: each account's root stays theirs.
-        if ROOT_SIGNED.contains(&action.as_str()) && !self.the_root_holders(caller) {
+        // What only the root of the person this computer was set up from signs is never answered
+        // for another account's call: each account's root stays theirs.
+        if ROOT_DEVICE_SIGNED.contains(&action.as_str()) && !self.the_device_person(caller) {
             return Pending::ready(Err(refused(
                 "only the person whose root this computer keeps signs this",
             )));
         }
+        // What the calling account's own root signs is answered with that root, and with no
+        // other: an account whose root this computer keeps not signs nothing here.
+        let rooted = if ROOT_PERSON_SIGNED.contains(&action.as_str()) {
+            match self.rooted_for(caller) {
+                Ok(rooted) => Some(rooted),
+                Err(reason) => return Pending::ready(Err(refused(reason))),
+            }
+        } else {
+            None
+        };
         let wait = args.get("wait").and_then(Value::as_bool) == Some(true);
         // A ticket names where the new computer dials this one: made before this device's
         // endpoint reached one of its relays, it would name only the network this device stands
@@ -1048,22 +1082,46 @@ impl Tickets {
         if !waiting {
             let answer = match action.as_str() {
                 INFO => Ok(device_info(&self.0.place, &self.0.key)),
-                RECOVERY_WORDS => super::services::recovery_words()
-                    .map(|words| json!({ "words": words }))
-                    .map_err(Into::into),
-                BACKUP => super::services::backup(
-                    args.get("passphrase")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default(),
-                )
-                .map(|backup| json!({ "backup": hex::encode(backup) }))
-                .map_err(Into::into),
-                CERTIFY_AGENT => self.certify_agent(&args),
-                ENROL_BOOT_KEY => super::signing::enrol_boot_key(self.0.workspaces.as_ref(), &args)
-                    .map_err(Into::into),
-                RELEASE_HALF => super::signing::release_half(&args).map_err(Into::into),
+                RECOVERY_WORDS => {
+                    let (record, _) = rooted.expect("the caller's root is read for its words");
+                    super::services::recovery_words_in(&record)
+                        .map(|words| json!({ "words": words }))
+                        .map_err(Into::into)
+                }
+                BACKUP => {
+                    let (record, _) = rooted.expect("the caller's root is read for its backup");
+                    super::services::backup_in(
+                        &record,
+                        args.get("passphrase")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    )
+                    .map(|backup| json!({ "backup": hex::encode(backup) }))
+                    .map_err(Into::into)
+                }
+                CERTIFY_AGENT => {
+                    let (_, root) = rooted.expect("the caller's root certifies its agent");
+                    self.certify_agent(&args, root)
+                }
+                ENROL_BOOT_KEY => {
+                    let (_, root) = match rooted {
+                        Some(rooted) => rooted,
+                        None => match self.rooted_for(caller) {
+                            Ok(rooted) => rooted,
+                            Err(reason) => return Pending::ready(Err(refused(reason))),
+                        },
+                    };
+                    super::signing::certify_boot_key(self.0.workspaces.as_ref(), &args, root)
+                        .map_err(Into::into)
+                }
+                RELEASE_HALF => {
+                    let (_, root) = rooted.expect("the caller's root releases a half");
+                    super::signing::release_half(&args, root).map_err(Into::into)
+                }
                 ANSWER_SIGN_IN => {
-                    super::signing::answer_sign_in(self.0.place.keys(), &args).map_err(Into::into)
+                    let (_, root) = rooted.expect("the caller's root answers a sign-in");
+                    super::signing::answer_sign_in(self.0.place.keys(), &args, root)
+                        .map_err(Into::into)
                 }
                 _ => super::services::identity_step(&action, &args).map_err(Into::into),
             };

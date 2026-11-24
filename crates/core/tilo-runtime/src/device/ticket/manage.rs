@@ -78,8 +78,12 @@ impl Tickets {
         });
     }
 
-    /// Certify the agent's grant `args` names with the root kept here.
-    pub(super) fn certify_agent(&self, args: &Value) -> Result<Value> {
+    /// Certify the agent's grant `args` names with the caller's root kept here.
+    pub(super) fn certify_agent(
+        &self,
+        args: &Value,
+        root: super::super::signing::Rooted,
+    ) -> Result<Value> {
         let grant = args
             .get("grant")
             .and_then(Value::as_str)
@@ -93,6 +97,7 @@ impl Tickets {
         Ok(super::super::signing::certify_agent(
             self.0.workspaces.as_ref(),
             &args,
+            root,
         )?)
     }
 
