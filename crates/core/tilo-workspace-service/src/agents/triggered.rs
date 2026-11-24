@@ -2,11 +2,11 @@
 //! shortcut uses, and the one action they invoke, the agent's `answer`.
 //!
 //! A new agent comes with the triggers a member would expect ([`triggers`]): a message that
-//! mentions it, a message in its direct conversation and a task assigned to it. They are one
-//! shortcut, saved by the person who made the agent, named after the agent, and its person
-//! changes or removes them like any shortcut's. None of them fires on the agent's own work or a
-//! copy of it carried back from elsewhere: each leaves out a change the agent made (`by`) and
-//! one that copies the agent's change (`origin`).
+//! mentions it, a message in its direct conversation, a task assigned to it, and a message that
+//! arrived in the workspace's mailbox. They are one shortcut, saved by the person who made the
+//! agent, named after the agent, and its person changes or removes them like any shortcut's.
+//! None of them fires on the agent's own work or a copy of it carried back from elsewhere: each
+//! leaves out a change the agent made (`by`) and one that copies the agent's change (`origin`).
 //!
 //! The shortcut's one step invokes `agents.agent:<id>#answer` with the change that fired it
 //! ([`ANSWER`], [`Answers`]). The agent engine takes the turn from that change alone: who asked
@@ -65,6 +65,10 @@ pub const MESSAGE: &str = "tl.so.tilo.chat.Message";
 pub const TASKS: &str = "so.tilo.tasks";
 /// The kind of a task of [`TASKS`].
 pub const TASK: &str = "tl.so.tilo.tasks.Task";
+/// tilolang Mail, whose received messages an agent answers.
+pub const MAIL: &str = "so.tilo.mail";
+/// The kind of a message of [`MAIL`].
+pub const MAIL_MESSAGE: &str = "tl.so.tilo.mail.Message";
 /// The workspace's moderation record, whose reports an agent watching chat also sees.
 pub const MODERATION: &str = "tilo.moderation";
 /// The verbs that file a report on it.
@@ -134,8 +138,9 @@ pub fn names(member: &tilo_action_policy::MemberId) -> String {
 
 /// The triggers a new agent comes with, as one shortcut named after it whose one step starts
 /// the agent's turn on the change that fired it: a message that mentions it, a message in its
-/// direct conversation, and a task assigned to it. Each leaves out the agent's own changes and
-/// a copy of one carried back from elsewhere, so its answer never starts it again.
+/// direct conversation, a task assigned to it, and a message that arrived in the workspace's
+/// mailbox. Each leaves out the agent's own changes and a copy of one carried back from
+/// elsewhere, so its answer never starts it again.
 #[must_use]
 pub fn triggers(agent: &str, name: &str) -> Shortcut {
     answering(
@@ -162,6 +167,18 @@ pub fn triggers(agent: &str, name: &str) -> Shortcut {
             ),
             // A task given to it.
             watch(agent, TASK, "item.assignee", Test::Has(json!(named(agent)))),
+            // A message that arrived in the workspace's mailbox: written by Mail's outside
+            // origin, not by anyone here, and not the account's own copy of what it sent, which
+            // an answer of the agent's comes back as once the server keeps it.
+            watching(
+                agent,
+                MAIL_MESSAGE,
+                Vec::new(),
+                vec![
+                    ("incoming_message", Test::Is(json!(true))),
+                    ("item.mailbox", Test::IsNot(json!("sent"))),
+                ],
+            ),
         ],
     )
 }
@@ -319,14 +336,15 @@ pub struct Where {
 }
 
 impl Where {
-    /// The cause of `event`: a message of Chat, a task of Tasks, or a report on the workspace's
-    /// moderation record. `None` for a change of anything else, which no agent's trigger
-    /// answers.
+    /// The cause of `event`: a message of Chat, a task of Tasks, a message of Mail, or a report
+    /// on the workspace's moderation record. `None` for a change of anything else, which no
+    /// agent's trigger answers.
     #[must_use]
     pub fn of(event: &DocumentEvent) -> Option<Self> {
         let app = match event.kind.as_str() {
             MESSAGE => CHAT,
             TASK => TASKS,
+            MAIL_MESSAGE => MAIL,
             MODERATION => MODERATION,
             _ => return None,
         };
@@ -400,7 +418,7 @@ pub fn published(app: &str, id: &str) -> String {
 }
 
 /// Write `words`, a turn's answer, where `place` asked for it, as `caller`: a reply to the
-/// message in its conversation, or a comment on the task.
+/// message in its conversation, an answer to the conversation in Mail, or a comment on the task.
 ///
 /// # Errors
 /// The app refused the write.
@@ -426,6 +444,10 @@ pub(super) async fn write_answer(
         arguments.insert("body".into(), json!(words));
         arguments.insert("reply_to".into(), json!(published(CHAT, &place.item)));
         (CHAT, published(CHAT, &place.record), "send")
+    } else if place.app == MAIL {
+        // Mail answers the conversation, to whoever wrote its newest message, as a reply.
+        arguments.insert("body".into(), json!(words));
+        (MAIL, published(MAIL, &place.record), "answer")
     } else {
         arguments.insert("text".into(), json!(words));
         arguments.insert(

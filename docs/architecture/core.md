@@ -223,9 +223,10 @@ direct message, a task assigned to it, a change to some resource, a time, or
 the weather in Bangalore. A watched event says what happened to the resource,
 created, edited or removed, read by the store from the recorded change beside
 its id; no app works it out for itself. A new agent comes with the triggers a member would
-expect (mentions, direct messages, assigned tasks), and its person changes them
-like any automation's. A trigger starts a turn, and the agent answers where it
-was triggered: in the chat, on the task, in the note. There is no separate
+expect (mentions, direct messages, assigned tasks, mail that arrives in the workspace's
+mailbox), and its person changes them like any automation's. A trigger starts a turn, and the
+agent answers where it was triggered: in the chat, on the task, in the note, or in the mail
+conversation the message arrived in. There is no separate
 record of asking. A turn is an invocation of the agent's answer action, so its
 state, steps and output are that invocation record's, and its cause is the
 address of the change that triggered it. Its triggers are an ordinary shortcut

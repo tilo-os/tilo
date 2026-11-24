@@ -531,7 +531,8 @@ pub type Model = Arc<dyn Fn() -> Option<Box<dyn PlanTurns>> + Send + Sync>;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ask {
     /// A change one of the agent's triggers fired on ([`triggered`]): the answer is written
-    /// where the change was made, a reply in its conversation or a comment on its task.
+    /// where the change was made, a reply in its conversation, an answer to the mail
+    /// conversation it arrived in, or a comment on its task.
     Triggered(triggered::Where),
 }
 
