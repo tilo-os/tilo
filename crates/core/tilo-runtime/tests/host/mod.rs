@@ -516,7 +516,8 @@ impl Host {
     /// The workspace's owner removes the person `user` from `workspace`, and every device of
     /// theirs with them.
     pub async fn remove_person(&self, workspace: &str, user: [u8; 32]) {
-        let workspaces = self.daemon().workspaces();
+        let daemon = self.daemon();
+        let workspaces = daemon.workspaces();
         workspaces
             .remove_member(
                 workspace,
