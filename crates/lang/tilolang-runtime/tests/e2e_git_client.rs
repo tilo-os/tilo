@@ -214,17 +214,17 @@ mod cases {
             .to_string()
         }
 
-        fn changed(&self, run: impl FnOnce(&mut Repo) -> &'static str) -> Result<String, String> {
+        fn changed(&self, run: impl FnOnce(&mut Repo) -> &'static str) -> String {
             {
                 let mut repo = self.repo.borrow_mut();
                 let answer = run(&mut repo);
                 repo.answer = answer;
             }
-            Ok(self.loaded())
+            self.loaded()
         }
 
         /// The files of the newest commit, each as the app shows it.
-        fn commit_detail(&self) -> Result<String, String> {
+        fn commit_detail(&self) -> String {
             let repo = self.repo.borrow();
             let files: Vec<String> = repo
                 .files
@@ -245,11 +245,11 @@ mod cases {
                     .to_string()
                 })
                 .collect();
-            Ok(serde_json::to_string(&files).unwrap())
+            serde_json::to_string(&files).unwrap()
         }
 
         /// The files of the staged change, each as the app lists it.
-        fn commit_files(&self) -> Result<String, String> {
+        fn commit_files(&self) -> String {
             let repo = self.repo.borrow();
             let files: Vec<String> = repo
                 .files
@@ -266,14 +266,14 @@ mod cases {
                     .to_string()
                 })
                 .collect();
-            Ok(serde_json::to_string(&files).unwrap())
+            serde_json::to_string(&files).unwrap()
         }
 
         /// The difference the newest commit made to the file `input` names.
-        fn commit_diff(&self, input: &str) -> Result<String, String> {
+        fn commit_diff(&self, input: &str) -> String {
             let mut repo = self.repo.borrow_mut();
             repo.diff_reads = repo.diff_reads.saturating_add(1);
-            Ok(serde_json::json!({
+            serde_json::json!({
                 "path": field(input, "file"),
                 "old_path": null,
                 "kind": "modified",
@@ -285,7 +285,7 @@ mod cases {
                 "left": "   1  fn beds() {}\n   2  -one\n",
                 "right": "   1  fn beds() {}\n   2  +two\n",
             })
-            .to_string())
+            .to_string()
         }
     }
 
@@ -304,7 +304,7 @@ mod cases {
                 .push((op.to_owned(), input.to_owned()));
             match op {
                 "load" => Ok(self.loaded()),
-                "stage_file" | "unstage_file" => self.changed(|repo| {
+                "stage_file" | "unstage_file" => Ok(self.changed(|repo| {
                     let file = field(input, "file");
                     let area = if op == "stage_file" {
                         "staged"
@@ -320,8 +320,8 @@ mod cases {
                         }
                     }
                     ""
-                }),
-                "stage_all" | "unstage_all" => self.changed(|repo| {
+                })),
+                "stage_all" | "unstage_all" => Ok(self.changed(|repo| {
                     let area = if op == "stage_all" {
                         "staged"
                     } else {
@@ -331,29 +331,29 @@ mod cases {
                         change.area = area;
                     }
                     ""
-                }),
+                })),
                 "apply_hunk" | "discard_hunk" | "stash_apply" | "fetch" | "pull" | "push" => {
-                    self.changed(|_| "")
+                    Ok(self.changed(|_| ""))
                 }
-                "discard_file" => self.changed(|repo| {
+                "discard_file" => Ok(self.changed(|repo| {
                     let file = field(input, "file");
                     repo.changes
                         .retain(|c| serde_json::Value::String(c.path.to_owned()) != file);
                     ""
-                }),
-                "commit" => self.changed(|repo| {
+                })),
+                "commit" => Ok(self.changed(|repo| {
                     repo.changes.retain(|c| c.area != "staged");
                     repo.commits.push(("Flush the blur pass", "abc1234"));
                     "abc1234"
-                }),
-                "create_branch" => self.changed(|repo| {
+                })),
+                "create_branch" => Ok(self.changed(|repo| {
                     repo.branches.push("topic");
                     if field(input, "checkout") == true {
                         repo.head = "topic";
                     }
                     ""
-                }),
-                "checkout_branch" => self.changed(|repo| {
+                })),
+                "checkout_branch" => Ok(self.changed(|repo| {
                     repo.head = "main";
                     if field(input, "stash") == true {
                         repo.stashes.push("before switching");
@@ -361,34 +361,32 @@ mod cases {
                     } else {
                         ""
                     }
-                }),
-                "delete_branch" => self.changed(|repo| {
+                })),
+                "delete_branch" => Ok(self.changed(|repo| {
                     repo.branches.retain(|name| *name != "topic");
                     ""
-                }),
-                "stash_save" => self.changed(|repo| {
+                })),
+                "stash_save" => Ok(self.changed(|repo| {
                     repo.stashes.push("WIP on main");
                     "1a2b3c4"
-                }),
-                "create_worktree" => self.changed(|repo| {
+                })),
+                "create_worktree" => Ok(self.changed(|repo| {
                     repo.worktrees.push("/srv/repos/garden-experiment");
                     ""
-                }),
-                "resolve_conflict" => self.changed(|repo| {
+                })),
+                "resolve_conflict" => Ok(self.changed(|repo| {
                     let file = field(input, "file");
                     repo.changes
                         .retain(|c| serde_json::Value::String(c.path.to_owned()) != file);
                     ""
-                }),
+                })),
                 "conflict_cost" => Ok(r#"{"ours":2,"theirs":3}"#.to_owned()),
-                "commit_detail" => self.commit_detail(),
-                "commit_files" => self.commit_files(),
-                "commit_diff" => self.commit_diff(input),
+                "commit_detail" => Ok(self.commit_detail()),
+                "commit_files" => Ok(self.commit_files()),
+                "commit_diff" => Ok(self.commit_diff(input)),
                 other => Err(format!("`{other}` is no op this device runs")),
             }
         }
-
-        /// Carries `run` out on the repository, which answers what `run` gives, and answers the
 
         fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
             self.asked

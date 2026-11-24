@@ -27,6 +27,9 @@ mod cases {
     const FILM: &str = "tilo-blob://film1";
 
     /// The device's engine: what it was asked, and the answers it gives.
+    /// A stream the device was handed: its job, and where the test says the play has got to.
+    type Stream = (String, std::sync::Arc<dyn Push>);
+
     #[derive(Clone, Default)]
     struct Engine {
         asked: Rc<RefCell<Vec<(String, String)>>>,
@@ -36,7 +39,7 @@ mod cases {
         /// bytes it does not hold.
         unreadable: Rc<RefCell<Vec<String>>>,
         /// What each stream was handed: where a test says the play has got to.
-        streams: Rc<RefCell<Vec<(String, std::sync::Arc<dyn Push>)>>>,
+        streams: Rc<RefCell<Vec<Stream>>>,
         /// The jobs a stream started, in order.
         live: Rc<RefCell<Vec<String>>>,
     }
