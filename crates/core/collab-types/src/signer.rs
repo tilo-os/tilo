@@ -52,6 +52,12 @@ pub trait DeviceSigner: MaybeSendSync {
     fn endpoint_secret(&self) -> Option<[u8; 32]> {
         None
     }
+    /// The key this device signs as, when it is held in the clear: a device's workspace service
+    /// signs as its device too, and takes the key from here. A page holds none, and runs no
+    /// workspace service of its own.
+    fn device_signing_key(&self) -> Option<ed25519_dalek::SigningKey> {
+        None
+    }
 }
 
 /// What `signer` signs `message` with when it answers at once, as a key held
@@ -86,6 +92,10 @@ impl<T: DeviceSigner + ?Sized> DeviceSigner for std::sync::Arc<T> {
     fn endpoint_secret(&self) -> Option<[u8; 32]> {
         (**self).endpoint_secret()
     }
+
+    fn device_signing_key(&self) -> Option<ed25519_dalek::SigningKey> {
+        (**self).device_signing_key()
+    }
 }
 
 impl DeviceSigner for ed25519_dalek::SigningKey {
@@ -95,6 +105,10 @@ impl DeviceSigner for ed25519_dalek::SigningKey {
 
     fn endpoint_secret(&self) -> Option<[u8; 32]> {
         Some(self.to_bytes())
+    }
+
+    fn device_signing_key(&self) -> Option<ed25519_dalek::SigningKey> {
+        Some(self.clone())
     }
 
     fn sign(&self, message: Vec<u8>) -> SignFuture<'_> {

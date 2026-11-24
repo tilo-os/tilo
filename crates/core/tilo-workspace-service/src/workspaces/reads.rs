@@ -116,8 +116,9 @@ impl Workspaces {
         workspace: &str,
     ) -> Option<tilo_action_policy::WorkspacePolicy> {
         let held = self.inner.readings.held(workspace)?;
+        let reader = self.own_reader(workspace)?;
         let peer = held.replica.lock();
-        peer.permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+        peer.permissions(reader, tilo_clock::wall())
             .ok()
             .map(|permissions| (*permissions.policy).clone())
     }

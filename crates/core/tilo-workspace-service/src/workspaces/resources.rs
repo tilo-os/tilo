@@ -1633,9 +1633,14 @@ impl Workspaces {
                 .resources
                 .show_live(rows, hex::encode(device.cert.user_public_key));
         }
+        let reader = self
+            .member_identity()
+            .map_or(self.inner.host.cert.device_public_key, |device| {
+                device.device()
+            });
         let policy = governed
             .peer()
-            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
+            .permissions(reader, tilo_clock::wall())
             .map(|permissions| std::sync::Arc::clone(&permissions.policy));
         if let Ok(policy) = policy {
             governed.resources.follow_policy(policy);

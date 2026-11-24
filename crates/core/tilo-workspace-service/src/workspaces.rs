@@ -2379,10 +2379,10 @@ impl Workspaces {
         let now = tilo_clock::wall();
         let state = self.workspace(workspace).await?;
         let governed = state.lock().await;
-        let policy = governed
-            .peer()
-            .permissions(self.inner.host.cert.device_public_key, now)?
-            .policy;
+        let reader = self
+            .own_reader(workspace)
+            .unwrap_or(self.inner.host.cert.device_public_key);
+        let policy = governed.peer().permissions(reader, now)?.policy;
         let people = governed.summary();
         drop(governed);
         Ok((
@@ -2405,10 +2405,10 @@ impl Workspaces {
         let now = tilo_clock::wall();
         let state = self.workspace(workspace).await?;
         let governed = state.lock().await;
-        let policy = governed
-            .peer()
-            .permissions(self.inner.host.cert.device_public_key, now)?
-            .policy;
+        let reader = self
+            .own_reader(workspace)
+            .unwrap_or(self.inner.host.cert.device_public_key);
+        let policy = governed.peer().permissions(reader, now)?.policy;
         let people = self.people(&governed);
         drop(governed);
         Ok((
