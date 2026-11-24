@@ -226,7 +226,9 @@ impl SwitcherKey {
 
     /// What a press on the walk's panel asks: the card under the pointer chosen, or gone to, or the
     /// panel dismissed.
-    pub(crate) fn of_panel(ask: tilo_session_core::desktop::host::contract::SwitcherAsk) -> Vec<Self> {
+    pub(crate) fn of_panel(
+        ask: tilo_session_core::desktop::host::contract::SwitcherAsk,
+    ) -> Vec<Self> {
         use tilo_session_core::desktop::host::contract::SwitcherAsk;
         let place = |at: usize| Self::Place(i64::try_from(at).unwrap_or(i64::MAX));
         match ask {
@@ -385,12 +387,12 @@ pub(crate) struct SessionKeys {
     /// nothing draws the desktop's palette under such a shell, so its own view lists the rows and
     /// the session answers Enter and the arrows over them.
     launcher: Option<tilo_session_core::desktop::state::DesktopHandle>,
+    /// The surfaces the shell draws over its windows: the one stack every view opens and closes
+    /// through, which Escape puts away from the top.
+    surfaces: Option<crate::device_lists::Surfaces>,
     /// The row the launcher's keys reached, and the query it was reached in: a new search starts
     /// again from its first row.
     launcher_at: RefCell<(String, Option<usize>)>,
-    /// Whether the shell that draws the screen shows its strips list, which the chrome keeps as it
-    /// keeps the bar: nothing else in the stack closes it, so Escape does here.
-    strips: Option<Rc<Cell<bool>>>,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press of their own replaces:
@@ -413,11 +415,11 @@ impl SessionKeys {
         self
     }
 
-    /// The strips list of a shell that draws its own screen: Escape puts it away, as it puts away
-    /// the surface the stack holds, because the chrome keeps this one and no surface hears it.
+    /// The surfaces the shell draws over its windows, as the keys see them: Escape puts away the
+    /// topmost one through the same walk every view closes through.
     #[must_use]
-    pub(crate) fn with_strips(mut self, strips: Option<Rc<Cell<bool>>>) -> Self {
-        self.strips = strips;
+    pub(crate) fn with_surfaces(mut self, surfaces: Option<crate::device_lists::Surfaces>) -> Self {
+        self.surfaces = surfaces;
         self
     }
 
@@ -446,8 +448,8 @@ impl SessionKeys {
             switcher: WalkKeys::new(session.overlays.clone()),
             overlays: session.overlays,
             launcher: None,
+            surfaces: None,
             launcher_at: RefCell::new((String::new(), None)),
-            strips: None,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
@@ -469,26 +471,23 @@ impl SessionKeys {
     /// The surface `press` closes, by the stack's dismissal table: Escape, for the topmost surface
     /// that answers it. The surface is drawn elsewhere, so this surface is the one that hears it.
     fn closes_the_top_surface(&self, press: &Press) -> Option<Part> {
-        (press.bare == Key::Named(NamedKey::Escape))
+        let part = (press.bare == Key::Named(NamedKey::Escape))
             .then(|| self.overlays.escape())
-            .flatten()
+            .flatten()?;
+        self.overlays.close(part);
+        Some(part)
     }
 
-    /// Whether `press` puts away the strips list a shell drawing the screen shows: Escape, when
-    /// nothing the stack holds stands above it. The chrome keeps the list, as it keeps its bar, so
-    /// the session closes it where it reads the key.
-    fn closes_the_strips_list(&self, press: &Press) -> bool {
-        let Some(strips) = &self.strips else {
-            return false;
-        };
-        if !press.pressed || press.bare != Key::Named(NamedKey::Escape) || !strips.get() {
-            return false;
-        }
-        if self.overlays.escape().is_some() {
-            return false;
-        }
-        strips.set(false);
-        true
+    /// Whether `press` puts away the surface the shell draws over its windows: Escape, when no
+    /// menu of the stack is over it. The shell's own views keep no state of their own, so the same
+    /// walk that closes a menu closes them, and the keys and a press on Done agree.
+    fn closes_the_shell_surface(&self, press: &Press) -> bool {
+        press.pressed
+            && press.bare == Key::Named(NamedKey::Escape)
+            && self
+                .surfaces
+                .as_ref()
+                .is_some_and(crate::device_lists::Surfaces::close_top)
     }
 
     /// Whether `press` is the display sheet's chord, which puts the sheet up: Super+P, as the
@@ -509,7 +508,9 @@ impl SessionKeys {
     fn configured_action(&self, press: &Press) -> Option<ShortcutAction> {
         let (logical, modifiers) = press.chord();
         let shortcuts = self.shortcuts.borrow();
-        tilo_session_core::desktop::shortcuts::configured_shortcut_action(&shortcuts, &logical, modifiers)
+        tilo_session_core::desktop::shortcuts::configured_shortcut_action(
+            &shortcuts, &logical, modifiers,
+        )
     }
 
     /// The fixed action `press` is: a chord Settings cannot rebind, answered before any app's.
@@ -540,7 +541,8 @@ impl SessionKeys {
     /// there when it armed the shortcut, and it stays the session's until the next arming drops it.
     fn trigger_chord(&self, press: &Press) -> Option<KeyChord> {
         let (logical, modifiers) = press.chord();
-        let chord = tilo_session_core::desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)?;
+        let chord =
+            tilo_session_core::desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)?;
         let shortcuts = self.shortcuts.borrow();
         shortcuts
             .action_for(&chord)
@@ -660,7 +662,8 @@ impl SessionKeys {
         }
         let (logical, modifiers) = press.chord();
         // A modifier held on its own is no chord, and no modifier is either.
-        if let Some(chord) = tilo_session_core::desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)
+        if let Some(chord) =
+            tilo_session_core::desktop::shortcuts::shortcut_chord_from_event(&logical, modifiers)
         {
             self.guide.catch(Caught::Chord(chord));
         }
@@ -680,11 +683,11 @@ impl SessionKeys {
     /// How the session claims `press`, offered before the focused window or panel gets it.
     pub(crate) fn claim(&self, press: &Press, locked: bool, inhibited: bool) -> KeyClaim {
         // A shell drawing its own launcher has no palette surface of the desktop's to hear the
-        // keys: the session walks the rows the search published and opens the one Enter reached,
-        // as the palette would.
+        // keys: while the launcher is the surface the stack has up, the session walks the rows the
+        // search published and opens the one Enter reached, as the palette would.
         if let Some(handle) = &self.launcher
             && !locked
-            && handle.search_open()
+            && self.overlays.here() == Overlay::Launcher
             && press.pressed
             && !press.repeat
             && !press.modifiers.ctrl
@@ -712,7 +715,8 @@ impl SessionKeys {
                         handle.choose_search_row(at.min(rows.len().saturating_sub(1)), None);
                         // The shell's launcher is its own surface over the shell: choosing a row
                         // leaves it, as the palette leaves search.
-                        self.overlays.show(tilo_session_core::desktop::overlays::Overlay::Rest);
+                        self.overlays
+                            .show(tilo_session_core::desktop::overlays::Overlay::Rest);
                     }
                     reached.1 = None;
                     return KeyClaim::Take;
@@ -759,7 +763,7 @@ impl SessionKeys {
         if let Some(claim) = self.switcher.claim(press, locked, inhibited) {
             return claim;
         }
-        if self.closes_the_strips_list(press) || self.closes_the_top_surface(press).is_some() {
+        if self.closes_the_top_surface(press).is_some() || self.closes_the_shell_surface(press) {
             return KeyClaim::Take;
         }
         // A chord that runs a saved shortcut is the session's, as a chord of the desktop's own

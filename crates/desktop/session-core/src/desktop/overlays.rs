@@ -10,11 +10,9 @@
 //! assistive technology reads them in it, and Escape closes the first open one. It is not derived
 //! from kinds — a display question answered above onboarding is a fact about the session, not about
 //! either one's modality.
-//! The parts the desktop's own chrome still draws (`Part::is_chrome`) are mirrored from the widgets
-//! that own their state; a press outside one closes it here where the widget says where it stands,
-//! and through the widget that holds the press when the press is the chrome's. The two the session
-//! puts up itself (the window menu and quick settings) declare [`Part::session_closes`] and are
-//! closed by the session's own verbs.
+//! Every part is the session's now: the Rust chrome that drew menus, the picker, the overview
+//! and the strip ribbon is gone, so the views draw what the stack names and the session's own
+//! verbs open and close every one of them (`Part::session_closes`).
 //! The stack also holds the shell's surface up ([`Overlay`]), what the person typed in its search,
 //! and Alt+Tab's walk: one reading, `desktop:overlays`, says all of it.
 
@@ -249,19 +247,12 @@ impl Part {
         }
     }
 
-    /// Whether the desktop's chrome draws and answers this part itself, as it still does for its
-    /// menus, the picker, the overview and the strip ribbon. Each leaves this set as its own view
-    /// takes it over.
-    #[must_use]
-    pub const fn is_chrome(self) -> bool {
-        !matches!(self, Self::WindowMenu | Self::QuickSettings)
-    }
-
-    /// Whether the session's own verbs open and close this part: the window menu and quick settings
-    /// are the session's, while the chrome's parts close through the widgets that keep their state.
+    /// Whether the session's own verbs open and close this part: every part, since the views that
+    /// draw them read the stack and keep no state of their own.
     #[must_use]
     pub const fn session_closes(self) -> bool {
-        !self.is_chrome()
+        let _ = self;
+        true
     }
 }
 
@@ -307,11 +298,11 @@ impl Role {
         }
     }
 
-    /// Whether Escape closes a surface of this kind: a menu and a sheet do. An overlay answers
-    /// Escape only if its own model says so.
+    /// Whether Escape closes a surface of this kind: a menu, a sheet and an overlay do. An overlay
+    /// is a mode the person leaves, and Escape is how they leave it.
     #[must_use]
     pub const fn closes_on_escape(self) -> bool {
-        matches!(self, Self::Popup | Self::Dialog)
+        matches!(self, Self::Popup | Self::Dialog | Self::Overlay)
     }
 
     /// Whether a press outside a surface of this kind closes it. A popup does; an overlay and a

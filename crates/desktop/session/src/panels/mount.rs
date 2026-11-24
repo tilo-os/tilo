@@ -46,9 +46,8 @@ pub(crate) struct KeyContext {
     pub(crate) overlays: Overlays,
     /// The desktop's handle where the shell draws its own launcher, whose rows the keys walk here.
     pub(crate) launcher: Option<tilo_session_core::desktop::state::DesktopHandle>,
-    /// Whether the shell that draws the screen shows its strips list, which Escape puts away: the
-    /// chrome keeps the list, so no surface of the stack hears that key.
-    pub(crate) strips: Option<Rc<Cell<bool>>>,
+    /// The surfaces the shell draws over its windows, which Escape puts away from the top.
+    pub(crate) surfaces: Option<crate::device_lists::Surfaces>,
 }
 
 /// The session's own resources and the keys it answers wherever the keyboard is: above every
@@ -77,7 +76,7 @@ pub(crate) fn mount_controls(
         sheets,
         overlays,
         launcher,
-        strips,
+        surfaces,
     }: KeyContext,
 ) -> Controls {
     let commands = Rc::new(RefCell::new(Vec::new()));
@@ -106,7 +105,7 @@ pub(crate) fn mount_controls(
             },
         )
         .with_launcher(launcher)
-        .with_strips(strips),
+        .with_surfaces(surfaces),
         portal,
         Rc::clone(&commands),
     ))));

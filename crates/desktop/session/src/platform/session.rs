@@ -621,14 +621,14 @@ impl Session {
             handle: handle.clone(),
             emoji: Rc::new(std::cell::Cell::new(false)),
             about: Rc::new(std::cell::Cell::new(false)),
-            strips: Rc::new(std::cell::Cell::new(false)),
         };
         // The same handle, for the pass that keeps one surface up at a time.
         let one_surface = surfaces.clone();
         let shell_surfaces = surfaces.clone();
-        // The strips list's flag, for the keys Escape reaches before the surfaces move into the
-        // pass that draws them.
-        let strips_flag = Rc::clone(&surfaces.strips);
+        // What the keys ask the panel's own app, which the surface loop hands
+        // the running app each pass. A device whose shell draws the panel has
+        // one; the shell's own view of the quick settings answers its own keys.
+        let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
         let lists_surface: tilo_session_core::surfaces::Shared =
             crate::shell::lists_surface(desktop.clone(), surfaces.clone());
         published.add(Rc::clone(&lists_surface));
@@ -1122,7 +1122,7 @@ impl Session {
                 },
                 overlays: overlays.clone(),
                 launcher: options.shell.then(|| handle.clone()),
-                strips: options.shell.then(|| Rc::clone(&strips_flag)),
+                surfaces: options.shell.then(|| surfaces.clone()),
             },
         );
 

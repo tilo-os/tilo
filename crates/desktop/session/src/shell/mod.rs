@@ -1282,15 +1282,14 @@ impl ShellChrome {
         // The strips list is the shell's own view under the shell: `show-strips` opens it and a
         // strip chosen closes it, so nothing of the chrome's strip switcher draws.
         if address.action == "show-strips" {
-            let open = !self.surfaces.strips.get();
-            self.surfaces.strips.set(open);
+            self.surfaces.toggle(crate::device_lists::Surfaces::STRIPS);
             return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )));
         }
         // Any other action of the chrome's puts the strips list away, as a menu closes once
         // something is chosen: showing a strip, stepping along them, switching workspace.
-        self.surfaces.strips.set(false);
+        self.surfaces.close(crate::device_lists::Surfaces::STRIPS);
         let here = |name: &str| self.surfaces.overlays.here().name() == name;
         let started = match address.action.as_str() {
             "overview" => {

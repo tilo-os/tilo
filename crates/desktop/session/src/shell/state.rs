@@ -25,11 +25,11 @@ use std::rc::Rc;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
+use tilo_desktop_model::TabId;
 use tilo_session_core::desktop::emoji::EmojiLink;
 use tilo_session_core::desktop::overlays::{Anchor as Place, Overlay, Part, SwitcherScope};
-use tilo_session_core::desktop::super_peek::SuperPeek;
-use tilo_desktop_model::TabId;
 use tilo_session_core::desktop::state::DesktopHandle;
+use tilo_session_core::desktop::super_peek::SuperPeek;
 
 use crate::device_lists::Surfaces;
 use tilo_resource::Effect;
@@ -566,7 +566,7 @@ impl ShellService {
             self.handle.personal_ask_revision(),
             self.peek.is_up(),
             views,
-            self.surfaces.strips.get(),
+            self.surfaces.overlays.is_open(Part::Strips),
         )
     }
     /// The tab of the window in front: the active group's, in the strip on the display the person
@@ -912,7 +912,7 @@ impl ShellService {
             emoji: self.surfaces.emoji_open(),
             peek: self.peek_card(),
             about_sheet: Some(self.about.clone()),
-            strips_open: self.surfaces.strips.get(),
+            strips_open: self.surfaces.overlays.is_open(Part::Strips),
         }
     }
 
