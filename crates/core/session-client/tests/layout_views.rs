@@ -19,7 +19,7 @@ use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
 
 use crate::support::{
-    commit_native, enrol, enter_page, start_workspace_host_relaying, wait_for,
+    commit_change, enrol, enter_page, start_workspace_host_relaying, wait_for,
 };
 
 fn new_key() -> SigningKey {
@@ -164,7 +164,7 @@ fn publish_view(
 ) -> Result<(), String> {
     let mut doc = automerge::AutoCommit::new();
     view.write(&mut doc).map_err(|error| error.to_string())?;
-    commit_native(&mut doc);
+    commit_change(&mut doc);
     page.write(
         view_route(workspace, person),
         &collab_types::DocumentMutation::Snapshot(doc.save()),

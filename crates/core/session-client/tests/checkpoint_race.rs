@@ -21,7 +21,7 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_session_client::{Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{commit_native, enrol, ready, route, start_host, start_peer, wait_for};
+use crate::support::{commit_change, enrol, ready, route, start_host, start_peer, wait_for};
 
 async fn durable(peer: &Link) {
     let receipt = peer.barrier().unwrap();
@@ -66,7 +66,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
 
     let mut base = AutoCommit::new();
     base.put(ROOT, "title", "base").unwrap();
-    commit_native(&mut base);
+    commit_change(&mut base);
     a.write(route(), &DocumentMutation::Snapshot(base.save()))
         .unwrap();
     durable(&a).await;
@@ -74,7 +74,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     // B commits a change A has not merged yet ...
     let mut on_b = base.fork();
     on_b.put(ROOT, "from_b", "concurrent").unwrap();
-    commit_native(&mut on_b);
+    commit_change(&mut on_b);
     b.write(
         route(),
         &DocumentMutation::Incremental(on_b.save_after(&base.get_heads())),
@@ -84,7 +84,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     // ... and A then checkpoints its own replica, which lacks it.
     let mut on_a = base.fork();
     on_a.put(ROOT, "from_a", "own").unwrap();
-    commit_native(&mut on_a);
+    commit_change(&mut on_a);
     a.write(route(), &DocumentMutation::Snapshot(on_a.save()))
         .unwrap();
     durable(&a).await;

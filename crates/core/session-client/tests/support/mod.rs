@@ -611,13 +611,14 @@ pub fn route() -> DocumentRoute {
     }
 }
 
-/// Commit what `doc` changed, as production commits an edit no action named: the framework's
-/// own native change, decided and recorded as the signing device's person. A receiver refuses a
-/// change that names no one, so every write a test makes through a document is committed here.
-pub fn commit_native(doc: &mut AutoCommit) {
+/// Commit what `doc` changed as a framework change, decided and recorded as the signing
+/// device's person: the genesis a record's first content is a test's stand-in for, as an app's
+/// action writes it in production. A receiver refuses a change that names no one, so every write
+/// a test makes through a document is committed here.
+pub fn commit_change(doc: &mut AutoCommit) {
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
     );
 }
 
@@ -627,7 +628,7 @@ pub fn commit_native(doc: &mut AutoCommit) {
 pub fn say(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
     let founds = doc.get_heads().is_empty();
     doc.put(ROOT, text, true).unwrap();
-    commit_native(doc);
+    commit_change(doc);
     if founds {
         DocumentMutation::Snapshot(doc.save())
     } else {
