@@ -112,7 +112,9 @@ fn commands(
     apps: &[app_fleet::FleetApp],
 ) -> Vec<AppCommand> {
     let keys = |chord: Option<&settings_store::hardware::KeyChord>| {
-        chord.map(|chord| chord.display()).unwrap_or_default()
+        chord
+            .map(settings_store::hardware::KeyChord::display)
+            .unwrap_or_default()
     };
     let mut listed: Vec<AppCommand> = apps
         .iter()
@@ -218,7 +220,8 @@ mod tests {
             table
                 .commands
                 .iter()
-                .find(|listed| listed.app == app.id && listed.action == command.action)
+                .filter(|listed| listed.app == app.id)
+                .find(|listed| listed.action == command.action)
                 .cloned()
                 .expect("the command is listed")
         };

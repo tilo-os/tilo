@@ -1,5 +1,5 @@
 //! The person's and the device's settings as resources of their workspaces
-//! ([`settings_store::workspace`]): the session is their provider, writing each change
+//! ([`settings_sections::workspace`]): the session is their provider, writing each change
 //! stamped with its setting's verb.
 //!
 //! The person's sections are kept in the workspace whose only member is them, which every
@@ -14,8 +14,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
+use settings_sections::workspace::{Stores, WorkspaceSettings};
 use settings_store::placement::Holder;
-use settings_store::workspace::{Stores, WorkspaceSettings};
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
 use tilo_resource_store::wire::{Command, Reply};
 use tilo_session_client::daemon_documents::{DaemonDocuments, DaemonShell};

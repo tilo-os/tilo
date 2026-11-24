@@ -35,15 +35,6 @@ fn verb(resources: &[ResourceSpec], id: &str) -> Option<(String, ActionSpec)> {
     Some((at.resource(DEVICE), spec))
 }
 
-/// Settings of this test's own, kept in the person's and the device owner's workspaces in memory
-/// with their history, which no other test sees: what the service reads and writes while the
-/// scope lives.
-fn held() -> settings_store::SourceScope {
-    let settings = std::sync::Arc::new(settings_store::workspace::WorkspaceSettings::new());
-    settings.attach(settings_store::in_memory::Workspaces::new());
-    settings_store::scoped_source(Some(settings))
-}
-
 /// The settings service, as the session starts it for `person`.
 fn own_person(person: &str) -> SettingsService {
     ui::framework::read_settings_on(DEVICE);
@@ -65,7 +56,7 @@ fn services() -> Services {
 #[test]
 fn every_setting_is_its_sections_verb_named_as_people_name_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let resources = services().resources();
     let mut named = 0;
     for setting in index::SETTINGS {
@@ -118,7 +109,7 @@ fn every_setting_is_its_sections_verb_named_as_people_name_it() {
 #[test]
 fn a_switch_says_whether_it_is_on_and_is_set_through_its_setter() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     let (resource, switch) = verb(&services.resources(), "appearance.high_contrast")
         .expect("high contrast is changed where it stands");
@@ -140,7 +131,7 @@ fn a_switch_says_whether_it_is_on_and_is_set_through_its_setter() {
 #[test]
 fn turning_off_a_switch_that_guards_the_lock_asks_first() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     let (resource, switch) = verb(&services.resources(), "power.lock_on_sleep").unwrap();
     let off = arguments(json!({ "value": false }));
@@ -170,7 +161,7 @@ fn turning_off_a_switch_that_guards_the_lock_asks_first() {
 #[test]
 fn a_choice_names_each_value_and_says_which_it_holds() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     let (resource, choice) = verb(&services.resources(), "appearance.style").unwrap();
     assert_eq!(choice.id, "set-mode");
@@ -205,7 +196,7 @@ fn a_choice_names_each_value_and_says_which_it_holds() {
 #[test]
 fn a_timer_takes_a_value_and_a_longer_lock_asks_first() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     let (resource, timer) = verb(&services.resources(), "power.lock_after").unwrap();
     assert_eq!(timer.id, "set-lock-minutes");
@@ -236,7 +227,7 @@ fn a_timer_takes_a_value_and_a_longer_lock_asks_first() {
 #[test]
 fn the_keyboard_layout_is_chosen_through_its_sections_verb() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     let (resource, layout) = verb(&services.resources(), "keyboard.layout").unwrap();
     assert_eq!(layout.id, "choose-layout");
@@ -260,7 +251,7 @@ fn the_keyboard_layout_is_chosen_through_its_sections_verb() {
 #[test]
 fn the_keyboard_sources_are_chosen_as_one_value() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     let input = section("input");
     services
@@ -322,7 +313,7 @@ fn high_contrast_on(service: &mut SettingsService) {
 #[test]
 fn a_change_is_a_step_the_person_takes_back_through_the_section() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     let section = &section("appearance");
     let published = services
@@ -374,7 +365,7 @@ fn a_change_is_a_step_the_person_takes_back_through_the_section() {
 #[test]
 fn someone_else_cannot_take_back_a_step_that_is_not_theirs() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut ada = own_person("ada");
     let mut bob = own_person("bob");
     high_contrast_on(&mut bob);
@@ -395,7 +386,7 @@ fn someone_else_cannot_take_back_a_step_that_is_not_theirs() {
 #[test]
 fn a_change_made_elsewhere_is_published_on_the_next_poll() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut service = own_person("ada");
     service.poll();
     assert!(!service.poll(), "nothing changed");
@@ -407,7 +398,7 @@ fn a_change_made_elsewhere_is_published_on_the_next_poll() {
 #[test]
 fn the_rotation_lock_is_an_action_of_the_display_section() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     services
         .invoke(
@@ -432,7 +423,7 @@ fn the_rotation_lock_is_an_action_of_the_display_section() {
 #[test]
 fn the_settings_it_publishes_are_the_sections() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let published = services().resources();
     for resource in &published {
         assert!(
@@ -459,7 +450,7 @@ fn the_settings_it_publishes_are_the_sections() {
 #[test]
 fn an_apps_preferences_are_set_one_by_one_by_their_own_verbs() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     let resource = settings_store::placement::address(
         settings_store::placement::APP_PERSONAL_SECTION,
@@ -535,7 +526,7 @@ fn configured() -> agent_provider_config::ProviderConfig {
 #[test]
 fn the_agent_model_reading_lists_a_providers_models_and_the_one_in_use() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     configured();
     let services = services();
     let reading = services
@@ -582,7 +573,7 @@ fn the_agent_model_reading_lists_a_providers_models_and_the_one_in_use() {
 #[test]
 fn use_model_changes_what_agents_answer_with_and_is_undone_as_one_step() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     configured();
     let mut services = services();
     let resolve = || {
@@ -639,7 +630,7 @@ fn use_model_changes_what_agents_answer_with_and_is_undone_as_one_step() {
 #[test]
 fn a_pads_buttons_and_dials_are_kept_by_the_choice_its_verb_takes() {
     let _home = tilo_test_env::TestHome::new().unwrap();
-    let _settings = held();
+    let _settings = crate::in_memory::scoped();
     let mut services = services();
     let device = "056a:0374:Wacom Intuos Pro M Pad";
     let input = section("input_device");

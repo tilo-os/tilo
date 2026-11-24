@@ -440,21 +440,19 @@ impl KnownDevices {
 
 impl FabricLink for KnownDevices {
     fn devices(&self) -> PersonDevices {
-        PersonDevices::new(
-            self.named.iter().map(|(device, label)| {
-                let mut known = PersonDevice::new(
-                    device.clone(),
-                    DeviceAbout {
-                        label: label.clone(),
-                        kind: DeviceKind::Laptop,
-                        capabilities: FabricCapabilities::default(),
-                    },
-                );
-                known.online = true;
-                known.last_seen_unix_ms = 1;
-                known
-            }),
-        )
+        PersonDevices::new(self.named.iter().map(|(device, label)| {
+            let mut known = PersonDevice::new(
+                device.clone(),
+                DeviceAbout {
+                    label: label.clone(),
+                    kind: DeviceKind::Laptop,
+                    capabilities: FabricCapabilities::default(),
+                },
+            );
+            known.online = true;
+            known.last_seen_unix_ms = 1;
+            known
+        }))
     }
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {

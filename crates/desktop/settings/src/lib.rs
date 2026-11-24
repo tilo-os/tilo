@@ -71,8 +71,6 @@ pub mod display_tools;
 pub mod display_tuning;
 pub mod hardware;
 pub mod identity;
-#[cfg(any(test, feature = "test-support"))]
-pub mod in_memory;
 pub mod index;
 mod key;
 pub mod keyboard_shortcuts;

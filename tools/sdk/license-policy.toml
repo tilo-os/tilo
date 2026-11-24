@@ -256,5 +256,5 @@ toolkit_reaches = [
 # workspace records, signed document envelopes) still lives in it: Tilo's record store. The
 # app layer moves into tilo-app, and the change that cuts each one deletes its line here.
 toolkit_reaches_to_cut = [
-    "tilo-resource-store",              # tilo-ui -> tilo-collaboration (record sync), tilo-settings-store (workspace settings)
+    "tilo-resource-store",              # tilo-ui -> tilo-collaboration (record sync)
 ]

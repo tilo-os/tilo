@@ -11,8 +11,9 @@ use serde_json::Value;
 use tilo_resource_store::wire::{self, Command, Reply};
 use tilo_resource_store::{Schema, Store};
 
-use crate::placement::Holder;
-use crate::workspace::{Stores, WorkspaceSettings, surface_json};
+use crate::workspace::{Stores, WorkspaceSettings};
+use settings_store::workspace::surface_json;
+use settings_store::{SettingsSource, SourceScope, placement::Holder};
 
 /// The person's workspace and the device owner's, each a store that declares the settings'
 /// surface, as the workspace service keeps them.
@@ -109,6 +110,15 @@ pub fn installed() -> (Arc<WorkspaceSettings>, Arc<Workspaces>) {
     let workspaces = Workspaces::new();
     let settings = Arc::new(WorkspaceSettings::new());
     settings.attach(Arc::clone(&workspaces) as Arc<dyn Stores>);
-    crate::install_source(Some(Arc::clone(&settings) as Arc<dyn crate::SettingsSource>));
+    settings_store::install_source(Some(Arc::clone(&settings) as Arc<dyn SettingsSource>));
     (settings, workspaces)
+}
+
+/// Settings over fresh [`Workspaces`], of this thread alone while the scope lives: what no other
+/// test sees.
+#[must_use]
+pub fn scoped() -> SourceScope {
+    let settings = Arc::new(WorkspaceSettings::new());
+    settings.attach(Workspaces::new());
+    settings_store::scoped_source(Some(settings))
 }

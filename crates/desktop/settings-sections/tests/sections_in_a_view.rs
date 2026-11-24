@@ -163,9 +163,7 @@ fn a_view_sets_the_persons_appearance_and_this_devices_lock_through_their_setter
     let _home = tilo_test_env::TestHome::new().unwrap();
     // The settings this process reads and writes, kept in the person's and the device owner's
     // workspaces in memory.
-    let settings = std::sync::Arc::new(settings_store::workspace::WorkspaceSettings::new());
-    settings.attach(settings_store::in_memory::Workspaces::new());
-    let _settings = settings_store::scoped_source(Some(settings));
+    let _settings = settings_sections::in_memory::scoped();
     ui::framework::read_settings_on(DEVICE);
     let mut service = settings_sections::service::SettingsService::new();
     tilo_service::Service::own_person(&mut service, "ada", &[]);
@@ -402,26 +400,29 @@ fn control_hints_section(
         Value::text("true"),
         "hints show until turned off"
     );
-    let learned =
-        |services: &Rc<RefCell<Services>>| reading(services, &published)["learned"].clone();
+    let learned = |services: &Rc<RefCell<Services>>, field: &str| {
+        reading(services, &published)
+            .pointer(&format!("/learned/{field}"))
+            .cloned()
+    };
 
     view.press(&anchor("learn"))
         .expect("the button calls learn-control-hint");
     view.press(&anchor("shown"))
         .expect("the button calls note-control-hint-shown");
     assert_eq!(
-        learned(services)["known"],
-        serde_json::json!(["move-window"])
+        learned(services, "known"),
+        Some(serde_json::json!(["move-window"]))
     );
     assert_eq!(
-        learned(services)["shown"],
-        serde_json::json!({ "pan-view": 1 })
+        learned(services, "shown"),
+        Some(serde_json::json!({ "pan-view": 1 }))
     );
     view.press(&anchor("withdrawn"))
         .expect("the button calls withdraw-control-hint-shown");
     assert_eq!(
-        learned(services)["shown"],
-        serde_json::json!({}),
+        learned(services, "shown"),
+        Some(serde_json::json!({})),
         "a showing that never reached the screen does not count"
     );
     services
@@ -430,8 +431,8 @@ fn control_hints_section(
         .expect("the undo runs")
         .expect("the undo answers");
     assert_eq!(
-        learned(services)["shown"],
-        serde_json::json!({ "pan-view": 1 }),
+        learned(services, "shown"),
+        Some(serde_json::json!({ "pan-view": 1 })),
         "undo takes the step back"
     );
 
@@ -452,8 +453,8 @@ fn control_hints_section(
     );
     view.press(&anchor("again"))
         .expect("the button calls show-control-hints-again");
-    assert_eq!(learned(services)["known"], serde_json::json!([]));
-    assert_eq!(learned(services)["shown"], serde_json::json!({}));
+    assert_eq!(learned(services, "known"), Some(serde_json::json!([])));
+    assert_eq!(learned(services, "shown"), Some(serde_json::json!({})));
 
     let refused = services.borrow_mut().invoke(
         &published,
@@ -525,9 +526,7 @@ fn texts(view: &ViewInstance) -> Vec<String> {
 #[test]
 fn a_display_placed_on_one_device_is_where_another_devices_view_shows_it() {
     let _home = tilo_test_env::TestHome::new().expect("a test home");
-    let settings = std::sync::Arc::new(settings_store::workspace::WorkspaceSettings::new());
-    settings.attach(settings_store::in_memory::Workspaces::new());
-    let _settings = settings_store::scoped_source(Some(settings));
+    let _settings = settings_sections::in_memory::scoped();
     ui::framework::read_settings_on(DEVICE);
     let mut service = settings_sections::service::SettingsService::new();
     tilo_service::Service::own_person(&mut service, "ada", &[]);
@@ -559,7 +558,7 @@ fn a_display_placed_on_one_device_is_where_another_devices_view_shows_it() {
         let (screens, published) = root("so.tilo.settings.sections#DisplayPerson");
         assert_eq!(published, "settings/display-person");
         publish(&laptop, &services, &screens, &published);
-        let mut mine = laptop
+        let mine = laptop
             .open_resource(&screens, Some(&declared("screens")))
             .expect("the view opens on the person's displays");
         assert_eq!(texts(&mine), ["0"], "{:?}", mine.tree());

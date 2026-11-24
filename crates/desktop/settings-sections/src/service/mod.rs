@@ -504,11 +504,9 @@ impl Service for SettingsService {
             let actor = serde_json::to_string(&invoker.acting.by).unwrap_or_default();
             let origin =
                 settings_store::ChangeOrigin::action(format!("{resource}#{action}")).by(&actor);
-            return settings_store::workspace::set_on_device(
-                device, section, field, &value, &origin,
-            )
-            .map(|()| Started::Done(tilo_actions::ActionOutput::default()))
-            .map_err(|error| ApiError::Failed(error.to_string()));
+            return crate::workspace::set_on_device(device, section, field, &value, &origin)
+                .map(|()| Started::Done(tilo_actions::ActionOutput::default()))
+                .map_err(|error| ApiError::Failed(error.to_string()));
         }
         // The service host asked the person first where the published
         // action asks it: what reaches here is confirmed.

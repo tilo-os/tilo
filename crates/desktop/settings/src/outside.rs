@@ -34,7 +34,7 @@ struct Left {
 }
 
 /// The file below the profile that keeps what was set on the device while no session held the
-/// settings' workspace ([`crate::workspace::WorkspaceSettings::kept_in`]).
+/// settings' workspace ([`crate::workspace::waiting`]).
 pub const WAITING: &str = "settings-waiting.json";
 
 /// Where the session leaves its settings for this profile.
@@ -111,13 +111,9 @@ fn set_at(
     if let Some(app) = app {
         values = Map::from_iter([(app, Value::Object(values))]);
     }
-    let keeping = crate::workspace::WorkspaceSettings::kept_in(waiting.to_owned());
-    keeping
-        .update_section(&section, values.clone())
-        .map_err(|error| error.to_string())?;
-    // What this device's processes read waits in that file: it is on the disk before this
-    // returns.
-    keeping.flush_kept();
+    let mut kept = crate::workspace::waiting(waiting);
+    crate::merge_section(&mut kept, &section, values.clone());
+    crate::workspace::keep_waiting(waiting, &kept).map_err(|error| error.to_string())?;
     let mut settings = held.settings;
     let Value::Object(kept) = settings
         .entry(section)
@@ -486,7 +482,7 @@ mod tests {
             read[placement::APP_PERSONAL_SECTION]["so.tilo.osk"]["size"],
             "large"
         );
-        let kept = crate::workspace::WorkspaceSettings::kept_in(waiting).load();
+        let kept = crate::workspace::waiting(&waiting);
         assert_eq!(
             kept["appearance"]["high_contrast"], true,
             "the session writes it once it runs"

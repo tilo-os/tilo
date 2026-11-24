@@ -1949,7 +1949,7 @@ mod tests {
         phase the_reading_follows_the_person_s_settings;
         {
             let _home = tilo_test_env::TestHome::new().expect("a home");
-            let _settings = settings_store::in_memory::installed();
+            let _settings = settings_sections::in_memory::installed();
             let snapshot = tunable(true, &["icc"]);
             kept(
                 &snapshot,
@@ -1980,7 +1980,7 @@ mod tests {
         phase a_display_that_could_not_show_hdr_says_so;
         {
             let _home = tilo_test_env::TestHome::new().expect("a home");
-            let _settings = settings_store::in_memory::installed();
+            let _settings = settings_sections::in_memory::installed();
             let mut snapshot = tunable(false, &[]);
             snapshot.outputs[0].sink_hdr = true;
             snapshot.outputs[0].hdr_unavailable_reason =
@@ -2049,7 +2049,7 @@ mod tests {
         ] {
             // Each change waits for the person to keep it, so each is tried on its own.
             let _home = tilo_test_env::TestHome::new().expect("a home");
-            let _settings = settings_store::in_memory::installed();
+            let _settings = settings_sections::in_memory::installed();
             let mut committed = DisplayConfig::default();
             committed
                 .outputs
@@ -2085,7 +2085,7 @@ mod tests {
     #[test]
     fn a_change_no_display_can_make_is_refused() {
         let _home = tilo_test_env::TestHome::new().expect("a home");
-        let _settings = settings_store::in_memory::installed();
+        let _settings = settings_sections::in_memory::installed();
         let snapshot = tunable(false, &[]);
         let mut displays = tunable_session(&snapshot);
         let error = invoke(
@@ -2128,7 +2128,7 @@ mod tests {
         use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 
         let _home = tilo_test_env::TestHome::new().expect("a home");
-        let _settings = settings_store::in_memory::installed();
+        let _settings = settings_sections::in_memory::installed();
         TrustedDisplayTools::trust(DisplayTool::new("/usr/bin/kanshi"))
             .expect("the tool is trusted");
         let mut displays = Displays::new(
