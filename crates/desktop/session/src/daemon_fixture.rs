@@ -27,7 +27,7 @@ use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{TestHost, governor, test_host};
 
 use crate::layout::Layouts;
-use crate::workspace_view::{ShellAsks, WorkspaceView};
+use crate::workspace_view::WorkspaceView;
 
 /// The device's certificate authority as a device's daemon keeps it: the device acts under its
 /// own certificate in every workspace it holds, and admits no other.
@@ -161,7 +161,7 @@ impl TestDaemon {
         let view = Arc::new(WorkspaceView::new(
             cert.user_public_key,
             cert.device_public_key,
-            Arc::new(Unasked),
+            crate::device_shell::asks(link(&socket, &links, &cert)),
         ));
         Self {
             host,
@@ -482,32 +482,6 @@ impl tilo_actions::remote::ActionProvider for GovernanceCall {
         tilo_actions::remote::Pending::ready(Err(
             tilo_actions::remote::ActionCallError::UnknownInvocation,
         ))
-    }
-}
-
-/// The session asks the test's daemon nothing of its workspaces' people or settings.
-struct Unasked;
-
-impl ShellAsks for Unasked {
-    fn account(
-        &self,
-        _resource: &str,
-        _action: &str,
-        _arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> tilo_session_client::engine::ServiceAnswer {
-        Box::pin(std::future::ready(Err(
-            "the test's daemon answers no account actions".to_owned(),
-        )))
-    }
-
-    fn invoke(
-        &self,
-        _workspace: Option<String>,
-        _request: tilo_actions::remote::InvokeRequest,
-    ) -> tilo_session_client::engine::ServiceAnswer {
-        Box::pin(std::future::ready(Err(
-            "the test's daemon answers no actions".to_owned(),
-        )))
     }
 }
 

@@ -64,6 +64,17 @@ impl ShellAsks for Asks {
 /// The view of the person's workspaces on this device, as the daemon this session's shell
 /// connection `client` reaches publishes it: followed from now on, `wake` called each time a reading changed it. `None`
 /// when this computer has no identity to be a person's shell with.
+/// What a view asks the daemon on `client`: its actions, carried out by the daemon's dispatch as
+/// the person.
+#[cfg(test)]
+pub(crate) fn asks(client: ShellClient) -> Arc<dyn ShellAsks> {
+    asks_of(&Arc::new(Daemon { client }))
+}
+
+fn asks_of(daemon: &Arc<Daemon>) -> Arc<dyn ShellAsks> {
+    Arc::new(Asks(Arc::clone(daemon)))
+}
+
 pub(crate) fn open(
     client: ShellClient,
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -73,7 +84,7 @@ pub(crate) fn open(
     let view = Arc::new(WorkspaceView::new(
         identity.device_cert.user_public_key,
         identity.device_cert.device_public_key,
-        Arc::new(Asks(Arc::clone(&daemon))) as Arc<dyn ShellAsks>,
+        asks_of(&daemon),
     ));
     let runtime = match tilo_rt::try_app() {
         Ok(runtime) => runtime,
