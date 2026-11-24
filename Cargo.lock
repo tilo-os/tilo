@@ -21130,6 +21130,7 @@ dependencies = [
  "tilo-appearance",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-automerge-isolate",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-collaboration",

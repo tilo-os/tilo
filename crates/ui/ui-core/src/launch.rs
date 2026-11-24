@@ -687,8 +687,16 @@ pub fn run_or_exit(spec: &LaunchSpec) {
 }
 
 /// Run the standard app lifecycle using `std::env::args`.
+///
+/// A process the app's own Automerge parsing started as a worker (its binary
+/// again, with the worker's argument) serves that and exits here, before the
+/// command line is read as the app's.
+#[allow(clippy::exit, reason = "an Automerge worker is the whole run of its process")]
 #[cfg(feature = "native")]
 pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        std::process::exit(i32::from(code));
+    }
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("app-launch-start");

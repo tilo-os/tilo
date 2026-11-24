@@ -307,6 +307,8 @@ media = { version = "0.1.0", package = "tilo-media", path = "../../engines/tilo-
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
+# The Automerge workers an app's binary is started as; `launch::run` serves them.
+tilo-automerge-isolate.workspace = true
 # The collaborative filesystem's records and history protocol, read by the
 # file history and conflict widgets.
 fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../core/fs-protocol" }
