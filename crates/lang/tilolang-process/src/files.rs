@@ -1146,6 +1146,9 @@ mod tests {
                 .expect("no preview is no error")
                 .is_none()
         );
+    }
+
+    #[test]
     fn a_folder_lists_its_entries_and_reads_their_bytes() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("books")).unwrap();
