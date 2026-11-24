@@ -750,13 +750,15 @@ impl GovernedWorkspace {
         let named = surfaces.registered();
         // The system's own kind, which no app declares: a reference to another workspace's
         // record, whichever app's it is.
-        let store = self.resources.store_mut();
-        if store
-            .schema()
-            .get(tilo_resource_store::reference::KIND)
-            .is_none()
         {
-            store.declare(tilo_resource_store::reference::schema());
+            let mut store = self.resources.store_mut();
+            if store
+                .schema()
+                .get(tilo_resource_store::reference::KIND)
+                .is_none()
+            {
+                store.declare(tilo_resource_store::reference::schema());
+            }
         }
         if self.resources.declared != named {
             self.resources.declared = named;

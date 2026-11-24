@@ -64,8 +64,8 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        let store = self.store_of(&mut governed);
-        let Some(kind) = kind_of(&self.inner.host.surfaces, store, app, kind, record) else {
+        let mut store = self.store_of(&mut governed);
+        let Some(kind) = kind_of(&self.inner.host.surfaces, &store, app, kind, record) else {
             return Ok(nothing(false));
         };
         let Some(document) = store
@@ -88,6 +88,7 @@ impl Workspaces {
             .iter()
             .map(ToString::to_string)
             .collect();
+        drop(store);
         drop(governed);
         let start = usize::try_from(from)
             .ok()
@@ -186,8 +187,8 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        let store = self.store_of(&mut governed);
-        let Some(kind) = kind_of(&self.inner.host.surfaces, store, app, None, record) else {
+        let mut store = self.store_of(&mut governed);
+        let Some(kind) = kind_of(&self.inner.host.surfaces, &store, app, None, record) else {
             return Ok(None);
         };
         Ok(store
@@ -231,7 +232,7 @@ impl Workspaces {
         let mut governed = std::sync::Arc::clone(&state).lock_owned().await;
         let held = kind_of(
             &self.inner.host.surfaces,
-            self.store_of(&mut governed),
+            &self.store_of(&mut governed),
             app,
             kind,
             record,
@@ -267,7 +268,7 @@ impl Workspaces {
                     },
                     stamp,
                 };
-                let writes = tilo_resource_store::wire::draft(self.store_of(&mut governed), founding)
+                let writes = tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), founding)
                     .map_err(|refused| refused.error.to_string())?;
                 self.keep_writes(governed, std::sync::Arc::clone(&device), app, writes, None)
                     .await?;
@@ -317,8 +318,8 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let (kind, held, removal) = {
             let mut governed = source.lock().await;
-            let store = self.store_of(&mut governed);
-            let kind = kind_of(&self.inner.host.surfaces, store, app, None, record)
+            let mut store = self.store_of(&mut governed);
+            let kind = kind_of(&self.inner.host.surfaces, &store, app, None, record)
                 .ok_or_else(|| format!("{app} keeps no record {record} in {from}"))?;
             let held = store
                 .content_document(&kind, record)
@@ -329,8 +330,9 @@ impl Workspaces {
                 id: record.to_owned(),
                 stamp: stamp.clone(),
             };
-            let removal = tilo_resource_store::wire::draft(store, removal)
+            let removal = tilo_resource_store::wire::draft(&mut store, removal)
                 .map_err(|refused| refused.error.to_string())?;
+            drop(store);
             self.would_keep(&mut governed, (caller, author), (app, &kind), &removal)
                 .map_err(|refused| format!("{from} refuses the record leaving: {refused}"))?;
             (kind, held, removal)
@@ -361,7 +363,7 @@ impl Workspaces {
             },
             stamp,
         };
-        let founding = tilo_resource_store::wire::draft(self.store_of(&mut governed), founding)
+        let founding = tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), founding)
             .map_err(|refused| refused.error.to_string())?;
         self.would_keep(&mut governed, (caller, author), (app, &kind), &founding)
             .map_err(|refused| format!("{to} refuses the record arriving: {refused}"))?;
@@ -781,7 +783,7 @@ kind = "undoable"
         use automerge::ReadDoc as _;
         let state = workspaces.workspace(workspace).await.unwrap();
         let mut governed = state.lock().await;
-        let store = workspaces.store_of(&mut governed);
+        let mut store = workspaces.store_of(&mut governed);
         store.index().get(NOTE, record)?;
         let doc = store.content_document(NOTE, record).unwrap()?;
         doc.get(automerge::ROOT, "title")
@@ -919,7 +921,7 @@ kind = "undoable"
         use automerge::ReadDoc as _;
         let state = workspaces.workspace(workspace).await.unwrap();
         let mut governed = state.lock().await;
-        let store = workspaces.store_of(&mut governed);
+        let mut store = workspaces.store_of(&mut governed);
         let Some(doc) = store.content_document(NOTE, record).unwrap() else {
             return Vec::new();
         };

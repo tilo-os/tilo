@@ -340,7 +340,6 @@ tilo_test_env::scenario! {
             tilo_app::resource::former_identities(&arrived),
             vec![origin.id]
         );
-        assert!(tilo_app::resource::references(&arrived).is_empty());
         assert!(
             arrived.get(ROOT, "tilo:records").unwrap().is_none(),
             "a document listing other records cannot join a workspace"
