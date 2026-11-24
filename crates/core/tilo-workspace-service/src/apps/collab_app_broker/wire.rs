@@ -368,8 +368,7 @@ impl JoinedChannel {
     }
 
     /// The route's context from now on, starting with its current
-    /// roster. A native private window's context also follows the
-    /// continuation it shows.
+    /// roster.
     pub(super) fn context_feed(&self) -> Result<Feed<ContextUpdate>, BrokerError> {
         let route = self.resource_route();
         self.state
@@ -378,31 +377,13 @@ impl JoinedChannel {
             .state
             .native_roster_for_subscriber(&route, &self.verified_identity)
             .map_err(BrokerError::failed)?;
-        let instance = self
-            .native_private_window_instance()
-            .map_err(BrokerError::failed)?;
-        let document = match instance {
-            Some(_) => Some(self.document_read_context().map_err(BrokerError::failed)?),
-            None => None,
-        };
         let rx = self
             .state
             .subscribe_context(&self.channel_id, self.connection_id, native.clone());
-        if let Some(instance) = instance {
-            let alias = CrdtRoute::record(
-                &route.app_id,
-                &route.cluster_id,
-                format!("continuation:{instance}"),
-            )
-            .channel_key();
-            self.state
-                .alias_private_context(&self.channel_id, &alias, self.connection_id);
-        }
         let native_guard = native.map(|native| NativeContextReadGuard {
             state: self.state.clone(),
             route,
             identity: native.admitted,
-            document,
         });
         Ok(Feed::new(rx).with_native_guard(native_guard))
     }
@@ -452,8 +433,7 @@ impl JoinedChannel {
             }),
             Report::ClearContinuation => continuations("continuation clearing unsupported")
                 .and_then(|service| service.clear(workspace, &app_id, instance)),
-            Report::Handoff(message) => continuations("handoff unsupported")
-                .and_then(|service| service.handoff(workspace, app_id, instance, message)),
+            Report::Handoff(message) => self.state.answered_save(&route, &message),
             Report::SearchIndex(delta) => {
                 if delta.len() > crate::apps::services::MAX_SEARCH_INDEX_DELTA_BYTES {
                     return Err(BrokerError::failed(

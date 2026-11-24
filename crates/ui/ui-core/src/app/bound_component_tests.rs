@@ -2909,66 +2909,6 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
     }
 }
 
-#[test]
-fn owner_takeover_follows_accepted_bound_actions_and_preserves_denials() {
-    let mut fixture = ActionFixture::broker();
-    fixture.app.collaboration.local_author = crate::permissions::MemberId::person("fixture-user");
-    let target = fixture.target(0, "follow-up");
-    let actor = tilo_actions::Actor::Member(fixture.app.collaboration.local_author.clone());
-    let granted = fixture.permissions.borrow().clone();
-    fixture.app.continuation.owner_view.following = true;
-    fixture.app.continuation.owner_view.pending =
-        Some(crate::collaboration::ContinuationMetadata {
-            schema_version: 1,
-            bytes: b"pending-peer-view".to_vec(),
-        });
-    fixture.permissions.set(
-        crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(
-            "fixture-user",
-        ))
-        .at_unix_time(100),
-    );
-    let heads = fixture.app.state.doc.get_heads();
-    let mut actual_before = fixture
-        .records
-        .read(&target.binding.checkout.id, Clone::clone)
-        .unwrap();
-    let actual_heads = actual_before.get_heads();
-    assert!(
-        fixture
-            .app
-            .invoke_bound_target(
-                &target,
-                &ResourceInvocation::new(&target.address.address, &actor)
-                    .approval(Some(&crate::app_core::TEST_APPROVAL))
-                    .broker_admitted(true)
-                    .invocation(Some(tilo_actions::InvocationId::new())),
-            )
-            .is_err()
-    );
-    assert!(fixture.app.continuation.owner_view.following);
-    assert!(!fixture.app.continuation.owner_view.awaiting_claim);
-    assert!(fixture.app.continuation.owner_view.pending.is_some());
-    assert_eq!(fixture.app.state.doc.get_heads(), heads);
-    let mut actual_after = fixture
-        .records
-        .read(&target.binding.checkout.id, Clone::clone)
-        .unwrap();
-    assert_eq!(actual_after.get_heads(), actual_heads);
-    fixture.permissions.set(granted);
-    let accepted = fixture.app.invoke_bound_target(
-        &target,
-        &ResourceInvocation::new(&target.address.address, &actor)
-            .approval(Some(&crate::app_core::TEST_APPROVAL))
-            .broker_admitted(true)
-            .invocation(Some(tilo_actions::InvocationId::new())),
-    );
-    assert!(accepted.is_ok(), "authorized local action: {accepted:?}");
-    assert!(!fixture.app.continuation.owner_view.following);
-    assert!(fixture.app.continuation.owner_view.awaiting_claim);
-    assert!(fixture.app.continuation.owner_view.pending.is_none());
-}
-
 /// Hover over bound components keeps their published snapshots.
 /// The dispatch lends each owner its record, which advances the owner's
 /// admission generation whether or not anything was written; a record left

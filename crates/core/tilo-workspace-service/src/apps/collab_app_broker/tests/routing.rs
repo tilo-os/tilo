@@ -485,7 +485,6 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
             state: state.clone(),
             route: route.clone(),
             identity: native.admitted,
-            document: None,
         }),
     )));
     let reading = Rc::clone(&queued);
@@ -979,8 +978,11 @@ fn live_action_invocation_is_fresh_directed_and_permission_checked() {
 tilo_test_env::scenario! {
     fn a_directed_delivery_reaches_exactly_its_addressee;
 
-    phase a_handoff_request_reaches_exactly_the_addressed_instance;
+    phase a_save_is_asked_of_exactly_the_addressed_window_and_ends_with_its_answer;
     {
+        use collab_types::handoff::{HandoffReport, HandoffRequest};
+        use tilo_actions::remote::{PendingPoll, pending};
+
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = AppBrokerState::new(
             &fanout,
@@ -990,79 +992,59 @@ tilo_test_env::scenario! {
             None,
         );
         let workspace = uuid::Uuid::new_v4().to_string();
-        let key = |app: &str, record: &str| {
-            CrdtRoute::record(app, workspace.clone(), record).channel_key()
-        };
+        let window = |app: &str, record: &str| CrdtRoute::record(app, workspace.clone(), record);
         let mut addressed =
-            state.subscribe_context(&key("dev.tilo.notes", "continuation:5"), 7, None);
+            state.subscribe_context(&window("dev.tilo.notes", "continuation:5").channel_key(), 7, None);
         let mut sibling =
-            state.subscribe_context(&key("dev.tilo.notes", "continuation:6"), 8, None);
+            state.subscribe_context(&window("dev.tilo.notes", "continuation:6").channel_key(), 8, None);
         let mut other_app =
-            state.subscribe_context(&key("dev.tilo.sheets", "continuation:5"), 9, None);
-        let request = collab_types::handoff::HandoffRequest::Checkpoint { token: 3 };
-        // The route SessionFollowDispatcher::request_handoff addresses.
-        state.fanout_to_route(
-            &CollabEvent::Handoff {
-                request: request.clone(),
-            },
-            u64::MAX,
-            &CrdtRoute::record("dev.tilo.notes", workspace.clone(), "continuation:5"),
-        );
+            state.subscribe_context(&window("dev.tilo.sheets", "continuation:5").channel_key(), 9, None);
+        let shown = window("dev.tilo.notes", "continuation:5");
+        let asked = |token| {
+            let (answer, saved) = pending();
+            state.ask_save(&shown, token, answer);
+            saved
+        };
+
+        let mut saved = asked(3);
         assert!(matches!(
             addressed.try_recv(),
             Ok(ContextUpdate::Handoff(message))
-                if collab_types::handoff::HandoffRequest::decode(&message) == Some(request)
+                if HandoffRequest::decode(&message) == Some(HandoffRequest::Checkpoint { token: 3 })
         ));
         assert!(
             sibling.try_recv().is_err(),
             "another window of the app is not asked"
         );
         assert!(other_app.try_recv().is_err());
-    }
+        assert_eq!(saved.poll_ready(), PendingPoll::Waiting, "the save waits for the app");
 
-    phase private_context_alias_uses_latest_exact_subscriber_without_duplicate_delivery;
-    {
-        let (state, _bridge_rx) = AppBrokerState::new(
-            &Arc::new(FanoutState::new()),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-            PeerPublisher::disabled(),
-            None,
-            None,
-        );
-        let workspace = uuid::Uuid::new_v4().to_string();
-        let document = CrdtRoute::record("so.tilo.code-editor", &workspace, "native-project");
-        let private = CrdtRoute::record("so.tilo.code-editor", &workspace, "continuation:42");
-        let mut old = state.subscribe_context(&document.channel_key(), 7, None);
-        let mut sibling = state.subscribe_context(&document.channel_key(), 8, None);
-        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
-        let mut current = state.subscribe_context(&document.channel_key(), 7, None);
-        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
-        state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
-        state.alias_private_context(&document.channel_key(), &private.channel_key(), 99);
-        let request = collab_types::handoff::HandoffRequest::Checkpoint { token: 3 };
-        state.fanout_to_route(
-            &CollabEvent::Handoff {
-                request: request.clone(),
-            },
-            u64::MAX,
-            &private,
-        );
-        assert!(
-            matches!(current.try_recv(), Ok(ContextUpdate::Handoff(message))
-            if collab_types::handoff::HandoffRequest::decode(&message) == Some(request))
-        );
-        assert!(
-            current.try_recv().is_err(),
-            "a renewed stream must receive each private view once"
-        );
-        assert!(
-            old.try_recv().is_err(),
-            "superseded context receiver cannot receive private views"
-        );
-        assert!(
-            sibling.try_recv().is_err(),
-            "sharing the document does not grant another window's private stream"
-        );
+        // Another window's answer, or one under another number, is no answer to it.
+        assert!(state
+            .answered_save(
+                &window("dev.tilo.notes", "continuation:6"),
+                &HandoffReport::Done { token: 3 }.encode()
+            )
+            .is_err());
+        assert!(state.answered_save(&shown, &HandoffReport::Done { token: 4 }.encode()).is_err());
+        assert_eq!(saved.poll_ready(), PendingPoll::Waiting);
+        state
+            .answered_save(&shown, &HandoffReport::Done { token: 3 }.encode())
+            .expect("the window answers the save it was asked");
+        assert_eq!(saved.poll_ready(), PendingPoll::Ready(HandoffReport::Done { token: 3 }));
+
+        // The connection asked closing before it answered ends the save unanswered; another
+        // connection closing leaves it waiting.
+        let mut saved = asked(5);
+        state.remove_connection(8);
+        assert_eq!(saved.poll_ready(), PendingPoll::Waiting);
+        state.remove_connection(7);
+        assert_eq!(saved.poll_ready(), PendingPoll::Abandoned);
+
+        // A window nobody shows is asked nothing: the save ends at once.
+        let (answer, mut saved) = pending();
+        state.ask_save(&window("dev.tilo.notes", "continuation:99"), 6, answer);
+        assert_eq!(saved.poll_ready(), PendingPoll::Abandoned);
     }
 
 }

@@ -345,8 +345,6 @@ impl SeatProvider {
                         )
                     }),
                     calls::CLEAR => notes.clear(workspace, &app, instance),
-                    calls::HANDOFF => field(&arguments, "message")
-                        .and_then(|message| notes.handoff(workspace, app, instance, message)),
                     other => Err(format!("windows' notes take no {other}")),
                 };
                 Box::pin(std::future::ready(done.map(|()| Value::Null)))

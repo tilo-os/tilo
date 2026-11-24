@@ -1,8 +1,8 @@
 //! Handoff: what the shell and one application instance say to each other
 //! while that instance's window moves to another workspace.
 //!
-//! The shell addresses one instance by its primary route and asks it for
-//! one step at a time; the instance answers on the same route. Both ride
+//! The shell addresses one instance by its primary route and asks it to
+//! save; the instance answers on the same route. Both ride
 //! session-local control frames that are never relayed to peers
 //! ([`crate::CollabEvent::Handoff`],
 //! [`crate::CollabRequest::ReportHandoff`]).
@@ -14,4 +14,4 @@
 //! The record itself moves by the workspace store's own `move` action, which
 //! the shell invokes once what the window shows is durable.
 
-pub use collab_types::handoff::{HandoffReport, HandoffRequest, MAX_MESSAGE_BYTES};
+pub use collab_types::handoff::{HandoffReport, HandoffRequest};

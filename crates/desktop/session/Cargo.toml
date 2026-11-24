@@ -20,6 +20,14 @@ name = "tilo-surface-probe"
 path = "tests/bin/surface_probe.rs"
 test = false
 
+# A window's app the window-move tests start through the session's launcher: it connects to the
+# device's daemon as an app does, and answers the save a move asks of it as the test says. Never
+# installed.
+[[bin]]
+name = "tilo-window-probe"
+path = "tests/bin/window_probe.rs"
+test = false
+
 # The session's integration tests: one binary, its files included as modules by
 # `tests/it.rs` (a file per binary linked the whole crate once each).
 [[test]]

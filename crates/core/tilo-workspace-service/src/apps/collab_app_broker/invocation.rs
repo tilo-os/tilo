@@ -871,7 +871,9 @@ impl AppBrokerState {
     /// A connection ended: every route it held is withdrawn, then what the
     /// connection itself owned.
     pub(super) fn remove_connection(&self, peer_id: u64) {
-        for hold in self.connection_holds(peer_id) {
+        let holds = self.connection_holds(peer_id);
+        self.drop_saves_of(&holds);
+        for hold in holds {
             self.withdraw_route_hold(hold);
         }
         self.launch_disconnected(peer_id);

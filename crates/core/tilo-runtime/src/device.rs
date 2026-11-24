@@ -112,6 +112,7 @@ pub(crate) mod vault_release;
 pub mod wake;
 pub mod wifi;
 mod window_follow;
+pub use window_follow::provide_window_steps;
 mod window_notes;
 pub mod workspaces;
 

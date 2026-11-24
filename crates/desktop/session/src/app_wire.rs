@@ -1303,10 +1303,9 @@ fn broker_services(
         // Settings read it: the broker hands over the keymap, and only this
         // machine's callers are offered it.
         keyboard_shortcuts: BrokerService::served(crate::keyboard_shortcuts::servable()),
-        // The continuation channel a window's app speaks on: its checkpoint
-        // and handoff reports are taken by the session that runs it rather
-        // than refused. What a window shows is read from the broker's record
-        // subscriptions instead ([`crate::continuations`]).
+        // The continuation channel a window's app speaks on: its continuation reports are
+        // taken by the session that runs it rather than refused. What a window shows is read
+        // from the broker's record subscriptions instead ([`crate::continuations`]).
         continuations: BrokerService::served(window_notes),
         // What an app publishes of its own content goes to the device's daemon on the app's own
         // connection there: the daemon keeps the device's one index.

@@ -1,10 +1,10 @@
 //! Handoff: what the shell and one application instance say to each other
 //! while that instance's window moves to another workspace.
 //!
-//! The shell addresses one instance by its primary route and asks it for
-//! one step at a time; the instance answers on the same route. Both ride
-//! session-local control frames that are never relayed to peers
-//! (the toolkit's `CollabEvent::Handoff` and `CollabRequest::ReportHandoff`).
+//! The shell addresses one instance by its primary route and asks it to save;
+//! the instance answers on the same route. Both ride session-local control
+//! frames that are never relayed to peers (the toolkit's `CollabEvent::Handoff`
+//! and `CollabRequest::ReportHandoff`).
 //!
 //! - [`HandoffRequest::Checkpoint`]: make everything the window shows
 //!   durable now, so the shell reads the document as the person left it
@@ -12,101 +12,29 @@
 //!
 //! The record itself moves by the workspace store's own `move` action, which
 //! the shell invokes once what the window shows is durable.
-//!
-//! A native owner view ([`HandoffRequest::OwnerView`]) is session-local
-//! owner-view control. Documents retain their normal CRDT routes; these
-//! messages carry presentation only and grant no focus or input.
-
-use automerge::ChangeHash;
 
 /// Upper bound on one encoded message; anything larger is not a handoff.
-pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 
-/// What a native owner shows of one instance, for the same person's other
-/// window to present read-only.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OwnerView {
-    pub workspace: String,
-    pub app: String,
-    pub instance: u64,
-    pub generation: u64,
-    pub counter: u64,
-    pub source: String,
-    pub projection: Option<OwnerProjection>,
-    /// A local takeover is acknowledged only after the host records its
-    /// newer Lamport revision. Older queued remote views then remain stale.
-    pub local_claim: bool,
-}
-
-/// The owner's presentation state, opaque here, under its schema version.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OwnerProjection {
-    pub schema_version: u16,
-    pub bytes: Vec<u8>,
-}
-
-impl OwnerView {
-    pub fn valid(&self) -> bool {
-        self.generation > 0
-            && self
-                .workspace
-                .parse::<uuid::Uuid>()
-                .is_ok_and(|workspace| !workspace.is_nil())
-            && !self.app.is_empty()
-            && self.app.len() <= 256
-            && self.source.len() <= 256
-            && !self.source.is_empty()
-            && self
-                .source
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'-')
-            && self.projection.as_ref().is_none_or(|metadata| {
-                metadata.schema_version > 0
-                    && !metadata.bytes.is_empty()
-                    && metadata.bytes.len() <= 32 * 1024
-            })
-    }
-}
-
-/// The shell asking one instance for the next step of a handoff.
+/// The shell asking one instance to save what its window shows.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "step", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HandoffRequest {
     /// Make everything this window shows durable, then answer.
     Checkpoint { token: u64 },
-    /// Read-only presentation on this exact authenticated native route.
-    OwnerView { view: OwnerView },
 }
 
 /// A window's app answering a handoff request.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "report", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HandoffReport {
-    /// The step is done. `heads` are the shown document's heads before the
-    /// step changed it, hex-encoded; empty when it changed nothing.
-    Done { token: u64, heads: Vec<String> },
-    /// Replay the latest view after this native route is acknowledged.
-    OwnerSubscribe { version: u16 },
-    /// Explicit local interaction takes over this instance's owner view.
-    OwnerTakeover {
-        token: u64,
-        schema: u16,
-        metadata: Vec<u8>,
-    },
+    /// The window's document is durable.
+    Done { token: u64 },
     /// The step could not be done.
     Failed { token: u64, reason: String },
 }
 
 impl HandoffRequest {
-    pub fn token(&self) -> u64 {
-        match self {
-            Self::Checkpoint { token } => *token,
-            Self::OwnerView { view } => view.counter,
-        }
-    }
-
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
@@ -114,24 +42,15 @@ impl HandoffRequest {
 
     /// `None` for anything that is not a bounded, well-formed request.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() > 192 * 1024 {
-            return None;
-        }
-        let request: Self = serde_json::from_slice(bytes).ok()?;
-        match &request {
-            Self::OwnerView { view } if view.valid() => Some(request),
-            Self::OwnerView { .. } => None,
-            Self::Checkpoint { .. } => (bytes.len() <= MAX_MESSAGE_BYTES).then_some(request),
-        }
+        bounded(bytes)
     }
 }
 
 impl HandoffReport {
-    /// Done, with `heads` as they were before the step.
-    pub fn done(token: u64, heads: &[ChangeHash]) -> Self {
-        Self::Done {
-            token,
-            heads: heads.iter().map(ToString::to_string).collect(),
+    /// The number of the request this answers.
+    pub const fn token(&self) -> u64 {
+        match self {
+            Self::Done { token } | Self::Failed { token, .. } => *token,
         }
     }
 
@@ -142,28 +61,19 @@ impl HandoffReport {
 
     /// `None` for anything that is not a bounded, well-formed report.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() > 192 * 1024 {
-            return None;
-        }
-        let report: Self = serde_json::from_slice(bytes).ok()?;
-        match &report {
-            Self::OwnerTakeover {
-                schema, metadata, ..
-            } if *schema > 0 && !metadata.is_empty() && metadata.len() <= 32 * 1024 => Some(report),
-            Self::OwnerTakeover { .. } => None,
-            Self::OwnerSubscribe { version } if *version != 1 => None,
-            _ if bytes.len() <= MAX_MESSAGE_BYTES => Some(report),
-            _ => None,
-        }
+        bounded(bytes)
     }
+}
 
-    /// The heads a [`Self::Done`] carries; `None` when any is malformed.
-    pub fn heads(&self) -> Option<Vec<ChangeHash>> {
-        match self {
-            Self::Done { heads, .. } => heads.iter().map(|head| head.parse().ok()).collect(),
-            Self::Failed { .. } | Self::OwnerTakeover { .. } | Self::OwnerSubscribe { .. } => None,
-        }
+/// `bytes` read as a `T`, when they are no more than [`MAX_MESSAGE_BYTES`].
+fn bounded<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+    if bytes.len() > MAX_MESSAGE_BYTES {
+        return None;
     }
+    tilo_failure::ignored!(
+        "bytes that do not read as a handoff message are no handoff",
+        serde_json::from_slice(bytes).ok()
+    )
 }
 
 #[cfg(test)]
@@ -171,20 +81,15 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// The handoff and owner messages on the wire: what round-trips, what is refused and what is bounded.
-        fn handoff_and_owner_messages_are_bounded_and_exact;
+        /// The save messages on the wire: what round-trips, what is refused and what is bounded.
+        fn save_messages_are_bounded_and_exact;
 
-        phase handoff_messages_round_trip_and_refuse_anything_else;
+        phase save_messages_round_trip_and_refuse_anything_else;
         {
             let request = HandoffRequest::Checkpoint { token: 7 };
             assert_eq!(HandoffRequest::decode(&request.encode()), Some(request));
-            let mut doc = automerge::AutoCommit::new();
-            let _ = automerge::transaction::Transactable::put(&mut doc, automerge::ROOT, "a", 1);
-            doc.commit();
-            let heads = doc.get_heads();
-            let done = HandoffReport::done(8, &heads);
-            let decoded = HandoffReport::decode(&done.encode()).unwrap();
-            assert_eq!(decoded.heads(), Some(heads));
+            let done = HandoffReport::Done { token: 8 };
+            assert_eq!(HandoffReport::decode(&done.encode()), Some(done));
             let failed = HandoffReport::Failed {
                 token: 8,
                 reason: "the record is not here".into(),
@@ -195,60 +100,11 @@ mod tests {
                 HandoffRequest::decode(&vec![b' '; MAX_MESSAGE_BYTES + 1]),
                 None
             );
-        }
-
-        phase owner_messages_are_bounded_and_do_not_expand_legacy_handoffs;
-        {
-            let mut view = OwnerView {
-                workspace: "3f2b1c00-0000-4000-8000-0000000000e1".into(),
-                app: "so.tilo.code-editor".into(),
-                instance: 7,
-                generation: 1,
-                counter: 8,
-                source: "certified-device".into(),
-                local_claim: false,
-                projection: Some(OwnerProjection {
-                    schema_version: 1,
-                    bytes: vec![255; 32 * 1024],
-                }),
-            };
-            let request = HandoffRequest::OwnerView { view: view.clone() };
-            assert!(request.encode().len() > MAX_MESSAGE_BYTES);
-            assert_eq!(HandoffRequest::decode(&request.encode()), Some(request));
-            let report = HandoffReport::OwnerTakeover {
-                token: 8,
-                schema: 1,
-                metadata: vec![255; 32 * 1024],
-            };
-            assert_eq!(HandoffReport::decode(&report.encode()), Some(report));
-            view.projection.as_mut().unwrap().bytes.push(0);
-            assert!(
-                HandoffRequest::decode(&HandoffRequest::OwnerView { view: view.clone() }.encode())
-                    .is_none()
-            );
-            view.projection = None;
-            view.source = "file:/secret".into();
-            assert!(HandoffRequest::decode(&HandoffRequest::OwnerView { view }.encode()).is_none());
             let oversized = HandoffReport::Failed {
                 token: 1,
                 reason: "x".repeat(MAX_MESSAGE_BYTES),
             };
             assert!(HandoffReport::decode(&oversized.encode()).is_none());
-            assert!(
-                HandoffReport::decode(
-                    &HandoffReport::OwnerTakeover {
-                        token: 1,
-                        schema: 1,
-                        metadata: vec![0; 32 * 1024 + 1]
-                    }
-                    .encode()
-                )
-                .is_none()
-            );
-            assert!(
-                HandoffReport::decode(br#"{"report":"owner_subscribe","version":1,"grant":true}"#)
-                    .is_none()
-            );
         }
     }
 }

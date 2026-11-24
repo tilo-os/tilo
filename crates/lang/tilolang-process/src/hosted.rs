@@ -3538,18 +3538,12 @@ impl Hosted {
     }
 
     /// Answer the shell's handoff step `request`: a checkpoint writes the document's on-disk copy
-    /// and is done; an owner view is presentation the instance has no window of its own for, and
-    /// wants no answer.
+    /// and is done.
     fn handoff(&self, request: &collaboration::handoff::HandoffRequest) {
         use collaboration::handoff::{HandoffReport, HandoffRequest};
-        let report = match request {
-            // Every write is in the store as it is made: nothing waits to be kept.
-            HandoffRequest::Checkpoint { token } => HandoffReport::Done {
-                token: *token,
-                heads: Vec::new(),
-            },
-            HandoffRequest::OwnerView { .. } => return,
-        };
+        // Every write is in the store as it is made: nothing waits to be kept.
+        let HandoffRequest::Checkpoint { token } = request;
+        let report = HandoffReport::Done { token: *token };
         if let Err(error) = self
             .connection
             .manager()

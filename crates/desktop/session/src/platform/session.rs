@@ -1875,7 +1875,7 @@ impl Session {
             notices: notices.clone(),
             moves: crate::window_move::Moves::new(
                 crate::notifications::RoleNotices::of(&notifications),
-                std::sync::Arc::clone(&notes),
+                options.wake.handle(),
             ),
             branches: crate::workspace_branch::Branches::default(),
             activities,

@@ -1,7 +1,8 @@
 //! What the person's shell tells this device's apps about their windows
 //! ([`window_follow`](tilo_actions::remote::window_follow)): whose view the person follows, and the
-//! next step of moving one app's window to another device. The apps' connections are this
-//! daemon's, so the daemon carries both out on its fan-out, to the apps' own routes.
+//! save of everything one app's window shows before the window moves. The apps' connections are
+//! this daemon's, so the daemon carries both out on its fan-out, to the apps' own routes; a save
+//! ends with the app's answer, or with none when its connection closes first.
 //!
 //! Only the person's own shell calls them: an app, an agent, or another device is refused. The
 //! shell's calls arrive as the person its link was made for.
@@ -9,6 +10,7 @@
 use std::sync::Arc;
 
 use collab_types::handoff::HandoffRequest;
+use tilo_actions::ActionFailure;
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::window_follow as wire;
 use tilo_actions::remote::{
@@ -27,9 +29,26 @@ impl WindowFollow {
 
     /// Take the shell's window steps from now on, on this device alone. No agent's catalogue
     /// lists a provider that reaches this device alone.
-    pub(super) fn register(self: Arc<Self>, providers: &Providers) {
+    pub(crate) fn register(self: Arc<Self>, providers: &Providers) {
         providers.provide(wire::PROVIDER, wire::APP, Reach::ThisDevice, self);
     }
+}
+
+/// Carry out the shell's window steps on `fanout`, the apps' connections there, from now on: what
+/// a device's daemon does when it starts, for a daemon a test starts on its own.
+pub fn provide_window_steps(fanout: Arc<FanoutState>, providers: &Providers) {
+    Arc::new(WindowFollow::new(fanout)).register(providers);
+}
+
+/// What a save the window's app did not answer ends in: its connection closed first, or no app
+/// shows that window.
+fn unanswered() -> Box<ActionFailure> {
+    Box::new(ActionFailure {
+        code: "unanswered".to_owned(),
+        message: "the window's app did not answer".to_owned(),
+        details: None,
+        retryable: false,
+    })
 }
 
 /// Step `action`, described for the dispatch's catalogue.
@@ -115,15 +134,28 @@ impl Admits for WindowFollow {
             wire::FOLLOW => {
                 let follow: wire::Follow = argument(request)?;
                 self.0.set(workspace, follow.peer);
+                Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
             }
             wire::HANDOFF => {
                 let handoff: wire::Handoff<HandoffRequest> = argument(request)?;
+                let HandoffRequest::Checkpoint { token } = handoff.request;
+                // Ends with the app's answer, however long the save takes, or with none when its
+                // connection closes first.
+                let (done, outcome) = tilo_actions::remote::pending();
                 self.0
-                    .request_handoff(workspace, &handoff.app, handoff.instance, handoff.request);
+                    .save(workspace, &handoff.app, handoff.instance, token)
+                    .then(move |answer| {
+                        done.complete(answer.ok_or_else(unanswered).map(|report| {
+                            tilo_actions::ActionOutput {
+                                value: serde_json::to_value(report).ok(),
+                                ..tilo_actions::ActionOutput::default()
+                            }
+                        }));
+                    });
+                Ok(outcome)
             }
-            _ => return Err("unknown window step".into()),
+            _ => Err("unknown window step".into()),
         }
-        Ok(Pending::ready(Ok(tilo_actions::ActionOutput::default())))
     }
 }
 
@@ -202,22 +234,19 @@ mod tests {
                 request: HandoffRequest::Checkpoint { token: 3 },
             },
         );
+        // No app shows that window here: the save ends at once, unanswered, and is no step any
+        // app hears of.
         assert!(matches!(
             call(&steps, &person(), handoff),
-            Ok(ReceiptStatus::Completed { .. })
+            Ok(ReceiptStatus::Failed { error }) if error.code == "unanswered"
         ));
         {
             let heard = heard.lock().unwrap();
-            assert_eq!(heard.len(), 2, "{heard:?}");
+            assert_eq!(heard.len(), 1, "{heard:?}");
             assert!(matches!(
                 &heard[0],
                 (_, CollabEvent::FollowChanged { peer_id: Some(tilo_actions::MemberId::Agent(agent)) })
                     if agent == "helper"
-            ));
-            assert!(matches!(
-                &heard[1],
-                (record, CollabEvent::Handoff { request: HandoffRequest::Checkpoint { token: 3 } })
-                    if record == "continuation:7"
             ));
             drop(heard);
         }
@@ -234,6 +263,6 @@ mod tests {
                 Err(ActionCallError::Refused { .. })
             ));
         }
-        assert_eq!(heard.lock().unwrap().len(), 2);
+        assert_eq!(heard.lock().unwrap().len(), 1);
     }
 }

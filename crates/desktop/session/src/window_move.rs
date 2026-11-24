@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use collab_types::handoff::{HandoffReport, HandoffRequest};
+use collab_types::handoff::HandoffReport;
 use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
 use tilo_desktop_model::{Layout, TabId, TileContent, Workspace, WorkspaceId};
@@ -23,7 +23,6 @@ use ui::resource::DocumentId;
 
 use crate::Shared;
 use crate::apps::launch_of;
-use crate::continuations::{Continuations, HandoffNote};
 use crate::device_workspaces::DeviceWorkspaces;
 use crate::i18n::{t, t_args};
 use crate::platform::notice::{Notice, Notices};
@@ -35,10 +34,6 @@ const CARRY: &str = "window-move-carry";
 
 /// The action a move's notice offers: leave the window where it is.
 const STAY: &str = "window-move-stay";
-
-/// How long a window's app may take to make what it shows durable. A move whose app did not say
-/// it did in that time is not made: what the person typed last could be left behind.
-const CHECKPOINT: Duration = Duration::from_secs(3);
 
 /// How long the app started where the tab went may take to open a window there.
 const OPENING: Duration = Duration::from_secs(30);
@@ -115,8 +110,9 @@ struct Crossing {
 
 /// What a move waits for.
 enum Phase {
-    /// The window's app was asked to make what it shows durable.
-    Checkpointing { token: u64, since: Instant },
+    /// The window's app was asked to make what it shows durable: its answer, or `None` when it
+    /// gave none (its connection closed first, or no app shows the window).
+    Checkpointing(Receiver<Option<HandoffReport>>),
     /// The workspaces' store is moving the record to where the tab went.
     Moving(Receiver<Result<DocumentId, Fault>>),
     /// The tab waits for the window of the app started in the destination.
@@ -132,9 +128,8 @@ pub(crate) struct Moves {
     crossing: RefCell<Vec<Crossing>>,
     /// What the person's notices are shown on, where the question and its answer go.
     notices: Rc<dyn Notices>,
-    /// What each window's app answered about a handoff step, taken up once a pass.
-    notes: RefCell<Vec<HandoffNote>>,
-    continuing: Arc<Continuations>,
+    /// Wakes the session's loop when a window's app answered.
+    wake: tilo_service::Wake,
     tokens: Cell<u64>,
     /// How long the app started where a tab went may take to open a window there
     /// ([`opening_period`]).
@@ -142,15 +137,14 @@ pub(crate) struct Moves {
 }
 
 impl Moves {
-    /// Carries asked about through `notices` , whose answers come back here, and whose windows are
-    /// reached through `continuing` .
-    pub(crate) fn new(notices: Rc<dyn Notices>, continuing: Arc<Continuations>) -> Self {
+    /// Carries asked about through `notices` , whose answers come back here; `wake` wakes the
+    /// session's loop when a window's app answers.
+    pub(crate) fn new(notices: Rc<dyn Notices>, wake: tilo_service::Wake) -> Self {
         Self {
             asking: RefCell::new(BTreeMap::new()),
             crossing: RefCell::new(Vec::new()),
             notices,
-            notes: RefCell::new(Vec::new()),
-            continuing,
+            wake,
             tokens: Cell::new(0),
             opening: opening_period(),
         }
@@ -163,9 +157,6 @@ impl Moves {
         compositor: &mut Compositor,
         handoff: Option<&WindowFollow>,
     ) {
-        self.notes
-            .borrow_mut()
-            .extend(self.continuing.take_handoffs());
         for (tag, key) in self.notices.take_chosen_actions() {
             let Some(asked) = self.asking.borrow_mut().remove(&tag) else {
                 continue;
@@ -182,8 +173,6 @@ impl Moves {
         for one in moving {
             self.step(shared, compositor, one);
         }
-        // An answer is taken up by the pass that asked for it.
-        self.notes.borrow_mut().clear();
     }
 
     /// The person carried `tab` to the workspace at `to` : the app it shows starts again there on
@@ -335,16 +324,20 @@ impl Moves {
             // What the window's app holds in memory is asked to reach the workspace before it is
             // read.
             Some(handoff) => {
-                handoff.request_handoff(
+                let (answered, answers) = std::sync::mpsc::channel();
+                let wake = Arc::clone(&self.wake);
+                handoff.save(
                     &crossing.from_id,
                     &crossing.app,
                     tab,
-                    HandoffRequest::Checkpoint { token },
-                );
-                Phase::Checkpointing {
                     token,
-                    since: Instant::now(),
-                }
+                    move |report| {
+                        // The pass that takes it up may already have given the move up.
+                        let _ = answered.send(report);
+                        wake();
+                    },
+                );
+                Phase::Checkpointing(answers)
             }
             // No app of this session can be reached: the move reads what it last saved.
             None => Phase::Finished,
@@ -387,9 +380,7 @@ impl Moves {
     /// Take one step of one move, and put it back in flight when it waits for something.
     fn step(&self, shared: &Shared, compositor: &mut Compositor, mut crossing: Crossing) {
         match std::mem::replace(&mut crossing.phase, Phase::Finished) {
-            Phase::Checkpointing { token, since } => {
-                self.checkpointing(shared, crossing, token, since);
-            }
+            Phase::Checkpointing(answers) => self.checkpointing(shared, crossing, answers),
             Phase::Moving(answers) => self.moving(shared, crossing, answers),
             Phase::Opening { since } => self.opening(shared, compositor, crossing, since),
             Phase::Finished => {}
@@ -397,32 +388,35 @@ impl Moves {
     }
 
     /// What the window's app answered: the record moves once the workspace holds everything the
-    /// window wrote, and stays where it is when the app could not say so.
-    fn checkpointing(&self, shared: &Shared, crossing: Crossing, token: u64, since: Instant) {
-        match self.claim(&crossing, token) {
-            Some(Ok(())) => self.carry_record(shared, crossing),
-            Some(Err(reason)) => {
+    /// window wrote, and stays where it is when the app did not say so, however long it took to
+    /// answer: a big document on a loaded device takes a while, and only its answer, or its
+    /// connection closing, says how the save went.
+    fn checkpointing(
+        &self,
+        shared: &Shared,
+        crossing: Crossing,
+        answers: Receiver<Option<HandoffReport>>,
+    ) {
+        match answers.try_recv() {
+            Err(TryRecvError::Empty) => self.waiting(crossing, Phase::Checkpointing(answers)),
+            Ok(Some(HandoffReport::Done { .. })) => self.carry_record(shared, crossing),
+            Ok(Some(HandoffReport::Failed { reason, .. })) => {
                 tracing::warn!(app = %crossing.app, %reason, "the window's app did not save what it shows");
                 self.give_up(shared, &crossing, &t("window-move-reason-unsaved"));
             }
-            None if since.elapsed() >= CHECKPOINT => {
+            Ok(None) | Err(TryRecvError::Disconnected) => {
+                tracing::warn!(app = %crossing.app, "the window's app gave no answer to the save");
                 self.give_up(shared, &crossing, &t("window-move-reason-unsaved"));
             }
-            None => self.waiting(crossing, Phase::Checkpointing { token, since }),
         }
     }
 
-    /// The step the move of `tab` asked of its window's app and waits on, while it waits.
+    /// Whether the move of `tab` waits on its window's app to save what it shows.
     #[cfg(test)]
-    fn checkpoint_asked(&self, tab: TabId) -> Option<u64> {
-        self.crossing
-            .borrow()
-            .iter()
-            .find(|crossing| crossing.tab == tab)
-            .and_then(|crossing| match crossing.phase {
-                Phase::Checkpointing { token, .. } => Some(token),
-                _ => None,
-            })
+    fn checkpoint_asked(&self, tab: TabId) -> bool {
+        self.crossing.borrow().iter().any(|crossing| {
+            crossing.tab == tab && matches!(crossing.phase, Phase::Checkpointing(_))
+        })
     }
 
     /// What moving the record to where the tab went came to.
@@ -623,35 +617,6 @@ impl Moves {
     fn waiting(&self, mut crossing: Crossing, phase: Phase) {
         crossing.phase = phase;
         self.crossing.borrow_mut().push(crossing);
-    }
-
-    /// What the window's app said about the step asked under `token` , if it said anything.
-    /// The app's answer to the step `token`: saved, or why it could not; `None` while it has
-    /// not answered.
-    fn claim(&self, crossing: &Crossing, token: u64) -> Option<Result<(), String>> {
-        let (from, app, instance) = (
-            crossing.from_id.as_str(),
-            crossing.app.as_str(),
-            crossing.tab,
-        );
-        let mut notes = self.notes.borrow_mut();
-        let at = notes.iter().position(|note| {
-            note.workspace == from
-                && note.app == app
-                && note.instance == instance
-                && matches!(
-                    &note.report,
-                    HandoffReport::Done { token: said, .. }
-                        | HandoffReport::Failed { token: said, .. } if *said == token
-                )
-        })?;
-        match notes.remove(at).report {
-            HandoffReport::Done { .. } => Some(Ok(())),
-            HandoffReport::Failed { reason, .. } => Some(Err(reason)),
-            HandoffReport::OwnerSubscribe { .. } | HandoffReport::OwnerTakeover { .. } => {
-                unreachable!("only a step's own answer is claimed")
-            }
-        }
     }
 
     fn next_token(&self) -> u64 {
@@ -887,6 +852,11 @@ verbs = [
     /// A shell with a session on it, and the window of [`PROBE`] in a tab of the workspace in front.
     struct Shell {
         _home: tilo_test_env::TestHome,
+        /// What the window's app is told about each save it is asked, and where it says it
+        /// listens: [`window_app`].
+        app: std::os::unix::net::UnixStream,
+        /// Where every start of the app connects to be told: kept, so a later start finds it.
+        _apps: std::os::unix::net::UnixListener,
         /// The device's daemon, holding both workspaces on a real workspace service: the
         /// session's shell link, where the move runs as whoever the session is of.
         device: crate::daemon_fixture::TestDaemon,
@@ -910,22 +880,39 @@ verbs = [
             let started = home.home().join("started");
             let arguments = home.home().join("arguments");
             install(&mut home);
+            // The launches the session records, which the device's daemon admits each app's
+            // connection by.
+            let launches = std::sync::Arc::new(crate::Launches::default());
+            // The workspace in front and the one behind it, as the shell below shows them, kept by
+            // the device's daemon, whose store knows the app's records as its package declares them.
+            let (from, to) = (WorkspaceId::from_u128(1), WorkspaceId::from_u128(2));
+            let (from_id, to_id) = (from.to_string(), to.to_string());
+            let device = crate::daemon_fixture::TestDaemon::writing_launched(
+                &[&from_id, &to_id],
+                Some(std::sync::Arc::clone(&launches)
+                    as std::sync::Arc<
+                        dyn tilo_workspace_service::apps::services::LauncherServices,
+                    >),
+            );
+            let control = home.home().join("app.sock");
+            let apps_told =
+                std::os::unix::net::UnixListener::bind(&control).expect("the app's control socket");
+            // The launcher records what it was asked, then runs the window's app as the launcher
+            // runs a package's: the app connects to the device's daemon itself.
             let launcher = tilo_test_env::stand_in(
                 home.home().join("tilo-launcher"),
                 &format!(
                     "printf '%s\\n' \"$$\" >> '{started}'\n\
                      printf '%s\\n' \"$*\" >> '{arguments}'\n\
-                     hold\n",
+                     exec '{app}' '{socket}' '{control}' '{PROBE}' \"${{TILO_CONTINUITY_INSTANCE:-}}\" \"$@\"\n",
                     started = started.display(),
                     arguments = arguments.display(),
+                    app = window_app().display(),
+                    socket = device.socket().display(),
+                    control = control.display(),
                 ),
             )
             .expect("a launcher");
-            // The workspace in front and the one behind it, as the shell below shows them, kept by
-            // the device's daemon, whose store knows the app's records as its package declares them.
-            let (from, to) = (WorkspaceId::from_u128(1), WorkspaceId::from_u128(2));
-            let (from_id, to_id) = (from.to_string(), to.to_string());
-            let device = crate::daemon_fixture::TestDaemon::writing(&[&from_id, &to_id]);
             device
                 .workspaces()
                 .declare_package_surface(PROBE, DECLARED.as_bytes());
@@ -942,6 +929,7 @@ verbs = [
                 Options {
                     presentation: ui::headless::fixture_runner_inputs,
                     collab: false,
+                    launches,
                     apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
                     launch: Some(Rc::clone(&apps)),
                     state: Some(state),
@@ -954,18 +942,25 @@ verbs = [
             // The shell this device shows, as a session that came back to one puts it in front.
             session.handle().replace_tree(two_workspaces());
             *session.shared.device_workspaces.borrow_mut() = Some(device.device_workspaces());
-            // The app's window, as the compositor would map it.
-            apps.start(
-                &Launch::Package {
-                    app: PROBE.into(),
-                    open: None,
-                },
-                &apps.workspace_named(&from_id),
-            )
-            .expect("the shell starts the app");
+            // The person opens the app: the shell holds a tab for its window, which the window's
+            // app is started as.
+            session
+                .desktop()
+                .with_policy(|policy| {
+                    policy.handle().dispatch(
+                        tilo_session_core::desktop::navigation::ChromeEffect::OpenApp {
+                            app: PROBE.into(),
+                            beside: None,
+                            background: None,
+                            float: None,
+                        },
+                    )
+                })
+                .expect("the person opens the app");
             wait(&mut session, "the app is started", |_| {
                 (starts(&started) == 1).then_some(())
             });
+            let (app, instance) = listening(&mut session, &apps_told);
             session
                 .desktop()
                 .with_policy(|policy| policy.map(window(11, PROBE)))
@@ -977,8 +972,14 @@ verbs = [
                     _ => None,
                 })
             });
+            assert_eq!(
+                tab, instance,
+                "the window takes the tab the shell held for it, which its app was started as"
+            );
             Self {
                 _home: home,
+                app,
+                _apps: apps_told,
                 device,
                 started,
                 arguments,
@@ -1066,13 +1067,13 @@ verbs = [
 
         /// The person moves the window to the workspace behind.
         fn carry(&mut self) {
-            let token = self.carry_asking();
-            self.saved(token);
+            self.carry_asking();
+            self.saved();
         }
 
         /// The person moves the window to the workspace behind, and the move asks the window's
-        /// app to make what it shows durable: the step it asked, which it waits on.
-        fn carry_asking(&mut self) -> u64 {
+        /// app to make what it shows durable, and waits on it.
+        fn carry_asking(&mut self) {
             self.session
                 .handle()
                 .choose_window_menu(self.tab, &move_to_workspace_id(self.to), None)
@@ -1081,31 +1082,20 @@ verbs = [
             wait(
                 &mut self.session,
                 "the move asks the app to save",
-                |session| session.shared.moves.checkpoint_asked(tab),
-            )
+                |session| session.shared.moves.checkpoint_asked(tab).then_some(()),
+            );
         }
 
-        /// The window's app answers with `report`, as its own route reports it to the device.
-        fn answer(&mut self, report: &HandoffReport) {
-            use tilo_broker_core::steps::ContinuationServices as _;
-            self.session
-                .shared
-                .notes
-                .handoff(
-                    WorkspaceId::from_u128(1),
-                    PROBE.to_owned(),
-                    self.tab,
-                    report.encode(),
-                )
-                .expect("the session takes the app's answer");
-            self.session
-                .step(Duration::from_millis(1))
-                .expect("a frame");
+        /// The window's app goes on with the save it was asked as `word` says: `saved`, `failed`,
+        /// or `quit` mid-save.
+        fn answer(&mut self, word: &str) {
+            use std::io::Write as _;
+            writeln!(self.app, "{word}").expect("the app hears how its save goes");
         }
 
         /// The window's app wrote everything it shows to the workspace, and says so.
-        fn saved(&mut self, token: u64) {
-            self.answer(&HandoffReport::done(token, &[]));
+        fn saved(&mut self) {
+            self.answer("saved");
         }
 
         /// What the person typed last in the note `id`, `typed` at its end, as the window's app
@@ -1343,6 +1333,36 @@ verbs = [
         home.env().set("TILO_APPS_DATA_DIR", &store);
     }
 
+    /// The window's app the launcher runs: [`crate`]'s `tilo-window-probe`.
+    fn window_app() -> PathBuf {
+        tilo_test_env::sibling_binary("tilo-session", "tilo-window-probe")
+    }
+
+    /// The window's app the session started, once it says it listens on its window's route: what
+    /// it is told about each save from then on, and the window it was started as.
+    fn listening(
+        session: &mut Session,
+        apps: &std::os::unix::net::UnixListener,
+    ) -> (std::os::unix::net::UnixStream, TabId) {
+        use std::io::BufRead as _;
+        apps.set_nonblocking(true).expect("the control socket");
+        let (app, _) = wait(session, "the app connects", |_| apps.accept().ok());
+        app.set_nonblocking(false)
+            .expect("the app's control connection");
+        app.set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .expect("the app's control connection");
+        let mut said = String::new();
+        std::io::BufReader::new(app.try_clone().expect("the app's control connection"))
+            .read_line(&mut said)
+            .expect("the app says it listens");
+        let instance = said
+            .trim()
+            .strip_prefix("listening ")
+            .and_then(|instance| instance.parse().ok())
+            .unwrap_or_else(|| panic!("the app listens on its window's route: {said:?}"));
+        (app, instance)
+    }
+
     /// Run frames until `asked` answers.
     #[track_caller]
     fn wait<T>(
@@ -1529,7 +1549,7 @@ verbs = [
         let _settled = ui::motion::testing::settled();
         let mut shell = Shell::new();
         let showing = shell.showing("first draft");
-        let token = shell.carry_asking();
+        shell.carry_asking();
         for _ in 0..5 {
             shell
                 .session
@@ -1542,7 +1562,7 @@ verbs = [
             "nothing moves before the app saved"
         );
         shell.typed(&showing, ", and the last word");
-        shell.saved(token);
+        shell.saved();
         let (_, arrived) = shell.arrived();
         shell.land();
         assert_eq!(
@@ -1560,11 +1580,21 @@ verbs = [
         let _settled = ui::motion::testing::settled();
         let mut shell = Shell::new();
         let showing = shell.showing("first draft");
-        let token = shell.carry_asking();
-        shell.answer(&HandoffReport::Failed {
-            token,
-            reason: "the disk is full".to_owned(),
-        });
+        shell.carry_asking();
+        shell.answer("failed");
+        refused(&mut shell, &showing, "window-move-reason-unsaved");
+    }
+
+    /// A window whose app goes away while it saves (it crashed, or the person quit it) answers
+    /// nothing, however long the move would wait: its connection closing ends the save, and the
+    /// window stays where it is with its record, and the person is told.
+    #[test]
+    fn a_move_whose_app_goes_away_while_it_saves_leaves_everything_where_it_was() {
+        let _settled = ui::motion::testing::settled();
+        let mut shell = Shell::new();
+        let showing = shell.showing("first draft");
+        shell.carry_asking();
+        shell.answer("quit");
         refused(&mut shell, &showing, "window-move-reason-unsaved");
     }
 

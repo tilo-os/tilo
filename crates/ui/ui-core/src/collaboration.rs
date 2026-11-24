@@ -7,7 +7,6 @@
 
 pub use ::collaboration::*;
 pub mod document_content;
-pub mod owner_view;
 
 #[cfg(test)]
 #[cfg(all(unix, feature = "broker-transport"))]

@@ -1440,9 +1440,6 @@ impl App {
         self.layout.layout_dirty = true;
         self.invalidate_widget_resource_cache();
         let started = started?;
-        if actor.member_id() == Some(&self.collaboration.local_author) {
-            self.take_over_owner_view();
-        }
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.actions.bound_invocations.insert(id, target.clone());
             if invocation.is_none() {
@@ -1534,7 +1531,6 @@ impl App {
         &mut self,
         request: ResourceInvocation<'_>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
-        let local = request.actor.member_id() == Some(&self.collaboration.local_author);
         let _ = crate::widget::take_presses();
         let started = (|| {
             use crate::bound_dispatch::local_target::{LocalResourceTarget, select_local_target};
@@ -1563,9 +1559,6 @@ impl App {
         // the caller learns it finished.
         for at in crate::widget::take_presses() {
             self.dispatch_semantic_click(at.x, at.y);
-        }
-        if local {
-            self.take_over_owner_view();
         }
         Ok(started)
     }

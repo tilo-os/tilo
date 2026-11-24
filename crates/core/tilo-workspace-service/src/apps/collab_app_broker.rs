@@ -159,6 +159,7 @@ use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::mpsc;
 
+use collab_types::handoff::HandoffReport;
 use collab_types::presence::PresenceKey;
 use collab_types::presence::PresencePayload;
 use runtime_collab::event::CollabEvent;
@@ -409,6 +410,11 @@ pub struct AppBrokerState {
     /// The window instance the shell launched each connected app for, by
     /// peer id: which tab's window the records it holds are shown in.
     window_instances: Mutex<HashMap<u64, u64>>,
+    /// The saves the shell asked of windows' apps that have not answered, by the window's route
+    /// (its channel key) and the request's number: the connection asked, and where its answer
+    /// goes. The connection's going away drops what it was asked, which the asker hears as no
+    /// answer ([`Self::ask_save`]).
+    saves: Mutex<HashMap<(String, u64), (u64, tilo_actions::remote::Completer<HandoffReport>)>>,
     /// The person's own presses, as the compositor attested them over the shell link: what a
     /// call an app's window makes proves it runs as the person
     /// ([`presses::Presses`]).

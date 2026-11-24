@@ -1874,4 +1874,3 @@ fn f32_of(v: f64) -> f32 {
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod tests;
-

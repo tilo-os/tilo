@@ -667,13 +667,6 @@ impl App {
                     payload: collab_types::presence::Payload::Arrived,
                 });
             }
-            // Only a window on its own instance route has an owner view to
-            // replay; a window showing a sealed record has none to ask for.
-            if self.private_continuity_route().is_some() {
-                self.report_handoff(
-                    &crate::collaboration::handoff::HandoffReport::OwnerSubscribe { version: 1 },
-                );
-            }
             self.publish_continuation_metadata();
             self.publish_search_index();
             self.broadcast_doc_delta();

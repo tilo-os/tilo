@@ -741,6 +741,7 @@ impl AppBrokerState {
                 launchable: launchable::LaunchableCatalogue::new(),
                 workspace_opens: workspace_open::WorkspaceOpens::default(),
                 window_instances: Mutex::new(HashMap::new()),
+                saves: Mutex::new(HashMap::new()),
                 presses: presses::Presses::default(),
                 action_directory_bridge: ActionDirectoryRequestQueue {
                     sender: bridge_tx,
