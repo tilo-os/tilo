@@ -614,15 +614,23 @@ d-4fjgzcq6 = Zusammengeführt
     .w-trusted-senders = Vertrauenswürdige Absender
 
 d-3k7hkyhl = Übernommene Mail
+    .w-nothing-here = Nichts hier
 
 d-m5y6nl2m = Alle Posteingänge
     .w-add-a-mail-account-in-settings = Füge in den Einstellungen ein Mailkonto hinzu
     .w-is-inbox = is:inbox
 
 d-s7tarqlp = Unterhaltungen der Konten
+    .w-nothing-has-arrived-yet = Noch nichts angekommen
+    .w-no-messages-in = Keine Nachrichten in { $place_title }
+    .w-open-account-settings = Kontoeinstellungen öffnen
     .w-show-older-messages-from = Ältere Nachrichten von { $address } anzeigen
 
 d-tfom3oeo = Unterhaltungen des Kontos
+    .w-nothing-has-arrived-yet = Noch nichts angekommen
+    .w-no-messages-in = Keine Nachrichten in { $name }
+    .w-no-messages-in-2 = Keine Nachrichten in { $place_title }
+    .w-open-account-settings = Kontoeinstellungen öffnen
     .w-show-older-messages = Ältere Nachrichten anzeigen
 
 d-gka45our = Postfächer
@@ -634,7 +642,6 @@ d-zp2cy2sc = Posteingang
     .w-nothing-here = Nichts hier
 
 d-jgdzx3la = Unterhaltungsliste
-    .w-nothing-here = Nichts hier
 
 d-u43u7z6w = Unterhaltungszeile
 

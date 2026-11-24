@@ -932,6 +932,58 @@ fn junk_the_server_holds_shows_in_its_place() {
     );
 }
 
+// USER REQUIREMENT: an empty place says why it holds nothing: an account no mail reached yet
+// says so and leads to the Settings that change it, and a place with no messages names it.
+#[test]
+fn an_empty_place_says_which_one_it_is() {
+    let servers = empty_servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    let account = session.wait_for("the account", |session| {
+        session.accounts().into_iter().next()
+    });
+
+    let said = session.view_of(&account);
+    assert!(
+        said.iter().any(|text| text == "Nothing has arrived yet"),
+        "an account no mail reached yet says so: {said:#?}"
+    );
+    assert!(
+        said.iter().any(|text| text == "Open account settings"),
+        "and leads to the Settings that change it: {said:#?}"
+    );
+    assert!(
+        !said.iter().any(|text| text.starts_with("No messages in")),
+        "and does not name a place that holds messages elsewhere: {said:#?}"
+    );
+
+    // Mail the server holds in another place reaches the account: the inbox is empty, and says
+    // which place it is rather than that nothing arrived.
+    servers.imap.append(
+        "[Gmail]/Spam",
+        &mail(
+            "offer@deals.example",
+            "Prize Draw <win@deals.example>",
+            "You have won a cruise",
+            "Claim your prize.",
+            None,
+        ),
+        &[],
+    );
+    session.call("check_now", &account, &json!({}));
+    session.until("the junk to come in", |session| {
+        session.threads().len() == 1
+    });
+    let said = session.view_of(&account);
+    assert!(
+        said.iter().any(|text| text == "No messages in Inbox"),
+        "the empty inbox names itself: {said:#?}"
+    );
+    assert!(
+        !said.iter().any(|text| text == "Nothing has arrived yet"),
+        "the account has mail, so nothing it says is that none arrived: {said:#?}"
+    );
+}
+
 /// An editor of the workspace's mailbox, which holds its own keys, is offered Check now like
 /// its owner, and the press runs: Mail's author is trusted for the account check it declares,
 /// so an admitted call is not asked again. What an author may not do still asks before it runs.
