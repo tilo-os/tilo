@@ -35,8 +35,12 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<ExitCode> {
-    if std::env::var_os(SET_UP).is_some() {
+    if let Some(profile) = std::env::var_os(SET_UP) {
         set_up_here()?;
+        let socket = tilo_api::daemon::profile_sockets(Path::new(&profile))
+            .map_err(anyhow::Error::msg)?
+            .join(tilo_paths::machine::DAEMON_NATIVE);
+        println!("{}", socket.display());
         return Ok(ExitCode::SUCCESS);
     }
     let mut args = std::env::args_os().skip(1);
@@ -59,10 +63,23 @@ fn run() -> Result<ExitCode> {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(profile, std::fs::Permissions::from_mode(0o700))?;
     }
-    let status = with_profile(&mut Command::new(std::env::current_exe()?), profile)
+    // Set up with the profile's own homes, where it also names the daemon's native socket: a
+    // profile's sockets are beside this account's own, named by its path, and finding them reads
+    // the login's directory, which is the profile's here and never this account's.
+    let set_up = with_profile(&mut Command::new(std::env::current_exe()?), profile)
         .env(SET_UP, profile)
-        .status()?;
-    ensure!(status.success(), "setting Tilo up in the profile failed: {status}");
+        .stderr(Stdio::inherit())
+        .output()?;
+    ensure!(
+        set_up.status.success(),
+        "setting Tilo up in the profile failed: {}",
+        set_up.status
+    );
+    let socket = std::path::PathBuf::from(
+        String::from_utf8(set_up.stdout)
+            .context("the profile's native socket")?
+            .trim_end(),
+    );
 
     let log = std::fs::File::create(profile.join("daemon.log"))?;
     let mut daemon = with_profile(&mut Command::new(&runtime), profile)
@@ -76,7 +93,7 @@ fn run() -> Result<ExitCode> {
         .stderr(log)
         .spawn()
         .with_context(|| format!("starting {}", Path::new(&runtime).display()))?;
-    let served = serving(profile);
+    let served = serving(&socket);
     let code = match served {
         Ok(()) => {
             let status = with_profile(&mut Command::new(program), profile)
@@ -101,6 +118,10 @@ fn run() -> Result<ExitCode> {
     }
     let _ = daemon.kill();
     let _ = daemon.wait();
+    // The profile's sockets are outside the profile, so they go with it here.
+    if let Some(sockets) = socket.parent() {
+        let _ = std::fs::remove_dir_all(sockets);
+    }
     Ok(code)
 }
 
@@ -126,14 +147,14 @@ fn set_up_here() -> Result<()> {
     Ok(())
 }
 
-/// Wait until the daemon in `profile` answers on its native endpoint. Its person's workspace is
+/// Wait until the daemon answers on its native endpoint, `socket`. Its person's workspace is
 /// founded the first time a call asks for it, which the suite's first connection does.
-fn serving(profile: &Path) -> Result<()> {
+fn serving(socket: &Path) -> Result<()> {
     let deadline = Instant::now()
         .checked_add(START_CAP)
         .context("the start's deadline")?;
     loop {
-        let last = status(profile);
+        let last = status(socket);
         if last.is_ok() {
             return Ok(());
         }
@@ -145,9 +166,9 @@ fn serving(profile: &Path) -> Result<()> {
     }
 }
 
-/// The daemon's answer to a `status` request on its native endpoint.
-fn status(profile: &Path) -> Result<Value> {
-    let mut stream = tilo_socket::connect(&profile.join("native.sock"))?;
+/// The daemon's answer to a `status` request on its native endpoint, `socket`.
+fn status(socket: &Path) -> Result<Value> {
+    let mut stream = tilo_socket::connect(socket)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.write_all(b"{\"native\":\"status\"}\n")?;
     let mut line = String::new();
