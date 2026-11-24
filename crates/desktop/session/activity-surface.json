@@ -505,6 +505,12 @@
               }
             },
             {
+              "name": "workspace",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
               "name": "instruction",
               "type": "text"
             },
@@ -544,6 +550,10 @@
             },
             {
               "name": "now",
+              "type": "text"
+            },
+            {
+              "name": "now_kind",
               "type": "text"
             }
           ]
@@ -681,6 +691,20 @@
           ]
         },
         {
+          "name": "DiffLine",
+          "doc": "One line of a file's change.",
+          "fields": [
+            {
+              "name": "side",
+              "type": "text"
+            },
+            {
+              "name": "text",
+              "type": "text"
+            }
+          ]
+        },
+        {
           "name": "Entry",
           "doc": "One change.",
           "fields": [
@@ -735,6 +759,30 @@
                   "named": "Refusal"
                 }
               }
+            }
+          ]
+        },
+        {
+          "name": "Execution",
+          "doc": "Where a command's execution is recorded: the workspace its shell's record is in (none for this one), the app and record that keep the session, and the execution in it.",
+          "fields": [
+            {
+              "name": "workspace",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "app_id",
+              "type": "text"
+            },
+            {
+              "name": "record",
+              "type": "text"
+            },
+            {
+              "name": "execution",
+              "type": "text"
             }
           ]
         },
@@ -1065,12 +1113,18 @@
               "type": "text"
             },
             {
-              "name": "view",
+              "name": "kind",
               "type": "text"
             },
             {
               "name": "place",
               "type": "text"
+            },
+            {
+              "name": "target",
+              "type": {
+                "named": "Target"
+              }
             },
             {
               "name": "title",
@@ -1103,9 +1157,11 @@
               }
             },
             {
-              "name": "lines",
+              "name": "diff",
               "type": {
-                "list": "text"
+                "list": {
+                  "named": "DiffLine"
+                }
               }
             },
             {
@@ -1115,6 +1171,26 @@
             {
               "name": "record",
               "type": "text"
+            },
+            {
+              "name": "execution",
+              "type": {
+                "option": {
+                  "named": "Execution"
+                }
+              }
+            },
+            {
+              "name": "undo_label",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "undo_verb",
+              "type": {
+                "option": "text"
+              }
             }
           ]
         },
@@ -1679,6 +1755,64 @@
               "type": {
                 "option": {
                   "named": "Feed"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "activity-output",
+      "label": "Command output",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "output",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "OutputReading"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "SessionOutput",
+          "doc": "Everything a command printed, as this device keeps it.",
+          "fields": [
+            {
+              "name": "lines",
+              "type": {
+                "list": "text"
+              }
+            },
+            {
+              "name": "truncated",
+              "type": "bool"
+            },
+            {
+              "name": "unavailable",
+              "type": "bool"
+            },
+            {
+              "name": "running",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "OutputReading",
+          "doc": "A command's whole output as its own reading: at most the lines its shell kept, or why this device holds none.",
+          "fields": [
+            {
+              "name": "output",
+              "type": {
+                "option": {
+                  "named": "SessionOutput"
                 }
               }
             }

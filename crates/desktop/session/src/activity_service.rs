@@ -30,6 +30,11 @@ pub(crate) const RESOURCE: &str = wire::RESOURCE;
 /// share a detail.
 pub(crate) const RANGE_PREFIX: &str = "workspace.activity/range/";
 
+/// What the workspace before and after a range of changes is published under, after this: the
+/// range's first and last change, as [`RANGE_PREFIX`]. A window that previews one change reads
+/// its own comparison.
+pub(crate) const COMPARE_PREFIX: &str = "workspace.activity/compare/";
+
 /// What a feed narrowed by the person's filters is published under: this workspace's changes or
 /// every workspace's, how far back, and the lens (a dash for none), after this. A window reads
 /// the page it shows, so two windows showing two periods each read their own.
@@ -39,6 +44,12 @@ pub(crate) const FEED_PREFIX: &str = "workspace.activity/feed/";
 /// `workspace.activity/sessions/all`. A window that lists them all reads its own page, while
 /// the activity's own reading holds this workspace's.
 pub(crate) const SESSIONS_PREFIX: &str = "workspace.activity/sessions/";
+
+/// What a command's whole output is published under, after this: the workspace its shell's
+/// record is in (a dash for this one), the app and record that keep the shell session, and the
+/// execution: `workspace.activity/output/-/<app>/<record>/<execution>`. A window that shows one
+/// command's output reads its own, while no other is read.
+pub(crate) const OUTPUT_PREFIX: &str = "workspace.activity/output/";
 
 /// The kind a reader with no words of its own knows the resource by.
 #[derive(tilo_resource::Row)]
@@ -349,6 +360,30 @@ pub(crate) struct Span {
     pub to: String,
 }
 
+/// Where a command's execution is recorded: the workspace its shell's record is in (none for this
+/// one), the app and record that keep the session, and the execution in it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub(crate) struct Execution {
+    pub workspace: Option<String>,
+    pub app_id: String,
+    pub record: String,
+    pub execution: String,
+}
+
+/// One line of a file's change.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub(crate) struct DiffLine {
+    /// `both`, `removed` or `added`.
+    pub side: String,
+    pub text: String,
+}
+
 /// One action an agent session took, and what it did.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default)]
@@ -361,9 +396,11 @@ pub(crate) struct SessionAction {
     /// What it did, as a sentence.
     pub summary: String,
     /// `file`, `command`, `page` or `record`.
-    pub view: String,
+    pub kind: String,
     /// A file's path, a command line, a page's address, or a record's id.
     pub place: String,
+    /// The resource the action touched, where it opens.
+    pub target: Target,
     /// The page's title, for a page.
     pub title: String,
     /// The directory a command ran in.
@@ -375,11 +412,20 @@ pub(crate) struct SessionAction {
     /// How a command ended; absent while it runs or when unknown.
     pub exit: Option<i64>,
     pub ended_ms: Option<i64>,
-    /// The lines a file's change added or removed.
-    pub lines: Vec<String>,
+    /// The lines a file's change added or removed, each with its side.
+    pub diff: Vec<DiffLine>,
     /// The app and record it changed.
     pub app_id: String,
     pub record: String,
+    /// The execution a command ran as, when its shell recorded one: what reads everything it
+    /// printed.
+    pub execution: Option<Execution>,
+    /// The action that undoes this record's share of the session alone, when it can be undone on
+    /// its own here.
+    pub undo_label: Option<String>,
+    /// What that action is, as the model names it: `undo-entry` for the record's share,
+    /// `undo` for the range of changes it took.
+    pub undo_verb: Option<String>,
 }
 
 /// One agent session: an instruction it worked, and the actions it took for it.
@@ -388,6 +434,8 @@ pub(crate) struct SessionAction {
 pub(crate) struct AgentSession {
     pub id: String,
     pub agent: Author,
+    /// The workspace it worked in, under every workspace's sessions.
+    pub workspace: Option<String>,
     /// What it was asked, as the person phrased it.
     pub instruction: String,
     /// Why it did what it did.
@@ -402,6 +450,9 @@ pub(crate) struct AgentSession {
     pub undo_blocked: Option<String>,
     /// What it is doing now, as a sentence; empty when it is not working.
     pub now: String,
+    /// What its `now` is: `running`, `editing`, `browsing`, `changing` or `ran`; empty when it
+    /// is not working.
+    pub now_kind: String,
 }
 
 /// Every agent session the history holds, newest first.
@@ -447,6 +498,32 @@ pub(crate) struct FeedReading {
 #[serde(default)]
 pub(crate) struct RangeDetail {
     pub detail: Option<Detail>,
+}
+
+/// A command's whole output as its own reading: at most the lines its shell kept, or why this
+/// device holds none.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub(crate) struct OutputReading {
+    pub output: Option<SessionOutput>,
+}
+
+/// Everything a command printed, as this device keeps it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub(crate) struct SessionOutput {
+    /// Its lines, without terminal escapes.
+    pub lines: Vec<String>,
+    /// It printed more than the lines hold, or more than its shell kept.
+    pub truncated: bool,
+    /// The execution is not known here, or its output has not reached this device.
+    pub unavailable: bool,
+    /// The execution has not ended.
+    pub running: bool,
 }
 
 /// The reads the model serves, in the order the service follows them: the action, and the
@@ -547,8 +624,10 @@ struct Keyed {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
     Range,
+    Compare,
     Feed,
     Sessions,
+    Output,
 }
 
 impl Key {
@@ -556,10 +635,14 @@ impl Key {
     fn of(resource: &str) -> Option<Self> {
         if resource.starts_with(RANGE_PREFIX) {
             Some(Self::Range)
+        } else if resource.starts_with(COMPARE_PREFIX) {
+            Some(Self::Compare)
         } else if resource.starts_with(FEED_PREFIX) {
             Some(Self::Feed)
         } else if resource.starts_with(SESSIONS_PREFIX) {
             Some(Self::Sessions)
+        } else if resource.starts_with(OUTPUT_PREFIX) {
+            Some(Self::Output)
         } else {
             None
         }
@@ -575,6 +658,16 @@ impl Key {
                     read_arguments(&wire::DetailQuery {
                         range,
                         compare: false,
+                    }),
+                ))
+            }
+            Self::Compare => {
+                let range = compare_range_of(resource)?;
+                Some((
+                    wire::DETAIL,
+                    read_arguments(&wire::DetailQuery {
+                        range,
+                        compare: true,
                     }),
                 ))
             }
@@ -595,22 +688,24 @@ impl Key {
                     }),
                 ))
             }
+            Self::Output => Some((wire::SESSION_OUTPUT, output_of(resource)?)),
         }
     }
 
     /// The reading an app gets of the model's last read of it.
     fn reading(self, value: &Value) -> Value {
         match self {
-            Self::Range => detail_json(value),
+            Self::Range | Self::Compare => detail_json(value),
             Self::Feed => feed_json(value),
             Self::Sessions => sessions_json(value),
+            Self::Output => output_json(value),
         }
     }
 
     /// What it reads as before the model has answered.
     fn empty(self) -> Value {
         match self {
-            Self::Range => empty_detail(),
+            Self::Range | Self::Compare => empty_detail(),
             Self::Feed => empty_feed(),
             Self::Sessions => serde_json::json!({
                 "sessions": [],
@@ -618,6 +713,7 @@ impl Key {
                 "pending": true,
                 "mutations": false,
             }),
+            Self::Output => empty_output(),
         }
     }
 }
@@ -927,6 +1023,21 @@ pub(crate) fn range_surface() -> tilo_actions::surface::Surface {
     )
 }
 
+/// A command's whole output as a view of another language reads it: the reading a view names by
+/// the command it shows. It offers no verbs of its own.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn output_surface() -> tilo_actions::surface::Surface {
+    named_root(
+        tilo_resource::surface::reading_surface::<OutputReading, tilo_resource::NoEffect>(
+            "activity-output",
+            "Command output",
+        ),
+        "OutputReading",
+        "Everything a command printed, as this device keeps it.",
+    )
+}
+
 /// What a view or an agent asks of the activity: an action of the model's, with its arguments.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "so.tilo.activity")]
@@ -1102,9 +1213,27 @@ impl SessionsValue {
 
 /// An agent session as an app reads it.
 fn session(session: &wire::AgentSession) -> AgentSession {
+    let (now, now_kind) = session.now.as_ref().map_or_else(
+        || (String::new(), String::new()),
+        |now| match now {
+            wire::Now::Running { command, .. } => (command.clone(), "running".to_owned()),
+            wire::Now::Editing { path, .. } => (path.clone(), "editing".to_owned()),
+            wire::Now::Browsing { url, title, .. } => (
+                if title.is_empty() {
+                    url.clone()
+                } else {
+                    title.clone()
+                },
+                "browsing".to_owned(),
+            ),
+            wire::Now::Changing { summary, .. } => (summary.clone(), "changing".to_owned()),
+            wire::Now::Ran { command, .. } => (command.clone(), "ran".to_owned()),
+        },
+    );
     AgentSession {
         id: session.id.clone(),
         agent: author(&session.agent),
+        workspace: session.workspace.clone(),
         instruction: session.instruction.clone(),
         decision: session.decision.clone(),
         started_ms: session.started_ms,
@@ -1112,30 +1241,14 @@ fn session(session: &wire::AgentSession) -> AgentSession {
         range: span(&session.range),
         actions: session.actions.iter().map(action).collect(),
         undo_blocked: session.undo_blocked.clone(),
-        now: session
-            .now
-            .as_ref()
-            .map_or_else(String::new, |now| match now {
-                wire::Now::Running { command, .. } => command.clone(),
-                wire::Now::Editing { path, .. } => path.clone(),
-                wire::Now::Browsing { url, title, .. } => {
-                    if title.is_empty() {
-                        url.clone()
-                    } else {
-                        title.clone()
-                    }
-                }
-                wire::Now::Changing { summary, .. }
-                | wire::Now::Ran {
-                    command: summary, ..
-                } => summary.clone(),
-            }),
+        now,
+        now_kind,
     }
 }
 
 /// One action of an agent session as an app reads it.
 fn action(action: &wire::SessionAction) -> SessionAction {
-    let (kind, place, title, cwd, output, more, exit, ended_ms, lines) = match &action.view {
+    let (kind, place, title, cwd, output, more, exit, ended_ms, diff) = match &action.view {
         wire::ActionView::File { path, lines, .. } => (
             "file",
             path.clone(),
@@ -1145,7 +1258,18 @@ fn action(action: &wire::SessionAction) -> SessionAction {
             false,
             None,
             None,
-            lines.iter().map(|line| line.text.clone()).collect(),
+            lines
+                .iter()
+                .map(|line| DiffLine {
+                    side: match line.side {
+                        wire::DiffSide::Both => "both",
+                        wire::DiffSide::Removed => "removed",
+                        wire::DiffSide::Added => "added",
+                    }
+                    .to_owned(),
+                    text: line.text.clone(),
+                })
+                .collect(),
         ),
         wire::ActionView::Command {
             command,
@@ -1189,22 +1313,50 @@ fn action(action: &wire::SessionAction) -> SessionAction {
             Vec::new(),
         ),
     };
+    let execution = match &action.view {
+        wire::ActionView::Command {
+            execution: Some(execution),
+            ..
+        } => Some(Execution {
+            workspace: execution.workspace.clone(),
+            app_id: execution.app_id.clone(),
+            record: execution.record.clone(),
+            execution: execution.execution.clone(),
+        }),
+        _ => None,
+    };
+    let (undo_label, undo_verb) = action.undo.as_ref().map_or((None, None), |offer| {
+        (
+            Some(offer.label.clone()),
+            Some(offer.action.action().to_owned()),
+        )
+    });
     SessionAction {
         range: span(&action.range),
         changes: i64::try_from(action.changes).unwrap_or(i64::MAX),
         at_ms: action.at_ms,
         summary: action.summary.clone(),
-        view: kind.to_owned(),
+        kind: kind.to_owned(),
         place,
+        target: Target {
+            app_id: action.view.target().app_id.clone(),
+            app_label: action.view.target().app_label.clone(),
+            id: action.view.target().id.clone(),
+            kind: action.view.target().kind.clone(),
+            label: action.view.target().label.clone(),
+        },
         title,
         cwd,
         output,
         more,
         exit: exit.map(i64::from),
         ended_ms,
-        lines,
+        diff,
         app_id: action.app_id.clone(),
         record: action.record.clone(),
+        execution,
+        undo_label,
+        undo_verb,
     }
 }
 
@@ -1275,6 +1427,62 @@ pub(crate) fn feed_resource(scope: &str, period: &str, lens: &str) -> String {
     format!("{FEED_PREFIX}{scope}/{period}/{lens}")
 }
 
+/// What a command's whole output is read with: the workspace its shell's record is in (a dash
+/// for this one), the app and record that keep the shell session, and the execution.
+fn output_of(resource: &str) -> Option<Map<String, Value>> {
+    let rest = resource.strip_prefix(OUTPUT_PREFIX)?;
+    let mut parts = rest.splitn(4, '/');
+    let workspace = match parts.next()? {
+        "-" => None,
+        workspace => Some(workspace.to_owned()),
+    };
+    let app_id = parts.next()?.to_owned();
+    let record = parts.next()?.to_owned();
+    let execution = parts.next()?.to_owned();
+    if app_id.is_empty() || record.is_empty() || execution.is_empty() {
+        return None;
+    }
+    Some(read_arguments(&wire::CommandExecution {
+        workspace,
+        app_id,
+        record,
+        execution,
+    }))
+}
+
+/// The resource a command's whole output is published as.
+#[cfg(test)]
+pub(crate) fn output_resource(
+    workspace: Option<&str>,
+    app_id: &str,
+    record: &str,
+    execution: &str,
+) -> String {
+    format!(
+        "{OUTPUT_PREFIX}{}/{app_id}/{record}/{execution}",
+        workspace.unwrap_or("-")
+    )
+}
+
+/// A command's output as an app reads it, from what the model read.
+fn output_json(value: &Value) -> Value {
+    match serde_json::from_value::<SessionOutput>(value.clone()) {
+        Ok(output) => serde_json::to_value(OutputReading {
+            output: Some(output),
+        })
+        .unwrap_or_else(|_| empty_output()),
+        Err(error) => {
+            tracing::warn!(%error, "a command's output is not the shape an app reads");
+            empty_output()
+        }
+    }
+}
+
+/// What a command's output with nothing read yet shows.
+fn empty_output() -> Value {
+    serde_json::to_value(OutputReading::default()).unwrap_or(Value::Null)
+}
+
 /// A page of the feed as an app reads it, from what the model read.
 fn feed_json(value: &Value) -> Value {
     let mut value = value.clone();
@@ -1319,6 +1527,22 @@ pub(crate) fn range_of(resource: &str) -> Option<wire::Range> {
         from: from.to_owned(),
         to: to.to_owned(),
     })
+}
+
+/// The range a comparison reading names, after [`COMPARE_PREFIX`].
+pub(crate) fn compare_range_of(resource: &str) -> Option<wire::Range> {
+    let rest = resource.strip_prefix(COMPARE_PREFIX)?;
+    let (from, to) = rest.split_once('-')?;
+    Some(wire::Range {
+        from: from.to_owned(),
+        to: to.to_owned(),
+    })
+}
+
+/// The resource a range's comparison is published as.
+#[cfg(test)]
+pub(crate) fn compare_resource(range: &wire::Range) -> String {
+    format!("{COMPARE_PREFIX}{}-{}", range.from, range.to)
 }
 
 /// The resource a range's detail is published as.
@@ -1508,6 +1732,12 @@ mod tests {
                     "gone": false,
                 })),
                 wire::FOCUS => Ok(Value::Null),
+                wire::SESSION_OUTPUT => Ok(serde_json::json!({
+                    "lines": ["$ cargo test", "ok"],
+                    "truncated": false,
+                    "unavailable": false,
+                    "running": false,
+                })),
                 other => Err(format!("no read `{other}`")),
             }
         }
@@ -1555,7 +1785,7 @@ mod tests {
         let sessions = reading.sessions.expect("agent sessions");
         assert_eq!(sessions.sessions[0].instruction, "Tidy the notes");
         assert_eq!(sessions.sessions[0].actions[0].place, "note-1");
-        assert_eq!(sessions.sessions[0].actions[0].view, "record");
+        assert_eq!(sessions.sessions[0].actions[0].kind, "record");
 
         // The model reads differently: the reading moves, and only then.
         assert!(
@@ -1634,6 +1864,29 @@ mod tests {
         );
         assert_eq!(served.moved(), None, "and it moved once");
 
+        // What the workspace held either side of that range is its own reading, so a window that
+        // previews a change asks for exactly that range's comparison.
+        let compare = compare_resource(&range);
+        let (action, arguments) = Key::Compare
+            .read(&compare)
+            .expect("the comparison read is asked");
+        assert_eq!(action, wire::DETAIL);
+        assert_eq!(
+            arguments.get("compare").and_then(Value::as_bool),
+            Some(true),
+            "the comparison is asked as one"
+        );
+        let first = served.read(&compare).expect("the comparison reads");
+        assert!(
+            first["detail"].is_null(),
+            "a comparison the model has not read yet reads as one with nothing in it"
+        );
+        let _ = served.poll();
+        serve(&requests, &mut model);
+        assert!(served.poll(), "the comparison's read arrives");
+        let detail = served.read(&compare).expect("the comparison reads");
+        assert_eq!(detail["detail"]["changes"][0]["after"], "Trip");
+
         // A page of the feed is a reading too, keyed by the person's filters: a window asking
         // for a week of one workspace reads that page and no other.
         let page = feed_resource("this", "week", "app:so.tilo.notes");
@@ -1682,13 +1935,41 @@ mod tests {
                 .is_some_and(|moved| moved.contains(&all.to_owned())),
             "the sessions' reading is named as the one that moved"
         );
+
+        // A command's whole output is one more reading, keyed by the execution the session's
+        // action names: a window that shows one command's output reads that one.
+        let output = output_resource(Some("Home"), "so.tilo.terminal", "shell-1", "exec-1");
+        let (action, arguments) = Key::Output
+            .read(&output)
+            .expect("the keyed output read is asked");
+        assert_eq!(action, wire::SESSION_OUTPUT);
+        assert_eq!(
+            arguments.get("execution").and_then(Value::as_str),
+            Some("exec-1")
+        );
+        assert_eq!(
+            arguments.get("workspace").and_then(Value::as_str),
+            Some("Home"),
+            "the workspace its shell's record is in is named"
+        );
+        let first = served.read(&output).expect("the output reads");
+        assert!(
+            first["output"].is_null(),
+            "a command's output the model has not read yet holds nothing"
+        );
+        let _ = served.poll();
+        serve(&requests, &mut model);
+        assert!(served.poll(), "the output's read arrives");
+        let output = served.read(&output).expect("the output reads");
+        assert_eq!(output["output"]["lines"][1], "ok");
+        assert_eq!(output["output"]["running"], false);
     }
 
     /// The surface an app compiles against is the one the session publishes, written beside the
     /// session as `activity-surface.json`.
     #[test]
     fn the_activity_surface_file_is_what_the_session_publishes() {
-        let published = vec![surface(), range_surface(), feed_surface()];
+        let published = vec![surface(), range_surface(), feed_surface(), output_surface()];
         let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
             .expect("a surface writes as JSON");
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("activity-surface.json");
