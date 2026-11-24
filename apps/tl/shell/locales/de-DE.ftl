@@ -1921,12 +1921,23 @@ d-65ugxki4 = Fenstermenü-Karte
 
 d-vhbxgivv = Fenstermenü-Zeile
 
+d-5myqhmsc = Was eine Leserin über eine Person hört
+    .w-agent = Agent
+    .w-joined = Beigetreten um { $joined }
+    .w-now = Jetzt: { $place }
+    .w-in-a-call = In einem Anruf: { $call }
+    .w-follows-you = Folgt dir
+
 d-mxfb2qdk = Wo-Zeile
     .w-working-in = Arbeitet in { $title }
     .w-viewing = Sieht { $title }
     .w-in = In { $in_app }
 
 d-xgvy7oje = Personen
+
+d-avkcokw5 = Personentafel
+    .w-people = Personen
+    .w-who-is-here-where-they-are = Wer hier ist, wo sie sind und was sie tun
     .w-close = Schließen
 
 d-vb456dpi = Liste
@@ -1938,12 +1949,17 @@ d-vb456dpi = Liste
     .w-agents = Agenten
     .w-invite-someone = Jemanden einladen
 
+d-djpxekrm = Person in der Liste
+    .w-someone = Jemand
+    .w-wave-at = { $label } zuwinken
+    .w-stop-following = { $label } nicht mehr folgen
+    .w-follow = { $label } folgen
+    .w-go-where-works = Dorthin gehen, wo { $label } arbeitet
+
 d-vyjuo52r = Zeile einer Person
     .w-someone = Jemand
     .w-joined = Beigetreten um { $joined }
-    .w-go-there = Dorthin gehen
-
-d-cddyuqgj = Gruppenüberschrift
+    .w-go-where-works = Dorthin gehen, wo { $name } arbeitet
 
 d-uw37p3tz = Titel der Liste
     .w-who-is-here = Wer hier ist
