@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilolang_runtime::blob::FileValue;
-use tilolang_runtime::value::{EnumValue, RecordInit};
+use tilolang_runtime::value::EnumValue;
 use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::host::RootView;
 use tilolang_tilo::runtime::ids::MemberId;
@@ -55,29 +55,6 @@ fn package_of_type(ada: &Replica, ty_name: &str) -> tilolang_runtime::meta::Meta
         return meta;
     }
     ada.host.package("tilo.std").unwrap().meta
-}
-
-/// A declared record type's value, its fields given by name.
-fn record(ada: &Replica, ty_name: &str, fields: &[(&str, Value)]) -> Value {
-    let meta = package_of_type(ada, ty_name);
-    let ty = meta
-        .types
-        .iter()
-        .find(|ty| ty.name == ty_name)
-        .unwrap_or_else(|| panic!("the {ty_name} type"));
-    let mut held = BTreeMap::new();
-    for (name, value) in fields {
-        let field = ty
-            .fields
-            .iter()
-            .find(|field| field.name == *name)
-            .unwrap_or_else(|| panic!("{ty_name} has no field {name}"));
-        held.insert(field.id.clone(), value.clone());
-    }
-    Value::Rec(RecordInit {
-        ty: ty.id.clone(),
-        fields: held,
-    })
 }
 
 fn none() -> Value {

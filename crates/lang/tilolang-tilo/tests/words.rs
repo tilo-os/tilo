@@ -461,7 +461,6 @@ fn a_root_reads_as_the_apps_name_not_what_it_holds() {
 fn the_palette_reads_native_and_tilolang_actions_in_german() {
     use tilo_desktop_search::model::Source as _;
     use tilo_desktop_search::providers::{Published, PublishedActions};
-    use tilo_resource::effect::{Effect as _, EffectDecl};
 
     let (host, package) = notes("de-DE");
     let notebook = notebook(&host, &package);

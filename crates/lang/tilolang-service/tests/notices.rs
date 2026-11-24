@@ -28,40 +28,6 @@ const CLOCKS: (&str, &str) = (
 );
 const CLOCKS_APP: &str = "so.tilo.clocks";
 
-/// An app that tells a person about a note and then asks who seals it: the notice is written
-/// before the ask, as something that goes out before one is.
-const TELLER: (&str, &str) = (
-    r#"app so.tilo.test.teller "Teller"
-
-type Note {
-    sealed: Bool
-}
-
-/// Tells the person about the note, then asks who seals it.
-action tell_and_seal(n: Note) uses notify {
-    notify(to: invoker, title: "A note of yours", body: "", opens: n)
-    seal(n)
-}
-
-/// Seals the note: it reaches outside, so a person decides it before it happens.
-action seal(n: Note) {
-    outside("smtp.send", (n.sealed,))
-    n.sealed = true
-}
-
-root Note
-
-default view note for Note
-
-view note(n: Note) {
-    ui.Text("a note")
-}
-"#,
-    "",
-);
-const TELLER_APP: &str = "so.tilo.test.teller";
-const WORKSPACE: &str = "workspace";
-
 /// What one device showed and took back, and what its platform said of the notifications it
 /// closed, as the notifications service would.
 #[derive(Clone, Default)]

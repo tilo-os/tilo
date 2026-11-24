@@ -100,7 +100,7 @@ fn a_second_device_sees_and_edits_the_same_tasks() {
 fn a_workspace_founded_again_keeps_the_tasks_the_hosted_one_holds() {
     let (site, root) = workspace();
     let ferry = call(&site, "new_task", create(&root, "Book the ferry"));
-    let tent = call(&site, "new_task", create(&root, "Pack the tent"));
+    call(&site, "new_task", create(&root, "Pack the tent"));
     site.commit();
     let before = items(&site);
 
