@@ -565,6 +565,16 @@ pub trait Widget {
         false
     }
 
+    /// The path of the node this widget publishes for one retained [`children`](Widget::children)
+    /// entry, where a page puts what the child composes under it: the node
+    /// [`accessibility`](Widget::accessibility) hangs the child's own controls off, or the node
+    /// that stands for the child itself. A widget whose node covers more than the child it speaks
+    /// for names it here, since the node does not stand where the child's own box does: a list's
+    /// row covers its lift, the row widget only the content between its gutters.
+    fn accessibility_child_node(&self, child_index: usize) -> Option<Vec<usize>> {
+        self.accessibility_child_path(child_index)
+    }
+
     /// Whether this widget lays one retained [`children`](Widget::children) entry out itself (an
     /// [`Embedded`](crate::widget::Embedded) part of a painted page) rather than through the window's
     /// layout, which then gives it no node.

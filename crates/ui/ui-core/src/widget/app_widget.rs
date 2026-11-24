@@ -1319,6 +1319,10 @@ mod component_adapter {
             self.in_root(|root| root.accessibility_child_path(child_index))
                 .flatten()
         }
+        fn accessibility_child_node(&self, child_index: usize) -> Option<Vec<usize>> {
+            self.in_root(|root| root.accessibility_child_node(child_index))
+                .flatten()
+        }
         fn accessibility_represents_child(&self, child_index: usize) -> bool {
             self.in_root(|root| root.accessibility_represents_child(child_index))
                 .unwrap_or_default()

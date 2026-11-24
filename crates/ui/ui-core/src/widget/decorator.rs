@@ -535,6 +535,7 @@ decorator_trait! {
         fn synthetic_accessibility_rect(path: &[usize]) -> Option<vello::kurbo::Rect>;
         fn accessibility_child_parent(child_index: usize) -> Option<usize>;
         fn accessibility_child_path(child_index: usize) -> Option<Vec<usize>>;
+        fn accessibility_child_node(child_index: usize) -> Option<Vec<usize>>;
         fn accessibility_represents_child(child_index: usize) -> bool;
         fn lays_out_child(child_index: usize) -> bool;
         fn accessibility_child_description(child_index: usize) -> Option<String>;
