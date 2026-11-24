@@ -271,9 +271,9 @@ async fn post(
     .expect("the person posts");
 }
 
-/// The changes `person` made by actions of theirs, as the record's history names them: not what
+/// The versions `person` wrote by actions of theirs, as the record's history lists them: not what
 /// the platform wrote for them, such as the record's root.
-fn changes_of(versions: &[Value], person: &str) -> Vec<String> {
+fn versions_of<'a>(versions: &'a [Value], person: &str) -> Vec<&'a Value> {
     let who = serde_json::to_value(tilo_workspace_service::tl_records::member(
         tilo_actions::MemberId::person(person.to_owned()),
     ))
@@ -287,9 +287,16 @@ fn changes_of(versions: &[Value], person: &str) -> Vec<String> {
                 .unwrap_or_default()
                 .starts_with('$')
         })
+        .collect()
+}
+
+/// The changes `person` made by actions of theirs. A change that wrote several resources is a
+/// version of each, and one change.
+fn changes_of(versions: &[Value], person: &str) -> Vec<String> {
+    versions_of(versions, person)
+        .into_iter()
         .filter_map(|version| version["change"].as_str())
         .map(str::to_owned)
-        // A change that wrote several resources is a version of each, and one change.
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -403,7 +410,7 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     );
     assert_eq!(
         shown.matches("\"who\"").count(),
-        taken.len(),
+        versions_of(&before, &owner).len(),
         "only the person's changes: {shown}"
     );
 
