@@ -38,6 +38,11 @@ impl StatePeer {
         envelope: collab_types::SignedOp,
         now: SystemTime,
     ) -> Result<AdmissionReport, crate::NotAdmitted> {
+        // A record whose stored history is set aside keeps none of what is written to it until a
+        // device sends its history again: a write taken now would not survive a restart.
+        if self.quarantined_route(app, record) {
+            return Err(crate::NotAdmitted::Restoring);
+        }
         let source = *envelope.author.as_bytes();
         if self.document(app, record).is_none() {
             // A local publication is an authored change to a record the

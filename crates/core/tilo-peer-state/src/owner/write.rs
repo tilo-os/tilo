@@ -42,6 +42,11 @@ pub enum WriteRefusal {
     /// person's activity reads it.
     #[error("{0}")]
     ChangeRefused(Box<crate::ChangeRefused>),
+    /// The record's stored history was set aside when this device opened the workspace and is
+    /// asked of another device again: nothing written to it could be kept until it is back
+    /// ([`crate::StatePeer::quarantined`]).
+    #[error("{}", crate::NotAdmitted::Restoring)]
+    Restoring,
 }
 
 impl WriteRefusal {
@@ -51,7 +56,7 @@ impl WriteRefusal {
         use neighbour_wire::RefusalReason;
         match self {
             Self::HistoryFull { .. } => RefusalReason::Full,
-            Self::Waiting(_) => RefusalReason::MissingDependency,
+            Self::Waiting(_) | Self::Restoring => RefusalReason::MissingDependency,
             Self::Declined { reason, .. } => *reason,
             Self::ChangeRefused(refused) => refused.reason_class(),
             Self::Unsigned(_) | Self::Refused(_) => RefusalReason::Other,
@@ -639,6 +644,7 @@ fn refusal_of(refused: crate::NotAdmitted) -> WriteRefusal {
             app: String::new(),
             record: String::new(),
         },
+        crate::NotAdmitted::Restoring => WriteRefusal::Restoring,
         crate::NotAdmitted::Refused { reason, detail } => WriteRefusal::Declined { reason, detail },
         crate::NotAdmitted::ChangeRefused(refused) => WriteRefusal::ChangeRefused(refused),
     }

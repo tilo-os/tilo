@@ -22,6 +22,10 @@ pub enum NotAdmitted {
     /// The workspace's rules refused the change before it went: the document it writes, the
     /// changes it carries and why, as a server's refusal of a change names them.
     ChangeRefused(Box<crate::ChangeRefused>),
+    /// The record's stored history was set aside when this device opened the workspace, and it
+    /// is asked of another device again: nothing written to it now could be kept, so the write is
+    /// refused until the history is back ([`super::StatePeer::quarantined`]).
+    Restoring,
 }
 
 impl std::fmt::Display for NotAdmitted {
@@ -30,6 +34,7 @@ impl std::fmt::Display for NotAdmitted {
             Self::Waiting(prerequisite) => write!(f, "the write waits for {prerequisite}"),
             Self::Refused { detail, .. } => f.write_str(detail),
             Self::HistoryFull => AdmissionError::HistoryFull.fmt(f),
+            Self::Restoring => f.write_str("This record is being restored from another device."),
             Self::ChangeRefused(refused) => f.write_str(&refused.reason),
         }
     }

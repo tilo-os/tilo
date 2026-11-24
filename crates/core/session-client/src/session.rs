@@ -3429,6 +3429,7 @@ impl Task {
             Err(
                 refusal @ (tilo_peer_state::owner::WriteRefusal::Refused(_)
                 | tilo_peer_state::owner::WriteRefusal::Declined { .. }
+                | tilo_peer_state::owner::WriteRefusal::Restoring
                 | tilo_peer_state::owner::WriteRefusal::ChangeRefused(_)),
             ) => Some(self.refused_write(route, &refusal)),
         }

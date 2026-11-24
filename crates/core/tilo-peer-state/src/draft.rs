@@ -284,6 +284,7 @@ async fn signed_local_write(
                     app: write.app.clone(),
                     record: write.document.clone(),
                 },
+                NotAdmitted::Restoring => WriteRefusal::Restoring,
                 NotAdmitted::Refused { reason, detail } => {
                     WriteRefusal::Declined { reason, detail }
                 }

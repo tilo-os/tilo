@@ -3,7 +3,7 @@
 //! brings it back through the same admission every write takes.
 
 use super::*;
-use crate::{AdmissionError, Quarantined};
+use crate::{AdmissionError, NotAdmitted, Quarantined};
 
 const OTHER: &str = "tab:2";
 
@@ -216,10 +216,32 @@ fn a_tampered_record_is_set_aside_and_comes_back_from_a_device_keeping_it() {
 
     // A device keeping the record sends its history again: the full admission takes it in, and
     // once it reaches the record's watermark the record leaves quarantine.
+    // Nothing written here while the record is set aside could be kept across a restart: a
+    // local write to it is refused at once, and says why.
+    let mut aside = Author(author.0.clone());
+    let early = write(&restored, &other, &keys, &aside.edit("value", "3"), now);
+    let refused = restored
+        .admit_new_local_document(APP, RECORD, envelope_of(&early), now)
+        .unwrap_err();
+    assert!(matches!(refused, NotAdmitted::Restoring), "{refused}");
+    assert_eq!(
+        refused.to_string(),
+        "This record is being restored from another device."
+    );
+    assert!(held(&restored).is_empty());
+
     for sealed in history {
         admit(&mut restored, &other, sealed, now);
     }
     assert!(restored.quarantined().is_empty(), "the record is back");
+    assert_eq!(held(&restored), kept);
+    // Back, the record takes this device's writes again, and they survive a restart.
+    let later = write(&restored, &other, &keys, &author.edit("value", "3"), now);
+    restored
+        .admit_new_local_document(APP, RECORD, envelope_of(&later), now)
+        .unwrap();
+    let mut kept = kept;
+    kept.push(envelope_of(&later));
     assert_eq!(held(&restored), kept);
     let reopened = f.restore(&restored.durable().unwrap()).unwrap();
     assert!(reopened.quarantined().is_empty());
