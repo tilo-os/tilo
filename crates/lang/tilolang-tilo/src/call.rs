@@ -26,7 +26,7 @@ pub struct Callees {
     /// packages of the providers the device registered ([`Callees::provide`]).
     pub published: HashSet<String>,
     /// The resource each loose action is published on, by the action's id: the session's (its
-    /// own ids), and a registered provider's (`<app>#<verb>`).
+    /// own ids, `Shell/place`), and a registered provider's (`<app>#<Type>/<verb>`).
     pub addresses: BTreeMap<String, String>,
     /// The workspace the call is made in: what a dispatch serving more than one routes it by, so a
     /// call reaches a record in another workspace the person belongs to.
@@ -246,7 +246,7 @@ fn published_call(
         Some(target) => target.id_string(),
         // The session's loose actions keep their own ids; a provider's are named by its app.
         None => addresses
-            .get(&crate::catalogue::untyped_id(action))
+            .get(action)
             .cloned()
             .filter(|_| {
                 app == crate::platform_apps::SESSION_APP

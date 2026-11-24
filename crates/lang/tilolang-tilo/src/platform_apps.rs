@@ -418,10 +418,10 @@ fn package(published: &Published) -> Result<PackageMeta, String> {
         }
     }
     // The session's own resources are described here, as the runtime loads them
-    // ([`session_package`]): its actions keep the ids its surface names them by, which is what
-    // the code calling them compiles to. An app's directory of the same name
-    // (`apps/tl/session`) names them by its app (`so.tilo.session#place`), which no call the
-    // runtime loads makes; the description here stands first, so a build reads it.
+    // ([`session_package`]): its actions keep the ids its surface names them by (`Shell/place`),
+    // which is what the code calling them compiles to. An app's directory of the same name
+    // (`apps/tl/session`) names them by its app too (`so.tilo.session#Shell/place`), which no
+    // call the runtime loads makes; the description here stands first, so a build reads it.
     let mut meta = if published.described {
         let file = published.files.first().copied().unwrap_or_default();
         crate::catalogue::described(published.app, published.title, file)?

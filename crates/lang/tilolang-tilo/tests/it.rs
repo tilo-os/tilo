@@ -11,6 +11,7 @@
     reason = "test assertions"
 )]
 
+mod action_ids;
 mod agent_queries;
 mod atomic;
 mod block_search;

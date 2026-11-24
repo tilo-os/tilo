@@ -496,7 +496,7 @@ impl SessionOrigin {
 pub(super) struct PlaceInvoker {
     pub(super) link: Rc<SessionLink>,
     /// The resource each of the session's loose actions is published on, by the action's id
-    /// (`session.show_surface(...)` goes to the shell).
+    /// (`session.show_surface(...)`, `Shell/show-surface`, goes to the shell).
     pub(super) session: BTreeMap<String, String>,
     /// The session's loose actions as its description declares them, by id: a parameter
     /// published as a field of another is sent nested under it.
@@ -536,24 +536,20 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                         kind: tilolang_tilo::resources::kinds::kind_of_type(&from.ty),
                     }),
             },
-            Invocation::Action { app, action, .. }
-                if app == super::SESSION_APP
-                    && self
-                        .session
-                        .contains_key(&tilolang_tilo::catalogue::untyped_id(action)) =>
-            {
-                // The session's loose action, by the verb its id names after its type.
-                let verb = tilolang_tilo::catalogue::untyped_id(action);
+            Invocation::Action {
+                app, action, name, ..
+            } if app == super::SESSION_APP && self.session.contains_key(action) => {
                 Ask {
                     // The guard says this action's resource is here; read it
                     // without indexing so a later change to the guard cannot
                     // panic a press.
-                    resource: self.session.get(&verb).cloned().unwrap_or_default(),
+                    resource: self.session.get(action).cloned().unwrap_or_default(),
+                    // As the session publishes it: the verb, not the id that names its type.
+                    action: name.clone(),
                     arguments: session_arguments(
-                        self.verbs.get(&verb),
+                        self.verbs.get(action),
                         invocation.api_arguments(),
                     ),
-                    action: verb,
                     from: None,
                 }
             }

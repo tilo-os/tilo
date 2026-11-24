@@ -381,7 +381,7 @@ impl TaskSession {
                 .flatten()
                 .filter(|ty| own_types.contains(&(signature.app.clone(), (*ty).to_owned())));
             let at = (action && on.is_none() && signature.app == crate::platform_apps::SESSION_APP)
-                .then(|| addresses.get(&crate::catalogue::untyped_id(&signature.id)))
+                .then(|| addresses.get(&signature.id))
                 .flatten();
             let app = apps
                 .entry(alias)
@@ -1211,7 +1211,7 @@ mod tests {
     }
 
     /// Chat, as its session hands the app's package to a task: its verbs named by the catalogue
-    /// (`so.tilo.chat#rename-channel`).
+    /// (`so.tilo.chat#Workspace/rename-channel`).
     fn chat() -> Meta {
         crate::catalogue::NativeSurface {
             app: "so.tilo.chat".to_owned(),

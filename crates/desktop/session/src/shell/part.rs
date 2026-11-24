@@ -459,7 +459,7 @@ impl Loads for ShellPlatform {
         };
         // The session's own package is a description: its actions run at the session's API.
         // It is the one the shell was built against — the bundle's own import, whose action ids
-        // are the ids the shell's code calls (`so.tilo.session#workspace-menu`). A package read again
+        // are the ids the shell's code calls (`Desktop/workspace-menu`). A package read again
         // from the source describes the same resources under the same names, but names its
         // actions as the surface does (`workspace-menu`), which is not what a compiled call names:
         // the runtime would find no action for it and the view would fail. The source's

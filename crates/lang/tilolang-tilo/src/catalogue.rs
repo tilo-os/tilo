@@ -4,9 +4,9 @@
 //! (`tilo_actions::surface::Surface`), whichever language the app is written in. Read as a
 //! package, a surface's resource kinds are its types, the documents and enums its fields name are
 //! types and enums, and its verbs are actions on their resource, each with an id naming that
-//! type and the verb (`Banners/act`). That package is what another
-//! package `use`s (`use so.tilo.chat as chat`), type-checked against at compile time, and what
-//! `tilolang describe` prints, native and tilolang apps alike.
+//! type and the verb (`Banners/act`). That package is what another package `use`s (`use
+//! so.tilo.chat as chat`), type-checked against at compile time, and what `tilolang describe`
+//! prints, native and tilolang apps alike.
 //!
 //! A tilolang record type is a resource of its own, so a field holding a document of another
 //! type refers to it ([`FieldType::Resource`]); a native document nested in a resource is part of
@@ -78,47 +78,55 @@ fn published(text: &str) -> Result<Vec<Published>, String> {
     Ok(file.resources)
 }
 
-/// The address each loose action of a `surface.toml` is published on, by the action's id: the
-/// resource whose `id` the file gives. An action of a resource kind without one (a native
-/// app's, or a kind of `instances`) is sent to the resource it is called on instead.
+/// The address each loose action of a `surface.toml` is published on, by the action's id
+/// ([`verb_id`]): the resource whose `id` the file gives. An action of a resource kind without
+/// one (a native app's, or a kind of `instances`) is sent to the resource it is called on
+/// instead.
 ///
 /// # Errors
-/// The text is not a surface file, or two resources with an address publish an action of the
-/// same id, so a call of it would name neither.
+/// The text is not a surface file, or two resources with an address publish one action, so a
+/// call of it would name neither.
 pub fn addresses(text: &str) -> Result<BTreeMap<String, String>, String> {
-    let surfaces = parse_surfaces(text)?;
-    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    Ok(loose(text)?
+        .into_iter()
+        .map(|(id, (address, _))| (id, address))
+        .collect())
+}
+
+/// The loose actions of a `surface.toml` as it declares them, by id ([`verb_id`]): the verbs of
+/// the resources whose `id` the file gives ([`addresses`]). A kind of `instances` offers its
+/// verbs on each resource of it, so an app's `open` is no loose `open` and never stands for the
+/// layout's.
+///
+/// # Errors
+/// As [`addresses`].
+pub fn loose_verbs(text: &str) -> Result<BTreeMap<String, VerbSurface>, String> {
+    Ok(loose(text)?
+        .into_iter()
+        .map(|(id, (_, verb))| (id, verb))
+        .collect())
+}
+
+/// The loose actions of a `surface.toml` by id, each with the address it is published on.
+fn loose(text: &str) -> Result<BTreeMap<String, (String, VerbSurface)>, String> {
+    let (surfaces, instances) = read_surfaces(text)?;
+    let types = verb_types(&surfaces, &instances);
+    let mut out: BTreeMap<String, (String, VerbSurface)> = BTreeMap::new();
     for (surface, published) in surfaces.iter().zip(published(text)?) {
-        let Some(id) = published.id else {
+        let Some(address) = published.id else {
             continue;
         };
+        let ty = types.get(&surface.kind).map_or("", String::as_str);
         for verb in surface.verbs.iter().filter(|verb| !platform_verb(verb)) {
-            if let Some(other) = out.insert(verb.id.clone(), id.clone()) {
+            let id = id_of(ty, verb);
+            if let Some((other, _)) = out.insert(id.clone(), (address.clone(), verb.clone())) {
                 return Err(format!(
-                    "`{}` is published on both `{other}` and `{id}`",
-                    verb.id
+                    "`{id}` is published on both `{other}` and `{address}`"
                 ));
             }
         }
     }
     Ok(out)
-}
-
-/// The loose actions of a `surface.toml` as it declares them, by id: the verbs of the resources
-/// whose `id` the file gives ([`addresses`]). A kind of `instances` offers its verbs on each
-/// resource of it, so an app's `open` is no loose `open` and never stands for the layout's.
-///
-/// # Errors
-/// As [`addresses`].
-pub fn loose_verbs(text: &str) -> Result<BTreeMap<String, VerbSurface>, String> {
-    addresses(text)?;
-    Ok(parse_surfaces(text)?
-        .into_iter()
-        .zip(published(text)?)
-        .filter(|(_, published)| published.id.is_some())
-        .flat_map(|(surface, _)| surface.verbs)
-        .map(|verb| (verb.id.clone(), verb))
-        .collect())
 }
 
 /// The resources a `surface.toml` lists.
@@ -201,34 +209,63 @@ pub fn provided(
         .map(|resource| resource.surface.clone())
         .collect();
     let meta = native_package(&package.app, &package.title, &surfaces, &[]);
+    let types = verb_types(&surfaces, &[]);
     let addresses = package
         .resources
         .iter()
         .flat_map(|resource| {
+            let ty = types.get(&resource.surface.kind).map_or("", String::as_str);
             resource
                 .surface
                 .verbs
                 .iter()
                 .filter(|verb| !platform_verb(verb))
-                .map(|verb| (action_id(&package.app, &verb.id), resource.address.clone()))
+                .map(move |verb| {
+                    (
+                        action_id(&package.app, &id_of(ty, verb)),
+                        resource.address.clone(),
+                    )
+                })
         })
         .collect();
     (meta, addresses)
 }
 
-/// The id a catalogue gives the action `verb` of the app `app`: `so.tilo.chat#share-window`, or
-/// `so.tilo.chat#Messages/share-window` where the verb names its type. A surface's verb ids are
-/// the app's own, so several apps in one catalogue would otherwise be one action; its types are
-/// named by their app the same way. The app's own api takes the verb back ([`published_verb`]).
+/// The id a catalogue gives the action `verb` (its [`verb_id`]) of the app `app`:
+/// `so.tilo.chat#Messages/share-window`. A surface's verb ids are the app's own (`open`,
+/// `share-window`), so several apps in one catalogue would otherwise be one action; its types
+/// are named by their app the same way. The app's own api takes the verb back
+/// ([`published_verb`]).
 #[must_use]
 pub fn action_id(app: &str, verb: &str) -> String {
     format!("{app}#{verb}")
 }
 
-/// The verb id the app's own api takes for the catalogue action `id` ([`action_id`]): every
-/// catalogue action's id names its resource type and the verb (`so.tilo.chat#Workspace/rename`,
-/// the session's `Shell/place`), and the api takes it by the verb alone. A tilolang package's
-/// action keeps the id its app gives it.
+/// The id of the verb `verb` of the resource type `ty` within its app: `Banners/act`. An
+/// action belongs to its resource's type, and its id always names the type, never the verb
+/// alone: were a verb offered on one type named by the verb, a second type adding the same verb
+/// would rename it, and every grant, shortcut and invocation record naming the old id would
+/// quietly stop matching.
+#[must_use]
+pub fn verb_id(ty: &str, verb: &str) -> String {
+    format!("{ty}/{verb}")
+}
+
+/// The id of the action `verb` of the resource type `ty` declares: its [`verb_id`], or, for a
+/// tilolang package's verb (one offered by a name of its own), the id its declaration keeps
+/// (`qymo5lg2`). That id is already the declaration's alone, whatever other type declares the
+/// name, and it is what a change of the action claims.
+fn id_of(ty: &str, verb: &VerbSurface) -> String {
+    if verb.name.is_empty() {
+        verb_id(ty, &verb.id)
+    } else {
+        verb.id.clone()
+    }
+}
+
+/// The verb id the app's own api takes for the catalogue action `id` ([`action_id`]): the verb
+/// after its resource type (`so.tilo.chat#Workspace/rename`, the session's `Shell/place`). A
+/// tilolang package's action keeps the id its app gives it.
 #[must_use]
 pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {
     let id = id
@@ -236,20 +273,6 @@ pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {
         .and_then(|rest| rest.strip_prefix('#'))
         .unwrap_or(id);
     id.rsplit_once('/').map_or(id, |(_, verb)| verb)
-}
-
-/// The catalogue action `id` without its type: `so.tilo.chat#Workspace/rename` is
-/// `so.tilo.chat#rename`, and the session's `Shell/place` is `place`, as [`addresses`] and
-/// [`provided`] list the resource each loose action is published on.
-#[must_use]
-pub fn untyped_id(id: &str) -> String {
-    match id.rsplit_once('/') {
-        Some((head, verb)) => match head.rsplit_once('#') {
-            Some((app, _)) => format!("{app}#{verb}"),
-            None => verb.to_owned(),
-        },
-        None => id.to_owned(),
-    }
 }
 
 /// The surface a native app directory publishes: its manifest's id and name, and its
@@ -546,6 +569,7 @@ fn package_with(
         ids,
         kinds: kind_names(surfaces, instances),
         rows: row_kinds(surfaces),
+        types: verb_types(surfaces, instances),
         declared: BTreeMap::new(),
         meta: PackageMeta {
             app: app.to_owned(),
@@ -565,23 +589,40 @@ fn package_with(
 /// `WorkspaceEmoji`). A resource of a kind of `instances` is a type too, though it stores no
 /// fields: its verbs act on the one resource they are called on.
 fn kind_names(surfaces: &[Surface], instances: &[String]) -> BTreeMap<String, String> {
-    let named: Vec<&str> = surfaces
+    surfaces
         .iter()
-        .flat_map(|surface| surface.types.iter().map(|ty| ty.name.as_str()))
-        .collect();
-    let mut kinds = BTreeMap::new();
-    for surface in surfaces {
-        if !surface.fields.is_empty() || instances.contains(&surface.kind) {
-            let short = kind_type_name(&surface.kind);
-            let name = if named.contains(&short.as_str()) {
-                longer_type_name(&surface.kind)
-            } else {
-                short
-            };
-            kinds.insert(surface.kind.clone(), name);
-        }
+        .filter(|surface| !surface.fields.is_empty() || instances.contains(&surface.kind))
+        .map(|surface| (surface.kind.clone(), type_name(surfaces, &surface.kind)))
+        .collect()
+}
+
+/// The type name of the resource kind `kind` of `surfaces`: [`kind_type_name`], or
+/// [`longer_type_name`] where a document or enum of the app already has that name.
+fn type_name(surfaces: &[Surface], kind: &str) -> String {
+    let short = kind_type_name(kind);
+    let named = surfaces
+        .iter()
+        .flat_map(|surface| &surface.types)
+        .any(|ty| ty.name == short);
+    if named { longer_type_name(kind) } else { short }
+}
+
+/// The resource type each resource kind of `surfaces` offers its verbs as actions of, which
+/// each action's id names ([`verb_id`]): the kind's type ([`kind_names`]), else the record type
+/// a reading holds resources of it as ([`row_kinds`]). A resource that is neither (the shell's
+/// layout, a workspace's members) stores nothing code reads, so its verbs take no resource
+/// first; their ids still name the type of the resource they are published on.
+fn verb_types(surfaces: &[Surface], instances: &[String]) -> BTreeMap<String, String> {
+    let mut types = kind_names(surfaces, instances);
+    for (kind, row) in row_kinds(surfaces) {
+        types.entry(kind).or_insert(row);
     }
-    kinds
+    for surface in surfaces {
+        types
+            .entry(surface.kind.clone())
+            .or_insert_with(|| type_name(surfaces, &surface.kind));
+    }
+    types
 }
 
 /// The record types of `surfaces` that are resources of their own, by their kind: a record a
@@ -641,6 +682,8 @@ struct Reader<'a> {
     /// The record types that are resources of their own ([`row_kinds`]), by kind: their kind's
     /// verbs are actions on them, and the record its reading declares is their type.
     rows: BTreeMap<String, String>,
+    /// The resource type each kind's verbs are actions of ([`verb_types`]).
+    types: BTreeMap<String, String>,
     /// The named types declared so far, by name, and whether each is an enum.
     declared: BTreeMap<String, (NamedType, bool)>,
     meta: PackageMeta,
@@ -686,10 +729,9 @@ impl Reader<'_> {
         if let Some(own) = own.as_ref().filter(|_| row.is_none()) {
             self.own_type(surface, own, &rename);
         }
-        // Every action is its resource type's: a loose verb's type is its resource's kind.
-        let ty = own.clone().unwrap_or_else(|| kind_type_name(&surface.kind));
+        let ty = self.types.get(&surface.kind).cloned().unwrap_or_default();
         for verb in surface.verbs.iter().filter(|verb| !platform_verb(verb)) {
-            self.action(verb, own.as_deref(), &ty, &rename);
+            self.action(verb, &ty, own.as_deref(), &rename);
         }
     }
 
@@ -790,14 +832,15 @@ impl Reader<'_> {
         });
     }
 
-    /// Declares the verb `verb` of the resource type `own` (none: a loose verb) as an action
-    /// taking its resource first. A verb with a parameter of a type tilolang code cannot give
-    /// (bytes, any JSON value) is left out: tilolang code cannot call it.
+    /// Declares the verb `verb` of the resource type `ty` as an action, taking its resource first
+    /// where code holds one of it (`own`; none for a resource that stores nothing code reads). A
+    /// verb with a parameter of a type tilolang code cannot give (bytes, any JSON value) is left
+    /// out: tilolang code cannot call it.
     fn action(
         &mut self,
         verb: &VerbSurface,
-        own: Option<&str>,
         ty: &str,
+        own: Option<&str>,
         rename: &dyn Fn(&str) -> String,
     ) {
         let mut params = Vec::new();
@@ -854,11 +897,11 @@ impl Reader<'_> {
             };
             self.ty(&ty, rename)
         });
-        // An action belongs to its resource's type, and its id names that type and the verb
-        // (`Banners/act`), so a second type offering the verb never changes an id that grants
-        // and records already name. The app's own api takes it back by the verb alone.
+        // An action's name belongs to its resource type: `act` on `Banners` and `act` on
+        // `Notifications` are two actions, each with an id naming its type (`Banners/act`), and
+        // the app's own api takes it back by the verb alone.
         self.meta.actions.push(ActionMeta {
-            id: format!("{ty}/{}", verb.id),
+            id: id_of(ty, verb),
             verb: verb.id.clone(),
             // The name the action API offers it by, made a tilolang action's name: a tilolang
             // app's own (`pin`), else the id a native verb publishes it as

@@ -4626,6 +4626,10 @@ mod surface_tests {
         WORKSPACE_AGENTS, WORKSPACE_GOVERNANCE_PUBLISHED, WORKSPACE_INVITATIONS, WORKSPACE_MEMBER,
         WORKSPACE_MEMBERS, WORKSPACE_WAITING,
     };
+    use tilo_actions::remote::{
+        WORKSPACE_APP, WORKSPACE_APPS, WORKSPACE_PERMISSION, WORKSPACE_REGISTRIES,
+        WORKSPACE_SERVERS, WORKSPACE_TRUST,
+    };
 
     use super::{VERBS, Verb};
 
@@ -4633,24 +4637,39 @@ mod surface_tests {
     /// an API change.
     const HEADER: &str = "# Written by its test; review like an API change.\n\n";
 
-    /// The resources the workspace's actions are grouped by, in file order, each named after
-    /// what it holds.
-    const RESOURCES: [(&str, &str); 4] = [
+    /// The resources the workspace's actions are published on, in file order: each child of its
+    /// governance tree, named after what it holds. Each is a resource type of its own, so a verb
+    /// several offer (`list` on the members, the invitations and the servers) is one action of
+    /// each, named by its type.
+    const RESOURCES: [(&str, &str); 10] = [
         ("members", "Members"),
-        ("roles", "Roles"),
+        ("member", "Member"),
         ("invitations", "Invitations"),
-        ("permissions", "Permissions"),
+        ("waiting", "Wait list"),
+        ("servers", "Servers"),
+        ("trust", "Trust"),
+        ("registries", "Registries"),
+        ("apps", "Apps"),
+        ("app", "App"),
+        ("permission", "Permission"),
     ];
 
-    /// The resource the action published at `child` acts on: the people, the place each person
-    /// holds, the invitations (and the wait list they are made from), and the workspace's own
-    /// permissions — its servers and the apps it runs.
+    /// The resource the action published at `child` stands on: the child of the governance tree
+    /// itself. A child this surface names no resource of fails the test, so an action is never
+    /// left out of the file.
     fn resource_of(child: Option<&str>) -> &'static str {
         match child {
             Some(WORKSPACE_MEMBERS) => "members",
-            Some(WORKSPACE_MEMBER) => "roles",
-            Some(WORKSPACE_INVITATIONS | WORKSPACE_WAITING) => "invitations",
-            _ => "permissions",
+            Some(WORKSPACE_MEMBER) => "member",
+            Some(WORKSPACE_INVITATIONS) => "invitations",
+            Some(WORKSPACE_WAITING) => "waiting",
+            Some(WORKSPACE_SERVERS) => "servers",
+            Some(WORKSPACE_TRUST) => "trust",
+            Some(WORKSPACE_REGISTRIES) => "registries",
+            Some(WORKSPACE_APPS) => "apps",
+            Some(WORKSPACE_APP) => "app",
+            Some(WORKSPACE_PERMISSION) => "permission",
+            other => panic!("the surface names no resource for the actions on {other:?}"),
         }
     }
 

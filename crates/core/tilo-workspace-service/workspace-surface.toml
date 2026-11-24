@@ -12,7 +12,7 @@ id = "list"
 kind = "read"
 
 [[resources.verbs]]
-id = "add"
+id = "admit"
 kind = "outside"
 params = [
   { name = "person", required = true, schema = { type = "string" } },
@@ -28,8 +28,8 @@ params = [
 ]
 
 [[resources]]
-kind = "workspace.roles"
-label = "Roles"
+kind = "workspace.member"
+label = "Member"
 version = 1
 
 [[resources.verbs]]
@@ -77,6 +77,11 @@ params = [
   { name = "invite", required = true, schema = { type = "string" } },
 ]
 
+[[resources]]
+kind = "workspace.waiting"
+label = "Wait list"
+version = 1
+
 [[resources.verbs]]
 id = "list"
 kind = "read"
@@ -97,8 +102,8 @@ params = [
 ]
 
 [[resources]]
-kind = "workspace.permissions"
-label = "Permissions"
+kind = "workspace.servers"
+label = "Servers"
 version = 1
 
 [[resources.verbs]]
@@ -137,31 +142,119 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "content"
+id = "keeps"
 kind = "read"
 
 [[resources.verbs]]
-id = "install-app"
+id = "content"
+kind = "read"
+
+[[resources]]
+kind = "workspace.trust"
+label = "Trust"
+version = 1
+
+[[resources.verbs]]
+id = "list"
+kind = "read"
+
+[[resources.verbs]]
+id = "revoked"
+kind = "read"
+
+[[resources.verbs]]
+id = "add"
+kind = "outside"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "pubkey", required = true, schema = { type = "string" } },
+  { name = "scope", required = false, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove"
+kind = "outside"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "revoke"
+kind = "outside"
+params = [
+  { name = "pubkey", required = true, schema = { type = "string" } },
+  { name = "reason", required = false, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "workspace.registries"
+label = "Registries"
+version = 1
+
+[[resources.verbs]]
+id = "list"
+kind = "read"
+
+[[resources.verbs]]
+id = "add"
+kind = "outside"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "url", required = true, schema = { type = "string" } },
+  { name = "owner_key", required = true, schema = { type = "string" } },
+  { name = "channel", required = false, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove"
+kind = "outside"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "enable"
+kind = "outside"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "disable"
+kind = "outside"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "channel"
+kind = "outside"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "channel", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "workspace.apps"
+label = "Apps"
+version = 1
+
+[[resources.verbs]]
+id = "install"
 kind = "outside"
 params = [
   { name = "app", required = true, schema = { type = "string" } },
   { name = "version", required = true, schema = { type = "string" } },
-  { name = "surface", required = true, schema = { type = "string" } },
-  { name = "package", required = true, schema = { type = "string" } },
-  { name = "publisher", required = true, schema = { type = "string" } },
+  { name = "surface", required = false, schema = { type = "string" } },
+  { name = "package", required = false, schema = { type = "string" } },
+  { name = "publisher", required = false, schema = { type = "string" } },
+  { name = "flatpak", required = false, schema = { type = "string" } },
   { name = "dev", required = false, schema = { type = "boolean" } },
   { name = "file", required = false, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
-id = "uninstall-app"
-kind = "outside"
-params = [
-  { name = "app", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "upload-app-file"
+id = "upload"
 kind = "outside"
 params = [
   { name = "file", required = true, schema = { type = "string" } },
@@ -171,19 +264,65 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "request-bot"
+id = "offers"
+kind = "read"
+
+[[resources]]
+kind = "workspace.app"
+label = "App"
+version = 1
+
+[[resources.verbs]]
+id = "update"
 kind = "outside"
 params = [
-  { name = "entry", required = true, schema = { type = "string" } },
+  { name = "app", required = true, schema = { type = "string" } },
   { name = "version", required = true, schema = { type = "string" } },
-  { name = "inputs", required = false, schema = { type = "object" } },
-  { name = "program", required = false, schema = { type = "string" } },
+  { name = "surface", required = false, schema = { type = "string" } },
+  { name = "package", required = false, schema = { type = "string" } },
+  { name = "publisher", required = false, schema = { type = "string" } },
+  { name = "flatpak", required = false, schema = { type = "string" } },
+  { name = "dev", required = false, schema = { type = "boolean" } },
+  { name = "file", required = false, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
-id = "withdraw-bot-request"
+id = "pin"
 kind = "outside"
 params = [
-  { name = "entry", required = true, schema = { type = "string" } },
+  { name = "app", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "unpin"
+kind = "outside"
+params = [
+  { name = "app", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "uninstall"
+kind = "outside"
+params = [
+  { name = "app", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "earlier"
+kind = "read"
+params = [
+  { name = "app", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "workspace.permission"
+label = "Permission"
+version = 1
+
+[[resources.verbs]]
+id = "revoke"
+kind = "outside"
+params = [
+  { name = "grant", required = true, schema = { type = "string" } },
 ]
 

@@ -77,17 +77,17 @@ tilo_test_env::scenario! {
         );
         let text = std::fs::read_to_string(dir.join("surface.toml")).expect("the description");
         let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
-        assert_eq!(addresses["place"], "shell:layout");
+        assert_eq!(addresses["Shell/place"], "shell:layout");
         // An app opens its recents and clears them by these two addresses, `session.recents(app:
         // ...)` and `session.clear_recents(app: ...)` in tilolang.
-        assert_eq!(addresses["recents"], "desktop:chrome");
-        assert_eq!(addresses["clear-recents"], "shell:layout");
+        assert_eq!(addresses["Desktop/recents"], "desktop:chrome");
+        assert_eq!(addresses["Shell/clear-recents"], "shell:layout");
         assert!(
-            !addresses.contains_key("focus"),
+            !addresses.contains_key("Window/focus"),
             "a window's focus goes to the window"
         );
         assert!(
-            !addresses.contains_key("close"),
+            !addresses.contains_key("Place/close"),
             "a place's close goes to the place"
         );
     }

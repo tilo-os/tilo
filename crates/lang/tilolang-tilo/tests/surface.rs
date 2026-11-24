@@ -991,7 +991,10 @@ fn a_package_keeping_a_workspace_record_publishes_its_surface() {
     };
     let (_, packages) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
     let chat = kinds(&packages[0].meta);
-    assert!(chat.iter().any(|kind| kind == "tilo.moderation"), "{chat:?}");
+    assert!(
+        chat.iter().any(|kind| kind == "tilo.moderation"),
+        "{chat:?}"
+    );
     assert!(
         chat.iter().any(|kind| kind == "tilo.workspace.emoji"),
         "{chat:?}"
@@ -1076,7 +1079,7 @@ fn a_description_declares_each_action_once_for_its_resource() {
     // What the session sends a loose call with is the layout's `open`, never the app's.
     let loose = tilolang_tilo::catalogue::loose_verbs(ONE_VERB_ON_TWO).unwrap();
     assert_eq!(
-        loose["open"].params.len(),
+        loose["Shell/open"].params.len(),
         1,
         "the layout's `open` takes its link"
     );
