@@ -31,6 +31,11 @@
 #                                          [default: <BIN_DIR>/../app-models]
 #   TAPP_DIR       install these already-verified release tapps instead of
 #                  packing BIN_DIR (optional)
+#   LANGUAGE_RUNTIME_PACKAGES
+#                  where the image staged the full tapp of each language runtime
+#                  its app set names, one directory per runtime; installed into
+#                  STORE with its bundle under RUNTIME_ROOT
+#                                          [default: <REPO>/language-runtime-packages]
 #   EXPECTED_PUBKEY require every prebuilt tapp to use this publisher (64 hex)
 #   STORE          app store root; becomes TILO_APPS_DATA_DIR
 #                                          [default: /usr/share/tilo-apps]
@@ -255,8 +260,47 @@ export TILO_APPS_DATA_DIR="$STORE"
 # store it writes (`--offline-store`) and tilo-install makes the device cache's
 # install change in its own process.
 
+# --- language runtime packages ---------------------------------------------
+# An app may run a script on a runtime's interpreter (`[entrypoint] runtime =
+# "bun/1.4.5+bun"`): the image ships that runtime package with it, installed
+# through the same `tilo-install` an app is, so the bundle the launcher mounts
+# lands in RUNTIME_ROOT and the store records what provides it. The image
+# builds each package from its pinned upstream release (os/Containerfile,
+# tools/apps/runtime_packages.sh) and stages its full tapp here. The plan names
+# which runtimes the app set needs, so the two cannot disagree; a runtime the
+# plan names and nothing staged is a failed image, not a silently broken app.
+runtime_shipped=()
+if [ -n "$APP_PLAN" ]; then
+    runtime_rows=$(python3 - "$APP_PLAN" <<'PY'
+import json, sys
+plan = json.load(open(sys.argv[1], encoding="utf-8"))
+for runtime in sorted(set(plan.get("runtimes", []))):
+    name, _, version = runtime.partition("/")
+    if name not in ("tilo-runtime", "tilolang"):
+        print("\t".join([name, version]))
+PY
+) || die "cannot read the runtimes of $APP_PLAN"
+    while IFS=$'\t' read -r runtime_name runtime_version; do
+        [ -n "$runtime_name" ] || continue
+        staged="${LANGUAGE_RUNTIME_PACKAGES:-$REPO/language-runtime-packages}/$runtime_name"
+        runtime_tapp=$(find "$staged" -maxdepth 1 -name '*.tapp' -print -quit 2>/dev/null || true)
+        [ -n "$runtime_tapp" ] \
+            || die "no $runtime_name runtime package staged at $staged for the app set ($APP_PLAN names $runtime_name/$runtime_version)"
+        if ! TILO_RUNTIME_BUNDLE_DIR="$RUNTIME_ROOT" \
+                "$INSTALL_BIN" --offline-store "$STORE" install "$runtime_tapp" \
+                --allow-self-signed --pinned \
+                >"$STAGE/runtime-$runtime_name.install.log" 2>&1; then
+            die "installing the $runtime_name runtime package failed — $(tail -3 "$STAGE/runtime-$runtime_name.install.log" | tr '\n' ' ')"
+        fi
+        [ -f "$RUNTIME_ROOT/$runtime_version/bundle.toml" ] \
+            || die "the $runtime_name runtime package installed no bundle at $RUNTIME_ROOT/$runtime_version"
+        runtime_shipped+=("$runtime_name/$runtime_version")
+    done <<<"$runtime_rows"
+fi
+
 # --- pack + install every manifest -----------------------------------------
 shipped=(); missing=(); failed=()
+
 # Which packages carry a model, by package id: an app keeps one by keeping a
 # guest crate beside it (apps/clocks -> apps/clocks-model-wasm). A prebuilt tapp
 # of one of these must still hold the module this pack would have staged.
@@ -498,6 +542,7 @@ fi
 
 # --- report ----------------------------------------------------------------
 msg "shipped ${#shipped[@]} size-guarded package(s) into $STORE"
+for r in ${runtime_shipped[@]+"${runtime_shipped[@]}"}; do msg "installed runtime $r"; done
 for m in ${missing[@]+"${missing[@]}"}; do msg "  skipped: $m"; done
 for f in ${failed[@]+"${failed[@]}"};  do msg "  FAILED:  $f"; done
 
@@ -517,9 +562,9 @@ rm -rf -- "$STORE/content" "$STORE/tmp" "$STORE/.lock"
 # palette, which is the failure this whole step exists to prevent.
 [ -s "$STORE/registry.toml" ] || die "$STORE/registry.toml is missing or empty"
 rows="$(grep -c '^\[\[entry\]\]' "$STORE/registry.toml" || true)"
-expected_rows=$((initial_rows + ${#shipped[@]}))
+expected_rows=$((initial_rows + ${#shipped[@]} + ${#runtime_shipped[@]}))
 [ "$rows" = "$expected_rows" ] \
-    || die "registry has $rows row(s), expected $initial_rows existing + ${#shipped[@]} installed"
+    || die "registry has $rows row(s), expected $initial_rows existing + ${#shipped[@]} apps + ${#runtime_shipped[@]} runtimes installed"
 msg "registry.toml lists $rows package(s)"
 
 # Every runtime build a shipped app pins -- the Browser's engine, and the

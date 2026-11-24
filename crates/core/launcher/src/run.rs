@@ -2081,11 +2081,17 @@ fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &ManifestView
         argv.push("--rw".to_string());
         argv.push(p.to_string());
     }
-    // The sandbox's own procfs, readable: a runtime reads `/proc/self`, `/proc/cpuinfo` and the
-    // like as it starts, and reports the sandbox's kernel facts. bwrap mounts a fresh procfs in
-    // the private PID namespace (`--proc /proc`), so this is never the host's process list.
-    argv.push("--ro".to_string());
-    argv.push("/proc".to_string());
+    // A script run by a runtime's interpreter reads a little of its own procfs: bun 1.4.5 aborts
+    // without `/proc/self/maps`, and reads its own `statm`, `cgroup` and `fd/` as it starts;
+    // CPython 3.13 reads none of it. Nothing else of /proc is granted — not another process's,
+    // not the kernel's tunables or sockets. bwrap mounts a fresh procfs in the private PID
+    // namespace (`--proc /proc`), so these are the app's own process alone.
+    if manifest.entrypoint.script.is_some() {
+        for path in crate::sandbox::PROC_SCRIPT_READ_PATHS {
+            argv.push("--ro".to_string());
+            argv.push((*path).to_string());
+        }
+    }
     let profile = crate::seccomp::manifest_profile(&manifest.sandbox, &manifest.package_id);
     for path in crate::profile::landlock_rw_nested_sandbox_paths(profile) {
         argv.push("--rw".to_string());
@@ -2126,27 +2132,47 @@ fn stage_sandbox_account(argv: &mut Vec<String>) -> Result<OwnedFd, LaunchError>
 mod scratch_rule_tests {
     use super::*;
 
-    /// A runtime reads `/proc/self` and `/proc/cpuinfo` as it starts. The sandbox's own procfs is
-    /// readable and read-only: the app may look at its own processes and kernel facts, never write
-    /// them. bwrap mounts it fresh in the private PID namespace, so it is never the host's.
+    /// A script run by a runtime's interpreter reads a measured little of its own procfs, read-only;
+    /// every other app gets no rule for `/proc` at all, and nothing ever gets it writable. bwrap
+    /// mounts a fresh procfs in the private PID namespace, so `/proc/self` is the app's own process.
     #[test]
-    fn the_sandbox_procfs_is_readable_and_read_only() {
-        let manifest = crate::manifest::test_manifest(
+    fn only_a_script_runtime_reads_procfs_and_only_its_own() {
+        let mut script = crate::manifest::test_manifest(
             "id = \"com.example.app\"\nversion = \"1.0.0\"\nkind = \"app\"",
-            "[entrypoint]\nbin = \"bin/app\"\n",
+            "[entrypoint]\nbin = \"bin/bun\"\n",
         );
+        script.entrypoint.script = Some("main.js".to_string());
         let mut argv: Vec<String> = Vec::new();
-        push_scratch_and_engine_rules(&mut argv, &manifest);
+        push_scratch_and_engine_rules(&mut argv, &script);
+        for path in crate::sandbox::PROC_SCRIPT_READ_PATHS {
+            assert!(
+                argv.windows(2)
+                    .any(|pair| pair[0] == "--ro" && pair[1] == *path),
+                "{path} is not readable: {argv:?}"
+            );
+        }
         assert!(
-            argv.windows(2)
+            !argv
+                .windows(2)
                 .any(|pair| pair[0] == "--ro" && pair[1] == "/proc"),
-            "{argv:?}"
+            "no app reads all of procfs: {argv:?}"
         );
         assert!(
             !argv
                 .windows(2)
-                .any(|pair| pair[0] == "--rw" && pair[1] == "/proc"),
-            "{argv:?}"
+                .any(|pair| pair[0] == "--rw" && pair[1].starts_with("/proc")),
+            "procfs is never writable: {argv:?}"
+        );
+
+        let ordinary = crate::manifest::test_manifest(
+            "id = \"com.example.app\"\nversion = \"1.0.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/app\"\n",
+        );
+        let mut argv: Vec<String> = Vec::new();
+        push_scratch_and_engine_rules(&mut argv, &ordinary);
+        assert!(
+            !argv.iter().any(|arg| arg.starts_with("/proc")),
+            "an app that runs no script reads no procfs: {argv:?}"
         );
     }
 }

@@ -48,6 +48,13 @@ for host in open(os.path.join(os.environ["TILO_APP_MODULE"], "targets")).read().
             print("GET " + str(answer.status) + " " + answer.read().decode())
     except Exception as error:
         print("GET refused " + type(error).__name__)
+for masked in ("/proc/net/tcp", "/proc/sys/kernel/hostname"):
+    try:
+        with open(masked) as probe:
+            probe.read(1)
+        print("MASKED read " + masked)
+    except Exception:
+        print("MASKED refused " + masked)
 "#;
 
 /// [`PYTHON_SCRIPT`]'s work, in JavaScript, with an absolute-form request to the proxy the
@@ -95,6 +102,14 @@ function fetchThroughProxy(url) {
 const targets = fs.readFileSync(`${mount}/targets`, "utf8").trim().split(/\s+/);
 for (const url of targets) {
   console.log("GET " + (await fetchThroughProxy(url)));
+}
+for (const masked of ["/proc/net/tcp", "/proc/sys/kernel/hostname"]) {
+  try {
+    fs.readFileSync(masked);
+    console.log("MASKED read " + masked);
+  } catch {
+    console.log("MASKED refused " + masked);
+  }
 }
 process.exit(0);
 "#;
@@ -323,6 +338,14 @@ fn probe(package: &str, script_name: &str, script: &str) -> String {
         "any other host is refused: {out}"
     );
     assert_eq!(said("GET ").len(), 2, "{out}");
+    assert_eq!(
+        said("MASKED "),
+        vec![
+            "refused /proc/net/tcp".to_owned(),
+            "refused /proc/sys/kernel/hostname".to_owned(),
+        ],
+        "the sandbox's procfs keeps its sockets and tunables from the runtime: {out}"
+    );
     out
 }
 

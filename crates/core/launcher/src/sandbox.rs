@@ -640,6 +640,12 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("/proc".to_string());
     argv.push("--dev".to_string());
     argv.push("/dev".to_string());
+    // A script run by a runtime's interpreter gets the little of procfs it reads (measured), and
+    // nothing sensitive beside it: the kernel's sockets, tunables, addresses and keys are masked
+    // out of its sandbox. No other app reads procfs at all.
+    if manifest.entrypoint.script.is_some() {
+        push_proc_masks(&mut argv);
+    }
 
     // Bind the runtime and its canonical ELF interpreter paths before the broad read-only `/lib` and
     // `/lib64` profile mounts below.
@@ -704,6 +710,38 @@ pub fn build_bwrap_argv_for_entry(
     argv.push(entry_abs.display().to_string());
 
     argv
+}
+
+/// The parts of its own procfs a script run by a runtime's interpreter reads. Measured on bun 1.4.5
+/// and CPython 3.13 running a hello-world and then this repository's script probe: bun opens its
+/// own `maps`, `statm`, `cgroup` and `fd/`, and aborts before running a script without `maps`;
+/// CPython reads none of it. Neither reads `cpuinfo`, `meminfo`, `status`, `stat`, `cmdline`,
+/// `auxv`, `exe` or `mountinfo`. The sandbox's procfs is a fresh one in its private PID namespace,
+/// so these are the app's own process alone.
+pub const PROC_SCRIPT_READ_PATHS: &[&str] = &[
+    // Its own address map: bun aborts before it runs a script without it.
+    "/proc/self/maps",
+    // Its own memory, cgroup and descriptors, which bun reads as it starts; CPython reads none.
+    "/proc/self/statm",
+    "/proc/self/cgroup",
+    "/proc/self/fd",
+];
+
+/// Sensitive procfs entries masked out of a script runtime's sandbox: an empty tmpfs over the
+/// directory entries, `/dev/null` over the single files. A runtime needs none of them, and they
+/// describe the machine and its other processes rather than the app.
+// The directory entries a procfs lets a sandbox mask with an empty tmpfs. `/proc/net` is a
+// symlink to the app's own `/proc/self/net`, and procfs refuses a mount over a symlink or a new
+// entry inside it, so single files such as `/proc/kcore` and `/proc/kallsyms` are refused by the
+// rules instead: no rule names them, and Landlock refuses every path it does not grant.
+const PROC_MASKED_DIRS: &[&str] = &["/proc/sys", "/proc/fs", "/proc/irq", "/proc/bus"];
+/// Mask procfs for a script runtime: the measurements above are the whole of what it reads, and
+/// everything else sensitive becomes an empty tmpfs directory or `/dev/null`.
+fn push_proc_masks(argv: &mut Vec<String>) {
+    for directory in PROC_MASKED_DIRS {
+        argv.push("--tmpfs".to_string());
+        argv.push((*directory).to_string());
+    }
 }
 
 /// Where the egress proxy socket is on each side of the sandbox boundary, and the loopback port the
@@ -1107,6 +1145,28 @@ mod tests {
                 );
             }
             assert!(!argv.iter().any(|arg| arg == "--share-net"));
+        }
+
+        phase procfs_is_masked_for_a_script_runtime_and_absent_for_any_other;
+        {
+            let masked = |argv: &[String], pair: [&str; 2]| {
+                argv.windows(2)
+                    .any(|w| w[0] == pair[0] && w[1] == pair[1])
+            };
+            let mut ordinary = mk_manifest("off");
+            let plain = plain_argv(&ordinary);
+            assert!(!masked(&plain, ["--tmpfs", "/proc/net"]));
+            assert!(!masked(&plain, ["--tmpfs", "/proc/sys"]));
+            assert!(!masked(&plain, ["--ro-bind", "/dev/null"]));
+
+            ordinary.entrypoint.script = Some("main.js".to_string());
+            let argv = plain_argv(&ordinary);
+            for directory in ["/proc/sys", "/proc/fs", "/proc/irq", "/proc/bus"] {
+                assert!(
+                    masked(&argv, ["--tmpfs", directory]),
+                    "{directory} is not masked: {argv:?}"
+                );
+            }
         }
 
         phase an_entrypoint_runtime_execs_the_runtime_binary_over_the_payload;
