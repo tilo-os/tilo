@@ -81,7 +81,7 @@ fn an_agent_invokes_a_console_action_with_no_window_open() {
         assert_eq!(
             host.daemon()
                 .apps()
-                .no_window_processes(SCRATCHPAD, &workspace, None),
+                .no_window_processes(CONSOLE, &workspace, None),
             processes,
             "the second call reused the process the first started"
         );
@@ -93,7 +93,7 @@ fn an_agent_invokes_a_console_action_with_no_window_open() {
         arguments.insert(EDIT_PARAM.to_owned(), agent_edit("Written by nobody"));
         let called = visitor
             .call(
-                &application_provider_token(&workspace, SCRATCHPAD),
+                &application_provider_token(&workspace, CONSOLE),
                 ActionAddress::new(VIEW, FIELD_EDIT),
                 &Value::Object(arguments),
             )
@@ -116,7 +116,7 @@ fn an_agent_invokes_a_console_action_with_no_window_open() {
         assert_eq!(
             host.daemon()
                 .apps()
-                .no_window_processes(SCRATCHPAD, &workspace, None),
+                .no_window_processes(CONSOLE, &workspace, None),
             processes,
             "no process started for the caller without a grant"
         );
