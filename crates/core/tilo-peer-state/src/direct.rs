@@ -4029,9 +4029,22 @@ mod tests {
             entry.reason = reason;
             entry.signature = [0; 64];
             sign_revocation_entry(&mut entry, &root).unwrap();
-            let mut theirs = RevocationList::new();
-            theirs.insert(entry.clone()).unwrap();
-            let sync = link(&roster, theirs, Vec::new());
+            // The replica held the device before its root revoked it, and
+            // carries the entry its governance was sent: a replica is never
+            // made over a roster that holds a revoked device.
+            let sync = link(&roster, RevocationList::new(), Vec::new());
+            assert!(
+                sync.0
+                    .replica
+                    .lock()
+                    .governance_mut()
+                    .publish_governed_revocations(
+                        std::slice::from_ref(&entry),
+                        &roster[0].0,
+                        tilo_clock::wall(),
+                    )
+                    .unwrap()
+            );
             let Err(said) = sync.admits(member.device_public_key, false) else {
                 panic!("a revoked device is refused");
             };
