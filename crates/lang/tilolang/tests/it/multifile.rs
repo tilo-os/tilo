@@ -454,24 +454,41 @@ tilo_test_env::scenario! {
 
     phase imports_are_found_among_sibling_packages_and_compiled_first;
     {
-        let today = apps_tl().join("today");
-        let order = dependency_order(&today, &[]).unwrap();
+        // A package that uses one sibling, which uses another, beside one it does not use. The
+        // example packages under apps/tl also use the platform's packages, which only the
+        // catalogue reads: building them is `tilolang-cli`'s test.
+        let scratch = Scratch::new("siblings");
+        scratch.package(
+            "base",
+            &[("app.tl", "app t.base \"Base\"\n\ntype Note {\n    title: Text\n}\n")],
+        );
+        scratch.package(
+            "middle",
+            &[(
+                "app.tl",
+                "app t.middle \"Middle\"\n\nuse t.base as base\n\ntype Pin {\n    note: Option<base.Note> = .none\n}\n",
+            )],
+        );
+        scratch.package(
+            "other",
+            &[("app.tl", "app t.other \"Other\"\n\ntype Thing {\n    name: Text\n}\n")],
+        );
+        let top = scratch.package(
+            "top",
+            &[(
+                "app.tl",
+                "app t.top \"Top\"\n\nuse t.middle as middle\n\ntype Board {\n    pin: Option<middle.Pin> = .none\n}\n",
+            )],
+        );
+        let order = dependency_order(&top, &[]).unwrap();
         let names: Vec<String> = order
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names.last().map(String::as_str), Some("today"));
-        // `discussion` and `agent` are not today's own imports: tasks and notes use the one, chat
-        // the other, so they come first.
-        for dep in ["notes", "tasks", "chat", "discussion", "agent"] {
-            assert!(names.contains(&dep.to_string()), "{names:?}");
-        }
-        assert_eq!(names.len(), 6, "only what today imports: {names:?}");
+        // `base` is not top's own import: middle uses it, so it comes first.
+        assert_eq!(names, ["base", "middle", "top"], "only what top imports, in order");
         let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(
-            built.last().unwrap().compiled.meta.app,
-            "so.tilo.lang.today"
-        );
+        assert_eq!(built.last().unwrap().compiled.meta.app, "t.top");
     }
 
     // Every example package building from its directory is `tilolang-cli`'s test rather than this one: a

@@ -545,8 +545,8 @@ tilo_test_env::scenario! {
         assert_eq!(codes(stat), Vec::<String>::new());
         let read = "type N {\n    body: RichText\n}\naction bytes(n: N) uses files {\n    match File.read(\"~/Books/a.epub\") {\n        .ok(b) => { n.body = RichText(\"{b.len()}\") },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
         assert_eq!(codes(read), Vec::<String>::new());
-        let not_bytes = "type N {\n    body: RichText\n}\naction bytes(n: N) uses files {\n    File.read(\"~/Books/a.epub\")\n}\n";
-        assert_eq!(codes(not_bytes), ["E020"], "what it answers is a Result, not the bytes");
+        let not_bytes = "type N {\n    body: RichText\n}\naction bytes(n: N) uses files {\n    let b = File.read(\"~/Books/a.epub\")\n    n.body = RichText(\"{b.len()}\")\n}\n";
+        assert_eq!(codes(not_bytes), ["E027"], "what it answers is a Result, not the bytes");
     }
 
     phase a_watch_names_one_of_the_packages_actions;
@@ -563,7 +563,7 @@ tilo_test_env::scenario! {
         assert_eq!(codes(made), Vec::<String>::new());
         let undeclared = made.replace(" uses files", "");
         assert_eq!(codes(&undeclared), ["E121"], "the disk is an outside read");
-        let trashed = "type N {\n    body: RichText\n}\naction drop(n: N) uses files {\n    match File.trash_entries() {\n        .ok(items) => { n.body = RichText(\"{items.len}\") },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
+        let trashed = "type N {\n    body: RichText\n}\naction drop(n: N) uses files {\n    match File.trash_entries() {\n        .ok(items) => { n.body = RichText(\"{items.len()}\") },\n        .err(why) => { n.body = RichText(why) }\n    }\n}\n";
         assert_eq!(codes(trashed), Vec::<String>::new());
     }
 
@@ -590,7 +590,7 @@ tilo_test_env::scenario! {
 
     phase a_view_reads_none_of_the_disk;
     {
-        let view = "type N {\n    body: RichText\n}\nview look(n: N) {\n    match File.list(\"~/Books\") {\n        .ok(entries) => { text(\"{entries.len}\") },\n        .err(why) => { text(why) }\n    }\n}\n";
+        let view = "type N {\n    body: RichText\n}\nview look(n: N) {\n    match File.list(\"~/Books\") {\n        .ok(entries) => { text(\"{entries.len()}\") },\n        .err(why) => { text(why) }\n    }\n}\n";
         assert_eq!(codes(view), ["E121"], "a view is drawn again from what it is shown");
     }
 }
