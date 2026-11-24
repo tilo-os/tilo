@@ -22722,7 +22722,6 @@ dependencies = [
  "collab-types",
  "collaboration",
  "jiff",
- "passwords",
  "serde",
  "serde_json",
  "tempfile",
