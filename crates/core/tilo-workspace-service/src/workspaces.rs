@@ -2060,15 +2060,6 @@ impl Workspaces {
         self.inner.jobs.govern_with(governance);
     }
 
-    /// The workspaces' governance while the service that governs them serves: the one dispatch
-    /// that keeps the calls waiting for their person's yes here, as a member device's call
-    /// reaches it on this device's action service. It is the one a store of asked records hands
-    /// an approve back to, which one made beside it is not.
-    #[must_use]
-    pub(crate) fn governance(&self) -> Option<actions::ServiceWorkspaceActions> {
-        self.inner.jobs.governance()
-    }
-
     /// What this device answers a device of its workspaces on the device action service: the
     /// turns of work it takes, and the workspaces' governance. A device whose session answers that
     /// service in the host's place hands these requests here.

@@ -710,13 +710,7 @@ impl Use {
         self,
         workspaces: &Workspaces,
         (workspace, root): (&str, &Path),
-        (by, acting, item, kind, places): (
-            &str,
-            &tilo_action_policy::Acting,
-            ItemId,
-            vault_items::ItemKind,
-            Vec<Place>,
-        ),
+        (by, acting, item): (&str, &tilo_action_policy::Acting, ItemId),
         purpose: UsedFor<'_>,
     ) -> Result<Value, String> {
         match self {
@@ -1195,7 +1189,7 @@ impl Workspaces {
             .carry_out(
                 self,
                 (&using.workspace, &root),
-                (&using.name, &using.acting(), item, kind, places),
+                (&using.name, &using.acting(), item),
                 purpose,
             )
             .await
