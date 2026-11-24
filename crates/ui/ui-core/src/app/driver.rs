@@ -576,12 +576,19 @@ impl Driver {
         Ok(())
     }
 
-    /// A frame the host asked for lays the tree out again: a caller asks for one after changing
+    /// A frame the host asked for places the tree as it stands: a caller asks for one after changing
     /// what its widgets read from outside them (a row slid down, a pane the host moved), which the
-    /// tree reports nothing of. What the widgets report since the last frame — a size that moved,
-    /// a region that asks for a measure — is taken up as a frame after an event takes it.
+    /// tree reports nothing of, so the frame's own pass would keep the old geometry. Placing it here
+    /// leaves the frame quiet: nothing was rebuilt, solved or marked, and a window at rest still owes
+    /// nothing after it. What the widgets report since the last frame — a size that moved, a region
+    /// that asks for a measure — is taken up as a frame after an event takes it.
     fn take_up_reported_layout(&mut self) {
-        self.app.layout.layout_dirty = true;
+        if let Some(root) = self.app.layout.root_node {
+            let tree = crate::widget::layout::TreeId::of(&self.app.layout.taffy);
+            crate::widget::layout::placing_again_in(tree, || {
+                self.app.apply_history_presentation(root);
+            });
+        }
         let root = self.app.root_widget.as_ref();
         if root.is_layout_dirty() || root.layout_needs_measure() || root.needs_redraw() {
             self.app.needs_sync = true;
