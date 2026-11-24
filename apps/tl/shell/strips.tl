@@ -548,7 +548,105 @@ fn shown_window(p: LayoutPlace) -> Option<device.Window> {
     return device.windows.all.find(w -> w.key == p.key)
 }
 
-/// The field a window's bar holds open to name the tab: the person's own word for the window,
+/// The parts a window's app declared for its bar, drawn in its own order before the shell's
+/// controls. An action the bar is too narrow for folds into one menu, its menu items under it.
+view bar_parts(w: device.Window, bar: device.Bar) {
+    for a in bar.leading {
+        bar_button(w, a)
+    }
+    if bar.back {
+        ui.Button("Back in this window", icon: .arrow_left, icon_only: true, role: .plain) {
+            on press: session.bar_back(tab: w.key)
+        }
+    }
+    if bar.forward {
+        ui.Button("Forward in this window", icon: .arrow_right, icon_only: true, role: .plain) {
+            on press: session.bar_forward(tab: w.key)
+        }
+    }
+    if bar.sidebar {
+        ui.Button("Sidebar", icon: .panel_left, icon_only: true, role: .plain, toggled: bar.sidebar_on) {
+            on press: session.bar_sidebar(tab: w.key)
+        }
+    }
+    for a in bar.actions.filter(a -> not a.menu and a.items.is_empty()) {
+        bar_button(w, a)
+    }
+    if bar.actions.any(a -> a.menu or not a.items.is_empty()) {
+        ui.MenuButton("More actions of this window", icon: .more_horizontal, icon_only: true, role: .plain) {
+            for a in bar.actions.filter(a -> a.menu and a.items.is_empty()) {
+                bar_item(w, a)
+            }
+            for a in bar.actions.filter(a -> not a.items.is_empty()) {
+                for b in a.items {
+                    ui.MenuItem(b.name, icon: b.icon, checked: b.on, disabled: not b.enabled, group: a.name) {
+                        on choose: session.bar_action(tab: w.key, id: b.id)
+                    }
+                }
+            }
+        }
+    }
+    if let v = bar.views {
+        ui.MenuButton(v.name, icon: .chevron_down, role: .bar) {
+            for c in v.choices {
+                ui.MenuItem(c.label, checked: c.id == v.chosen) {
+                    on choose: session.bar_action(tab: w.key, id: c.id)
+                }
+            }
+        }
+    }
+    if let n = bar.notice {
+        ui.Badge(
+            n.text,
+            tone: if n.tone == "success" {
+                .success
+            } else if n.tone == "warning" {
+                .warning
+            } else if n.tone == "error" {
+                .danger
+            } else {
+                .info
+            },
+        )
+        for a in n.actions {
+            ui.Button(a.name, icon: a.icon, role: .plain, size: .small) {
+                on press: session.bar_action(tab: w.key, id: a.id)
+            }
+        }
+    }
+    if let r = bar.reactions {
+        for p in r.pills {
+            ui.Button("{p.emoji} {p.count}", role: .plain, size: .small, toggled: p.mine) {
+                on press: session.bar_action(tab: w.key, id: p.action)
+            }
+        }
+    }
+}
+
+/// One control of a window's bar: its glyph alone, its name read on hover, and the mark a
+/// toggle shows while it is on.
+view bar_button(w: device.Window, a: device.BarAction) {
+    ui.Button(
+        a.name,
+        icon: a.icon,
+        icon_only: true,
+        role: .plain,
+        enabled: a.enabled,
+        toggled: if a.toggles { a.on } else { .none },
+        description: a.name,
+    ) {
+        on press: session.bar_action(tab: w.key, id: a.id)
+    }
+}
+
+/// One row of a window's bar menu: an action its app offers, checked while its toggle is on.
+view bar_item(w: device.Window, a: device.BarAction) {
+    ui.MenuItem(a.name, icon: a.icon, checked: a.on, disabled: not a.enabled) {
+        on choose: session.bar_action(tab: w.key, id: a.id)
+    }
+}
+
+/// The field a window's bar holds open to name the tab/// The field a window's bar holds open to name the tab: the person's own word for the window,
 /// committed with Enter and left as it was with Escape.
 view bar_rename(w: device.Window) {
     state typed: Text = w.title
@@ -600,6 +698,13 @@ view bar_search(w: device.Window) {
 /// the same app, the window's own search, and the way back and forward through what it showed.
 /// Each is one session action, so a press, a key and an agent move the window the same way.
 view window_bar_actions(w: device.Window) {
+    // What the window's app puts in its bar, before the shell's own controls: its leading
+    // controls, its way back and forward, its sidebar, its actions and views, a line it says to
+    // the person, and the reactions to what it shows. Every press is the app's own action, sent
+    // back to it by the session.
+    if let bar = w.bar {
+        bar_parts(w, bar)
+    }
     if w.opens_tabs and w.local {
         ui.Button("New tab of this window", icon: .plus, icon_only: true, role: .plain) {
             on press: session.open_app(app: w.app_key, beside: w.key)
