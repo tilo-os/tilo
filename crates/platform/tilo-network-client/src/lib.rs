@@ -24,8 +24,6 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};
 use serde::Deserialize;
 use tilo_secrets::{PutOptions, SecretStore};
 
-/// The one app this engine answers for.
-pub const APP: &str = "so.tilo.api-tester";
 
 /// The longest one request may take. A server that never answers is a failure with a reason,
 /// not a job that waits forever.
@@ -159,9 +157,9 @@ fn append_query(base: String, query: &[String]) -> String {
     url
 }
 
-/// The store this app's credentials are kept in on this device.
-fn store() -> SecretStore {
-    SecretStore::for_app(APP)
+/// The store `app`'s credentials are kept in on this device.
+fn store(app: &str) -> SecretStore {
+    SecretStore::for_app(app)
 }
 
 /// Keep `value` as a credential on this device, answering the reference the workspace holds
@@ -170,9 +168,9 @@ fn store() -> SecretStore {
 /// # Errors
 ///
 /// The device has no secret store it may write to.
-pub fn keep_credential(value: &str) -> Result<String, String> {
+pub fn keep_credential(app: &str, value: &str) -> Result<String, String> {
     let reference = fresh(job_counter());
-    store()
+    store(app)
         .put_blocking(&reference, value.as_bytes(), PutOptions::default())
         .map_err(|error| format!("this device keeps no credentials: {error}"))?;
     Ok(reference)
@@ -184,14 +182,14 @@ pub fn keep_credential(value: &str) -> Result<String, String> {
 /// # Errors
 ///
 /// The store could not be written.
-pub fn forget_credential(reference: &str) -> Result<(), String> {
-    store()
+pub fn forget_credential(app: &str, reference: &str) -> Result<(), String> {
+    store(app)
         .delete_blocking(reference)
         .map_err(|error| format!("this device's credentials were not written: {error}"))
 }
 
-fn credential(reference: &str) -> Option<String> {
-    let secret = store().get_blocking(reference).ok()??;
+fn credential(app: &str, reference: &str) -> Option<String> {
+    let secret = store(app).get_blocking(reference).ok()??;
     String::from_utf8(secret.expose().to_vec()).ok()
 }
 
@@ -201,13 +199,13 @@ fn credential(reference: &str) -> Option<String> {
 /// # Errors
 ///
 /// A credential the workspace names is not on this device.
-pub fn build_outgoing(ask: &Ask) -> Result<Outgoing, String> {
+pub fn build_outgoing(app: &str, ask: &Ask) -> Result<Outgoing, String> {
     let mut values = std::collections::HashMap::new();
     for (key, shared, reference) in &ask.vars {
         let value = if reference.is_empty() {
             shared.clone()
         } else {
-            credential(reference).ok_or_else(|| {
+            credential(app, reference).ok_or_else(|| {
                 format!("`{key}` is a secret this device holds no value for: enter it again")
             })?
         };
@@ -244,7 +242,7 @@ pub fn build_outgoing(ask: &Ask) -> Result<Outgoing, String> {
 
     match ask.auth_scheme.as_str() {
         "bearer" | "basic" | "api_key" if !ask.auth_reference.is_empty() => {
-            let secret = credential(&ask.auth_reference).ok_or_else(|| {
+            let secret = credential(app, &ask.auth_reference).ok_or_else(|| {
                 "this request's sign-in is not on this device: enter it again".to_owned()
             })?;
             match ask.auth_scheme.as_str() {
@@ -339,7 +337,7 @@ fn fresh(n: u64) -> String {
 /// # Errors
 ///
 /// The op is unknown, the input does not read, or the device's store refused.
-pub fn call(op: &str, input: &str) -> Result<String, String> {
+pub fn call(app: &str, op: &str, input: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Keep {
         value: String,
@@ -352,16 +350,16 @@ pub fn call(op: &str, input: &str) -> Result<String, String> {
         "keep_credential" => {
             let ask: Keep = serde_json::from_str(input)
                 .map_err(|error| format!("the credential does not read: {error}"))?;
-            let reference = keep_credential(&ask.value)?;
+            let reference = keep_credential(app, &ask.value)?;
             Ok(serde_json::json!({ "reference": reference }).to_string())
         }
         "forget_credential" => {
             let ask: Forget = serde_json::from_str(input)
                 .map_err(|error| format!("the reference does not read: {error}"))?;
-            forget_credential(&ask.reference)?;
+            forget_credential(app, &ask.reference)?;
             Ok("{}".to_owned())
         }
-        other => Err(format!("`{other}` is no op this device runs for {APP}")),
+        other => Err(format!("`{other}` is no op this device runs for {app}")),
     }
 }
 
@@ -370,13 +368,13 @@ pub fn call(op: &str, input: &str) -> Result<String, String> {
 /// # Errors
 ///
 /// The op is unknown, the request does not read, or the device could not start it.
-pub fn start(op: &str, input: &str) -> Result<String, String> {
+pub fn start(app: &str, op: &str, input: &str) -> Result<String, String> {
     if op != "send" {
-        return Err(format!("`{op}` is no op this device runs for {APP}"));
+        return Err(format!("`{op}` is no op this device runs for {app}"));
     }
     let ask: Ask = serde_json::from_str(input)
         .map_err(|error| format!("the request does not read: {error}"))?;
-    let outgoing = build_outgoing(&ask)?;
+    let outgoing = build_outgoing(app, &ask)?;
     let job = Arc::new(Job {
         cancel: Arc::new(AtomicBool::new(false)),
         answer: Mutex::new(None),
@@ -659,6 +657,8 @@ fn hex_dump(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The app the request tests act for.
+    const APP: &str = "so.tilo.api-tester";
     use super::*;
 
     fn ask(method: &str, url: &str) -> Ask {
@@ -714,16 +714,16 @@ mod tests {
         ] {
             let mut ask = ask("GET", base);
             ask.params = vec![("q".into(), "rust lang".into())];
-            assert_eq!(build_outgoing(&ask).unwrap().url, expected, "base: {base}");
+            assert_eq!(build_outgoing(APP, &ask).unwrap().url, expected, "base: {base}");
 
             ask.params.clear();
-            assert_eq!(build_outgoing(&ask).unwrap().url, base);
+            assert_eq!(build_outgoing(APP, &ask).unwrap().url, base);
         }
         for suffix in ["", "#section?ignored"] {
             let mut ask = ask("GET", &format!("https://example.com/items&{suffix}"));
             ask.params = vec![("q".into(), "test".into())];
             assert_eq!(
-                build_outgoing(&ask).unwrap().url,
+                build_outgoing(APP, &ask).unwrap().url,
                 format!("https://example.com/items&?q=test{suffix}")
             );
         }
@@ -738,7 +738,7 @@ mod tests {
             ("  ".into(), "unnamed".into()),
         ];
         ask.vars = env(&[("base", "https://api.example.com"), ("trace", "abc")]);
-        let out = build_outgoing(&ask).unwrap();
+        let out = build_outgoing(APP, &ask).unwrap();
         assert_eq!(
             out.url,
             "https://api.example.com/search?q=rust%20lang&off=1"
@@ -752,7 +752,7 @@ mod tests {
         ask.body_mode = BodyMode::Json;
         ask.body = r#"{"id":{{id}}}"#.into();
         ask.vars = env(&[("id", "7")]);
-        let out = build_outgoing(&ask).unwrap();
+        let out = build_outgoing(APP, &ask).unwrap();
         assert_eq!(out.method, "POST");
         assert_eq!(out.body.as_deref(), Some(r#"{"id":7}"#));
         assert_eq!(
@@ -767,7 +767,7 @@ mod tests {
             ("off".into(), "1".into()),
             ("name".into(), "{{id}}".into()),
         ];
-        let out = build_outgoing(&ask).unwrap();
+        let out = build_outgoing(APP, &ask).unwrap();
         assert_eq!(out.body.as_deref(), Some("q=a%26b%3Dc&off=1&name=7"));
         assert_eq!(
             out.headers,
@@ -776,7 +776,7 @@ mod tests {
 
         ask.body_mode = BodyMode::None;
         ask.headers.clear();
-        assert!(build_outgoing(&ask).unwrap().body.is_none());
+        assert!(build_outgoing(APP, &ask).unwrap().body.is_none());
     }
 
     #[test]
@@ -809,40 +809,40 @@ mod tests {
     fn a_job_is_unknown_until_it_starts_and_a_bad_op_is_refused() {
         assert!(status("no-such-job").is_err());
         assert!(!cancel("no-such-job"));
-        assert!(start("paint", "{}").is_err());
-        assert!(start("send", "not json").is_err());
-        assert!(call("paint", "{}").is_err());
+        assert!(start(APP, "paint", "{}").is_err());
+        assert!(start(APP, "send", "not json").is_err());
+        assert!(call(APP, "paint", "{}").is_err());
     }
 
     #[test]
     fn a_credential_is_kept_and_forgotten_on_this_device() {
         tilo_secrets::keep_in_memory_for_process();
-        let reference = keep_credential("private-token").unwrap();
-        assert_eq!(credential(&reference).as_deref(), Some("private-token"));
-        forget_credential(&reference).unwrap();
-        assert_eq!(credential(&reference), None);
+        let reference = keep_credential(APP, "private-token").unwrap();
+        assert_eq!(credential(APP, &reference).as_deref(), Some("private-token"));
+        forget_credential(APP, &reference).unwrap();
+        assert_eq!(credential(APP, &reference), None);
 
         let mut ask = ask("GET", "https://x.test");
         ask.auth_scheme = "bearer".into();
-        ask.auth_reference = keep_credential("secret123").unwrap();
+        ask.auth_reference = keep_credential(APP, "secret123").unwrap();
         assert_eq!(
-            build_outgoing(&ask).unwrap().headers,
+            build_outgoing(APP, &ask).unwrap().headers,
             vec![("Authorization".into(), "Bearer secret123".into())]
         );
         ask.auth_scheme = "basic".into();
         ask.auth_username = "user".into();
         assert_eq!(
-            build_outgoing(&ask).unwrap().headers,
+            build_outgoing(APP, &ask).unwrap().headers,
             vec![("Authorization".into(), "Basic dXNlcjpzZWNyZXQxMjM=".into())]
         );
         ask.auth_scheme = "api_key".into();
         ask.auth_header = "X-Api-Key".into();
         assert_eq!(
-            build_outgoing(&ask).unwrap().headers,
+            build_outgoing(APP, &ask).unwrap().headers,
             vec![("X-Api-Key".into(), "secret123".into())]
         );
         ask.auth_reference = "not-there".into();
-        assert!(build_outgoing(&ask).is_err());
-        forget_credential(&ask.auth_reference).ok();
+        assert!(build_outgoing(APP, &ask).is_err());
+        forget_credential(APP, &ask.auth_reference).ok();
     }
 }

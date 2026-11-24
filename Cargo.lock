@@ -15458,19 +15458,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-api-client"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "percent-encoding",
- "serde",
- "serde_json",
- "tilo-net",
- "tilo-secrets",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
@@ -18742,6 +18729,19 @@ dependencies = [
  "tilo-workspace-service",
  "tokio",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-network-client"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tilo-net",
+ "tilo-secrets",
  "workspace-hack",
 ]
 
@@ -22352,7 +22352,6 @@ dependencies = [
  "tilo-account-probe",
  "tilo-action-policy",
  "tilo-actions",
- "tilo-api-client",
  "tilo-app",
  "tilo-app-module",
  "tilo-app-state",
@@ -22383,6 +22382,7 @@ dependencies = [
  "tilo-image-codec",
  "tilo-media",
  "tilo-net",
+ "tilo-network-client",
  "tilo-ocr",
  "tilo-paths",
  "tilo-pdf-reader",
@@ -27533,7 +27533,6 @@ dependencies = [
  "tilo-agent-session",
  "tilo-agent-turn",
  "tilo-api",
- "tilo-api-client",
  "tilo-app",
  "tilo-app-builder",
  "tilo-app-fleet",
@@ -27693,6 +27692,7 @@ dependencies = [
  "tilo-net-answers",
  "tilo-net-p2p",
  "tilo-network-actor",
+ "tilo-network-client",
  "tilo-network-secret-agent",
  "tilo-nm",
  "tilo-notifications-service",

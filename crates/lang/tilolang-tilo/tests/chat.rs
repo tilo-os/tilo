@@ -2029,3 +2029,139 @@ fn discords_setup_and_members_are_changed_by_the_workspaces_moderators_alone() {
     );
     refused(&by_member, "Only the bridge keeps the server's layout");
 }
+
+/// A bridged conversation is said on Discord: a message written here goes there with the
+/// channel, the webhook and the person's name, an edit, a reaction, a deletion and a thread
+/// follow it, and a message over Discord's 2000 characters is cut where Discord takes it.
+#[test]
+fn what_a_bridged_conversation_says_is_carried_to_discord() {
+    use serde_json::Value as Json;
+    use tilolang_runtime::MemorySink;
+    use tilolang_runtime::value::EnumValue;
+
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);
+    ada.host.runtime().set_members(
+        vec![tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner)],
+        None,
+    );
+    let sink = MemorySink::new();
+    ada.host.runtime().set_sink(sink.clone());
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    let meta = ada.host.package(APP).unwrap().meta;
+    let case = |name: &str, case: &str| {
+        let declared = meta.enums.iter().find(|e| e.name == name).expect(name);
+        let variant = declared.variants.iter().find(|v| v.name == case).expect(case);
+        Value::Enum(EnumValue {
+            ty: declared.id.clone(),
+            variant: variant.id.clone(),
+            fields: std::collections::BTreeMap::new(),
+        })
+    };
+    let act = |action: &str, args: Vec<Value>| {
+        match ada.host.runtime().invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (crate::fixtures::action_id(&meta, action).as_str(), args),
+        ) {
+            Ok(InvokeOutcome::Done(value)) => value,
+            other => panic!("{action}: {other:?}"),
+        }
+    };
+    let design = act("new_channel", vec![all.clone(), Value::text("design")]);
+    let discord = act("begin_setup", vec![all.clone()]);
+    act("connect", vec![discord.clone(), Value::text("123"), Value::text("Server")]);
+    let published = |value: &Value| -> String {
+        match value {
+            Value::Ref(reference) => tilolang_tilo::publish::resource_id(
+                APP,
+                &reference.target.id_string(),
+            ),
+            _ => panic!("a record is a reference: {value:?}"),
+        }
+    };
+    let conversation = published(&design);
+    let map = |kind: &str, tilo: &str, discord_id: &str| {
+        act(
+            "map",
+            vec![
+                discord.clone(),
+                case("MappedKind", kind),
+                Value::text(tilo),
+                Value::text(discord_id),
+                case("OriginSide", "discord"),
+            ],
+        );
+    };
+    map("channel", &conversation, "456");
+    map("webhook", &conversation, "789");
+    ada.commit();
+
+    let message = act("send", vec![design.clone(), rich("hello")]);
+    let sent = published(&message);
+    map("message", &sent, "999");
+    ada.commit();
+    let carried = |sink: &MemorySink| -> Vec<Json> {
+        sink.delivered()
+            .into_iter()
+            .filter(|(capability, _)| capability == "discord.perform")
+            .filter_map(|(_, payload)| payload.as_str().map(str::to_owned))
+            .map(|payload| {
+                let perform: Json = serde_json::from_str(&payload).expect("a Discord call");
+                let op = perform["op"].as_str().expect("the call's op");
+                serde_json::from_str(op).expect("the op")
+            })
+            .collect()
+    };
+    ada.host.settle_outbox().expect("the send is carried");
+    ada.commit();
+    let ops = carried(&sink);
+    let send = ops.last().expect("a send reached Discord");
+    assert_eq!(send["op"], "send", "{send}");
+    assert_eq!(send["channel"], "456", "{send}");
+    assert_eq!(send["webhook"], "789", "{send}");
+    assert_eq!(send["content"], "hello", "{send}");
+    assert_eq!(send["tilo"], format!("tl:so.tilo.chat:{sent}"), "{send}");
+    assert_eq!(send["username"], "ada", "{send}");
+    assert!(
+        send.get("thread").is_none_or(Json::is_null),
+        "a channel's send names no thread: {send}"
+    );
+
+    act("edit", vec![message.clone(), rich("hello again")]);
+    act("react", vec![message.clone(), Value::text("👍")]);
+    act("delete", vec![design.clone(), message.clone()]);
+    act("start_thread", vec![design, message, Value::text("topic")]);
+    ada.host.settle_outbox().expect("the changes are carried");
+    ada.commit();
+    let ops = carried(&sink);
+    let find = |op: &str| {
+        ops.iter()
+            .rev()
+            .find(|op_json| op_json["op"] == op)
+            .unwrap_or_else(|| panic!("a {op} reached Discord: {ops:?}"))
+            .clone()
+    };
+    let edit = find("edit");
+    assert_eq!(edit["message"], "999", "{edit}");
+    assert_eq!(edit["content"], "hello again", "{edit}");
+    assert_eq!(edit["webhook"], "789", "{edit}");
+    let react = find("react");
+    assert_eq!(react["message"], "999", "{react}");
+    assert_eq!(react["emoji"], "👍", "{react}");
+    let delete = find("delete");
+    assert_eq!(delete["message"], "999", "{delete}");
+    assert_eq!(delete["webhook"], "789", "{delete}");
+    let thread = find("start-thread");
+    assert_eq!(thread["message"], "999", "{thread}");
+    assert_eq!(thread["channel"], "456", "{thread}");
+
+    // Discord takes 2000 characters: the rest is said by the cut.
+    let long = "word ".repeat(600);
+    act("send", vec![all.clone(), rich(&long)]);
+    ada.host.settle_outbox().expect("the long send is carried");
+    ada.commit();
+    let ops = carried(&sink);
+    let send = ops.last().expect("a long send reached Discord");
+    let content = send["content"].as_str().unwrap_or_default();
+    assert_eq!(content.chars().count(), 2000, "cut to what Discord takes");
+    assert!(content.ends_with('…'), "the cut says so: {content}");
+}

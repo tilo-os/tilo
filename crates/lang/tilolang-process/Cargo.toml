@@ -28,7 +28,7 @@ app-launch = [
     "dep:tilolang-music",
     "dep:tilolang-youtube",
     "tilolang-mail/engine",
-    "dep:tilo-api-client",
+    "dep:tilo-network-client",
     "dep:tilo-backups-engine",
     "dep:tilolang-calendar",
     "dep:tilo-feeds",
@@ -211,7 +211,7 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
 # The Video Editor's editing and picture engines (`app-launch`): what it asks for a probe, a
 # still, a waveform, a colour and a render, through `video_engine`.
-tilo-api-client = { version = "0.1.0", path = "../../engines/tilo-api-client", optional = true }
+tilo-network-client = { version = "0.1.0", path = "../../platform/tilo-network-client", optional = true }
 # The Backups app's engine: the snapshots this device keeps of a folder, verified and restored.
 tilo-backups-engine = { version = "0.1.0", path = "../../engines/tilo-backups-engine", optional = true }
 # The Feeds app's engine: its feeds read away from the frame, and OPML read and written.

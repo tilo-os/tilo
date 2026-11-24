@@ -97,7 +97,7 @@ type DChannel {
     id: Text
     kind: ChannelKind
     name: Text
-    parent: Text = ""
+    parent: Option<Text> = .none
     position: Int = 0
     topic: Text = ""
     overwrites: List<Overwrite>
@@ -219,9 +219,13 @@ type SendOp {
     op: Text = "send"
     channel: Text
     webhook: Text
-    thread: Text = ""
+    /// The thread it goes in, when the conversation is one; none for a channel or a direct
+    /// conversation.
+    thread: Option<Text> = .none
     username: Text
-    avatar_url: Text = ""
+    avatar_url: Option<Text> = .none
+    /// The avatar this message's author wears on Discord, by the hash of its bytes there.
+    avatar_blob: Option<Text> = .none
     content: Text
     attachments: List<OutAttachment>
     created_ms: Int = 0
@@ -229,7 +233,7 @@ type SendOp {
     tilo: Text
 }
 
-/// A file a message carries, by the address its bytes are kept at.
+/// A file a message carries, by the bare blake3 hex of its bytes, as Discord's worker reads it.
 type OutAttachment {
     blob: Text
     name: Text
@@ -242,7 +246,7 @@ type EditOp {
     channel: Text
     webhook: Text
     message: Text
-    thread: Text = ""
+    thread: Option<Text> = .none
     content: Text
 }
 
@@ -250,9 +254,9 @@ type EditOp {
 type DeleteOp {
     op: Text = "delete"
     channel: Text
-    webhook: Text = ""
+    webhook: Option<Text> = .none
     message: Text
-    thread: Text = ""
+    thread: Option<Text> = .none
 }
 
 /// The bot's reaction added there, or taken back.
@@ -282,12 +286,13 @@ type CreateWebhookOp {
 /// A channel made there, or brought back in line.
 type ChannelSpec {
     op: Text = "apply-channel"
-    id: Text = ""
+    /// The Discord channel it is, when it is known; none for a channel made afresh.
+    id: Option<Text> = .none
     tilo: Text
     kind: ChannelKind = .text
     name: Text
     topic: Text = ""
-    parent: Text = ""
+    parent: Option<Text> = .none
     position: Int = 0
 }
 
@@ -303,10 +308,10 @@ type CategoryPlace {
     position: Int
 }
 
-/// Where a channel goes: under `parent` (empty for the top level), at `position`.
+/// Where a channel goes: under `parent` (none for the top level), at `position`.
 type ChannelPlace {
     channel: Text
-    parent: Text = ""
+    parent: Option<Text> = .none
     position: Int
 }
 
@@ -320,7 +325,7 @@ type ArrangeOp {
 /// A role made there, or brought back in line.
 type RoleSpec {
     op: Text = "apply-role"
-    id: Text = ""
+    id: Option<Text> = .none
     tilo: Text
     name: Text
     permissions: Text = ""
@@ -353,10 +358,16 @@ type OverwriteOp {
     op: Text = "set-overwrite"
     channel: Text
     target: Text
-    /// 0 for a role, 1 for a member.
-    target_kind: Int = 0
+    /// Whose overwrite it is: a role's or a member's, as Discord numbers them.
+    target_kind: OverwriteTarget = .role
     allow: Text = ""
     deny: Text = ""
+}
+
+/// Whose permission overwrite an op sets.
+enum OverwriteTarget {
+    role
+    member
 }
 
 /// A file copied from Discord's CDN into the workspace's content store.
@@ -364,6 +375,9 @@ type FetchAssetOp {
     op: Text = "fetch-asset"
     url: Text = ""
     max_bytes: Int = 0
+    /// Whether the answer carries the picture itself, as a `data:` address, for a record to keep
+    /// (an avatar, a link's photo), rather than its bytes reaching the host to store.
+    inline: Bool = false
 }
 
 /// A slash command's reply edited to what came of it.
@@ -376,7 +390,7 @@ type AnswerInteractionOp {
 /// A workspace emoji uploaded to the server, or renamed there.
 type EmojiSpec {
     op: Text = "apply-emoji"
-    id: Text = ""
+    id: Option<Text> = .none
     name: Text
     picture: Text = ""
     tilo: Text
@@ -590,6 +604,145 @@ view setup_dialog(d: Discord) {
     }
 }
 
+// ---- what Chat's own actions carry ------------------------------------------------
+//
+// Chat's send, edit, delete, react and start_thread hand what they wrote to the bridge, so a
+// bridged conversation is said on Discord as it is said here. Each is the app's own path: the
+// calls to Discord a plan makes stay the bridge's alone.
+
+/// The published id of a conversation a message went into.
+fn conversation_id(to: TextChannel | Thread | Direct) -> Text {
+    match to {
+        c: TextChannel => published(c.id),
+        t: Thread => published(t.id),
+        d: Direct => published(d.id),
+    }
+}
+
+/// The conversation whose messages hold `m`, as Chat names it; empty when none does.
+fn conversation_of(all: Conversations, m: Message) -> Text {
+    let found = ""
+    for place in all.channels {
+        match place {
+            ch: TextChannel => {
+                if ch.messages.any(x -> x == m) {
+                    found = published(ch.id)
+                }
+                for t in ch.threads.filter(t -> t.messages.any(x -> x == m)) {
+                    found = published(t.id)
+                }
+            }
+            cat: Category => {
+                for place in cat.channels {
+                    match place {
+                        tc: TextChannel => {
+                            if tc.messages.any(x -> x == m) {
+                                found = published(tc.id)
+                            }
+                            for t in tc.threads.filter(t -> t.messages.any(x -> x == m)) {
+                                found = published(t.id)
+                            }
+                        }
+                        v: VoiceChannel => {}
+                    }
+                }
+            }
+            d: Direct => {
+                if d.messages.any(x -> x == m) {
+                    found = published(d.id)
+                }
+                for t in d.threads.filter(t -> t.messages.any(x -> x == m)) {
+                    found = published(t.id)
+                }
+            }
+            v: VoiceChannel => {}
+        }
+    }
+    found
+}
+
+/// A message written here, carried to its conversation there.
+action bridge_sent(all: Conversations, conversation: Text, m: Message) {
+    if let d = all.discord.first() {
+        if let c = carried(d, conversation) {
+            carry_message(d, c, m)
+        }
+    }
+}
+
+/// A change to a message here, carried.
+action bridge_edited(all: Conversations, m: Message) {
+    if let d = all.discord.first() {
+        if let c = carried(d, conversation_of(all, m)) {
+            if let map = mapping(d, .message, published(m.id())) {
+                carry_edit(d, c, m, map.discord)
+            }
+        }
+    }
+}
+
+/// A deletion here, carried.
+action bridge_deleted(all: Conversations, conversation: Text, m: Message) {
+    if let d = all.discord.first() {
+        if let c = carried(d, conversation) {
+            if let map = mapping(d, .message, published(m.id())) {
+                carry_delete(d, c, map.discord, c.webhook)
+            }
+        }
+    }
+}
+
+/// A reaction added here, or taken back, carried.
+action bridge_reacted(all: Conversations, m: Message, emoji: Text, added: Bool) {
+    if let d = all.discord.first() {
+        if let c = carried(d, conversation_of(all, m)) {
+            if let map = mapping(d, .message, published(m.id())) {
+                carry_reaction(d, c, map.discord, emoji, added)
+            }
+        }
+    }
+}
+
+/// A thread started here on a message, carried: the message it grows from is the one there.
+action bridge_threaded(all: Conversations, conversation: Text, root: Message, t: Thread) {
+    if let d = all.discord.first() {
+        if let c = carried(d, conversation) {
+            if let map = mapping(d, .message, published(root.id())) {
+                carry_thread(d, c, map.discord, t)
+            }
+        }
+    }
+}
+
+/// Starts a thread on a message there.
+action carry_thread(d: Discord, c: Carried, there: Text, t: Thread) {
+    outside(
+        "discord.perform",
+        json.encode(
+            Perform(
+                account: d.id(),
+                op: json.encode(
+                    StartThreadOp(
+                        channel: c.channel,
+                        message: there,
+                        name: t.name,
+                        tilo: published(t.id()),
+                    ),
+                ),
+            ),
+        ),
+    )
+}
+
+/// A message's words as Discord takes them: 2000 characters at most, the rest said by the cut.
+fn fitted(text: Text) -> Text {
+    if text.len() <= 2000 {
+        text
+    } else {
+        "{text.slice(0, 1999)}…"
+    }
+}
+
 /// A conversation the bridge carries: its channel there, the channel's webhook, and the thread
 /// when the conversation is one.
 type Carried {
@@ -651,12 +804,12 @@ fn ordered_channels(d: Discord) -> List<DChannel> {
     let rows: List<DChannel> = []
     for cat in categories {
         rows = rows + [cat]
-        for ch in rest.filter(ch -> ch.parent == cat.id) {
+        for ch in rest.filter(ch -> ch.parent == .some(cat.id)) {
             rows = rows + [ch]
         }
     }
     let loose = rest.filter(
-        ch -> not d.channels.any(c -> c.kind == .category and c.id == ch.parent),
+        ch -> not d.channels.any(c -> c.kind == .category and ch.parent == .some(c.id)),
     )
     rows + loose
 }
@@ -931,12 +1084,12 @@ action carry_message(d: Discord, c: Carried, m: Message) {
                     SendOp(
                         channel: c.channel,
                         webhook: c.webhook,
-                        thread: c.thread,
+                        thread: thread_of(c),
                         username: author.name,
-                        avatar_url: author.avatar,
-                        content: m.body.text,
+                        avatar_url: if author.avatar == "" { .none } else { .some(author.avatar) },
+                        content: fitted(m.body.text),
                         attachments: m.attachments.map(
-                            f -> OutAttachment(blob: f.blob, name: f.name, size: f.size),
+                            f -> OutAttachment(blob: bare_blob(f.blob), name: f.name, size: f.size),
                         ),
                         tilo: published(m.id()),
                     ),
@@ -958,7 +1111,7 @@ action carry_edit(d: Discord, c: Carried, m: Message, there: Text) {
                         channel: c.channel,
                         webhook: c.webhook,
                         message: there,
-                        thread: c.thread,
+                        thread: thread_of(c),
                         content: m.body.text,
                     ),
                 ),
@@ -977,9 +1130,9 @@ action carry_delete(d: Discord, c: Carried, there: Text, webhook: Text) {
                 op: json.encode(
                     DeleteOp(
                         channel: c.channel,
-                        webhook: webhook,
+                        webhook: if webhook == "" { .none } else { .some(webhook) },
                         message: there,
-                        thread: c.thread,
+                        thread: thread_of(c),
                     ),
                 ),
             ),
@@ -1020,6 +1173,37 @@ fn author_of(d: Discord, who: Actor, said: Text) -> There {
     if let l = d.links.find(l -> l.person == who.id()) {
         There(name: shown_name(l), avatar: avatar_url(l))
     } else if said != "" { There(name: said) } else { There(name: who.name()) }
+}
+
+/// Whether an op names no Discord object: one that is made afresh.
+fn fresh(value: Option<Text>) -> Bool {
+    match value {
+        .none => true,
+        .some(_) => false,
+    }
+}
+
+/// An option's text, when it has one: what a guard reads an op's absent id or parent as.
+fn or_empty(value: Option<Text>) -> Text {
+    match value {
+        .some(text) => text,
+        .none => "",
+    }
+}
+
+/// The thread an op goes in, from a conversation carried there; none for a channel.
+fn thread_of(c: Carried) -> Option<Text> {
+    if c.thread == "" { .none } else { .some(c.thread) }
+}
+
+/// A file's bytes as Discord's worker reads them: the bare blake3 hex of the content address.
+fn bare_blob(address: Text) -> Text {
+    let scheme = "tilo-blob://"
+    if address.starts_with(scheme) {
+        address.slice(scheme.len(), address.len())
+    } else {
+        address
+    }
 }
 
 /// Where Discord serves a linked account's avatar.
@@ -1353,7 +1537,7 @@ action edit_there(d: Discord, op: EditOp) {
 action delete_there(d: Discord, op: DeleteOp) {
     require bridge(invoker) "The bridge carries messages to Discord"
     require knows_channel(d, op.channel) "There is no such channel in the server"
-    require op.webhook == "" or by_discord(d, .webhook, op.webhook) != .none "That is not one of the bridge's webhooks"
+    require op.webhook == .none or by_discord(d, .webhook, or_empty(op.webhook)) != .none "That is not one of the bridge's webhooks"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
@@ -1392,13 +1576,13 @@ action apply_channel(d: Discord, op: ChannelSpec) {
     require may_configure(invoker) "Only the workspace's moderators change the server's channels"
     require d.mirror_channels "This bridge does not make channels in Discord"
     require d.ownership == .adopted "The server is adopted first"
-    require op.id == ""
+    require fresh(op.id)
         or d.map.any(
             m -> (m.kind == .channel or m.kind == .category)
-                and m.discord == op.id
+                and m.discord == or_empty(op.id)
                 and m.origin == .tilo,
         ) "The bridge changes only channels it made, never the server's own"
-    require op.parent == "" or knows_channel(d, op.parent) "There is no such channel in the server"
+    require op.parent == .none or knows_channel(d, or_empty(op.parent)) "There is no such channel in the server"
     require op.name != "" and op.name.len() <= 100 "A Discord channel name is 1 to 100 characters"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
@@ -1423,7 +1607,7 @@ action arrange_channels(d: Discord, op: ArrangeOp) {
     require d.ownership == .adopted "The server is adopted first"
     require op.categories.all(place -> knows_channel(d, place.category)) "There is no such channel in the server"
     require op.channels.all(place -> knows_channel(d, place.channel)) "There is no such channel in the server"
-    require op.channels.all(place -> place.parent == "" or knows_channel(d, place.parent)) "There is no such channel in the server"
+    require op.channels.all(place -> place.parent == .none or knows_channel(d, or_empty(place.parent))) "There is no such channel in the server"
     require op.channels.all(place -> not moves_bridged(d, place)) "The bridge moves only the channels it bridges to another category"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
@@ -1444,7 +1628,7 @@ action may_change(d: Discord, id: Text) {
 
 /// Whether `place` would move a channel the bridge did not make to another category.
 fn moves_bridged(d: Discord, place: ChannelPlace) -> Bool {
-    let parent_now = if let seen = observed(d, place.channel) { seen.parent } else { "" }
+    let parent_now = if let seen = observed(d, place.channel) { seen.parent } else { .none }
     if parent_now == place.parent {
         false
     } else {
@@ -1457,7 +1641,7 @@ fn moves_bridged(d: Discord, place: ChannelPlace) -> Bool {
 action apply_role(d: Discord, op: RoleSpec) {
     require may_configure(invoker) "Only the workspace's moderators change the server's roles"
     require d.map_roles "This bridge leaves the server's roles alone"
-    require op.id == "" or by_discord(d, .role, op.id) != .none "The bridge changes only the roles it made"
+    require fresh(op.id) or by_discord(d, .role, or_empty(op.id)) != .none "The bridge changes only the roles it made"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
@@ -1506,7 +1690,7 @@ action set_overwrite(d: Discord, op: OverwriteOp) {
     require may_configure(invoker) "Only the workspace's moderators change the server's permissions"
     require d.map_roles "This bridge leaves the server's roles alone"
     require knows_channel(d, op.channel) "There is no such channel in the server"
-    require op.target_kind == 0 and by_discord(d, .role, op.target) != .none "The bridge sets overwrites only for the roles it made"
+    require op.target_kind == .role and by_discord(d, .role, op.target) != .none "The bridge sets overwrites only for the roles it made"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }
 
@@ -1521,7 +1705,7 @@ action fetch_asset(d: Discord, op: FetchAssetOp) {
 /// Uploads a workspace emoji to the server, or renames one the bridge uploaded.
 action apply_emoji(d: Discord, op: EmojiSpec) {
     require valid_discord_emoji_name(op.name) "A Discord emoji's name is 2 to 32 letters, digits and underscores"
-    require op.id == "" or by_discord(d, .emoji, op.id) != .none "The bridge changes only emoji it uploaded"
+    require fresh(op.id) or by_discord(d, .emoji, or_empty(op.id)) != .none "The bridge changes only emoji it uploaded"
     require is_content_address(op.picture) "An emoji op names its picture's content address"
     outside("discord.perform", json.encode(Perform(account: d.id(), op: json.encode(op))))
 }

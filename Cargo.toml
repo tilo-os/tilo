@@ -350,7 +350,7 @@ members = [
     "crates/desktop/tilo-system-resources",
     "crates/engines/tilo-image-codec",
     "crates/engines/tilo-image-info",
-    "crates/engines/tilo-api-client",
+    "crates/platform/tilo-network-client",
     "crates/engines/tilo-backups-engine",
     "crates/desktop/tilo-keyboard-map",
     "crates/platform/tilo-locale",

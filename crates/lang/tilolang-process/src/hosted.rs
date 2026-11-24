@@ -71,6 +71,9 @@ const PLAYBACK_APP: &str = "so.tilo.playback";
 use crate::phrases::Phrases;
 use crate::presence::Presence;
 
+/// The API Tester's app id: the one app the general network client answers its requests for.
+const API_TESTER_APP: &str = "so.tilo.api-tester";
+
 thread_local! {
     /// The caller of the invocation being built on this thread, as the broker delivered it.
     static CALLER: RefCell<Option<Caller>> = const { RefCell::new(None) };
@@ -735,6 +738,9 @@ impl Platform for HostPlatform {
                 return crate::camera_engine::call(self, app, op, input);
             }
             crate::backups_engine::register();
+            if app == API_TESTER_APP {
+                return tilo_network_client::call(app, op, input);
+            }
             crate::feed_engine::register();
             crate::weather_engine::register();
         }
@@ -751,8 +757,8 @@ impl Platform for HostPlatform {
     fn engine_start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
-            if app == tilo_api_client::APP {
-                return tilo_api_client::start(op, input);
+            if app == API_TESTER_APP {
+                return tilo_network_client::start(app, op, input);
             }
             if app == crate::video_engine::APP {
                 return crate::video_engine::start(self, app, op, input);
@@ -798,7 +804,7 @@ impl Platform for HostPlatform {
             crate::backups_engine::register();
             crate::feed_engine::register();
             crate::weather_engine::register();
-            if let Ok(status) = tilo_api_client::status(job)
+            if let Ok(status) = tilo_network_client::status(job)
                 .or_else(|_| crate::video_engine::status(self, job))
                 .or_else(|_| crate::print_centre_engine::status(self, job))
                 .or_else(|_| crate::camera_engine::status(self, job))
@@ -819,7 +825,7 @@ impl Platform for HostPlatform {
             crate::backups_engine::register();
             crate::feed_engine::register();
             crate::weather_engine::register();
-            if tilo_api_client::cancel(job)
+            if tilo_network_client::cancel(job)
                 || crate::video_engine::cancel(job)
                 || crate::print_centre_engine::cancel(job)
                 || crate::camera_engine::cancel(job)

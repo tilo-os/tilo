@@ -778,6 +778,8 @@ action send(
             Attached(name: f.name, media: f.media, size: f.size(), blob: f.url()),
         )
     }
+    // Said on Discord too, when the conversation is bridged.
+    bridge_sent(root Conversations, conversation_id(to), sent)
     sent
 }
 
@@ -955,6 +957,7 @@ action edit(m: Message, body: RichText = m.body, turn: Text = m.turn) (
     require not body.is_empty() "Type a message first"
     m.body = body
     m.turn = turn
+    bridge_edited(root Conversations, m)
 }
 
 /// Deletes a message from the channel or thread it is in. Its author, or anyone the
@@ -985,6 +988,7 @@ destructive action delete(to: TextChannel | Thread | Direct, m: Message) (
             d.messages.remove(m)
         }
     }
+    bridge_deleted(root Conversations, conversation_id(to), m)
 }
 
 /// Pins a message to its channel, or unpins it.
@@ -1000,6 +1004,7 @@ action pin(m: Message, pinned: Bool = not m.pinned) (
 action react(m: Message, emoji: Text) (icon: .smile_plus, label: "React") {
     let mine = if let who = m.reactions.get(emoji) { who.any(p -> p == invoker) } else { false }
     if mine { m.reactions.remove(emoji, invoker) } else { m.reactions.add(emoji, invoker) }
+    bridge_reacted(root Conversations, m, emoji, not mine)
 }
 
 /// Reports a message of a conversation to the workspace's moderators, saying why when the
@@ -1044,7 +1049,7 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
     icon: .message_square,
     label: "Start thread",
 ) {
-    match c {
+    let made = match c {
         ch: TextChannel => {
             let t = ch.threads.insert(Thread(name: name))
             m.thread = t
@@ -1056,6 +1061,8 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
             t
         }
     }
+    bridge_threaded(root Conversations, conversation_id(c), m, made)
+    made
 }
 
 /// Chat's Unread place, as another app's page shows it: the conversations with something the

@@ -1,12 +1,12 @@
 [package]
-name = "tilo-api-client"
+name = "tilo-network-client"
 version = "0.1.0"
 edition = "2024"
 publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Sends the HTTP requests an API client app asks for: any method, encoded queries and forms, basic auth, a bounded body read, and jobs a person can stop."
+description = "The general network client of tilolang packages: the HTTP requests an app's code sends, any method, queries, headers, bodies and secret references, bounded in time and size, as jobs its person can stop."
 
 [dependencies]
 # The device's network, once per request, and its own limits on how long one may take.

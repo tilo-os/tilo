@@ -616,10 +616,14 @@ d-fqkenlwb = Channel
 d-5qmn6o6u = Webhook
 
 d-35rsrlum = Thread
+    .doc = The thread it goes in, when the conversation is one; none for a channel or a direct conversation.
 
 d-5f33mabo = Username
 
 d-epcz6l7f = Avatar url
+
+d-ayx2qu6h = Avatar blob
+    .doc = The avatar this message's author wears on Discord, by the hash of its bytes there.
 
 d-7exg3bha = Content
 
@@ -633,7 +637,7 @@ d-ld3nm43w = Tilo
 d-w5l4kq6a-filter-created_ms = Created ms
 
 d-yxgnscic = Out attachment
-    .doc = A file a message carries, by the address its bytes are kept at.
+    .doc = A file a message carries, by the bare blake3 hex of its bytes, as Discord's worker reads it.
     .noun = { $count ->
         [one] out attachment
        *[other] out attachments
@@ -738,6 +742,7 @@ d-v5fg4ke3 = Channel spec
 d-ffcekihx = Op
 
 d-obrvgv5z = Id
+    .doc = The Discord channel it is, when it is known; none for a channel made afresh.
 
 d-rdqrtii5 = Tilo
 
@@ -780,7 +785,7 @@ d-lnbqfx6g = Position
 d-6m5og6gi-filter-position = Position
 
 d-zblqsbjd = Channel place
-    .doc = Where a channel goes: under `parent` (empty for the top level), at `position`.
+    .doc = Where a channel goes: under `parent` (none for the top level), at `position`.
     .noun = { $count ->
         [one] channel place
        *[other] channel places
@@ -881,7 +886,7 @@ d-syrsf566 = Channel
 d-fohcx76y = Target
 
 d-v7ggg7lk = Target kind
-    .doc = 0 for a role, 1 for a member.
+    .doc = Whose overwrite it is: a role's or a member's, as Discord numbers them.
 
 d-x6idw22j = Allow
 
@@ -902,7 +907,12 @@ d-77p2naze = Url
 
 d-cqzm3ho2 = Max bytes
 
+d-npughan5 = Inline
+    .doc = Whether the answer carries the picture itself, as a `data:` address, for a record to keep (an avatar, a link's photo), rather than its bytes reaching the host to store.
+
 d-s25bqwlq-filter-max_bytes = Max bytes
+
+d-s25bqwlq-filter-inline = Inline
 
 d-2tqwhmeu = Answer interaction op
     .doc = A slash command's reply edited to what came of it.
@@ -1054,6 +1064,13 @@ d-dygnzgoc = Voice
 d-p4gznreo = Category
 
 d-plvd6wd3 = Thread
+
+d-cloly55s = Overwrite target
+    .doc = Whose permission overwrite an op sets.
+
+d-roegn2mw = Role
+
+d-rw2ncbfi = Member
 
 d-4scklxqs = New channel
     .doc = Adds a text channel to the sidebar, under `category` when it is given and about `topic` when that is.
@@ -1311,6 +1328,52 @@ d-6uysx57s-name = Name
 d-g6uruw6c = Connect Discord
     .doc = Starts the account: the record the setup writes into.
     .w-only-the-workspace-s-moderators-connect = Only the workspace's moderators connect a Discord server
+
+d-6mhgkjxx = Bridge sent
+    .doc = A message written here, carried to its conversation there.
+
+d-6mhgkjxx-conversation = Conversation
+
+d-6mhgkjxx-m = M
+
+d-dvwvrdlu = Bridge edited
+    .doc = A change to a message here, carried.
+
+d-dvwvrdlu-m = M
+
+d-7habrzma = Bridge deleted
+    .doc = A deletion here, carried.
+
+d-7habrzma-conversation = Conversation
+
+d-7habrzma-m = M
+
+d-5lejesop = Bridge reacted
+    .doc = A reaction added here, or taken back, carried.
+
+d-5lejesop-m = M
+
+d-5lejesop-emoji = Emoji
+
+d-5lejesop-added = Added
+
+d-cd3jfjjf = Bridge threaded
+    .doc = A thread started here on a message, carried: the message it grows from is the one there.
+
+d-cd3jfjjf-conversation = Conversation
+
+d-cd3jfjjf-root = Root
+
+d-cd3jfjjf-t = T
+
+d-eucsy5nt = Carry thread
+    .doc = Starts a thread on a message there.
+
+d-eucsy5nt-c = C
+
+d-eucsy5nt-there = There
+
+d-eucsy5nt-t = T
 
 d-m66js2te = Connect Discord
     .doc = Opens the setup dialog.
