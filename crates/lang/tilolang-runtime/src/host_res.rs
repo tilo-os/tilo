@@ -754,6 +754,7 @@ impl Core {
                 };
                 self.make_in_change(&new, &r.target.doc, txn)
                     .map_err(|error| crate::engine::HostFail::Trap(error.to_string()))?;
+                self.touched(r.target.id_string());
             }
         }
         Ok(MutCtx {
