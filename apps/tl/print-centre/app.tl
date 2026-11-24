@@ -444,11 +444,63 @@ action turn_page(page: ScannedPage) uses image {
     }
 }
 
+/// Crops a scanned page to the part the person kept, in fractions of the picture a viewer
+/// shows. The text read off the whole page no longer describes it, so it is cleared.
+action crop_page(
+    p: PrintCentre,
+    page: ScannedPage,
+    left: Float,
+    top: Float,
+    right: Float,
+    bottom: Float,
+) uses image {
+    let x = clamp_fraction(left)
+    let y = clamp_fraction(top)
+    let width = clamp_fraction(right) - x
+    let height = clamp_fraction(bottom) - y
+    if width <= 0.0 or height <= 0.0 {
+        return
+    }
+    match page.file.cropped(x, y, width, height) {
+        .ok(cropped) => {
+            page.file = cropped
+            page.text = ""
+        }
+        .err(why) => {
+            if let scan = p.scans.first() {
+                scan.failed = why
+            }
+        }
+    }
+}
+
+fn clamp_fraction(value: Float) -> Float {
+    if value < 0.0 { 0.0 } else if value > 1.0 { 1.0 } else { value }
+}
+
 /// Throws a scanned page away.
 action remove_page(p: PrintCentre, page: ScannedPage) {
     for scan in p.scans {
         scan.pages.remove(page)
     }
+}
+
+/// Starts a new scanned document: the pages it held go. The change is the person's own and is
+/// taken back from history; it is refused while a page is still being scanned, so a scan in
+/// flight is never thrown away.
+action new_scanned_document(p: PrintCentre) (icon: .file_plus, label: "New scanned document") {
+    require not scanning(p) "Wait for the page to finish scanning before starting a new document"
+    for scan in p.scans {
+        for page in scan.pages {
+            scan.pages.remove(page)
+        }
+        scan.failed = ""
+    }
+}
+
+/// Whether a page is being scanned now.
+fn scanning(p: PrintCentre) -> Bool {
+    if let scan = p.scans.first() { scan.job != "" } else { false }
 }
 
 /// Moves a scanned page to `order`, and the page that stood there to where it was.
@@ -572,7 +624,9 @@ action set_ocr_language(p: PrintCentre, language: Text) {
 /// The window: the printers, their jobs, the scanner, and the print and scan forms.
 view window(p: PrintCentre) {
     state place: Text = "dashboard"
-    state cropping: Bool = false
+    // The page whose crop frame is open, by its id, and the part of it the person kept.
+    state cropping: Text = ""
+    state crop_edges: List<Float> = [0.0, 0.0, 1.0, 1.0]
     let printers = device.printers
     let scanners = device.scanners
     // A document another app handed over opens the print form, so the person chooses the
@@ -661,7 +715,7 @@ view window(p: PrintCentre) {
                 print_form(p, printers)
             }
         } else if let scan = p.scans.first() {
-            scan_pane(p, scan, scanners)
+            scan_pane(p, scan, scanners, cropping, crop_edges)
         } else {
             scan_form(p, scanners)
         }
@@ -1061,7 +1115,13 @@ view scan_form(p: PrintCentre, scanners: device.Scanners) {
 }
 
 /// The scan form: the scanner, how to scan, and the pages as they come.
-view scan_pane(p: PrintCentre, scan: ScanSession, scanners: device.Scanners) {
+view scan_pane(
+    p: PrintCentre,
+    scan: ScanSession,
+    scanners: device.Scanners,
+    cropping: State<Text>,
+    crop_edges: State<List<Float>>,
+) {
     ui.ObjectHeader("Scan", caption: "Pages scanned on this computer", icon: .scan_line)
     if scanners.found.is_empty() {
         ui.EmptyState(
@@ -1157,12 +1217,15 @@ view scan_pane(p: PrintCentre, scan: ScanSession, scanners: device.Scanners) {
                 secondary: true,
             )
             for page in pages {
-                scanned_page(page)
+                scanned_page(p, page, cropping, crop_edges)
             }
         }
         row(gap: .tight, wrap: true) {
             ui.Button("Scan another page", icon: .scan_line) {
                 on press: scan_page(p)
+            }
+            ui.Button("New scanned document", icon: .file_plus, role: .destructive) {
+                on press: new_scanned_document(p)
             }
             ui.Button("Save the document as a PDF", icon: .download, role: .primary) {
                 on press: file.save(document_to_save(p), name: "scanned document.pdf")
@@ -1187,10 +1250,45 @@ fn language_code(name: Text) -> Text {
 }
 
 /// One scanned page: its picture, the text read off it, and what can be done with it.
-view scanned_page(page: ScannedPage) {
-    let p = root PrintCentre
+view scanned_page(
+    p: PrintCentre,
+    page: ScannedPage,
+    cropping: State<Text>,
+    crop_edges: State<List<Float>>,
+) {
     ui.Card(title: if page.text != "" { first_line(page.text) } else { std.say("Page") }) {
         ui.Image(src: page.file.url, alt: "Scanned page", fit: .contain, aspect: 0.7727)
+        if cropping == page.id() {
+            ui.ImageCropEditor(
+                page.file.url,
+                left: crop_edges.at(0) ?? 0.0,
+                top: crop_edges.at(1) ?? 0.0,
+                right: crop_edges.at(2) ?? 1.0,
+                bottom: crop_edges.at(3) ?? 1.0,
+            ) {
+                on change(edges: List<Float>): set(crop_edges, edges)
+            }
+            row(gap: .tight, wrap: true) {
+                ui.Button("Apply crop", icon: .check, role: .primary) {
+                    on press: crop_page(
+                            p,
+                            page,
+                            crop_edges.at(0) ?? 0.0,
+                            crop_edges.at(1) ?? 0.0,
+                            crop_edges.at(2) ?? 1.0,
+                            crop_edges.at(3) ?? 1.0,
+                        )
+                        .then(set(cropping, ""))
+                }
+                ui.Button("Cancel crop", icon: .x) {
+                    on press: set(cropping, "")
+                }
+            }
+        } else {
+            ui.Button("Crop", icon: .scissors, size: .small) {
+                on press: set(crop_edges, [0.0, 0.0, 1.0, 1.0]).then(set(cropping, page.id()))
+            }
+        }
         row(gap: .tight, wrap: true) {
             ui.Button("Turn", icon: .rotate_cw, size: .small) {
                 on press: turn_page(page)
