@@ -42,7 +42,7 @@ pub use scanners::SCANNERS;
 pub use storage::STORAGE;
 pub use users::USERS;
 pub use windows_apps::{WINDOWS_APPS, WINDOWS_PROGRAM};
-pub use windows_compat::WINDOWS_COMPAT;
+pub use windows_compat::WINDOWS_PROGRAMS;
 
 /// The resources' ids.
 pub const POWER: &str = "power";

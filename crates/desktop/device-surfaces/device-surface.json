@@ -5304,7 +5304,7 @@
           "path": "support",
           "stored": "value",
           "type": {
-            "named": "WindowsCompat"
+            "named": "WindowsPrograms"
           },
           "readonly": true
         },
@@ -5843,7 +5843,7 @@
           ]
         },
         {
-          "name": "WindowsCompat",
+          "name": "WindowsPrograms",
           "doc": "What this computer's Windows compatibility reads as now.",
           "fields": [
             {

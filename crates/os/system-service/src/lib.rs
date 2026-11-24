@@ -71,7 +71,7 @@ use update::Update;
 pub use tilo_system_resources::{
     CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIREWALL, FIRMWARE, HOST_INFO, JOURNAL,
     KEYBOARD_BACKLIGHT, POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE,
-    USERS, WINDOWS_APPS, WINDOWS_COMPAT, WINDOWS_PROGRAM,
+    USERS, WINDOWS_APPS, WINDOWS_PROGRAM, WINDOWS_PROGRAMS,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -96,7 +96,7 @@ enum Part {
     HostInfo,
     Scanners,
     CodecPack,
-    WindowsCompat,
+    WindowsPrograms,
     Firmware,
     Containers,
     Processes,
@@ -127,7 +127,7 @@ pub struct Readings {
     pub host_info: tilo_system_resources::host_info::HostInfo,
     pub scanners: tilo_system_resources::scanners::Scanners,
     pub codec_pack: tilo_system_resources::codec_pack::CodecPack,
-    pub windows_compat: tilo_system_resources::windows_compat::WindowsCompat,
+    pub windows_compat: tilo_system_resources::windows_compat::WindowsPrograms,
     pub firmware: tilo_system_resources::firmware::Firmware,
     pub containers: tilo_system_resources::containers::Containers,
     pub processes: tilo_system_resources::processes::Processes,
@@ -543,7 +543,10 @@ impl SystemService {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .by_workspace
-                .insert(workspace.to_owned(), (std::time::Instant::now(), reading.clone()));
+                .insert(
+                    workspace.to_owned(),
+                    (std::time::Instant::now(), reading.clone()),
+                );
             reading
         };
         {
@@ -646,7 +649,7 @@ impl SystemService {
                 &mut readings.codec_pack.pending,
                 &mut readings.codec_pack.problem,
             ),
-            Part::WindowsCompat => (
+            Part::WindowsPrograms => (
                 &mut readings.windows_compat.pending,
                 &mut readings.windows_compat.problem,
             ),
@@ -1478,11 +1481,11 @@ pub fn codec_pack_surface() -> tilo_resource::surface::Surface {
 
 /// The `windows-compat` resource's surface, as a shell reads it over `so.tilo.device`.
 #[must_use]
-pub fn windows_compat_surface() -> tilo_resource::surface::Surface {
+pub fn windows_programs_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<
-        tilo_system_resources::windows_compat::WindowsCompat,
-        tilo_system_resources::windows_compat::WindowsCompatAction,
-    >(WINDOWS_COMPAT, "Windows support")
+        tilo_system_resources::windows_compat::WindowsPrograms,
+        tilo_system_resources::windows_compat::WindowsProgramsAction,
+    >(WINDOWS_PROGRAMS, "Windows support")
 }
 
 /// The `firmware` resource's surface, as a shell reads it over `so.tilo.device`.
@@ -2140,19 +2143,19 @@ impl SystemService {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
-        let action = decode::<tilo_system_resources::windows_compat::WindowsCompatAction>(
+        let action = decode::<tilo_system_resources::windows_compat::WindowsProgramsAction>(
             published, resource, action, arguments,
         )?;
         let id = action.id();
         let change = match action {
-            tilo_system_resources::windows_compat::WindowsCompatAction::Install => {
+            tilo_system_resources::windows_compat::WindowsProgramsAction::Install => {
                 WindowsChange::Install
             }
-            tilo_system_resources::windows_compat::WindowsCompatAction::Remove => {
+            tilo_system_resources::windows_compat::WindowsProgramsAction::Remove => {
                 WindowsChange::Remove
             }
         };
-        Ok(self.start_extension(Part::WindowsCompat, id, ExtensionChange::Windows(change)))
+        Ok(self.start_extension(Part::WindowsPrograms, id, ExtensionChange::Windows(change)))
     }
 
     /// An action on the `firmware` resource.
@@ -2426,7 +2429,7 @@ impl Service for SystemService {
             HOST_INFO => Some(reading(&self.readings.host_info)),
             SCANNERS => Some(reading(&self.readings.scanners)),
             CODEC_PACK => Some(reading(&self.readings.codec_pack)),
-            WINDOWS_COMPAT => Some(reading(&self.readings.windows_compat)),
+            WINDOWS_PROGRAMS => Some(reading(&self.readings.windows_compat)),
             WINDOWS_APPS => Some(reading(&self.windows_reading(""))),
             FIRMWARE => Some(reading(&self.readings.firmware)),
             CONTAINERS => Some(reading(&self.readings.containers)),
@@ -2497,7 +2500,9 @@ impl Service for SystemService {
             DISK_UNLOCK => self.invoke_disk_unlock(&published, resource, action, arguments),
             HOST_INFO => self.invoke_host_info(&published, resource, action, arguments),
             CODEC_PACK => self.invoke_codec_pack(&published, resource, action, arguments),
-            WINDOWS_COMPAT => self.invoke_windows_programs(&published, resource, action, arguments),
+            WINDOWS_PROGRAMS => {
+                self.invoke_windows_programs(&published, resource, action, arguments)
+            }
             WINDOWS_APPS => self.invoke_windows_apps(&published, "", resource, action, arguments),
             WINDOWS_PROGRAM => {
                 self.invoke_windows_program(&published, "", resource, action, arguments)

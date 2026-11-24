@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The resource's id.
-pub const WINDOWS_COMPAT: &str = "windows-compat";
+pub const WINDOWS_PROGRAMS: &str = "windows-compat";
 
 /// How the compatibility layer stands.
 #[derive(
@@ -32,7 +32,7 @@ pub enum WindowsState {
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
 )]
-pub struct WindowsCompat {
+pub struct WindowsPrograms {
     /// Whether this system offers it at all.
     #[serde(default)]
     pub available: bool,
@@ -53,7 +53,7 @@ pub struct WindowsCompat {
 /// The `windows-compat` resource's actions.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "so.tilo.system.windows-compat")]
-pub enum WindowsCompatAction {
+pub enum WindowsProgramsAction {
     /// Download and install the compatibility layer, after the size is shown.
     #[effect(kind = "outside")]
     #[effect(

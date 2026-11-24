@@ -59,7 +59,7 @@ pub fn device_surfaces() -> Vec<Surface> {
         tilo_system_service::disk_unlock_surface(),
         tilo_system_service::host_info_surface(),
         tilo_system_service::codec_pack_surface(),
-        tilo_system_service::windows_compat_surface(),
+        tilo_system_service::windows_programs_surface(),
         tilo_system_service::windows_apps::surface(),
         tilo_system_service::firmware_surface(),
         tilo_system_service::containers_surface(),

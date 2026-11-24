@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::windows_compat::WindowsCompat;
+use super::windows_compat::WindowsPrograms;
 
 /// The resource's id.
 pub const WINDOWS_APPS: &str = "windows-apps";
@@ -350,7 +350,7 @@ pub struct WindowsApps {
     #[serde(default)]
     pub pending_install: Option<PendingInstall>,
     /// Whether the compatibility layer (Wine, Proton) is installed, and what installing it takes.
-    pub support: WindowsCompat,
+    pub support: WindowsPrograms,
     /// The last program that ended, said for a while after it did.
     #[serde(default)]
     pub ended: Option<EndedProgram>,

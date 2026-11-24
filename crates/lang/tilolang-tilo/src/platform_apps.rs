@@ -157,7 +157,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("disk_unlock", "DiskUnlock", "disk-unlock"),
     ("host_info", "HostInfo", "host-info"),
     ("codec_pack", "CodecPack", "codec-pack"),
-    ("windows_compat", "WindowsCompat", "windows-compat"),
+    ("windows_compat", "WindowsPrograms", "windows-compat"),
     ("windows_apps", "WindowsApps", "windows-apps"),
     ("firmware", "Firmware", "firmware"),
     ("containers", "Containers", "containers"),
