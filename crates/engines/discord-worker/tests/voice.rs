@@ -605,14 +605,17 @@ async fn without_dave_audio_is_transport_encrypted_only() {
     assert_eq!(host.fake.voice_dave_version(), 0);
 }
 
+/// One audio object a device opened: the device that sealed it, the bridged participant it
+/// names, and the Opus payload.
+type Voice = ([u8; 32], Option<[u8; 32]>, Vec<u8>);
+
 /// A Tilo device in the workspace's call: the live session it hears it on and
 /// the board it reads everyone's presence from.
 struct Member {
     live: LiveSession,
     board: Board,
-    /// Every audio object it opened: the device that sealed it, the bridged
-    /// participant it names, and the Opus payload.
-    voices: Vec<([u8; 32], Option<[u8; 32]>, Vec<u8>)>,
+    /// Every audio object it opened, as [`Voice`].
+    voices: Vec<Voice>,
     sequence: u32,
 }
 
@@ -956,7 +959,7 @@ async fn an_outside_call_is_carried_into_the_tilo_call_as_a_bridged_person() {
             .any(|person| person.account == "7001" && person.muted)
     })
     .await;
-    let carried = grace
+    let before_mute = grace
         .voices
         .iter()
         .filter(|(_, who, _)| *who == Some(dana_key))
@@ -973,7 +976,7 @@ async fn an_outside_call_is_carried_into_the_tilo_call_as_a_bridged_person() {
             .iter()
             .filter(|(_, who, _)| *who == Some(dana_key))
             .count(),
-        carried,
+        before_mute,
         "a muted participant's frames are not carried"
     );
 
@@ -1080,5 +1083,10 @@ async fn a_bridged_person_the_call_denies_is_not_carried() {
 
 /// A key as presence and call rules name it.
 fn hex_of(key: [u8; 32]) -> String {
-    key.iter().map(|byte| format!("{byte:02x}")).collect()
+    use std::fmt::Write as _;
+    key.iter()
+        .fold(String::with_capacity(64), |mut text, byte| {
+            let _ = write!(text, "{byte:02x}");
+            text
+        })
 }
