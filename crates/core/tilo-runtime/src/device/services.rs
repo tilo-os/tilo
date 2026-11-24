@@ -1853,6 +1853,13 @@ impl Daemon {
             Arc::clone(&apps) as Arc<dyn tilo_workspace_service::work::HostConnections>
         );
         start_triggers(&broker, &workspaces, &invocations);
+        // A device that serves the workspace's pages runs its apps with no session, so nothing
+        // but this daemon would carry their notices to the person: it keeps them in the record
+        // of their devices, where every device of theirs and every page raises them.
+        #[cfg(not(windows))]
+        if serves_pages {
+            start_notices(&workspaces, &apps);
+        }
         let replicas = take_work_files(
             &TakenFiles {
                 root,
@@ -5240,6 +5247,121 @@ fn start_triggers(
             Arc::clone(invocations),
         ),
     );
+}
+
+/// How often the daemon looks for what its apps raised, and for the answers to what it showed,
+/// while nothing is written: what it shows the person is read again as their time there runs
+/// out, and their answers are carried out within this.
+#[cfg(not(windows))]
+const NOTICES_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Carry the notices this device's apps raise into the record of the person's devices, and carry
+/// out what the person answers of them there, from now on: what a device serving pages does in
+/// place of a desktop session, which the person may not have anywhere.
+#[cfg(not(windows))]
+fn start_notices(workspaces: &Arc<ServiceWorkspaces>, apps: &Arc<apps::Apps>) {
+    let copies = workspaces.copies().clone();
+    let cert = workspaces.device_cert().clone();
+    let apps = Arc::clone(apps);
+    tilo_rt::app().handle().spawn(async move {
+        use tilo_workspace_service::apps::served_notices::Package;
+        let mut notices = tilo_workspace_service::apps::served_notices::ServedNotices::new(
+            copies.clone(),
+            cert.device_public_key,
+            cert.user_public_key,
+        );
+        let mut writes = copies.document_writes();
+        // The app records whose notices are read: every one the workspaces hold at the start, and
+        // each written since.
+        let mut pending: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
+        let mut seeded = false;
+        // The package each app's record is read through here, by workspace and app: verified once
+        // and kept, since an app's install does not change under a running daemon.
+        let mut packages: std::collections::BTreeMap<
+            (String, String),
+            tilo_workspace_service::apps::served_notices::Package,
+        > = std::collections::BTreeMap::new();
+        // What one pass looks at: every app record written since the last, and the ones the
+        // workspaces hold the first time. A pass runs on the tick, so a burst of writes to one
+        // record is read once, and an answer the person gave is carried out within the tick.
+        let mut tick = tokio::time::interval(NOTICES_EVERY);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                write = writes.recv() => {
+                    match write {
+                        Ok(write) => {
+                            pending.insert((write.workspace, write.app));
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => seeded = false,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    }
+                    continue;
+                }
+            }
+            if !seeded {
+                seeded = true;
+                for workspace in copies.list().await {
+                    for (app, _) in copies
+                        .records(&workspace.workspace)
+                        .await
+                        .unwrap_or_default()
+                    {
+                        pending.insert((workspace.workspace.clone(), app));
+                    }
+                }
+            }
+            let now = tilo_clock::unix_now_ms_i64();
+            for (workspace, app) in std::mem::take(&mut pending) {
+                let package = packages
+                    .entry((workspace.clone(), app.clone()))
+                    .or_insert_with(|| {
+                        match super::package_runs::runs_in_process(&app)
+                            .then(|| super::package_runs::verified_installed(&workspace, &app))
+                        {
+                            Some(Ok(verified)) => Package::Installed(verified.module),
+                            _ => Package::BuiltIn,
+                        }
+                    })
+                    .clone();
+                // An app this device neither installed nor carries runs nowhere here, so its
+                // record holds no notice this device could read.
+                let readable = !matches!(package, Package::BuiltIn)
+                    || tilo_workspace_service::tl_records::built_in(&app)
+                        .is_ok_and(|packages| packages.is_some());
+                if !readable {
+                    continue;
+                }
+                if let Err(error) = notices
+                    .project(
+                        &workspace,
+                        &app,
+                        &apps.display_name(&app),
+                        Some(&package),
+                        now,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        %workspace,
+                        %app,
+                        %error,
+                        "an app's notices are not shown on the person's devices"
+                    );
+                }
+            }
+            if let Err(error) = notices.follow(now).await {
+                // This device keeps no copy of the person's own workspace yet (it settles
+                // once they are here): nothing of theirs to carry out until it does.
+                tracing::debug!(
+                    %error,
+                    "the person's answers to their notices are not carried out"
+                );
+            }
+        }
+    });
 }
 
 /// Answer the person's keys from the broker from now on, and serve the workspaces' pages
