@@ -11,6 +11,12 @@ use crate::fixtures::Replica;
 const GALLERY: &str = concat!(
     include_str!("../../../../apps/tl/gallery/app.tl"),
     "\n",
+    include_str!("../../../../apps/tl/gallery/charts_flow.tl"),
+    "\n",
+    include_str!("../../../../apps/tl/gallery/charts_series.tl"),
+    "\n",
+    include_str!("../../../../apps/tl/gallery/charts_shape.tl"),
+    "\n",
     include_str!("../../../../apps/tl/gallery/controls.tl"),
     "\n",
     include_str!("../../../../apps/tl/gallery/custom.tl"),
@@ -23,7 +29,11 @@ const GALLERY: &str = concat!(
     "\n",
     include_str!("../../../../apps/tl/gallery/media.tl"),
     "\n",
+    include_str!("../../../../apps/tl/gallery/pies.tl"),
+    "\n",
     include_str!("../../../../apps/tl/gallery/shell.tl"),
+    "\n",
+    include_str!("../../../../apps/tl/gallery/states.tl"),
 );
 
 const IDS: &str = include_str!("../../../../apps/tl/gallery/app.ids");

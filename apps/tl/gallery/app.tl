@@ -42,6 +42,14 @@ type Gallery (title: name) {
     controls_notes: Text = ""
     controls_background: Bool = true
     controls_lettering: Bool = true
+    /// The values the states page's samples show: a box off and one on, a name, one that is
+    /// wrong, a share and a room.
+    states_off: Bool = false
+    states_on: Bool = true
+    states_name: Text = "Ada Lovelace"
+    states_wrong: Text = "Ada_99"
+    states_share: Float = 0.4
+    states_room: Text = "Studio"
     /// The backlog's items, and the line being written at its foot.
     backlog_items: Collection<Item>
     backlog_draft: RichText
@@ -165,6 +173,8 @@ fn page_title(page: Text) -> Text {
         std.say("Basics")
     } else if page == "controls" {
         std.say("Controls")
+    } else if page == "states" {
+        std.say("States")
     } else if page == "feedback" {
         std.say("Feedback")
     } else if page == "backlogs" {
@@ -181,6 +191,12 @@ fn page_title(page: Text) -> Text {
         std.say("Shell parts")
     } else if page == "customs" {
         std.say("Charts and views")
+    } else if page == "series" {
+        std.say("Trends and series")
+    } else if page == "shapes" {
+        std.say("Shares and shapes")
+    } else if page == "flows" {
+        std.say("Flows and trees")
     } else if page == "type" { std.say("Type and scripts") } else { std.say("Gallery") }
 }
 
@@ -204,6 +220,9 @@ view gallery(g: Gallery) {
                     }
                     ui.NavItem("feedback", "Feedback", icon: .circle_check) {
                         on select: set(showing, "feedback")
+                    }
+                    ui.NavItem("states", "States", icon: .mouse_pointer_2) {
+                        on select: set(showing, "states")
                     }
                 }
                 ui.NavSection("Collections") {
@@ -235,6 +254,17 @@ view gallery(g: Gallery) {
                         on select: set(showing, "customs")
                     }
                 }
+                ui.NavSection("Charts") {
+                    ui.NavItem("series", "Trends and series", icon: .bar_chart) {
+                        on select: set(showing, "series")
+                    }
+                    ui.NavItem("shapes", "Shares and shapes", icon: .gauge) {
+                        on select: set(showing, "shapes")
+                    }
+                    ui.NavItem("flows", "Flows and trees", icon: .list_tree) {
+                        on select: set(showing, "flows")
+                    }
+                }
                 ui.NavSection("Text") {
                     ui.NavItem("type", "Type and scripts", icon: .italic) {
                         on select: set(showing, "type")
@@ -258,6 +288,8 @@ view gallery(g: Gallery) {
                             basics(g)
                         } else if showing == "controls" {
                             controls(g)
+                        } else if showing == "states" {
+                            states(g)
                         } else if showing == "feedback" {
                             feedback(g)
                         } else if showing == "data" {
@@ -268,6 +300,13 @@ view gallery(g: Gallery) {
                             shell_parts(g)
                         } else if showing == "type" {
                             type_and_scripts(g)
+                        } else if showing == "series" {
+                            series_charts(g)
+                        } else if showing == "shapes" {
+                            shape_charts(g)
+                            pies()
+                        } else if showing == "flows" {
+                            flow_charts(g)
                         } else {
                             custom(g)
                         }

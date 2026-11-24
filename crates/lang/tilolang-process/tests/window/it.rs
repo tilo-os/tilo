@@ -29,6 +29,8 @@ mod gallery_close;
 mod gallery_frames;
 #[path = "gallery_html.rs"]
 mod gallery_html;
+#[path = "gallery_pages.rs"]
+mod gallery_pages;
 #[path = "gallery_sidebar.rs"]
 mod gallery_sidebar;
 #[path = "gallery_start.rs"]

@@ -11,10 +11,11 @@ use ui::composition::{Composed, Composition};
 use ui::framework::testing::TestApp;
 use ui::headless::FrameHarness;
 
-const PLACES: [&str; 11] = [
+const PLACES: [&str; 15] = [
     "Basics",
     "Controls",
     "Feedback",
+    "States",
     "Backlog",
     "Release board",
     "Data",
@@ -22,6 +23,9 @@ const PLACES: [&str; 11] = [
     "Places",
     "Shell parts",
     "Charts and views",
+    "Trends and series",
+    "Shares and shapes",
+    "Flows and trees",
     "Type and scripts",
 ];
 
@@ -173,7 +177,7 @@ fn charts_show_their_marks(composition: &Composition, shown: &str) {
 /// The view as the page reads it, until `reads` holds of it: what reached it laid out, as a page's
 /// read lays it out. The gallery reads its indexes on workers that wake the view when a read
 /// lands, so the test waits for what it reads, and fails saying so if it never comes.
-fn until(
+pub(crate) fn until(
     harness: &mut FrameHarness,
     waited: &str,
     reads: impl Fn(&Composition) -> bool,
@@ -196,7 +200,7 @@ fn until(
 }
 
 /// Every part of `composition`, outermost first.
-fn nodes(composition: &Composition) -> Vec<&Composed> {
+pub(crate) fn nodes(composition: &Composition) -> Vec<&Composed> {
     let mut all = Vec::new();
     let mut pending: Vec<&Composed> = std::iter::once(&composition.root)
         .chain(&composition.layers)
@@ -209,7 +213,7 @@ fn nodes(composition: &Composition) -> Vec<&Composed> {
 }
 
 /// The sidebar's row for `place`.
-fn row<'a>(composition: &'a Composition, place: &str) -> Option<&'a Composed> {
+pub(crate) fn row<'a>(composition: &'a Composition, place: &str) -> Option<&'a Composed> {
     nodes(composition).into_iter().find(|node| {
         node.semantics
             .as_ref()
@@ -218,7 +222,7 @@ fn row<'a>(composition: &'a Composition, place: &str) -> Option<&'a Composed> {
 }
 
 /// Whether the page beside the sidebar shows `place`: a part other than its row is named for it.
-fn shows(composition: &Composition, place: &str) -> bool {
+pub(crate) fn shows(composition: &Composition, place: &str) -> bool {
     nodes(composition).into_iter().any(|node| {
         node.semantics.as_ref().is_some_and(|access| {
             access.role != Role::TreeItem && access.name.as_deref() == Some(place)

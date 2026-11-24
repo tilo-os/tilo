@@ -18,8 +18,9 @@ use ui::tilo_resource::profiling::{Sample, observe};
 use ui::winit::event::{ElementState, MouseButton};
 
 /// The middle of the sidebar's rows of the pages in a 1280×800 window, from the top: Basics,
-/// Controls, Feedback, Backlog, Release board, Data, Media, Places.
-const ROWS: [f64; 8] = [100.0, 132.0, 164.0, 244.0, 276.0, 308.0, 380.0, 412.0];
+/// Controls, Feedback, Backlog, Release board, Data, Media, Places (States, under Feedback, is
+/// measured by `gallery_pages`).
+const ROWS: [f64; 8] = [100.0, 132.0, 164.0, 276.0, 308.0, 340.0, 412.0, 444.0];
 /// Just past the sidebar's edge, where the grip that resizes it stands.
 const EDGE: f64 = 282.0;
 

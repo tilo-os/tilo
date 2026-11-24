@@ -19,6 +19,7 @@ view controls(g: Gallery) {
     state layer: Int = 0
     state swatch: Int = 0
     state text_size: Int = 1
+    state delivery: Int = 0
     ui.Text(
         "Fields, switches, sliders, pickers, dates and colours, each bound to the document's own.",
         role: .caption,
@@ -71,6 +72,28 @@ view controls(g: Gallery) {
                         on change(i): set(cadence, i)
                     }
                 }
+            }
+        }
+        ui.Section("Radio buttons") {
+            ui.RadioGroup(selected: delivery, label: "Send the report by") {
+                ui.Radio("Email", detail: "A copy to everyone on the team")
+                ui.Radio("Chat", detail: "A message in the team's channel")
+                ui.Radio(
+                    "Post",
+                    detail: "Printed and sent on Monday",
+                    enabled: false,
+                    description: "The print room is closed this week",
+                )
+                on change(i): set(delivery, i)
+            }
+            ui.RadioGroup(
+                selected: 1,
+                label: "Who can open it",
+                enabled: false,
+                description: "Only the page's owner changes who can open it",
+            ) {
+                ui.Radio("Only the people it is shared with")
+                ui.Radio("Everyone in the workspace, including guests who joined for one project")
             }
         }
         ui.Section("Views") {

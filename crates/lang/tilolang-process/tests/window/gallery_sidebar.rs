@@ -10,10 +10,11 @@ use ui::framework::testing::drive_live_window;
 use ui::vello::Scene;
 use ui::winit::event::{ElementState, MouseButton};
 
-const PLACES: [&str; 11] = [
+const PLACES: [&str; 15] = [
     "Basics",
     "Controls",
     "Feedback",
+    "States",
     "Backlog",
     "Release board",
     "Data",
@@ -21,6 +22,9 @@ const PLACES: [&str; 11] = [
     "Places",
     "Shell parts",
     "Charts and views",
+    "Trends and series",
+    "Shares and shapes",
+    "Flows and trees",
     "Type and scripts",
 ];
 
@@ -84,18 +88,34 @@ fn lists_places(app: &App) -> bool {
     })
 }
 
-/// The middle of the sidebar's row for `place`.
-fn row(app: &App, place: &str) -> (f64, f64) {
-    let bounds = app
-        .semantic_tree()
-        .iter()
-        .find(|node| node.role == ui::a11y::Role::TreeItem && node.answers_to(place))
-        .and_then(|node| node.bounds)
-        .unwrap_or_else(|| panic!("the sidebar has a row for {place}"));
-    (
-        f64::midpoint(bounds.x0, bounds.x1),
-        f64::midpoint(bounds.y0, bounds.y1),
-    )
+/// The middle of the sidebar's row for `place`, wheeling the sidebar until the row is in the
+/// window as a person would: the places run longer than a laptop screen is tall.
+fn row(app: &mut App, place: &str) -> (f64, f64) {
+    let height = f64::from(SIZE.with(std::cell::Cell::get).height);
+    for _ in 0..40 {
+        let bounds = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::TreeItem && node.answers_to(place))
+            .and_then(|node| node.bounds)
+            .unwrap_or_else(|| panic!("the sidebar has a row for {place}"));
+        let middle = (
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        );
+        if bounds.y0 >= 0.0 && bounds.y1 <= height {
+            return middle;
+        }
+        let lines = if bounds.y1 > height { -1.0 } else { 1.0 };
+        app.surface_input(
+            &Window,
+            ui::synthetic_input::cursor_moved(middle.0, height / 2.0),
+            false,
+        );
+        app.surface_input(&Window, ui::synthetic_input::mouse_wheel(0.0, lines), false);
+        rest(app);
+    }
+    panic!("the sidebar never brings {place} into the window");
 }
 
 /// The place the page beside the sidebar shows: the window's title, read off everything but the
@@ -183,7 +203,8 @@ fn a_phone_pushes_the_chosen_page_over_the_places() {
     drive_live_window::<TlApp, _>(|app| {
         until(app, "the sidebar lists its places", lists_places);
         for place in PLACES {
-            press(app, row(app, place));
+            let at = row(app, place);
+            press(app, at);
             until(
                 app,
                 &format!("one press shows {place}, over the places, with Back"),
