@@ -720,11 +720,10 @@ impl Core {
                 self.sheet_call(imp, a)
             }
             FileList | FileStat | FileReadPath | FileWatch | FileOpenPath | FileOpen
-            | FileMkdir | FileWrite | FileRename | FileMove | FileCopy | FileRemove | FileTrash
-            | FileTrashEntries | FileRestore | FileCompress | FileExtract | ToolDocumentApps
-            | ToolOpenWith | ToolTerminal | ToolOpenLink | ToolContext | ToolContainerShell => {
-                self.file_device_import(imp, a)
-            }
+            | FileMkdir | FileWrite | FileRename | FileMove | FileCopy | FileCopyTo
+            | FilePreview | FileRemove | FileTrash | FileTrashEntries | FileRestore
+            | FileCompress | FileExtract | ToolDocumentApps | ToolOpenWith | ToolTerminal
+            | ToolOpenLink | ToolContext | ToolContainerShell => self.file_device_import(imp, a),
             ClipboardCopyText | ClipboardCopySecret | ClipboardCopyImage | ClipboardPasteText
             | ClipboardPasteImage => self.clipboard_import(imp, a),
             JsonParse | JsonDecode | JsonEncode | StageReading => self.json_import(imp, a),
