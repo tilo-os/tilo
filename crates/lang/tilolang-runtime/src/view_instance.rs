@@ -641,8 +641,13 @@ impl ViewInstance {
             .cloned()
     }
 
-    /// Set the view state `state` of this view's person in its window.
+    /// Set the view state `state` of this view's person in its window. A scalar is boxed as a
+    /// slot holds it, so the view reads back what the person picked through `unwrap_i`.
     pub fn set_view_state(&self, state: &str, value: Value) {
+        let value = match value {
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) => Value::some(value),
+            other => other,
+        };
         self.core
             .view_states
             .borrow_mut()
@@ -703,8 +708,41 @@ impl ViewInstance {
         StateKey::view(
             self.live.window.clone(),
             self.live.viewer.clone(),
-            state.to_owned(),
+            self.state_id(state),
         )
+    }
+
+    /// The id of the state the window's view declares as `state`: a plain name of the view its
+    /// window shows (`place`), or `view.name` for one a view it draws declares. A name no view of
+    /// the window declares is taken as the id it is: what the runtime keeps for itself is named
+    /// by the code that keeps it.
+    fn state_id(&self, state: &str) -> String {
+        let Some(root) = self.live.bound(crate::live::ROOT) else {
+            return state.to_owned();
+        };
+        let (view, name) = match state.split_once('.') {
+            Some((view, name)) => (Some(view), name),
+            None => (None, state),
+        };
+        let registry = self.core.registry.borrow();
+        let Some(package) = registry.package(&root.target.module) else {
+            return state.to_owned();
+        };
+        let mut found: Option<&str> = None;
+        for view in package.meta.views.iter().filter(|candidate| {
+            view.map_or(candidate.id == root.target.view, |chosen| {
+                candidate.name == chosen
+            })
+        }) {
+            for declared in view.state.iter().filter(|declared| declared.name == name) {
+                match found {
+                    // One name, two declarations: the caller names the view it means.
+                    Some(held) if held != declared.id => return state.to_owned(),
+                    _ => found = Some(&declared.id),
+                }
+            }
+        }
+        found.map_or_else(|| state.to_owned(), str::to_owned)
     }
 
     /// Evaluate the arguments of `aref` that read view state (`send(c, draft)`, `set(open, not
