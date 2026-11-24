@@ -144,6 +144,9 @@ def sdk_closure(meta: dict) -> set[str]:
 # tilo-vello compiles its shaders with `Device::create_compute_pipeline_async`,
 # which only the patched wgpu has, so it is the fork tilo-wgpu.
 UPSTREAM_SUFFICES = {
+    "alacritty_terminal": "one fix: erasing above the cursor (`CSI 1 J`) with the cursor on the "
+                          "second line leaves the first; same API, a terminal on the release keeps "
+                          "that line",
     "accesskit": "dependency trim (zbus's async-io backend follows a feature); same API",
     "accesskit_atspi_common": "dependency trim; the crates.io release, patched only to stay one copy",
     "accesskit_consumer": "dependency trim; the crates.io release, patched only to stay one copy",

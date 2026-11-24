@@ -2,9 +2,12 @@
 name = "tilo-environment"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
-license.workspace = true
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "The environment record: where a shell runs, which images make up its /usr, and which directories it was granted."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "tilo_environment"
@@ -12,13 +15,13 @@ path = "src/lib.rs"
 
 [dependencies]
 # The record layer: an environment is a `#[resource]` record with actions.
-tilo-resource = { path = "../../core/tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 # Grants are capabilities in the shared vocabulary, not a second permission type.
-collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
+collab-types = { version = "0.1.0", package = "tilo-collab-types", path = "../../core/collab-types" }
 # A grant names a member or a role, and the app whose sandbox it is.
-tilo-action-policy = { path = "../../core/action-policy" }
+tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # Images are tapp packages, named by their content address.
-tilo-app-package = { path = "../../core/tilo-app-package" }
+tilo-app-package = { version = "0.1.0", path = "../../core/tilo-app-package" }
 automerge.workspace = true
 base64.workspace = true
 fnv.workspace = true
