@@ -1199,6 +1199,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   an invocation carries that invocation and its id, signed by the device running
   the app; it runs as the original caller, bounded by both the caller's access and
   the app's grants, and only while that invocation is live.
+  Such a call is not asked again when the invocation was delivered to that same
+  connection and the parent action declares the call's effect: the consent the
+  parent was given covers it, and history records it under the parent. A call the
+  parent doesn't declare asks as any other.
   An action declares its effects in the one registry: the app, kind and verb each
   step writes. A recorded step on another resource or verb than the call named is
   accepted only when the called action declares it, read from the registry and
