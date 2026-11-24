@@ -957,6 +957,171 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
     );
 }
 
+/// A window showing `doc` whose bar holds `menu` under its `actions` part, and `content` in it.
+fn menu_page(menu: UiNode, content: Vec<UiNode>) -> Vec<ToUi> {
+    let mut shell = UiNode::empty("ui.NavShell", "shell");
+    let mut actions = UiNode::empty("part", "actions");
+    actions
+        .props
+        .insert("name".to_owned(), Value::text("actions"));
+    actions.children.push(menu);
+    shell.children.push(actions);
+    let mut content_part = UiNode::empty("part", "content");
+    content_part
+        .props
+        .insert("name".to_owned(), Value::text("content"));
+    content_part.children = content;
+    shell.children.push(content_part);
+    vec![ToUi::Open {
+        level: Level::Root,
+        target: doc(),
+        tree: shell,
+        front: None,
+        capture_protected: false,
+    }]
+}
+
+/// A `File` menu button, named `key`.
+fn file_menu(key: &str) -> UiNode {
+    let mut menu = UiNode::empty(&kind("MenuButton"), key);
+    menu.props.insert("label".to_owned(), Value::text("File"));
+    menu
+}
+
+/// A file menu whose commands are the menu item nodes the view wrote: Save as… on Ctrl+Shift+S.
+fn save_menu() -> UiNode {
+    let mut item = UiNode::empty(&kind("MenuItem"), "file#save");
+    item.props
+        .insert("label".to_owned(), Value::text("Save as…"));
+    item.props
+        .insert("key".to_owned(), Value::text("Ctrl+Shift+S"));
+    item.events
+        .insert("choose".to_owned(), wire::Event::default());
+    let mut menu = file_menu("file");
+    menu.children.push(item);
+    menu
+}
+
+/// A menu item's key is the window's while the window has the keyboard, not only while its menu
+/// is open: the closed menu's command runs, on what the window shows, as choosing it does.
+#[test]
+fn a_closed_menus_command_answers_its_key() {
+    let (mut app, mut harness) = drawn(&menu_page(save_menu(), Vec::new()));
+    press(&mut harness, &["command", "shift"], "S");
+    assert_eq!(
+        fired(&mut app),
+        [ToApp::Fire {
+            level: Level::Root,
+            key: "file#save".to_owned(),
+            event: "choose".to_owned(),
+            value: None,
+            gesture: None,
+        }],
+        "the closed menu's command ran on its key"
+    );
+}
+
+/// The commands a control offers (`ui.MenuButton(actions: actions(r))`, a bar's) register their
+/// keys the same way: the value names the key and the event that runs it, and the press runs it
+/// with the menu closed.
+#[test]
+fn a_menus_offered_commands_answer_their_keys_with_the_menu_closed() {
+    let mut menu = file_menu("file");
+    menu.props.insert(
+        "actions".to_owned(),
+        Value::List(vec![Value::Action(wire::Offered {
+            label: "Save as…".to_owned(),
+            key: Some("Ctrl+Shift+S".to_owned()),
+            event: "items.0".to_owned(),
+            ..wire::Offered::default()
+        })]),
+    );
+    let (mut app, mut harness) = drawn(&menu_page(menu, Vec::new()));
+    press(&mut harness, &["command", "shift"], "S");
+    assert_eq!(
+        fired(&mut app),
+        [ToApp::Fire {
+            level: Level::Root,
+            key: "file".to_owned(),
+            event: "items.0".to_owned(),
+            value: None,
+            gesture: None,
+        }],
+        "the offered command ran on its key with the menu closed"
+    );
+}
+
+/// A field's own keys are the field's: a plain key a menu item declares types into the field
+/// while the keyboard is in it, and the menu's command waits; a chord that types nothing is the
+/// window's all the same.
+#[test]
+fn a_fields_own_keys_edit_its_text_before_a_menus_key_runs() {
+    let mut item = UiNode::empty(&kind("MenuItem"), "file#toggle");
+    item.props
+        .insert("label".to_owned(), Value::text("Toggle the terminal"));
+    item.props.insert("key".to_owned(), Value::text("t"));
+    item.events
+        .insert("choose".to_owned(), wire::Event::default());
+    let mut menu = file_menu("file");
+    let mut chord = UiNode::empty(&kind("MenuItem"), "file#save");
+    chord
+        .props
+        .insert("label".to_owned(), Value::text("Save as…"));
+    chord
+        .props
+        .insert("key".to_owned(), Value::text("Ctrl+Shift+S"));
+    chord
+        .events
+        .insert("choose".to_owned(), wire::Event::default());
+    menu.children.push(item);
+    menu.children.push(chord);
+    let mut field = UiNode::empty("ui.TextInput", "field");
+    field.binding = Some(crate::Binding {
+        field: Some(("doc/notes:a".to_owned(), "field".to_owned())),
+        kind: Some("notes.Note".to_owned()),
+        name: "Field".to_owned(),
+    });
+    field.props.insert("bind".to_owned(), Value::text("value"));
+    let mut page = menu_page(menu, vec![field]);
+    page.push(ToUi::Bound {
+        level: Level::Root,
+        key: "field".to_owned(),
+        value: Value::text("Q3 plan"),
+        acked: 0,
+    });
+    let (mut app, mut harness) = drawn(&page);
+    harness.click_named("field").expect("the title is drawn");
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_control().as_deref(),
+        Some("field"),
+        "the keyboard is in the title"
+    );
+    harness.key("End");
+    press(&mut harness, &[], "t");
+    assert_eq!(
+        shown_value(&harness, "Field").as_deref(),
+        Some("Q3 plant"),
+        "the plain key typed into the field"
+    );
+    assert!(
+        fired(&mut app).is_empty(),
+        "the menu's plain key ran no command while the field holds it"
+    );
+    press(&mut harness, &["command", "shift"], "S");
+    assert_eq!(
+        fired(&mut app),
+        [ToApp::Fire {
+            level: Level::Root,
+            key: "file#save".to_owned(),
+            event: "choose".to_owned(),
+            value: None,
+            gesture: None,
+        }],
+        "a chord that types nothing is the window's, the field in the way or not"
+    );
+}
+
 /// A control that names several keys answers each of them, and only them.
 #[test]
 fn a_control_declares_keys_that_all_press_it() {

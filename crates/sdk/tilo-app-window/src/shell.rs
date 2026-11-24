@@ -61,13 +61,20 @@ pub fn as_shell(tree: &UiNode) -> UiNode {
 }
 
 fn row(tree: &UiNode) -> bool {
+    row_like(&tree.kind)
+}
+
+/// Whether a node of `kind` is a row of a list: what a list shows of an item, whose own
+/// commands answer while that row is selected rather than for the window.
+pub(crate) fn row_like(node_kind: &str) -> bool {
     [
         kind("ListRow"),
         kind("TreeViewRow"),
         kind("SwipeRow"),
         kind("ListItem"),
     ]
-    .contains(&tree.kind)
+    .iter()
+    .any(|row| row.as_str() == node_kind)
 }
 
 /// A row as a window's content: a page from its top, at the readable measure, scrolling under the
