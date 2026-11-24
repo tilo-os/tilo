@@ -17,7 +17,7 @@ mod cases {
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-    use tilolang_runtime::host_work::{EngineHost, VaultCode, VaultHost};
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers, VaultCode, VaultHost};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
@@ -86,14 +86,20 @@ mod cases {
             self.engine.call(op, input)
         }
 
-        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+        fn start(
+            &self,
+            _app: &str,
+            op: &str,
+            input: &str,
+            _handlers: &JobHandlers,
+        ) -> Result<String, String> {
             let _window = self.scope.enter();
             self.engine.start(op, input)
         }
 
-        fn status(&self, job: &str) -> Result<String, String> {
-            let _window = self.scope.enter();
-            self.engine.status(job)
+        /// Authenticator starts no jobs, so the device records none of its.
+        fn job(&self, _path: &str) -> Result<Option<serde_json::Value>, String> {
+            Ok(None)
         }
 
         fn cancel(&self, job: &str) -> bool {
