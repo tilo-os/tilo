@@ -526,3 +526,149 @@ fn a_link_offer_opens_once_for_its_holder_until_it_runs_out() {
         "{refused:?}"
     );
 }
+
+/// The bridge's setup, the server it connects and what it reports of that server are the
+/// workspace's moderators' to change, and the bridge's own program while it carries a change
+/// there: a member may read the page but cannot connect a server, point the sign-in anywhere,
+/// unlink someone else's account or report a layout.
+#[test]
+fn the_servers_setup_and_layout_are_the_workspaces_moderators_to_change() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+            tilolang_runtime::members::Member::person("mo", tilo_actions::policy::Role::Moderator),
+        ],
+        None,
+    );
+    let accounts = Value::resource(&ada.host.root_of(APP).unwrap());
+    let meta = ada.host.package(APP).unwrap().meta;
+    let as_who = |who: &Actor, action: &str, args: Vec<Value>| {
+        ada.host.runtime().invoke_action(
+            who,
+            (crate::fixtures::action_id(&meta, action).as_str(), args),
+        )
+    };
+    let refused = |result: &Result<InvokeOutcome, _>, why: &str| {
+        assert!(
+            !matches!(result, Ok(InvokeOutcome::Done(_))),
+            "the call is refused: {result:?}"
+        );
+        assert!(
+            format!("{result:?}").contains(why),
+            "with the reason `{why}`: {result:?}"
+        );
+    };
+
+    let ben = person("ben");
+    let setup = as_who(&ben, "begin_setup", vec![accounts.clone()]);
+    refused(
+        &setup,
+        "Only the workspace's moderators connect a Discord server",
+    );
+
+    let opened = as_who(&person("ada"), "begin_setup", vec![accounts]);
+    let discord = match opened {
+        Ok(InvokeOutcome::Done(discord)) => discord,
+        other => panic!("the owner connects a Discord account: {other:?}"),
+    };
+    ada.commit();
+
+    let connected = as_who(
+        &person("ada"),
+        "connect",
+        vec![discord.clone(), Value::text("123"), Value::text("Server")],
+    );
+    assert!(
+        matches!(connected, Ok(InvokeOutcome::Done(_))),
+        "the owner connects one server: {connected:?}"
+    );
+    ada.commit();
+
+    let joined = as_who(
+        &ben,
+        "connect",
+        vec![
+            discord.clone(),
+            Value::text("456"),
+            Value::text("Elsewhere"),
+        ],
+    );
+    refused(
+        &joined,
+        "Only the workspace's moderators connect a Discord server",
+    );
+
+    let sign_in = as_who(
+        &ben,
+        "set_sign_in",
+        vec![
+            discord.clone(),
+            Value::text("https://discord.com/oauth2/authorize?client_id=1&scope=identify"),
+        ],
+    );
+    refused(
+        &sign_in,
+        "Only the workspace's moderators set up signing in with Discord",
+    );
+
+    let mo = as_who(
+        &person("mo"),
+        "set_sign_in",
+        vec![
+            discord.clone(),
+            Value::text("https://discord.com/oauth2/authorize?client_id=1&scope=identify"),
+        ],
+    );
+    assert!(
+        matches!(mo, Ok(InvokeOutcome::Done(_))),
+        "a moderator sets the consent page: {mo:?}"
+    );
+
+    let unlink = as_who(&ben, "unlink", vec![discord.clone(), Value::text("3001")]);
+    refused(
+        &unlink,
+        "Only the workspace's moderators, or the person it is with, unlink a Discord account",
+    );
+
+    // The bridge itself reports the layout and blocks a persona: it acts as the app, which no
+    // member is.
+    let bridge = bridge();
+    let layout = as_who(
+        &bridge,
+        "observe_layout",
+        vec![
+            discord.clone(),
+            Value::text("1"),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+        ],
+    );
+    assert!(
+        matches!(layout, Ok(InvokeOutcome::Done(_))),
+        "the bridge reports the layout: {layout:?}"
+    );
+    let blocked = as_who(
+        &bridge,
+        "block_persona",
+        vec![discord.clone(), Value::text("3001")],
+    );
+    assert!(
+        matches!(blocked, Ok(InvokeOutcome::Done(_))),
+        "the bridge blocks a persona: {blocked:?}"
+    );
+    let by_member = as_who(
+        &ben,
+        "observe_layout",
+        vec![
+            discord,
+            Value::text("1"),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+            Value::List(Vec::new()),
+        ],
+    );
+    refused(&by_member, "Only the bridge keeps the server's layout");
+}
