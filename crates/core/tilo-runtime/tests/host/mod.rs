@@ -468,8 +468,9 @@ impl Host {
 
     /// A device of another person than this computer's, `label`, in `workspace` as an editor:
     /// the workspace's owner adds the person, and their device enters. Who a workspace shared
-    /// with other people has among its members.
-    pub async fn other_person(&self, label: &str, workspace: &str) -> Member {
+    /// with other people has among its members. Answered with their person's root, by which
+    /// the owner names them.
+    pub async fn other_person(&self, label: &str, workspace: &str) -> (Member, [u8; 32]) {
         use tilo_workspace_service::workspaces::{AddMemberRequest, MemberPlace};
 
         let (root, user) = tilo_user_identity::UserIdentity::generate(label, 1);
@@ -509,7 +510,24 @@ impl Host {
             .enter(workspace, &cert)
             .await
             .expect("their device enters the workspace");
-        self.dial(key, workspace).await
+        (self.dial(key, workspace).await, user.public_key)
+    }
+
+    /// The workspace's owner removes the person `user` from `workspace`, and every device of
+    /// theirs with them.
+    pub async fn remove_person(&self, workspace: &str, user: [u8; 32]) {
+        let workspaces = self.daemon().workspaces();
+        workspaces
+            .remove_member(
+                workspace,
+                workspaces.device_cert(),
+                tilo_workspace_service::workspaces::RemoveMemberRequest {
+                    request_id: *blake3::hash(&[&user[..], b"removed"].concat()).as_bytes(),
+                    user_public_key: user,
+                },
+            )
+            .await
+            .expect("the workspace's owner removes the person");
     }
 
     /// A key no certificate of `workspace` names, asking the daemon over the device link: a

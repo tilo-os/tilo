@@ -2,14 +2,16 @@
 //! workspaces on this computer, answered for the person's keys that entered them there
 //! ([`crate::key_sessions`]).
 //!
-//! A key's run is admitted as an MCP client of this runtime is: the profile's person on this
-//! device, with an agent named after the key acting under a key of its own. A computer that
+//! A key of the person's is admitted as an MCP client of this runtime is: the profile's person
+//! on this device, with an agent named after the key acting under a key of its own. Another
+//! member's device runs as that member, decided by the workspace's grants for them. A computer that
 //! founded its person's workspace answers that one ([`HostRuns`]); a keeping server answers
 //! each workspace it keeps ([`KeptRuns`]), its dispatch built for that workspace.
 
 use super::services::RuntimeActionProvider;
 use super::services::action_provider;
 use super::workspaces::ServiceWorkspaces;
+use crate::personal_devices::Whose;
 use collab_types::WorkspaceId;
 use std::sync::{Arc, OnceLock};
 use tilo_actions::remote::Caller;
@@ -103,17 +105,14 @@ impl crate::key_sessions::Sessions for HostRuns {
         &self,
         workspace: &str,
         key: &DeviceCert,
+        whose: Whose,
     ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
-        let (run, caller) = self
-            .provider()?
-            .agent_session(workspace, &self.actor, &self.policy_time, |_| {
-                (
-                    tilo_mcp::devices::agent_id("agent", key),
-                    key.device_label.clone(),
-                )
-            })
-            .map_err(|error| error.to_string())?;
-        Ok((Arc::new(run), caller))
+        key_run(
+            &self.provider()?,
+            workspace,
+            (key, whose),
+            (&self.actor, &self.policy_time),
+        )
     }
 
     fn dispatch(&self, workspace: &str) -> Option<crate::key_sessions::SessionHost> {
@@ -164,18 +163,16 @@ impl crate::key_sessions::Sessions for KeptRuns {
         &self,
         workspace: &str,
         key: &DeviceCert,
+        whose: Whose,
     ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
-        let (run, caller) = self
-            .provider(workspace)
-            .map_err(|error| error.to_string())?
-            .agent_session(workspace, &self.actor, &self.policy_time, |_| {
-                (
-                    tilo_mcp::devices::agent_id("agent", key),
-                    key.device_label.clone(),
-                )
-            })
-            .map_err(|error| error.to_string())?;
-        Ok((Arc::new(run), caller))
+        key_run(
+            &self
+                .provider(workspace)
+                .map_err(|error| error.to_string())?,
+            workspace,
+            (key, whose),
+            (&self.actor, &self.policy_time),
+        )
     }
 
     fn dispatch(&self, workspace: &str) -> Option<crate::key_sessions::SessionHost> {
@@ -183,4 +180,25 @@ impl crate::key_sessions::Sessions for KeptRuns {
         let host: crate::key_sessions::SessionHost = Arc::new(provider);
         Some(host)
     }
+}
+
+/// The run of `key`, `whose` it is, in `workspace` through `provider`: a key of the person's as
+/// an agent of `actor`'s named after the key, a member's device as that member.
+fn key_run(
+    provider: &RuntimeActionProvider,
+    workspace: &str,
+    (key, whose): (&DeviceCert, Whose),
+    (actor, policy_time): (&str, &tilo_workspace_service::apps::policy_clock::PolicyTime),
+) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
+    let (run, caller) = match whose {
+        Whose::Own => provider.agent_session(workspace, actor, policy_time, |_| {
+            (
+                tilo_mcp::devices::agent_id("agent", key),
+                key.device_label.clone(),
+            )
+        }),
+        Whose::Member => provider.member_session(workspace, key, policy_time),
+    }
+    .map_err(|error| error.to_string())?;
+    Ok((Arc::new(run), caller))
 }

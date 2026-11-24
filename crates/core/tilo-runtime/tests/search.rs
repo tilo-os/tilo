@@ -271,6 +271,53 @@ async fn asked_over_the_link(member: &host::Member, word: &str) -> Vec<String> {
     }
 }
 
+/// The search `member` asks over the device link for `word`, as it is answered.
+async fn search_over_the_link(
+    member: &host::Member,
+    word: &str,
+) -> Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionCallError> {
+    member
+        .send(Query::request(
+            tilo_actions::InvocationId::new(),
+            word,
+            &Within::default(),
+        ))
+        .await
+}
+
+/// The computer that keeps a workspace searches it for its members alone: a device of someone
+/// the workspace has no place for is refused as a stranger, and a member the owner removed is
+/// refused from then on, told why.
+#[test]
+fn a_stranger_and_a_removed_member_search_nothing_through_the_owners_computer() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let (key, _) = host::stranger("Mallory");
+        let stranger = host.dial(key, &workspace).await;
+        let asked = search_over_the_link(&stranger, "wombat").await;
+        assert!(
+            matches!(
+                asked,
+                Err(tilo_actions::remote::ActionCallError::NotPermitted)
+            ),
+            "a device of no member searches nothing: {asked:?}"
+        );
+
+        let (grace, user) = host.other_person("Grace", &workspace).await;
+        let asked = search_over_the_link(&grace, "wombat").await;
+        assert!(
+            matches!(asked, Ok(tilo_actions::InvocationUpdate::Succeeded { .. })),
+            "a member searches the workspace: {asked:?}"
+        );
+        host.remove_person(&workspace, user).await;
+        let asked = search_over_the_link(&grace, "wombat").await;
+        let Err(tilo_actions::remote::ActionCallError::Refused { reason }) = &asked else {
+            panic!("a removed member searches nothing: {asked:?}");
+        };
+        assert!(reason.contains("not a member"), "{reason}");
+    });
+}
+
 /// A conversation the person keeps with themselves in Chat (a `Direct` whose only person is
 /// them) is sealed to them by the store. The daemon reads Chat's resources from the store as the
 /// person, and keeps all of Chat's entries in one slot, which another member of the workspace
@@ -294,7 +341,7 @@ fn a_conversation_sealed_to_its_people_is_found_by_them_alone() {
     host::run(|host| async move {
         let (caller, workspace) = (host.caller(), host.workspace().to_owned());
         // Someone else is a member of the workspace.
-        let grace = host.other_person("Grace", &workspace).await;
+        let (grace, _) = host.other_person("Grace", &workspace).await;
         let workspaces = host.daemon().workspaces().clone();
         let chat = tl_records::built_in(CHAT)
             .unwrap()

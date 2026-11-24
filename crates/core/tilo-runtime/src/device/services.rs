@@ -4006,10 +4006,13 @@ impl RuntimeActionProvider {
             .map(|session| session.admission.caller().clone())
     }
 
-    /// Whether `caller` is the person's own run, not an agent's: only the person adds a device.
+    /// Whether `caller` is the person's own run, not an agent's nor another member's: only the
+    /// device's person adds a device.
     fn is_the_person(&self, caller: &Caller) -> bool {
+        let person = hex::encode(self.workspaces.device_cert().user_public_key);
         self.session.as_ref().is_some_and(|session| {
             session.agent.is_none()
+                && session.admission.caller().acting().person_id() == Some(person.as_str())
                 && (session.admits(caller) || caller == session.admission.caller())
         })
     }
@@ -4266,6 +4269,51 @@ impl RuntimeActionProvider {
             tickets: self.tickets.clone(),
             invocations: Arc::clone(&self.invocations),
             asked: self.asked.clone(),
+        };
+        Ok((run, caller))
+    }
+
+    /// A run of another member's device `key` in `workspace`, which this device holds: its calls
+    /// are that member's own on that device, decided by the workspace's grants for them through
+    /// the broker's host for other devices, and a search answers what they may read, never what
+    /// this device's person may. Nothing of the device's own is theirs: no ticket, no asked
+    /// record of its person's.
+    ///
+    /// # Errors
+    /// The workspace is not kept here, or does not admit the run now.
+    pub(super) fn member_session(
+        &self,
+        workspace: &str,
+        key: &DeviceCert,
+        policy_time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
+    ) -> io::Result<(Self, Caller)> {
+        let (copies, named, cert) = (
+            self.workspaces.copies().clone(),
+            workspace.to_owned(),
+            key.clone(),
+        );
+        // The member's device proved its key on the link that carries its calls, and the
+        // workspace's roster admitted it there: its run presents nothing of its own.
+        let admission =
+            block_on_owned(async move { copies.admit_key(&named, &cert, Vec::new()).await })
+                .map_err(io::Error::other)?;
+        let caller = admission.caller().clone();
+        let run = Self {
+            broker: self.broker.clone(),
+            workspace: self.workspace.clone(),
+            workspaces: self.workspaces.clone(),
+            apps: self.apps.clone(),
+            session: Some(Arc::new(AdmittedRuntimeSession {
+                policy_time: policy_time.clone(),
+                provider: self.broker.device_host(),
+                admission,
+                agent: None,
+                projection: None,
+                pressed: None,
+            })),
+            tickets: None,
+            invocations: Arc::clone(&self.invocations),
+            asked: None,
         };
         Ok((run, caller))
     }
