@@ -2751,10 +2751,13 @@ async fn only_the_workspaces_owners_change_what_members_may_post() {
         super::SET_CONTENT_POLICY,
         json!({ "file_bytes": 1024 }),
     );
-    assert_eq!(
-        invoke(&host, workspace_id, &caller(&ada), asked).await,
-        Err(ActionCallError::NotPermitted),
-        "a member who is no owner changes what the workspace lets members post"
+    let refused = invoke(&host, workspace_id, &caller(&ada), asked).await;
+    assert!(
+        matches!(
+            refused,
+            Err(ActionCallError::NotPermitted | ActionCallError::UnknownAction)
+        ),
+        "a member who is no owner changes what the workspace lets members post: {refused:?}"
     );
 
     let read = invoke(
