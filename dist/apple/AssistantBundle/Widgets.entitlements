@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The widget extension of Tilo Assistant on the iPhone. build.sh writes the signing team for
-     __TEAM__ and the app's identifier for __ID__. -->
-<plist version="1.0"><dict>
-  <key>application-identifier</key><string>__TEAM__.__ID__.widgets</string>
-  <key>com.apple.developer.team-identifier</key><string>__TEAM__</string>
-</dict></plist>

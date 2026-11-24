@@ -40,7 +40,7 @@ final class WordsTests: XCTestCase {
                         "mento", "jonas", "linkedin", "bitwarden", "github"]
         let sources = package.appendingPathComponent("Sources")
         var read = 0
-        for target in ["AssistantCore", "AssistantUI", "AssistantMac", "AssistantPhone", "AssistantWidgets"] {
+        for target in ["AssistantCore", "AssistantTilo", "AssistantClosed", "AssistantNotice", "TiloLive"] {
             let folder = sources.appendingPathComponent(target)
             for name in try FileManager.default.contentsOfDirectory(atPath: folder.path) where name.hasSuffix(".swift") {
                 let text = try String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8).lowercased()

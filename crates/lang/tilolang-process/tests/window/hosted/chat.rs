@@ -558,6 +558,21 @@ fn an_agents_ask_shows_and_the_persons_answer_goes_to_the_dispatch() {
     );
 }
 
+/// The person writes `body` in `direct` through Chat's published `send`, as their own press does.
+fn person_says(session: &mut Session, direct: &ResourceRef, body: &str) {
+    let identity = session.published_doing(&format!("tl.{CHAT}"), "send");
+    let address = ui::tilo_actions::ActionAddress::parse(&identity)
+        .unwrap_or_else(|| panic!("{identity} names a resource and an action"));
+    let arguments = json!({
+        "to": resource_argument(session, "Direct", direct),
+        "body": body,
+    });
+    let arguments = arguments.as_object().cloned().unwrap_or_default();
+    session
+        .invoke(None, None, &address.resource, &address.action, &arguments)
+        .unwrap_or_else(|why| panic!("the person's send ran: {why}"));
+}
+
 /// Whether the window sent the dispatch an answer of `approval` to the invocation `step`.
 fn resolve_asked(session: &Session, step: &str, approval: &str) -> bool {
     use ui::tilo_actions::remote::{InvokeArgument, RemoteActionMessage};
@@ -578,4 +593,233 @@ fn resolve_asked(session: &Session, step: &str, approval: &str) -> bool {
         };
         arguments.get("resolution").and_then(|it| it.as_str()) == Some(approval)
     })
+}
+
+/// Run the wheel's glide to where it rests, as the window draws it away.
+fn glide(session: &mut Session) {
+    use ui::time::testing::with_monotonic_time;
+    let mut at = ui::time::Instant::now();
+    for _ in 0..400 {
+        with_monotonic_time(at, || {
+            session.settle_host();
+            session.window.frame();
+        });
+        if !session
+            .window
+            .harness()
+            .frame_schedule()
+            .needs_animation_frame
+        {
+            return;
+        }
+        at += ui::time::Duration::from_millis(16);
+    }
+    panic!("the list's glide never came to rest");
+}
+
+/// A turn that runs: the window offers Stop on it, and pressing Stop cancels the invocation the
+/// turn is, so the dispatch ends it and what it wrote so far stays.
+#[test]
+fn a_running_turn_is_stopped_from_its_message() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, workspace) = chat_with_an_agent();
+    open_the_agents_conversation(&mut session);
+    send_with_the_control(&mut session, "Plan the release with me");
+
+    let direct = conversation(&session, AGENT_NAME);
+    let asked = messages(&session, &direct)
+        .into_iter()
+        .next()
+        .expect("the person's message");
+    let turn = "agents.agent:helper#answer:7";
+    agent_says(
+        &mut session,
+        &direct,
+        "Design on Monday.",
+        Some(&asked),
+        turn,
+    );
+    dispatch_a_turn(
+        &mut session,
+        turn_in(&workspace, turn, "running", Vec::new()),
+        &[],
+    );
+
+    let shown = session
+        .controls()
+        .into_iter()
+        .map(|control| control.name)
+        .collect::<Vec<_>>();
+    assert!(
+        shown.iter().any(|name| name == "Stop"),
+        "a running turn offers Stop: {shown:?}"
+    );
+
+    session.forget_sent();
+    session.window.press_named("Stop");
+    session.settle();
+
+    use ui::tilo_actions::remote::{InvokeArgument, RemoteActionMessage};
+    let cancelled = session.sent.borrow().iter().any(|request| {
+        let collaboration::CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(request),
+        } = request
+        else {
+            return false;
+        };
+        request.target.address.action == "cancel"
+            && matches!(request.argument, InvokeArgument::Json(_))
+    });
+    assert!(
+        cancelled,
+        "pressing Stop cancels the turn's invocation: {:?}",
+        session
+            .sent
+            .borrow()
+            .iter()
+            .map(|request| format!("{request:?}"))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A long conversation: the window opens at its newest message, and scrolling back reaches the
+/// first one, so a person reads a conversation of any length from its start.
+#[test]
+fn a_long_conversation_is_read_back_to_its_first_message() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _workspace) = chat_with_an_agent();
+    open_the_agents_conversation(&mut session);
+    let direct = conversation(&session, AGENT_NAME);
+    for n in 0..40 {
+        person_says(&mut session, &direct, &format!("Message number {n}"));
+    }
+    session.settle();
+
+    let newest = transcript(&mut session);
+    let last = newest
+        .last()
+        .expect("the transcript draws the newest message");
+    assert!(
+        last.text.contains("Message number 39"),
+        "the window opens at the newest message: {}",
+        last.text
+    );
+
+    // The person turns the wheel over the conversation until its first message stands in the
+    // window.
+    // The pointer stands over the conversation, where a person's wheel turns it.
+    session.window.move_to(640.0, 700.0);
+    session.settle();
+    let mut found = false;
+    for _ in 0..100 {
+        let shown = transcript(&mut session);
+        found = shown.iter().any(|shown| {
+            shown.text.split(' ').any(|word| word == "number")
+                && shown.text.contains("Message number 0")
+        });
+        if found {
+            break;
+        }
+        session.window.scroll(0.0, 20.0);
+        glide(&mut session);
+    }
+    assert!(found, "the conversation reads back to its first message");
+    assert_eq!(
+        messages(&session, &direct).len(),
+        40,
+        "every message the person wrote is in the conversation"
+    );
+}
+
+/// A person replies to a message: Reply on its row puts it above the composer, and the message
+/// then sent quotes it above its own words, in the conversation and in what Chat keeps.
+#[test]
+fn a_person_replies_to_a_message_and_the_window_quotes_what_it_answers() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _workspace) = chat_with_an_agent();
+    open_the_agents_conversation(&mut session);
+    send_with_the_control(&mut session, "Plan the release with me");
+
+    let direct = conversation(&session, AGENT_NAME);
+    let asked = messages(&session, &direct)
+        .into_iter()
+        .next()
+        .expect("the person's message");
+    agent_says(
+        &mut session,
+        &direct,
+        "Friday suits the team.",
+        Some(&asked),
+        "agents.agent:helper#answer:3",
+    );
+    session.settle();
+    let answered = messages(&session, &direct)
+        .into_iter()
+        .last()
+        .expect("the agent's answer");
+
+    // The person points at the agent's answer and presses Reply where it stands.
+    let nodes = session.window.harness().a11y_nodes();
+    let answer_at = nodes
+        .iter()
+        .find_map(|(_, node)| {
+            node.label()
+                .is_some_and(|label| label.contains("Friday suits the team."))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .expect("the answer stands in the conversation");
+    // The pointer stands on the answer, where its toolbar shows.
+    session.window.move_to(
+        f64::midpoint(answer_at.x0, answer_at.x1),
+        f64::midpoint(answer_at.y0, answer_at.y1),
+    );
+    session.settle();
+    let reply_at = session
+        .window
+        .harness()
+        .a11y_nodes()
+        .iter()
+        .filter_map(|(_, node)| {
+            (node.label().as_deref() == Some("Reply"))
+                .then(|| node.bounds())
+                .flatten()
+                .filter(|rect| rect.y1 <= answer_at.y0 + 1.0)
+        })
+        .max_by(|one, two| one.y1.total_cmp(&two.y1))
+        .expect("Reply stands over the answer");
+    session.window.click_at(
+        f64::midpoint(reply_at.x0, reply_at.x1),
+        f64::midpoint(reply_at.y0, reply_at.y1),
+    );
+    session.settle();
+    send_with_the_control(&mut session, "Then Friday it is.");
+
+    let sent = messages(&session, &direct);
+    assert_eq!(sent.len(), 3, "the reply is a message of the conversation");
+    let reply = sent.last().expect("the reply");
+    let host = session.instance_host();
+    let answering = host
+        .runtime()
+        .read(reply, "reply_to")
+        .expect("the reply says what it answers");
+    let id = answered.id_string();
+    let item = id.rsplit('/').next().unwrap_or(&id);
+    assert!(
+        format!("{answering:?}").contains(item),
+        "the reply answers the agent's message ({item}): {answering:?}"
+    );
+
+    let shown = transcript(&mut session);
+    let answer = shown.last().expect("the transcript draws the reply");
+    assert!(
+        answer.text.contains("Then Friday it is."),
+        "the person's words stand in the reply: {}",
+        answer.text
+    );
+    assert!(
+        answer.text.contains("Friday suits the team."),
+        "the reply quotes what it answers above its words: {}",
+        answer.text
+    );
 }

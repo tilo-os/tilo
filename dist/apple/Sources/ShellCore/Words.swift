@@ -91,8 +91,8 @@ public enum Words: String, CaseIterable, Sendable {
         }
     }
 
-    /// The app's own name, as its bundle says it: "Tilo Shell", or "Tilo Assistant". The
-    /// share extension's bundle carries the name of its app.
+    /// The app's own name, as its bundle says it: "Tilo Shell". The share extension's bundle
+    /// carries the name of its app.
     public static func appName(info: [String: Any]? = Bundle.main.infoDictionary) -> String {
         let named = ["CFBundleDisplayName", "CFBundleName"].compactMap { info?[$0] as? String }
         return named.first { !$0.isEmpty } ?? "Tilo Shell"
