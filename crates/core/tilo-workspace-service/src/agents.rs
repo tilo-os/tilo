@@ -1241,9 +1241,10 @@ impl ServerAgents {
         }
         drop(going);
         // A turn that failed is not kept done: the shortcut's one retry asks the answer again
-        // with the same cause, and this turn runs for that attempt.
-        if failed {
-            return Err(ended.err().unwrap_or_else(|| "the turn failed".to_owned()));
+        // with the same cause, and this turn runs for that attempt. It fails with the reason
+        // it could not go on, unless writing that to its reply failed first.
+        if let Some(why) = failed {
+            return Err(ended.err().unwrap_or(why));
         }
         let done = json!({"answered": ended.is_ok()});
         if let Err(error) = crate::work::keep_done(&self.workspaces, workspace, &ask, done).await {
@@ -1340,20 +1341,21 @@ impl ServerAgents {
         Ok(scope)
     }
 
-    /// Work `turn`, which holds its place as `going`: how it ended, and what answered its model
+    /// Work `turn`, which holds its place as `going`: how it ended, what answered its model
     /// calls and what they used and cost, as the invocation that started it keeps them
-    /// (`provider`, `model`, `tokens`, `cost_usd`).
+    /// (`provider`, `model`, `tokens`, `cost_usd`), and why it failed where it may be asked
+    /// again.
     async fn answer_going(
         &self,
         workspace: &str,
         turn: &Turn,
         going: &going::Going,
         claim: Arc<crate::work::Claim>,
-    ) -> (Result<(), String>, Value, bool) {
+    ) -> (Result<(), String>, Value, Option<String>) {
         let scope = match self.scope(workspace, turn).await {
             Ok(scope) => scope,
             // A turn whose scope could not be made failed: the same cause may run again.
-            Err(error) => return (Err(error), Value::Null, true),
+            Err(error) => return (Err(error.clone()), Value::Null, Some(error)),
         };
         let mut turn = turn.clone();
         turn.history = scope.recall(&turn).await;
@@ -1372,7 +1374,7 @@ impl ServerAgents {
         workspace: &str,
         (scope, mut turn, mut reply): (TurnScope, Turn, Reply),
         going: &going::Going,
-    ) -> (Result<(), String>, Value, bool) {
+    ) -> (Result<(), String>, Value, Option<String>) {
         // A task is worked on over many agent sessions: the session is begun and its place
         // made before the model is asked, and one that may not begin ends here with its plain
         // line.
@@ -1380,7 +1382,7 @@ impl ServerAgents {
             Ok(task) => task,
             Err(words) => {
                 let ended = reply.finished(&Outcome::Stopped(words)).await;
-                return (ended, Value::Null, false);
+                return (ended, Value::Null, None);
             }
         };
         let clock = tilo_clock::now();
@@ -1452,7 +1454,10 @@ impl ServerAgents {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
                 .await;
         }
-        let failed = matches!(&outcome, Outcome::Failed(_));
+        let failed = match &outcome {
+            Outcome::Failed(why) => Some(why.clone()),
+            Outcome::Answered(_) | Outcome::Stopped(_) | Outcome::Cancelled => None,
+        };
         let ended = reply.finished(&outcome).await;
         self.sub_ended(&scope, &turn, &outcome).await;
         let summary = match &outcome {

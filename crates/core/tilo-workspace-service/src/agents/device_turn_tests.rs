@@ -414,8 +414,8 @@ async fn a_stopped_reply_keeps_what_came_and_says_it_was_stopped() {
 }
 
 /// A turn whose model call breaks off in the middle keeps what came in its reply, and says below
-/// it, in plain words, why it could not go on. It is not kept done: its answer fails, so the
-/// trigger's one retry asks it again with the same cause.
+/// it, in plain words, why it could not go on. It is not kept done: its answer fails with that
+/// reason, so the trigger's one retry asks it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_that_breaks_off_keeps_what_came_and_says_why() {
     let scratch = tempfile::tempdir().unwrap();
@@ -443,9 +443,12 @@ async fn a_reply_that_breaks_off_keeps_what_came_and_says_why() {
     )
     .await
     .expect("the turn ends");
-    assert!(
-        started.is_err(),
-        "a turn whose model failed answers with a failure the trigger retries: {started:?}"
+    let why = started.expect_err("a turn whose model gave no answer fails, so it is asked again");
+    assert_eq!(
+        why,
+        "My model did not answer: Provider authentication failed; check the credential in \
+         Settings",
+        "the turn fails with the reason it could not go on"
     );
 
     assert_eq!(
