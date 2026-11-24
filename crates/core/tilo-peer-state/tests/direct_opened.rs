@@ -117,7 +117,7 @@ fn sealed(record: &str, writer: &SigningKey, seq: u64) -> NeighbourMsg {
     .unwrap();
     let mut edit = AutoCommit::new();
     edit.put(ROOT, "value", format!("sealed {seq}")).unwrap();
-    edit.commit_edit("fixture", "value");
+    edit.commit_edit("fixture", "value", &writer.verifying_key().to_bytes());
     let plaintext = tilo_peer_state::DocumentMutation::Incremental(edit.save_incremental())
         .encode()
         .unwrap();

@@ -143,7 +143,7 @@ async fn link(
     a_key: &SigningKey,
     b: &DirectSync,
     b_key: &SigningKey,
-) -> (Router, tokio::task::JoinHandle<Result<(), String>>) {
+) -> (Router, tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>) {
     let a_endpoint = localhost_endpoint(a_key).await;
     let router = Router::builder(a_endpoint.clone())
         .accept(DIRECT_ALPN, a.clone())
