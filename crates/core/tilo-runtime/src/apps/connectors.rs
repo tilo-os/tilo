@@ -184,7 +184,7 @@ impl Drop for Connectors {
 
 /// Whether `process` still runs.
 fn alive(process: &mut Process) -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         matches!(process.try_wait(), Ok(None))
     }

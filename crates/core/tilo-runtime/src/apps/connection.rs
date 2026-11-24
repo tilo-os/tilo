@@ -140,9 +140,9 @@ fn on_power() -> bool {
     on
 }
 
-/// The power supplies the kernel reports: on power while one of mains or USB is online, or
-/// when the device has no battery at all.
-#[cfg(target_os = "linux")]
+/// The power supplies the kernel reports, Linux's and Android's alike: on power while one of
+/// mains or USB is online, or when the device has no battery at all.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn read_power() -> bool {
     let read = |path: std::path::PathBuf| {
         std::fs::read_to_string(path)
