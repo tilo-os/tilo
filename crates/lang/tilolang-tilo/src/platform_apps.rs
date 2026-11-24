@@ -335,6 +335,10 @@ pub fn device_surfaces() -> Result<Vec<tilo_actions::surface::Surface>, String> 
 /// # Panics
 /// A committed surface this build reads does not read: a fault of the build itself.
 #[must_use]
+#[allow(
+    clippy::expect_used,
+    reason = "the surfaces are committed with the build; one that does not read is the build's fault"
+)]
 pub fn platform_roots() -> Vec<(String, String)> {
     static ROOTS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
     ROOTS

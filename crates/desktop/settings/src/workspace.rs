@@ -551,12 +551,12 @@ fn set_on(
         origin: origin.clone(),
     };
     let made = held.iter().map(|_| address.clone()).collect();
-    let stored = match held {
+    let kept = match held {
         Some(Value::Object(fields)) => BTreeMap::from([(address, fields)]),
         _ => BTreeMap::new(),
     };
     let invocation = uuid::Uuid::new_v4().to_string();
-    let (commands, _) = commands_for(stores, &pending, device, (&made, &stored), &invocation);
+    let (commands, _) = commands_for(stores, &pending, device, (&made, &kept), &invocation);
     let steps = commands.into_values().flatten().collect();
     stores
         .command(Holder::Device, Command::Batch(steps))
