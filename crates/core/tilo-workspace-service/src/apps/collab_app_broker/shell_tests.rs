@@ -647,7 +647,7 @@ async fn only_the_shell_hands_the_device_processes_an_instance() {
     tokio::io::AsyncWriteExt::write_all(&mut dialed, &opening)
         .await
         .unwrap();
-    let refused = ask(ours).await.unwrap();
+    let refused = ask(ours.into()).await.unwrap();
     assert!(
         matches!(refused, Ok(None) | Err(_)),
         "a process that dialed the daemon itself is not answered: {refused:?}"

@@ -1576,7 +1576,7 @@ mod tests {
                     move || -> std::io::Result<OwnedFd> {
                         let (ours, theirs) = runtime_portal::packet::pair()?;
                         handing(theirs);
-                        Ok(ours)
+                        Ok(ours.into())
                     },
                 ))
             }
