@@ -1014,12 +1014,15 @@ async fn index_retained_checkpoint(
     let before = records.retained(workspace_id).await.unwrap();
     let mut watches = workspaces.document_writes();
     let refused = workspaces
-        .resource_command(&context, put_signed_issue("No signed base"))
+        .resource_command(&context, put_signed_issue("i-1", "No signed base"))
         .await
         .unwrap_err();
     assert!(refused.contains("has not opened this resource's signed history"));
     let refused = workspaces
-        .resource_command(&context, Command::Batch(vec![put_signed_issue("Unsigned")]))
+        .resource_command(
+            &context,
+            Command::Batch(vec![put_signed_issue("i-1", "Unsigned")]),
+        )
         .await
         .unwrap_err();
     assert!(refused.contains("has not opened this resource's signed history"));
@@ -1049,10 +1052,10 @@ fn signed_issue(title: &str) -> Resource {
     }
 }
 
-fn put_signed_issue(title: &str) -> Command {
+fn put_signed_issue(id: &str, title: &str) -> Command {
     Command::Put {
         kind: KIND.into(),
-        id: "i-1".into(),
+        id: id.into(),
         resource: signed_issue(title),
         stamp: create(),
     }
@@ -1065,6 +1068,7 @@ async fn a_cancelled_write_keeps_nothing(
     workspace: &str,
     workspace_id: collab_types::WorkspaceId,
     context: &ResourceRequestContext,
+    id: &str,
 ) {
     let records = workspaces.workspace_documents();
     let before = records.retained(workspace_id).await.unwrap();
@@ -1074,9 +1078,10 @@ async fn a_cancelled_write_keeps_nothing(
     let cancelled = tokio::spawn({
         let workspaces = workspaces.clone();
         let context = context.clone();
+        let id = id.to_owned();
         async move {
             workspaces
-                .resource_command(&context, put_signed_issue("Cancelled"))
+                .resource_command(&context, put_signed_issue(&id, "Cancelled"))
                 .await
         }
     });
@@ -1086,10 +1091,7 @@ async fn a_cancelled_write_keeps_nothing(
     assert!(cancelled.await.unwrap_err().is_cancelled());
     drop(held);
     assert_eq!(records.retained(workspace_id).await.unwrap(), before);
-    assert_eq!(
-        title_through_service(workspaces, context, "i-1").await,
-        None
-    );
+    assert_eq!(title_through_service(workspaces, context, id).await, None);
 }
 
 #[tokio::test]
@@ -1119,7 +1121,7 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
     keys.hold_nothing();
     let mut watches = workspaces.document_writes();
     let refused = workspaces
-        .resource_command(&context, put_signed_issue("Refused"))
+        .resource_command(&context, put_signed_issue("i-1", "Refused"))
         .await;
     assert_eq!(refused.unwrap_err(), "this channel has no keys yet");
     assert_eq!(
@@ -1143,11 +1145,18 @@ async fn a_first_resource_write_refused_by_retention_leaves_no_row() {
         .unwrap()
         .unwrap();
 
-    a_cancelled_write_keeps_nothing(&workspaces, &workspace, created.workspace_id, &context).await;
+    a_cancelled_write_keeps_nothing(
+        &workspaces,
+        &workspace,
+        created.workspace_id,
+        &context,
+        "i-1",
+    )
+    .await;
 
     let batch = Command::Batch(vec![
-        put_signed_issue("First"),
-        put_signed_issue("Second"),
+        put_signed_issue("i-1", "First"),
+        put_signed_issue("i-1", "Second"),
         Command::Remove {
             kind: KIND.into(),
             id: "missing".into(),
@@ -1248,7 +1257,7 @@ async fn a_member_copy_retains_and_forwards_its_first_resource_write() {
     let context = context(&workspace, &cert);
     member
         .workspaces()
-        .resource_command(&context, put_signed_issue("Member"))
+        .resource_command(&context, put_signed_issue("i-1", "Member"))
         .await
         .unwrap();
     let retained = member
@@ -1321,7 +1330,7 @@ async fn a_member_copy_reads_resources_that_reached_it_before_its_keys() {
         .workspaces()
         .resource_command(
             &context(&workspace, &owner_cert),
-            put_signed_issue("Written before"),
+            put_signed_issue("i-1", "Written before"),
         )
         .await
         .unwrap();
@@ -1501,7 +1510,14 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
     let records = workspaces.workspace_documents();
     let before_cancel = records.retained(created.workspace_id).await.unwrap();
     let mut watches = workspaces.document_writes();
-    a_cancelled_write_keeps_nothing(&workspaces, &workspace, created.workspace_id, &context).await;
+    a_cancelled_write_keeps_nothing(
+        &workspaces,
+        &workspace,
+        created.workspace_id,
+        &context,
+        "i-cancelled",
+    )
+    .await;
     assert!(
         watches.try_recv().is_err(),
         "a cancelled write wakes nobody"
@@ -1517,7 +1533,7 @@ async fn retained_store_checkpoint_restores_signed_history_on_open() {
     );
 
     workspaces
-        .resource_command(&context, put_signed_issue("Edited"))
+        .resource_command(&context, put_signed_issue("i-1", "Edited"))
         .await
         .unwrap();
     assert_eq!(
