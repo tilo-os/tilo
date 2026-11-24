@@ -244,7 +244,8 @@ impl Workspace for Mcp {
         // call that waits in its asked record keeps that record, and its answer is read from it.
         let invocation = step_id("person", &action, &args);
         let wait = u64::try_from(ASK_WAIT.as_millis()).unwrap_or(u64::MAX);
-        let call = json!({"path": action, "args": args, "wait_ms": wait, "invocation_id": invocation});
+        let call =
+            json!({"path": action, "args": args, "wait_ms": wait, "invocation_id": invocation});
         let until = std::time::Instant::now()
             .checked_add(PERSON_WAIT)
             .ok_or_else(|| anyhow!("no time to wait for the person in"))?;
@@ -420,13 +421,16 @@ mod tests {
             )
             .expect("it ran once answered");
         assert_eq!(added["address"], "ada@example.com");
-        let calls = calls.lock().expect("the calls");
+        let calls = calls.lock().expect("the calls").clone();
         assert_eq!(calls.len(), 2, "read again while it waited");
         let ids: Vec<Value> = calls
             .iter()
             .filter_map(|call| call.pointer("/params/arguments/invocation_id").cloned())
             .collect();
-        assert_eq!(ids[0], ids[1], "the same call, which the workspace runs once");
+        assert_eq!(
+            ids[0], ids[1],
+            "the same call, which the workspace runs once"
+        );
     }
 
     /// A person who says no ends the call declined: the step reads that as the account being
@@ -435,10 +439,12 @@ mod tests {
     fn a_person_saying_no_leaves_the_call_unanswered() {
         let (mut workspace, _) = reached_as_the_person(
             Vec::new(),
-            vec![json!({"content": [], "isError": true, "structuredContent": {
-                "status": "failed",
-                "error": {"code": "cancelled", "message": "declined"},
-            }})],
+            vec![
+                json!({"content": [], "isError": true, "structuredContent": {
+                    "status": "failed",
+                    "error": {"code": "cancelled", "message": "declined"},
+                }}),
+            ],
         );
         let error = workspace
             .person(

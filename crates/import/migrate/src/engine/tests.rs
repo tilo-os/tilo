@@ -301,9 +301,9 @@ fn an_account_the_person_says_no_to_is_left_unconnected() {
     assert!(workspace.kept.is_empty());
     assert_eq!(journal.brought.get("accounts"), None);
     assert!(
-        told.lines.iter().any(|line| line
-            .contains("left unconnected")
-            && line.contains("ada@example.com")),
+        told.lines
+            .iter()
+            .any(|line| line.contains("left unconnected") && line.contains("ada@example.com")),
         "{:?}",
         told.lines
     );
@@ -333,12 +333,12 @@ fn each_chosen_account_is_asked_once_and_nobody_answering_leaves_it_unconnected(
     assert_eq!(workspace.added.len(), 2, "one ask per account");
     assert!(workspace.kept.is_empty());
     assert_eq!(journal.brought.get("accounts"), None);
-    let left: Vec<&String> = told
+    let left = told
         .lines
         .iter()
         .filter(|line| line.contains("left unconnected"))
-        .collect();
-    assert_eq!(left.len(), 2, "{:?}", told.lines);
+        .count();
+    assert_eq!(left, 2, "{:?}", told.lines);
 }
 
 #[test]

@@ -35,6 +35,7 @@ use zeroize::Zeroizing;
 
 use crate::engine::{self, Stopped, state::Place, writer::Workspace};
 
+pub mod caller;
 mod records;
 
 use records::Records;

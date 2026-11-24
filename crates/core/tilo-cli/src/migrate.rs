@@ -37,18 +37,18 @@
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Subcommand;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::{
-    ActionProvider as _, Caller, InvokeRequest, LineClient, MAX_REMOTE_WAIT, ReceiptStatus,
-    RemoteActionTarget, UpdateMark, asked, workspace_invocations,
-};
-use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
+use tilo_actions::ActionFailure;
+use tilo_actions::remote::asked::Asked;
+use tilo_actions::remote::{Caller, LineClient};
 use tilo_migrate::engine;
-use tilo_migrate::provider::{PROVIDER, SECRET_NEEDED, resource};
+use tilo_migrate::provider::SECRET_NEEDED;
+use tilo_migrate::provider::caller::{Answering, Asks, Steps, question_said};
 
 /// How long a command waits for this computer's daemon to answer, its service started.
 const REACHING: Duration = Duration::from_secs(30);
@@ -131,12 +131,15 @@ pub enum MigrateCmd {
 /// Run `cmd` on this computer's device; `json` answers as JSON. `workspace` names a workspace
 /// with `-w`, which must be one this computer's device is in.
 pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitCode> {
-    let device = Device::reach()?;
+    let device = reach()?;
     if let Some(named) = workspace {
         device.in_workspace(named)?;
     }
+    let call = |action: &str, args: Map<String, Value>, asks: Asks| {
+        step(&device, action, args, json, asks)?.map_err(failed)
+    };
     let answer = match cmd {
-        MigrateCmd::Sources => device.call("sources", Map::new(), json)?,
+        MigrateCmd::Sources => call("sources", Map::new(), Asks::Leave)?,
         MigrateCmd::Connect {
             service,
             url,
@@ -154,13 +157,13 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
             if let Some(file) = &secret_file {
                 args.insert("secret".into(), json!(*secret("", Some(file))?));
             }
-            match device.step("connect", args.clone(), json, Asks::Leave)? {
+            match step(&device, "connect", args.clone(), json, Asks::Leave)? {
                 Ok(answer) => answer,
                 Err(failure) => match asked_secret(&failure) {
                     // The person types what it asks for, and it runs again with it.
                     Some(asks) if secret_file.is_none() => {
                         args.insert("secret".into(), json!(*secret(&asks, None)?));
-                        device.call("connect", args, json)?
+                        call("connect", args, Asks::Leave)?
                     }
                     _ => return Err(failed(failure)),
                 },
@@ -171,7 +174,7 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
             if let Some(profile) = profile {
                 args.insert("profile".into(), json!(handed_profile(&profile)?));
             }
-            device.call("review", args, json)?
+            call("review", args, Asks::Leave)?
         }
         MigrateCmd::Choose {
             source,
@@ -183,7 +186,7 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
             args.insert("items".into(), json!(items));
             args.insert("leave_out".into(), json!(leave_out));
             args.insert("only".into(), json!(only));
-            device.call("choose", args, json)?
+            call("choose", args, Asks::Leave)?
         }
         MigrateCmd::Start { source, yes } => {
             let mut args = sourced(&source);
@@ -194,17 +197,17 @@ pub fn run(cmd: MigrateCmd, json: bool, workspace: Option<&str>) -> Result<ExitC
                      it is on."
                 );
             }
-            device.call_answering("start", args, json, Asks::of(yes))?
+            call("start", args, asks_of(yes))?
         }
         MigrateCmd::Status { source } => {
             let args = source.as_deref().map(sourced).unwrap_or_default();
-            device.call("status", args, json)?
+            call("status", args, Asks::Leave)?
         }
-        MigrateCmd::Stop { source } => device.call("stop", sourced(&source), json)?,
+        MigrateCmd::Stop { source } => call("stop", sourced(&source), Asks::Leave)?,
         MigrateCmd::Undo { run } => {
             let mut args = Map::new();
             args.insert("run".into(), json!(run));
-            device.call("undo", args, json)?
+            call("undo", args, Asks::Leave)?
         }
     };
     if json {
@@ -259,347 +262,76 @@ fn failed(failure: ActionFailure) -> anyhow::Error {
     anyhow::Error::msg(failure.message)
 }
 
-/// This computer's device, whose migrations each command invokes.
-struct Device {
-    client: LineClient,
-    /// The resource the device's migrations are.
-    migrations: String,
-    /// The workspace this device is in, and its name as the person knows it.
-    workspace: String,
-    workspace_name: Option<String>,
-}
-
-impl Device {
-    /// This computer's device, through its daemon's native endpoint, the service started when
-    /// none runs.
-    ///
-    /// # Errors
-    /// This computer is not logged in, or its daemon could not be reached.
-    fn reach() -> Result<Self> {
-        let login = crate::login::Place::here(crate::identity::paths())?;
-        let device = crate::login::served_device_key(login.keys())
-            .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
-        let home = crate::login::home();
-        // A daemon that is there is waited for, not replaced: it may be busy with a change.
-        let stream = tilo_api::daemon::this_computer()
-            .and_then(|place| place.reach_native(REACHING))
-            .map_err(anyhow::Error::msg)?;
-        Ok(Self {
-            client: LineClient::of_stream(stream)?,
-            migrations: resource(&device),
-            workspace: home
-                .as_ref()
-                .map(|home| home.workspace.clone())
-                .unwrap_or_default(),
-            workspace_name: home.and_then(|home| home.workspace_name),
-        })
-    }
-
-    /// Refuse a workspace this computer's device is not in, naming the command that joins it.
-    ///
-    /// # Errors
-    /// The device is not in a workspace `named` calls by its id or its name.
-    fn in_workspace(&self, named: &str) -> Result<()> {
-        if in_workspace(named, &self.workspace, self.workspace_name.as_deref()) {
-            return Ok(());
-        }
-        Err(not_in(named))
-    }
-
-    /// Invoke `action` with `args` and follow it to its end: its answer, or why it failed.
-    fn call(&self, action: &str, args: Map<String, Value>, json: bool) -> Result<Value> {
-        self.call_answering(action, args, json, Asks::Leave)
-    }
-
-    /// Invoke `action` with `args` and follow it, answering the questions it asks as `asks`
-    /// says: its answer, or why it failed.
-    fn call_answering(
-        &self,
-        action: &str,
-        args: Map<String, Value>,
-        json: bool,
-        asks: Asks,
-    ) -> Result<Value> {
-        self.step(action, args, json, asks)?.map_err(failed)
-    }
-
-    /// Invoke `action` with `args` and follow it to its end, saying its progress on stderr
-    /// unless `json`: its answer, or the failure it ran into.
-    ///
-    /// # Errors
-    /// The daemon did not answer, or refused the step before it ran.
-    fn step(
-        &self,
-        action: &str,
-        args: Map<String, Value>,
-        json: bool,
-        asks: Asks,
-    ) -> Result<std::result::Result<Value, ActionFailure>> {
-        let request = InvokeRequest::plain(
-            RemoteActionTarget {
-                provider: PROVIDER.into(),
-                address: ActionAddress::new(self.migrations.clone(), action),
-            },
-            args,
-        );
-        let id = request.invocation;
+/// This computer's device, whose migrations each command steps, through its daemon's native
+/// endpoint, the service started when none runs: the person whose account connects is who the
+/// daemon decides each step as.
+///
+/// # Errors
+/// This computer is not logged in, or its daemon could not be reached.
+fn reach() -> Result<Steps> {
+    let login = crate::login::Place::here(crate::identity::paths())?;
+    let device = crate::login::served_device_key(login.keys())
+        .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
+    let home = crate::login::home();
+    // A daemon that is there is waited for, not replaced: it may be busy with a change.
+    let stream = tilo_api::daemon::this_computer()
+        .and_then(|place| place.reach_native(REACHING))
+        .map_err(anyhow::Error::msg)?;
+    Ok(Steps::new(
+        Arc::new(LineClient::of_stream(stream)?),
         // The daemon decides the step as whoever connects; the caller here names nobody.
-        let caller = Caller::local_person("");
-        let receipt = answered(self.client.invoke(&caller, request))?
-            .map_err(|error| anyhow!("{action} was refused: {}", error.said()))?;
-        self.follow(&caller, id, receipt.status, json, asks)
-    }
+        Caller::local_person(""),
+        &device,
+        home.as_ref()
+            .map(|home| home.workspace.clone())
+            .unwrap_or_default(),
+        home.and_then(|home| home.workspace_name),
+    ))
+}
 
-    /// Follow the invocation `id`, whose receipt said `status`, to its end, answering the
-    /// questions it asks as `asks` says.
-    fn follow(
-        &self,
-        caller: &Caller,
-        id: InvocationId,
-        mut status: ReceiptStatus,
-        json: bool,
-        asks: Asks,
-    ) -> Result<std::result::Result<Value, ActionFailure>> {
-        let stopped = || anyhow!("this computer's daemon stopped answering");
-        let mut seen = UpdateMark::Accepted;
-        loop {
-            match status {
-                ReceiptStatus::Accepted => {}
-                ReceiptStatus::Completed { output } => {
-                    return Ok(Ok(output.value.unwrap_or_default()));
-                }
-                ReceiptStatus::Failed { error } => return Ok(Err(error)),
-                ReceiptStatus::Rejected { error } => bail!("{}", error.said()),
-                ReceiptStatus::Cancelled { message } => {
-                    return Ok(Ok(json!({
-                        "said": message.unwrap_or_else(|| "it was stopped".into()),
-                    })));
-                }
-            }
-            // Asked for before looking, so a change between the two is never missed.
-            let change = self.client.next_change(caller, &id).ok_or_else(stopped)?;
-            let state = self.client.observe(caller, &id).ok_or_else(stopped)?;
-            if UpdateMark::of(&state.update) == seen {
-                if asks.answers() {
-                    // A run that waits for its person asks in a record of its own: the
-                    // terminal answers it, as any other client of the workspace does.
-                    self.answer_asks(asks, json)?;
-                    let _ = change.wait_timeout(LOOK_AGAIN);
-                } else {
-                    // A wait the daemon let pass unanswered is looked at again.
-                    let _ = change.wait_timeout(MAX_REMOTE_WAIT.saturating_add(REACHING));
-                }
-                continue;
-            }
-            seen = UpdateMark::of(&state.update);
-            if let InvocationUpdate::Progress {
-                message: Some(line),
-                ..
-            } = &state.update
-                && !json
-            {
-                eprintln!("{line}");
-            }
-            status = state.receipt().status;
+/// Invoke `action` with `args` on `device` and follow it to its end, saying its progress on
+/// stderr unless `json`, and answering the questions it asks as `asks` says: its answer, or the
+/// failure it ran into.
+fn step(
+    device: &Steps,
+    action: &str,
+    args: Map<String, Value>,
+    json: bool,
+    asks: Asks,
+) -> Result<std::result::Result<Value, ActionFailure>> {
+    let mut prompt = |question: &Asked| asked_at_terminal(question, json);
+    let mut say = |line: &str| {
+        if !json {
+            eprintln!("{line}");
         }
-    }
-}
-
-/// Whether `named` is the workspace this computer's device is in, by its id or the name its
-/// person knows it under.
-fn in_workspace(named: &str, workspace: &str, name: Option<&str>) -> bool {
-    named == workspace
-        || name.is_some_and(|name| name.eq_ignore_ascii_case(named))
-}
-
-/// The refusal of a workspace this computer's device is not in: the command that joins it is the
-/// one to name, so a person has the step to take.
-fn not_in(named: &str) -> anyhow::Error {
-    anyhow!(
-        "this computer's device is not in the workspace {named:?}: join it with the invitation \
-         link a member sends you, `tilo login <invitation link>` (a server of yours takes it in \
-         with `tilo login --server`), then run `tilo migrate -w {named}`"
+    };
+    device.step(
+        action,
+        args,
+        &mut Answering {
+            asks,
+            prompt: &mut prompt,
+            say: &mut say,
+        },
     )
 }
 
-/// How the terminal answers the questions a run asks: say yes beforehand (`--yes`), ask the
-/// person here, leave them to someone else, or (with nobody to ask) say no, so the account stays
-/// unconnected and the run says so.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Asks {
-    /// Answer nobody: another client of the workspace (the person's shell) does.
-    Leave,
-    /// Say yes to every question, as `--yes` does.
-    Approve,
-    /// Say no: nobody is at a terminal to ask.
-    Decline,
-    /// Put each question to the person at this terminal.
-    Prompt,
-}
-
-impl Asks {
-    /// How `tilo migrate start` answers, given its `--yes` and whether a person is at a terminal.
-    fn of(yes: bool) -> Self {
-        if yes {
-            return Self::Approve;
-        }
-        if std::io::stdin().is_terminal() || std::env::var_os("TILO_ASK_TTY").is_some() {
-            Self::Prompt
-        } else {
-            Self::Decline
-        }
+/// How `tilo migrate start` answers the questions its run asks, given its `--yes` and whether a
+/// person is at a terminal: yes beforehand, the person asked here, or (with nobody to ask) no,
+/// so the account stays unconnected and the run says so.
+fn asks_of(yes: bool) -> Asks {
+    if yes {
+        return Asks::Approve;
     }
-
-    /// Whether the terminal answers the run's questions at all.
-    const fn answers(self) -> bool {
-        !matches!(self, Self::Leave)
-    }
-}
-
-/// How long a run that may ask is waited on before its questions are looked for again.
-const LOOK_AGAIN: Duration = Duration::from_millis(250);
-
-impl Device {
-    /// Answer the questions this run asks, as `asks` says: each is a record in the workspace,
-    /// answered with its own `resolve`, as the person's shell answers it.
-    fn answer_asks(&self, asks: Asks, json: bool) -> Result<()> {
-        for question in self.questions()? {
-            if !connects_a_mail_account(&question) {
-                continue;
-            }
-            if !json && asks != Asks::Prompt {
-                eprintln!("{}", question_said(&question));
-            }
-            let approve = match asks {
-                Asks::Approve => true,
-                Asks::Decline => false,
-                Asks::Prompt => asked_at_terminal(&question, json)?,
-                Asks::Leave => continue,
-            };
-            if let Err(error) = self.answer(&question, approve) {
-                // Another client answered it first: the run reads their answer.
-                eprintln!("the answer did not go through: {error:#}");
-                continue;
-            }
-            if !json {
-                eprintln!(
-                    "{}",
-                    if approve {
-                        "You said yes: it is connected."
-                    } else {
-                        "You said no: it stays unconnected."
-                    }
-                );
-            }
-        }
-        Ok(())
-    }
-
-    /// The questions that wait for this person, oldest first.
-    fn questions(&self) -> Result<Vec<Value>> {
-        let request = InvokeRequest::plain(
-            RemoteActionTarget {
-                provider: asked::PROVIDER.into(),
-                address: ActionAddress::new(asked::WAITING, asked::LIST),
-            },
-            Map::new(),
-        );
-        let caller = Caller::local_person("");
-        let receipt = answered(self.client.invoke(&caller, request))?
-            .map_err(|error| anyhow!("the questions could not be read: {}", error.said()))?;
-        let ReceiptStatus::Completed { output } = receipt.status else {
-            return Ok(Vec::new());
-        };
-        Ok(output
-            .value
-            .as_ref()
-            .and_then(|value| value.get("questions"))
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    /// Answer `question`'s record with `approve`.
-    fn answer(&self, question: &Value, approve: bool) -> Result<()> {
-        let Some(record) = question
-            .pointer("/record/record")
-            .and_then(Value::as_str)
-        else {
-            return Ok(());
-        };
-        let mut args = Map::new();
-        args.insert(
-            "resolution".into(),
-            json!(if approve { "approve" } else { "decline" }),
-        );
-        let request = InvokeRequest::plain(
-            RemoteActionTarget {
-                provider: workspace_invocations::PROVIDER.into(),
-                address: ActionAddress::new(record, asked::RESOLVE),
-            },
-            args,
-        );
-        let caller = Caller::local_person("");
-        answered(self.client.invoke(&caller, request))?
-            .map_err(|error| anyhow!("the answer was refused: {}", error.said()))?;
-        Ok(())
-    }
-}
-
-/// Whether `question` asks to keep a mail account: the only question a migration's run asks.
-fn connects_a_mail_account(question: &Value) -> bool {
-    question
-        .get("action")
-        .and_then(Value::as_str)
-        .is_some_and(|action| action.ends_with("#add"))
-}
-
-/// `question` as the person reads it before answering: who asks, in their words, and what is
-/// decided.
-fn question_said(question: &Value) -> String {
-    let mut said = String::new();
-    let words = question
-        .get("words")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if words.trim().is_empty() {
-        let verb = question
-            .get("verb")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let on = question
-            .get("on")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        said.push_str(verb);
-        if !on.is_empty() {
-            said.push(' ');
-            said.push_str(on);
-        }
+    if std::io::stdin().is_terminal() || std::env::var_os("TILO_ASK_TTY").is_some() {
+        Asks::Prompt
     } else {
-        said.push_str(words);
+        Asks::Decline
     }
-    if let Some(agent) = question
-        .pointer("/by/agent/name")
-        .and_then(Value::as_str)
-    {
-        said.push_str(&format!(" (asked by {agent})"));
-    }
-    for fact in question
-        .get("facts")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let label = fact.get("label").and_then(Value::as_str).unwrap_or("");
-        let value = fact.get("value").and_then(Value::as_str).unwrap_or("");
-        said.push_str(&format!("\n  {label}: {value}"));
-    }
-    said
 }
 
 /// Put `question` to the person at this terminal; `false` when nobody is there to ask.
-fn asked_at_terminal(question: &Value, json: bool) -> Result<bool> {
+fn asked_at_terminal(question: &Asked, json: bool) -> Result<bool> {
     if !json {
         eprintln!("{}", question_said(question));
     }
@@ -627,15 +359,6 @@ fn ask_yes(tty: &mut std::fs::File) -> Result<bool> {
     std::io::BufReader::new(&*tty).read_line(&mut said)?;
     let said = said.trim();
     Ok(said.is_empty() || said == "y" || said == "yes" || said == "Y" || said == "Yes")
-}
-
-/// What the daemon answers to `pending`.
-fn answered<T: Send + 'static>(pending: tilo_actions::remote::Pending<T>) -> Result<T> {
-    pending
-        .wait_timeout(MAX_REMOTE_WAIT.saturating_add(REACHING))
-        .ok()
-        .flatten()
-        .ok_or_else(|| anyhow!("this computer's daemon did not answer"))
 }
 
 /// A secret the person types, unseen, or reads from a file they name; never an argument.
@@ -694,61 +417,15 @@ mod tests {
 
     use super::*;
 
-    const ENTERED: &str = "6f1c2b9e-1c1f-4f0e-9a51-3c4d5e6f7a8b";
-
-    /// A workspace the device is in is named by its id or by the name the person knows it under;
-    /// one it is not in is not, and the refusal names the command that joins it.
-    #[test]
-    fn a_workspace_the_device_is_in_is_named_by_id_or_name() {
-        assert!(in_workspace(ENTERED, ENTERED, Some("Studio")));
-        assert!(in_workspace("studio", ENTERED, Some("Studio")));
-        assert!(!in_workspace("Lab", ENTERED, Some("Studio")));
-        assert!(!in_workspace("studio", ENTERED, None));
-
-        let refusal = format!("{}", not_in("Lab"));
-        assert!(refusal.contains("tilo login"), "{refusal}");
-        assert!(refusal.contains("Lab"), "{refusal}");
-    }
-
     /// `--yes` says yes without asking; with nobody at a terminal to ask and no `--yes`, the
     /// answer is no, so the account stays unconnected and the run says so.
     #[test]
     fn the_terminal_says_yes_beforehand_or_leaves_it_unconnected() {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.remove("TILO_ASK_TTY");
-        assert_eq!(Asks::of(true), Asks::Approve);
-        assert_eq!(Asks::of(false), Asks::Decline, "nobody is here to ask");
+        assert_eq!(asks_of(true), Asks::Approve);
+        assert_eq!(asks_of(false), Asks::Decline, "nobody is here to ask");
         env.set("TILO_ASK_TTY", "1");
-        assert_eq!(Asks::of(false), Asks::Prompt, "a person is at a terminal");
-    }
-
-    /// Only the question that keeps a mail account is a migration's: the terminal answers that
-    /// one, and leaves another app's question to its own caller.
-    #[test]
-    fn only_keeping_a_mail_account_is_a_migrations_question() {
-        assert!(connects_a_mail_account(
-            &json!({"action": "workspace/mail-accounts#add"})
-        ));
-        assert!(!connects_a_mail_account(
-            &json!({"action": "workspace/mail-accounts#list"})
-        ));
-        assert!(!connects_a_mail_account(&json!({})));
-    }
-
-    /// The question reads as the person answers it: who asks, what it is on, and what is decided.
-    #[test]
-    fn a_question_reads_as_the_person_answers_it() {
-        let said = question_said(&json!({
-            "action": "workspace/mail-accounts#add",
-            "verb": "connect",
-            "on": "ada@example.com",
-            "facts": [
-                {"label": "receives from", "value": "imap.example.com:993"},
-                {"label": "signs in with", "value": "ada@example.com"},
-            ],
-        }));
-        assert!(said.contains("connect ada@example.com"), "{said}");
-        assert!(said.contains("imap.example.com:993"), "{said}");
-        assert!(said.contains("signs in with"), "{said}");
+        assert_eq!(asks_of(false), Asks::Prompt, "a person is at a terminal");
     }
 }

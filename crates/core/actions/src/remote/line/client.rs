@@ -16,7 +16,8 @@ use crate::remote::{
     ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer, ContentPutStep,
     ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, MAX_CONTENT_FRAME_BYTES,
     MAX_HAVE_HASHES, MAX_PUT_MANY_BYTES, MAX_PUT_MANY_FILES, MAX_REMOTE_ACTION_FRAME_BYTES,
-    MAX_REMOTE_WAIT, Pending, RemoteActionFrame, RemoteActionMessage, UpdateMark, pending,
+    MAX_REMOTE_WAIT, Pending, RemoteActionFrame, RemoteActionMessage, ResourceReadRequest,
+    ResourceReads, UpdateMark, pending,
 };
 
 /// How long past the longest remote wait an answer is waited for before the ask is given up.
@@ -225,6 +226,35 @@ impl LineClient {
     }
 }
 
+/// A record read goes to the other end as it was asked, which decides it as whoever connected:
+/// what a client of a device's dispatch reads records through.
+impl ResourceReads for LineClient {
+    fn answer_read(
+        self: Arc<Self>,
+        _caller: &Caller,
+        correlation: u64,
+        read: ResourceReadRequest,
+    ) -> Pending<RemoteActionMessage> {
+        let ours = self.correlation();
+        self.ask(
+            Key::Correlation(ours),
+            RemoteActionMessage::ResourceRead {
+                correlation: ours,
+                on_behalf_of: None,
+                read,
+            },
+        )
+        .map(move |answer| RemoteActionMessage::ResourceReading {
+            correlation,
+            result: match answer {
+                Ok(RemoteActionMessage::ResourceReading { result, .. }) => result,
+                Ok(other) => Err(unexpected(&other)),
+                Err(error) => Err(error),
+            },
+        })
+    }
+}
+
 /// What the other end answered where it should have answered something else.
 fn unexpected(answer: &RemoteActionMessage) -> ActionCallError {
     ActionCallError::Unavailable {
@@ -303,6 +333,7 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
     let mut waiting = shared.waiting.lock_recover();
     let asked = match &message {
         RemoteActionMessage::CatalogueResponse { correlation, .. }
+        | RemoteActionMessage::ResourceReading { correlation, .. }
         | RemoteActionMessage::ContentPutResponse { correlation, .. }
         | RemoteActionMessage::ContentGetResponse { correlation, .. }
         | RemoteActionMessage::Update {
@@ -436,6 +467,10 @@ impl ActionProvider for LineClient {
     }
 
     fn content_gets(&self) -> Option<Arc<dyn ContentGets>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    fn resource_reads(&self) -> Option<Arc<dyn ResourceReads>> {
         Some(Arc::new(self.clone()))
     }
 }
