@@ -546,6 +546,56 @@ fn header_addr(name: Text, address: Text) -> Text {
     if name == "" or name == address { address } else { "{name} <{address}>" }
 }
 
+/// The address book's people whose name or address the words in a recipient `field` start, in
+/// the order the book lists them and no more than a recipient field offers.
+fn offered_contacts(book: contacts.Book, field: Text) -> List<contacts.Contact> {
+    book.contacts
+        .sort_by(c -> c.name.lower())
+        .filter(c -> c.emails.any(e -> offers_recipient(c.name, e.value, field)))
+        .take(6)
+}
+
+/// The recipients already written in a recipient `field`, up to and including the separator
+/// that ends them: what a chosen contact stands after. Empty while the first one is typed.
+fn recipients_before(field: Text) -> Text {
+    let after_comma = field.split(",").last() ?? field
+    let tail = after_comma.split(";").last() ?? after_comma
+    if tail.len() == field.len() { "" } else { field.slice(0, field.len() - tail.len()) }
+}
+
+/// The recipient being typed at the end of a recipient `field`: the words a contact must start.
+fn recipient_typed(field: Text) -> Text {
+    let after_comma = field.split(",").last() ?? field
+    (after_comma.split(";").last() ?? after_comma).trim()
+}
+
+/// Whether the contact `name` at `address` is one the words being typed start — their address,
+/// their name, or a word of it — and is not already written in `field`: what the recipient
+/// field offers under it.
+fn offers_recipient(name: Text, address: Text, field: Text) -> Bool {
+    let typed = recipient_typed(field).lower()
+    if typed == "" {
+        return false
+    }
+    let mail = address.trim().lower()
+    if mail == "" or field.lower().contains(mail) {
+        return false
+    }
+    let who = name.trim().lower()
+    mail.starts_with(typed)
+        or who.starts_with(typed)
+        or who.split(" ").any(w -> w.starts_with(typed))
+}
+
+/// What taking a contact writes into a recipient `field`: the recipients already there, then
+/// the one chosen as a header names them ("Ada Lovelace <ada@example.org>"), and the separator
+/// the next one follows.
+fn recipient_taken(field: Text, name: Text, address: Text) -> Text {
+    let before = recipients_before(field)
+    let one = header_addr(name.trim(), address.trim())
+    if before == "" { "{one}, " } else { "{before} {one}, " }
+}
+
 /// The name a message's export is written under: its subject with the characters a file name
 /// cannot hold taken out, and "Message" for one that names nothing.
 fn message_file(m: Message) -> Text {
@@ -2273,14 +2323,73 @@ view editor(d: Draft) {
                 }
             }
         }
+        // Each recipient field is a field of its own binding, so the three are written out: what
+        // the person types there is offered the workspace's contacts, and taking one writes the
+        // address with their name beside the recipients already typed.
         field("To") {
-            input(bind: d.to, placeholder: "name@example.org")
+            ui.Autocomplete(
+                bind: d.to,
+                placeholder: "name@example.org",
+                open_list: true,
+                filter: false,
+                max_visible: 6,
+            ) {
+                for c in offered_contacts(contacts.book, d.to) {
+                    for e in c.emails {
+                        if offers_recipient(c.name, e.value, d.to) {
+                            ui.Suggestion(
+                                recipient_taken(d.to, c.name, e.value),
+                                label: if c.name.trim() == "" { e.value } else { c.name },
+                                detail: e.value,
+                                icon: .user,
+                            )
+                        }
+                    }
+                }
+            }
         }
         field("Cc") {
-            input(bind: d.cc)
+            ui.Autocomplete(
+                bind: d.cc,
+                open_list: true,
+                filter: false,
+                max_visible: 6,
+            ) {
+                for c in offered_contacts(contacts.book, d.cc) {
+                    for e in c.emails {
+                        if offers_recipient(c.name, e.value, d.cc) {
+                            ui.Suggestion(
+                                recipient_taken(d.cc, c.name, e.value),
+                                label: if c.name.trim() == "" { e.value } else { c.name },
+                                detail: e.value,
+                                icon: .user,
+                            )
+                        }
+                    }
+                }
+            }
         }
         field("Bcc") {
-            input(bind: d.bcc, placeholder: "name@example.org")
+            ui.Autocomplete(
+                bind: d.bcc,
+                placeholder: "name@example.org",
+                open_list: true,
+                filter: false,
+                max_visible: 6,
+            ) {
+                for c in offered_contacts(contacts.book, d.bcc) {
+                    for e in c.emails {
+                        if offers_recipient(c.name, e.value, d.bcc) {
+                            ui.Suggestion(
+                                recipient_taken(d.bcc, c.name, e.value),
+                                label: if c.name.trim() == "" { e.value } else { c.name },
+                                detail: e.value,
+                                icon: .user,
+                            )
+                        }
+                    }
+                }
+            }
         }
         input(bind: d.subject, placeholder: "Subject")
         // The formatting the shared editor applies, asked of it by these controls: what a person
