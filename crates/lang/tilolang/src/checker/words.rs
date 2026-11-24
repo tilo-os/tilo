@@ -10,6 +10,11 @@
 //! A view's text parameter is words it shows, so the literal a caller gives it is the caller's message
 //! too. Which literals those are is known before any of them is lowered, so the pass that lowers reads
 //! the answer of a pass that said it ([`super::check_module`]).
+//!
+//! A `fn` that hands words back is part of what the view shows: `answer_words(a)` shows the literals
+//! its body returns, each a message of the fn's own declaration. Those bodies are checked again once
+//! the pass that says which literals are words knows which of them a view shows
+//! ([`super::Checker::shown_fns`]).
 
 use super::{Checker, Ex};
 use crate::abi::Imp;
@@ -17,6 +22,7 @@ use crate::ast::{self, BinOp, ExprKind, StmtKind, StrPart};
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
 use crate::meta::WordMeta;
+use crate::resolve::CKind;
 use crate::types::Ty;
 
 /// The most words of a literal its key keeps.
@@ -27,8 +33,34 @@ impl Checker<'_> {
     /// or one a `let` kept under the name it is given by.
     pub(super) fn mark_shown(&mut self, value: &ast::Expr) {
         match &value.kind {
-            ExprKind::Str(_) => {
+            // The words show the text as written, and what each interpolation puts in it: a `fn`'s or a
+            // branch's words are shown too.
+            ExprKind::Str(parts) => {
                 self.shown.insert(value.span);
+                for part in parts {
+                    if let StrPart::Interp(inner) = part {
+                        self.mark_shown(inner);
+                    }
+                }
+            }
+            // A `fn` of this package that answers text, called where words are shown: its result is
+            // shown, so the literals its body returns are messages of that fn's own declaration.
+            ExprKind::Call { callee, .. } => {
+                if let ExprKind::Ident(name) = &callee.kind
+                    && self.lookup(name).is_none()
+                {
+                    let shown = self
+                        .env
+                        .callables
+                        .iter()
+                        .find(|c| {
+                            c.own && c.kind == CKind::Fn && c.name == *name && c.result == Ty::Text
+                        })
+                        .and_then(|c| c.func);
+                    if let Some(func) = shown {
+                        self.shown_fns.insert(func);
+                    }
+                }
             }
             // A name a `let` bound is the value it was written as: the literals inside it are the ones the
             // prop shows, whichever branch or binding chose them.

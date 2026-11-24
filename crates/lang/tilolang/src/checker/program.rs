@@ -56,6 +56,8 @@ pub fn check_program(
         outer_at: None,
         migrating: false,
         shown: std::collections::HashSet::new(),
+        shown_fns: std::collections::HashSet::new(),
+        showing_result: false,
         answers: std::collections::HashMap::new(),
     };
     c.begin(Ctx::Program, params, Ty::Unit, export);

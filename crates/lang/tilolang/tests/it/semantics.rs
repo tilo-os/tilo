@@ -546,6 +546,45 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_helper_fns_words_are_messages_of_its_own_declaration;
+    // A `fn` that hands words back is part of what a view shows: the literals its body returns are
+    // messages, under the fn's own declaration, so a window reading another language translates the
+    // sentence a row is built from and not only the sentence a view writes directly.
+    {
+        let c = compile(
+            "type Answer {\n    name: Text\n    allowed: Bool\n}\ntype Book {\n    answers: List<Answer>\n}\nroot Book\ndefault view book for Book\nfn standing(a: Answer) -> Text {\n    if a.allowed { \"Allowed\" } else { \"Refused\" }\n}\nfn words(a: Answer) -> Text {\n    if a.allowed { \"Yes for {a.name}\" } else { \"No, {a.name}: {standing(a)}\" }\n}\nview book(b: Book) {\n    for a in b.answers {\n        text(words(a))\n    }\n}",
+        );
+        crate::common::validate(&c.wasm);
+        let source = tilolang::messages::source_catalogue(&c.meta);
+        let words = tilolang::messages::key_of(c.ids.get("words").expect("the fn"));
+        let standing = tilolang::messages::key_of(c.ids.get("standing").expect("the fn"));
+        for line in [
+            format!("{words} = Words"),
+            "    .w-yes-for = Yes for { $name }".to_owned(),
+            "    .w-no = No, { $name }: { $standing }".to_owned(),
+            format!("{standing} = Standing"),
+            "    .w-allowed = Allowed".to_owned(),
+            "    .w-refused = Refused".to_owned(),
+        ] {
+            assert!(source.contains(&line), "{line:?} in {source}");
+        }
+    }
+
+    phase a_helper_fns_words_are_no_message_where_no_view_shows_them;
+    // A fn no view shows hands back data: its literal is a tag, a query or a key, and stays text.
+    {
+        let c = compile(
+            "type Note {\n    tag: Text\n}\ntype Book {\n    notes: List<Note>\n}\nroot Book\ndefault view book for Book\nfn tag_of(n: Note) -> Text {\n    \"private\"\n}\nview book(b: Book) {\n    for n in b.notes {\n        text(n.tag)\n    }\n}",
+        );
+        crate::common::validate(&c.wasm);
+        let source = tilolang::messages::source_catalogue(&c.meta);
+        let tag = tilolang::messages::key_of(c.ids.get("tag_of").expect("the fn"));
+        assert!(
+            !source.contains(&format!("{tag}.w-private")),
+            "a fn no view shows writes no message: {source}"
+        );
+    }
+
     phase a_view_answers_a_request_to_show_an_item_of_a_type_it_lists;
     // A view answers a request to show an item of a type it lists (`on show(x: T): ...`): the action it makes
     // in its own state, run with the item.
