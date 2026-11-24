@@ -527,28 +527,6 @@ impl FabricLink for SessionFabric {
             Err(error) => tracing::warn!(%error, "the clipboard is not shared"),
         }
     }
-
-    fn share_display(
-        &self,
-        rect: tilo_network_actor::fabric::DisplayRect,
-        scale_milli: u16,
-        connectors: Vec<tilo_network_actor::fabric::DisplayConnectorPlacement>,
-        outputs: Vec<tilo_network_actor::fabric::DisplayOutputObservation>,
-    ) -> bool {
-        self.say("displays", |presence| {
-            presence.display = Some(super::DeviceDisplay {
-                rect,
-                scale_milli,
-                connectors,
-                outputs,
-            });
-        })
-    }
-
-    fn person_displays(&self) -> Vec<settings_store::person_displays::PersonDevice> {
-        let local = self.live.lock_recover().local().clone();
-        self.devices().person_devices(&local)
-    }
 }
 
 /// What this session does with the actions the person's other devices sent it: the services that

@@ -1,98 +1,33 @@
-//! The person's screens as their devices say they stand: this device's outputs offered to the
-//! others, and every device's screens read back as the shared placement lays them out.
+//! The person's screens as their devices say they stand: this device keeps its outputs in the
+//! record of the person's devices, and every device's screens are read back from that record as
+//! the shared placement lays them out.
 //! The display sheet and Settings read the published view
 //! ([`settings_store::person_displays::PersonDisplays`]); the session publishes it in memory and on
 //! disk whenever what the person's devices show changed, so a screen that appears on the tablet or
 //! the desktop appears in the placement without either device asking.
 
-use crate::platform::fabric::SharedLink;
+use std::collections::BTreeSet;
+
 use settings_store::hardware::{DisplayHardwareSnapshot, DisplaySet};
-use settings_store::person_displays::{DeviceOutput, PersonDevice, PersonDisplays};
-use tilo_network_actor::fabric::{
-    DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect,
+use settings_store::person_displays::{
+    DeviceOutput, MAX_DEVICE_OUTPUTS, PersonDevice, PersonDisplays,
 };
+use tilo_workspace_service::workspaces::person_workspace::devices::{Devices, KeyKind};
 
-/// Where this device's outputs stand and what their hardware says, as the person's other devices
-/// hear it: the live session they make, and one entry per output with the place it holds on it. The live session
-/// is in the device's own logical coordinates, so it is said at 1:1 while each output carries the
-/// scale it runs at. `None` when the compositor published no display to offer.
-pub(crate) fn observation(
-    snapshot: Option<&DisplayHardwareSnapshot>,
-) -> Option<(
-    DisplayRect,
-    u16,
-    Vec<DisplayConnectorPlacement>,
-    Vec<DisplayOutputObservation>,
-)> {
-    let snapshot = snapshot?;
-    let live_session = live_session(snapshot)?;
-    let connectors = connectors(snapshot);
-    let outputs = outputs(snapshot);
-    Some((live_session, 1000, connectors, outputs))
-}
+use crate::owner_session::OwnerDevices;
 
-/// The live session this device's outputs make: the rectangle that holds all of them, in the device's own
-/// logical coordinates.
-fn live_session(snapshot: &DisplayHardwareSnapshot) -> Option<DisplayRect> {
-    let mut bounds: Option<(i32, i32, i32, i32)> = None;
-    for placement in &snapshot.layout {
-        let right = placement.x.checked_add_unsigned(placement.width)?;
-        let bottom = placement.y.checked_add_unsigned(placement.height)?;
-        bounds = Some(match bounds {
-            None => (placement.x, placement.y, right, bottom),
-            Some((x, y, right0, bottom0)) => (
-                x.min(placement.x),
-                y.min(placement.y),
-                right.max(right0),
-                bottom.max(bottom0),
-            ),
-        });
-    }
-    let (x, y, right, bottom) = bounds?;
-    Some(DisplayRect {
-        x,
-        y,
-        width: u32::try_from(right.checked_sub(x)?).ok()?,
-        height: u32::try_from(bottom.checked_sub(y)?).ok()?,
-    })
-}
-
-/// Where each of this device's outputs stands, as the compositor laid them out.
-fn connectors(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayConnectorPlacement> {
-    snapshot
-        .layout
-        .iter()
-        .filter_map(|placement| {
-            let output = snapshot
-                .outputs
-                .iter()
-                .find(|output| output.descriptor.connector == placement.connector)?;
-            if !output.scale.is_finite() || !(0.5..=4.0).contains(&output.scale) {
-                return None;
-            }
-            let scale_milli = format!("{:.0}", output.scale * 1000.0)
-                .parse::<u16>()
-                .ok()?;
-            Some(DisplayConnectorPlacement {
-                connector: placement.connector.clone(),
-                label: output.descriptor.label().to_owned(),
-                rect: DisplayRect {
-                    x: placement.x,
-                    y: placement.y,
-                    width: placement.width,
-                    height: placement.height,
-                },
-                scale_milli,
-            })
-        })
-        .take(32)
-        .collect()
-}
+/// The fact under which a device keeps the outputs it shows in its entry of the record of the
+/// person's devices: [`DeviceOutput`]s, postcard in hex.
+pub(crate) const DISPLAYS: &str = "displays";
 
 /// What the hardware behind each of this device's outputs says: the monitor's name, the mode it
-/// runs at and where it stands among the others.
-fn outputs(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutputObservation> {
-    if snapshot.outputs.len() > settings_store::person_displays::MAX_DEVICE_OUTPUTS {
+/// runs at and where it stands among the others, in the device's own logical coordinates. Empty
+/// when the compositor published no display.
+pub(crate) fn outputs(snapshot: Option<&DisplayHardwareSnapshot>) -> Vec<DeviceOutput> {
+    let Some(snapshot) = snapshot else {
+        return Vec::new();
+    };
+    if snapshot.outputs.len() > MAX_DEVICE_OUTPUTS {
         return Vec::new();
     }
     let identities = DisplaySet::of(
@@ -135,10 +70,59 @@ fn outputs(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutputObservation> 
                 connected: true,
                 enabled: placement.is_some(),
             };
-            facts.valid().then(|| DisplayOutputObservation {
-                connector: connector.clone(),
-                output: facts,
-            })
+            facts.valid().then_some(facts)
+        })
+        .collect()
+}
+
+/// `outputs` as the record keeps them: postcard in hex.
+fn encoded(outputs: &[DeviceOutput]) -> Option<String> {
+    postcard::to_allocvec(outputs)
+        .inspect_err(|error| tracing::warn!(%error, "this device's outputs do not encode"))
+        .ok()
+        .map(hex::encode)
+}
+
+/// The outputs a device keeps in `value`, where they hold: no more than a device has, each one an
+/// output could be, none named twice.
+fn decoded(value: &str) -> Option<Vec<DeviceOutput>> {
+    let outputs: Vec<DeviceOutput> = crate::platform::fabric::decoded(value)?;
+    let ids = outputs
+        .iter()
+        .map(|output| output.id.as_str())
+        .collect::<BTreeSet<_>>();
+    (outputs.len() <= MAX_DEVICE_OUTPUTS
+        && ids.len() == outputs.len()
+        && outputs.iter().all(DeviceOutput::valid))
+    .then_some(outputs)
+}
+
+/// The person's devices `record` keeps, each with the outputs it says it shows: their devices
+/// whose certificates their root signed and did not take back, `local` (hex) this one and `online`
+/// (hex) those on a session with it now.
+pub(crate) fn person_devices(
+    record: &Devices,
+    person: &[u8; 32],
+    local: &str,
+    online: &BTreeSet<String>,
+) -> Vec<PersonDevice> {
+    record
+        .listed(person)
+        .into_iter()
+        .filter(|listed| {
+            listed.device.kind == KeyKind::Device && !listed.device.revoked(&listed.cert)
+        })
+        .map(|listed| PersonDevice {
+            label: listed.device.called(&listed.cert),
+            local: listed.key == local,
+            online: listed.key == local || online.contains(&listed.key),
+            outputs: listed
+                .device
+                .facts
+                .get(DISPLAYS)
+                .and_then(|value| decoded(value))
+                .unwrap_or_default(),
+            device: listed.key,
         })
         .collect()
 }
@@ -148,44 +132,64 @@ fn outputs(snapshot: &DisplayHardwareSnapshot) -> Vec<DisplayOutputObservation> 
 #[derive(Default)]
 pub(crate) struct Publisher {
     seen: Option<Vec<PersonDevice>>,
+    /// What the last pass read: the record's reading, the devices online and the snapshot's
+    /// time. A pass that reads the same does nothing.
+    read: Option<(u64, BTreeSet<String>, Option<u64>)>,
 }
 
 impl Publisher {
-    /// Offer this device's displays, and publish the person's devices as the fabric now has them:
-    /// once per change, on the pass that saw it.
+    /// Keep this device's outputs in the record of the person's devices, and publish their devices
+    /// as the record now has them, `online` (hex) those on a session with this one: once per
+    /// change, on the pass that saw it.
     pub(crate) fn follow(
         &mut self,
-        fabric: &SharedLink,
+        devices: &OwnerDevices,
+        online: &BTreeSet<String>,
         snapshot: Option<&DisplayHardwareSnapshot>,
-    ) -> bool {
-        let mut moved = false;
-        if let Some((rect, scale_milli, connectors, outputs)) = observation(snapshot) {
-            moved |= fabric.share_display(rect, scale_milli, connectors, outputs);
+    ) {
+        let read = (
+            devices.revision(),
+            online.clone(),
+            snapshot.map(|snapshot| snapshot.generated_unix_ms),
+        );
+        if self.read.as_ref() == Some(&read) {
+            return;
         }
-        let devices = fabric.person_displays();
+        self.read = Some(read);
+        if snapshot.is_some()
+            && let Some(value) = encoded(&outputs(snapshot))
+        {
+            devices.keep_own(DISPLAYS, &value);
+        }
+        let (person, local) = devices.who();
+        let listed = person_devices(&devices.devices(), &person, &local, online);
+        self.publish(&local, listed);
+    }
+
+    /// Publish `devices`, `local` (hex) among them this one, unless it is what was published last.
+    /// Whether it published them.
+    fn publish(&mut self, local: &str, devices: Vec<PersonDevice>) -> bool {
         if self.seen.as_ref() == Some(&devices) {
-            return moved;
+            return false;
         }
         self.seen = Some(devices.clone());
-        let Some((local, _)) = fabric.local_device_fabric_identity() else {
-            return moved;
-        };
         let Ok((publisher_pid, publisher_start_ticks)) =
             settings_store::hardware::publisher_identity()
         else {
-            return moved;
+            return false;
         };
         let view = PersonDisplays {
             schema_version: settings_store::person_displays::SCHEMA_VERSION,
             publisher_pid,
             publisher_start_ticks,
-            local_device: local.as_str().to_owned(),
+            local_device: local.to_owned(),
             devices,
         };
         if let Err(error) = view.save() {
             tracing::warn!(%error, "the person's displays are not published");
+            return false;
         }
-        moved
+        true
     }
 }
 
@@ -196,6 +200,7 @@ mod tests {
         DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, MonitorIdentity,
         OutputDescriptor, OutputMode,
     };
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
     /// One of this device's outputs at `x` , built-in when `builtin` , at `scale` .
     fn output(
@@ -260,6 +265,23 @@ mod tests {
         }
     }
 
+    /// A device of the person whose root is `root`, labelled `label`, its key drawn from `seed`.
+    fn device(root: &ed25519_dalek::SigningKey, label: &str, seed: u8) -> DeviceCert {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: label.to_owned(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, root).expect("the root signs");
+        cert
+    }
+
     tilo_test_env::scenario! {
         fn this_devices_displays_are_published_where_they_stand;
 
@@ -269,93 +291,98 @@ mod tests {
                 output("eDP-1", "BOE", 0, 1.5, true),
                 output("DP-2", "", 1920, 1.0, false),
             ]);
-            let (live_session, scale_milli, connectors, outputs) =
-                observation(Some(&hardware)).expect("two outputs are offered");
-            assert_eq!(
-                (live_session.x, live_session.y, live_session.width, live_session.height),
-                (0, 0, 3840, 1200),
-                "the live session holds both outputs"
-            );
-            assert_eq!(
-                scale_milli, 1000,
-                "the live session is in logical coordinates; each output says its own scale"
-            );
-            assert_eq!(connectors[0].scale_milli, 1500, "the panel runs at 1.5x");
-            assert_eq!(
-                connectors
-                    .iter()
-                    .map(|connector| (connector.connector.as_str(), connector.rect.x))
-                    .collect::<Vec<_>>(),
-                [("eDP-1", 0), ("DP-2", 1920)],
-                "each output keeps the place it holds: {connectors:?}"
-            );
+            let outputs = outputs(Some(&hardware));
             assert_eq!(
                 outputs
                     .iter()
-                    .map(|fact| (fact.connector.as_str(), fact.output.name.as_str()))
+                    .map(|output| (output.name.as_str(), output.x, output.scale_milli))
                     .collect::<Vec<_>>(),
-                [("eDP-1", "BOE Panel"), ("DP-2", "DP-2")],
-                "each says the monitor behind it, or the connector when it names none: {outputs:?}"
+                [("BOE Panel", 0, 1500), ("DP-2", 1920, 1000)],
+                "each says the monitor behind it, or the connector when it names none, where it \
+                 stands and the scale it runs at: {outputs:?}"
             );
-            assert!(outputs[0].output.builtin && !outputs[1].output.builtin);
-            assert!(outputs.iter().all(|fact| fact.output.enabled));
+            assert!(outputs[0].builtin && !outputs[1].builtin);
+            assert!(outputs.iter().all(|output| output.enabled));
         }
 
-        phase this_device_s_screens_are_published_for_the_placement;
-        // What this device shows is published for the shared placement: its own device, with the
-        // screens it shows, once per change.
+        phase every_device_s_screens_are_read_from_the_record;
+        // What each device keeps in the record of the person's devices is what the placement
+        // shows: this one's screens, and the tablet's, offline until it is on a session here.
+        {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+            let (laptop, tablet) = (device(&root, "Laptop", 5), device(&root, "Tablet", 6));
+            let mut record = tilo_resource::Replica::<Devices>::new();
+            let shows = |cert: &DeviceCert, x: i32| {
+                let hardware = snapshot(vec![output("eDP-1", "BOE", x, 1.0, true)]);
+                Devices::KEEP_FACT.with((
+                    hex::encode(cert.device_public_key),
+                    hex::encode(postcard::to_allocvec(cert).unwrap()),
+                    DISPLAYS.to_owned(),
+                    encoded(&outputs(Some(&hardware))).unwrap(),
+                ))
+            };
+            record.apply(shows(&laptop, 0)).expect("the laptop keeps its screen");
+            record.apply(shows(&tablet, 0)).expect("the tablet keeps its screen");
+            let local = hex::encode(laptop.device_public_key);
+            let listed = person_devices(
+                &record.state().unwrap(),
+                &root.verifying_key().to_bytes(),
+                &local,
+                &BTreeSet::new(),
+            );
+            let laptop_listed = listed.iter().find(|device| device.local).unwrap();
+            assert!(laptop_listed.online, "this device is always online");
+            assert_eq!(laptop_listed.label, "Laptop");
+            assert_eq!(laptop_listed.outputs[0].name, "BOE Panel");
+            let tablet_listed = listed.iter().find(|device| !device.local).unwrap();
+            assert!(!tablet_listed.online && tablet_listed.outputs.len() == 1);
+
+            let other = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+            record
+                .apply(shows(&device(&other, "Theirs", 7), 0))
+                .expect("a key the record does not vouch for is kept as written");
+            assert_eq!(
+                person_devices(
+                    &record.state().unwrap(),
+                    &root.verifying_key().to_bytes(),
+                    &local,
+                    &BTreeSet::new(),
+                )
+                .len(),
+                2,
+                "a device another root certified is none of the person's"
+            );
+        }
+
+        phase the_placement_is_published_once_per_change;
         {
             let _home = tilo_test_env::TestHome::new().expect("a home");
-            let fabric = fabric();
-            let link: crate::platform::fabric::SharedLink = fabric;
             let hardware = snapshot(vec![output("eDP-1", "BOE", 0, 1.5, true)]);
+            let devices = vec![PersonDevice {
+                device: "laptop".into(),
+                label: "Laptop".into(),
+                local: true,
+                online: true,
+                outputs: outputs(Some(&hardware)),
+            }];
             let mut publisher = Publisher::default();
-            assert!(
-                publisher.follow(&link, Some(&hardware)),
-                "the screen is news for the person's other devices"
-            );
+            assert!(publisher.publish("laptop", devices.clone()), "the screen is news");
             let view = PersonDisplays::published().expect("the person's displays are published");
-            assert_eq!(view.local_device, "this-laptop");
-            assert_eq!(view.devices.len(), 1);
-            assert!(view.devices[0].local && view.devices[0].online);
-            assert_eq!(
-                view.devices[0]
-                    .outputs
-                    .iter()
-                    .map(|output| output.name.as_str())
-                    .collect::<Vec<_>>(),
-                ["BOE Panel"]
-            );
+            assert_eq!(view.local_device, "laptop");
+            assert_eq!(view.devices, devices);
             let generation = PersonDisplays::published_generation();
-            assert!(
-                !publisher.follow(&link, Some(&hardware)),
-                "an unchanged screen is not offered again"
-            );
+            assert!(!publisher.publish("laptop", devices), "an unchanged placement is not");
             assert_eq!(
                 PersonDisplays::published_generation(),
                 generation,
-                "and the placement is not written again"
+                "and it is not written again"
             );
         }
 
         phase a_device_that_published_no_display_offers_nothing;
         {
-            assert!(observation(None).is_none());
-            assert!(observation(Some(&snapshot(Vec::new()))).is_none());
+            assert!(outputs(None).is_empty());
+            assert!(outputs(Some(&snapshot(Vec::new()))).is_empty());
         }
-    }
-
-    /// This session's fabric, as a device of the person's with one screen.
-    fn fabric() -> std::sync::Arc<crate::platform::fabric::SessionFabric> {
-        let (reach, _sent) = crate::platform::fabric::Reach::listened(
-            [7; 32],
-            crate::platform::fabric::Continuity::default(),
-        );
-        crate::platform::fabric::SessionFabric::new(
-            crate::platform::fabric::DeviceId::new("this-laptop").expect("a device id"),
-            "Laptop".to_owned(),
-            None,
-            reach,
-        )
     }
 }

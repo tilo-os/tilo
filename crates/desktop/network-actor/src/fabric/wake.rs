@@ -576,7 +576,6 @@ mod tests {
         device.online = true;
         device.presence = DevicePresence {
             wake_routes: routes,
-            ..DevicePresence::default()
         };
         device
     }

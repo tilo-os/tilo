@@ -26,9 +26,9 @@ pub use tilo_network_actor::fabric::unlock::{
 };
 pub use tilo_network_actor::fabric::wake::WakeEvent;
 pub use tilo_network_actor::fabric::{
-    CarriedDrag, CarriedOffer, ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceDisplay,
-    DeviceKind, DevicePresence, FabricCapabilities, FabricError, FabricInputEvent, InputLease,
-    Ipv4Subnet, MAX_CLIPBOARD_ITEMS, MAX_FABRIC_ACTION_AGE_MS, MAX_INPUT_LEASE_MS, MAX_WAKE_ROUTES,
+    CarriedDrag, CarriedOffer, ClipboardEntry, ClipboardPayload, DeviceAbout, DeviceKind,
+    DevicePresence, FabricCapabilities, FabricError, FabricInputEvent, InputLease, Ipv4Subnet,
+    MAX_CLIPBOARD_ITEMS, MAX_FABRIC_ACTION_AGE_MS, MAX_INPUT_LEASE_MS, MAX_WAKE_ROUTES,
     MediaSourceLocator, PersonDevice, PersonDevices, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
     REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_RATE_HZ, ScrollUnit, WakeInterfaceKind,

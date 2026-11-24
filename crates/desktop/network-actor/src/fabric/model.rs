@@ -1492,8 +1492,6 @@ pub enum FabricError {
     ClipboardHashMismatch,
     #[error("clipboard history is full of pinned entries")]
     ClipboardHistoryFull,
-    #[error("invalid display placement")]
-    InvalidDisplayPlacement,
     #[error("invalid input lease")]
     InvalidInputLease,
     #[error("input lease has expired")]

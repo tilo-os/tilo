@@ -1355,8 +1355,11 @@ impl Session {
             );
         }
         let mcp_server = server.map(|server| {
-            let mut server =
-                server.serve(app_wire.as_ref().and_then(|app_wire| app_wire.dispatch.clone()));
+            let mut server = server.serve(
+                app_wire
+                    .as_ref()
+                    .and_then(|app_wire| app_wire.dispatch.clone()),
+            );
             server.open_terminals_on(
                 app_wire
                     .as_ref()
@@ -2187,12 +2190,24 @@ impl Session {
             self.compositor.display_snapshot(),
             &self.compositor.outputs(),
         );
-        // Where this device's screens stand reaches the person's other
-        // devices, and what every device shows is published for the shared
-        // layout the display sheet and Settings show.
-        if let Some(fabric) = &self.shared.fabric {
+        // Where this device's screens stand is kept in the record of the
+        // person's devices, and what every device shows there is published
+        // for the shared layout the display sheet and Settings show.
+        if let Some(devices) = &self.shared.owner_devices {
+            let online = self
+                .shared
+                .fabric
+                .as_ref()
+                .map(|fabric| {
+                    fabric
+                        .devices()
+                        .online_devices()
+                        .map(|device| device.device.as_str().to_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
             self.published_displays
-                .follow(fabric, self.compositor.display_snapshot());
+                .follow(devices, &online, self.compositor.display_snapshot());
         }
         self.displays
             .follow(&mut self.compositor, night_light, turned)
@@ -2867,7 +2882,9 @@ impl Session {
         if self.layout_published == Some(revision) {
             return;
         }
-        app_wire.layout.publish(self.shared.handle.read(Clone::clone));
+        app_wire
+            .layout
+            .publish(self.shared.handle.read(Clone::clone));
         self.layout_published = Some(revision);
     }
 

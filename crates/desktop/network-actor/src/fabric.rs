@@ -12,7 +12,7 @@ pub mod unlock;
 pub mod wake;
 
 pub use carried::{CarriedDrag, CarriedOffer, MAX_CARRIED_OFFERS};
-pub use devices::{DeviceAbout, DeviceDisplay, DevicePresence, PersonDevice, PersonDevices};
+pub use devices::{DeviceAbout, DevicePresence, PersonDevice, PersonDevices};
 pub use model::*;
 
 use getrandom::SysRng;
@@ -117,53 +117,4 @@ pub fn nonzero<const N: usize>() -> [u8; N] {
             return value;
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayRect {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl DisplayRect {
-    /// Logical geometry shared with the Displays placement control.
-    /// Malformed or overflowing screen bounds are never crossing targets.
-    pub fn logical_placement(self) -> Option<settings_store::display_placement::Placement> {
-        let width = i32::try_from(self.width).ok()?;
-        let height = i32::try_from(self.height).ok()?;
-        if width <= 0 || height <= 0 {
-            return None;
-        }
-        self.x.checked_add(width)?;
-        self.y.checked_add(height)?;
-        Some(settings_store::display_placement::Placement::new(
-            self.x, self.y, width, height,
-        ))
-    }
-
-    pub fn intersects(&self, other: Self) -> bool {
-        self.x < other.x.saturating_add_unsigned(other.width)
-            && self.x.saturating_add_unsigned(self.width) > other.x
-            && self.y < other.y.saturating_add_unsigned(other.height)
-            && self.y.saturating_add_unsigned(self.height) > other.y
-    }
-}
-
-/// A physical connector in its owner's logical coordinate space.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayConnectorPlacement {
-    pub connector: String,
-    pub label: String,
-    pub rect: DisplayRect,
-    pub scale_milli: u16,
-}
-
-/// Rich hardware facts accompanying the connector extension. They describe
-/// an output but never grant control or change its live geometry.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DisplayOutputObservation {
-    pub connector: String,
-    pub output: settings_store::person_displays::DeviceOutput,
 }

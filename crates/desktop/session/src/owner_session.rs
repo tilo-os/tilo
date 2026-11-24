@@ -292,10 +292,37 @@ impl OwnerDevices {
         )
     }
 
+    /// Who this device is: its person's root and its own key (hex).
+    pub(crate) fn who(&self) -> ([u8; 32], String) {
+        (
+            self.cert.user_public_key,
+            hex::encode(self.cert.device_public_key),
+        )
+    }
+
+    /// The record as it last read.
+    pub(crate) fn devices(&self) -> std::rc::Rc<Devices> {
+        self.record.get()
+    }
+
+    /// A number that moves each time the record does.
+    pub(crate) fn revision(&self) -> u64 {
+        self.record.revision()
+    }
+
     /// Keep what this device is in the record, once it read the record and found it says something
     /// else: what the person's other devices list it as.
     fn keep_about(&self) {
-        let Some((about, certificate)) = &self.about else {
+        if let Some((about, _)) = &self.about {
+            self.keep_own(crate::platform::fabric::ABOUT, about);
+        }
+    }
+
+    /// Keep `value` (hex) as this device's fact `name` in the record, once it read the record and
+    /// found it says something else there; a daemon that did not take it is not asked again for a
+    /// few seconds.
+    pub(crate) fn keep_own(&self, name: &str, value: &str) {
+        let Some((_, certificate)) = &self.about else {
             return;
         };
         if self.record.held().is_none()
@@ -314,19 +341,15 @@ impl OwnerDevices {
             .get(&tilo_resource::Id::from_raw(key.clone()))
             .is_some_and(|kept| {
                 &kept.certificate == certificate
-                    && kept.facts.get(crate::platform::fabric::ABOUT) == Some(about)
+                    && kept.facts.get(name).map(String::as_str) == Some(value)
             });
         if kept {
             return;
         }
-        let keep = Devices::KEEP_FACT.with((
-            key,
-            certificate.clone(),
-            crate::platform::fabric::ABOUT.to_owned(),
-            about.clone(),
-        ));
+        let keep =
+            Devices::KEEP_FACT.with((key, certificate.clone(), name.to_owned(), value.to_owned()));
         if let Err(error) = self.record.invoke(&keep) {
-            tracing::warn!(%error, "what this device is reaches the person's devices later");
+            tracing::warn!(%error, name, "what this device says of itself reaches the person's devices later");
             self.quiet_until.set(Instant::now().checked_add(SAY_AGAIN));
         }
     }
