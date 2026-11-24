@@ -82,14 +82,14 @@ impl DeviceRecords {
     /// own, which the daemon carries them into.
     #[must_use]
     pub fn on(shell: DaemonShell, workspace: String) -> Self {
-        let (writes, mut queued) = mpsc::unbounded_channel();
-        let (writer, space) = (shell.clone(), workspace.clone());
+        let (writes, mut pending) = mpsc::unbounded_channel();
+        let (daemon, space) = (shell.clone(), workspace.clone());
         shell.runtime().spawn(async move {
-            while let Some(next) = queued.recv().await {
+            while let Some(next) = pending.recv().await {
                 match next {
                     Queued::Set(name, value) => {
                         let request = set_request(&name, value);
-                        if let Err(error) = writer
+                        if let Err(error) = daemon
                             .dispatch(
                                 Some(&space),
                                 &tilo_actions::remote::RemoteActionMessage::Invoke(request),
@@ -125,11 +125,13 @@ impl DeviceRecords {
     }
 
     /// Write `value` as the record `name` from outside this session, as Settings or an agent does:
-    /// what a test of a session that follows the record hands it.
+    /// what a test of a session that follows the record hands it. Only a record held in this
+    /// process is written this way: one the daemon keeps is written by the daemon alone.
     #[cfg(any(test, feature = "test-support"))]
     pub fn write_elsewhere(&self, name: &str, value: Value) {
         let Keeper::Held(held) = &*self.keeper else {
-            panic!("only held records are written from elsewhere in this process");
+            tracing::warn!(record = %name, "only a held record is written from here");
+            return;
         };
         let followers: Vec<_> = {
             let mut held = held.lock_recover();
@@ -141,8 +143,9 @@ impl DeviceRecords {
                 .filter_map(|(_, follower)| follower.upgrade())
                 .collect()
         };
+        let announced = Some(value).filter(|value| !value.is_null());
         for follower in followers {
-            follower.arrived(Some(value.clone()).filter(|value| !value.is_null()));
+            follower.arrived(announced.clone());
         }
     }
 
@@ -233,16 +236,28 @@ impl Followed {
     }
 }
 
+/// A change a followed record arrived at, kept until the session's loop takes it.
+#[derive(Clone, Debug)]
+enum Arrival {
+    /// What the record holds now.
+    Held(Value),
+    /// The record was emptied.
+    Emptied,
+}
+
 /// What a followed record holds now, when it changed since it was last taken: for a session that
 /// takes a change up on its own loop.
 #[derive(Clone, Default)]
-pub struct Arrived(Arc<Mutex<Option<Option<Value>>>>);
+pub struct Arrived(Arc<Mutex<Option<Arrival>>>);
 
 impl Arrived {
     /// The record as it changed to since the last take, `Some(None)` when it was emptied.
     #[must_use]
     pub fn take(&self) -> Option<Option<Value>> {
-        self.0.lock_recover().take()
+        self.0.lock_recover().take().map(|arrival| match arrival {
+            Arrival::Held(value) => Some(value),
+            Arrival::Emptied => None,
+        })
     }
 }
 
@@ -277,7 +292,7 @@ impl DeviceRecord {
         &self,
         changed: impl Fn(Option<Value>) + Send + Sync + 'static,
     ) -> Result<Self, String> {
-        let followed = |now| {
+        let from_now = |now| {
             Arc::new(Followed {
                 known: Mutex::new(Known {
                     value: now,
@@ -293,21 +308,24 @@ impl DeviceRecord {
                 // What it holds now, and the revision the follower waits past: a reading of the
                 // record before this session's own writes is never heard as news.
                 let readings = shell.read_blocking(read_request(workspace, &self.name, None))?;
-                let followed = followed(value_of(&readings));
-                let after = readings["revision"].as_str().map(str::to_owned);
+                let followed = from_now(value_of(&readings));
+                let after = readings
+                    .get("revision")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 let (shell, workspace, name) =
                     (shell.clone(), workspace.clone(), self.name.clone());
-                let follower = Arc::downgrade(&followed);
+                let watching = Arc::downgrade(&followed);
                 shell
                     .runtime()
                     .clone()
-                    .spawn(follow(shell, workspace, name, after, follower));
+                    .spawn(follow(shell, workspace, name, after, watching));
                 followed
             }
             #[cfg(any(test, feature = "test-support"))]
             Keeper::Held(held) => {
                 let mut held = held.lock_recover();
-                let followed = followed(held.values.get(&self.name).cloned());
+                let followed = from_now(held.values.get(&self.name).cloned());
                 held.followers
                     .push((self.name.clone(), Arc::downgrade(&followed)));
                 followed
@@ -332,7 +350,10 @@ impl DeviceRecord {
         let arrived = Arrived::default();
         let keeping = arrived.clone();
         let record = self.follow(move |value| {
-            *keeping.0.lock_recover() = Some(value);
+            *keeping.0.lock_recover() = Some(match value {
+                Some(value) => Arrival::Held(value),
+                None => Arrival::Emptied,
+            });
             wake();
         })?;
         Ok((record, arrived))
@@ -404,7 +425,10 @@ async fn follow(
             .await
         {
             Ok(readings) => {
-                after = readings["revision"].as_str().map(str::to_owned);
+                after = readings
+                    .get("revision")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 let Some(follower) = follower.upgrade() else {
                     return;
                 };
@@ -441,10 +465,11 @@ fn read_request(workspace: &str, name: &str, after: Option<String>) -> ResourceR
 
 /// What a reading of one record holds: `None` for one absent or emptied.
 fn value_of(readings: &Value) -> Option<Value> {
-    let record = &readings["records"][0];
+    let record = readings.get("records")?.get(0)?;
+    let absent = record.get("absent").and_then(Value::as_bool) == Some(true);
     record
         .get("value")
-        .filter(|_| record["absent"].as_bool() != Some(true))
+        .filter(|_| !absent)
         .filter(|value| !value.is_null())
         .cloned()
 }
