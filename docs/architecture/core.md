@@ -351,6 +351,14 @@ workspace's models without being able to read the key, and such a call runs on
 a device of someone who may read it. A member who loses access never held the
 key, so nothing is taken back from their devices. Models, keys, spend and
 limits are the workspace's; a limit for a member or an agent is a grant.
+An app whose protocol needs the raw secret in its own process (a gateway
+login, voice) holds a read grant on that one item, which its person grants once
+as an asked record. The vault's release action hands the item only to that app's
+connection, on a device that may read it, placed there by `work::takes_turn`.
+The secret lives in that process's memory alone, never in a record, an argument,
+a log or history, and the app's sandbox reaches only the hosts the item names.
+Every other use stays a call the vault makes itself, such as a web call with the
+secret added where the vault is.
 
 ### Views
 
