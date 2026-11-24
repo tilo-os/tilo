@@ -74,6 +74,8 @@ mod chat;
 mod customer_workspaces;
 #[path = "daemon_flows.rs"]
 mod daemon_flows;
+#[path = "desktop_page.rs"]
+mod desktop_page;
 #[path = "device_actions.rs"]
 mod device_actions;
 #[path = "device_host.rs"]

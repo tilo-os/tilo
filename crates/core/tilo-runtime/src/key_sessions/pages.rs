@@ -5,6 +5,11 @@
 //! answers the page's markup, and what the person does on the page comes back to it as the
 //! view's semantic actions. The device keeps no copy of what the page shows.
 //!
+//! The workspace's desktop (`/w/<workspace>/desktop`) is a view of the shell (`so.tilo.shell`)
+//! opened the same way: the layout the workspace's people share, read and changed through the
+//! layout's actions as the page's person. Where the shell leaves a window to the device that
+//! shows it, the page shows a link to that window's own page ([`DesktopWells`]).
+//!
 //! The workspace's front page and its search are the device's own pages, and everything they
 //! show is asked of the device's dispatch as the page's person: the apps and actions they may
 //! use from its catalogue, what the workspace holds from its search, and who is here from its
@@ -25,7 +30,7 @@ use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::page::window::{WindowAsk, WindowLink};
 use tilo_server_protocol::page::{
-    OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
+    DESKTOP, OpenedPage, PageAction, PageAddress, PagePatch, PageRefusal, encode_part,
 };
 use tilo_workspace_service::app_serving::{AppPages, PageAct};
 use ui::composition::page::escape;
@@ -74,6 +79,8 @@ enum Held {
         window: WindowLink,
         workspace: String,
         app: String,
+        /// What the page shows where the view leaves a window to the device: the desktop's.
+        wells: Option<DesktopWells>,
     },
     /// The workspace's front page: it changes only when opened again.
     Home,
@@ -164,13 +171,28 @@ impl Inner {
             .views
             .get()
             .ok_or_else(|| unavailable("this device shows no app's window on a page"))?;
-        let app_id = app_named(&dispatch, caller, &address.app)?;
+        let desktop = address.app == DESKTOP;
+        let app_id = if desktop {
+            tilo_workspace_service::apps::shell::SHELL_APP.to_owned()
+        } else {
+            app_named(&dispatch, caller, &address.app)?
+        };
         let mut window = views.open(&workspace, &app_id, caller)?;
+        let mut wells = desktop.then(|| DesktopWells {
+            workspace_id,
+            dispatch: dispatch.clone(),
+            caller: caller.clone(),
+            shown: None,
+        });
+        if let Some(wells) = &mut wells {
+            wells.follow(&mut window)?;
+        }
         let (title, css, body) = window.open(address.show.clone()).map_err(unavailable)?;
         let page = self.hold(Held::App {
             window,
             workspace,
             app: address.app.clone(),
+            wells,
         });
         Ok(OpenedPage {
             page,
@@ -194,9 +216,14 @@ impl Inner {
                     window,
                     workspace,
                     app,
+                    wells,
                 },
                 Some(act),
             ) => {
+                let mut patches = match wells {
+                    Some(wells) => wells.follow(window)?,
+                    None => Vec::new(),
+                };
                 let invoker = act
                     .signed
                     .as_deref()
@@ -205,17 +232,27 @@ impl Inner {
                         self.signer(call, workspace, app, asked)
                     })
                     .transpose()?;
-                window
-                    .act(&WindowAsk::Act {
-                        id: act.id,
-                        target: act.target,
-                        action: act.action,
-                        signed: act.signed,
-                        invoker,
-                    })
-                    .map_err(unavailable)
+                patches.extend(
+                    window
+                        .act(&WindowAsk::Act {
+                            id: act.id,
+                            target: act.target,
+                            action: act.action,
+                            signed: act.signed,
+                            invoker,
+                        })
+                        .map_err(unavailable)?,
+                );
+                Ok(patches)
             }
-            (Held::App { window, .. }, None) => window.changed().map_err(unavailable),
+            (Held::App { window, wells, .. }, None) => {
+                let mut patches = match wells {
+                    Some(wells) => wells.follow(window)?,
+                    None => Vec::new(),
+                };
+                patches.extend(window.changed().map_err(unavailable)?);
+                Ok(patches)
+            }
             (Held::Home, _) => Ok(Vec::new()),
             (Held::Search(search), act) => Ok(search.act(act)),
         }
@@ -249,6 +286,92 @@ impl Inner {
         Ok(collab_types::Stamp::by(&tilo_action_policy::Actor::member(
             person,
         )))
+    }
+}
+
+/// The links a desktop page stands where its shell leaves a window to the device: each window's
+/// own page, on the record it shows, for the apps the page's person may open. Read again from
+/// the layout's actions as the page's person before each answer, so a window someone else
+/// opened anywhere leads to its page here too.
+struct DesktopWells {
+    workspace_id: WorkspaceId,
+    dispatch: SessionHost,
+    caller: Caller,
+    /// What the page's window was last told.
+    shown: Option<std::collections::BTreeMap<String, String>>,
+}
+
+impl DesktopWells {
+    /// Tell `window` the wells as the layout has them now, when they moved: what that changed.
+    fn follow(&mut self, window: &mut WindowLink) -> Result<Vec<PagePatch>, PageRefusal> {
+        let wells = self.read()?;
+        if self.shown.as_ref() == Some(&wells) {
+            return Ok(Vec::new());
+        }
+        let patches = window.wells(wells.clone()).map_err(unavailable)?;
+        self.shown = Some(wells);
+        Ok(patches)
+    }
+
+    /// Each window on the layout, by its key, as the link to its own page.
+    fn read(&self) -> Result<std::collections::BTreeMap<String, String>, PageRefusal> {
+        let request = InvokeRequest {
+            invocation: InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: crate::device::layout::PROVIDER.to_owned(),
+                address: ActionAddress::new(crate::device::layout::RESOURCE, "read"),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let receipt = waited(self.dispatch.invoke(&self.caller, request))?.map_err(unavailable)?;
+        let read = match receipt.status {
+            ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
+            ReceiptStatus::Rejected { error } => return Err(unavailable(error)),
+            ReceiptStatus::Failed { error } => return Err(unavailable(error.message)),
+            ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+                return Err(unavailable("the layout was not read"));
+            }
+        };
+        let listed: Vec<String> = catalogue(&self.dispatch, &self.caller)?
+            .providers
+            .into_iter()
+            .map(|provider| provider.app_id)
+            .collect();
+        let mut wells = std::collections::BTreeMap::new();
+        for window in read["windows"].as_array().into_iter().flatten() {
+            let field = |name: &str| window[name].as_str().unwrap_or_default();
+            let (key, app, title, record) = (
+                field("key"),
+                field("app"),
+                field("app_title"),
+                field("record"),
+            );
+            if key.is_empty() || !listed.iter().any(|listed| listed == app) {
+                continue;
+            }
+            let href = PageAddress {
+                workspace: self.workspace_id.to_string(),
+                app: page_app_name(app).to_owned(),
+                show: (!record.is_empty()).then(|| record.to_owned()),
+            }
+            .path();
+            wells.insert(
+                key.to_owned(),
+                format!(
+                    "<a class=\"tilo-canvas-open\" href=\"{}\">Open {}</a>",
+                    escape(&href),
+                    escape(title)
+                ),
+            );
+        }
+        Ok(wells)
     }
 }
 
@@ -371,7 +494,8 @@ fn home(
     let mut body = format!(
         "<aside class=\"tilo-view tilo-home\"><h1 class=\"tilo-home-title\">Tilo</h1>\
          <a class=\"tilo-home-search\" href=\"/w/{workspace_id}/{SEARCH_APP}\" \
-         aria-label=\"Search the workspace\">Search apps, actions and records</a>"
+         aria-label=\"Search the workspace\">Search apps, actions and records</a>\
+         <a class=\"tilo-home-desktop\" href=\"/w/{workspace_id}/{DESKTOP}\">Desktop</a>"
     );
     // Who is here is said only when the presence says someone is: a page that claims "0
     // here" of a workspace someone is reading is wrong about the one person it can see.
@@ -1013,6 +1137,10 @@ border-radius:12px;background:var(--tilo-raised);color:var(--tilo-text-dim);\
 text-decoration:none;font-size:16px;}\
 .tilo-home-search:hover{color:var(--tilo-text);}\
 .tilo-home-search:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
+.tilo-home-desktop{align-self:flex-start;padding:8px 14px;border-radius:10px;background:var(--tilo-raised);\
+color:var(--tilo-text);text-decoration:none;font-size:14px;font-weight:500;}\
+.tilo-home-desktop:hover{background:var(--tilo-hover);}\
+.tilo-home-desktop:focus-visible{outline:2px solid var(--tilo-accent);outline-offset:-2px;}\
 .tilo-home-apps{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));\
 gap:8px;margin:0;padding:0;list-style:none;max-width:880px;}\
 .tilo-home-app{display:flex;flex-direction:column;align-items:center;gap:10px;padding:18px 10px;\

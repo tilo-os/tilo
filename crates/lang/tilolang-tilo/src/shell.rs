@@ -6,9 +6,11 @@
 
 use std::collections::BTreeMap;
 
+/// The person's layout as a host hands it to [`LayoutOrigin`]: what the shell's views read.
+pub use tilo_desktop_model::reading::{LayoutReading, LayoutWorkspaceReading};
 use tilo_desktop_model::reading::{
-    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutReading, LayoutRefReading,
-    LayoutRowReading, LayoutStripReading, LayoutWorkspaceReading,
+    LayoutPersonReading, LayoutPlaceReading, LayoutQueryReading, LayoutRefReading,
+    LayoutRowReading, LayoutStripReading,
 };
 
 use crate::origin::{OriginCx, OriginType, origin_types};

@@ -40,8 +40,6 @@ serde_json.workspace = true
 wasm-bindgen = "=0.2.108"
 
 [dev-dependencies]
-# The person's layout, as a host hands the shell's canvas page a reading of it.
-tilo-desktop-model = { path = "../../desktop/desktop-model" }
 tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }
 
 [lints]

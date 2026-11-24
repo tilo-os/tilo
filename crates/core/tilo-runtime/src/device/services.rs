@@ -1104,6 +1104,18 @@ impl Daemon {
                 .provide(super::control::PROVIDER, control),
             Err(why) => tracing::info!(%why, "this device offers no device control"),
         }
+        // The layouts of the workspaces it keeps are read and changed through their actions, by a
+        // desktop page's shell, an agent and anyone else alike, each as the caller's.
+        {
+            let titled = Arc::clone(&apps);
+            workspaces.copies().provide(
+                super::layout::PROVIDER,
+                Arc::new(super::layout::LayoutActions::new(
+                    Arc::clone(&workspaces),
+                    Arc::new(move |app: &str| titled.display_name(app)),
+                )),
+            );
+        }
         // So is its package cache, the one it answered before the login too.
         #[cfg(unix)]
         match super::packages::PackageCache::this_device(&identity.cert.device_public_key) {

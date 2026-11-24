@@ -58,6 +58,8 @@ pub fn frame_over(channel: Channel) -> FrameHarness {
 #[derive(Default)]
 pub struct ShownOnPage {
     page: Page,
+    /// What the device stands in each of the page's wells, by place ([`Page::wells`]).
+    wells: std::collections::HashMap<String, String>,
 }
 
 impl ShownOnPage {
@@ -83,6 +85,7 @@ impl ShownOnPage {
         }
         let composition = composition(frame);
         self.page = Page::new();
+        self.page.wells.clone_from(&self.wells);
         Shown {
             title: ui::component_lifecycle::window_title(frame.root_widget())
                 .unwrap_or_default()
@@ -113,6 +116,18 @@ impl ShownOnPage {
                 tracing::debug!(%reason, widget, "a page's press was refused");
             }
         }
+        self.changed(frame)
+    }
+
+    /// What changed on the page once it shows `wells` in its wells, by place: what the device
+    /// stands where the view leaves a window to it.
+    pub fn fill_wells(
+        &mut self,
+        frame: &mut FrameHarness,
+        wells: std::collections::BTreeMap<String, String>,
+    ) -> Vec<Patch> {
+        self.wells = wells.into_iter().collect();
+        self.page.wells.clone_from(&self.wells);
         self.changed(frame)
     }
 
@@ -245,6 +260,7 @@ pub fn serve(
                 WindowAnswer::Changed(patches(changed))
             }
             WindowAsk::Changed => WindowAnswer::Changed(patches(page.changed(frame))),
+            WindowAsk::Wells(wells) => WindowAnswer::Changed(patches(page.fill_wells(frame, wells))),
         };
         window::send(link, &answer)?;
     }

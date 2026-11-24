@@ -62,6 +62,7 @@ use used::{Used, used_apps};
 
 use crate::call::Calls;
 use crate::invocations::Invocations;
+use crate::shell_page::ShellPage;
 /// The package whose `Playback` an app's session keeps: the one a window's playback outputs come
 /// from.
 const PLAYBACK_APP: &str = "so.tilo.playback";
@@ -1193,6 +1194,9 @@ pub struct Hosted {
     /// The invocations the views read (an agent's turn, its steps, what it asks), and the lines
     /// the person ran from them.
     invocations: Invocations,
+    /// What the shell reads of the device and carries out for its views, where the instance is
+    /// the shell shown with no session ([`ShellPage`]).
+    shell: Option<ShellPage>,
     /// What the connection delivered before the instance ran, taken on its first frame.
     early: Vec<CollabEvent>,
     /// The records other devices wrote, as the connection told since the last frame: read again
@@ -1346,6 +1350,10 @@ impl Hosted {
         let presence = Presence::new(&spec.app, &spec.person);
         let calls = Calls::new(&spec.person);
         let invocations = Invocations::new(&spec.workspace);
+        // The shell, shown where no session runs it (a web page of the workspace's desktop),
+        // reads its layout, apps and windows from the device's dispatch.
+        let shell = (spec.app == crate::shell_page::SHELL_APP && spec.shows == Shows::View)
+            .then(|| ShellPage::new(&spec.workspace, &mut instance));
         // The apps this one may call, each by its package: what a call of another app's action
         // is built from.
         let callees = Rc::new(callees_of(&bundle, &spec.workspace, &spec.provided));
@@ -1422,6 +1430,7 @@ impl Hosted {
             calls,
             page_prompts: crate::page_prompts::PagePrompts::default(),
             invocations,
+            shell,
             early: Vec::new(),
             moved_records: std::collections::BTreeSet::new(),
             opening: None,
@@ -1520,6 +1529,7 @@ impl Hosted {
             self.presence.wakes_in(),
             self.calls.wakes_in(),
             self.invocations.wakes_in(),
+            self.shell.as_ref().and_then(ShellPage::wakes_in),
         ]
         .into_iter()
         .flatten()
@@ -1650,12 +1660,16 @@ impl Hosted {
         if !self.sending
             && let Some(host) = self.instance.host()
         {
-            host.runtime().set_foreign_invoker(Apis {
+            let apis = Apis {
                 workspace: self.spec.workspace.clone(),
                 callees: Rc::clone(&self.callees),
                 calls: Rc::clone(&self.waiting_calls),
                 manager: self.connection.shared_manager(),
-            });
+            };
+            match &self.shell {
+                Some(shell) => host.runtime().set_foreign_invoker(shell.invoker(apis)),
+                None => host.runtime().set_foreign_invoker(apis),
+            }
             self.sending = true;
         }
         // What the person picked and saw, as their own document keeps it, before the views run.
@@ -1669,7 +1683,10 @@ impl Hosted {
         // Who else is here and who is writing, before the views that show it run.
         let before = events.len();
         events.retain(|event| {
-            !self.presence.take(event) && !self.calls.take(event) && !self.invocations.take(event)
+            !self.presence.take(event)
+                && !self.calls.take(event)
+                && !self.invocations.take(event)
+                && !self.shell.as_mut().is_some_and(|shell| shell.take(event))
         });
         changed |= events.len() != before;
         self.presence.show(&mut self.instance);
@@ -1719,6 +1736,10 @@ impl Hosted {
         self.invocations.follow(&self.instance);
         self.invocations
             .say(|request| connection.manager().send(request));
+        if let Some(shell) = &mut self.shell {
+            shell.turn(&self.instance);
+            shell.say(|request| connection.manager().send(request));
+        }
         self.presence.say(&self.instance, |request| {
             if !connection.manager().send(request) {
                 tracing::debug!("the connection did not take the person's presence");

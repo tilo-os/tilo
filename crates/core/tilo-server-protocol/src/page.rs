@@ -73,6 +73,11 @@ pub struct WaitingAddress {
     pub invited: bool,
 }
 
+/// The app name a page's address carries for the workspace's desktop (`/w/<workspace>/desktop`):
+/// the shell's own view of the layout the workspace's people share, its windows each a link to
+/// its app's own page.
+pub const DESKTOP: &str = "desktop";
+
 /// What a page's address names: the workspace (its id), the app (the last
 /// part of its id, `notes` for `so.tilo.notes`) and what it shows first. An
 /// address naming no app is the workspace's front page, which lists them.
@@ -105,6 +110,17 @@ impl PageAddress {
             app: app.to_owned(),
             show,
         })
+    }
+
+    /// The path this address is read from ([`Self::parse`]): what a link to the page names.
+    #[must_use]
+    pub fn path(&self) -> String {
+        let mut path = format!("{PAGE_PREFIX}{}/{}", self.workspace, self.app);
+        if let Some(show) = &self.show {
+            path.push('/');
+            path.push_str(&encode_part(show));
+        }
+        path
     }
 
     /// Whether this address names the workspace itself rather than one of its

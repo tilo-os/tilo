@@ -22965,7 +22965,6 @@ dependencies = [
  "tilo-app-window",
  "tilo-clipboard",
  "tilo-content",
- "tilo-desktop-model",
  "tilo-dialogs",
  "tilo-font-catalog",
  "tilo-render-protocol",

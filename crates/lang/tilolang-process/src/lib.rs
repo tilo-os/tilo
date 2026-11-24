@@ -38,6 +38,7 @@ pub mod page_prompts;
 pub mod personal;
 pub mod phrases;
 pub mod presence;
+pub mod shell_page;
 pub mod stop;
 pub mod task;
 #[cfg(any(test, feature = "test-support"))]

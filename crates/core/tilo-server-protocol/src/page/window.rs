@@ -38,6 +38,10 @@ pub enum WindowAsk {
     },
     /// What changed on the page since the window last answered.
     Changed,
+    /// What the page shows in each of its wells from now on, by the place each shows: where the
+    /// view leaves a window to the device that shows it (a desktop's windows), the markup the
+    /// device stands there instead, a link to that window's own page. Answered with what changed.
+    Wells(std::collections::BTreeMap<String, String>),
 }
 
 /// What the window answers.
@@ -131,6 +135,17 @@ impl WindowLink {
     /// As [`Self::open`].
     pub fn changed(&mut self) -> std::io::Result<Vec<PagePatch>> {
         self.changes(&WindowAsk::Changed)
+    }
+
+    /// What changed once the page shows `wells` in its wells, as [`WindowAsk::Wells`] asks it.
+    ///
+    /// # Errors
+    /// As [`Self::open`].
+    pub fn wells(
+        &mut self,
+        wells: std::collections::BTreeMap<String, String>,
+    ) -> std::io::Result<Vec<PagePatch>> {
+        self.changes(&WindowAsk::Wells(wells))
     }
 
     fn changes(&mut self, ask: &WindowAsk) -> std::io::Result<Vec<PagePatch>> {
