@@ -91,6 +91,13 @@ pub enum HistoryEdit {
     Redo {
         #[param("How many undos, newest first")]
         steps: Option<u32>,
+        /// Only the newest of these undos still in effect, whoever made it, with the rest of its
+        /// move: what a window redoes, of the undos it made.
+        #[param(
+            "Change ids of undos from history: redo the newest of them still in effect, its \
+             whole move"
+        )]
+        undos: Option<Vec<String>>,
     },
     /// Bring the document back to a version as a new change, or only the items named by ids.
     #[effect(document, kind = "undoable", audience = "agents", returns = HistoryAnswer, icon = "rotate-ccw")]
@@ -172,7 +179,8 @@ impl HistoryEdit {
             } => (HistoryOp::Undo, steps.unwrap_or(1)),
             Self::Undo { step: Some(_), .. } => (HistoryOp::Undo, 1),
             Self::Undo { steps, .. } => (HistoryOp::Undo, steps.unwrap_or(0)),
-            Self::Redo { steps } => (HistoryOp::Redo, steps.unwrap_or(1)),
+            Self::Redo { undos: Some(_), .. } => (HistoryOp::Redo, 1),
+            Self::Redo { steps, undos: None } => (HistoryOp::Redo, steps.unwrap_or(1)),
             Self::Restore { step: Some(_), .. } => (HistoryOp::Restore, 1),
             Self::Restore { .. } | Self::RestoreReviewed { .. } => (HistoryOp::Restore, 0),
             Self::Checkpoint { name } => (HistoryOp::Checkpoint { name: name.clone() }, 0),
@@ -201,6 +209,9 @@ impl HistoryEdit {
                 let scope = undo_scope(doc, invocation.as_ref(), by.as_ref());
                 steps::undo_preview(doc, &scope, 1).into_iter().next()
             }
+            Self::Redo {
+                undos: Some(undos), ..
+            } => named_undo(doc, undos),
             Self::Redo { .. } if steps == 1 => {
                 let scope = Scope::invoking(doc);
                 steps::undos_in_effect(doc, &|version| scope.owns(version), 1)
@@ -289,7 +300,23 @@ impl HistoryEdit {
                     .map(|step| one(step, invocation.clone(), by.clone()))
                     .collect::<Option<_>>()?
             }
-            Self::Redo { steps } => {
+            Self::Redo {
+                undos: Some(undos), ..
+            } => {
+                // The newest named undo in effect, and the undos written together with it: its
+                // move, brought back as it was undone, each change by its own id.
+                let target = named_undo(doc, undos)?;
+                steps::named_undos_in_effect(doc, &|undo| {
+                    undo.hash == target.hash || together(&target, undo)
+                })
+                .into_iter()
+                .map(|undo| Self::Redo {
+                    steps: None,
+                    undos: Some(vec![undo.hash.to_string()]),
+                })
+                .collect()
+            }
+            Self::Redo { steps, undos: None } => {
                 // An undo is the changes one move wrote together: a redo brings back each of
                 // them, its whole move as it was undone.
                 let scope = Scope::invoking(doc);
@@ -307,7 +334,13 @@ impl HistoryEdit {
                     count = count.saturating_add(1);
                     last = Some(undo);
                 }
-                vec![Self::Redo { steps: Some(1) }; count]
+                vec![
+                    Self::Redo {
+                        steps: Some(1),
+                        undos: None,
+                    };
+                    count
+                ]
             }
             Self::Restore {
                 version,
@@ -361,6 +394,20 @@ fn stands_for(doc: &AutoCommit, version: &Version) -> Version {
         at = redone;
     }
     at
+}
+
+/// The newest of the undos `undos` names that is in effect; `None` when none is.
+fn named_undo(doc: &AutoCommit, undos: &[String]) -> Option<Version> {
+    let named = undos
+        .iter()
+        .map(|change| match steps::resolve(doc, change).ok()?[..] {
+            [hash] => Some(hash),
+            _ => None,
+        })
+        .collect::<Option<HashSet<ChangeHash>>>()?;
+    steps::named_undos_in_effect(doc, &|undo| named.contains(&undo.hash))
+        .into_iter()
+        .next()
 }
 
 /// Whose step `version` is, as an undo names it: the agent session it is part of, else who
@@ -534,7 +581,18 @@ impl HistoryEdit {
                     return Err("choose an author or an invocation, not both".into());
                 }
             }
-            Self::Redo { steps } => {
+            Self::Redo {
+                steps,
+                undos: Some(undos),
+            } => {
+                if undos.is_empty() || undos.len() > MAX_CHOSEN {
+                    return Err(format!("name 1 to {MAX_CHOSEN} undos"));
+                }
+                if steps.is_some() {
+                    return Err("give the undos alone".into());
+                }
+            }
+            Self::Redo { steps, undos: None } => {
                 if let Some(steps) = steps
                     && !(1..=MAX_STEPS).contains(&i64::from(*steps))
                 {
@@ -659,7 +717,10 @@ fn part_action(edit: &PartEdit) -> Result<PartHistoryEditAction, String> {
             step: step.clone(),
             part,
         },
-        HistoryEdit::Redo { steps } => PartHistoryEditAction::Redo {
+        HistoryEdit::Redo { undos: Some(_), .. } => {
+            return Err("a part's history redoes no named undos".into());
+        }
+        HistoryEdit::Redo { steps, undos: None } => PartHistoryEditAction::Redo {
             steps: *steps,
             part,
         },
@@ -755,7 +816,7 @@ impl From<PartHistoryEditAction> for PartEdit {
             },
             PartHistoryEditAction::Redo { steps, part } => Self {
                 part,
-                edit: HistoryEdit::Redo { steps },
+                edit: HistoryEdit::Redo { steps, undos: None },
             },
             PartHistoryEditAction::Restore { version, ids, part } => Self {
                 part,
@@ -1793,7 +1854,19 @@ impl HistoryEdit {
                 }
                 .map(drop)
             }
-            Self::Redo { steps } => {
+            Self::Redo {
+                undos: Some(undos), ..
+            } => match named_undo(doc, undos) {
+                Some(target) => steps::redo_undo(
+                    doc,
+                    target,
+                    |doc, version| restoration(doc, &registry, version),
+                    words,
+                )
+                .map(drop),
+                None => Err("Those undos are no longer in effect.".into()),
+            },
+            Self::Redo { steps, undos: None } => {
                 let scope = Scope::invoking(doc);
                 steps::redo(
                     doc,

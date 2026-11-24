@@ -2725,7 +2725,10 @@ impl Hosted {
                 step: None,
                 chosen: None,
             },
-            HistoryAsk::Redo => HistoryEdit::Redo { steps: Some(1) },
+            HistoryAsk::Redo => HistoryEdit::Redo {
+                steps: Some(1),
+                undos: None,
+            },
             HistoryAsk::UndoStep(step) | HistoryAsk::UndoRun(step) => HistoryEdit::Undo {
                 steps: None,
                 invocation: None,
@@ -2787,6 +2790,12 @@ impl Hosted {
         let failed = |error: tilolang_tilo::runtime::store::StoreError| error.to_string();
         match edit {
             HistoryEdit::Undo {
+                chosen: Some(_), ..
+            }
+            | HistoryEdit::Redo { undos: Some(_), .. } => {
+                Err("this app takes back and brings back whole invocations".to_owned())
+            }
+            HistoryEdit::Undo {
                 invocation, step, ..
             } if invocation.is_some() || step.is_some() => {
                 let named = invocation
@@ -2810,7 +2819,7 @@ impl Hosted {
                 }
                 Ok(Some(serde_json::json!({ "undone": undone })))
             }
-            HistoryEdit::Redo { steps } => {
+            HistoryEdit::Redo { steps, undos: None } => {
                 let mut redone = 0_u32;
                 for _ in 0..steps.unwrap_or(1).max(1) {
                     if !self.store.redo_last(Some(by)).map_err(failed)? {

@@ -826,12 +826,15 @@ impl ResourceService {
                 }
                 Ok(serde_json::json!({ "undone": undone }))
             }
-            HistoryEdit::Redo { steps } => {
+            HistoryEdit::Redo { steps, undos: None } => {
                 let mut redone = 0_u32;
                 while redone < steps.unwrap_or(1) && store.redo_last(Some(by)).map_err(failed)? {
                     redone = redone.saturating_add(1);
                 }
                 Ok(serde_json::json!({ "redone": redone }))
+            }
+            HistoryEdit::Redo { undos: Some(_), .. } => {
+                Err("this app brings back whole invocations".to_owned())
             }
             HistoryEdit::Undo { .. } => Err(
                 "undo takes an invocation or a step from history, or how many of your last \

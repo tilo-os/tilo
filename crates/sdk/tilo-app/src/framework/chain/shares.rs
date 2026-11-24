@@ -111,7 +111,10 @@ impl<P: Chained> Chain<P> {
         for index in &undone.0 {
             let edit = PartEdit {
                 part: *index,
-                edit: super::super::history::HistoryEdit::Redo { steps: None },
+                edit: super::super::history::HistoryEdit::Redo {
+                    steps: None,
+                    undos: None,
+                },
             };
             redone |= self
                 .state
