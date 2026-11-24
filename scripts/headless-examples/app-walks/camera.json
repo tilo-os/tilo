@@ -1,0 +1,62 @@
+{
+  "app": "camera",
+  "said": "Camera",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.camera",
+    "package": "camera"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Camera on a computer whose cameras it names, and meet the viewfinder",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "actions" },
+        { "targets": true },
+        { "offered": ["Take photo", "Photos", "Settings"] }
+      ]
+    },
+    {
+      "id": "settings",
+      "said": "The capture settings take the self-timer, the format and the lens",
+      "ops": [
+        { "press_any": ["Settings"] },
+        { "wait_for": { "shown": "Self-timer" } },
+        { "wait_for": { "shown": "Photo format" } },
+        { "press_any": ["3 seconds"] },
+        { "wait_for": { "shown": "10 seconds" } },
+        { "offered": ["Back to the camera"] }
+      ]
+    },
+    {
+      "id": "documents",
+      "said": "The document scanner says it has no scanner rather than inventing pages",
+      "ops": [
+        { "press_any": ["Back to the camera"] },
+        { "wait_for": { "shown": "Take photo" } },
+        { "press_any": ["Documents"] },
+        { "wait_for": { "shown": "No scanner found" } }
+      ]
+    },
+    {
+      "id": "scanner",
+      "said": "The code scanner offers a picture to read and a way to look again",
+      "ops": [
+        { "press_any": ["Back to the camera"] },
+        { "wait_for": { "shown": "Take photo" } },
+        { "press_any": ["Scan"] },
+        { "wait_for": { "shown": "Look again" } },
+        { "offered": ["Scan an image"] }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [{ "theme": true }],
+      "dark": true
+    }
+  ]
+}

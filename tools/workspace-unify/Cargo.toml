@@ -130,9 +130,6 @@ doc = false
 "cached_proc_macro_types-0_1_1" = { package = "cached_proc_macro_types", version = "^0.1.1", default-features = false, features = [] }
 "calloop-0_14_4" = { package = "calloop", version = "^0.14.4", default-features = false, features = [] }
 "calloop-wayland-source-0_4_1" = { package = "calloop-wayland-source", version = "^0.4.1", default-features = false, features = [] }
-"camera" = { path = "../../apps/camera", default-features = false, features = ["default", "live-capture", "native-capture"] }
-"camera-model" = { path = "../../apps/camera-model", default-features = false, features = [] }
-"camera-model-wasm" = { path = "../../apps/camera-model-wasm", default-features = false, features = [] }
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
@@ -1075,7 +1072,7 @@ doc = false
 "tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-canvas-engine" = { path = "../../crates/engines/canvas-engine", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
-"tilo-capture" = { path = "../../crates/engines/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
+"tilo-capture" = { path = "../../crates/engines/tilo-capture", default-features = false, features = ["avfoundation", "camera", "codes", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../crates/desktop/capture-studio", default-features = false, features = [] }
 "tilo-chromium-blocker" = { path = "../../crates/engines/chromium-blocker", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../crates/sdk/cli", default-features = false, features = [] }
@@ -2653,9 +2650,6 @@ doc = false
 "cached_proc_macro_types-0_1_1" = { package = "cached_proc_macro_types", version = "^0.1.1", default-features = false, features = [] }
 "calloop-0_14_4" = { package = "calloop", version = "^0.14.4", default-features = false, features = [] }
 "calloop-wayland-source-0_4_1" = { package = "calloop-wayland-source", version = "^0.4.1", default-features = false, features = [] }
-"camera" = { path = "../../apps/camera", default-features = false, features = ["default", "live-capture", "native-capture"] }
-"camera-model" = { path = "../../apps/camera-model", default-features = false, features = [] }
-"camera-model-wasm" = { path = "../../apps/camera-model-wasm", default-features = false, features = [] }
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
@@ -3586,7 +3580,7 @@ doc = false
 "tilo-callstream" = { path = "../../crates/engines/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
 "tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
-"tilo-capture" = { path = "../../crates/engines/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
+"tilo-capture" = { path = "../../crates/engines/tilo-capture", default-features = false, features = ["avfoundation", "camera", "codes", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../crates/desktop/capture-studio", default-features = false, features = [] }
 "tilo-chromium-blocker" = { path = "../../crates/engines/chromium-blocker", default-features = false, features = [] }
 "tilo-cli-kit" = { path = "../../crates/sdk/cli", default-features = false, features = [] }

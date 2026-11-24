@@ -20,7 +20,6 @@ extends = ["default"]
 include = ["tl-files", "tl-settings", "terminal"]
 
 [features]
-camera = ["live-capture"]
 # Typst from its engine library beside the runtime.
 typst-editor = ["runtime-engine"]
 # The provider panel from the Settings engine library, which holds it for

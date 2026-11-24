@@ -81,10 +81,6 @@
       "libraries": 43387239,
       "tests": 891798096
     },
-    "camera": {
-      "libraries": 20535456,
-      "tests": 317841248
-    },
     "canvas": {
       "libraries": 98892749,
       "tests": 7484853176

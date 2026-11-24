@@ -1565,59 +1565,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "camera"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "camera-model",
- "image",
- "qrcode",
- "rqrr",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-automerge-fork",
- "tilo-capture",
- "tilo-clock",
- "tilo-content",
- "tilo-doc-pdf",
- "tilo-files",
- "tilo-media",
- "tilo-ocr",
- "tilo-paths",
- "tilo-settings-model",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-thumbnail",
- "tilo-vello",
- "tilo-winit",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "camera-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-content",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "camera-model-wasm"
-version = "0.1.0"
-dependencies = [
- "camera-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "cap-fs-ext"
 version = "3.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18447,7 +18394,6 @@ name = "tilo-models-wasm"
 version = "0.1.0"
 dependencies = [
  "assistant-model-wasm",
- "camera-model-wasm",
  "console-model-wasm",
  "diffmerge-model-wasm",
  "poker-model-wasm",
@@ -26433,9 +26379,6 @@ dependencies = [
  "cached_proc_macro_types",
  "calloop",
  "calloop-wayland-source",
- "camera",
- "camera-model",
- "camera-model-wasm",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",

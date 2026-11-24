@@ -11,8 +11,6 @@ description = "Talk to your assistant in one main chat, follow its sub-agents an
 description = "Browse the web with built-in ad blocking, private windows, and Chrome extensions."
 [apps.calculator]
 description = "Everyday arithmetic and scientific formulas, worked out as you type."
-[apps.camera]
-description = "Capture photos and video from your connected cameras."
 [apps.canvas]
 description = "Draw and paint with vector marks and real wet media that stay editable as objects."
 [apps.chat]

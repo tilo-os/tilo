@@ -20,7 +20,6 @@ export * as assistant from "./assistant.ts";
 export * as browser from "./browser.ts";
 export * as calculator from "./calculator.ts";
 export * as calendar from "./calendar.ts";
-export * as camera from "./camera.ts";
 export * as chat from "./chat.ts";
 export * as chipDesign from "./chip_design.ts";
 export * as clocks from "./clocks.ts";

@@ -28,7 +28,7 @@ const WRITTEN: &str = "Written by an agent";
 
 /// Apps whose state is the device's own by design, so no published action changes the record
 /// every member reads: there is nothing for a caller to edit there.
-const LOCAL_STATE: &[&str] = &["so.tilo.camera", "so.tilo.totp"];
+const LOCAL_STATE: &[&str] = &["so.tilo.totp"];
 
 /// One Rust app of this tree: its package (a directory of `apps/`), the entrypoint this run
 /// built, its id, and the kind of record it keeps for the workspace.
@@ -45,12 +45,6 @@ const APPS: &[App] = &[
         bin: "assistant",
         id: "so.tilo.assistant",
         kind: "assistant.window",
-    },
-    App {
-        package: "camera",
-        bin: "camera",
-        id: "so.tilo.camera",
-        kind: "camera",
     },
     App {
         package: "chip-design",

@@ -4231,108 +4231,6 @@
         ],
         "description": ""
       },
-      "camera.register-capture.Arguments": {
-        "type": "object",
-        "properties": {
-          "capture": {
-            "additionalProperties": false,
-            "properties": {
-              "dur_ms": {
-                "type": "integer"
-              },
-              "facing": {
-                "enum": [
-                  "Back",
-                  "Front",
-                  "Wide"
-                ],
-                "type": "string"
-              },
-              "h": {
-                "maximum": 4294967295,
-                "minimum": 0,
-                "type": "integer"
-              },
-              "id": {
-                "type": "string"
-              },
-              "kind": {
-                "enum": [
-                  "Photo",
-                  "Video"
-                ],
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "media_id": {
-                "type": "string"
-              },
-              "ts": {
-                "type": "integer"
-              },
-              "w": {
-                "maximum": 4294967295,
-                "minimum": 0,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "id",
-              "media_id",
-              "kind",
-              "ts",
-              "w",
-              "h",
-              "dur_ms",
-              "label",
-              "facing"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "capture"
-        ],
-        "description": ""
-      },
-      "camera.record-scan.Arguments": {
-        "type": "object",
-        "properties": {
-          "raw": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "raw"
-        ],
-        "description": ""
-      },
-      "camera.set-grid.Arguments": {
-        "type": "object",
-        "properties": {
-          "on": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "on"
-        ],
-        "description": ""
-      },
-      "camera.set-level.Arguments": {
-        "type": "object",
-        "properties": {
-          "on": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "on"
-        ],
-        "description": ""
-      },
       "chat.workspace.begin-chat.Arguments": {
         "type": "object",
         "properties": {},
@@ -22347,6 +22245,24 @@
         "required": [],
         "description": ""
       },
+      "tilolang.personal.view-state.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keep a view's state"
+      },
+      "tilolang.personal.seen.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keep what is seen"
+      },
+      "tilolang.personal.seen-runs.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Keep reviewed runs"
+      },
       "tl.so.tilo.agent.Ask.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -37783,30 +37699,6 @@
       "resource": "tilo.contacts.identities",
       "action": "forget-endpoint",
       "arguments": "#/components/schemas/tilo.contacts.identities.forget-endpoint.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "camera",
-      "action": "register-capture",
-      "arguments": "#/components/schemas/camera.register-capture.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "camera",
-      "action": "record-scan",
-      "arguments": "#/components/schemas/camera.record-scan.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "camera",
-      "action": "set-grid",
-      "arguments": "#/components/schemas/camera.set-grid.Arguments"
-    },
-    {
-      "app": "so.tilo.camera",
-      "resource": "camera",
-      "action": "set-level",
-      "arguments": "#/components/schemas/camera.set-level.Arguments"
     },
     {
       "app": "so.tilo.chat",
