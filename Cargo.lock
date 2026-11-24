@@ -21179,6 +21179,7 @@ dependencies = [
  "tilo-polkit-agent",
  "tilo-portal",
  "tilo-power-mgmt",
+ "tilo-presentation",
  "tilo-process",
  "tilo-projector",
  "tilo-quick-settings",
@@ -21203,7 +21204,6 @@ dependencies = [
  "tilo-session-power",
  "tilo-settings-service",
  "tilo-sheets",
- "tilo-shell-surface",
  "tilo-speaker-service",
  "tilo-startup-metrics",
  "tilo-system-service",
@@ -21213,10 +21213,12 @@ dependencies = [
  "tilo-ui",
  "tilo-unlock-protocol",
  "tilo-user-identity",
+ "tilo-vello",
  "tilo-vision-service",
  "tilo-wallpapers",
  "tilo-webview",
  "tilo-window-share",
+ "tilo-winit",
  "tilo-workspace-directory",
  "tilo-workspace-join",
  "tilo-workspace-keys",
@@ -21487,32 +21489,6 @@ dependencies = [
  "url",
  "workspace-hack",
  "zeroize",
-]
-
-[[package]]
-name = "tilo-shell-surface"
-version = "0.1.0"
-dependencies = [
- "app-catalogue",
- "package-store",
- "serde_json",
- "tilo-action-policy",
- "tilo-app-window",
- "tilo-compositor",
- "tilo-desktop-model",
- "tilo-desktop-policy",
- "tilo-presentation",
- "tilo-render-protocol",
- "tilo-render-service",
- "tilo-service",
- "tilo-session-core",
- "tilo-ui",
- "tilo-vello",
- "tilo-winit",
- "tilolang-tilo",
- "tracing",
- "url",
- "workspace-hack",
 ]
 
 [[package]]
@@ -28399,7 +28375,6 @@ dependencies = [
  "tilo-settings-service",
  "tilo-sheet",
  "tilo-sheets",
- "tilo-shell-surface",
  "tilo-shm",
  "tilo-socket",
  "tilo-sort",

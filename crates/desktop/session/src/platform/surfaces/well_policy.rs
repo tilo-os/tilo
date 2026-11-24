@@ -4,7 +4,7 @@
 //! A tilolang shell's views never draw a place's content: each frame puts a
 //! [`ui::widget::WindowWell`] where the content goes, and the well reports its rectangle, keyed
 //! by the place, to the [`Wells`] handle the surface host shares with this policy, over the
-//! desktop [`ShellDesktop`](crate::ShellDesktop) runs. The policy answers a window's initial
+//! desktop [`ShellDesktop`](crate::platform::surfaces::ShellDesktop) runs. The policy answers a window's initial
 //! size, its place and the placement of every window from that: a window maps into the
 //! desktop's tab model (giving it a tab id), and its well is the one keyed by that tab id.
 //!
@@ -16,7 +16,7 @@
 //! gets no frame callbacks.
 //!
 //! The desktop model the tabs live in is the policy's own ([`well_policy`]), or the session's
-//! ([`crate::ShellDesktop::well_policy`]), so a place in the person's placement names the
+//! ([`crate::platform::surfaces::ShellDesktop::well_policy`]), so a place in the person's placement names the
 //! window's tab there.
 
 use std::cell::{RefCell, RefMut};
@@ -31,8 +31,9 @@ use tilo_desktop_policy::DesktopPolicy;
 use ui::widget::Wells;
 use ui::widget::arrange::rem_of;
 
-use crate::desktop::{GestureReader, ShellGesture, WindowFollowers, WindowObserver};
-use crate::widget::WidgetSurface;
+use super::desktop::{WindowFollowers, WindowObserver};
+use super::gestures::{GestureReader, ShellGesture};
+use super::widget::WidgetSurface;
 
 /// Where a window not shown waits: left of every output, out of sight and out of the pointer's
 /// reach.
@@ -132,7 +133,7 @@ pub struct WellPolicy {
 #[must_use]
 pub fn well_policy(salt: u16, scale: f64) -> (WellPolicy, WellDesktop) {
     let (policy, surface) = DesktopPolicy::new(salt);
-    let placement = crate::Placement {
+    let placement = super::Placement {
         origin: (0, 0),
         size: (1, 1),
         scale,

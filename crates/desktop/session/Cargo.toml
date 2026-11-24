@@ -298,7 +298,12 @@ tilo-callstream = { path = "../../engines/tilo-callstream", features = ["surface
 image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }
-tilo-shell-surface = { path = "../../session/shell-surface" }
+# The layers the session draws itself (its widget trees, the tilolang shell's parts, a surface
+# app) are scenes drawn on the compositor's GPU, into the render node it names, and fed the
+# toolkit's input events.
+vello.workspace = true
+winit.workspace = true
+tilo-presentation = { path = "../../platform/tilo-presentation" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
@@ -520,6 +525,8 @@ tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tilo-audio-service = { path = "../../os/audio-service" }
 tilo-onboarding = { path = "../onboarding" }
 tilo-quick-settings = { path = "../../session/quick-settings", features = ["test-support"] }
+# The tilolang shell's parts are tested over the instance's test support.
+tilolang-tilo = { path = "../../lang/tilolang-tilo", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.

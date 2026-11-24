@@ -11,7 +11,7 @@ use tilo_compositor::{Compositor, LayoutRect, OutputConfig, WindowInfo, WindowPo
 
 use tilo_desktop_model::TileContent;
 use tilo_session_core::surface::ShellSurface as _;
-use tilo_shell_surface::{ShellDesktop, desktop};
+use tilo_session::platform::surfaces::{ShellDesktop, desktop};
 
 fn output() -> Vec<LayoutRect> {
     vec![LayoutRect::new((0, 0).into(), (1280, 800).into())]
@@ -404,7 +404,7 @@ fn an_x11_window_is_a_tab_of_its_class_that_retitles_and_reopens() {
     );
     // The desktop carries the command out on its next pass, as it does for the
     // session's loop.
-    host.with_widgets(tilo_shell_surface::WidgetSurface::relayout);
+    host.with_widgets(tilo_session::platform::surfaces::WidgetSurface::relayout);
     let (reopened, title, shown) = tabs(&host).pop().expect("the tab is back");
     assert_eq!(reopened, tab, "the window comes back in its own tab");
     assert_eq!(title, "vim ~/notes", "named as the person left it");
@@ -483,7 +483,7 @@ fn a_window_opened_beyond_the_visible_strip_stands_on_the_output_at_once() {
                 .checked_add(Duration::from_millis(16))
                 .expect("a moment");
             ui::time::testing::with_monotonic_time(now, || {
-                host.with_widgets(tilo_shell_surface::WidgetSurface::relayout);
+                host.with_widgets(tilo_session::platform::surfaces::WidgetSurface::relayout);
             });
         }
         let arranged = policy

@@ -40,14 +40,14 @@ fn click(part: &mut ShellPart, name: &str) {
 fn notebook() -> (ResourceService, tilolang_tilo::runtime::Meta) {
     let host = Host::new(Actor::Member(MemberId::person("Pat")), || None).unwrap();
     host.load_builtin(
-        include_str!("../../../../../apps/tl/discussion/app.tl"),
-        include_str!("../../../../../apps/tl/discussion/app.ids"),
+        include_str!("../../../../../../apps/tl/discussion/app.tl"),
+        include_str!("../../../../../../apps/tl/discussion/app.ids"),
     )
     .unwrap();
     let notes = host
         .load_builtin(
-            include_str!("../../../../../apps/tl/notes/app.tl"),
-            include_str!("../../../../../apps/tl/notes/app.ids"),
+            include_str!("../../../../../../apps/tl/notes/app.tl"),
+            include_str!("../../../../../../apps/tl/notes/app.ids"),
         )
         .unwrap();
     host.root_of(NOTES_APP).unwrap();
@@ -378,7 +378,7 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     let Some((value, Some(bounds))) = title else {
         panic!(
             "the note's editor stands in its place: {:?}",
-            crate::Published::accessible_labels(&mut part)
+            tilo_session_core::surfaces::Published::accessible_labels(&mut part)
         );
     };
     assert_eq!(
@@ -392,16 +392,16 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     );
 }
 
-const CHAT: &str = include_str!("../../../../../apps/tl/chat/app.tl");
-const CHAT_IDS: &str = include_str!("../../../../../apps/tl/chat/app.ids");
-const DISCUSSION: &str = include_str!("../../../../../apps/tl/discussion/app.tl");
-const DISCUSSION_IDS: &str = include_str!("../../../../../apps/tl/discussion/app.ids");
+const CHAT: &str = include_str!("../../../../../../apps/tl/chat/app.tl");
+const CHAT_IDS: &str = include_str!("../../../../../../apps/tl/chat/app.ids");
+const DISCUSSION: &str = include_str!("../../../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = concat!(
-    include_str!("../../../../../apps/tl/tasks/app.tl"),
+    include_str!("../../../../../../apps/tl/tasks/app.tl"),
     "\n",
-    include_str!("../../../../../apps/tl/tasks/scenarios.tl")
+    include_str!("../../../../../../apps/tl/tasks/scenarios.tl")
 );
-const TASKS_IDS: &str = include_str!("../../../../../apps/tl/tasks/app.ids");
+const TASKS_IDS: &str = include_str!("../../../../../../apps/tl/tasks/app.ids");
 const CHAT_APP: &str = "so.tilo.lang.chat";
 const TASKS_APP: &str = "so.tilo.tasks";
 

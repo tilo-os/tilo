@@ -41,7 +41,7 @@ fn reading() -> LayoutReading {
     }
 }
 
-use crate::shell_part::tests_support::{
+use crate::shell::part::tests_support::{
     compiled, part_of, part_with, publish_notices, publish_time,
 };
 
@@ -598,7 +598,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
     for _ in 0..6 {
         part.prepare_frame();
     }
-    let labels = crate::Published::accessible_labels(&mut part);
+    let labels = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
     assert!(
         part.control_bounds("Sheets").is_some(),
         "the dock shows Sheets: {labels:?}"
@@ -748,7 +748,7 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     assert!(part.layers().is_empty(), "nothing of it is drawn");
     assert!(!part.accepts_pointer(100.0, 10.0), "it takes no pointer");
     assert!(
-        !crate::Published::offered(&part),
+        !tilo_session_core::surfaces::Published::offered(&part),
         "the API reaches the bars still there, not this one"
     );
     // The compositor tells it of the outputs left: it does not stretch over them.
@@ -760,7 +760,7 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     // The display comes back: the part stands on it again.
     part.set_display(Some(display.clone()), 1.0);
     assert_eq!(part.placement(), Some(display));
-    assert!(crate::Published::offered(&part));
+    assert!(tilo_session_core::surfaces::Published::offered(&part));
     assert_eq!(
         part.widgets.placement().size,
         (1280, 800),
@@ -855,7 +855,7 @@ fn showing_one_window() -> (ShellPart, ui::widget::Wells) {
 fn the_screen_shows_the_layout_and_a_canvas_pan_carries_each_windows_well() {
     let (mut part, wells) = showing_one_window();
     assert!(part.below_windows(), "the windows stand over the screen");
-    let labels = crate::Published::accessible_labels(&mut part);
+    let labels = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
     for name in ["Notifications", "Showing Strips"] {
         assert!(
             labels.iter().any(|label| label == name),
@@ -865,7 +865,7 @@ fn the_screen_shows_the_layout_and_a_canvas_pan_carries_each_windows_well() {
     // The preset switch is the bar's own menu, named by the preset in use: the ways of showing
     // the same layout are its items, offered when the person opens it.
     click(&mut part, "Showing Strips");
-    let labels = crate::Published::accessible_labels(&mut part);
+    let labels = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
     for name in ["Frames", "Spaces"] {
         assert!(
             labels.iter().any(|label| label == name),
@@ -894,7 +894,7 @@ fn the_screen_shows_the_layout_and_a_canvas_pan_carries_each_windows_well() {
     );
     // The preset switch shows the same place on the framed canvas, its well there.
     click(&mut part, "Frames");
-    let labels = crate::Published::accessible_labels(&mut part);
+    let labels = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
     let named = part.control_bounds_all("Terminal");
     assert!(
         !named.is_empty()
@@ -1047,7 +1047,7 @@ fn moving_a_window_to_another_strip_names_the_strip_by_its_id() {
         part.draw();
     }
     // The menu open is either window's: each offers the other's strip.
-    let labels = crate::Published::accessible_labels(&mut part);
+    let labels = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
     let (item, tab, strip) = if labels.iter().any(|label| label == "Move to Research") {
         ("Move to Research", "7", "1")
     } else {
@@ -1172,10 +1172,10 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
 /// gives way, stands on a wide one though nothing of the shell changed since.
 #[test]
 fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
-    let packages = crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
+    let packages = crate::shell::part::compile_shell().unwrap_or_else(|why| panic!("{why}"));
     let app = packages.last().unwrap().meta.app.clone();
     let link = Rc::new(SessionLink::default());
-    crate::shell_part::tests_support::publish_platform_roots(&link);
+    crate::shell::part::tests_support::publish_platform_roots(&link);
     link.publish_layout(reading());
     let mut part = ShellPart::new(
         ShellIdentity {
@@ -1206,7 +1206,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
     assert!(
         part.control_bounds("Main").is_some(),
         "a wide bar names the strip: {:?}",
-        crate::Published::accessible_labels(&mut part)
+        tilo_session_core::surfaces::Published::accessible_labels(&mut part)
     );
 }
 
@@ -1252,7 +1252,7 @@ fn a_wide_bar_shows_the_strip_and_the_person_with_nothing_touched() {
     for _ in 0..8 {
         part.prepare_frame();
     }
-    let labels: Vec<String> = crate::Published::accessible_labels(&mut part);
+    let labels: Vec<String> = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
     assert!(
         labels.iter().any(|label| label == "Main"),
         "the bar names the strip: {labels:?}"
@@ -1549,7 +1549,7 @@ fn the_shells_preset_reaches_the_screen() {
         for _ in 0..6 {
             part.prepare_frame();
         }
-        let labels = crate::Published::accessible_labels(part);
+        let labels = tilo_session_core::surfaces::Published::accessible_labels(part);
         assert!(
             labels.iter().any(|l| l == "Showing Strips"),
             "the shell shows the strips: {labels:?}"
@@ -1564,14 +1564,14 @@ fn the_shells_preset_reaches_the_screen() {
 
     beside.prepare_frame();
     for part in [&mut beside, &mut part] {
-        let labels = crate::Published::accessible_labels(part);
+        let labels = tilo_session_core::surfaces::Published::accessible_labels(part);
         assert!(
             !labels.iter().any(|l| l.starts_with("Showing ")),
             "the traditional desktop's bar carries the window's commands, not the preset \
              switch: {labels:?}"
         );
     }
-    let labels = crate::Published::accessible_labels(&mut part);
+    let labels = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
     assert!(
         labels.iter().any(|l| l == "Dock"),
         "the desktop's dock rides its foot: {labels:?}"
@@ -1598,20 +1598,20 @@ fn the_style_switch_lists_the_styles_a_later_reading_carries() {
         part.prepare_frame();
     }
     // With no styles yet the bar's menu falls back to naming the strips, and offers nothing.
-    let labels = crate::Published::accessible_labels(&mut part);
+    let labels = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
     assert!(
         labels.iter().any(|l| l == "Showing Strips"),
         "the bar shows before the styles come: {labels:?}"
     );
     super::tests_support::publish_styles(
         &link,
-        &crate::shell_part::tests_support::shipped_styles(),
+        &crate::shell::part::tests_support::shipped_styles(),
     );
     for _ in 0..6 {
         part.prepare_frame();
     }
     click(&mut part, "Showing Strips");
-    let labels = crate::Published::accessible_labels(&mut part);
+    let labels = tilo_session_core::surfaces::Published::accessible_labels(&mut part);
     for name in ["Strips", "Frames", "Spaces", "Desktop"] {
         assert!(
             labels.iter().any(|l| l == name),

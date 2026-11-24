@@ -1,13 +1,15 @@
 //! A part of a tree that only fades, grows or moves is posed by the compositor: drawn once into a
 //! layer of its own below the rest, and only its pose changes while it animates.
 
+#![cfg(target_os = "linux")]
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_session_core::surface::ShellSurface as _;
 
-use tilo_shell_surface::{Placement, WidgetSurface};
+use tilo_session::platform::surfaces::{Placement, WidgetSurface};
 use ui::kurbo::{Affine, Rect};
 use ui::peniko::{Color, Fill};
 use ui::taffy::{NodeId, Style, TaffyTree};

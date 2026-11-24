@@ -25,6 +25,11 @@ use crate::displays;
 #[cfg(target_os = "linux")]
 pub mod state;
 
+#[cfg(target_os = "linux")]
+pub mod part;
+#[cfg(target_os = "linux")]
+pub mod part_view;
+
 /// The shell package and the packages it uses, compiled, the shell last: what the shell's
 /// instance runs. The installed `so.tilo.shell` when the person's app store holds one, the
 /// build's fallback copy when it does not (shell.md §6).
@@ -114,7 +119,10 @@ fn band() -> u32 {
         clippy::cast_sign_loss,
         reason = "a bar's height, a few dozen pixels"
     )]
-    let band = f64::from(tilo_session_core::desktop::overlays::topbar_height(&ui::Theme::dark())).ceil() as u32;
+    let band = f64::from(tilo_session_core::desktop::overlays::topbar_height(
+        &ui::Theme::dark(),
+    ))
+    .ceil() as u32;
     band
 }
 
@@ -452,7 +460,7 @@ impl Shell {
             // A placed app's views call the `fn`s of the apps it uses (`discussion.said_about`):
             // those run as their own app's code here, so their packages are loaded with it, as
             // an app's own window loads them (`ResourceService::service_document`).
-            let packages = tilo_shell_surface::shell_part::readings::with_uses(packages, |app| {
+            let packages = crate::shell::part::readings::with_uses(packages, |app| {
                 services
                     .module(app)
                     .or_else(|| crate::styles::module_from_store(app))
@@ -1510,7 +1518,9 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
-        if address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE && address.action == "search" {
+        if address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE
+            && address.action == "search"
+        {
             if let Some(Value::String(query)) = arguments.get("query")
                 && !query.is_empty()
             {
@@ -1540,7 +1550,10 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                     let asked =
                         Map::from_iter([("query".to_owned(), Value::String(query.clone()))]);
                     self.lists.borrow_mut().invoke(
-                        &ActionAddress::new(tilo_session_core::desktop::verbs::SHELL_RESOURCE, "search"),
+                        &ActionAddress::new(
+                            tilo_session_core::desktop::verbs::SHELL_RESOURCE,
+                            "search",
+                        ),
                         &asked,
                         look,
                     )?
@@ -1764,7 +1777,8 @@ impl crate::Session {
         // disagree. It is the same surface the views read (`d.here`), and the one place that knows
         // when it closes: however the person left it, the next arrival is a banner on the shell
         // again rather than a row behind a page that is gone.
-        let centre = shell.surface() == tilo_session_core::desktop::overlays::Overlay::Centre.name();
+        let centre =
+            shell.surface() == tilo_session_core::desktop::overlays::Overlay::Centre.name();
         self.shared.notices.set_shell_centre(centre);
         if centre {
             self.shared.notices.mark_read();

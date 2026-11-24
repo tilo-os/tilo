@@ -3,13 +3,15 @@
 //! frame per event. A drag that reaches the tree with no input of its own asks for a frame too, and
 //! a tree on a second display sees it where it is on that display.
 
+#![cfg(target_os = "linux")]
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_session_core::surface::{KeyModifiers, ShellSurface as _, SurfaceKey};
 
-use tilo_shell_surface::{Placement, WidgetSurface};
+use tilo_session::platform::surfaces::{Placement, WidgetSurface};
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::widget::{EventCtx, TaffyTreeExt as _, Widget};
 use ui::winit::event::{ElementState, WindowEvent};

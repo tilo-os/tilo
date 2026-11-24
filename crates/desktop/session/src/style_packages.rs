@@ -8,7 +8,7 @@
 //! the REPL run the one path.
 //!
 //! * **Make it mine** copies a shipped style's package source from the copy this build carries
-//!   (`tilo_shell_surface::shell_part::shell_sources`) into the person's workspace under their own
+//!   (`crate::shell::part::shell_sources`) into the person's workspace under their own
 //!   package id ([`COPY_ID`]), installs it, and leaves the shipped package untouched: updates to
 //!   the shipped style never reach the copy.
 //! * **check** compiles a package of the workspace against what this session publishes and
@@ -273,7 +273,7 @@ fn make_it_mine(style: &str) -> Result<(String, String), String> {
     let (package, view) = style
         .split_once(':')
         .map_or((style, ""), |(package, view)| (package, view));
-    if package != tilo_shell_surface::shell_part::SHELL_APP {
+    if package != crate::shell::part::SHELL_APP {
         return Err(format!(
             "`{style}` is not a shipped style: only the styles this build ships can be copied, and \
              another package's style is already its author's"
@@ -294,14 +294,14 @@ fn make_it_mine(style: &str) -> Result<(String, String), String> {
 /// it: its name, the doc line the switch lists it by, and its body.
 fn shipped_view(named: &str) -> Result<ShippedView, String> {
     let named = if named.is_empty() { "strips" } else { named };
-    for (_, text) in tilo_shell_surface::shell_part::shell_sources() {
+    for (_, text) in crate::shell::part::shell_sources() {
         if let Some(view) = view_in(text, named) {
             return Ok(view);
         }
     }
     Err(format!(
         "`{}:{named}` is not a style this build ships",
-        tilo_shell_surface::shell_part::SHELL_APP
+        crate::shell::part::SHELL_APP
     ))
 }
 
@@ -376,7 +376,7 @@ fn shell_names() -> &'static [String] {
                 names.push(name.to_owned());
             }
         };
-        for (_, text) in tilo_shell_surface::shell_part::shell_sources() {
+        for (_, text) in crate::shell::part::shell_sources() {
             for line in text.lines() {
                 let line = line.trim_start();
                 let line = line.strip_prefix("template ").unwrap_or(line);
@@ -457,7 +457,7 @@ fn style_source(view: &ShippedView) -> String {
          view {name}(a: shell.Layout) {{\n\
          {body}\n\
          }}\n",
-        package = tilo_shell_surface::shell_part::SHELL_APP,
+        package = crate::shell::part::SHELL_APP,
         name = view.name,
         line = view.line,
         body = view.body,

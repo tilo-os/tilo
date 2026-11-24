@@ -774,7 +774,7 @@ The copies:
 | Widget output | ui-core paints to a canvas, and 162 widget files also write HTML (`composition.rs` `HtmlCx`) |
 | tilolang hosts | `apps/tilolang` (21,346, one process per installed app, toolkit linked in); `tilolang-process` (14,358, one process per workspace and author) |
 | Rust model logic | each app's own code, and again as `apps/*-model` (34 crates) plus `apps/*-model-wasm` (31 crates) with `tilo-model-guest` |
-| Launch paths | a Rust app binary through `app-launch` and the `launcher` sandbox; `apps/tilolang`; `tilolang-process`; in-process written views and `shell-surface`; `app-keeper` for non-Tilo programs; Rust models as WebAssembly |
+| Launch paths | a Rust app binary through `app-launch` and the `launcher` sandbox; `apps/tilolang`; `tilolang-process`; in-process written views and the session's own layers; `app-keeper` for non-Tilo programs; Rust models as WebAssembly |
 | Permission checks | `action-policy` (12,437); tilolang's own `tl:host` commit and `SimpleAuthority`; the SDK's `PermissionContext`; Chat's `ChatPermissions` |
 | Shell | `apps/tl/shell` (6,990), over the desktop session-core holds |
 | App models compiled into hosts | `tilo-server` links Chat and Tasks; `tilo-agent-session` links most models natively; the WebAssembly `tilo-model-engine` is the third |

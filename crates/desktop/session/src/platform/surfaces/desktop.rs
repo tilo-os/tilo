@@ -3,156 +3,23 @@
 //! [`desktop`] makes the [`ShellDesktop`] a session runs the desktop on: the policy that keeps its
 //! windows as tabs of the desktop's strips ([`tilo_desktop_policy`]), the desktop's pass each
 //! frame, and the shell's published side. The tilolang shell's wells place the windows
-//! ([`crate::WellPolicy`]), reading the same desktop.
+//! ([`super::WellPolicy`]), reading the same desktop.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_compositor::gestures::{
-    GestureAction, GestureConfig, GestureTracker, SWIPE_THRESHOLD, claims,
-};
-use tilo_compositor::{
-    GestureEvent, LayoutPoint, LayoutRect, TouchSample, WindowInfo, WindowPlacement, WindowPolicy,
-    WindowRequest,
-};
+use tilo_compositor::gestures::GestureConfig;
+use tilo_compositor::{LayoutRect, WindowInfo};
 use tilo_session_core::surface::{
     Scroll, ShellSurface, SurfaceIme, SurfaceKey, SurfaceLayer, SurfaceTextInput,
 };
 
-use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::DesktopPolicy;
+use tilo_desktop_policy::displays::Output;
 use tilo_session_core::desktop::state::DesktopHandle;
 
-use crate::{Placement, WidgetSurface};
-
-/// What a touchpad gesture the desktop took asks of it, once the gesture
-/// has said what it means: the same steps the desktop's chords take.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ShellGesture {
-    /// Three fingers carrying the shown strip: `travel` is their total
-    /// signed travel since they landed, positive toward later windows.
-    StripDrag { travel: f64, began: bool },
-    /// Those fingers lifted (or the hand was taken back): the strip coasts
-    /// on the velocity they let go at, or stays where it was.
-    StripDragEnd { cancelled: bool },
-    /// Three fingers up or down lifted past the threshold: the strip
-    /// `steps` on, sliding as a finger's change does.
-    StepStrip(i32),
-    /// Four fingers up or down: the workspace `delta` on.
-    SwitchWorkspace(i32),
-    /// A pinch in opens the overview (`true`), out closes it.
-    Overview(bool),
-}
-
-/// What reading one touchpad event came to.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Reading {
-    /// Not the desktop's: the client under the pointer keeps it.
-    Clients,
-    /// The desktop took it; the fingers say nothing yet.
-    Taken,
-    /// The desktop took it and it asks this.
-    Asked(ShellGesture),
-}
-
-/// The desktop's reading of the touchpad's gestures: the three- and four-finger
-/// streams the person's settings give the desktop, followed until the fingers say
-/// what they mean (`tilo_compositor::gestures` turns the stream into those
-/// actions). Both window policies read them — the strips' and the shell's
-/// wells — so a gesture means the same on either desktop.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct GestureReader {
-    tracker: GestureTracker,
-    /// How far the fingers have carried the strip, or the strip deck, in the
-    /// gesture in flight.
-    travel: f64,
-}
-
-impl GestureReader {
-    /// Whether the desktop takes `gesture`, handing what it asks to `asked`.
-    pub(crate) fn take(
-        &mut self,
-        gesture: &GestureEvent,
-        config: Option<GestureConfig>,
-        asked: impl FnOnce(ShellGesture),
-    ) -> bool {
-        match self.read(gesture, config) {
-            Reading::Clients => false,
-            Reading::Taken => true,
-            Reading::Asked(desktop) => {
-                asked(desktop);
-                true
-            }
-        }
-    }
-
-    /// `gesture` as the desktop's, when `config` reads gestures (the person asked
-    /// for them) and it has three or more fingers.
-    pub(crate) fn read(
-        &mut self,
-        gesture: &GestureEvent,
-        config: Option<GestureConfig>,
-    ) -> Reading {
-        let action = match *gesture {
-            GestureEvent::SwipeBegin { fingers } | GestureEvent::PinchBegin { fingers } => {
-                let Some(config) = config.filter(|_| claims(fingers)) else {
-                    return Reading::Clients;
-                };
-                self.tracker.set_config(config);
-                self.tracker.swipe_begin(fingers);
-                self.travel = 0.0;
-                None
-            }
-            GestureEvent::SwipeUpdate { dx, dy } => self.tracker.swipe_update(dx, dy),
-            GestureEvent::SwipeEnd { cancelled } | GestureEvent::PinchEnd { cancelled } => {
-                self.tracker.swipe_end_with_cancel(cancelled)
-            }
-            GestureEvent::PinchUpdate { scale, .. } => self.tracker.pinch_update(scale),
-            // A hold asks nothing of the desktop: the client keeps it.
-            GestureEvent::HoldBegin { .. } | GestureEvent::HoldEnd { .. } => {
-                return Reading::Clients;
-            }
-        };
-        let step = |travel: f64| {
-            if travel >= SWIPE_THRESHOLD {
-                Some(1)
-            } else if travel <= -SWIPE_THRESHOLD {
-                Some(-1)
-            } else {
-                None
-            }
-        };
-        let asked = match action {
-            // Up and down, the travel decides at the lift; sideways, every
-            // update carries the shown strip with the fingers.
-            Some(GestureAction::StripDeckUpdate { travel, .. }) => {
-                self.travel = travel;
-                None
-            }
-            Some(GestureAction::StripPanUpdate { travel, began }) => {
-                self.travel = travel;
-                Some(ShellGesture::StripDrag { travel, began })
-            }
-            Some(GestureAction::StripPanEnd { cancelled }) => {
-                Some(ShellGesture::StripDragEnd { cancelled })
-            }
-            Some(GestureAction::StripDeckEnd { cancelled: false }) => {
-                step(self.travel).map(ShellGesture::StepStrip)
-            }
-            Some(GestureAction::SwitchWorkspace(delta)) => {
-                Some(ShellGesture::SwitchWorkspace(delta))
-            }
-            Some(GestureAction::ShowOverview) => Some(ShellGesture::Overview(true)),
-            Some(GestureAction::HideOverview) => Some(ShellGesture::Overview(false)),
-            // A cancelled deck drag is the hand coming back: nothing moves.
-            Some(GestureAction::StripDeckEnd { cancelled: true }) | None => None,
-        };
-        match asked {
-            Some(asked) => Reading::Asked(asked),
-            None => Reading::Taken,
-        }
-    }
-}
+use super::gestures::ShellGesture;
+use super::{Placement, WidgetSurface};
 
 /// The desktop both halves share.
 struct Desktop {
@@ -335,12 +202,12 @@ impl ShellDesktop {
 
     /// Answer `look` and `read` of a window this session does not run, which
     /// the desktop publishes on the window's own resource: the tree holds what
-    /// they say, and the session's [`crate::Look`] makes the picture. Any
+    /// they say, and the session's [`tilo_session_core::surfaces::Look`] makes the picture. Any
     /// other address is left to the desktop's tree.
     fn read_window(
         &self,
         address: &ui::tilo_actions::ActionAddress,
-        look: &mut crate::Look<'_>,
+        look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::ApiError>
     {
         use tilo_session_core::desktop::window;
@@ -401,7 +268,7 @@ impl ShellDesktop {
     /// Ctrl+K and an agent all ask the platform to search, and the platform's
     /// search is the one that knows the person's apps, their files, what apps
     /// hold and the desktop's windows. The desktop's palette is drawn over the
-    /// windows by the chrome ([`crate::desktop::ShellDesktop`]'s
+    /// windows by the chrome ([`crate::platform::surfaces::ShellDesktop`]'s
     /// `SearchOverlay`), which is the one surface that may cover a window in
     /// front; opening it here means the same search every way into search
     /// reaches.
@@ -468,8 +335,8 @@ impl ShellDesktop {
     /// runs with when the shell draws the whole screen. The windows keep their tabs in this
     /// desktop, so a place in the person's placement names the window's well.
     #[must_use]
-    pub fn well_policy(&self) -> crate::WellPolicy {
-        crate::WellPolicy::over(Rc::new(self.clone()))
+    pub fn well_policy(&self) -> super::WellPolicy {
+        super::WellPolicy::over(Rc::new(self.clone()))
     }
 
     /// Draw the desktop with `theme`: the person's palette, tokens and fonts.
@@ -535,7 +402,7 @@ impl ShellDesktop {
     }
 }
 
-impl crate::well_policy::WindowModel for ShellDesktop {
+impl super::well_policy::WindowModel for ShellDesktop {
     fn policy(&self) -> std::cell::RefMut<'_, DesktopPolicy> {
         std::cell::RefMut::map(self.desktop.borrow_mut(), |desktop| &mut desktop.policy)
     }
@@ -557,7 +424,7 @@ impl crate::well_policy::WindowModel for ShellDesktop {
     }
 }
 
-impl crate::Published for ShellDesktop {
+impl tilo_session_core::surfaces::Published for ShellDesktop {
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
         let mut desktop = self.desktop.borrow_mut();
         let mut resources = desktop
@@ -565,7 +432,9 @@ impl crate::Published for ShellDesktop {
             .as_ref()
             .map(tilo_session_core::desktop::shell_verbs::ShellVerbs::resources)
             .unwrap_or_default();
-        resources.extend(crate::Published::resources(&mut desktop.surface));
+        resources.extend(tilo_session_core::surfaces::Published::resources(
+            &mut desktop.surface,
+        ));
         resources
     }
 
@@ -578,7 +447,7 @@ impl crate::Published for ShellDesktop {
         let handle = desktop.policy.handle();
         // The shell's own rows also name the windows that stopped answering.
         let unresponsive = handle.shared.borrow().unresponsive_revision;
-        crate::Published::revision(&desktop.surface).map(|drawn| {
+        tilo_session_core::surfaces::Published::revision(&desktop.surface).map(|drawn| {
             drawn
                 .wrapping_add(handle.navigation_revision())
                 .wrapping_add(handle.search_revision())
@@ -590,7 +459,7 @@ impl crate::Published for ShellDesktop {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut crate::Look<'_>,
+        look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         if let Some(answered) = self.read_window(address, look)? {
             return Ok(answered);
@@ -601,7 +470,7 @@ impl crate::Published for ShellDesktop {
         if let Some(answered) = self.invoke_verb(address, arguments)? {
             return Ok(answered);
         }
-        crate::Published::invoke(
+        tilo_session_core::surfaces::Published::invoke(
             &mut self.desktop.borrow_mut().surface,
             address,
             arguments,
@@ -614,7 +483,7 @@ impl crate::Published for ShellDesktop {
         actor: &ui::tilo_actions::Actor,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut crate::Look<'_>,
+        look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         if let Some(answered) = self.read_window(address, look)? {
             return Ok(answered);
@@ -625,7 +494,7 @@ impl crate::Published for ShellDesktop {
         if let Some(answered) = self.invoke_verb(address, arguments)? {
             return Ok(answered);
         }
-        crate::Published::invoke_as(
+        tilo_session_core::surfaces::Published::invoke_as(
             &mut self.desktop.borrow_mut().surface,
             actor,
             address,
@@ -635,7 +504,9 @@ impl crate::Published for ShellDesktop {
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
-        crate::Published::accessible_labels(&mut self.desktop.borrow_mut().surface)
+        tilo_session_core::surfaces::Published::accessible_labels(
+            &mut self.desktop.borrow_mut().surface,
+        )
     }
 
     /// The desktop's own controls — its strips, its windows' bars — and, behind
@@ -643,7 +514,9 @@ impl crate::Published for ShellDesktop {
     /// own content ([`ui::window_targets`]): a window's app keeps its widget
     /// tree to itself, so this is the one place they are named.
     fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
-        let mut shown = crate::Published::controls(&mut self.desktop.borrow_mut().surface);
+        let mut shown = tilo_session_core::surfaces::Published::controls(
+            &mut self.desktop.borrow_mut().surface,
+        );
         // Every window's own controls stand where they stand, beside the desktop's: two windows go
         // by the same names — each window's sidebar toggle, each window's "More actions" — and
         // each is named where it is drawn. A window's control is never the desktop's because they
@@ -691,7 +564,11 @@ impl crate::Published for ShellDesktop {
         {
             return Ok(());
         }
-        crate::Published::press_identity(&mut desktop.surface, identity, action)
+        tilo_session_core::surfaces::Published::press_identity(
+            &mut desktop.surface,
+            identity,
+            action,
+        )
     }
 
     fn press_action(
@@ -715,7 +592,7 @@ impl crate::Published for ShellDesktop {
                     .any(|control| control.name == name),
             )
         };
-        let chrome = crate::Published::controls(&mut desktop.surface);
+        let chrome = tilo_session_core::surfaces::Published::controls(&mut desktop.surface);
         // A control the desktop draws in the front window's own chrome — its bar's buttons — is that
         // window's: it answers for it as its app's content does.
         let in_fronts_chrome = front_window.is_some_and(|window| {
@@ -730,7 +607,11 @@ impl crate::Published for ShellDesktop {
             })
         });
         if in_fronts_chrome {
-            return crate::Published::press_action(&mut desktop.surface, name, action);
+            return tilo_session_core::surfaces::Published::press_action(
+                &mut desktop.surface,
+                name,
+                action,
+            );
         }
         // The window in front answers for its own content: a person pointing at a control there
         // presses that window's, never one behind it that goes by the same name — another
@@ -742,7 +623,11 @@ impl crate::Published for ShellDesktop {
                 .press_window_control_in(front, name, action);
         }
         if chrome.iter().any(|control| control.name == name) {
-            return crate::Published::press_action(&mut desktop.surface, name, action);
+            return tilo_session_core::surfaces::Published::press_action(
+                &mut desktop.surface,
+                name,
+                action,
+            );
         }
         // The control is one a window's app draws: the press reaches it as its
         // own assistive technology's activation does.
@@ -753,15 +638,19 @@ impl crate::Published for ShellDesktop {
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
-        crate::Published::a11y_tree(&mut self.desktop.borrow_mut().surface)
+        tilo_session_core::surfaces::Published::a11y_tree(&mut self.desktop.borrow_mut().surface)
     }
 
     fn a11y_name(&self) -> Option<String> {
-        crate::Published::a11y_name(&self.desktop.borrow().surface)
+        tilo_session_core::surfaces::Published::a11y_name(&self.desktop.borrow().surface)
     }
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
-        crate::Published::a11y_action(&mut self.desktop.borrow_mut().surface, target, action)
+        tilo_session_core::surfaces::Published::a11y_action(
+            &mut self.desktop.borrow_mut().surface,
+            target,
+            action,
+        )
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -938,7 +827,7 @@ impl ShellSurface for ShellDesktop {
 
 /// Who a window policy tells of the windows the desktop gives a place, and
 /// of the ones gone: the same for every policy placing the desktop's
-/// windows ([`StripPolicy`], [`crate::WellPolicy`]).
+/// windows ([`StripPolicy`], [`crate::platform::surfaces::WellPolicy`]).
 #[derive(Default)]
 pub(crate) struct WindowFollowers {
     /// Told the process of each window the compositor maps, the moment the
@@ -984,66 +873,6 @@ impl WindowFollowers {
         if let Some(observer) = &self.observer {
             observer.closed(id);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The display the test places windows on.
-    fn output() -> LayoutRect {
-        LayoutRect::new(LayoutPoint::from((0, 0)), (1280, 800).into())
-    }
-
-    /// A window of `app` made by the process `pid`.
-    fn window(id: u64, app: &str, pid: Option<u32>) -> WindowInfo {
-        WindowInfo {
-            id,
-            app_id: Some(app.to_owned()),
-            pid,
-            ..WindowInfo::default()
-        }
-    }
-
-    /// Three fingers moving sideways carry the shown strip: the desktop reads
-    /// every report as the hand's total travel, from the first one on, and
-    /// the lift as its release, rather than stepping the strip once the
-    /// travel passes a threshold.
-    #[test]
-    fn three_fingers_sideways_carry_the_strip() {
-        let mut reader = GestureReader::default();
-        // Natural scrolling, the touchpad default: the strip goes with the
-        // fingers, so their leftward travel goes toward later windows.
-        let config = Some(GestureConfig {
-            natural_scroll: true,
-            ..GestureConfig::default()
-        });
-        assert_eq!(
-            reader.read(&GestureEvent::SwipeBegin { fingers: 3 }, config),
-            Reading::Taken,
-            "the desktop takes three fingers"
-        );
-        assert_eq!(
-            reader.read(&GestureEvent::SwipeUpdate { dx: -20.0, dy: 0.0 }, config),
-            Reading::Asked(ShellGesture::StripDrag {
-                travel: 20.0,
-                began: true,
-            }),
-            "the first report already carries the strip"
-        );
-        assert_eq!(
-            reader.read(&GestureEvent::SwipeUpdate { dx: -10.0, dy: 0.0 }, config),
-            Reading::Asked(ShellGesture::StripDrag {
-                travel: 30.0,
-                began: false,
-            }),
-            "the gesture reports its total"
-        );
-        assert_eq!(
-            reader.read(&GestureEvent::SwipeEnd { cancelled: false }, config),
-            Reading::Asked(ShellGesture::StripDragEnd { cancelled: false })
-        );
     }
 }
 

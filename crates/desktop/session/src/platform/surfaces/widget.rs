@@ -22,8 +22,9 @@ use tilo_session_core::surface::SurfaceKey;
 use winit::event::Modifiers;
 use winit::keyboard::ModifiersState;
 
-use crate::frames::Frames;
-use crate::{Placement, ime_event, key_event, mouse_input};
+use super::Placement;
+use super::app_process::{ime_event, key_event, mouse_input};
+use super::frames::Frames;
 use ui::widget::Widget;
 
 /// The colour a widget tree draws on: nothing, so the desktop shows through
@@ -209,7 +210,7 @@ pub struct WidgetSurface {
     revision: u64,
     /// The wells the tree's places report to as it lays them out: shared
     /// with the window policy placing the windows they stand for
-    /// ([`crate::WellPolicy`]).
+    /// ([`crate::platform::surfaces::WellPolicy`]).
     wells: Option<ui::widget::Wells>,
     /// The previews the tree's views report to as it lays them out: shared
     /// with the closures that name the windows it pictures
@@ -650,7 +651,7 @@ impl WidgetSurface {
     }
 }
 
-impl crate::Published for WidgetSurface {
+impl tilo_session_core::surfaces::Published for WidgetSurface {
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
         self.host.resources()
     }
@@ -663,7 +664,7 @@ impl crate::Published for WidgetSurface {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut crate::Look<'_>,
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         let started = self
             .host
@@ -775,7 +776,7 @@ impl crate::Published for WidgetSurface {
                     .into_iter()
                     .filter(|(_, node)| node.label() == Some(name))
                     .collect();
-                let node = named_so
+                let Some(node) = named_so
                     .iter()
                     .find(|(_, node)| {
                         node.bounds().is_some_and(|b| {
@@ -784,7 +785,10 @@ impl crate::Published for WidgetSurface {
                     })
                     .or_else(|| named_so.first())
                     .map(|(node, _)| *node)
-                    .ok_or(named)?;
+                else {
+                    // Nothing of that name stands on the layer: the tree's own refusal says so.
+                    return Err(named);
+                };
                 self.host
                     .perform_a11y_action(node, &ui::a11y::Action::Activate)?;
             }
@@ -945,7 +949,10 @@ impl ShellSurface for WidgetSurface {
     }
 
     fn pointer_axis(&mut self, scroll: Scroll) {
-        self.input(&crate::mouse_wheel(scroll, self.placement.scale));
+        self.input(&super::app_process::mouse_wheel(
+            scroll,
+            self.placement.scale,
+        ));
     }
 
     fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {

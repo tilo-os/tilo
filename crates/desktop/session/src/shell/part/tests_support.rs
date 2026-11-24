@@ -176,7 +176,7 @@ pub(super) fn reading_with_windows() -> Staged {
 /// it again is the same work with the same result, and a part shares nothing of the packages it
 /// is handed with another.
 pub(super) fn compiled() -> Vec<Compiled> {
-    crate::shell_part::compile_shell().unwrap_or_else(|why| panic!("{why}"))
+    crate::shell::part::compile_shell().unwrap_or_else(|why| panic!("{why}"))
 }
 
 /// A part over `reading`, its outputs set.

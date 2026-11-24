@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use tilo_compositor::Compositor;
 
+use super::{ShellDesktop, WidgetSurface};
 use tilo_session_core::surfaces::Published;
-use tilo_shell_surface::{ShellDesktop, WidgetSurface};
 use ui::widget::Widget;
 
 use super::{Heard, Layer, Placement, Shell, Surfaces};

@@ -19,13 +19,13 @@ use tilo_session_core::desktop::osd::Hint;
 
 use tilo_session_core::desktop::osd::Osd;
 
+use crate::platform::surfaces::{ShellDesktop, WidgetSurface};
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::osd::OsdKind;
 use tilo_session_core::desktop::overlays::{Overlays, Part};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::Surfaces;
-use tilo_shell_surface::{ShellDesktop, WidgetSurface};
 use ui::host_operation::ResourceOperationStart;
 
 use crate::assembly::{Session, Shared};

@@ -9,7 +9,7 @@
 //! the GPU too, and only that comes back. Where the machine has no GPU the
 //! compositor reads them from, the toolkit's CPU rasterizer draws the frame,
 //! exactly as it draws a normal app's frame there, on threads of its own
-//! ([`crate::raster`]) so the loop answering the session's requests never waits
+//! ([`super::raster`]) so the loop answering the session's requests never waits
 //! for it. A device lost under the
 //! renderer gives way to the same CPU rasterizer, so a GPU that stops leaves
 //! the surface slower rather than stopped. Only what changed is drawn, so a
@@ -22,7 +22,7 @@ use tilo_render_protocol::control::DmabufFormat;
 use tilo_render_service::buffers::{self as delivery, Allocator, BufferSet, History, Memory};
 use tilo_session_core::surface::{CELL, Region, SurfaceBuffer, SurfaceBuffers, SurfaceFrame};
 
-use crate::raster::OffThread;
+use super::raster::OffThread;
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::Rect;

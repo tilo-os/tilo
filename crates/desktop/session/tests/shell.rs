@@ -408,7 +408,7 @@ fn choosing_a_workspace_from_the_bars_menu_brings_it_to_the_front() {
     // A second workspace, in front.
     session
         .invoke(
-            tilo_shell_surface::shell_part::CHROME_RESOURCE,
+            tilo_session::shell::part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -458,7 +458,7 @@ fn the_workspaces_menu_stands_while_the_change_feed_under_it() {
     // The shell changes under the menu: another workspace, in front.
     session
         .invoke(
-            tilo_shell_surface::shell_part::CHROME_RESOURCE,
+            tilo_session::shell::part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -542,7 +542,7 @@ fn with_nothing_changing_the_bar_does_no_work() {
     let before = session.shell_work().unwrap();
     session
         .invoke(
-            tilo_shell_surface::shell_part::CHROME_RESOURCE,
+            tilo_session::shell::part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -586,7 +586,7 @@ fn a_new_workspace_frame_is_measured() {
         let workspaces = shell(&session).workspaces.len();
         session
             .invoke(
-                tilo_shell_surface::shell_part::CHROME_RESOURCE,
+                tilo_session::shell::part::CHROME_RESOURCE,
                 "new-workspace",
                 &serde_json::Map::new(),
             )
@@ -786,7 +786,7 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
     // A second workspace, in front, with a window of its own.
     session
         .invoke(
-            tilo_shell_surface::shell_part::CHROME_RESOURCE,
+            tilo_session::shell::part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -855,7 +855,7 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
     let behind = shell(&session).workspace;
     session
         .invoke(
-            tilo_shell_surface::shell_part::CHROME_RESOURCE,
+            tilo_session::shell::part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -1521,7 +1521,7 @@ tilo_test_env::scenario! {
     phase an_apps_open_the_shell_calls_starts_it;
     // An app's own `open` the shell calls (`session.open(app)`, a dock's press) starts the app in the
     // workspace in front, as the launcher's row of it does. (The press making that call is
-    // `tilo-shell-surface` 's `a_press_on_a_dock_app_asks_the_session_to_open_it` .)
+    // `a_press_on_a_dock_app_asks_the_session_to_open_it` in `shell::part` .)
     {
         let _settled = ui::motion::testing::settled();
         let apps = Rc::new(Apps::default());
@@ -1537,7 +1537,7 @@ tilo_test_env::scenario! {
         session
             .shell_link()
             .expect("the shell runs")
-            .ask(tilo_shell_surface::shell_part::Ask {
+            .ask(tilo_session::shell::part::Ask {
                 resource: "app.so.tilo.sheets".to_owned(),
                 action: "open".to_owned(),
                 arguments: std::collections::BTreeMap::new(),
@@ -1885,7 +1885,7 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
     // panel's app where the stack placed it.
     session
         .invoke(
-            tilo_shell_surface::shell_part::CHROME_RESOURCE,
+            tilo_session::shell::part::CHROME_RESOURCE,
             "quick-settings",
             &serde_json::Map::new(),
         )
@@ -1967,7 +1967,7 @@ fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
     until_settled(&mut session, |session| says(session, &time(session).clock));
     session
         .invoke(
-            tilo_shell_surface::shell_part::CHROME_RESOURCE,
+            tilo_session::shell::part::CHROME_RESOURCE,
             "quick-settings",
             &serde_json::Map::new(),
         )
@@ -2309,7 +2309,7 @@ fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
         .clone();
     session
         .invoke(
-            tilo_shell_surface::shell_part::CHROME_RESOURCE,
+            tilo_session::shell::part::CHROME_RESOURCE,
             "new-workspace",
             &serde_json::Map::new(),
         )
@@ -2323,7 +2323,7 @@ fn moving_a_window_to_a_workspace_from_the_overview_carries_it_there() {
         .clone();
     session
         .invoke(
-            tilo_shell_surface::shell_part::CHROME_RESOURCE,
+            tilo_session::shell::part::CHROME_RESOURCE,
             "switch-workspace",
             &serde_json::Map::from_iter([(
                 "workspace".to_owned(),
@@ -3112,7 +3112,7 @@ fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
         until_settled(&mut session, |session| says(session, &time(session).clock));
         session
             .invoke(
-                tilo_shell_surface::shell_part::CHROME_RESOURCE,
+                tilo_session::shell::part::CHROME_RESOURCE,
                 "quick-settings",
                 &serde_json::Map::new(),
             )
@@ -3195,7 +3195,7 @@ fn the_shell_loads_from_the_package_store_and_not_the_builds_copy() {
     // from source and cannot be byte-identical to it, so the two differ where the path did its
     // work: a module compiled from `include_str!` and one the build staged are not the same
     // bytes.
-    let fallback = tilo_shell_surface::shell_part::compile_shell().expect("the fallback compiles");
+    let fallback = tilo_session::shell::part::compile_shell().expect("the fallback compiles");
     assert_ne!(
         fallback.last().map(|package| package.wasm.as_slice()),
         installed.last().map(|package| package.wasm.as_slice()),

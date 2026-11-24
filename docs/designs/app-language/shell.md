@@ -233,7 +233,7 @@ stays a saved resource, synced and undoable like any app's.
 The native session (`crates/desktop/session`) is already thin: the compositor
 (`tilo-compositor`) shows buffers and routes input and draws no interface; a `WindowPolicy`
 decides placement and focus; surface apps reach the screen as `ShellSurface` layers through
-`tilo-shell-surface`; the shell and chrome are the Rust widgets of `tilo-desktop`
+the session's surface host (`src/platform/surfaces`); the shell and chrome are the Rust widgets of `tilo-desktop`
 (`desktop_host`, `topbar`, `overview`, `window_switcher`, …) over `tilo-desktop-model`, and
 everything a person can do is a published action (`Session::resources`, `Session::invoke`).
 The tilolang shell takes the place of `tilo-desktop`'s widgets, one part at a time, on the same
@@ -241,7 +241,7 @@ boundaries:
 
 - **Shell views on layers.** A shell package's views run in the tilolang process like any app's
   and draw through the same app window; a `ShellSurface` shows each part (bar, layout, overlays) as
-  layers, exactly as `tilo-shell-surface` shows a toolkit app. Headless, nested and DRM work
+  layers, exactly as the session's surface host shows a toolkit app. Headless, nested and DRM work
   unchanged, because the compositor's backends do.
 - **System resources for the shell.** What the chrome reads today through `chrome.rs` (clock,
   person, notifications), the desktop model (workspaces, strips, windows), tasks and presence
@@ -271,7 +271,7 @@ boundaries:
   the window is composited above the shell layer. After each layout, and on each frame that a
   component around it moves it (`ui.Map`'s pan and zoom, a strip row's scroll), it reports its
   rectangle in layout coordinates to the host's `Wells`, keyed by place. The shell's views run in
-  the compositor's process (`tilo-shell-surface`), so the surface host and the policy share one
+  the compositor's process (the session's `src/shell/part.rs`), so the surface host and the policy share one
   `Wells` handle, as `ShellDesktop` and `StripPolicy` share `Shell` today.
 
   The policy for a tilolang shell answers `initial_size`, `place` and `arrange` from `Wells`, as

@@ -15,7 +15,7 @@
 use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{WindowInfo, WindowPolicy as _};
 
-use tilo_shell_surface::{WellPolicy, well_policy};
+use tilo_session::platform::surfaces::{WellPolicy, well_policy};
 use ui::headless::FrameHarness;
 use ui::widget::Column;
 use ui::widget::{Element, Map, PinPlace, Wells, WindowWell, window_well};

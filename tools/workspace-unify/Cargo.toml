@@ -1320,7 +1320,6 @@ doc = false
 "tilo-settings-service" = { path = "../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheet" = { path = "../../crates/engines/tilo-sheet", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../crates/desktop/sheets", default-features = false, features = [] }
-"tilo-shell-surface" = { path = "../../crates/session/shell-surface", default-features = false, features = [] }
 "tilo-shm" = { path = "../../crates/platform/tilo-shm", default-features = false, features = [] }
 "tilo-socket" = { path = "../../crates/platform/tilo-socket", default-features = false, features = ["tokio"] }
 "tilo-sort" = { path = "../../crates/platform/tilo-sort", default-features = false, features = [] }
@@ -3933,7 +3932,6 @@ doc = false
 "tilo-session-power" = { path = "../../crates/os/power-service", default-features = false, features = ["default", "service"] }
 "tilo-settings-service" = { path = "../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../crates/desktop/sheets", default-features = false, features = [] }
-"tilo-shell-surface" = { path = "../../crates/session/shell-surface", default-features = false, features = [] }
 "tilo-socket" = { path = "../../crates/platform/tilo-socket", default-features = false, features = [] }
 "tilo-sort" = { path = "../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-speaker-service" = { path = "../../crates/session/speaker-service", default-features = false, features = [] }

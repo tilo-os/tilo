@@ -219,6 +219,8 @@ mod rotation;
 mod search;
 #[path = "second_device.rs"]
 mod second_device;
+#[path = "send_box_targets.rs"]
+mod send_box_targets;
 #[path = "service_sessions.rs"]
 mod service_sessions;
 #[path = "services.rs"]
@@ -245,6 +247,8 @@ mod sheets_placement;
 mod shell;
 #[path = "shell_a11y.rs"]
 mod shell_a11y;
+#[path = "shell_desktop.rs"]
+mod shell_desktop;
 #[path = "shell_displays.rs"]
 mod shell_displays;
 #[path = "shell_navigation.rs"]
@@ -269,6 +273,10 @@ mod strips_tabs;
 mod style_packages;
 #[path = "styles.rs"]
 mod styles;
+#[path = "surface_input_frames.rs"]
+mod surface_input_frames;
+#[path = "surface_lifted.rs"]
+mod surface_lifted;
 #[path = "test_control.rs"]
 mod test_control;
 #[path = "tools.rs"]
@@ -283,6 +291,8 @@ mod unheld_workspace;
 mod visual_alerts;
 #[path = "vpn.rs"]
 mod vpn;
+#[path = "well_policy.rs"]
+mod well_policy;
 #[path = "wifi_continuity.rs"]
 mod wifi_continuity;
 #[path = "window_accent.rs"]

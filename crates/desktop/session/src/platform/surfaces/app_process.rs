@@ -1,4 +1,4 @@
-//! The shell's surface apps in the compositor's process.
+//! A toolkit app shown on a layer of the compositor, in the session's process.
 //!
 //! The top bar, the launcher and the panels are ordinary toolkit apps. An
 //! [`AppProcess`] shows one of them on a rectangle of the desktop: it drives the
@@ -6,23 +6,6 @@
 //! changed the way the app's own frames are, and hands the compositor the
 //! buffer as a [`SurfaceLayer`]. The compositor knows nothing of the app;
 //! the app knows nothing of the compositor.
-
-#![cfg(target_os = "linux")]
-
-mod desktop;
-mod frames;
-mod i18n;
-pub mod part_view;
-mod raster;
-mod session_platform;
-pub mod shell_part;
-mod well_policy;
-mod widget;
-
-pub use desktop::{ShellDesktop, ShellGesture, WindowObserver, desktop};
-pub use shell_part::{SessionLink, ShellPart, ShellWork};
-pub use well_policy::{WellDesktop, WellPolicy, WindowModel, well_policy};
-pub use widget::WidgetSurface;
 
 use std::cell::Cell;
 
@@ -42,11 +25,11 @@ use winit::event::{
 use winit::keyboard::{ModifiersState, PhysicalKey, SmolStr};
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
-use frames::Frames;
+use super::frames::Frames;
 
-/// The API a hosted surface publishes through: every host's, so a surface app is reached the
-/// same on each.
-pub(crate) use tilo_session_core::surfaces::{Look, Published, through_api, through_api_as};
+// The API a hosted surface publishes through: every host's, so a surface app is reached the
+// same on each.
+use tilo_session_core::surfaces::{Published, through_api, through_api_as};
 
 /// The format files are dragged in.
 const URI_LIST: &str = "text/uri-list";
@@ -57,9 +40,7 @@ const BTN_MIDDLE: u32 = 0x112;
 const BTN_SIDE: u32 = 0x113;
 const BTN_EXTRA: u32 = 0x114;
 
-/// The rectangle an app is shown on, in the compositor's logical layout,
-/// and the output scale it is drawn at.
-pub use tilo_session_core::surface::Placement;
+use super::Placement;
 
 /// The surface the app is drawn on, as the toolkit asks it.
 struct Surface {
@@ -177,10 +158,12 @@ impl AppProcess {
     /// frame. Whether anything ran.
     pub fn serve_api(&mut self) -> bool {
         let app = &mut self.app;
-        let ran = self.api.serve_with(|actor, address, arguments| match actor {
-            Some(actor) => app.invoke_local_resource_action_as(actor, address, arguments),
-            None => app.invoke_local_resource_action(address, arguments),
-        });
+        let ran = self
+            .api
+            .serve_with(|actor, address, arguments| match actor {
+                Some(actor) => app.invoke_local_resource_action_as(actor, address, arguments),
+                None => app.invoke_local_resource_action(address, arguments),
+            });
         if ran {
             self.wants = true;
         }
@@ -271,7 +254,7 @@ impl Published for AppProcess {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut crate::Look<'_>,
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         // Through the app's own API, as every caller on this device.
         let api = self.api.clone();
@@ -289,7 +272,7 @@ impl Published for AppProcess {
         actor: &ui::tilo_actions::Actor,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut crate::Look<'_>,
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         let api = self.api.clone();
         self.revision = self.revision.wrapping_add(1);

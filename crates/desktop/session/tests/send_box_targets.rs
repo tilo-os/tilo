@@ -6,7 +6,7 @@
 
 use tilo_session_core::surface::ShellSurface as _;
 use tilo_session_core::surfaces::Published as _;
-use tilo_shell_surface::{AppProcess, Placement};
+use tilo_session::platform::surfaces::{AppProcess, Placement};
 
 /// A session-hosted app window with no menu of its own, drawn on the desktop: the window carries
 /// the send-to box itself.

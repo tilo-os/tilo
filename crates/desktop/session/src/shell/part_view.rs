@@ -41,8 +41,8 @@ use tilolang_tilo::instance::{Config, Instance, Mode};
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::{Meta, ResourceRef, Value};
 
-use crate::session_platform::{Loads, OnSession};
-use crate::{Placement, WidgetSurface};
+use crate::platform::session_platform::{Loads, OnSession};
+use crate::platform::surfaces::{Placement, WidgetSurface};
 
 /// How often the instance and its window may answer each other in one frame before the frame
 /// is drawn as it is: a press, the invocation it asked for, the answer, the next view run.
@@ -287,9 +287,9 @@ impl Open {
     /// Draw a frame of the view's tree when it owes one, and say whether it drew or changed
     /// what it shows.
     fn draw(&mut self) -> bool {
-        let before = crate::Published::revision(&self.widgets);
+        let before = tilo_session_core::surfaces::Published::revision(&self.widgets);
         let drew = self.widgets.prepare_frame();
-        drew || crate::Published::revision(&self.widgets) != before
+        drew || tilo_session_core::surfaces::Published::revision(&self.widgets) != before
     }
 }
 
@@ -519,7 +519,7 @@ impl PartView {
     /// draws.
     pub fn labels(&mut self) -> Vec<String> {
         self.open.as_mut().map_or_else(Vec::new, |open| {
-            crate::Published::accessible_labels(&mut open.widgets)
+            tilo_session_core::surfaces::Published::accessible_labels(&mut open.widgets)
         })
     }
 

@@ -1294,7 +1294,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn each_kept_window_claims_its_own_saved_tab_and_a_closed_ones_tab_goes() {
         let mut tree = kept_layout();
-        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let (desktop, _policy) = crate::platform::surfaces::desktop(7, 1.0);
         desktop.with_widgets(|widgets| {
             widgets.set_placement(tilo_session_core::surface::Placement {
                 origin: (0, 0),
@@ -1359,7 +1359,7 @@ mod tests {
         };
         let mut tree = layout(vec![window(44, unnamed), window(43, notes())]);
         tree.active = tree.workspaces[0].id();
-        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let (desktop, _policy) = crate::platform::surfaces::desktop(7, 1.0);
         desktop.with_widgets(|widgets| {
             widgets.set_placement(tilo_session_core::surface::Placement {
                 origin: (0, 0),
@@ -1410,7 +1410,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn kept_windows_that_answer_before_the_layout_wait_for_it_and_take_their_tabs() {
-        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let (desktop, _policy) = crate::platform::surfaces::desktop(7, 1.0);
         desktop.with_widgets(|widgets| {
             widgets.set_placement(tilo_session_core::surface::Placement {
                 origin: (0, 0),
@@ -1470,7 +1470,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn kept_windows_stop_waiting_for_a_layout_that_does_not_come() {
-        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let (desktop, _policy) = crate::platform::surfaces::desktop(7, 1.0);
         let mut partly = Restore::default();
         partly.begin();
         let mut first = kept_layout();
@@ -1547,7 +1547,7 @@ mod tests {
             window(41, windows("putty-setup.exe")),
             window(42, windows("putty.exe")),
         ]);
-        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let (desktop, _policy) = crate::platform::surfaces::desktop(7, 1.0);
         desktop.with_policy(|policy| policy.handle().replace_tree(tree));
         let saved = |tab: TabId, app: &str, start: Start| Saved {
             tab,
@@ -1583,7 +1583,7 @@ mod tests {
         let saved = window(tab, saved_terminal_tile());
         let mut tree = layout(vec![saved]);
         tree.active = tree.workspaces[0].id();
-        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let (desktop, _policy) = crate::platform::surfaces::desktop(7, 1.0);
         desktop.with_widgets(|widgets| {
             widgets.set_placement(tilo_session_core::surface::Placement {
                 origin: (0, 0),

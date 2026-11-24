@@ -36,8 +36,8 @@ use tilolang_tilo::resources::{ResourceStore, Watch};
 use tilolang_tilo::runtime::Delivery;
 use tilolang_tilo::tilolang::Compiled;
 
-use crate::session_platform::{Loads, OnSession};
-use crate::{Placement, WidgetSurface};
+use crate::platform::session_platform::{Loads, OnSession};
+use crate::platform::surfaces::{Placement, WidgetSurface};
 
 /// What a shell reads of the session and the names the session publishes it by: every host's,
 /// so the shell's views and the session use the same names.
@@ -123,20 +123,29 @@ pub fn installed_shell() -> Result<Option<Vec<Compiled>>, String> {
     // loads each before the one that uses it.
     let mut out: Vec<Compiled> = Vec::new();
     for import in &bundle.imports {
-        out.push(compiled_of(&import.wasm, &import.meta, ""));
+        out.push(compiled_of(&import.wasm, &import.meta, "")?);
     }
-    out.push(compiled_of(&bundle.wasm, &bundle.meta, &bundle.ids));
+    out.push(compiled_of(&bundle.wasm, &bundle.meta, &bundle.ids)?);
     Ok(Some(out))
 }
 
 /// A compiled package made of the module `wasm`, the metadata `meta` and the ids lock `ids`,
 /// as an installed payload holds them: the shape a shell's instance loads.
-fn compiled_of(wasm: &[u8], meta: &tilolang_tilo::tilolang::PackageMeta, ids: &str) -> Compiled {
-    Compiled {
+///
+/// # Errors
+/// The payload's ids lock does not read.
+fn compiled_of(
+    wasm: &[u8],
+    meta: &tilolang_tilo::tilolang::PackageMeta,
+    ids: &str,
+) -> Result<Compiled, String> {
+    let ids = tilolang_tilo::tilolang::IdsLock::parse(ids)
+        .map_err(|error| format!("{SHELL_APP}: its ids lock: {error}"))?;
+    Ok(Compiled {
         wasm: wasm.to_vec(),
         meta: meta.clone(),
-        ids: tilolang_tilo::tilolang::IdsLock::parse(ids).unwrap_or_default(),
-    }
+        ids,
+    })
 }
 
 /// How often the instance and its window may answer each other in one frame before the frame
@@ -563,7 +572,7 @@ impl ShellPart {
     /// its link; `waker` wakes the session's loop when work the instance waits for is ready.
     ///
     /// The views' wells ([`ui::widget::Wells`]) report to `wells`, the handle the window policy
-    /// placing the windows they stand for shares (`crate::WellPolicy`).
+    /// placing the windows they stand for shares (`crate::platform::surfaces::WellPolicy`).
     ///
     /// The part is the shell's whole screen ([`screen_layer`]): it shows the person's
     /// layout and puts each window in its well.
@@ -1216,36 +1225,36 @@ impl ShellPart {
     }
 }
 
-impl crate::Published for ShellPart {
+impl tilo_session_core::surfaces::Published for ShellPart {
     /// A part whose display went offers nothing: the parts still there answer the API.
     fn offered(&self) -> bool {
         !self.retired()
     }
 
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
-        crate::Published::resources(&mut self.widgets)
+        tilo_session_core::surfaces::Published::resources(&mut self.widgets)
     }
 
     fn revision(&self) -> Option<u64> {
-        crate::Published::revision(&self.widgets)
+        tilo_session_core::surfaces::Published::revision(&self.widgets)
     }
 
     fn invoke(
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        look: &mut crate::Look<'_>,
+        look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         self.input = true;
-        crate::Published::invoke(&mut self.widgets, address, arguments, look)
+        tilo_session_core::surfaces::Published::invoke(&mut self.widgets, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
-        crate::Published::accessible_labels(&mut self.widgets)
+        tilo_session_core::surfaces::Published::accessible_labels(&mut self.widgets)
     }
 
     fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
-        crate::Published::controls(&mut self.widgets)
+        tilo_session_core::surfaces::Published::controls(&mut self.widgets)
     }
 
     fn press(&mut self, name: &str) -> Result<(), String> {
@@ -1255,20 +1264,20 @@ impl crate::Published for ShellPart {
         // input alone, so a press that did not say so waited for the next deadline — the
         // clock — the shell drawing the style the person left until then.
         self.input = true;
-        crate::Published::press(&mut self.widgets, name)
+        tilo_session_core::surfaces::Published::press(&mut self.widgets, name)
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
-        crate::Published::a11y_tree(&mut self.widgets)
+        tilo_session_core::surfaces::Published::a11y_tree(&mut self.widgets)
     }
 
     fn a11y_name(&self) -> Option<String> {
-        crate::Published::a11y_name(&self.widgets)
+        tilo_session_core::surfaces::Published::a11y_name(&self.widgets)
     }
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
         self.input = true;
-        crate::Published::a11y_action(&mut self.widgets, target, action)
+        tilo_session_core::surfaces::Published::a11y_action(&mut self.widgets, target, action)
     }
 
     fn wants_keyboard(&self) -> bool {
@@ -1373,10 +1382,10 @@ impl ShellPart {
         if !self.widgets.wants_frame() {
             return false;
         }
-        let before = crate::Published::revision(&self.widgets);
+        let before = tilo_session_core::surfaces::Published::revision(&self.widgets);
         let started = std::time::Instant::now();
         let drew = self.widgets.prepare_frame();
-        let changed = crate::Published::revision(&self.widgets) != before;
+        let changed = tilo_session_core::surfaces::Published::revision(&self.widgets) != before;
         if changed {
             self.work.drawn = self.work.drawn.wrapping_add(1);
             self.work.drawing = self.work.drawing.saturating_add(started.elapsed());
@@ -1441,7 +1450,7 @@ mod tests_support;
 mod tests;
 
 #[cfg(test)]
-mod places;
+mod places_tests;
 
 #[cfg(test)]
 mod switcher_keys;

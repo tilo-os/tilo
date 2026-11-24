@@ -346,7 +346,6 @@
   "tilo-staging-reclaim": {"libraries": 1741599, "tests": 15448680},
   "tilo-startup-metrics": {"libraries": 1852026, "tests": 10244336},
   "tilo-subject": {"libraries": 745503, "tests": 2856392},
-  "tilo-shell-surface": {"libraries": 17740398, "tests": 2328610928},
   "tilo-system-info": {"libraries": 975771, "tests": 12544472},
   "tilo-system-service": {"libraries": 4327354, "tests": 27451056},
   "tilo-system-stats": {"libraries": 25856058, "tests": 15622248},

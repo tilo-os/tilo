@@ -17,6 +17,9 @@
 #[cfg(target_os = "linux")]
 pub mod session;
 
+#[cfg(target_os = "linux")]
+pub(crate) mod session_platform;
+
 /// What a host reads of the machine it runs on.
 pub mod readings;
 

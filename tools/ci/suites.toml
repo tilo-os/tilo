@@ -897,17 +897,6 @@ readers = [
 
 
 [[cargo]]
-package = "tilo-shell-surface"
-# The part embeds and compiles the shell package's sources and ids lock, and the packages its
-# views reach (`notes`, `tasks`, `chat`), every file of each; its places' tests publish a notebook
-# from the notes app's sources.
-inputs = ["apps/tl/"]
-readers = [
-  "crates/session/shell-surface/src/shell_part/places.rs",
-  "crates/session/shell-surface/src/shell_part/tests.rs",
-]
-
-[[cargo]]
 package = "tilo-local"
 # The launcher runs the development session's scripts, the web bundle's build and the local
 # hosting stack from the checkout it is built in.
@@ -1554,6 +1543,8 @@ readers = [
   "crates/desktop/session/src/nearby_transfer.rs",
   "crates/desktop/session/src/app_wire.rs",
   "crates/desktop/session/src/shell/mod.rs",
+  "crates/desktop/session/src/shell/part/places_tests.rs",
+  "crates/desktop/session/src/shell/part/tests.rs",
   "crates/desktop/session/tests/common/dev_apps.rs",
   "crates/desktop/session/tests/common/mod.rs",
   "crates/desktop/session/tests/common/people.rs",

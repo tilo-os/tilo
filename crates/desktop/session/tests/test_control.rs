@@ -25,12 +25,12 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_compositor::KeyRepeat;
-use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
 use tilo_desktop_model::{
     Layout, Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session};
+use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SHELL_RESOURCE};
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
@@ -693,7 +693,7 @@ fn session_showing(tree: Layout, socket: &Path) -> Session {
     session.handle().replace_tree(tree);
     session
         .desktop()
-        .with_widgets(tilo_shell_surface::WidgetSurface::relayout);
+        .with_widgets(tilo_session::platform::surfaces::WidgetSurface::relayout);
     session.step(Duration::from_millis(1)).expect("step");
     session
 }

@@ -12,7 +12,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use crate::common::{Linked, TestUser, hold_workspace, wait_until_subscribed};
 
 const TEST_ALPN: &[u8] = b"tilo-workspace-join/test";
-const TEST_ALPN_TWO: &[u8] = b"tilo-shell-surface/test";
+const TEST_ALPN_TWO: &[u8] = b"tilo-additional-protocol/test";
 
 #[derive(Clone, Debug)]
 struct Echo {
