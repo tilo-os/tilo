@@ -2,8 +2,6 @@
 
 d-so-tilo-chat = Chat
 
-d-so-tilo-lang-chat-keywords = nachrichten, chat, unterhaltung, gespräch, messenger, sofortnachrichten
-
 d-lmdoxbnn = Unterhaltungen
     .doc = Die Unterhaltungen des Arbeitsbereichs in der Reihenfolge der Seitenleiste: Kanäle außerhalb jeder Kategorie, die Kategorien mit ihren eigenen, und die Direktnachrichten, in der Liste als Personen.
     .noun = { $count ->
@@ -181,36 +179,6 @@ d-so72kbuk-filter-accepted = Angenommen
 
 d-so72kbuk-filter-at = Wann
 
-d-msf7yzn7 = Neuer Kanal
-    .doc = Fügt der Seitenleiste einen Textkanal hinzu, unter `category`, wenn sie angegeben ist, und über `topic`, wenn es angegeben ist.
-    .w-new-channel = new-channel
-
-d-msf7yzn7-topic = Thema
-
-d-msf7yzn7-category = Kategorie
-
-d-26f7sh5k = Neue Kategorie
-    .doc = Fügt der Seitenleiste eine Kategorie hinzu.
-    .w-new-category = Neue Kategorie
-
-d-uhenzjex = Problem melden
-    .doc = Meldet ein Problem, auf das jemand beim Benutzen von Tilo gestoßen ist, im Kanal #feedback des Arbeitsbereichs, den die erste Meldung eröffnet.
-    .did = hat ein Problem gemeldet
-    .w-say-what-went-wrong-first = Sag zuerst, was schiefgegangen ist
-
-d-uhenzjex-body = Text
-
-d-v6wnfixl = Problem melden~present
-
-d-x32afsaz = Person anschreiben~present
-
-d-tkh5jonr = Personen der Direktnachrichten übernehmen
-    .doc = Die Direktnachrichten, die eine frühere Version mit nur einer Person führte (`person`) und die jedes Mitglied lesen konnte: in jeder sind diese Person und wer sie geöffnet hat, wie ihr Verlauf sagt.
-
-d-3cetzzm3 = Nachricht
-    .doc = Öffnet die Direktnachricht zwischen dem Aufrufer und `who` in der Seitenleiste, oder die schon offene zwischen den beiden: zwei Personen haben eine Unterhaltung, nicht jedes Mal eine neue leere.
-    .w-is-not-in-this-workspace = { $name } ist nicht in diesem Arbeitsbereich
-
 d-peb7lz2j = Senden
     .doc = Veröffentlicht eine Nachricht in einem Kanal, einem Thread oder einer Direktunterhaltung als der, der es aufträgt, und antwortet auf eine andere, wenn `reply_to` eine nennt.
     .did = { $count ->
@@ -218,43 +186,17 @@ d-peb7lz2j = Senden
        *[other] schrieb { $count } Nachrichten
     }
 
-d-634q3q33 = Schreiben an
-    .doc = Schreibt `body` an `who`, eine Person oder einen Agenten, in der einen Direktunterhaltung mit ihnen: der schon offenen, sonst einer neuen in der Seitenleiste.
-
 d-qaa5kdra = Eine Ansicht senden
     .doc = Sendet eine Ansicht als Nachricht: ihren Titel als das, was die Nachricht sagt, ihre Definition, damit jeder, der sie liest, sie den eigenen Ansichten hinzufügen kann.
     .w-the-view-is-empty = Die Ansicht ist leer
 
-d-255qjx7d = Bearbeiten
-    .doc = Ändert, was eine Nachricht sagt.
-    .w-only-its-author-can-edit-a = Nur ihr Autor kann eine Nachricht bearbeiten
-    .w-type-a-message-first = Schreib zuerst eine Nachricht
-
 d-vhmhrq2t = Löschen
     .doc = Löscht eine Nachricht aus dem Kanal oder Thread, in dem sie steht.
-
-d-2ojqeubz = Anheften
-    .doc = Heftet eine Nachricht an ihren Kanal an, oder löst sie wieder.
-    .w-pin = Anheften
-    .w-unpin = Lösen
-
-d-np3mn65k = Reagieren
-    .doc = Fügt einer Nachricht deine Reaktion mit einem Emoji hinzu, oder nimmt sie zurück, wenn du schon damit reagiert hattest.
 
 d-6uysx57s = Thread beginnen
     .doc = Beginnt einen Thread aus einer Nachricht eines Kanals oder einer Direktunterhaltung, benannt nach dem, was die Nachricht sagt.
 
 d-dgrvpxre = Ansicht senden~present
-
-d-clq6mq5o = Neue Fähigkeit~present
-
-d-umfqj3us = Fähigkeit korrigieren~present
-
-d-3e27liaz = Beispiel aufbewahren~present
-
-d-comllwls = Bearbeiten~present
-
-d-c2x2a6dh = Anheften~present
 
 d-dzzuovny = Ungelesen
     .w-unread = Ungelesen
@@ -295,42 +237,22 @@ d-5rkfnkg4 = Seitenleiste
 d-ymtess4x = Kanal
     .w-message = Nachricht an #{ $name }
     .w-send = Senden
-    .w-wrote-this-in-the-native-chat = { $by } hat das im nativen Chat geschrieben
     .w-pinned = Angeheftet
     .w-edit-message = Nachricht bearbeiten
     .w-cancel = Abbrechen
     .w-save = Speichern
     .w-reply = Antworten
     .w-edit = Bearbeiten
-    .w-running = Läuft …
-    .w-working = Arbeitet …
-    .w-waiting-for-your-answer = Wartet auf deine Antwort
-    .w-failed = Fehlgeschlagen
-    .w-stopped = Gestoppt
-    .w-done = Fertig
-    .w-allow = Erlauben
-    .w-always = Immer
-    .w-deny = Ablehnen
 
 d-jbezqvlc = Direkt
     .w-message = Nachricht an { $name }
     .w-send = Senden
-    .w-wrote-this-in-the-native-chat = { $by } hat das im nativen Chat geschrieben
     .w-pinned = Angeheftet
     .w-edit-message = Nachricht bearbeiten
     .w-cancel = Abbrechen
     .w-save = Speichern
     .w-reply = Antworten
     .w-edit = Bearbeiten
-    .w-running = Läuft …
-    .w-working = Arbeitet …
-    .w-waiting-for-your-answer = Wartet auf deine Antwort
-    .w-failed = Fehlgeschlagen
-    .w-stopped = Gestoppt
-    .w-done = Fertig
-    .w-allow = Erlauben
-    .w-always = Immer
-    .w-deny = Ablehnen
 
 d-q45utnmh = Kanalübersicht
 
@@ -343,22 +265,12 @@ d-hrbsxhor = Fähigkeitszeile
 d-enkgjyn7 = Thread
     .w-message = Nachricht an { $name }
     .w-send = Senden
-    .w-wrote-this-in-the-native-chat = { $by } hat das im nativen Chat geschrieben
     .w-pinned = Angeheftet
     .w-edit-message = Nachricht bearbeiten
     .w-cancel = Abbrechen
     .w-save = Speichern
     .w-reply = Antworten
     .w-edit = Bearbeiten
-    .w-running = Läuft …
-    .w-working = Arbeitet …
-    .w-waiting-for-your-answer = Wartet auf deine Antwort
-    .w-failed = Fehlgeschlagen
-    .w-stopped = Gestoppt
-    .w-done = Fertig
-    .w-allow = Erlauben
-    .w-always = Immer
-    .w-deny = Ablehnen
 
 d-rydgecpc = Hier wird geschrieben
     .w-is-typing = { $who } schreibt …
@@ -373,33 +285,10 @@ d-dcprca6g = Hier wird im Thread geschrieben
     .w-and-others-are-typing = { $who } und andere schreiben …
 
 d-h327uiql = Frage und Antwort
-    .w-working = Arbeitet …
-    .w-waiting-for-your-answer = Wartet auf deine Antwort
-    .w-failed = Fehlgeschlagen
-    .w-stopped = Gestoppt
-    .w-done = Fertig
-    .w-allow = Erlauben
-    .w-always = Immer
-    .w-deny = Ablehnen
 
 d-hjw5xd6b = Gesagt
     .w-a-view-to-add-to-your = Eine Ansicht, die du den eigenen hinzufügen kannst
     .w-edited = bearbeitet
-
-# What each argument is called where a person gives it.
-d-msf7yzn7-name = Name
-
-d-26f7sh5k-name = Name
-
-d-3cetzzm3-who = Wer
-
-d-rkqdq6oi = Unterhaltung mit
-    .doc = Die Direktunterhaltung zwischen dem Aufrufer und `who`, keine, solange die beiden keine haben: was ein Agent, ein Skript oder eine andere App liest, um sie zu finden, ohne etwas zu öffnen oder anzulegen.
-
-d-rkqdq6oi-who = Wer
-
-d-3vgu5d7q = Ungelesen
-    .doc = Wie viele Nachrichten einer Direktunterhaltung die fragende Person nicht gelesen hat: die Zahl, die ihre Zeile neben der anderen Person zeigt, und was ein Agent oder ein Skript davon liest.
 
 d-peb7lz2j-to = An
 
@@ -407,25 +296,15 @@ d-peb7lz2j-body = Text
 
 d-peb7lz2j-reply_to = Antwort auf
 
-d-634q3q33-who = Wer
-
-d-634q3q33-body = Text
-
 d-qaa5kdra-to = An
 
 d-qaa5kdra-title = Titel
 
 d-qaa5kdra-definition = Definition
 
-d-255qjx7d-body = Text
-
 d-vhmhrq2t-to = An
 
 d-vhmhrq2t-m = M
-
-d-2ojqeubz-pinned = Angeheftet
-
-d-np3mn65k-emoji = Emoji
 
 d-6uysx57s-c = C
 
@@ -442,61 +321,9 @@ d-xr347kui = Sprachkanal
 
 d-olqjezxu = Name
 
-d-egiu6ag4 = Neuer Sprachkanal
-    .doc = Fügt der Seitenleiste einen Sprachkanal hinzu, unter `category`, wenn sie angegeben ist.
-    .w-voice = Sprache
-
-d-egiu6ag4-name = Name
-
-d-egiu6ag4-category = Kategorie
-
-d-dra3nelb = Neue Fähigkeit
-    .doc = Beginnt eine Fähigkeit namens `name`.
-    .w-the-workspace-already-has-a-skill = Der Arbeitsbereich hat schon eine Fähigkeit namens { $name }
-
-d-dra3nelb-name = Name
-
-d-fvl622e2 = Fähigkeit korrigieren
-    .doc = Korrigiert eine Fähigkeit: nur das Angegebene ändert sich, und was fehlt, bleibt, wie es ist.
-    .w-the-workspace-already-has-a-skill = Der Arbeitsbereich hat schon eine Fähigkeit namens { $name }
-
-d-fvl622e2-name = Name
-
-d-fvl622e2-work = Wofür sie gilt
-
-d-fvl622e2-how = So wird sie getan
-
-d-fvl622e2-form = Form des Ergebnisses
-
-d-fvl622e2-model = Modell
-
-d-wmxknkkc = Fähigkeit vergessen
-    .doc = Vergisst eine Fähigkeit: keine spätere Runde liest sie.
-
-d-4fojczoe = Ein Beispiel aufbewahren
-    .doc = Bewahrt ein Beispiel einer Fähigkeit auf: ein Ergebnis, das die Person angenommen (mehr davon) oder abgelehnt (weniger davon) hat, mit dem, was sie dazu gesagt hat.
-    .w-an-example-says-what-the-result = Ein Beispiel sagt, was das Ergebnis war
-
-d-4fojczoe-text = Text
-
-d-4fojczoe-accepted = Angenommen
-
-d-4fojczoe-note = Notiz
-
-d-aqrwkeib = Das Beispiel entfernen
-    .doc = Nimmt ein Beispiel aus einer Fähigkeit heraus.
-
-d-aqrwkeib-example = Beispiel
-
 d-qnkkcusk = Sprachkanal
 
 d-lkjppscz = Sprachkanalübersicht
-
-d-aod7dups = Früheren Chat übernehmen
-    .doc = Die Unterhaltungen, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jeweils mit Name und Thema, und jede Nachricht eines Kanals mit ihrem Wortlaut, ob sie angeheftet war und welche Kennung sie dort hatte.
-
-d-uuhhrrha = Frühere Fähigkeiten übernehmen
-    .doc = Die Fähigkeiten des Arbeitsbereichs, die der frühere Chat vor der Übernahme dieser Kennung hielt, einmalig in diese übernommen: wie jede heißt, welche Arbeit sie betrifft, wie die Arbeit hier getan wird, die Form ihres Ergebnisses und das Modell, unter der Kennung, die sie dort hatte, und in der Reihenfolge, in der sie stand, und die Beispiele, die sie aufbewahrte, älteste zuerst, jedes mit dem, was das Ergebnis war, ob die Person es angenommen hat, was sie dazu gesagt hat und wann es aufbewahrt wurde.
 
 d-4da5gcom = Geschrieben in
     .doc = Wo eine hierher übernommene oder weitergeleitete Nachricht geschrieben wurde.
@@ -544,10 +371,6 @@ d-6372fg6z = Weiterleiten
 d-jozxp5qy = Kanal löschen
     .doc = Löscht einen Kanal und was darin gesagt wurde.
 
-d-uukhgkjq = Kategorie löschen
-    .doc = Löscht eine Kategorie, die keinen Kanal enthält.
-    .w-move-or-delete-its-channels-first = Verschiebe oder lösche zuerst ihre Kanäle
-
 d-7sjai347 = Melden
     .doc = Meldet eine Nachricht einer Unterhaltung an die Moderatoren des Arbeitsbereichs, mit Grund, wenn die meldende Person einen nennt.
     .did = hat eine Nachricht gemeldet
@@ -557,12 +380,6 @@ d-7sjai347-to = In
 d-7sjai347-m = Nachricht
 
 d-7sjai347-reason = Grund
-
-d-qfzfo5jh = Entscheiden
-    .doc = Schließt eine Meldung ab: was eine Moderatorin oder der Moderationsagent entschieden hat.
-    .w-say-what-was-decided = Sag, was entschieden wurde
-
-d-qfzfo5jh-decision = Entscheidung
 
 d-6372fg6z-to = In
 
@@ -576,34 +393,11 @@ d-6372fg6z-written = Geschrieben
 
 d-6372fg6z-reply_to = Antwort auf
 
-d-bhn35nvx = Reaktion weiterleiten
-    .doc = Leitet eine Reaktion weiter, die jemand einer Nachricht dort gab, wo sie geschrieben wurde, so wie jener Ort die Person nennt: das Gegenstück zu „Weiterleiten“ für eine Reaktion.
-    .did = hat eine Reaktion weitergeleitet
-    .w-say-which-emoji = Sag, welches Emoji
-    .w-say-who-gave-the-reaction = Sag, wer die Reaktion gab
-    .w-say-what-they-are-called-there = Sag, wie die Person dort heißt
-
-d-bhn35nvx-emoji = Emoji
-
-d-bhn35nvx-persona = Konto
-
-d-bhn35nvx-by = Von
-
-d-bhn35nvx-given = Gegeben
-
 d-jozxp5qy-from = Aus
 
 d-jozxp5qy-ch = Kanal
 
-d-uukhgkjq-c = Kategorie
-
 d-psjj65el = Weiterleiten~present
-
-d-xjtinzwn = Reaktion weiterleiten~present
-
-d-gwrwo3w5 = Kategorie löschen~present
-
-d-5ips5yl3 = Entscheiden~present
 
 d-n7d27huf = Anhänge
     .doc = Die Dateien, die sie mitbringt: was eine Brücke aus einem anderen Dienst weiterleitet, und was jemand mit einer Nachricht sendet.
@@ -642,21 +436,5 @@ d-hammizbi = Von
     .doc = Der Name, den jener Ort dafür zeigt.
 
 d-6372fg6z-attachments = Anhänge
-
-d-ggtglnmb = Kanal verschieben
-    .doc = Verschiebt einen Kanal an eine Stelle der Seitenleiste: unter `category` oder außerhalb jeder, an `at` unter den dort gelisteten Kanälen (am Ende, wenn negativ).
-
-d-ggtglnmb-ch = Kanal
-
-d-ggtglnmb-category = Kategorie
-
-d-ggtglnmb-at = Stelle
-
-d-n4l2mod2 = Kategorie verschieben
-    .doc = Verschiebt eine Kategorie an eine Stelle der Seitenleiste, an `at` unter den dort gelisteten Kategorien und Kanälen (am Ende, wenn negativ).
-
-d-n4l2mod2-c = Kategorie
-
-d-n4l2mod2-at = Stelle
 
 d-peb7lz2j-attachments = Anhänge
