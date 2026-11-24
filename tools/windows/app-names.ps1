@@ -5,7 +5,6 @@ function Get-TiloWindowsAppName {
         'file-explorer' { 'Files' }
         'word-processor' { 'Word Processor' }
         'hex-editor' { 'Hex Editor' }
-        'code-editor' { 'Code Editor' }
         'api-tester' { 'API Tester' }
         'diffmerge' { 'Diff and Merge' }
         'db-client' { 'Database Client' }

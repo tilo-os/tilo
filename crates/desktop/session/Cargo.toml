@@ -196,6 +196,8 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 # The device's image model as the session's actions: its model gateway connection and the
 # library analysis search reads, which only a Linux desktop session hosts.
 tilo-vision-service = { path = "../../services/vision" }
+# The code editor's device work: its files, searches, commands and language servers.
+code-engine = { path = "../../engines/code-engine" }
 # The apps the session runs itself keep their resources in the workspace's store, whose
 # commands are answered by this device's own workspace service.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }

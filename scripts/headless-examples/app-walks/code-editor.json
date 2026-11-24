@@ -1,0 +1,67 @@
+{
+  "app": "code-editor",
+  "said": "Code Editor",
+  "tl": {
+    "id": "so.tilo.code-editor",
+    "package": "code-editor"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Code Editor on an empty project",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "actions" },
+        { "wait_for": "New file" },
+        { "targets": true }
+      ]
+    },
+    {
+      "id": "new-file",
+      "said": "Make a file and write code in it",
+      "ops": [
+        { "press": { "tl": "New file" } },
+        { "wait_for": "ui.CodeEditor" },
+        { "type": { "into": "ui.CodeEditor", "text": "fn main() {\n    let x = 1;\n}\n" } },
+        { "wait_for": "Unsaved" }
+      ]
+    },
+    {
+      "id": "check",
+      "said": "Check the file and read its problems",
+      "ops": [
+        { "press": { "tl": "Check the file" } },
+        { "wait_for": "Problems" }
+      ]
+    },
+    {
+      "id": "run-a-command",
+      "said": "Run a command in the project and read what it answered",
+      "ops": [
+        { "press": { "tl": "Panel" } },
+        { "press": { "tl": "Terminal" } },
+        { "press": { "tl": "Run" } },
+        { "wait_for": "Stop" }
+      ]
+    },
+    {
+      "id": "search-the-project",
+      "said": "Search the project and read the places it found",
+      "ops": [
+        { "press": { "tl": "Panel" } },
+        { "press": { "tl": "Search results" } },
+        { "type": { "into": "ui.TextInput", "text": "main" } },
+        { "press": { "tl": "Search" } }
+      ]
+    },
+    {
+      "id": "dark",
+      "said": "The same project in the dark theme",
+      "ops": [
+        { "theme": true },
+        { "wait_for": "Problems" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+[package]
+name = "code-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The code editor's device work: a project's files read, written, searched and listed, its commands run, and its language servers"
+
+[dependencies]
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+serde.workspace = true
+serde_json.workspace = true
+lsp-types = "0.97"
+url.workspace = true
+# A command's output read without letting it grow without bound.
+bounded-command = { path = "../../platform/bounded-command" }
+tilo-process = { path = "../../platform/tilo-process" }
+# Saving a source file is a write that must not truncate it: a temp file, fsync and rename.
+tilo-files = { path = "../../platform/tilo-files" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

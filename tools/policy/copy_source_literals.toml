@@ -115,11 +115,6 @@ reason = "A service's name, spelled the same in every language; the sentence aro
 # picture or a test, never in a window a person works in.
 
 [[allow]]
-file = "apps/code-editor/src/app.rs"
-text = "Reloaded main.rs from disk"
-reason = "A sample a capture stages for the window's status shot; no person's window shows it."
-
-[[allow]]
 file = "crates/core/tilo-resource/src/read.rs"
 text = "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource."
 reason = "What the read tool answers an agent, never shown in a window."

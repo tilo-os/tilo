@@ -215,7 +215,7 @@ wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-
 args = ["--locked", "--examples"]
 unify = "workspace-unify"
 packages = [
-    "accounts", "app-cli", "key-group", "code-editor",
+    "accounts", "app-cli", "key-group",
     "containers", "discord-worker", "imager", "launcher", "local-model-service",
     "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
     "tilo-agent-session", "tilo-app", "tilo-bluez",
@@ -7096,7 +7096,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "clocks", "devices", "displays-across-devices", "file-explorer", "music", "notes", "settings", "shell", "tube", "video-player"]
+app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "clocks", "code-editor", "devices", "displays-across-devices", "file-explorer", "music", "notes", "settings", "shell", "tube", "video-player"]
 
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the
 # frame that shows its window: the cold open and each open after a quit, as the walks of the apps
@@ -7160,42 +7160,6 @@ requires = ["arch=x86_64"]
 isolation = "nested"
 timeout_secs = 1200
 on = ["idle"]
-
-[[check]]
-name = "editor-typing-iai-tools"
-# Installs packages (npm, PyPI, rustup) from hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/perf/build-typing-tools.sh"
-# Runs `cargo install` of a crate the state's Cargo.lock doesn't name, so it needs cargo's
-# network; t turns it off where it hands a job the state's crates.
-env = { CARGO_NET_OFFLINE = "false" }
-requires = ["arch=x86_64"]
-outputs = ["/target/iai-runner/**", "/target/iai-valgrind-fixed/install/**", "/target/iai-valgrind-fixed/build-inputs.txt", "/target/iai-valgrind-fixed/install.sha256"]
-timeout_secs = 3600
-on = ["dispatch"]
-
-[[check]]
-name = "editor-typing-iai-build"
-# Installs packages (npm, PyPI, rustup) from hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/perf/typing-iai.sh --build-only"
-needs = ["editor-typing-iai-tools"]
-requires = ["arch=x86_64"]
-outputs = ["/target/iai-built/**", "/target/iai/benchmark-executable*", "/target/iai/*source.sha256", "/target/iai/build-inputs.sha256", "/target/iai/compiler.txt", "/target/iai/instrumenter*", "/target/iai/build.jsonl", "/target/cargo-timings/**"]
-timeout_secs = 3600
-on = ["dispatch"]
-
-[[check]]
-name = "editor-typing-iai"
-# Installs packages (npm, PyPI, rustup) from hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/perf/typing-iai.sh"
-needs = ["editor-typing-iai-build", "editor-typing-iai-tools"]
-requires = ["arch=x86_64"]
-outputs = ["/target/iai/**"]
-cache = false
-timeout_secs = 3600
-on = ["dispatch"]
 
 # ---- Product images, signatures and publication
 #

@@ -59,6 +59,9 @@ fn main() -> std::process::ExitCode {
     // rendering) build rayon's process-wide pool on first use: build it here,
     // bounded, before a session thread reaches one.
     tilo_rt::bound_parallel_pool();
+    // The code editor's device work — its files, its searches, its commands and its language
+    // servers — answered for the one app that asks it (`engine.call`, `engine.start`).
+    code_engine::register();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it opens no display and

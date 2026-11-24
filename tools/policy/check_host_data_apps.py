@@ -32,7 +32,6 @@ PLANS = Path("tools/screenshots")
 # person opens in them, never the machine by themselves.
 EXCEPTIONS = {
     "backups": "shows the backup location the person chose, nothing until then",
-    "code-editor": "shows the project the person opens, nothing until then",
     "git-client": "shows the repository the person opens, nothing until then",
 }
 

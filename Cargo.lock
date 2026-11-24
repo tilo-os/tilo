@@ -2430,6 +2430,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "code-engine"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "lsp-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-files",
+ "tilo-process",
+ "tilo-test-env",
+ "tilolang-tilo",
+ "url",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -20967,6 +20983,7 @@ dependencies = [
  "block-devices",
  "bounded-command",
  "browser-continuity",
+ "code-engine",
  "collab-types",
  "collaboration",
  "compat-catalogue",

@@ -102,10 +102,6 @@ aarch64 = 1703936
 x86_64 = 1245184
 aarch64 = 1179648
 
-[apps."so.tilo.code-editor"]
-x86_64 = 3407872
-aarch64 = 2490368
-
 [apps."so.tilo.contacts"]
 x86_64 = 1638400
 aarch64 = 1638400

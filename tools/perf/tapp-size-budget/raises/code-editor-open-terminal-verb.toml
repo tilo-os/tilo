@@ -1,5 +1,0 @@
-reason = "the project offers the terminal's open-terminal verb, with its label and the strings the palette asks its values with"
-run = "rf37e1c0c06"
-
-[apps."so.tilo.code-editor"]
-x86_64 = 14336
