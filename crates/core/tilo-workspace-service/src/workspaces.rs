@@ -3236,6 +3236,23 @@ impl Workspaces {
             workspace.workspace(),
             access.member_user_roots.iter().copied(),
         );
+        // A holder is no member and no trusted person, and keeps what it is
+        // named to keep: the peers that dial it, and that it dials, admit the
+        // one device each naming names.
+        let now_ns = tilo_clock::unix_now_ns();
+        let holders: Vec<[u8; 32]> = workspace
+            .peer()
+            .governance()
+            .keeping_devices()
+            .into_iter()
+            .filter(|hint| {
+                tilo_user_identity::verify_device_cert_at(&hint.host, now_ns).is_ok()
+            })
+            .map(|hint| hint.host.device_public_key)
+            .collect();
+        self.inner
+            .memberships
+            .record_holders(workspace.workspace(), holders);
         // What the workspace keeps as keys its person revoked: refused with how to approve another,
         // and dropped from its access, so every caller is told what to do.
         let revoked = collaboration::revoked_keys(workspace);

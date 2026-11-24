@@ -784,16 +784,20 @@ impl Workspaces {
         let workspace_id = state.id().map_err(Refusal::Other)?;
         let host = &self.inner.host;
         let (certificate, keeps_workspace) = state.read(|peer| {
+            // The device a workspace names among its holders is no member and is
+            // admitted by the one row its naming writes: the address it signed,
+            // carrying its own certificate.
+            let keeping = peer
+                .governance()
+                .keeping_devices()
+                .into_iter()
+                .find(|keeping| keeping.host.device_public_key == remote);
             let certificate = peer
                 .certificates()
                 .into_iter()
-                .find(|certificate| certificate.device_public_key == remote);
-            let keeps = peer
-                .governance()
-                .keeping_devices()
-                .iter()
-                .any(|keeping| keeping.host.device_public_key == remote);
-            (certificate, keeps)
+                .find(|certificate| certificate.device_public_key == remote)
+                .or_else(|| keeping.clone().map(|keeping| keeping.host));
+            (certificate, keeping.is_some())
         });
         // A hosted browser environment's device is the server's own: the
         // register holds the certificate it was placed with, which the
