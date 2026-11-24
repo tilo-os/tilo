@@ -4,8 +4,8 @@
 
 use crate::model::{
     Accessory, Band, Bluetooth, Client, Connectivity, Link, Metered, Mobile, MobileProfile, Modem,
-    ModemUnit, Nearby, Network, NetworkWake, SavedIpv4, SavedNetwork, Tethering, Vpn,
-    VpnPluginKind, VpnProfile, Wifi, WifiNetwork, Wired, ordered,
+    ModemUnit, Nearby, Network, NetworkWake, SavedEnterprise, SavedIpv4, SavedNetwork, Tethering,
+    Vpn, VpnPluginKind, VpnProfile, Wifi, WifiNetwork, Wired, ordered,
 };
 
 /// A change to make on the device.
@@ -286,7 +286,7 @@ fn saved_networks() -> Vec<SavedNetwork> {
 fn with_settings(mut saved: SavedNetwork) -> SavedNetwork {
     let Some(settings) = read_or_log(
         "saved network settings",
-        os_actions::connection_profile_settings(&saved.id),
+        os_actions::connection_profile_settings(&saved.profile),
     ) else {
         return saved;
     };
@@ -298,8 +298,12 @@ fn with_settings(mut saved: SavedNetwork) -> SavedNetwork {
     saved.hidden = settings.hidden.unwrap_or_default();
     saved.open = settings.open;
     saved.ipv4 = settings.ipv4.as_ref().map(SavedIpv4::from);
-    saved.wake = read_or_log("network wake", os_actions::network_wake::status(&saved.id))
-        .map(|status| NetworkWake::from(&status));
+    saved.enterprise = settings.enterprise.as_ref().map(SavedEnterprise::from);
+    saved.wake = read_or_log(
+        "network wake",
+        os_actions::network_wake::status(&saved.profile),
+    )
+    .map(|status| NetworkWake::from(&status));
     saved
 }
 

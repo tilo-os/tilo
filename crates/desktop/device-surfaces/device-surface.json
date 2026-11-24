@@ -1532,6 +1532,20 @@
           ]
         },
         {
+          "name": "SavedEnterprise",
+          "doc": "Who a work or school network knows this device as, and the certificate it checks the network with.",
+          "fields": [
+            {
+              "name": "identity",
+              "type": "text"
+            },
+            {
+              "name": "ca-certificate",
+              "type": "text"
+            }
+          ]
+        },
+        {
           "name": "SavedIpv4",
           "doc": "How a saved network's addresses are set.",
           "fields": [
@@ -1596,7 +1610,7 @@
               "type": "text"
             },
             {
-              "name": "id",
+              "name": "profile",
               "type": "text"
             },
             {
@@ -1652,6 +1666,14 @@
               "type": {
                 "option": {
                   "named": "NetworkWake"
+                }
+              }
+            },
+            {
+              "name": "enterprise",
+              "type": {
+                "option": {
+                  "named": "SavedEnterprise"
                 }
               }
             }

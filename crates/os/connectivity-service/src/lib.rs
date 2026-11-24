@@ -277,7 +277,7 @@ impl Connectivity {
             .saved
             .iter()
             .filter(|saved| saved.open && saved.autoconnect)
-            .map(|saved| saved.id.clone())
+            .map(|saved| saved.profile.clone())
             .collect()
     }
 
@@ -567,7 +567,12 @@ impl Connectivity {
         let id = action.id();
         let change = match action {
             SavedNetworkAction::Join => {
-                let saved = self.readings.network.saved.iter().find(|s| s.id == profile);
+                let saved = self
+                    .readings
+                    .network
+                    .saved
+                    .iter()
+                    .find(|s| s.profile == profile);
                 Change::Join {
                     network: saved.map_or_else(|| profile.to_owned(), |s| s.name.clone()),
                     password: None,
@@ -719,7 +724,7 @@ fn address_rows(readings: &mut Readings) {
     }
     for saved in &mut network.saved {
         saved.address =
-            tilo_resource::Handle::new(child_id(SAVED_NETWORK, &saved.id).unwrap_or_default());
+            tilo_resource::Handle::new(child_id(SAVED_NETWORK, &saved.profile).unwrap_or_default());
     }
     for accessory in &mut readings.bluetooth.accessories {
         accessory.handle = tilo_resource::Handle::new(
@@ -1100,8 +1105,8 @@ fn network_children(network: &Network) -> impl Iterator<Item = ResourceSpec> + '
         )
     });
     let saved = network.saved.iter().filter_map(|profile| {
-        let id = child_id(SAVED_NETWORK, &profile.id)?;
-        let profile_id: Value = profile.id.clone().into();
+        let id = child_id(SAVED_NETWORK, &profile.profile)?;
+        let profile_id: Value = profile.profile.clone().into();
         let bindings = tilo_resource::RowBindings::new()
             .bind(SavedNetworkAction::JOIN, NO_ARGUMENTS)
             .bind(SavedNetworkAction::SET_AUTOCONNECT, NO_ARGUMENTS)

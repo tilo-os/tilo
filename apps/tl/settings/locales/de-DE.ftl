@@ -1226,6 +1226,10 @@ d-c4tbp74f = Network pane
     .w-broadcast = Gesendet
     .w-a-new-password-where-it-has = Ein neues Passwort, falls es eines hat
     .w-change-the-password = Passwort ändern
+    .w-share-with-my-devices = Mit meinen Geräten teilen
+    .w-shared-with-your-other-devices = Mit deinen anderen Geräten geteilt
+    .w-share-a-saved-wi-fi-network = Ein gemerktes WLAN sicher mit deinen anderen Geräten teilen
+    .w-share = Teilen
     .w-join-a-hidden-network = Einem verborgenen Netzwerk beitreten
     .w-one-that-does-not-say-its = Eines, das seinen Namen nicht sendet
     .w-open-networks = Offene Netze
@@ -1234,6 +1238,13 @@ d-c4tbp74f = Network pane
     .w-ask-first = Zuerst fragen
     .w-asks-first = Fragt zuerst
     .w-never-this-device-asks-before-joining = Nie: Dieses Gerät fragt, bevor es einem offenen Netz beitritt
+
+d-g2tvylph = Arbeitsidentität
+    .w-work-or-school-identity = Identität bei der Arbeit oder Schule
+    .w-the-identity-the-network-knows = Die Identität, unter der das Netzwerk das Gerät kennt
+    .w-the-certificate-that-verifies-it = Das Zertifikat, das es überprüft
+    .w-apply-identity = Identität anwenden
+    .w-the-certificate-is-the-full-path = Das Zertifikat ist der vollständige Pfad der Datei der Organisation; bei einem Netzwerk, das nicht überprüft wird, leer lassen.
 
 d-un4ag5eg = Hotspot page
     .w-hotspot = Hotspot
@@ -1995,3 +2006,9 @@ d-ybsxvql4 = Was andere Geräte halten
 d-kap65mlg = Wann ein Gerät zuletzt da war
     .w-never-heard-from = noch nie gehört
     .w-last-seen = zuletzt gesehen { $day }, { $clock }
+
+d-hlpmp5i4 = Betreiberwörter
+    .w-in-use = In Gebrauch
+    .w-not-for-this-sim = Nicht für diese SIM
+    .w-in-reach = In Reichweite
+    .w-unknown = Unbekannt

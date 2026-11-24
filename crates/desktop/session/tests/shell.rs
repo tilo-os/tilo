@@ -3805,7 +3805,7 @@ impl tilo_connectivity_service::device::Device for Radios {
             }
             tilo_connectivity_service::device::Change::Autoconnect { profile, on } => {
                 for saved in &mut readings.network.saved {
-                    if saved.id == *profile {
+                    if saved.profile == *profile {
                         saved.autoconnect = *on;
                     }
                 }
@@ -3855,7 +3855,7 @@ fn wireless_session() -> Session {
         }];
         readings.network.saved = vec![tilo_connectivity_service::model::SavedNetwork {
             name: "Home".to_owned(),
-            id: "uuid-home".to_owned(),
+            profile: "uuid-home".to_owned(),
             ..tilo_connectivity_service::model::SavedNetwork::default()
         }];
         readings.bluetooth.available = true;

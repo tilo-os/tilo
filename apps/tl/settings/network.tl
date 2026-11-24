@@ -7,7 +7,7 @@ view network_pane() {
     if page == "all" {
         all_networks(page, chosen)
     } else if page == "known" {
-        known_networks(page)
+        known_networks(page, chosen)
     } else if page == "hidden" {
         hidden_network_page(page)
     } else if page == "wired" {
@@ -324,8 +324,8 @@ view all_networks(page: State<Text>, chosen: State<Text>) {
 }
 
 /// The networks this device keeps: what it joins by itself, whether it is metered and its proxy,
-/// each forgettable.
-view known_networks(page: State<Text>) {
+/// each forgettable, and each opening what this device keeps of it.
+view known_networks(page: State<Text>, chosen: State<Text>) {
     let net = device.network
     let saved = net.saved
     ui.Section("Known networks") {
@@ -347,6 +347,7 @@ view known_networks(page: State<Text>) {
                 } else if s.kind == .mobile { .signal } else { .wifi },
                 mark: if s.hidden { .eye_off },
             ) {
+                on activate: set(chosen, s.name).then(set(page, "net"))
                 trailing: {
                     ui.MenuButton(
                         "This network",
@@ -382,6 +383,7 @@ view network_page(name: Text, page: State<Text>) {
     state priority: Text = ""
     state proxy_address: Text = ""
     state password: Text = ""
+    state shared: Bool = false
     let net = device.network
     let n = net.wifi.networks.find(x -> x.name == name)
     ui.Section(name) {
@@ -442,14 +444,14 @@ view network_page(name: Text, page: State<Text>) {
                 ui.Button("Use it", size: .small) {
                     on press: device.set_network_policy(
                         device.network,
-                        profile: saved.id,
+                        profile: saved.profile,
                         proxy_address: proxy_address.trim(),
                     )
                 }
                 ui.Button("No proxy", size: .small) {
                     on press: device.set_network_policy(
                         device.network,
-                        profile: saved.id,
+                        profile: saved.profile,
                         proxy_address: "",
                     )
                 }
@@ -465,7 +467,7 @@ view network_page(name: Text, page: State<Text>) {
                         ui.Button("Save", size: .small) {
                             on press: device.set_network_policy(
                                 device.network,
-                                profile: saved.id,
+                                profile: saved.profile,
                                 priority: priority.to_int() ?? saved.priority,
                             )
                         }
@@ -482,21 +484,21 @@ view network_page(name: Text, page: State<Text>) {
                         ui.Button("Let it say", size: .small) {
                             on press: device.set_network_policy(
                                 device.network,
-                                profile: saved.id,
+                                profile: saved.profile,
                                 metered: "automatic",
                             )
                         }
                         ui.Button("Metered", size: .small) {
                             on press: device.set_network_policy(
                                 device.network,
-                                profile: saved.id,
+                                profile: saved.profile,
                                 metered: "metered",
                             )
                         }
                         ui.Button("Unmetered", size: .small) {
                             on press: device.set_network_policy(
                                 device.network,
-                                profile: saved.id,
+                                profile: saved.profile,
                                 metered: "unmetered",
                             )
                         }
@@ -515,7 +517,7 @@ view network_page(name: Text, page: State<Text>) {
                         ui.Button("Change", role: .plain, size: .small) {
                             on press: device.set_network_policy(
                                 device.network,
-                                profile: saved.id,
+                                profile: saved.profile,
                                 hidden: not saved.hidden,
                             )
                         }
@@ -530,11 +532,31 @@ view network_page(name: Text, page: State<Text>) {
                     ui.Button("Change the password", size: .small) {
                         on press: device.set_wifi_password(
                             device.network,
-                            profile: saved.id,
+                            profile: saved.profile,
                             password: password,
                         )
                     }
                 }
+                if not saved.open {
+                    ui.ListRow(
+                        "Share with my devices",
+                        secondary: if shared {
+                            "Shared with your other devices"
+                        } else {
+                            "Share a saved Wi-Fi network securely with your other devices"
+                        },
+                        icon: .share,
+                    ) {
+                        trailing: {
+                            ui.Button("Share", role: .plain, size: .small) {
+                                on press: saved.share_with_devices().then(set(shared, true))
+                            }
+                        }
+                    }
+                }
+            }
+            if let enterprise = saved.enterprise {
+                work_identity(enterprise, saved.profile)
             }
             if let ipv4 = saved.ipv4 {
                 ui.ListRow(
@@ -554,7 +576,7 @@ view network_page(name: Text, page: State<Text>) {
                     ui.Button("Take one from the network", size: .small) {
                         on press: device.set_network_ipv4(
                             device.network,
-                            profile: saved.id,
+                            profile: saved.profile,
                             automatic: true,
                             addresses: comma_list(addresses),
                             gateway: gateway.trim(),
@@ -564,7 +586,7 @@ view network_page(name: Text, page: State<Text>) {
                     ui.Button("Use these addresses", size: .small) {
                         on press: device.set_network_ipv4(
                             device.network,
-                            profile: saved.id,
+                            profile: saved.profile,
                             automatic: false,
                             addresses: comma_list(addresses),
                             gateway: gateway.trim(),
@@ -578,6 +600,31 @@ view network_page(name: Text, page: State<Text>) {
             }
         }
     }
+}
+
+/// Who a work or school network knows this device as, and the certificate that verifies it. The
+/// two are applied together, so changing one keeps the other as the device has it.
+view work_identity(kept: device.SavedEnterprise, profile: Text) {
+    state identity: Text = kept.identity
+    state ca: Text = kept.ca_certificate
+    ui.ListRow("Work or school identity", secondary: kept.identity, icon: .landmark)
+    row(gap: .related, align: .center, wrap: true) {
+        ui.TextInput(bind: identity, placeholder: "The identity the network knows", fill)
+        ui.TextInput(bind: ca, placeholder: "The certificate that verifies it", fill)
+        ui.Button("Apply identity", size: .small) {
+            on press: device.set_enterprise_identity(
+                device.network,
+                profile: profile,
+                identity: identity,
+                ca_certificate: ca,
+            )
+        }
+    }
+    ui.Text(
+        "The certificate is the full path of the organization's file; leave it empty for a network that is not checked.",
+        role: .caption,
+        secondary: true,
+    )
 }
 
 /// The wired connection's page: how it stands, its addresses and whether it wakes the machine.
