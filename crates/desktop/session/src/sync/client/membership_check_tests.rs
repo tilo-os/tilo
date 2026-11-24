@@ -1,9 +1,8 @@
-//! What an app writes on one device reaches the workspace's other devices: the broker commits it to
-//! this device's owner, the canonical copy of the workspace here, and the owner's outgoing ownership
-//! leaves on the peer network's session with the workspace's host, which hands it to every other member.
-//! Two sessions' peer networks on this machine's loopback, each with its own engine, join one workspace
-//! governed by a host on this machine whose certificate takes part in no channels: the workspace's
-//! records are documents the owner commits.
+//! What an app writes on one device reaches the workspace's other devices: the broker commits the
+//! app's effect receipt into the daemon's copy of the workspace here, which syncs it with the device
+//! hosting the workspace, which hands it to every other member. Each device's daemon on this
+//! machine's loopback joins one workspace governed by a host on this machine whose certificate takes
+//! part in no channels: the workspace's records are documents the owner commits.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -12,70 +11,76 @@
 
 tilo_automerge_isolate::test_worker!();
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::WorkspaceId;
-use tilo_user_identity::DeviceCapabilities;
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
+use tilo_workspace_service::apps::commits::ServiceCommits;
+use tilo_workspace_service::apps::workspace_commits::WorkspaceCommits;
+use tilo_workspace_service::service::ServiceSlot;
+use tilo_workspace_service::workspaces::MemberDevice;
+use tilo_workspace_service::workspaces::fixtures::{TestHost, test_host_in_the_clear};
 
 use tilo_resource::Replica;
 use tilo_user_identity::WorkspaceList;
 
-use super::{Client, Entering, Entry, OwnPresence};
-use crate::engine::Engine;
-use crate::platform::fabric::Continuity;
-use crate::workspace_keys::KeyLink;
 use crate::workspaces::{ListWrite, Personal};
 
-/// One session's side of the workspace: its engine, and its peer network.
+/// A device: the daemon that keeps the workspaces its person joined here. A session reads and
+/// writes its workspaces through its device's daemon, so what the daemon holds is what its person
+/// has on this device.
 struct Device {
-    engine: std::sync::Arc<Engine>,
-    network: Client,
-    /// The session's question sheet: what its person is asked here.
-    _questions: tilo_service::AskReceiver,
+    /// The device's workspaces, kept by its daemon and synced with the devices hosting them.
+    daemon: TestHost,
+    /// The daemon's service, which the broker commits an app's effect receipts through.
+    service: ServiceSlot,
+    /// The person and device this machine is, as its daemon signs.
+    cert: DeviceCert,
     _state: tempfile::TempDir,
 }
 
 impl Device {
-    /// A session of a device certified by `root`, relaying through `host`'s server: two of them
-    /// are two devices of one person. Each device mints a key no other run shares, as each host
-    /// does.
-    fn of(root: &SigningKey, label: &str, host: &test_server::Host) -> Self {
-        let state = tempfile::tempdir().expect("the session's directory");
+    /// A device certified by `root`: two of them are two devices of one person. Each device mints
+    /// a key no other run shares, as each host does.
+    fn of(root: &SigningKey, label: &str) -> Self {
+        let state = tempfile::tempdir().expect("the device's directory");
         let key = test_server::fresh_signing_key(label);
         let cert = test_server::certified(root, &key, label, DeviceCapabilities::member());
-        let identity = tilo_network_actor::DeviceIdentity::kept(cert, key);
-        let engine = std::sync::Arc::new(
-            Engine::open(identity.clone(), Some(state.path()), std::iter::empty())
-                .expect("the session's engine opens"),
-        );
-        engine.attach_link(KeyLink::new());
-        let (asks, questions) = tilo_service::asks::channel();
-        let network = Client::start(
-            Entry {
-                identity: Some(identity),
-                own: OwnPresence::default(),
-                hosts: Vec::new(),
-                continuity: Continuity::default(),
-                wake: std::sync::Arc::new(|| ()),
-                relays: host.relays(),
-                lan: None,
-            },
-            Some(std::sync::Arc::clone(&engine)),
-            Some(asks),
-            Vec::new(),
-        )
-        .expect("the session's peer network starts");
+        let daemon = tilo_rt::app()
+            .block_on(test_host_in_the_clear(
+                &state.path().join("workspaces"),
+                &key,
+                &cert,
+            ))
+            .expect("the app runtime drives the daemon");
+        // The workspaces this device joins are member copies it signs for, as the device's daemon
+        // holds them.
+        daemon
+            .workspaces()
+            .set_member_device(Arc::new(MemberDevice {
+                cert: cert.clone(),
+                signer: Arc::new(key),
+            }));
+        let service = ServiceSlot::default();
+        service.install(daemon.shared());
         Self {
-            engine,
-            network,
-            _questions: questions,
+            daemon,
+            service,
+            cert,
             _state: state,
         }
     }
 
     fn person(&self) -> [u8; 32] {
-        self.engine.identity().device_cert.user_public_key
+        self.cert.user_public_key
+    }
+
+    /// The workspaces this device's daemon keeps.
+    fn copies(&self) -> tilo_workspace_service::workspaces::Workspaces {
+        self.daemon.workspaces().clone()
     }
 
     /// Join the host's workspace with an invitation for this person, and wait until the workspace
@@ -87,26 +92,21 @@ impl Device {
     /// Join `workspace`, one `host` governs, with an invitation for this person, and wait until the
     /// workspace is held here.
     fn join_to(&self, host: &test_server::Host, workspace: &str, request: u8) -> WorkspaceId {
-        let _invitation = host.invitation_to(workspace, self.person(), request);
-        panic!(
-            "an invitation is redeemed by the device's daemon (account/workspaces#join), which \
-             this harness does not start"
-        )
-    }
-
-    /// What became of this device's enrollment or entry, once its host answered.
-    fn enrolled(&self) -> tilo_session_client::Enrolled {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            if let Some(enrolled) = self.network.take_enrolled().pop() {
-                return enrolled;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the workspace's host answers"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let invitation = host.invitation_to(workspace, self.person(), request);
+        let copies = self.copies();
+        let joined = tilo_rt::app()
+            .block_on(tilo_test_env::within(
+                "the workspace's host admits this device",
+                async move { copies.join_member(&invitation).await },
+            ))
+            .expect("the app runtime drives the daemon")
+            .expect("the device's daemon redeems the invitation");
+        assert_eq!(
+            joined.to_string(),
+            workspace,
+            "the daemon holds the workspace the invitation is to"
+        );
+        WorkspaceId::parse(workspace).expect("a workspace id")
     }
 
     /// Enter the host's workspace as a further device of this person, at the host's own signed
@@ -114,17 +114,32 @@ impl Device {
     /// device takes part in it from then on.
     fn enter(&self, host: &test_server::Host) -> WorkspaceId {
         let workspace_id = WorkspaceId::parse(host.workspace()).expect("a workspace id");
-        self.network
-            .enter(Entering {
-                workspace_id,
-                name: "Notes".into(),
-                host: host.host_hint(),
-                held: false,
-            })
-            .expect("the peer network takes the entry");
-        let enrolled = self.enrolled();
-        assert!(enrolled.member, "the entry is one of the person's own");
-        enrolled.result.expect("the workspace admits this device");
+        let named = workspace_id.to_string();
+        let held = named.clone();
+        let hint = host.host_hint();
+        let copies = self.copies();
+        let entered = tilo_rt::app()
+            .block_on(tilo_test_env::within(
+                "the workspace's host admits this device",
+                async move {
+                    let workspace =
+                        tilo_server_protocol::WorkspaceId::parse(&named).expect("a workspace id");
+                    copies.hold_as_member(workspace, &hint).await
+                },
+            ))
+            .expect("the app runtime drives the daemon")
+            .expect("the workspace admits this device");
+        assert_eq!(
+            entered.to_string(),
+            workspace_id.to_string(),
+            "the device holds the workspace it entered"
+        );
+        let copies = self.copies();
+        let member = tilo_rt::app()
+            .block_on(async move { copies.is_member(&held).await })
+            .expect("the app runtime drives the daemon")
+            .expect("the daemon answers which workspaces it holds");
+        assert!(member, "the entry is one of the person's own");
         workspace_id
     }
 }
@@ -152,63 +167,54 @@ fn receipt(
 
 /// Whether `device` 's copy of `workspace` holds the receipt of `invocation` .
 fn holds_receipt(device: &Device, workspace_id: WorkspaceId, invocation: uuid::Uuid) -> bool {
-    device
-        .engine
-        .owner()
-        .with_current(workspace_id, |view| {
-            Ok(view.peer().admitted_workspace().is_some_and(|workspace| {
-                tilo_desktop_model::projection::workspace_effect_receipts_of(workspace)
-                    .iter()
-                    .any(|held| held.invocation.0 == invocation)
-            }))
+    let named = workspace_id.to_string();
+    let copies = device.copies();
+    tilo_rt::app()
+        .block_on(async move {
+            copies.state(&named).await.map(|state| {
+                state.admitted_workspace().is_some_and(|workspace| {
+                    tilo_desktop_model::projection::workspace_effect_receipts_of(workspace)
+                        .iter()
+                        .any(|held| held.invocation.0 == invocation)
+                })
+            })
         })
+        .ok()
+        .flatten()
         .unwrap_or(false)
 }
 
-/// An effect an app had in a workspace this session holds: the broker the
-/// session serves its apps from commits its receipt to the session's owner,
-/// and the owner's ownership leaves for the workspace's other session, which
-/// then holds it too.
+/// An effect an app had in a workspace this device's daemon holds: the broker the daemon serves
+/// the session's apps from commits its receipt to the daemon's copy, which syncs it with the
+/// device hosting the workspace, and the other device's daemon holds it too.
 #[test]
 fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
     let host = test_server::Host::of(&SigningKey::from_bytes(&[0x71; 32]), "Notes");
-    let writer = Device::of(&SigningKey::from_bytes(&[0x51; 32]), "The writer", &host);
-    let reader = Device::of(&SigningKey::from_bytes(&[0x61; 32]), "The reader", &host);
+    let writer = Device::of(&SigningKey::from_bytes(&[0x51; 32]), "The writer");
+    let reader = Device::of(&SigningKey::from_bytes(&[0x61; 32]), "The reader");
     let workspace = writer.join(&host, 0x01);
     assert_eq!(reader.join(&host, 0x02), workspace);
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .expect("the broker's runtime");
     let invocation = uuid::Uuid::new_v4();
-    write(&runtime, &writer, workspace, invocation);
+    write(&writer, workspace, invocation);
     wait_for(&reader, workspace, invocation);
 }
 
 /// Have `device` 's app write `invocation` into `workspace` , as the broker commits what an app
-/// did: the owner's ownership leaves for the workspace's host, which hands it to the workspace's
-/// other devices.
-fn write(
-    runtime: &tokio::runtime::Runtime,
-    device: &Device,
-    workspace_id: WorkspaceId,
-    invocation: uuid::Uuid,
-) {
-    let publisher = tilo_workspace_service::apps::collab_outbound::PeerPublisher::with_commits(
-        std::sync::Arc::clone(&device.engine)
-            as std::sync::Arc<
-                dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits,
-            >,
-    );
+/// did: the device's daemon takes the receipt into its copy of the workspace, which leaves for the
+/// device hosting the workspace, which hands it to the workspace's other devices.
+fn write(device: &Device, workspace_id: WorkspaceId, invocation: uuid::Uuid) {
+    let publisher = PeerPublisher::with_commits(Arc::new(ServiceCommits::new(
+        device.service.clone(),
+    )) as Arc<dyn WorkspaceCommits>);
     assert!(
         publisher.records_effects_for(&workspace_id.to_string()),
         "the workspace's effect receipts are the owner's to commit"
     );
     let (workspace, redacted) = receipt(device, workspace_id, invocation);
-    runtime
-        .block_on(publisher.record_effect(workspace, redacted))
+    tilo_rt::app()
+        .block_on(async move { publisher.record_effect(workspace, redacted).await })
+        .expect("the app runtime drives the daemon")
         .expect("the record takes the app's write");
     assert!(
         holds_receipt(device, workspace_id, invocation),
@@ -236,19 +242,14 @@ fn wait_for(device: &Device, workspace_id: WorkspaceId, invocation: uuid::Uuid) 
 fn a_person_s_further_device_enters_their_workspace_at_its_host() {
     let root = SigningKey::from_bytes(&[0x71; 32]);
     let host = test_server::Host::of(&root, "Notes");
-    let laptop = Device::of(&root, "The laptop", &host);
-    let desktop = Device::of(&root, "The desktop", &host);
+    let laptop = Device::of(&root, "The laptop");
+    let desktop = Device::of(&root, "The desktop");
     assert_eq!(laptop.person(), desktop.person(), "one person, two devices");
     let workspace = laptop.join(&host, 0x01);
 
     // What the laptop wrote before the desktop was up.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .expect("the broker's runtime");
     let earlier = uuid::Uuid::new_v4();
-    write(&runtime, &laptop, workspace, earlier);
+    write(&laptop, workspace, earlier);
 
     // The desktop enters the workspace at its host: no invitation, and the workspace's whole
     // history comes with the entry.
@@ -257,7 +258,7 @@ fn a_person_s_further_device_enters_their_workspace_at_its_host() {
 
     // And back: what the desktop writes reaches the laptop.
     let later = uuid::Uuid::new_v4();
-    write(&runtime, &desktop, workspace, later);
+    write(&desktop, workspace, later);
     wait_for(&laptop, workspace, later);
 }
 
