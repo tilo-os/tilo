@@ -55,6 +55,8 @@ pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, Os
                 tilo_runtime: package::DEFAULT_TILO_RUNTIME.to_owned(),
                 tilolang_runtime: package::DEFAULT_TILOLANG_RUNTIME.to_owned(),
                 version: "0.1.0".to_owned(),
+                // The scratch copy's ids lock is the build's to write, as a developer's tree is.
+                locked: false,
             },
             &publisher,
         )
@@ -333,7 +335,13 @@ pub fn install_rust(root: &Path, package: &str, bin: &str) {
     // The payload as the packer reads it: the binary this run built at the manifest's entrypoint
     // and the surface the app publishes.
     let payload = root.join("rust").join(package);
-    let entry = payload.join(&parsed.entrypoint.as_ref().expect("the manifest names its entrypoint").bin);
+    let entry = payload.join(
+        &parsed
+            .entrypoint
+            .as_ref()
+            .expect("the manifest names its entrypoint")
+            .bin,
+    );
     std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
     std::fs::copy(tilo_test_env::sibling_binary(package, bin), &entry)
         .unwrap_or_else(|error| panic!("{package}'s binary: {error}"));
