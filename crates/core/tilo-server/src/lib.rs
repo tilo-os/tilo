@@ -63,7 +63,6 @@ pub mod kept_content;
 pub mod linux_devices;
 #[cfg(not(target_arch = "wasm32"))]
 mod page_tickets;
-#[cfg(feature = "agents")]
 #[cfg(not(target_arch = "wasm32"))]
 pub mod servers;
 #[cfg(feature = "web")]

@@ -44,11 +44,9 @@ pub const UPDATE_LEASE: &str = "tilo.servers.update";
 /// including the boot loader's tries of a generation that fails, so the
 /// lease outlives the restart of the server holding it.
 pub const UPDATE_LEASE_TTL: Duration = Duration::from_secs(2 * 60 * 60);
-/// How often a server holding [`UPDATE_LEASE`] pushes its deadline out.
-/// The socket in the state root the update service asks on.
 /// The file in the state root naming the image a server restarted into while
 /// it held [`UPDATE_LEASE`].
-/// How long a request on [`SOCKET`] may be.
+const PENDING: &str = "update-pending";
 
 /// What the update service asks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +100,7 @@ pub trait Machine {
     /// take no more wakes; done once every one is suspended.
     fn suspend_machines(&self) -> impl Future<Output = Result<(), String>> + Send;
     /// The image this server restarted into under the lease, if it did.
+    fn pending(&self) -> Option<String>;
     /// Keep (`Some`) or forget (`None`) the image restarted into.
     ///
     /// # Errors
@@ -327,6 +326,23 @@ impl ServerMachine {
         servers::person_workspace_id(&self.device().user_public_key)
     }
 
+    fn pending_path(&self) -> PathBuf {
+        self.state_root.join(PENDING)
+    }
+
+    async fn release(&self, workspace: &str, lease: &str) -> Result<(), String> {
+        let device = self.device().clone();
+        self.workspaces
+            .author_own_workspace_state(workspace, &device, |peer| {
+                peer.workspace_mut().release_lease(&device, lease, now())
+            })
+            .await
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl Machine for ServerMachine {
     async fn hold_update_lease(&self) -> Result<bool, String> {
         let device = self.device().clone();
         self.workspaces
@@ -388,6 +404,13 @@ impl ServerMachine {
 
     async fn suspend_machines(&self) -> Result<(), String> {
         self.workspaces.drain_machines().await
+    }
+
+    fn pending(&self) -> Option<String> {
+        std::fs::read_to_string(self.pending_path())
+            .ok()
+            .map(|target| target.trim().to_owned())
+            .filter(|target| !target.is_empty())
     }
 
     fn set_pending(&self, target: Option<&str>) -> Result<(), String> {

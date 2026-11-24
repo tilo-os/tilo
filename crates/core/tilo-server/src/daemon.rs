@@ -637,15 +637,13 @@ impl Server {
         let enrolled_server = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
         // The pages this host serves are served their tickets by the device's one set of
         // tickets, which keeps each device a page's ticket adds in its person's record here.
-        if let Some(governed) = &governed {
-            governed.action_service().tickets().serve_pages(Arc::new(
-                crate::page_tickets::PageTickets {
-                    identity: live.clone(),
-                    endpoint: endpoint.clone(),
-                    records: Some(governed.clone()),
-                },
-            ));
-        }
+        governed.action_service().tickets().serve_pages(Arc::new(
+            crate::page_tickets::PageTickets {
+                identity: live.clone(),
+                endpoint: endpoint.clone(),
+                records: Some(governed.clone()),
+            },
+        ));
         let web = Box::new(WebContext {
             server: handler.clone(),
             #[cfg(feature = "web")]
@@ -1057,14 +1055,6 @@ fn site_origin(web_entry: &str) -> Option<String> {
 /// The site name a keeper's web entry names: `tilo.sh` for
 /// `https://tilo.sh/app/`. One without a web entry is no site and goes by its
 /// server's name alone.
-/// The https origin of the site `web_entry` names (`https://eu1.tilo.sh`), which the address
-/// this keeper signs carries: `None` for an entry that is no https address.
-fn site_origin(web_entry: &str) -> Option<String> {
-    let rest = web_entry.strip_prefix("https://")?;
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    (!host.is_empty()).then(|| format!("https://{host}"))
-}
-
 fn site_name(web_entry: &str) -> String {
     let rest = web_entry
         .split_once("://")
