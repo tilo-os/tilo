@@ -679,6 +679,18 @@ impl Shared {
                         &path,
                     ));
                 }
+                crate::tools::Ask::LinkOpener {
+                    url,
+                    workspace,
+                    reply,
+                } => {
+                    let _ = reply.send(crate::documents::opener(
+                        Some(&self.handle),
+                        &workspace,
+                        &self.person,
+                        &url,
+                    ));
+                }
                 crate::tools::Ask::WorkspaceSettings {
                     workspace,
                     route,

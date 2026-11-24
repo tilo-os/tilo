@@ -498,6 +498,7 @@ imports! {
     ToolDocumentApps = "tool_document_apps" ([H] -> [H]);
     ToolOpenWith = "tool_open_with" ([H, H] -> [H]);
     ToolTerminal = "tool_terminal" ([H] -> [H]);
+    ToolOpenLink = "tool_open_link" ([H] -> [H]);
     // What the shell opened this app with, as JSON, or empty text: the folder a terminal
     // opened at, the file an app was asked to show.
     ToolContext = "tool_context" ([] -> [H]);

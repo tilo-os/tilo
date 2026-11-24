@@ -402,6 +402,7 @@ imports! {
     (ToolDocumentApps, "tool_document_apps", "i", "i"),
     (ToolOpenWith, "tool_open_with", "ii", "i"),
     (ToolTerminal, "tool_terminal", "i", "i"),
+    (ToolOpenLink, "tool_open_link", "i", "i"),
     (ToolContext, "tool_context", "", "i"),
     (ToolContainerShell, "tool_container_shell", "ii", "i"),
     (FileOpenPath, "file_open_path", "i", "i"),

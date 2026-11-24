@@ -618,6 +618,17 @@ pub trait Platform {
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
 
+    /// Open the address `url` with the app that opens links of its scheme: what
+    /// `tool.open_link` asks.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing opened it.
+    fn open_link(&self, url: &str) -> Result<(), String> {
+        let _ = url;
+        Err(tilolang_runtime::files::NO_LINKS.to_owned())
+    }
+
     /// Open `file` in the app that opens its kind: what `File.open` asks. The shell picks the app
     /// by the file's first bytes and its name and starts it, or says nothing here opens it or
     /// that this app may not open files.
@@ -898,6 +909,10 @@ impl tilolang_runtime::files::FilesHost for PlatformFiles {
 
     fn terminal_at(&self, folder: &str) -> Result<(), String> {
         self.0.open_terminal_at(folder)
+    }
+
+    fn open_link(&self, url: &str) -> Result<(), String> {
+        self.0.open_link(url)
     }
 
     fn launch_context(&self) -> String {

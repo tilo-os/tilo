@@ -3018,6 +3018,13 @@ impl Checker<'_> {
                 "`tool.terminal(folder)`: a terminal opened in the folder `folder`",
                 true,
             ),
+            "open_link" => (
+                Imp::ToolOpenLink,
+                1,
+                result(Ty::Unit),
+                "`tool.open_link(url)`: the web or mail address `url` opened in the app that opens links of its scheme, as pressing a link does",
+                false,
+            ),
             "context" => (
                 Imp::ToolContext,
                 0,
@@ -3037,7 +3044,7 @@ impl Checker<'_> {
                     "E026",
                     name.span,
                     format!(
-                        "`tool` has `document_apps`, `open_with`, `terminal`, `context` and `container_shell`, not `{other}`"
+                        "`tool` has `document_apps`, `open_with`, `terminal`, `open_link`, `context` and `container_shell`, not `{other}`"
                     ),
                 );
                 for a in args {

@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 pub const TOOL_PROTOCOL_VERSION: u32 = crate::RUNTIME_INTERFACE_VERSION;
 pub const TOOL_SERVICE_FD_ENV: &str = "TILO_SVC_TOOLS_FD";
 pub const TOOL_CONTEXT_ENV: &str = "TILO_TOOL_CONTEXT";
-pub const MAX_WIRE_BYTES: usize = 4 * 1024;
+/// The largest request a tool service carries: a link it opens may stand near the 8 KiB a mail
+/// client reads one at, and a link is most of what a request says.
+pub const MAX_WIRE_BYTES: usize = 16 * 1024;
 /// A reply may carry the drive list or the app list, so it gets more room than
 /// a request.
 pub const MAX_REPLY_BYTES: usize = MAX_LISTED_APPS * MAX_APP_ENTRY_BYTES + 16 * 1024;
@@ -26,6 +28,9 @@ const MAX_PATH_BYTES: usize = 2 * 1024;
 const MAX_CONTAINER_NAME_BYTES: usize = 255;
 const MAX_FILE_NAME_BYTES: usize = 255;
 const MAX_REFERENCE_BYTES: usize = 256;
+/// The longest address a link opens: a web or mail address past this is no address a person
+/// wrote by hand.
+const MAX_LINK_BYTES: usize = 8 * 1024;
 use tilo_app_id::apps::TERMINAL as TERMINAL_PACKAGE_ID;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +145,11 @@ pub enum ToolIntent {
     },
     UninstallApplication {
         app: String,
+    },
+    /// Open the address `url` (`https://…`, `http://…` or `mailto:…`) with the app that opens
+    /// links of its scheme, as a person pressing a link does: what `tool.open_link` asks for.
+    OpenLink {
+        url: String,
     },
     /// Open the file `name` whose bytes the workspace's content store holds under `hash`, in
     /// `app`, one of the apps that open its type: what `File.open` asks for a file an action
@@ -309,6 +319,12 @@ impl ToolIntent {
                 }
                 Ok(())
             }
+            Self::OpenLink { url } => {
+                if !is_link(url) {
+                    return Err("invalid link".into());
+                }
+                Ok(())
+            }
             Self::DocumentApps { path } => {
                 // A path Files opens, or the kind name the one decision for every caller asks by
                 // (`file.md`): a name is no path, and no file is opened by it.
@@ -398,7 +414,8 @@ impl ToolIntent {
             | Self::UninstallApplication { .. }
             | Self::DocumentApps { .. }
             | Self::OpenDocument { .. }
-            | Self::OpenContent { .. } => None,
+            | Self::OpenContent { .. }
+            | Self::OpenLink { .. } => None,
         }
     }
 }
@@ -426,6 +443,16 @@ fn is_reference(hash: &str) -> bool {
         && hash
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+/// An address a link opens: one with a web or mail scheme, and no control character in it.
+fn is_link(url: &str) -> bool {
+    let lower = url.trim_start().to_ascii_lowercase();
+    ["https://", "http://", "mailto:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
+        && url.len() <= MAX_LINK_BYTES
+        && !url.chars().any(char::is_control)
 }
 
 fn is_path(path: &str) -> bool {
@@ -629,6 +656,18 @@ impl Service {
             name: name.to_owned(),
             hash: hash.to_owned(),
             app: app.to_owned(),
+        })
+        .map(drop)
+    }
+
+    /// Open the address `url` with the app that opens links of its scheme.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing opened it.
+    pub fn open_link(&self, url: &str) -> Result<(), String> {
+        self.ask(ToolIntent::OpenLink {
+            url: url.to_owned(),
         })
         .map(drop)
     }
@@ -988,6 +1027,45 @@ mod tests {
                     .validate()
                     .is_err()
             );
+        }
+
+        phase an_open_link_names_a_web_or_mail_address;
+        {
+            let open = ToolIntent::OpenLink {
+                url: "https://tilo.sh/plan".into(),
+            };
+            assert!(open.validate().is_ok());
+            assert_eq!(
+                open.package_id(),
+                None,
+                "the shell routes a link, no package opens it"
+            );
+            assert_eq!(
+                serde_json::to_value(&open).unwrap(),
+                serde_json::json!({ "tool": "open_link", "url": "https://tilo.sh/plan" })
+            );
+            assert!(
+                ToolIntent::OpenLink {
+                    url: "mailto:ada@analytical.example".into()
+                }
+                .validate()
+                .is_ok()
+            );
+            for bad in [
+                String::new(),
+                "javascript:alert(1)".into(),
+                "data:text/html,hello".into(),
+                "file:///etc/passwd".into(),
+                "https://tilo.sh/a\nb".into(),
+                format!("https://tilo.sh/{}", "a".repeat(MAX_LINK_BYTES)),
+            ] {
+                assert!(
+                    ToolIntent::OpenLink { url: bad.clone() }
+                        .validate()
+                        .is_err(),
+                    "a link is a web or mail address, bounded: {bad:?}"
+                );
+            }
         }
 
         phase drive_intents_are_shell_routes_with_a_bounded_id;

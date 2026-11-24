@@ -1057,6 +1057,15 @@ impl Platform for HostPlatform {
             .map(drop)
     }
 
+    /// `tool.open_link`: the shell opens the address with the app that opens links of its
+    /// scheme, as a person pressing a link does.
+    fn open_link(&self, url: &str) -> Result<(), String> {
+        let Some(tools) = self.tools.as_deref() else {
+            return Err("the shell is not answering which app opens a link".to_owned());
+        };
+        tools.open_link(url)
+    }
+
     /// What the shell opened this app with: the launcher hands it the tool context it was
     /// started for (`TILO_TOOL_CONTEXT`), and an app opened on its own has none.
     fn launch_context(&self) -> String {

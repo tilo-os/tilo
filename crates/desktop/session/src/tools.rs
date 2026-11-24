@@ -61,6 +61,12 @@ pub(crate) enum Ask {
         workspace: String,
         reply: SyncSender<Vec<Launch>>,
     },
+    /// The app that opens the link `url` in `workspace` , as a press on a link asks.
+    LinkOpener {
+        url: String,
+        workspace: String,
+        reply: SyncSender<Option<Launch>>,
+    },
 }
 
 /// What the session's loop and the broker reach of the service.
@@ -448,6 +454,7 @@ fn answer(inner: &Inner, caller: Option<&Caller>, request: &ToolRequest) -> Tool
             open_document(inner, caller, path, app.as_deref())
         }
         ToolIntent::OpenContent { name, hash, app } => open_content(inner, caller, name, hash, app),
+        ToolIntent::OpenLink { url } => open_link(inner, caller, url),
         ToolIntent::OpenApplication { app } => open_application(inner, caller, app),
         ToolIntent::UninstallApplication { app } => uninstall(inner, caller, app),
         ToolIntent::WorkspaceSettings { route } => workspace_settings(inner, caller, *route),
@@ -539,6 +546,31 @@ fn open_drive(inner: &Inner, caller: &Caller, drive: &str) -> ToolReply {
 /// declares `files.open` — its own deliberate ask, which the person saw when they installed it.
 fn opens_files(inner: &Inner, caller: &Caller) -> bool {
     caller.app == files() || inner.launches.declares_files_open(&caller.app)
+}
+
+/// Open the link `url` in the app this workspace opens links of its scheme with, as a person
+/// pressing a link does: the app the person or the workspace chose for the scheme, else a Tilo
+/// app that claims it, else the app this machine opens it with.
+fn open_link(inner: &Inner, caller: &Caller, url: &str) -> ToolReply {
+    let (reply, answered) = std::sync::mpsc::sync_channel(1);
+    inner.asks.lock_recover().push(Ask::LinkOpener {
+        url: url.to_owned(),
+        workspace: caller.workspace.clone(),
+        reply,
+    });
+    (inner.wake)();
+    let launch = match answered.recv_timeout(ANSWER_WAIT) {
+        Ok(Some(launch)) => launch,
+        Ok(None) => return refused("nothing on this device opens this link"),
+        Err(_) => return refused("this session did not say which app opens the link"),
+    };
+    match inner
+        .launches
+        .ask(launch, &caller.workspace, LaunchPlace::Focus, None)
+    {
+        Ok(()) => accepted("opened"),
+        Err(message) => refused(&message),
+    }
 }
 
 /// The apps that open the document at `path` in the caller's workspace, the one it opens with

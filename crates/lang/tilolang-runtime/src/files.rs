@@ -293,6 +293,17 @@ pub trait FilesHost {
         Err(NO_FILES.to_owned())
     }
 
+    /// Open the address `url` (`https://…`, `http://…` or `mailto:…`) with the app that opens
+    /// links of its scheme, as a person pressing a link does: what `tool.open_link` does.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing opened it.
+    fn open_link(&self, url: &str) -> Result<(), String> {
+        let _ = url;
+        Err(NO_LINKS.to_owned())
+    }
+
     /// What the shell opened this app with, as the JSON its tool context holds (the folder a
     /// terminal opens at, the file an app was asked to show), or empty text when it was opened
     /// on its own: what `tool.context` answers.
@@ -336,6 +347,12 @@ impl Core {
                 | Imp::FileWatch
                 | Imp::FileOpenPath
                 | Imp::FileOpen => self.result(Err(NO_FILES.to_owned())),
+                Imp::ToolDocumentApps
+                | Imp::ToolOpenWith
+                | Imp::ToolTerminal
+                | Imp::ToolOpenLink
+                | Imp::ToolContext
+                | Imp::ToolContainerShell => self.result(Err(NO_LINKS.to_owned())),
                 _ => trap("not a file import"),
             };
         };
@@ -401,6 +418,7 @@ impl Core {
             Imp::ToolDocumentApps
             | Imp::ToolOpenWith
             | Imp::ToolTerminal
+            | Imp::ToolOpenLink
             | Imp::ToolContext
             | Imp::ToolContainerShell => self.tool_import(host.as_ref(), imp, a),
             Imp::FileCompress | Imp::FileExtract => self.archive_import(host.as_ref(), imp, a),
@@ -442,6 +460,10 @@ impl Core {
             Imp::ToolTerminal => {
                 let folder = self.text(a.h(0)?)?;
                 self.result(host.terminal_at(&folder).map(|()| Value::Unit))
+            }
+            Imp::ToolOpenLink => {
+                let url = self.text(a.h(0)?)?;
+                self.result(host.open_link(&url).map(|()| Value::Unit))
             }
             Imp::ToolContext => self.ret_h(Value::Text(host.launch_context())),
             Imp::ToolContainerShell => {
@@ -494,6 +516,8 @@ impl Core {
 
 /// What an app is told when the platform running it holds no files.
 pub const NO_FILES: &str = "this host keeps no device files";
+/// What a host that opens no links answers: one outside a window has no app to open them.
+pub const NO_LINKS: &str = "this host opens no links";
 
 /// The fields `host.Entry` declares, in their order: what a listing's entries read as.
 pub const TRASH_ENTRY_FIELDS: &[(&str, &str, &str)] = &[
