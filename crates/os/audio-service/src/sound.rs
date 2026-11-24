@@ -57,6 +57,10 @@ pub fn destinations(sound: &Sound) -> Vec<super::media::Output> {
 }
 
 /// What the `sound` resource reads.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent fact of the device's sound, read as it is by Settings and the bar"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Sound {

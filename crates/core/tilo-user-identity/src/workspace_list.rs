@@ -179,7 +179,7 @@ impl WorkspaceList {
                 .workspaces
                 .position(&Id::from_raw(after))
                 .ok_or_else(|| Refusal::new("the list does not name the workspace to follow"))?;
-            if at < from { at + 1 } else { at }
+            if at < from { at.saturating_add(1) } else { at }
         };
         self.workspaces.move_to(&id, to);
         Ok(())

@@ -14,6 +14,10 @@ use crate::shortcut::{Schedule, TriggerSpec};
 
 use super::{literal_text, number_at, quoted, split_word, text_at};
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per kind of trigger, each saying it the way a person reads it"
+)]
 pub(super) fn trigger_text(trigger: &TriggerSpec) -> String {
     match trigger {
         TriggerSpec::Keyboard { chord } => format!("when someone presses {}", quoted(chord)),
