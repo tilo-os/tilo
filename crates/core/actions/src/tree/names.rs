@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn a_name_that_fits_several_apps_chooses_none_of_them() {
-        let several = app_meant("video", APPS).expect_err("two apps begin so");
+        let several = app_meant("vid", APPS).expect_err("two apps begin so");
         assert!(
             several.contains("names several")
                 && several.contains("so.tilo.video")

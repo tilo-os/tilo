@@ -810,7 +810,11 @@ mod tests {
                 "verb": "set",
                 "plural": "alarms",
                 "conversation": null,
-                "takes": null,
+                "takes": [],
+                "answeredBy": null,
+                "retry": null,
+                "files": null,
+                "many": false,
                 "kind": "",
                 "effect": null,
             })

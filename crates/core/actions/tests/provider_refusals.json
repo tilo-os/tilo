@@ -21,7 +21,27 @@
   {
     "wire": {
       "ConfirmationRequired": {
-        "departure": []
+        "by": {
+          "device": {
+            "id": "",
+            "name": ""
+          }
+        },
+        "words": "",
+        "on": null,
+        "facts": [],
+        "destructive": false,
+        "choices": [],
+        "verb": "",
+        "plural": null,
+        "conversation": null,
+        "takes": [],
+        "answeredBy": null,
+        "retry": null,
+        "files": null,
+        "many": false,
+        "kind": "",
+        "effect": null
       }
     },
     "code": "action_confirmation_required",
@@ -30,16 +50,36 @@
   {
     "wire": {
       "ConfirmationRequired": {
-        "departure": [
+        "by": {
+          "device": {
+            "id": "",
+            "name": ""
+          }
+        },
+        "words": "",
+        "on": null,
+        "facts": [
           {
-            "key": "browser.departure.kind",
+            "label": "kind",
             "value": "submit"
           },
           {
-            "key": "browser.departure.picture",
+            "label": "picture",
             "value": "tilo.content:5f2b"
           }
-        ]
+        ],
+        "destructive": false,
+        "choices": [],
+        "verb": "",
+        "plural": null,
+        "conversation": null,
+        "takes": [],
+        "answeredBy": null,
+        "retry": null,
+        "files": null,
+        "many": false,
+        "kind": "",
+        "effect": null
       }
     },
     "code": "action_confirmation_required",

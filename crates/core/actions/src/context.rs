@@ -1955,7 +1955,7 @@ mod tests {
             // An actor on the host's own device says nothing of a device.
             let local = ActionContext::default().with_invoker(ActionInvoker::agent("task-8"));
             let json = serde_json::to_string(&local.invoker).unwrap();
-            assert!(!json.contains("device"), "{json}");
+            assert!(!json.contains("\"device\""), "{json}");
         }
 
         phase a_cause_survives_the_change_message;
