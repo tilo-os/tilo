@@ -38,7 +38,7 @@ pub type Committed<'a> =
 
 /// Where a workspace's governance is read and written: who is in it, and each change to its
 /// people, signed as this device.
-pub trait Governs: collab_types::signer::MaybeSendSync {
+pub trait Roster: collab_types::signer::MaybeSendSync {
     /// The workspace's people, as its governance names them.
     ///
     /// # Errors
@@ -51,7 +51,7 @@ pub trait Governs: collab_types::signer::MaybeSendSync {
     -> Committed<'_>;
 }
 
-impl Governs for Engine {
+impl Roster for Engine {
     fn people(&self, workspace: &str) -> Result<Vec<collab_types::Member>, String> {
         Self::people(self, workspace)
     }
@@ -82,7 +82,7 @@ impl Governs for Engine {
 /// key, and forwards it to the device keeping the workspace otherwise
 /// ([`crate::workspace_view::MEMBERSHIP`]).
 #[cfg(not(target_arch = "wasm32"))]
-impl Governs for crate::workspace_view::WorkspaceView {
+impl Roster for crate::workspace_view::WorkspaceView {
     fn people(&self, workspace: &str) -> Result<Vec<collab_types::Member>, String> {
         Self::people(self, workspace)
     }
@@ -109,7 +109,7 @@ impl Governs for crate::workspace_view::WorkspaceView {
     }
 }
 
-impl<T: Governs + ?Sized> Governs for std::sync::Arc<T> {
+impl<T: Roster + ?Sized> Roster for std::sync::Arc<T> {
     fn people(&self, workspace: &str) -> Result<Vec<collab_types::Member>, String> {
         (**self).people(workspace)
     }
@@ -124,15 +124,15 @@ impl<T: Governs + ?Sized> Governs for std::sync::Arc<T> {
 }
 
 pub struct Membership<'a> {
-    governs: &'a dyn Governs,
+    roster: &'a dyn Roster,
     workspace_id: WorkspaceId,
 }
 
 impl<'a> Membership<'a> {
-    /// The people of the workspace `workspace_id` names, read and written through `governs`.
-    pub fn of(governs: &'a impl Governs, workspace_id: WorkspaceId) -> Self {
+    /// The people of the workspace `workspace_id` names, read and written through `roster`.
+    pub fn of(roster: &'a impl Roster, workspace_id: WorkspaceId) -> Self {
         Self {
-            governs,
+            roster,
             workspace_id,
         }
     }
@@ -204,7 +204,7 @@ impl<'a> Membership<'a> {
     /// Whether the workspace has `person` in it, as its own governance here says. A workspace this
     /// device does not hold has nobody here.
     fn has(&self, person: &str) -> bool {
-        self.governs
+        self.roster
             .people(&self.workspace_id.to_string())
             .is_ok_and(|people| {
                 people
@@ -314,7 +314,7 @@ impl<'a> Membership<'a> {
     /// Write `command` into the workspace's governance as this device, signed by its ownership,
     /// saying why when the workspace refuses it or cannot publish it.
     async fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {
-        self.governs.command(self.workspace_id, command).await
+        self.roster.command(self.workspace_id, command).await
     }
 }
 
