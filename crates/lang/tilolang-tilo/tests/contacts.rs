@@ -1211,18 +1211,8 @@ fn the_window_sorts_by_organization_and_counts_its_places() {
         .into_iter()
         .find(|item| word(item, "label").as_deref() == Some("By organization"))
         .unwrap_or_else(|| panic!("the sort menu: {:?}", all(&view, "ui.MenuItem")));
-    let chosen = view
-        .event_action(&sort.key, "choose")
-        .expect("By organization is chosen");
-    let ran = ada
-        .host
-        .runtime()
-        .invoke_action(
-            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person(&ada.name)),
-            (chosen.action.as_str(), chosen.args.clone()),
-        )
+    view.fire(&sort.key, "choose")
         .expect("choosing the order runs");
-    assert!(matches!(ran, InvokeOutcome::Done(_)), "{ran:?}");
     view.poll_patches().unwrap();
     assert_eq!(titles(&rows(&mut view)), ["Grace Hopper", "Ada Lovelace"]);
 }
