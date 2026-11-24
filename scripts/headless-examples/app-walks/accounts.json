@@ -68,7 +68,7 @@
         {
           "do_app": {
             "app": "so.tilo.settings",
-            "operation": "open-pane",
+            "operation": "open_pane",
             "args": {
               "pane": "external_accounts"
             }
