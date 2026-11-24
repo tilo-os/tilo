@@ -117,7 +117,9 @@ tilo-canvas-engine = { version = "0.1.0", path = "../../engines/canvas-engine" }
 speed-engine = { version = "0.1.0", path = "../../engines/speed-engine" }
 # The one PDF reader: what the device's PDF engine answers a package's `pdf.*` with.
 tilo-pdf-reader = { version = "0.1.0", path = "../../engines/pdf" }
-tilo-capture = { path = "../../engines/tilo-capture", features = ["scanner"] }
+tilo-capture = { path = "../../engines/tilo-capture", features = ["scanner", "camera", "codes"] }
+# A camera's picture, still and page, kept through the one image codec.
+tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
 tilo-ocr = { path = "../../engines/ocr" }
 tilo-doc-pdf = { path = "../../engines/tilo-doc-pdf" }
 image = { workspace = true, features = ["png"] }

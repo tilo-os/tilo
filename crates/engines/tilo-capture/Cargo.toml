@@ -21,6 +21,8 @@ screen = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:ashp
 # nothing on other targets.
 avfoundation = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-core-video", "dep:objc2-core-foundation", "dep:objc2-core-graphics", "dep:block2", "dep:dispatch2"]
 scanner = ["dep:bounded-command"]
+# QR and barcode detection over a picture's pixels: what the Camera app scans with.
+codes = ["dep:rqrr"]
 # Synthetic devices (`broker::synthetic`), for dependents' tests.
 test-support = []
 
@@ -59,8 +61,14 @@ rustix = { workspace = true, features = ["net", "std"] }
 ashpd = { workspace = true, optional = true, features = ["screencast"] }
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command", optional = true }
 
+# The detector a build with `codes` links.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rqrr = { workspace = true, optional = true }
+
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }
+# A code rendered for the detector's tests.
+qrcode = { workspace = true }
 
 [lints]
 workspace = true

@@ -33,6 +33,8 @@
 ))]
 pub mod backups_engine;
 pub mod call;
+#[cfg(feature = "app-launch")]
+pub mod camera_engine;
 pub mod canvas;
 pub mod connection;
 #[cfg(feature = "app-launch")]

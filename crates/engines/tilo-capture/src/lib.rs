@@ -19,6 +19,7 @@
 //! for it. An app its sandbox confines is served by
 //! the process that launched it ([`broker`]).
 
+pub mod codes;
 pub mod scanner;
 
 #[cfg(avf)]

@@ -731,6 +731,9 @@ impl Platform for HostPlatform {
             if app == crate::print_centre_engine::APP {
                 return crate::print_centre_engine::call(self, app, op, input);
             }
+            if app == crate::camera_engine::APP {
+                return crate::camera_engine::call(self, app, op, input);
+            }
             crate::backups_engine::register();
             crate::feed_engine::register();
             crate::weather_engine::register();
@@ -756,6 +759,9 @@ impl Platform for HostPlatform {
             }
             if app == crate::print_centre_engine::APP {
                 return crate::print_centre_engine::start(self, app, op, input);
+            }
+            if app == crate::camera_engine::APP {
+                return crate::camera_engine::start(self, app, op, input);
             }
             crate::backups_engine::register();
             crate::feed_engine::register();
@@ -795,6 +801,7 @@ impl Platform for HostPlatform {
             if let Ok(status) = tilo_api_client::status(job)
                 .or_else(|_| crate::video_engine::status(self, job))
                 .or_else(|_| crate::print_centre_engine::status(self, job))
+                .or_else(|_| crate::camera_engine::status(self, job))
             {
                 return Ok(status);
             }
@@ -815,6 +822,7 @@ impl Platform for HostPlatform {
             if tilo_api_client::cancel(job)
                 || crate::video_engine::cancel(job)
                 || crate::print_centre_engine::cancel(job)
+                || crate::camera_engine::cancel(job)
             {
                 return true;
             }

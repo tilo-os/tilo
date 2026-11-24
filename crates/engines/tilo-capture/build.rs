@@ -19,6 +19,13 @@ fn main() {
         ("avf_screen", mac && feature("SCREEN")),
         ("portal_screen", os == "linux" && feature("SCREEN")),
         ("sane_scanner", os == "linux" && feature("SCANNER")),
+        (
+            "codes",
+            !matches!(
+                std::env::var("CARGO_CFG_TARGET_ARCH").as_deref(),
+                Ok("wasm32")
+            ) && feature("CODES"),
+        ),
     ];
     for (cfg, on) in cfgs {
         println!("cargo::rustc-check-cfg=cfg({cfg})");
