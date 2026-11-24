@@ -14,8 +14,7 @@ use crate::types::Ty;
 
 use std::collections::HashSet;
 
-const ROW_ARGS_TEXT: &str =
-    "secondary:, note:, meta:, mark:, icon:, avatar:, badge:, value:, checkbox: and check:";
+const ROW_ARGS_TEXT: &str = "prefix:, secondary:, note:, meta:, mark:, icon:, avatar:, badge:, value:, checkbox: and check:";
 
 fn host(imp: Imp, args: Vec<Ex>) -> Stmt {
     Stmt::Eval(Ex::host(imp, args, Ty::Unit))
@@ -433,7 +432,7 @@ impl Checker<'_> {
                     let _ = self.expr(value, None);
                 }
                 Some("meta") => self.meta_arg(&node, value),
-                Some(name @ ("secondary" | "badge" | "note")) => {
+                Some(name @ ("prefix" | "secondary" | "badge" | "note")) => {
                     self.text_arg(&node, name, value);
                 }
                 Some("value") => {

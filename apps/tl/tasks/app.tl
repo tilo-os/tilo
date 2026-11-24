@@ -1708,7 +1708,7 @@ view task_item(
         // The row leaves out the project the window is of, and the day its group is headed by.
         // It opens no page of its own: the task's page is the window's content column, beside
         // the list the row stands in, so the list never continues under it.
-        task_row(t, project, group != .none, t.parent)
+        task_row(t, project, group != .none, t.parent, false)
         menu: {
             ui.MenuItem("Open as page", icon: .arrow_up_right) {
                 on choose: open(t, view: task_page)
@@ -1794,8 +1794,27 @@ view task_card(t: Task, p: Option<Project>) {
                 }
             }
         }
-        task_row(t, p, false, .none)
+        task_row(t, p, false, .none, true)
     }
+}
+
+/// Where a task stands in its work, in the word a row says it in.
+fn status_word(s: Status) -> Text {
+    if s == .backlog {
+        "Backlog"
+    } else if s == .todo {
+        "To do"
+    } else if s == .in_progress {
+        "In progress"
+    } else if s == .in_review { "In review" } else if s == .done { "Done" } else { "Cancelled" }
+}
+
+/// What a row says under its title: where the task stands, and on a card its labels too.
+fn row_facts(t: Task, project: Option<Project>, card: Bool) -> Option<Text> {
+    let labels = if card { t.labels.sort_by(l -> l).join(" · ") } else { "" }
+    if let place = placed(t, project) {
+        .some(if labels == "" { place } else { "{place} · {labels}" })
+    } else if labels != "" { .some(labels) }
 }
 
 /// One task as a row, leaving out what the window and the row over it already say: the project
@@ -1810,13 +1829,17 @@ fn placed(t: Task, project: Option<Project>) -> Option<Text> {
     } else { place }
 }
 
-view task_row(t: Task, project: Option<Project>, day: Bool, under: Option<Task>) {
+/// A task's number stands before its title, as `#12` names it; a list row says where the task
+/// stands in its work, and a card, whose column says that, how far its steps are and its labels.
+view task_row(t: Task, project: Option<Project>, day: Bool, under: Option<Task>, card: Bool) {
     let due: Option<Date> = if day { .none } else { own_due(t, under) }
     row(
         t.title,
+        prefix: "#{t.number}",
         checkbox: t.done,
         check: check(t),
-        secondary: placed(t, project),
+        secondary: row_facts(t, project, card),
+        value: if card { subtask_count(t) ?? "" } else { status_word(t.status) },
         note: proposal_note(t),
         meta: due,
         mark: t.priority,

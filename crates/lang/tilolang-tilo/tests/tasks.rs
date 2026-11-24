@@ -840,6 +840,71 @@ fn lists(view: &ViewInstance) -> Vec<List> {
         .collect()
 }
 
+/// A task's row names it by its number before its title and says where it stands in its work;
+/// its card on a board, whose column says that, says how far its steps are and its labels.
+#[test]
+fn a_tasks_row_and_card_say_its_number_status_steps_and_labels() {
+    let (ada, root) = workspace();
+    let post = call(&ada, "new_task", create(&root, "Write the launch post"));
+    call(
+        &ada,
+        "set_status",
+        vec![post.clone(), case(&ada, "Status", "in_progress")],
+    );
+    call(&ada, "label", vec![post.clone(), Value::text("launch")]);
+    for title in ["Outline", "Screenshots"] {
+        call(&ada, "add_subtask", vec![post.clone(), Value::text(title)]);
+    }
+    call(&ada, "check", vec![task(&ada, "Outline")]);
+    ada.commit();
+    let number = match read(&ada, &post, "number") {
+        Value::Int(number) => number,
+        other => panic!("a number: {other:?}"),
+    };
+
+    let mut view = ada.view(APP);
+    go_to(&mut view, "All issues");
+    let row = home_row_node(&mut view, &target(&post).expect("a task"));
+    let drawn = *row.of_kind("ui.ListRow").first().expect("the row is drawn");
+    assert_eq!(
+        drawn.props.get("prefix"),
+        Some(&Value::text(format!("#{number}")))
+    );
+    assert_eq!(drawn.props.get("value"), Some(&Value::text("In progress")));
+
+    let Value::Ref(at) = &root else {
+        panic!("a resource: {root:?}")
+    };
+    let mut board = ada.host.open_resource(&at.target, None).unwrap();
+    board.poll_patches().unwrap();
+    let tabs = key_of(&board, "ui.ViewTabs", &|_| true);
+    board
+        .fire_with(&tabs, "change", Some(&Value::Int(1)))
+        .unwrap();
+    board.poll_patches().unwrap();
+    let card = board
+        .tree()
+        .of_kind("ui.BoardCard")
+        .into_iter()
+        .find(|card| card.props.get("item").and_then(target) == target(&post))
+        .expect("the task has a card")
+        .clone();
+    let drawn = *card
+        .of_kind("ui.ListRow")
+        .first()
+        .expect("the card draws its row");
+    assert_eq!(
+        drawn.props.get("prefix"),
+        Some(&Value::text(format!("#{number}")))
+    );
+    assert_eq!(
+        drawn.props.get("value"),
+        Some(&Value::text("1/2")),
+        "one of two steps done"
+    );
+    assert_eq!(drawn.props.get("secondary"), Some(&Value::text("launch")));
+}
+
 /// The key of the node of `kind` that `holds` holds of, in the window `view` shows.
 pub(crate) fn key_of(view: &ViewInstance, kind: &str, holds: &dyn Fn(&UiNode) -> bool) -> String {
     view.tree()
@@ -891,10 +956,22 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped()
                 Some(4),
                 ids(&[&boxes, &van, &books, &bedworkspace])
             ),
-            (Some("Planned: the next thing to pick up".to_owned()), Some(0), vec![]),
+            (
+                Some("Planned: the next thing to pick up".to_owned()),
+                Some(0),
+                vec![]
+            ),
             (Some("Someone is working on it".to_owned()), Some(0), vec![]),
-            (Some("Done by whoever worked on it, waiting for a person to look".to_owned()), Some(0), vec![]),
-            (Some("Done and checked by its person".to_owned()), Some(0), vec![]),
+            (
+                Some("Done by whoever worked on it, waiting for a person to look".to_owned()),
+                Some(0),
+                vec![]
+            ),
+            (
+                Some("Done and checked by its person".to_owned()),
+                Some(0),
+                vec![]
+            ),
             (Some("Not to be done".to_owned()), Some(0), vec![]),
         ]
     );
@@ -919,15 +996,31 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_column_where_it_was_dropped()
     assert_eq!(
         lists(&view),
         [
-            (Some("Written down, not planned yet".to_owned()), Some(1), ids(&[&bedworkspace])),
-            (Some("Planned: the next thing to pick up".to_owned()), Some(0), vec![]),
+            (
+                Some("Written down, not planned yet".to_owned()),
+                Some(1),
+                ids(&[&bedworkspace])
+            ),
+            (
+                Some("Planned: the next thing to pick up".to_owned()),
+                Some(0),
+                vec![]
+            ),
             (
                 Some("Someone is working on it".to_owned()),
                 Some(3),
                 ids(&[&van, &books, &boxes])
             ),
-            (Some("Done by whoever worked on it, waiting for a person to look".to_owned()), Some(0), vec![]),
-            (Some("Done and checked by its person".to_owned()), Some(0), vec![]),
+            (
+                Some("Done by whoever worked on it, waiting for a person to look".to_owned()),
+                Some(0),
+                vec![]
+            ),
+            (
+                Some("Done and checked by its person".to_owned()),
+                Some(0),
+                vec![]
+            ),
             (Some("Not to be done".to_owned()), Some(0), vec![]),
         ]
     );
@@ -1810,14 +1903,11 @@ fn an_opened_task_stands_beside_the_list_not_under_its_discussion() {
     assert_eq!(home_list_titles(&ada, &mut view), ["milk", "eggs"]);
     let overview = part(&view, "overview");
     assert!(
-        overview
-            .of_kind("ui.ListItem")
+        overview.of_kind("ui.ListItem").iter().all(|item| item
+            .children
             .iter()
-            .all(|item| item
-                .children
-                .iter()
-                .all(|child| !(child.kind == "part"
-                    && child.props.get("name") == Some(&Value::text("detail"))))),
+            .all(|child| !(child.kind == "part"
+                && child.props.get("name") == Some(&Value::text("detail"))))),
         "a row holds its line, not the whole page of the task: {overview:?}"
     );
 
