@@ -45,11 +45,11 @@ struct Shared {
     next: AtomicU64,
     /// The connection, shut when the last clone of the client goes: the reader then ends, and
     /// the other end hears the client left.
-    #[cfg(unix)]
-    stream: Option<std::os::unix::net::UnixStream>,
+    #[cfg(any(unix, windows))]
+    stream: Option<tilo_socket::Stream>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Drop for Shared {
     fn drop(&mut self) {
         if let Some(stream) = &self.stream {
@@ -92,19 +92,19 @@ impl LineClient {
                 writer: Mutex::new(Box::new(write)),
                 waiting: Mutex::default(),
                 next: AtomicU64::new(1),
-                #[cfg(unix)]
+                #[cfg(any(unix, windows))]
                 stream: None,
             },
         )
     }
 
-    /// A client over the unix socket connection `stream`, which it shuts when its last clone
-    /// goes.
+    /// A client over the local socket connection `stream` (a Unix socket, or a named pipe on
+    /// Windows), which it shuts when its last clone goes.
     ///
     /// # Errors
     /// The connection cannot be read.
-    #[cfg(unix)]
-    pub fn of_stream(stream: std::os::unix::net::UnixStream) -> std::io::Result<Self> {
+    #[cfg(any(unix, windows))]
+    pub fn of_stream(stream: tilo_socket::Stream) -> std::io::Result<Self> {
         let (read, write) = (stream.try_clone()?, stream.try_clone()?);
         Self::reading(
             read,
@@ -126,13 +126,13 @@ impl LineClient {
         Ok(Self(shared))
     }
 
-    /// A client of the provider listening at the unix socket `path`.
+    /// A client of the provider listening at the local socket `path`.
     ///
     /// # Errors
     /// Nothing listens there, or the connection cannot be read.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn connect(path: &std::path::Path) -> std::io::Result<Self> {
-        Self::of_stream(std::os::unix::net::UnixStream::connect(path)?)
+        Self::of_stream(tilo_socket::connect(path)?)
     }
 
     fn correlation(&self) -> u64 {

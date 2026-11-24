@@ -373,14 +373,16 @@ impl super::Source for Folders {
 
 /// Whether `path` is a mount point: its device differs from its parent's.
 fn is_mounted(path: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-    let (Ok(here), Some(Ok(parent))) = (
-        std::fs::metadata(path),
-        path.parent().map(std::fs::metadata),
-    ) else {
-        return false;
+    let volume = |path: &Path| {
+        tilo_files::native::FileStamp::of(path)
+            .ok()
+            .flatten()
+            .map(|stamp| stamp.id().0)
     };
-    here.dev() != parent.dev()
+    match (volume(path), path.parent().and_then(volume)) {
+        (Some(here), Some(parent)) => here != parent,
+        _ => false,
+    }
 }
 
 /// How a migration's copying stands, shared by the threads that copy.

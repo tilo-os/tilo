@@ -105,10 +105,7 @@ pub(super) fn install(
         if previous.is_none() && dest.is_dir() {
             fs::rename(&dest, staging.join("retired"))?;
         }
-        let link = root.join(format!(".{}.next", directory.to_string_lossy()));
-        let _ = fs::remove_file(&link);
-        std::os::unix::fs::symlink(std::path::Path::new(VERSIONS).join(&version), &link)?;
-        fs::rename(&link, &dest)?;
+        put_in_force(&root, &directory, &version, &dest)?;
         if let Some(previous) = previous {
             let _ = fs::remove_dir_all(root.join(previous));
         }
@@ -122,4 +119,28 @@ pub(super) fn install(
     })();
     let _ = fs::remove_dir_all(&staging);
     result
+}
+
+/// Put `version`, unpacked in `root`'s versions, in force as the pack `dest` names. The pack's name
+/// links to the version in force, swapped in one rename. Windows links need a privilege an install
+/// does not have: there the version itself takes the pack's name, the pack before it already
+/// retired.
+fn put_in_force(
+    root: &std::path::Path,
+    directory: &std::ffi::OsStr,
+    version: &str,
+    dest: &std::path::Path,
+) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let link = root.join(format!(".{}.next", directory.to_string_lossy()));
+        let _ = fs::remove_file(&link);
+        std::os::unix::fs::symlink(std::path::Path::new(VERSIONS).join(version), &link)?;
+        fs::rename(&link, dest)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        fs::rename(root.join(VERSIONS).join(version), dest)
+    }
 }

@@ -82,6 +82,10 @@ uuid = { version = "1.23.1", features = ["js"] }
 [target.'cfg(all(target_family = "wasm", target_os = "unknown", tilo_no_js))'.dependencies]
 uuid = { version = "1.23.1", features = ["rng-getrandom"] }
 
+# A line client's connection is this login's local socket: a Unix socket, or a named pipe on Windows.
+[target.'cfg(any(unix, windows))'.dependencies]
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
+
 # A provider's synchronous read of an invocation's state may wait on a device: only a host with
 # `off-worker` enables tokio and runs it on a blocking thread, so the runtime carries the answer.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
