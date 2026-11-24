@@ -1744,6 +1744,13 @@ build_bundle() {
   say "bundle built ($((SECONDS - began))s)"
 }
 
+# stop_tree PID: PID and every process it started, theirs first.
+stop_tree() {
+  local child
+  for child in $(cat "/proc/$1/task/"*/children 2>/dev/null); do stop_tree "$child"; done
+  kill "$1" 2>/dev/null || true
+}
+
 # Whether DIR holds a finished desktop bundle with the module the page starts
 # from.
 bundle_whole() {
@@ -2144,8 +2151,12 @@ up_native() {
     if [[ -z ${TILO_SH_PROGRAMS:-} ]] && ! from_t && on_builder; then
       builder_build programs bundle
     else
-      build_bundle > "$state/logs/bundle.log" 2>&1 &
+      # The bundle's job holds no lock of the state, and ends with this command: a start that
+      # stops (its programs did not build) leaves no build behind it following t, which held
+      # the lock the next start waits on.
+      build_bundle > "$state/logs/bundle.log" 2>&1 9>&- &
       bundle_pid=$!
+      trap '[[ -z ${bundle_pid:-} ]] || stop_tree "$bundle_pid"' EXIT
     fi
   fi
   build_programs
@@ -2153,7 +2164,10 @@ up_native() {
   lay_out_releases
   if [[ -n $bundle_pid ]]; then
     say "waiting for the desktop bundle (stack.sh logs bundle)"
-    wait "$bundle_pid" || { tail -30 "$state/logs/bundle.log" >&2; die 'the desktop bundle did not build'; }
+    local built=0
+    wait "$bundle_pid" || built=$?
+    bundle_pid=
+    ((built == 0)) || { tail -30 "$state/logs/bundle.log" >&2; die 'the desktop bundle did not build'; }
   elif [[ -z ${TILO_SH_BUNDLE:-} && -z ${TILO_SH_SITE:-} ]]; then
     build_bundle
   fi
