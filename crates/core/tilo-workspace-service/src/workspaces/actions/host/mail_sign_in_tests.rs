@@ -17,7 +17,10 @@ use std::sync::{Arc, Mutex};
 use collab_types::WorkspaceId;
 use serde_json::{Value, json};
 use tilo_account_probe::mail_servers::{Found, MailServers, Server};
-use tilo_actions::remote::person_accounts::{self, MailAccount, MailAccounts, Provider};
+use tilo_actions::remote::person_accounts::{
+    self, MailAccount, MailAccounts, MailSignIns, Provider, SetFilesMode, SyncControl,
+};
+use tilo_actions::remote::person_vault;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
@@ -113,8 +116,28 @@ impl Setup {
         action: &str,
         argument: Value,
     ) -> Result<Value, ActionCallError> {
+        self.ask_target(
+            device,
+            person_accounts::PROVIDER,
+            resource,
+            action,
+            argument,
+        )
+        .await
+    }
+
+    /// What `action` of `resource` of the provider `provider` answers, as the page of
+    /// `device` asks it.
+    async fn ask_target(
+        &self,
+        device: &DeviceCert,
+        provider: &str,
+        resource: &str,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value, ActionCallError> {
         let target = RemoteActionTarget {
-            provider: person_accounts::PROVIDER.to_owned(),
+            provider: provider.to_owned(),
             address: ActionAddress::new(resource, action),
         };
         let argument = match argument {
@@ -824,4 +847,270 @@ async fn another_member_lists_the_account_and_checks_its_server() {
         .await
         .expect("the saved sign-in is checked");
     assert_eq!(checked, json!("signed in"));
+}
+
+/// A login the workspace's vault keeps for Ada's mail servers adds her account without a
+/// password being typed again: the listing offers it by its reference and name, never its
+/// secret, and the account signs in with that entry.
+#[tokio::test]
+async fn a_login_the_vault_keeps_adds_its_account() {
+    let setup = Setup::new().await;
+    let kept = setup
+        .ask_target(
+            &setup.owner,
+            person_vault::PROVIDER,
+            person_vault::RESOURCE,
+            person_vault::ADD,
+            json!({
+                "kind": "login",
+                "title": EXAMPLE,
+                "belongsTo": ["imap://imap.example.test:993", "smtp://smtp.example.test:465"],
+                "username": EXAMPLE,
+                "secret": "kept-password",
+            }),
+        )
+        .await
+        .expect("the workspace's vault keeps her login");
+    let reference = kept["reference"].as_str().expect("a reference").to_owned();
+
+    // The accounts listing offers the logins that belong to mail servers, and says nothing
+    // of what they sign in with.
+    let offered: MailSignIns = serde_json::from_value(
+        setup
+            .ask(
+                person_accounts::RESOURCE,
+                person_accounts::SIGN_INS,
+                Value::Null,
+            )
+            .await
+            .expect("the workspace's logins are read"),
+    )
+    .expect("the login listing reads");
+    assert_eq!(offered.sign_ins.len(), 1, "{offered:?}");
+    let offered = &offered.sign_ins[0];
+    assert_eq!(offered.id, reference);
+    assert_eq!(offered.title, EXAMPLE);
+    assert_eq!(offered.username, EXAMPLE);
+    assert_eq!(
+        offered.places,
+        vec![
+            "imap://imap.example.test:993".to_owned(),
+            "smtp://smtp.example.test:465".to_owned()
+        ]
+    );
+    let said = serde_json::to_string(&offered).unwrap();
+    assert!(!said.contains("kept-password"), "{said}");
+
+    // Adding from it keeps the account, signing in with that entry and nothing copied.
+    let added: MailAccount = serde_json::from_value(
+        setup
+            .ask(
+                person_accounts::RESOURCE,
+                person_accounts::ADD_MAIL_WITH_ITEM,
+                json!({
+                    "address": EXAMPLE,
+                    "incomingHost": "imap.example.test",
+                    "incomingPort": 993,
+                    "outgoingHost": "smtp.example.test",
+                    "outgoingPort": 465,
+                    "password": reference,
+                }),
+            )
+            .await
+            .expect("the account is added from the login"),
+    )
+    .unwrap();
+    assert_eq!(added.address, EXAMPLE);
+    assert!(added.has_secret);
+    let config = settings(&setup, EXAMPLE).await;
+    assert_eq!(
+        config[accounts::email::PASSWORD_ITEM_KEY],
+        json!(reference),
+        "the account names the login it signs in with"
+    );
+    assert!(
+        setup
+            .ask(
+                person_accounts::RESOURCE,
+                person_accounts::LIST,
+                Value::Null,
+            )
+            .await
+            .is_ok(),
+        "the listing answers after the account is added"
+    );
+}
+
+/// What tells this device's cloud mounts what to do, as a test stands in for the files
+/// service: every request it was told, and the mounts it answers with.
+#[derive(Default)]
+struct StandInCloud {
+    mounts: Mutex<Vec<tilo_fs_client::cloud::CloudMount>>,
+    requests: Mutex<Vec<tilo_fs_client::cloud::CloudRequest>>,
+}
+
+impl crate::workspaces::person_settings::cloud_control::CloudControl for StandInCloud {
+    fn mounts(&self) -> Result<Vec<tilo_fs_client::cloud::CloudMount>, String> {
+        Ok(self.mounts.lock().unwrap().clone())
+    }
+
+    fn control(&self, request: tilo_fs_client::cloud::CloudRequest) -> Result<(), String> {
+        self.requests.lock().unwrap().push(request);
+        Ok(())
+    }
+}
+
+impl StandInCloud {
+    /// The next request it is told, or a panic naming what it was told instead.
+    fn told(&self, expected: tilo_fs_client::cloud::CloudRequest) {
+        let requests = self.requests.lock().unwrap();
+        assert!(
+            requests.last() == Some(&expected),
+            "the files service was told {requests:?}, not {expected:?}"
+        );
+    }
+}
+
+/// A cloud account's files mode is chosen on it, and its sync is controlled on this device's
+/// files service: sync now, pause and resume each reach the service, and the reading says
+/// whether the mount is paused.
+#[tokio::test]
+async fn a_cloud_accounts_files_mode_and_its_sync_are_chosen() {
+    use tilo_fs_client::cloud::{CloudMount, CloudRequest};
+
+    let setup = Setup::new().await;
+    let cloud = Arc::new(StandInCloud::default());
+    setup.workspaces.cloud_control_through(Arc::clone(&cloud)
+        as Arc<dyn crate::workspaces::person_settings::cloud_control::CloudControl>);
+    let id = "google-drive:my-drive";
+    let mut drive = accounts::Account::new(id, accounts::cloud_types::GOOGLE_DRIVE);
+    drive.display_name = "My Drive".into();
+    drive.config = json!({
+        "provider": "google-drive",
+        "use_files": true,
+        "use_mail": false,
+        "use_calendar": false,
+        "services": {"mail": false, "calendar": false, "files": true},
+    });
+    let keeping = setup.workspace.to_string();
+    setup
+        .workspaces
+        .keep_workspace_account(
+            (&keeping, &setup.workspaces.acting_or_own(None), None),
+            &drive,
+        )
+        .await
+        .unwrap();
+
+    // Its files stay in sync until copied once; the choice is kept on the account.
+    assert_eq!(
+        accounts::cloud_types::mode_of(&settings(&setup, id).await),
+        Some(accounts::cloud_types::FilesMode::Sync)
+    );
+    let kept: SetFilesMode = SetFilesMode {
+        account: id.to_owned(),
+        mode: "import".to_owned(),
+    };
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::SET_FILES_MODE,
+            serde_json::to_value(&kept).unwrap(),
+        )
+        .await
+        .expect("its person chooses to copy it once");
+    assert_eq!(
+        accounts::cloud_types::mode_of(&settings(&setup, id).await),
+        Some(accounts::cloud_types::FilesMode::Import)
+    );
+    let refused = setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::SET_FILES_MODE,
+            json!({"account": id, "mode": "sometimes"}),
+        )
+        .await
+        .expect_err("a mode there is none of is refused");
+    assert!(
+        matches!(&refused, ActionCallError::Refused { reason } if reason.contains("files mode")),
+        "{refused:?}"
+    );
+
+    // Sync now, pause and resume each reach this device's files service.
+    let sync = serde_json::to_value(SyncControl {
+        account: id.to_owned(),
+    })
+    .unwrap();
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::SYNC_NOW,
+            sync.clone(),
+        )
+        .await
+        .expect("the service is told to sync now");
+    cloud.told(CloudRequest::SyncNow {
+        account: id.to_owned(),
+    });
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::PAUSE_SYNC,
+            sync.clone(),
+        )
+        .await
+        .expect("the service is told to pause");
+    cloud.told(CloudRequest::Pause {
+        account: id.to_owned(),
+    });
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::RESUME_SYNC,
+            sync,
+        )
+        .await
+        .expect("the service is told to resume");
+    cloud.told(CloudRequest::Resume {
+        account: id.to_owned(),
+    });
+
+    // A mail account's files do not sync here, so its sync is refused.
+    setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::ADD_MAIL,
+            json!({"address": EXAMPLE, "password": "typed", "incomingHost": "imap.example.test", "outgoingHost": "smtp.example.test"}),
+        )
+        .await
+        .expect("a mail account is added");
+    let refused = setup
+        .ask(
+            person_accounts::RESOURCE,
+            person_accounts::SYNC_NOW,
+            json!({"account": EXAMPLE}),
+        )
+        .await
+        .expect_err("a mail account's files do not sync on a device");
+    assert!(
+        matches!(&refused, ActionCallError::Refused { reason } if reason.contains("cloud-storage")),
+        "{refused:?}"
+    );
+
+    // The reading says a paused mount is paused.
+    *cloud.mounts.lock().unwrap() = vec![CloudMount {
+        account: id.to_owned(),
+        mount_point: std::path::PathBuf::from("/home/ada/Remote/My Drive"),
+        health: None,
+        paused: true,
+        capabilities: Default::default(),
+        signed_in: false,
+    }];
+    let reading = reading(&setup).await;
+    let account = reading["accounts"]
+        .as_array()
+        .and_then(|accounts| accounts.iter().find(|account| account["id"] == json!(id)))
+        .expect("the drive reads");
+    assert_eq!(account["paused"], json!(true));
+    assert_eq!(account["filesMode"], json!("import"));
 }

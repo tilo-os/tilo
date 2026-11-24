@@ -1160,6 +1160,12 @@ struct WorkspacesInner {
     #[cfg(any(test, feature = "test-support"))]
     icloud_sign_in:
         std::sync::RwLock<Option<std::sync::Arc<dyn account_credentials::icloud::ICloudAuth>>>,
+    /// What controls this device's cloud mounts, when a test stands a service of its
+    /// own in ([`Workspaces::cloud_control_through`]); the device's files service otherwise.
+    #[cfg(any(test, feature = "test-support"))]
+    cloud_control: std::sync::RwLock<
+        Option<std::sync::Arc<dyn crate::workspaces::person_settings::cloud_control::CloudControl>>,
+    >,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1608,6 +1614,7 @@ impl Workspaces {
                 icloud_calendars_at: std::sync::RwLock::new(None),
                 #[cfg(any(test, feature = "test-support"))]
                 cloud_sign_in: std::sync::RwLock::new(None),
+                cloud_control: std::sync::RwLock::new(None),
                 #[cfg(any(test, feature = "test-support"))]
                 icloud_sign_in: std::sync::RwLock::new(None),
                 draining: std::sync::atomic::AtomicBool::new(false),

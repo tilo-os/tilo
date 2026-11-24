@@ -21992,6 +21992,7 @@ dependencies = [
  "tilo-files",
  "tilo-formats",
  "tilo-fs",
+ "tilo-fs-client",
  "tilo-fs-protocol",
  "tilo-history",
  "tilo-identity",

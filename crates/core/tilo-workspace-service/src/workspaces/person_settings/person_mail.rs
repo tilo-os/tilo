@@ -11,8 +11,9 @@ use serde_json::{Map, Value};
 use tilo_account_probe::AccountTester as _;
 use tilo_account_probe::mail_servers::MailServers;
 use tilo_actions::remote::person_accounts::{
-    self, AddMailAccount, FindServers, FoundServers, MailAccount, MailAccounts, Provider, ServerAt,
-    Services, SetCalendars, SetServices,
+    self, AddMailAccount, FindServers, FoundServers, MailAccount, MailAccounts, MailSignIn,
+    MailSignIns, Provider, ServerAt, Services, SetCalendars, SetFilesMode, SetServices,
+    SyncControl,
 };
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
 
@@ -390,6 +391,115 @@ impl Workspaces {
             reason = "it keeps the shape of the build that does keep calendars"
         )
     )]
+    /// The logins the workspace's vault keeps that belong to mail servers, each by its
+    /// reference with its name, sign-in name and servers, never its secret
+    /// (`SIGN_INS`): what a person picks from to add an account without typing its
+    /// password again.
+    pub(super) async fn mail_sign_ins(&self, workspace: &str) -> Result<MailSignIns, String> {
+        let Some(opened) = self.read_made_vault(workspace).await? else {
+            return Ok(MailSignIns::default());
+        };
+        let sign_ins = opened
+            .entries()
+            .iter()
+            .filter(|(entry, _)| entry.kind == accounts::SecretItemKind::Login)
+            .filter_map(|(entry, _)| {
+                let places: Vec<String> = entry
+                    .origins
+                    .iter()
+                    .filter(|place| place.starts_with("imap://") || place.starts_with("smtp://"))
+                    .cloned()
+                    .collect();
+                let signs_in = places.iter().any(|place| place.starts_with("imap://"))
+                    && places.iter().any(|place| place.starts_with("smtp://"));
+                let id = tilo_actions::remote::person_vault::ItemRef::from_id(&entry.id.0)?;
+                signs_in.then(|| MailSignIn {
+                    id: id.to_string(),
+                    title: entry.title.clone(),
+                    username: entry.username.clone(),
+                    places,
+                })
+            })
+            .collect();
+        Ok(MailSignIns { sign_ins })
+    }
+
+    /// Keep the cloud-storage account `saying` names in the files mode its person chose
+    /// (`SET_FILES_MODE`): files kept in sync, or copied into the workspace once.
+    pub(super) async fn set_files_mode(
+        &self,
+        signing: Signing<'_>,
+        saying: SetFilesMode,
+    ) -> Result<MailAccounts, String> {
+        let held = signing.vault.accounts().await?;
+        let account = held
+            .account(&saying.account)
+            .ok_or_else(|| "That account is not kept here".to_owned())?;
+        if !is_file_account(&account) {
+            return Err("Only a cloud-storage account's files have a mode".to_owned());
+        }
+        let mode = match saying.mode.trim() {
+            "sync" => accounts::cloud_types::FilesMode::Sync,
+            "import" => accounts::cloud_types::FilesMode::Import,
+            other => {
+                return Err(format!(
+                    "`{other}` is no files mode: an account's files stay in sync or are \
+                     imported once"
+                ));
+            }
+        };
+        change_config(signing.vault, account.id.as_str(), |config| {
+            let mut settings = Value::Object(std::mem::take(config));
+            accounts::cloud_types::set_files_mode(&mut settings, mode);
+            if let Value::Object(back) = settings {
+                *config = back;
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(mail_accounts(
+            &signing.vault.accounts().await?,
+            signing.root,
+        ))
+    }
+
+    /// Do `action` to the cloud-storage account `control` names on this device's files
+    /// service (`SYNC_NOW`, `PAUSE_SYNC`, `RESUME_SYNC`), answering the accounts as they are.
+    pub(super) async fn control_sync(
+        &self,
+        signing: Signing<'_>,
+        action: &str,
+        control: SyncControl,
+    ) -> Result<MailAccounts, String> {
+        let held = signing.vault.accounts().await?;
+        let account = held
+            .account(&control.account)
+            .ok_or_else(|| "That account is not kept here".to_owned())?;
+        if !is_file_account(&account) {
+            return Err("Only a cloud-storage account's files sync on this device".to_owned());
+        }
+        let request = match action {
+            person_accounts::SYNC_NOW => tilo_fs_client::cloud::CloudRequest::SyncNow {
+                account: control.account.clone(),
+            },
+            person_accounts::PAUSE_SYNC => tilo_fs_client::cloud::CloudRequest::Pause {
+                account: control.account.clone(),
+            },
+            person_accounts::RESUME_SYNC => tilo_fs_client::cloud::CloudRequest::Resume {
+                account: control.account.clone(),
+            },
+            _ => return Err("That is no cloud-sync action".to_owned()),
+        };
+        let cloud = self.cloud_control();
+        tokio::task::spawn_blocking(move || cloud.control(request))
+            .await
+            .map_err(|_| "the files service was not told to the end".to_owned())??;
+        Ok(mail_accounts(
+            &signing.vault.accounts().await?,
+            signing.root,
+        ))
+    }
+
     pub(super) async fn set_services(
         &self,
         signing: Signing<'_>,
@@ -594,6 +704,27 @@ impl Workspaces {
             person_accounts::SET_SERVICES => {
                 let saying: SetServices = argument(request, "an account and its services")?;
                 let kept = Box::pin(self.set_services(signing, saying)).await;
+                if kept.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&kept)
+            }
+            person_accounts::SIGN_INS => answer(&self.mail_sign_ins(workspace).await),
+            person_accounts::SET_FILES_MODE => {
+                let saying: SetFilesMode =
+                    argument(request, "an account and the files mode it takes")?;
+                let kept = Box::pin(self.set_files_mode(signing, saying)).await;
+                if kept.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&kept)
+            }
+            person_accounts::SYNC_NOW
+            | person_accounts::PAUSE_SYNC
+            | person_accounts::RESUME_SYNC => {
+                let control: SyncControl = argument(request, "an account whose sync to control")?;
+                let action = request.target.address.action.clone();
+                let kept = Box::pin(self.control_sync(signing, &action, control)).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }

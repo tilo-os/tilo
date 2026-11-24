@@ -11,7 +11,7 @@ use super::Verb;
 use super::mail;
 
 /// The `tilo.accounts` actions a person asks of the workspace's accounts, in catalogue order.
-const VERBS: [Verb; 12] = [
+const VERBS: [Verb; 18] = [
     Verb {
         id: person_accounts::ADD_MAIL,
         label: "Add a mail account",
@@ -83,6 +83,48 @@ const VERBS: [Verb; 12] = [
         params: calendar_params,
     },
     Verb {
+        id: person_accounts::SIGN_INS,
+        label: "Read the logins the vault keeps for mail",
+        check: "",
+        kind: ActionKind::Read,
+        params: no_params,
+    },
+    Verb {
+        id: person_accounts::ADD_MAIL_WITH_ITEM,
+        label: "Add a mail account from the vault",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: add_account_with_item_params,
+    },
+    Verb {
+        id: person_accounts::SET_FILES_MODE,
+        label: "Choose how an account's files are kept",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: files_mode_params,
+    },
+    Verb {
+        id: person_accounts::SYNC_NOW,
+        label: "Sync an account now",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: sync_params,
+    },
+    Verb {
+        id: person_accounts::PAUSE_SYNC,
+        label: "Pause an account's sync",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: sync_params,
+    },
+    Verb {
+        id: person_accounts::RESUME_SYNC,
+        label: "Resume an account's sync",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: sync_params,
+    },
+    Verb {
         id: person_accounts::SET_SERVICES,
         label: "Choose an account's services",
         check: "",
@@ -114,6 +156,11 @@ fn begin_sign_in_params() -> Vec<ActionParam> {
             "name",
             ParamType::Text,
             "The name the account is shown under.",
+        ),
+        ActionParam::optional(
+            "address",
+            ParamType::Text,
+            "The address a provider's own page signs in to, for a mail account.",
         ),
         ActionParam::optional(
             "mail",
@@ -221,6 +268,63 @@ fn password_params() -> Vec<ActionParam> {
          never answered back.",
     ));
     params
+}
+
+fn add_account_with_item_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("address", ParamType::Text, "The account's address."),
+        ActionParam::optional(
+            "displayName",
+            ParamType::Text,
+            "The name its mail is sent under.",
+        ),
+        ActionParam::optional(
+            "username",
+            ParamType::Text,
+            "The sign-in name, when it is neither the item's nor the address.",
+        ),
+        ActionParam::required("incomingHost", ParamType::Text, "The IMAP server."),
+        ActionParam::optional("incomingPort", ParamType::Integer, "The IMAP port."),
+        ActionParam::required("outgoingHost", ParamType::Text, "The SMTP server."),
+        ActionParam::optional("outgoingPort", ParamType::Integer, "The SMTP port."),
+        // The reference as Passwords names it (`vault.item:<id>`): a view, an agent and a
+        // script spell it the same way, and the vault hands out only a login that belongs to
+        // both servers the account names.
+        ActionParam::required(
+            "password",
+            ParamType::Text,
+            "The vault item that is the account's sign-in, by its reference.",
+        ),
+        ActionParam::optional(
+            "reason",
+            ParamType::Text,
+            "Why whoever asks needs it, in one sentence their person reads when they are \
+             asked whether they may.",
+        ),
+    ]
+}
+
+fn files_mode_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("account", ParamType::Text, "The cloud-storage account."),
+        ActionParam::required(
+            "mode",
+            ParamType::Text,
+            "`sync` to keep its files in sync, `import` to copy them into the workspace once.",
+        ),
+    ]
+}
+
+fn sync_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "account",
+        ParamType::Text,
+        "The cloud-storage account whose sync it is.",
+    )]
+}
+
+fn no_params() -> Vec<ActionParam> {
+    Vec::new()
 }
 
 fn account_params() -> Vec<ActionParam> {
@@ -382,7 +486,45 @@ mod surface_tests {
                             named("AccountServices".to_owned()),
                             "Which of its services the account feeds.",
                         ),
+                        (
+                            "files_mode",
+                            FieldType::Text,
+                            "A cloud-storage account's files: `sync` kept in sync, `import` \
+                             copied into the workspace once.",
+                        ),
+                        (
+                            "paused",
+                            FieldType::Bool,
+                            "Whether its background sync and uploads are paused.",
+                        ),
                     ],
+                ),
+                record(
+                    "MailSignIn",
+                    "A login of the workspace's vault that belongs to a mail server.",
+                    &[
+                        (
+                            "id",
+                            FieldType::Text,
+                            "Its reference, as adding an account from it names it.",
+                        ),
+                        ("title", FieldType::Text, "What Passwords shows it as."),
+                        ("username", FieldType::Text, "The name it signs in with."),
+                        (
+                            "places",
+                            list(FieldType::Text),
+                            "The servers it belongs to, each `imap://…` or `smtp://…`.",
+                        ),
+                    ],
+                ),
+                record(
+                    "MailSignIns",
+                    "The logins the workspace's vault keeps for mail servers.",
+                    &[(
+                        "sign_ins",
+                        list(named("MailSignIn".to_owned())),
+                        "Each by its reference, its name and its servers.",
+                    )],
                 ),
                 record(
                     "CalendarView",
@@ -482,14 +624,19 @@ mod surface_tests {
                 }
             })
             .collect();
-        let returns = matches!(
-            verb.id,
-            person_accounts::BEGIN_SIGN_IN | person_accounts::BEGIN_CLOUD_SIGN_IN
-        )
-        .then(|| tilo_actions::surface::ReturnsSurface {
-            schema: serde_json::Value::Null,
-            ty: FieldType::Named("SignInStep".to_owned()),
-        });
+        let returns = match verb.id {
+            person_accounts::BEGIN_SIGN_IN | person_accounts::BEGIN_CLOUD_SIGN_IN => {
+                Some(tilo_actions::surface::ReturnsSurface {
+                    schema: serde_json::Value::Null,
+                    ty: FieldType::Named("SignInStep".to_owned()),
+                })
+            }
+            person_accounts::SIGN_INS => Some(tilo_actions::surface::ReturnsSurface {
+                schema: serde_json::Value::Null,
+                ty: FieldType::Named("MailSignIns".to_owned()),
+            }),
+            _ => None,
+        };
         VerbSurface {
             id: verb.id.to_owned(),
             name: String::new(),

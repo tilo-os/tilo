@@ -550,3 +550,171 @@ async fn a_webdav_server_is_kept_from_what_its_person_typed() {
         "{refused:?}"
     );
 }
+
+/// A mailbox is kept once its provider's own page approved it: Google says which mailbox the
+/// grant is for, and the account arrives with that address and its mail, its grant sealed in
+/// the workspace's vault as the sign-in Mail reads with.
+#[tokio::test]
+async fn a_mail_account_is_kept_once_google_s_page_approves_it() {
+    use account_credentials::{CredentialStore, OAuthIssuer, OAuthUse};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
+    let ada = caller(&device);
+
+    let provider = tilo_oauth::fake::FakeAuthorizationServer::start();
+    provider.set_identity("ada@gmail.example");
+    workspaces.cloud_sign_in_through(
+        CredentialStore::for_root(None)
+            .with_use(
+                OAuthUse::mail(OAuthIssuer::Google),
+                provider.provider(),
+                "test-client",
+            )
+            .with_gmail_profile_endpoint(provider.profile_url()),
+    );
+    workspaces.sign_in_accounts_through(|_address, _password| Ok("signed in".into()));
+
+    let step: SignInStep = answered(
+        settled(page.invoke(
+            &ada,
+            asking(
+                person_accounts::BEGIN_SIGN_IN,
+                json!({"provider": "google", "address": "ada@gmail.example", "mail": true}),
+            ),
+        ))
+        .await
+        .unwrap(),
+    );
+    assert!(!step.id.is_empty());
+    assert!(step.code.is_empty(), "the loopback waits for the browser");
+    // The sign-in goes to the provider's own page.
+    assert!(step.open.starts_with(&provider.url()), "{}", step.open);
+
+    tokio::task::spawn_blocking(move || tilo_oauth::fake::browse(&step.open))
+        .await
+        .unwrap()
+        .expect("the browser approves the sign-in");
+    kept_soon(workspaces, workspace_id, accounts::email::TYPE_ID).await;
+
+    let reading = kept_reading(workspaces, &workspace_id).await;
+    let account = reading["accounts"]
+        .as_array()
+        .and_then(|accounts| accounts.first())
+        .expect("the mailbox reads");
+    assert_eq!(account["kind"], json!("mail"), "{reading}");
+    assert_eq!(account["address"], json!("ada@gmail.example"));
+    assert_eq!(account["provider"], json!("google"));
+    assert_eq!(
+        account["services"],
+        json!({"mail": true, "calendar": false, "files": false})
+    );
+
+    // The vault keeps the grant as the account's own sign-in, and no secret is answered back.
+    let config = workspaces
+        .workspace_accounts(&workspace_id.to_string())
+        .await
+        .unwrap()
+        .account("ada@gmail.example")
+        .map(|account| account.config)
+        .expect("the account is kept");
+    assert!(
+        accounts::email::is_oauth(&config),
+        "the account signs in with a token: {config}"
+    );
+    let sealed = sealed(workspaces, workspace_id, "ada@gmail.example")
+        .await
+        .expect("the vault keeps its sign-in");
+    assert!(!sealed.is_empty());
+    assert!(!reading.to_string().contains(&sealed), "{reading}");
+}
+
+/// Microsoft's mail scopes read no profile, so the address its person typed is the one kept,
+/// proved by signing in at its servers with the grant.
+#[tokio::test]
+async fn a_microsoft_mail_account_keeps_the_address_its_person_typed() {
+    use account_credentials::{CredentialStore, OAuthIssuer, OAuthUse};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, actions) = governed(workspaces).await;
+    let device = admit(workspaces, &workspace, &owner, 1).await;
+    let page = actions.in_workspace_as(workspace_id, &device);
+    let ada = caller(&device);
+
+    // The address is proved at the servers the grant is for: a stand-in takes the token.
+    let proved = std::sync::Arc::new(Mutex::new(Vec::new()));
+    workspaces.sign_in_accounts_through({
+        let proved = std::sync::Arc::clone(&proved);
+        move |account, token| {
+            proved
+                .lock()
+                .unwrap()
+                .push((account.to_owned(), token.to_owned()));
+            Ok("signed in".into())
+        }
+    });
+    let provider = tilo_oauth::fake::FakeAuthorizationServer::start();
+    workspaces.cloud_sign_in_through(CredentialStore::for_root(None).with_use(
+        OAuthUse::mail(OAuthIssuer::Microsoft),
+        provider.provider(),
+        "test-client",
+    ));
+
+    // An address left out is refused in words its person reads, before anything is begun.
+    let refused = settled(page.invoke(
+        &ada,
+        asking(
+            person_accounts::BEGIN_SIGN_IN,
+            json!({"provider": "microsoft", "mail": true}),
+        ),
+    ))
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&refused, tilo_actions::remote::ActionCallError::Refused { reason } if reason.contains("Microsoft")),
+        "{refused:?}"
+    );
+
+    let step: SignInStep = answered(
+        settled(page.invoke(
+            &ada,
+            asking(
+                person_accounts::BEGIN_SIGN_IN,
+                json!({
+                    "provider": "microsoft",
+                    "address": "ada@outlook.example",
+                    "mail": true,
+                }),
+            ),
+        ))
+        .await
+        .unwrap(),
+    );
+    tokio::task::spawn_blocking(move || tilo_oauth::fake::browse(&step.open))
+        .await
+        .unwrap()
+        .expect("the browser approves the sign-in");
+    kept_soon(workspaces, workspace_id, accounts::email::TYPE_ID).await;
+
+    let proved = proved.lock().unwrap().clone();
+    assert_eq!(proved.len(), 1, "{proved:?}");
+    assert_eq!(proved[0].0, "ada@outlook.example");
+    let reading = kept_reading(workspaces, &workspace_id).await;
+    let account = reading["accounts"]
+        .as_array()
+        .and_then(|accounts| accounts.first())
+        .expect("the mailbox reads");
+    assert_eq!(account["address"], json!("ada@outlook.example"));
+    assert_eq!(account["provider"], json!("microsoft"));
+    // A server at its usual port is named without one.
+    assert_eq!(account["incoming"], json!("outlook.office365.com"));
+    assert_eq!(account["outgoing"], json!("smtp.office365.com:587"));
+}

@@ -25,9 +25,10 @@ use std::time::Duration;
 use account_credentials::icloud::{ICloudAuth, ICloudChallenge, ICloudSignIn, WebICloud};
 use account_credentials::nextcloud;
 use account_credentials::{
-    Authorization, CredentialStore, OAuthCloud, icloud_secret, oauth_secret,
+    Authorization, CredentialStore, OAuthCloud, OAuthIssuer, icloud_secret, oauth_secret,
 };
 use serde_json::{Value, json};
+use tilo_account_probe::AccountTester as _;
 use tilo_actions::remote::person_accounts::{
     BeginCloudSignIn, BeginSignIn, CancelSignIn, CloudKind, Provider, Services, SignInStep,
     SigningIn, SubmitSignInCode,
@@ -83,6 +84,21 @@ enum Flow {
         /// Stops the loopback wait.
         stop: Option<account_credentials::LoopbackCancel>,
     },
+    /// A mailbox's provider page, signed in with the grant it leaves: Google's
+    /// or Microsoft's own, kept as a mail account once the browser approves it.
+    OauthMail {
+        provider: Provider,
+        /// The name the account is shown under.
+        name: String,
+        /// The address the person signed in with, when they typed it.
+        address: String,
+        /// What the account feeds.
+        services: Services,
+        /// The account this signs in again, when its sign-in stopped working.
+        replace: String,
+        /// Stops the loopback wait.
+        stop: Option<account_credentials::LoopbackCancel>,
+    },
     /// An `Apple ID` signed in to, waiting for the verification code Apple
     /// sent to the person's devices.
     Icloud {
@@ -109,11 +125,12 @@ fn begun() -> std::sync::MutexGuard<'static, BTreeMap<String, Begun>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The providers this server can sign a person in with on their own page:
-/// Nextcloud's login flow.
+/// The providers this server can sign a person in with on their own page: Google's and
+/// Microsoft's for a mailbox, and Nextcloud's login flow. A build without a provider's client
+/// registration refuses its sign-in in words its person reads.
 #[must_use]
 pub(super) fn signs_in_with() -> Vec<Provider> {
-    vec![Provider::Nextcloud]
+    vec![Provider::Google, Provider::Microsoft, Provider::Nextcloud]
 }
 
 const fn provider_label(provider: Provider) -> &'static str {
@@ -157,13 +174,15 @@ pub(super) fn signing_in(root: &Path) -> Vec<SigningIn> {
         .values()
         .filter(|entry| entry.root == root)
         .filter_map(|entry| {
-            let Flow::Nextcloud { server, .. } = &entry.flow else {
-                return None;
+            let (provider, server) = match &entry.flow {
+                Flow::Nextcloud { server, .. } => (Provider::Nextcloud, server.clone()),
+                Flow::OauthMail { provider, .. } => (*provider, String::new()),
+                Flow::Oauth { .. } | Flow::Icloud { .. } => return None,
             };
             Some(SigningIn {
                 id: entry.id.clone(),
-                provider: Provider::Nextcloud,
-                server: server.clone(),
+                provider,
+                server,
                 failed: entry.failed.clone(),
             })
         })
@@ -200,14 +219,18 @@ impl Workspaces {
         if begun().len() >= MAX_BEGUN {
             return Err("Too many sign-ins are open here. Finish or cancel one first".into());
         }
-        if provider == Provider::Nextcloud {
-            self.begin_nextcloud((person, workspace, call), services, asking, reach)
-                .await
-        } else {
-            Err(format!(
+        match provider {
+            Provider::Nextcloud => {
+                self.begin_nextcloud((person, workspace, call), services, asking, reach)
+                    .await
+            }
+            Provider::Google | Provider::Microsoft => {
+                self.begin_oauth_mail((person, workspace), provider, asking)
+            }
+            Provider::Icloud | Provider::Other => Err(format!(
                 "{} signs in with a password, not on its own page",
                 provider_label(provider)
-            ))
+            )),
         }
     }
 
@@ -296,6 +319,126 @@ impl Workspaces {
                 }
                 Ok(Err(reason)) => keep_failed(&kept_id, &reason, cancelled_at),
                 Err(_) => keep_failed(&kept_id, "the Nextcloud answer was not read", cancelled_at),
+            }
+        });
+        Ok(SignInStep {
+            id,
+            open,
+            code: String::new(),
+        })
+    }
+
+    /// Begin signing in to a mailbox on Google's or Microsoft's own page: the loopback waits
+    /// for the browser, and the grant it leaves is kept as a mail account whose sign-in it is.
+    fn begin_oauth_mail(
+        &self,
+        (person, workspace): ([u8; 32], &str),
+        provider: Provider,
+        asking: &BeginSignIn,
+    ) -> Result<SignInStep, String> {
+        let issuer = match provider {
+            Provider::Google => OAuthIssuer::Google,
+            Provider::Microsoft => OAuthIssuer::Microsoft,
+            _ => return Err("That provider signs in with a password".into()),
+        };
+        let address = asking.address.trim().to_owned();
+        if provider == Provider::Microsoft && address.is_empty() {
+            return Err(
+                "Type the address you sign in to Microsoft with, so the account is kept under it"
+                    .into(),
+            );
+        }
+        let root = self.workspace_root(workspace);
+        let store = self.cloud_credentials(&root);
+        let hint = (!address.is_empty()).then_some(address.as_str());
+        let authorization = store
+            .begin_sign_in_for_capabilities(issuer, &[account_credentials::Capability::Mail], hint)
+            .map_err(|error| match error {
+                account_credentials::CredentialError::NotConfigured { provider, .. } => {
+                    format!("Signing in with {provider} is not set up in this build")
+                }
+                error => error.to_string(),
+            })?;
+        let Some(stop) = authorization.canceller() else {
+            return Err(format!(
+                "{}'s sign-in could not wait for your browser here. Try again",
+                issuer.label()
+            ));
+        };
+        let open = authorization.url().to_owned();
+        let id = tilo_oauth::random_token().map_err(|error| error.to_string())?;
+        let until_ms = now_ms().saturating_add(minutes_ms(SIGN_IN_MINUTES));
+        let name = if asking.name.trim().is_empty() {
+            if address.is_empty() {
+                issuer.label().to_owned()
+            } else {
+                address.clone()
+            }
+        } else {
+            asking.name.trim().to_owned()
+        };
+        // A mailbox's sign-in keeps its mail; the other services its provider offers are
+        // asked for later, from the account's row.
+        let services = Services {
+            mail: true,
+            calendar: false,
+            files: false,
+        };
+        begun().insert(
+            id.clone(),
+            Begun {
+                id: id.clone(),
+                person,
+                root: root.clone(),
+                until_ms,
+                failed: None,
+                flow: Flow::OauthMail {
+                    provider,
+                    name: name.clone(),
+                    address: address.clone(),
+                    services,
+                    replace: asking.account.trim().to_owned(),
+                    stop: Some(stop),
+                },
+            },
+        );
+        let workspaces = self.clone();
+        let workspace = workspace.to_owned();
+        let tester = self.account_tester();
+        let replace = asking.account.trim().to_owned();
+        let kept_id = id.clone();
+        let cancelled_at = until_ms;
+        tokio::spawn(async move {
+            let finished =
+                tokio::task::spawn_blocking(move || CredentialStore::finish_sign_in(authorization))
+                    .await;
+            let kept = match finished {
+                Ok(Ok(tokens)) => {
+                    Box::pin(keep_oauth_mail(
+                        workspaces.vault_for(
+                            &workspace,
+                            &tilo_action_policy::Acting::person(hex::encode(person)),
+                        ),
+                        &store,
+                        issuer,
+                        &name,
+                        &address,
+                        &replace,
+                        services,
+                        &tokens,
+                        tester,
+                    ))
+                    .await
+                }
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(_) => Err("the sign-in was not read to the end".to_owned()),
+            };
+            match kept {
+                Ok(()) => {
+                    begun().remove(&kept_id);
+                    workspaces.person_settings_changed();
+                }
+                Err(reason) => keep_failed(&kept_id, &reason, cancelled_at),
             }
         });
         Ok(SignInStep {
@@ -636,7 +779,7 @@ impl Workspaces {
                     Some(authorization) => Finish::Pasted(authorization, *cloud, name.clone()),
                     None => Finish::None,
                 },
-                Flow::Nextcloud { .. } => Finish::None,
+                Flow::Nextcloud { .. } | Flow::OauthMail { .. } => Finish::None,
             }
         };
         match finish {
@@ -781,7 +924,7 @@ fn keep_failed(id: &str, reason: &str, until_ms: u64) {
         entry.until_ms = until_ms;
         match &mut entry.flow {
             Flow::Nextcloud { stop, .. } => *stop = None,
-            Flow::Oauth { stop, .. } => *stop = None,
+            Flow::Oauth { stop, .. } | Flow::OauthMail { stop, .. } => *stop = None,
             Flow::Icloud { .. } => {}
         }
     }
@@ -860,12 +1003,16 @@ pub(super) fn cancel(person: &[u8; 32], cancel: &CancelSignIn) -> Result<(), Str
     if !theirs {
         return Err("That sign-in was not begun here".into());
     }
-    if let Some(entry) = entries.remove(&cancel.sign_in)
-        && let Flow::Oauth {
-            stop: Some(stop), ..
-        } = entry.flow
-    {
-        stop.cancel();
+    if let Some(entry) = entries.remove(&cancel.sign_in) {
+        match entry.flow {
+            Flow::Oauth {
+                stop: Some(stop), ..
+            }
+            | Flow::OauthMail {
+                stop: Some(stop), ..
+            } => stop.cancel(),
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -918,6 +1065,110 @@ async fn keep_oauth_account(
     let mut account = accounts::Account::new(accounts::AccountId::from(id), cloud.type_id());
     name.clone_into(&mut account.display_name);
     account.config = config;
+    vault.keep_account(&account).await
+}
+
+/// Keep a mailbox the provider's page signed in: its grant in the workspace's
+/// vault, its account, and the servers its provider's mail lives at.
+///
+/// Google says which mailbox the grant is for; Microsoft's mail scopes read no
+/// profile, so the address the person typed is the one kept, proved by
+/// signing in at both its servers with the grant.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one sign-in: what it is for, whom it names, where it is kept and what proves it"
+)]
+async fn keep_oauth_mail(
+    vault: VaultAt<'_>,
+    store: &CredentialStore,
+    issuer: OAuthIssuer,
+    name: &str,
+    typed: &str,
+    replace: &str,
+    services: Services,
+    tokens: &account_credentials::TokenSet,
+    tester: std::sync::Arc<dyn tilo_account_probe::AccountTester>,
+) -> Result<(), String> {
+    let email = match issuer {
+        // Asking Google which mailbox a grant is for is a blocking call, on a thread of its
+        // own as every other call a person waits on here is.
+        OAuthIssuer::Google => {
+            let store = store.clone();
+            let tokens = tokens.clone();
+            tokio::task::spawn_blocking(move || store.gmail_identity(&tokens))
+                .await
+                .map_err(|_| "the mailbox was not read to the end".to_owned())?
+                .map_err(|error| error.to_string())?
+        }
+        OAuthIssuer::Microsoft => {
+            if typed.is_empty() {
+                return Err(
+                    "Type the address you sign in to Microsoft with, so the account is kept \
+                     under it"
+                        .into(),
+                );
+            }
+            typed.to_owned()
+        }
+        issuer => {
+            return Err(format!(
+                "{} is no mailbox this server keeps",
+                issuer.label()
+            ));
+        }
+    };
+    let config = issuer
+        .mail_config(&email)
+        .ok_or_else(|| format!("{} keeps no mailbox for {email}", issuer.label()))?;
+    let id = if replace.is_empty() {
+        email.clone()
+    } else {
+        replace.to_owned()
+    };
+    let mut account = accounts::Account::new(
+        accounts::AccountId::from(id.clone()),
+        accounts::email::TYPE_ID,
+    );
+    if name.trim().is_empty() {
+        email.clone_into(&mut account.display_name);
+    } else {
+        name.trim().clone_into(&mut account.display_name);
+    }
+    let mut settings = config.to_value().map_err(|error| error.to_string())?;
+    if let serde_json::Value::Object(settings) = &mut settings {
+        settings.insert(
+            "services".into(),
+            serde_json::to_value(services).map_err(|error| error.to_string())?,
+        );
+        settings.insert("provider".into(), issuer.id().into());
+    }
+    account.config = settings;
+
+    // Microsoft's address is the person's word until its servers take the grant: signing
+    // in at both proves it, as a typed password is proved.
+    if issuer == OAuthIssuer::Microsoft {
+        let secret = accounts::Secret::password(tokens.access_token.clone());
+        let checking = account.clone();
+        tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
+            .await
+            .map_err(|_| "the mail server check did not finish".to_owned())??;
+    }
+
+    let before = vault
+        .accounts()
+        .await?
+        .account(&id)
+        .and_then(|before| sign_in_of(&before.config));
+    let reference = vault
+        .keep_sign_in(
+            &id,
+            (accounts::vault_items::ItemKind::Login, places_of(&account)?),
+            &config.username,
+            Zeroizing::new(oauth_secret(tokens).token.unwrap_or_default()),
+            before.as_ref(),
+        )
+        .await?;
+    accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
     vault.keep_account(&account).await
 }
 
@@ -1045,6 +1296,7 @@ async fn keep_cloud_sign_in(
 /// entry of the workspace's vault the account names, at the account's two servers.
 pub(super) async fn mail_secret(
     vault: VaultAt<'_>,
+    root: &Path,
     account: &accounts::Account,
     by: &str,
 ) -> Result<accounts::Secret, String> {
@@ -1059,6 +1311,9 @@ pub(super) async fn mail_secret(
             SIGN_IN,
         )
         .await?;
+    // An account a provider signed in on its own page reads with the token its grant holds
+    // now, renewed here; every other account signs in with the password it keeps.
+    let released = super::oauth_grant::signs_in_with(vault, root, account, released).await?;
     Ok(accounts::Secret::password(released.secret.to_string()))
 }
 
@@ -1211,6 +1466,7 @@ mod tests {
             calendar: false,
             files: false,
             name: String::new(),
+            address: String::new(),
             account: String::new(),
         }
     }
