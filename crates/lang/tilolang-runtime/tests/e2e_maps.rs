@@ -765,6 +765,7 @@ mod cases {
             .find(|p| m.text(p, "name") == "Marienplatz")
             .expect("the place the geocoder answered is on the map");
         m.call("save_place", vec![Value::resource(&place)]);
+        let where_it_is = m.text(&place, "key");
         // A saved place is named by what the search brought until the person renames it.
         m.call(
             "rename_place",
@@ -776,7 +777,7 @@ mod cases {
         assert_eq!(m.text(&place, "name"), "Office", "the typed name, trimmed");
         assert_eq!(
             m.text(&place, "key"),
-            "node/1",
+            where_it_is,
             "renaming keeps where the place is"
         );
         // The action refuses a place with no name of its own.
