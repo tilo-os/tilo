@@ -927,6 +927,31 @@ def pre_push_lint():
     return module
 
 
+class BuilderLicenseGateTests(unittest.TestCase):
+    """A push whose manifests put AGPL code under a published builder crate is refused."""
+
+    def metadata(self, leaf_license: str) -> dict:
+        policy = tomllib.loads((ROOT / "tools/sdk/license-policy.toml").read_text())
+        def package(name, license, deps=()):
+            return {"name": name, "source": None, "license": license, "dependencies": [
+                {"name": dep, "kind": None, "req": "^0.1.0", "path": f"/x/{dep}"} for dep in deps]}
+        roots = [package(name, "MIT") for name in policy["builder_roots"]]
+        roots[0]["dependencies"].append(
+            {"name": "leaf", "kind": None, "req": "^0.1.0", "path": "/x/leaf", "optional": True})
+        return {"packages": [*roots, package("leaf", leaf_license)]}
+
+    def test_an_agpl_crate_under_a_builder_crate_is_found_and_an_mit_one_is_not(self):
+        module = pre_push_lint()
+        found = module.builder_license_findings(ROOT, self.metadata("AGPL-3.0-only"))
+        self.assertEqual(len(found), 1)
+        self.assertIn("leaf", found[0])
+        self.assertEqual(module.builder_license_findings(ROOT, self.metadata("MIT")), [])
+
+    def test_a_push_that_changes_no_manifest_is_not_asked(self):
+        module = pre_push_lint()
+        self.assertEqual(module.builder_licenses_range(ROOT, module.Push({"crates/x/src/lib.rs"}, [], [], [])), 0)
+
+
 class CatalogueGateTests(unittest.TestCase):
     """A push that reaches what the component catalogue is made from names t's ui-graph."""
 
