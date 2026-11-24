@@ -243,6 +243,7 @@ d-5rkfnkg4 = Seitenleiste
     .w-reports = Meldungen
 
 d-ymtess4x = Kanal
+    .w-replay = { $name } erneut abspielen
     .w-pinned-messages = Angeheftete Nachrichten
     .w-members = Mitglieder
     .w-channel = Kanal
@@ -250,6 +251,7 @@ d-ymtess4x = Kanal
     .w-set-the-topic = Thema setzen
     .w-restore-channel = Kanal zurückholen
     .w-archive-channel = Kanal archivieren
+    .w-export-conversation = Unterhaltung exportieren…
     .w-move-up = Nach oben
     .w-move-down = Nach unten
     .w-delete-channel = Kanal löschen
@@ -279,6 +281,7 @@ d-27cntb22 = Mitglieder des Kanals
     .w-add = Hinzufügen
 
 d-jbezqvlc = Direkt
+    .w-replay = { $name } erneut abspielen
     .w-message = Nachricht an { $name }
     .w-attach = Anhängen
     .w-send = Senden
@@ -306,6 +309,7 @@ d-oqg63mfd = Kategorieübersicht
 d-hrbsxhor = Fähigkeitszeile
 
 d-enkgjyn7 = Thread
+    .w-replay = { $name } erneut abspielen
     .w-message = Nachricht an { $name }
     .w-attach = Anhängen
     .w-send = Senden
@@ -654,11 +658,14 @@ d-bi2i7p2d = Nativen Chat übernehmen
     .doc = Die Unterhaltungen, die der native Chat hielt, bevor diese App seine Id übernahm, einmal in diese übernommen: seine Kategorien und Kanäle in der Reihenfolge der Seitenleiste, jede mit Name und Thema, und jede Nachricht eines Kanals mit dem, was sie sagte, ob sie angeheftet war und der Id, die sie dort hatte.
 
 d-yqispavu = Problem melden
+    .w-a-recording-is-a-video = Eine Aufnahme ist ein Video
     .doc = Legt einen Problembericht ab, was jemand bei der Nutzung von Tilo erlebt hat, im #feedback-Kanal des Arbeitsbereichs, den der erste Bericht öffnet.
     .did = hat ein Problem gemeldet
     .w-say-what-went-wrong-first = Sag zuerst, was schiefging
 
 d-yqispavu-body = Text
+
+d-yqispavu-recording = Aufnahme
 
 d-4cfw6ty2 = Nachricht
     .doc = Eine Nachricht.
@@ -1175,3 +1182,12 @@ d-we3jqglq = Festlegen, wie laut jemand klingt
 d-z5deq3xd = Jemanden für mich stummschalten
     .doc = Schaltet `who` in Anrufen auf diesem Gerät stumm, oder hört die Person wieder mit der Lautstärke, die sie hatte.
     .did = hat jemanden für sich stummgeschaltet
+
+d-ecxyvu6t = Unterhaltung exportieren
+    .doc = Eine Unterhaltung als Datei zum Aufbewahren oder Weitergeben: jede Nachricht der Reihe nach, als Markdown, jede unter dem Namen, mit dem sie erscheint, und der Zeit, zu der sie geschrieben wurde.
+
+d-ecxyvu6t-conversation = Unterhaltung
+
+d-v4cscgro = Über die Person
+    .w-about = Über { $name }
+    .w-message = Nachricht

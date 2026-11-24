@@ -32,6 +32,7 @@ mod chat_liveshare;
 mod chat_members;
 mod chat_persona_shot;
 mod chat_small;
+mod chat_system;
 mod composer;
 mod contacts;
 mod containers;

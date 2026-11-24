@@ -1198,6 +1198,61 @@ view call_input_menu<R>(of: R, inputs: List<host.CallInput>, what: Text) {
     }
 }
 
+/// A person's card: their face, their name, and what they are in the workspace, with what the
+/// view showing them offers to do with them under it (`actions`: write to them, report them). Any
+/// view that shows people opens it where a person is chosen, a message's author or a row of the
+/// workspace's people, so a person reads the same in every app; the card itself keeps nothing.
+view person_card(who: Actor, actions: View) {
+    stack(gap: .related, min: 16rem) {
+        row(gap: .related, align: .center) {
+            avatar(who)
+            stack(gap: .tight, fill: 1.0) {
+                ui.Text(who.name(), role: .subheading, truncate)
+                ui.Text(person_standing(who), role: .caption, secondary: true)
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            actions
+        }
+    }
+}
+
+/// What `who` is in the workspace, in a word: an agent, or a person by the role the workspace
+/// gave them, and someone the workspace no longer lists as such.
+fn person_standing(who: Actor) -> Text {
+    if who.kind() == .agent {
+        return phrase("tilolang-person-agent")
+    }
+    let role = who.role() ?? ""
+    if role == "owner" {
+        phrase("tilolang-person-owner")
+    } else if role == "administrator" {
+        phrase("tilolang-person-administrator")
+    } else if role == "moderator" {
+        phrase("tilolang-person-moderator")
+    } else if role == "editor" {
+        phrase("tilolang-person-member")
+    } else if role == "commenter" {
+        phrase("tilolang-person-commenter")
+    } else if role == "viewer" {
+        phrase("tilolang-person-viewer")
+    } else { phrase("tilolang-person-outside") }
+}
+
+/// A conversation as a file a person keeps or hands on: Markdown under its `title`, one line
+/// for each of its `entries` ([`transcript_entry`]). What every conversation exports the same
+/// way, whatever app keeps it.
+fn transcript_markdown(title: Text, entries: List<Text>) -> Text {
+    "# {title}\n\n{entries.join("")}"
+}
+
+/// One message of an exported conversation: who wrote it, when (RFC 3339, as the log has it) and
+/// what it says, its lines after the first indented under it.
+fn transcript_entry(author: Text, at: Option<Time>, said: Text) -> Text {
+    let when = if let t = at { " ({t.iso()})" } else { "" }
+    "- **{author}**{when}: {said.replace("\n", "\n  ")}\n"
+}
+
 /// Under a message that started a thread: how many replies it has, opening the thread, and the
 /// latest of them as one quiet line (whose face, the start of what it says, when), so a thread
 /// that moved on reads as moving without opening it. An `archived` thread says it was set aside.
