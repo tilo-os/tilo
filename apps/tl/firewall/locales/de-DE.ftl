@@ -163,79 +163,79 @@ d-lr6vcvpw = Protokoll
 
 d-dguxp5s2 = Beschreibung
 
-d-afyql7vm = Die firewalld dieses Geräts lesen
+d-rmbzih5s = Die firewalld dieses Geräts lesen
     .doc = Übernimmt, was die firewalld dieses Geräts hält: die Zonen, ihre Dienste und Regeln und die Schalter.
 
-d-fc3ic755 = Firewall starten
+d-wvp77mci = Firewall starten
     .doc = Startet firewalld.
     .w-there-is-no-firewall-configuration-yet = Es gibt noch keine Firewall-Konfiguration
 
-d-26ttuw3a = Firewall stoppen
+d-2jbc472l = Firewall stoppen
     .doc = Stoppt firewalld.
 
-d-bqldudwm = Panikmodus einschalten
+d-7fjzxy2n = Panikmodus einschalten
     .doc = Wechselt in den Panikmodus: der gesamte Datenverkehr ein- und ausgehend wird verworfen.
     .w-there-is-no-firewall-configuration-yet = Es gibt noch keine Firewall-Konfiguration
 
-d-brlebqzi = Panikmodus ausschalten
+d-t5pt7a72 = Panikmodus ausschalten
     .doc = Verlässt den Panikmodus.
 
-d-hpu4mjx5 = Zur aktiven Zone machen
+d-fas2qr4c = Zur aktiven Zone machen
     .doc = Macht eine Zone zur aktiven.
 
-d-hpu4mjx5-zone = Zone
+d-fas2qr4c-zone = Zone
 
-d-fwu3tm6n = Eine Regel ein- oder ausschalten
+d-t5sxzg6g = Eine Regel ein- oder ausschalten
     .doc = Schaltet eine Regel in einer Zone ein oder aus.
 
-d-fwu3tm6n-zone = Zone
+d-t5sxzg6g-zone = Zone
 
-d-fwu3tm6n-rule = Regel
+d-t5sxzg6g-rule = Regel
 
-d-fwu3tm6n-on = An
+d-t5sxzg6g-on = An
 
-d-wvzqmhhj = Einen Dienst erlauben
+d-3hwynxa2 = Einen Dienst erlauben
     .doc = Erlaubt einen Dienst in einer Zone oder erlaubt ihn nicht mehr.
 
-d-wvzqmhhj-zone = Zone
+d-3hwynxa2-zone = Zone
 
-d-wvzqmhhj-service = Dienst
+d-3hwynxa2-service = Dienst
 
-d-wvzqmhhj-on = An
+d-3hwynxa2-on = An
 
-d-ohjdpfn7 = Regel hinzufügen
+d-ipsf2opk = Regel hinzufügen
     .doc = Fügt einer Zone eine Regel hinzu oder speichert die bearbeitete.
     .w-choose-a-service = Wähle einen Dienst
     .w-that-is-not-a-port-or = Das ist kein Port und kein Portbereich, den diese Firewall annimmt
     .w-that-is-not-an-ipv4-address = Das ist keine IPv4-Adresse und kein Netz
 
-d-ohjdpfn7-zone = Zone
+d-ipsf2opk-zone = Zone
 
-d-ohjdpfn7-editing = Bearbeitung
+d-ipsf2opk-editing = Bearbeitung
 
-d-ohjdpfn7-as_service = Als Dienst
+d-ipsf2opk-as_service = Als Dienst
 
-d-ohjdpfn7-service = Dienst
+d-ipsf2opk-service = Dienst
 
-d-ohjdpfn7-port = Port
+d-ipsf2opk-port = Port
 
-d-ohjdpfn7-proto = Protokoll
+d-ipsf2opk-proto = Protokoll
 
-d-ohjdpfn7-verdict = Urteil
+d-ipsf2opk-verdict = Urteil
 
-d-ohjdpfn7-source = Quelle
+d-ipsf2opk-source = Quelle
 
-d-gmrhjhmc = Regel löschen
+d-qf5szroz = Regel löschen
     .doc = Löscht eine Regel aus einer Zone.
 
-d-gmrhjhmc-zone = Zone
+d-qf5szroz-zone = Zone
 
-d-gmrhjhmc-rule = Regel
+d-qf5szroz-rule = Regel
 
 d-bnokiyga = Verworfenen Datenverkehr zeigen
     .doc = Liest, was der Kernel in der letzten Stunde verworfen hat.
 
-d-7ezojanx = Ankommen
+d-jrxpvoqv = Ankommen
     .doc = Beim Öffnen der App wird die firewalld dieses Geräts in die Konfiguration des Arbeitsbereichs gelesen, wenn diese noch keine hat.
 
 d-xcdaj2hg = Regeltitel
@@ -292,11 +292,11 @@ d-fudc3znt = Quellenangabe
     .w-from-1-address = von 1 Adresse
     .w-from-addresses = von { $sources } Adressen
 
-d-hcbrcxoa = Starten~present
+d-7fs3cjxx = Starten~present
 
-d-xyhhvsn4 = Panik einschalten~present
+d-4r3hrblj = Panik einschalten~present
 
-d-z7doxjm6 = Regel hinzufügen~present
+d-vxibtymz = Regel hinzufügen~present
 
 d-okktoj56 = Fenster
     .w-firewall = Firewall

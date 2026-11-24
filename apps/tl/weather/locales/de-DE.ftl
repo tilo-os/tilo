@@ -533,64 +533,64 @@ d-sx243l4e-filter-air_no2 = Luft NO₂
 
 d-sx243l4e-filter-air_ozone = Luft Ozon
 
-d-mlxrazr6 = Ort speichern
+d-f3sknmsd = Ort speichern
     .doc = Speichert einen Ort, dem eine Person folgt.
     .did = speicherte einen Ort
     .w-a-place-needs-a-name = Ein Ort braucht einen Namen
     .w-a-place-lies-between-latitudes-90 = Ein Ort liegt zwischen den Breiten -90 und 90
     .w-a-place-lies-between-longitudes-180 = Ein Ort liegt zwischen den Längen -180 und 180
 
-d-mlxrazr6-name = Name
+d-f3sknmsd-name = Name
 
-d-mlxrazr6-latitude = Breite
+d-f3sknmsd-latitude = Breite
 
-d-mlxrazr6-longitude = Länge
+d-f3sknmsd-longitude = Länge
 
-d-mlxrazr6-region = Region
+d-f3sknmsd-region = Region
 
-d-mlxrazr6-country = Land
+d-f3sknmsd-country = Land
 
-d-mlxrazr6-country_code = Ländercode
+d-f3sknmsd-country_code = Ländercode
 
-d-mlxrazr6-timezone = Zeitzone
+d-f3sknmsd-timezone = Zeitzone
 
-d-xz3zxbjv = Zuerst zeigen
+d-xp2ceo5y = Zuerst zeigen
     .doc = Zeigt die Vorhersage eines Ortes zuerst, wann immer die App öffnet.
     .did = wählte den zuerst gezeigten Ort
 
-d-xz3zxbjv-place = Ort
+d-xp2ceo5y-place = Ort
 
-d-zvjmzc4s = Nach oben
+d-cirfp6lv = Nach oben
     .doc = Schiebt einen Ort an den Anfang der Liste.
     .w-this-place-is-already-at-the = Dieser Ort steht schon ganz oben
 
-d-zvjmzc4s-place = Ort
+d-cirfp6lv-place = Ort
 
-d-mmdmaoku = Ort entfernen
+d-wqobjlmz = Ort entfernen
     .doc = Entfernt einen Ort aus der Liste; was von ihm gelesen war, geht mit.
     .did = entfernte einen Ort
 
-d-mmdmaoku-place = Ort
+d-wqobjlmz-place = Ort
 
-d-eflmglly = Vorhersagen aktualisieren
+d-kl6crcze = Vorhersagen aktualisieren
     .doc = Liest die Vorhersagen erneut: jeden Ort, oder den, den `place` nennt.
     .did = aktualisierte die Vorhersagen
     .w-there-are-no-places-to-update = Es gibt keine Orte zu aktualisieren
     .w-an-update-is-already-running = Eine Aktualisierung läuft bereits
     .w-couldn-t-start-updating = Aktualisieren konnte nicht starten: { $why }
 
-d-eflmglly-place = Ort
+d-kl6crcze-place = Ort
 
-d-fkmwifvf = Aktualisieren beenden
+d-7muahxxg = Aktualisieren beenden
     .doc = Beendet eine laufende Aktualisierung.
 
-d-timhpd7q = Erneut versuchen
+d-ryiczm2w = Erneut versuchen
     .doc = Aktualisiert einen Ort, dessen letztes Lesen scheiterte, sobald die Person erneut fragt.
     .did = fragte erneut nach einer Vorhersage
 
-d-timhpd7q-place = Ort
+d-ryiczm2w-place = Ort
 
-d-imyfbzvr = Wetter abholen
+d-yajyk4wl = Wetter abholen
     .doc = Holt, was das Gerät bisher gelesen hat: die Antwort jedes Ortes, wie sie eintrifft, und was der Dienst dazu sagt.
     .w-the-update-stopped = Die Aktualisierung endete: { $why }
     .w-the-update-s-answer-did-not = Die Antwort der Aktualisierung ließ sich nicht lesen: { $why }
@@ -598,39 +598,39 @@ d-imyfbzvr = Wetter abholen
     .w-couldn-t-look-for-places = Orte konnten nicht gesucht werden: { $why }
     .w-the-place-search-stopped = Die Ortssuche endete: { $why }
 
-d-4pqkkn4f = Ankommen
+d-ig7wjove = Ankommen
     .doc = Das Öffnen des Fensters liest die Orte, deren Vorhersage fehlt oder nicht mehr aktuell ist.
 
-d-adat7qgf = Nach einem Ort suchen
+d-lxgnovv7 = Nach einem Ort suchen
     .doc = Sucht Orte nach Namen.
 
-d-vhlaqk6n = Suche beenden
+d-muewds7a = Suche beenden
     .doc = Leert das Feld und beendet die Suche.
 
-d-vhlaqk6n-reader = Suchender
+d-muewds7a-reader = Suchender
 
-d-wgc6qaaa = Gefundenen hinzufügen
+d-6vszu5un = Gefundenen hinzufügen
     .doc = Speichert den Ort, den eine Suche fand, nach seinem Platz in der Liste des Gefundenen, und zeigt ihn.
 
-d-wgc6qaaa-reader = Suchender
+d-6vszu5un-reader = Suchender
 
-d-wgc6qaaa-at = Um
+d-6vszu5un-at = Um
 
-d-zzf7wo24 = Gefundenen übernehmen
+d-7zdozvog = Gefundenen übernehmen
     .doc = Nimmt die Zeile, die eine Person aus der Suche wählte: speichert den Ort und leert die Suche.
 
-d-zzf7wo24-reader = Suchender
+d-7zdozvog-reader = Suchender
 
-d-zzf7wo24-choice = Auswahl
+d-7zdozvog-choice = Auswahl
 
 d-hbcsago3 = Warum-Antwort
     .w-the-weather-service-refused-the-request = Der Wetterdienst hat die Anfrage abgelehnt (HTTP { $status })
 
-d-gmh3bhiz = Ort speichern
+d-muq4w6r3 = Ort speichern
 
-d-gzw7s3l7 = Nach oben
+d-o45nvib3 = Nach oben
 
-d-zichnt4l = Aktualisieren
+d-imdl6rzh = Aktualisieren
 
 d-46yntdob = Stundenkachel
     .w-now = Jetzt

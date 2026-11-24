@@ -353,118 +353,118 @@ d-3ahku3ip = Unlesbar
 
 d-xazatgpx = Fehlend
 
-d-kae43nbd = Erneut nachsehen
+d-67y2enqb = Erneut nachsehen
     .doc = Sieht im Depot erneut nach: die Quelle, das Ziel und die Stände darin.
 
-d-vx27gxld = Katalog behalten
+d-rvp6xxbz = Katalog behalten
     .doc = Hält fest, was das Gerät über sein Depot geantwortet hat, damit Fenster und Agent dieselben Stände lesen.
 
-d-vx27gxld-answer = Antwort
+d-rvp6xxbz-answer = Antwort
 
-d-xu762kkg = Jetzt sichern
+d-ekhujpxs = Jetzt sichern
     .doc = Sichert den Ordner jetzt und behält, was die Aufbewahrungsregel behält.
     .w-choose-a-folder-to-protect-first = Wähle zuerst einen Ordner zum Schützen
     .w-choose-where-the-snapshots-go-first = Wähle zuerst, wohin die Stände gehen
     .w-one-piece-of-work-is-running = Es läuft bereits eine Arbeit
 
-d-ej6mpr4g = Stand prüfen
+d-fmzgim3f = Stand prüfen
     .doc = Prüft, ob jede Datei eines Stands noch dem entspricht, was der Stand festhielt.
     .w-one-piece-of-work-is-running = Es läuft bereits eine Arbeit
 
-d-ej6mpr4g-s = S
+d-fmzgim3f-s = S
 
-d-5myl2c4c = Stand wiederherstellen
+d-ttl3xkqx = Stand wiederherstellen
     .doc = Öffnet das Blatt, das fragt, wohin ein Stand zurückgeht.
     .w-one-piece-of-work-is-running = Es läuft bereits eine Arbeit
 
-d-5myl2c4c-s = S
+d-ttl3xkqx-s = S
 
-d-54sveqlf = Wiederherstellen beginnen
+d-4v3uefx5 = Wiederherstellen beginnen
     .doc = Beginnt, den Ordner für die Wiederherstellung zu suchen, ohne schon etwas auszuführen.
 
-d-iuao7mb5 = Wiederherstellen
+d-v5ylljvo = Wiederherstellen
     .doc = Stellt den Stand in dem Ordner wieder her, den die Person wählte.
     .w-choose-a-folder-to-restore-into = Wähle einen Ordner zum Wiederherstellen
     .w-one-piece-of-work-is-running = Es läuft bereits eine Arbeit
 
-d-iuao7mb5-s = S
+d-v5ylljvo-s = S
 
-d-oy6xe2kw = Arbeit anhalten
+d-pz4zxkew = Arbeit anhalten
     .doc = Hält die laufende Arbeit an; was sie schrieb, wird entfernt.
 
-d-p36jqvz5 = Abfragen
+d-eq6dkezf = Abfragen
     .doc = Fragt das Gerät einmal pro Sekunde, wie weit die Arbeit ist, solange sie läuft.
 
-d-7yii5u67 = Stand öffnen
+d-nrshrfas = Stand öffnen
     .doc = Zeigt das Blatt eines Stands: was er enthält und was damit möglich ist.
     .did = hat einen Stand geöffnet
 
-d-7yii5u67-s = S
+d-nrshrfas-s = S
 
-d-io4vwrit = Reihenfolge
+d-5gdsin6x = Reihenfolge
     .doc = Listet den Verlauf neueste zuerst, oder älteste zuerst.
 
-d-io4vwrit-newest_first = Neueste zuerst
+d-5gdsin6x-newest_first = Neueste zuerst
 
-d-d4o5rfp2 = Ort anzeigen
+d-w7nn64aa = Ort anzeigen
     .doc = Zeigt einen der Orte in der Seitenleiste.
 
-d-d4o5rfp2-place = Ort
+d-w7nn64aa-place = Ort
 
-d-kueny6zt = Einen mehr behalten
+d-vap65q73 = Einen mehr behalten
     .doc = Behält einen Stand einer Klasse mehr.
 
-d-kueny6zt-which = Welche
+d-vap65q73-which = Welche
 
-d-dgq6sncs = Einen weniger behalten
+d-h6ethwbw = Einen weniger behalten
     .doc = Behält einen Stand einer Klasse weniger.
 
-d-dgq6sncs-which = Welche
+d-h6ethwbw-which = Welche
 
-d-vozt7zoy = Ausblenden
+d-x5h6br5g = Ausblenden
     .doc = Blendet die Zeile unter der Liste aus.
 
-d-rnm76nch = Ordner zum Schützen wählen
+d-z6m2czb6 = Ordner zum Schützen wählen
     .doc = Fragt die Person, welchen Ordner dieses Gerät schützt.
 
-d-bxmaks6k = Wählen, wohin Stände gehen
+d-ioanf4us = Wählen, wohin Stände gehen
     .doc = Fragt die Person, wohin die Stände geschrieben werden.
 
-d-4ohomida = Öffnen
+d-54fhu267 = Öffnen
     .doc = Geht in der Auswahl in einen anderen Ordner und zeigt die Ordner darin.
 
-d-4ohomida-path = Pfad
+d-54fhu267-path = Pfad
 
-d-vguvvrud = Nach oben
+d-k5qqlbcc = Nach oben
     .doc = Geht in der Auswahl einen Ordner nach oben.
 
-d-ukngufhw = Diesen Ordner verwenden
+d-nj4ehqok = Diesen Ordner verwenden
     .doc = Nimmt den Ordner, den die Auswahl zeigt: als geschützten Ordner, als Ziel der Stände oder als Ziel einer Wiederherstellung.
 
-d-yklow3tj = Abbrechen
+d-egcbexsk = Abbrechen
     .doc = Verlässt die Auswahl, ohne etwas zu ändern.
 
-d-rep26x33 = Auswahl lesen
+d-5b35wzq6 = Auswahl lesen
     .doc = Liest die Ordner des Ordners, den die Auswahl zeigt.
 
-d-qlels442 = Arbeit starten
+d-ifgic4vt = Arbeit starten
     .doc = Startet eine Arbeit und merkt sich den Auftrag, den das Gerät gab.
 
-d-qlels442-kind = Art
+d-ifgic4vt-kind = Art
 
-d-qlels442-ask = Auftrag
+d-ifgic4vt-ask = Auftrag
 
-d-kksceb67 = Stand schließen
+d-vq7l4nar = Stand schließen
 
-d-wl57o5d2 = Ersetzen erlauben
+d-apgumkkc = Ersetzen erlauben
 
-d-n3hdlmrp = Jetzt gesichert
+d-t5f6lf3u = Jetzt gesichert
 
-d-m7624jja = Geprüft
+d-ngp7g7pa = Geprüft
 
-d-vv6rzzay = Wiederherstellen angefragt
+d-s2kwexka = Wiederherstellen angefragt
 
-d-avm3dn36 = Wiederhergestellt
+d-4vnqjv4m = Wiederhergestellt
 
 d-yeswuxpe = Fenster
 

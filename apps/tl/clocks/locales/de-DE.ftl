@@ -3,6 +3,8 @@
 
 d-so-tilo-clocks = Uhren
 
+d-so-tilo-clocks-keywords = uhr, uhren, wecker, alarm, alarme, timer, stoppuhr, weltuhr, weltzeit, zeit, countdown, clock, alarm, timer, stopwatch
+
 d-fncbrtzl = Weltuhr
     .doc = Eine Stadt, deren Zeit jemand mit der eigenen vergleicht.
     .noun = { $count ->
@@ -291,6 +293,8 @@ d-inqk2nou = Weckerseite
     .w-cancel = Abbrechen
     .w-new-alarm = Neuer Wecker
     .w-add-alarm = Wecker hinzufügen
+    .w-rings-on = Klingelt am { $rings_on_label }
+    .w-repeat-on = Wiederholen am { $day_name }
 
 d-g2agvnl7 = Timerseite
     .w-no-timers-yet = Noch keine Timer
@@ -304,6 +308,11 @@ d-g2agvnl7 = Timerseite
     .w-minutes = Minuten
     .w-min = Min.
     .w-start-timer = Timer starten
+    .w-paused = Angehalten
+    .w-1-min = +1 Min.
+    .w-resume = Fortsetzen
+    .w-pause = Pause
+    .w-remove = Entfernen
 
 d-k3yetx4r = Stoppuhrseite
     .w-stopwatch = Stoppuhr

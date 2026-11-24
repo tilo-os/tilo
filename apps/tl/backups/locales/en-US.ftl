@@ -353,118 +353,118 @@ d-3ahku3ip = Unreadable
 
 d-xazatgpx = Missing
 
-d-kae43nbd = Look again
+d-67y2enqb = Look again
     .doc = Looks at the repository again: the source, the destination and the snapshots it holds.
 
-d-vx27gxld = Keep catalog
+d-rvp6xxbz = Keep catalog
     .doc = Keeps what the device answered about its repository, so the window and an agent read the same snapshots.
 
-d-vx27gxld-answer = Answer
+d-rvp6xxbz-answer = Answer
 
-d-xu762kkg = Back up now
+d-ekhujpxs = Back up now
     .doc = Backs the folder up now, keeping what the retention policy keeps.
     .w-choose-a-folder-to-protect-first = Choose a folder to protect first
     .w-choose-where-the-snapshots-go-first = Choose where the snapshots go first
     .w-one-piece-of-work-is-running = One piece of work is running already
 
-d-ej6mpr4g = Verify the snapshot
+d-fmzgim3f = Verify the snapshot
     .doc = Checks that every file of a snapshot is still what the snapshot recorded.
     .w-one-piece-of-work-is-running = One piece of work is running already
 
-d-ej6mpr4g-s = S
+d-fmzgim3f-s = S
 
-d-5myl2c4c = Restore the snapshot
+d-ttl3xkqx = Restore the snapshot
     .doc = Opens the sheet that asks where a snapshot goes back to.
     .w-one-piece-of-work-is-running = One piece of work is running already
 
-d-5myl2c4c-s = S
+d-ttl3xkqx-s = S
 
-d-54sveqlf = Begin restore
+d-4v3uefx5 = Begin restore
     .doc = Starts finding the folder a restore writes into, without running anything yet.
 
-d-iuao7mb5 = Restore
+d-v5ylljvo = Restore
     .doc = Restores the snapshot into the folder the person chose.
     .w-choose-a-folder-to-restore-into = Choose a folder to restore into
     .w-one-piece-of-work-is-running = One piece of work is running already
 
-d-iuao7mb5-s = S
+d-v5ylljvo-s = S
 
-d-oy6xe2kw = Stop the work
+d-pz4zxkew = Stop the work
     .doc = Stops the work under way; what it was writing goes.
 
-d-p36jqvz5 = Poll
+d-eq6dkezf = Poll
     .doc = Asks the device how the work is doing, once a second while it runs.
 
-d-7yii5u67 = Open snapshot
+d-nrshrfas = Open snapshot
     .doc = Shows one snapshot's sheet: what it holds and what can be done with it.
     .did = opened a snapshot
 
-d-7yii5u67-s = S
+d-nrshrfas-s = S
 
-d-io4vwrit = Order
+d-5gdsin6x = Order
     .doc = Lists the timeline newest first, or oldest first.
 
-d-io4vwrit-newest_first = Newest first
+d-5gdsin6x-newest_first = Newest first
 
-d-d4o5rfp2 = Show the place
+d-w7nn64aa = Show the place
     .doc = Shows one of the sidebar's places.
 
-d-d4o5rfp2-place = Place
+d-w7nn64aa-place = Place
 
-d-kueny6zt = Keep one more
+d-vap65q73 = Keep one more
     .doc = Keeps one more snapshot of a class.
 
-d-kueny6zt-which = Which
+d-vap65q73-which = Which
 
-d-dgq6sncs = Keep one fewer
+d-h6ethwbw = Keep one fewer
     .doc = Keeps one fewer snapshot of a class.
 
-d-dgq6sncs-which = Which
+d-h6ethwbw-which = Which
 
-d-vozt7zoy = Dismiss
+d-x5h6br5g = Dismiss
     .doc = Dismisses the line under the list.
 
-d-rnm76nch = Choose the folder to protect
+d-z6m2czb6 = Choose the folder to protect
     .doc = Asks the person which folder this device protects.
 
-d-bxmaks6k = Choose where snapshots go
+d-ioanf4us = Choose where snapshots go
     .doc = Asks the person where the snapshots go.
 
-d-4ohomida = Go
+d-54fhu267 = Go
     .doc = Walks the picker to another folder and shows the folders in it.
 
-d-4ohomida-path = Path
+d-54fhu267-path = Path
 
-d-vguvvrud = Go up
+d-k5qqlbcc = Go up
     .doc = Walks the picker up one folder.
 
-d-ukngufhw = Use this folder
+d-nj4ehqok = Use this folder
     .doc = Takes the folder the picker shows: as what this device protects, where snapshots go, or where a restore writes.
 
-d-yklow3tj = Cancel
+d-egcbexsk = Cancel
     .doc = Leaves the picker without changing anything.
 
-d-rep26x33 = Read picker
+d-5b35wzq6 = Read picker
     .doc = Reads the folders of the one the picker shows.
 
-d-qlels442 = Start work
+d-ifgic4vt = Start work
     .doc = Starts a piece of work and keeps the job the device gave it.
 
-d-qlels442-kind = Kind
+d-ifgic4vt-kind = Kind
 
-d-qlels442-ask = Ask
+d-ifgic4vt-ask = Ask
 
-d-kksceb67 = Close snapshot
+d-vq7l4nar = Close snapshot
 
-d-wl57o5d2 = Allow overwrite
+d-apgumkkc = Allow overwrite
 
-d-n3hdlmrp = Back up now~present
+d-t5f6lf3u = Back up now~present
 
-d-m7624jja = Verify~present
+d-ngp7g7pa = Verify~present
 
-d-vv6rzzay = Ask restore~present
+d-s2kwexka = Ask restore~present
 
-d-avm3dn36 = Restore now~present
+d-4vnqjv4m = Restore now~present
 
 d-yeswuxpe = Window
 

@@ -3,6 +3,8 @@
 
 d-so-tilo-clocks = Clocks
 
+d-so-tilo-clocks-keywords = clock, clocks, alarm, alarms, timer, timers, stopwatch, world clock, time, countdown, wecker, uhr, stoppuhr, weltzeit, zeit, countdown
+
 d-fncbrtzl = World clock
     .doc = A city whose time a person compares with their own.
     .noun = { $count ->
@@ -281,6 +283,8 @@ d-sm7xxyrn = World place
 
 d-inqk2nou = Alarms place
     .w-no-alarms-yet-set-one-for = No alarms yet. Set one for a future time.
+    .w-rings-on = Rings on { $rings_on_label }
+    .w-repeat-on = Repeat on { $day_name }
     .w-edit = Edit { $label }
     .w-what-is-this-alarm-for = What is this alarm for?
     .w-hour = Hour
@@ -294,6 +298,11 @@ d-inqk2nou = Alarms place
 
 d-g2agvnl7 = Timers place
     .w-no-timers-yet = No timers yet
+    .w-paused = Paused
+    .w-1-min = +1 min
+    .w-resume = Resume
+    .w-pause = Pause
+    .w-remove = Remove
     .w-quick-starts = Quick starts
     .w-tea-5-min = Tea (5 min)
     .w-break-10-min = Break (10 min)

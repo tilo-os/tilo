@@ -110,103 +110,103 @@ d-pmoafk6y = TOML
 
 d-sewa2633 = Dockerfile
 
-d-mm53574g = Neuer Textbaustein
+d-7dpulqjh = Neuer Textbaustein
     .doc = Macht einen Textbaustein, abgelegt in `folder`, wenn einer genannt ist.
     .did = machte einen Textbaustein
     .w-a-snippet-needs-a-title = Ein Textbaustein braucht einen Titel
 
-d-mm53574g-title = Titel
+d-7dpulqjh-title = Titel
 
-d-mm53574g-folder = Ordner
+d-7dpulqjh-folder = Ordner
 
-d-yne2tfly = Duplizieren
+d-of3vdpk2 = Duplizieren
     .doc = Macht eine zweite Kopie eines Textbausteins, direkt danach; seine Nutzungszahl beginnt wieder bei null.
     .did = duplizierte einen Textbaustein
 
-d-yne2tfly-snippet = Textbaustein
+d-of3vdpk2-snippet = Textbaustein
 
-d-yne2tfly-title = Titel
+d-of3vdpk2-title = Titel
 
-d-hqhhicru = Löschen
+d-wvqaaaem = Löschen
     .doc = Löscht einen Textbaustein aus der Bibliothek.
     .did = löschte einen Textbaustein
 
-d-hqhhicru-snippet = Textbaustein
+d-wvqaaaem-snippet = Textbaustein
 
-d-qogfdws3 = Markierung entfernen
+d-jznobsdy = Markierung entfernen
     .doc = Markiert einen Textbaustein oder nimmt die Markierung zurück.
     .w-remove-star = Markierung entfernen
     .w-star-it = Markieren
 
-d-qogfdws3-starred = Markiert
+d-jznobsdy-starred = Markiert
 
-d-nh66jgh3 = Schlagwörter bearbeiten…
+d-vjnt6qmu = Schlagwörter bearbeiten…
     .doc = Gibt einem Textbaustein die Schlagwörter, die eine Person getippt hat, durch Kommas getrennt: jedes getrimmt, klein, ohne `#`, höchstens 24.
     .did = versah einen Textbaustein mit Schlagwörtern
 
-d-nh66jgh3-tags = Schlagwörter
+d-vjnt6qmu-tags = Schlagwörter
 
-d-afvqqrn3 = Schlagwort entfernen
+d-dzojuuh3 = Schlagwort entfernen
     .doc = Nimmt einem Textbaustein ein Schlagwort ab.
 
-d-afvqqrn3-tag = Schlagwort
+d-dzojuuh3-tag = Schlagwort
 
-d-6bqnklse = Ordner umbenennen
+d-gc4q7njn = Ordner umbenennen
     .doc = Benennt einen Ordner überall um; ein leerer neuer Name legt seine Textbausteine unter nichts ab.
     .did = benannte einen Ordner um
     .w-there-is-no-such-folder = Diesen Ordner gibt es nicht
 
-d-6bqnklse-folder = Ordner
+d-gc4q7njn-folder = Ordner
 
-d-6bqnklse-to = Zu
+d-gc4q7njn-to = Zu
 
-d-jmxghpuf = Schlagwort umbenennen
+d-627pjftv = Schlagwort umbenennen
     .doc = Benennt ein Schlagwort überall um.
     .did = benannte ein Schlagwort um
     .w-there-is-no-such-tag = Dieses Schlagwort gibt es nicht
     .w-a-tag-needs-a-name = Ein Schlagwort braucht einen Namen
 
-d-jmxghpuf-tag = Schlagwort
+d-627pjftv-tag = Schlagwort
 
-d-jmxghpuf-to = Zu
+d-627pjftv-to = Zu
 
-d-o5bdt7vd = Schlagwort entfernen
+d-rirlohhq = Schlagwort entfernen
     .doc = Nimmt jedem Textbaustein ein Schlagwort ab.
     .did = entfernte ein Schlagwort
     .w-there-is-no-such-tag = Dieses Schlagwort gibt es nicht
 
-d-o5bdt7vd-tag = Schlagwort
+d-rirlohhq-tag = Schlagwort
 
-d-3lo37mfx = Kopieren
+d-2fawdcmk = Kopieren
     .doc = Kopiert den Inhalt eines Textbausteins in die Zwischenablage und zählt die Nutzung.
     .did = kopierte einen Textbaustein
 
-d-4k5pl7yr = Ausfüllen und kopieren
+d-niz7er5a = Ausfüllen und kopieren
     .doc = Beginnt das Ausfüllen der Variablen eines Textbausteins: ein Feld für jede Variable seines Inhalts, geleert.
 
-d-4k5pl7yr-snippet = Textbaustein
+d-niz7er5a-snippet = Textbaustein
 
-d-rjqbun77 = Kopieren
+d-iaud5pvs = Kopieren
     .doc = Kopiert den ausgefüllten Inhalt, zählt die Nutzung und legt die Füllung weg.
     .did = kopierte einen Textbaustein
 
-d-rjqbun77-fill = Füllung
+d-iaud5pvs-fill = Füllung
 
-d-lnul5ski = Abbrechen
+d-5w7vbjxg = Abbrechen
     .doc = Legt die Füllung ohne Kopieren weg.
 
-d-gptgbn5d = Füllung leeren
+d-hnseelrx = Füllung leeren
     .doc = Leert eine Füllung, sodass das Blatt schließt.
 
-d-xiimohm2 = Neuer Textbaustein
+d-uek4qev2 = Neuer Textbaustein
 
-d-jysqa4ij = Markieren
+d-6bdzaoah = Markieren
 
-d-4tqyv7to = Ordner umbenennen
+d-m6awo5yk = Ordner umbenennen
 
-d-idijlyp2 = Schlagwort umbenennen
+d-ziy3kioi = Schlagwort umbenennen
 
-d-3tbwsppb = Schlagwort entfernen
+d-fdsmfdne = Schlagwort entfernen
 
 d-2jh6hotv = Textbausteinzeile
 

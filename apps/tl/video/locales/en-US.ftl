@@ -3,6 +3,8 @@
 
 d-so-tilo-video = Video
 
+d-so-tilo-video-keywords = video, videos, player, movie, movies, film, films, play, watch, clip, clips, media, mp4, mkv, webm, mov, avi, video abspielen, videoplayer, film ansehen, filme, video, videos, abspielen, anschauen, wiedergabe, medienspieler, klipp
+
 d-j4cx5fiu = Clip
     .doc = A video a person opened: what it is called and where its bytes play from.
     .noun = { $count ->

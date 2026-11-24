@@ -533,64 +533,64 @@ d-sx243l4e-filter-air_no2 = Air no2
 
 d-sx243l4e-filter-air_ozone = Air ozone
 
-d-mlxrazr6 = Save a place
+d-f3sknmsd = Save a place
     .doc = Saves a place a person follows.
     .did = saved a place
     .w-a-place-needs-a-name = A place needs a name
     .w-a-place-lies-between-latitudes-90 = A place lies between latitudes -90 and 90
     .w-a-place-lies-between-longitudes-180 = A place lies between longitudes -180 and 180
 
-d-mlxrazr6-name = Name
+d-f3sknmsd-name = Name
 
-d-mlxrazr6-latitude = Latitude
+d-f3sknmsd-latitude = Latitude
 
-d-mlxrazr6-longitude = Longitude
+d-f3sknmsd-longitude = Longitude
 
-d-mlxrazr6-region = Region
+d-f3sknmsd-region = Region
 
-d-mlxrazr6-country = Country
+d-f3sknmsd-country = Country
 
-d-mlxrazr6-country_code = Country code
+d-f3sknmsd-country_code = Country code
 
-d-mlxrazr6-timezone = Timezone
+d-f3sknmsd-timezone = Timezone
 
-d-xz3zxbjv = Show first
+d-xp2ceo5y = Show first
     .doc = Shows a place's forecast first whenever the app opens.
     .did = chose the place shown first
 
-d-xz3zxbjv-place = Place
+d-xp2ceo5y-place = Place
 
-d-zvjmzc4s = Move to top
+d-cirfp6lv = Move to top
     .doc = Moves a place to the top of the list.
     .w-this-place-is-already-at-the = This place is already at the top
 
-d-zvjmzc4s-place = Place
+d-cirfp6lv-place = Place
 
-d-mmdmaoku = Remove place
+d-wqobjlmz = Remove place
     .doc = Removes a place from the list; what was read of it goes with it.
     .did = removed a place
 
-d-mmdmaoku-place = Place
+d-wqobjlmz-place = Place
 
-d-eflmglly = Refresh forecasts
+d-kl6crcze = Refresh forecasts
     .doc = Reads the forecasts again: every place, or the one `place` names.
     .did = updated the forecasts
     .w-there-are-no-places-to-update = There are no places to update
     .w-an-update-is-already-running = An update is already running
     .w-couldn-t-start-updating = Couldn't start updating: { $why }
 
-d-eflmglly-place = Place
+d-kl6crcze-place = Place
 
-d-fkmwifvf = Stop updating
+d-7muahxxg = Stop updating
     .doc = Stops an update that is running.
 
-d-timhpd7q = Try again
+d-ryiczm2w = Try again
     .doc = Updates a place whose last read failed, once the person asks again.
     .did = asked for a forecast again
 
-d-timhpd7q-place = Place
+d-ryiczm2w-place = Place
 
-d-imyfbzvr = Poll weather
+d-yajyk4wl = Poll weather
     .doc = Takes what the device has read so far: each place's answer as it lands, and what the service says of it.
     .w-the-update-stopped = The update stopped: { $why }
     .w-the-update-s-answer-did-not = The update's answer did not read: { $why }
@@ -598,39 +598,39 @@ d-imyfbzvr = Poll weather
     .w-couldn-t-look-for-places = Couldn't look for places: { $why }
     .w-the-place-search-stopped = The place search stopped: { $why }
 
-d-4pqkkn4f = Arrive
+d-ig7wjove = Arrive
     .doc = Opening the window reads the places whose forecast is missing or no longer current.
 
-d-adat7qgf = Look for a place
+d-lxgnovv7 = Look for a place
     .doc = Looks for places by name.
 
-d-vhlaqk6n = End search
+d-muewds7a = End search
     .doc = Empties the field and stops looking.
 
-d-vhlaqk6n-reader = Reader
+d-muewds7a-reader = Reader
 
-d-wgc6qaaa = Add found
+d-6vszu5un = Add found
     .doc = Saves the place a search found, by its place in the list of what it found, and shows it.
 
-d-wgc6qaaa-reader = Reader
+d-6vszu5un-reader = Reader
 
-d-wgc6qaaa-at = At
+d-6vszu5un-at = At
 
-d-zzf7wo24 = Accept found
+d-7zdozvog = Accept found
     .doc = Takes the row a person picked from the search: saves the place and empties the search.
 
-d-zzf7wo24-reader = Reader
+d-7zdozvog-reader = Reader
 
-d-zzf7wo24-choice = Choice
+d-7zdozvog-choice = Choice
 
 d-hbcsago3 = Why answer
     .w-the-weather-service-refused-the-request = The weather service refused the request (HTTP { $status })
 
-d-gmh3bhiz = Save place~present
+d-muq4w6r3 = Save place~present
 
-d-gzw7s3l7 = Move to top~present
+d-o45nvib3 = Move to top~present
 
-d-zichnt4l = Refresh~present
+d-imdl6rzh = Refresh~present
 
 d-46yntdob = Hour tile
     .w-now = Now

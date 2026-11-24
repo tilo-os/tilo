@@ -163,79 +163,79 @@ d-lr6vcvpw = Proto
 
 d-dguxp5s2 = Description
 
-d-afyql7vm = Read this device's firewalld
+d-rmbzih5s = Read this device's firewalld
     .doc = Brings in what this device's firewalld holds: the zones, their services and rules, and the switches.
 
-d-fc3ic755 = Start firewall
+d-wvp77mci = Start firewall
     .doc = Starts firewalld.
     .w-there-is-no-firewall-configuration-yet = There is no firewall configuration yet
 
-d-26ttuw3a = Stop firewall
+d-2jbc472l = Stop firewall
     .doc = Stops firewalld.
 
-d-bqldudwm = Enter panic mode
+d-7fjzxy2n = Enter panic mode
     .doc = Enters panic mode: all traffic in and out is dropped.
     .w-there-is-no-firewall-configuration-yet = There is no firewall configuration yet
 
-d-brlebqzi = Exit panic mode
+d-t5pt7a72 = Exit panic mode
     .doc = Leaves panic mode.
 
-d-hpu4mjx5 = Make active zone
+d-fas2qr4c = Make active zone
     .doc = Makes a zone the active one.
 
-d-hpu4mjx5-zone = Zone
+d-fas2qr4c-zone = Zone
 
-d-fwu3tm6n = Turn a rule on or off
+d-t5sxzg6g = Turn a rule on or off
     .doc = Turns a rule on or off in a zone.
 
-d-fwu3tm6n-zone = Zone
+d-t5sxzg6g-zone = Zone
 
-d-fwu3tm6n-rule = Rule
+d-t5sxzg6g-rule = Rule
 
-d-fwu3tm6n-on = On
+d-t5sxzg6g-on = On
 
-d-wvzqmhhj = Allow a service
+d-3hwynxa2 = Allow a service
     .doc = Allows a service in a zone, or stops allowing it.
 
-d-wvzqmhhj-zone = Zone
+d-3hwynxa2-zone = Zone
 
-d-wvzqmhhj-service = Service
+d-3hwynxa2-service = Service
 
-d-wvzqmhhj-on = On
+d-3hwynxa2-on = On
 
-d-ohjdpfn7 = Add rule
+d-ipsf2opk = Add rule
     .doc = Adds a rule to a zone, or saves the one being edited.
     .w-choose-a-service = Choose a service
     .w-that-is-not-a-port-or = That is not a port or a port range this firewall accepts
     .w-that-is-not-an-ipv4-address = That is not an IPv4 address or network
 
-d-ohjdpfn7-zone = Zone
+d-ipsf2opk-zone = Zone
 
-d-ohjdpfn7-editing = Editing
+d-ipsf2opk-editing = Editing
 
-d-ohjdpfn7-as_service = As service
+d-ipsf2opk-as_service = As service
 
-d-ohjdpfn7-service = Service
+d-ipsf2opk-service = Service
 
-d-ohjdpfn7-port = Port
+d-ipsf2opk-port = Port
 
-d-ohjdpfn7-proto = Proto
+d-ipsf2opk-proto = Proto
 
-d-ohjdpfn7-verdict = Verdict
+d-ipsf2opk-verdict = Verdict
 
-d-ohjdpfn7-source = Source
+d-ipsf2opk-source = Source
 
-d-gmrhjhmc = Delete rule
+d-qf5szroz = Delete rule
     .doc = Deletes a rule from a zone.
 
-d-gmrhjhmc-zone = Zone
+d-qf5szroz-zone = Zone
 
-d-gmrhjhmc-rule = Rule
+d-qf5szroz-rule = Rule
 
 d-bnokiyga = Show dropped traffic
     .doc = Reads what the kernel dropped in the last hour.
 
-d-7ezojanx = Arrive
+d-jrxpvoqv = Arrive
     .doc = Opening the app reads this device's firewalld into the workspace's configuration when it holds none yet.
 
 d-xcdaj2hg = Rule title of
@@ -292,11 +292,11 @@ d-fudc3znt = Sources label
     .w-from-1-address = from 1 address
     .w-from-addresses = from { $sources } addresses
 
-d-hcbrcxoa = Start~present
+d-7fs3cjxx = Start~present
 
-d-xyhhvsn4 = Enter panic~present
+d-4r3hrblj = Enter panic~present
 
-d-z7doxjm6 = Add rule~present
+d-vxibtymz = Add rule~present
 
 d-okktoj56 = Window
     .w-firewall = Firewall

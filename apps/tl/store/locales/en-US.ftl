@@ -611,12 +611,15 @@ d-omjipbxx = Job
 d-haex7z3y = Error
 
 d-g5vn7lms = One ask
+    .doc = What one app is asked about: its id, and the registry its source is, when a bot is added from it.
     .noun = { $count ->
         [one] one ask
        *[other] one asks
     }
 
 d-bzdopfzn = Identity
+
+d-kz4m2q7x = Registry
 
 d-64wyfi3e = One
     .noun = { $count ->
@@ -934,7 +937,7 @@ d-lm6i5ieu = Update all apps
     .w-every-app-is-up-to-date = Every app is up to date
 
 d-vmb6w54f = Add to this workspace…
-    .doc = Asks a workspace for a directory bot: a bot runs in a workspace, never on this computer, and is added from inside the workspace it runs in.
+    .doc = Adds a directory bot to this workspace as the person's own shortcut: its program is verified against the signed listing and saved as the shortcut the workspace's host runs for them, under the triggers the program declares.
     .w-only-a-directory-bot-is-added = Only a directory bot is added to a workspace
 
 d-vmb6w54f-a = A

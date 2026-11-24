@@ -110,103 +110,103 @@ d-pmoafk6y = Toml
 
 d-sewa2633 = Dockerfile
 
-d-mm53574g = New snippet
+d-7dpulqjh = New snippet
     .doc = Makes a snippet, filed under `folder` when it names one.
     .did = made a snippet
     .w-a-snippet-needs-a-title = A snippet needs a title
 
-d-mm53574g-title = Title
+d-7dpulqjh-title = Title
 
-d-mm53574g-folder = Folder
+d-7dpulqjh-folder = Folder
 
-d-yne2tfly = Duplicate
+d-of3vdpk2 = Duplicate
     .doc = Makes a second copy of a snippet, right after it; its word count starts again from nothing.
     .did = duplicated a snippet
 
-d-yne2tfly-snippet = Snippet
+d-of3vdpk2-snippet = Snippet
 
-d-yne2tfly-title = Title
+d-of3vdpk2-title = Title
 
-d-hqhhicru = Delete
+d-wvqaaaem = Delete
     .doc = Deletes a snippet from the library.
     .did = deleted a snippet
 
-d-hqhhicru-snippet = Snippet
+d-wvqaaaem-snippet = Snippet
 
-d-qogfdws3 = Remove star
+d-jznobsdy = Remove star
     .doc = Stars a snippet, or takes the star back.
     .w-remove-star = Remove star
     .w-star-it = Star it
 
-d-qogfdws3-starred = Starred
+d-jznobsdy-starred = Starred
 
-d-nh66jgh3 = Edit tags…
+d-vjnt6qmu = Edit tags…
     .doc = Gives a snippet the tags a person typed, comma-separated: each trimmed, lower case, without `#`, at most 24 of them.
     .did = tagged a snippet
 
-d-nh66jgh3-tags = Tags
+d-vjnt6qmu-tags = Tags
 
-d-afvqqrn3 = Remove the tag
+d-dzojuuh3 = Remove the tag
     .doc = Takes one tag off one snippet.
 
-d-afvqqrn3-tag = Tag
+d-dzojuuh3-tag = Tag
 
-d-6bqnklse = Rename folder
+d-gc4q7njn = Rename folder
     .doc = Renames a folder everywhere it is used; an empty new name files its snippets under nothing.
     .did = renamed a folder
     .w-there-is-no-such-folder = There is no such folder
 
-d-6bqnklse-folder = Folder
+d-gc4q7njn-folder = Folder
 
-d-6bqnklse-to = To
+d-gc4q7njn-to = To
 
-d-jmxghpuf = Rename tag
+d-627pjftv = Rename tag
     .doc = Renames a tag everywhere it is used.
     .did = renamed a tag
     .w-there-is-no-such-tag = There is no such tag
     .w-a-tag-needs-a-name = A tag needs a name
 
-d-jmxghpuf-tag = Tag
+d-627pjftv-tag = Tag
 
-d-jmxghpuf-to = To
+d-627pjftv-to = To
 
-d-o5bdt7vd = Remove tag
+d-rirlohhq = Remove tag
     .doc = Takes a tag off every snippet that carries it.
     .did = removed a tag
     .w-there-is-no-such-tag = There is no such tag
 
-d-o5bdt7vd-tag = Tag
+d-rirlohhq-tag = Tag
 
-d-3lo37mfx = Copy
+d-2fawdcmk = Copy
     .doc = Copies a snippet's body to the clipboard, and counts the use.
     .did = copied a snippet
 
-d-4k5pl7yr = Fill in and copy
+d-niz7er5a = Fill in and copy
     .doc = Starts filling in a snippet's variables: one field for each variable its body holds, emptied.
 
-d-4k5pl7yr-snippet = Snippet
+d-niz7er5a-snippet = Snippet
 
-d-rjqbun77 = Copy
+d-iaud5pvs = Copy
     .doc = Copies the filled body, counts the use, and puts the filling away.
     .did = copied a snippet
 
-d-rjqbun77-fill = Fill
+d-iaud5pvs-fill = Fill
 
-d-lnul5ski = Cancel
+d-5w7vbjxg = Cancel
     .doc = Puts the filling away without copying.
 
-d-gptgbn5d = Clear fill
+d-hnseelrx = Clear fill
     .doc = Empties a filling, so the sheet closes.
 
-d-xiimohm2 = New snippet~present
+d-uek4qev2 = New snippet~present
 
-d-jysqa4ij = Star~present
+d-6bdzaoah = Star~present
 
-d-4tqyv7to = Rename folder~present
+d-m6awo5yk = Rename folder~present
 
-d-idijlyp2 = Rename tag~present
+d-ziy3kioi = Rename tag~present
 
-d-3tbwsppb = Remove tag~present
+d-fdsmfdne = Remove tag~present
 
 d-2jh6hotv = Snippet row
 
