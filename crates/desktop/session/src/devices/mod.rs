@@ -63,7 +63,9 @@ pub use tilo_device_surfaces::devices::{
     AccessKey, AccessKind, DeviceWorkspace, DevicesAction, RowPart, SendableSound, SoundAsk,
     SoundRoute,
 };
-pub(crate) use tilo_device_surfaces::devices::{DevicesView, PersonalDeviceView};
+pub(crate) use tilo_device_surfaces::devices::{
+    DeviceDisplayView, DevicesView, PersonalDeviceView,
+};
 
 /// The resource the person's devices are published as, with the verbs a press on one of its rows
 /// offers: what the session serves, and what a host that publishes a reading of its own (a
@@ -178,6 +180,13 @@ fn read(
                 display: device.about.capabilities.display,
                 wakeable: entry.is_some_and(wake::wakeable),
                 audio_output: device.about.capabilities.audio_output,
+                displays: entry
+                    .and_then(|kept| kept.facts.get(crate::shared_displays::DISPLAYS))
+                    .and_then(|value| crate::shared_displays::decoded(value))
+                    .unwrap_or_default()
+                    .iter()
+                    .map(display_view)
+                    .collect(),
                 seen_ms: entry
                     .and_then(|kept| kept.seen_ms())
                     .and_then(|ms| u64::try_from(ms).ok())
@@ -259,6 +268,22 @@ fn access(
 /// `ns` nanoseconds since the epoch in milliseconds, for a list that shows a day.
 fn milliseconds(ns: u64) -> i64 {
     i64::try_from(ns / 1_000_000).unwrap_or(i64::MAX)
+}
+
+/// `output` as a view of another language reads it: its shared id, where it stands in its
+/// device's own layout, and whether it shows anything.
+fn display_view(output: &settings_store::person_displays::DeviceOutput) -> DeviceDisplayView {
+    DeviceDisplayView {
+        output: output.id.clone(),
+        name: output.name.clone(),
+        builtin: output.builtin,
+        x: output.x,
+        y: output.y,
+        width: output.width,
+        height: output.height,
+        connected: output.connected,
+        enabled: output.enabled,
+    }
 }
 
 /// The person's devices as the session's services publish them: read off the fabric every pass, so
@@ -624,6 +649,7 @@ impl From<&DevicesReading> for DevicesView {
                     display: device.display,
                     wakeable: device.wakeable,
                     audio_output: device.audio_output,
+                    displays: device.displays.clone(),
                     seen_ms: device.seen_ms,
                     storage: device.storage.clone(),
                 })
@@ -659,6 +685,17 @@ mod surface_tests {
                 display: true,
                 wakeable: false,
                 audio_output: true,
+                displays: vec![DeviceDisplayView {
+                    output: "connector:DP-1".to_owned(),
+                    name: "DELL U2720Q".to_owned(),
+                    builtin: false,
+                    x: 0,
+                    y: 0,
+                    width: 3840,
+                    height: 2160,
+                    connected: true,
+                    enabled: true,
+                }],
                 seen_ms: 1_700_000_000_000,
                 storage: vec![tilo_system_resources::storage::WorkspaceHold {
                     workspace: "studio".to_owned(),

@@ -62,6 +62,16 @@ view hints(h: settings.ControlHints) {
     button("Again", on: settings.show_control_hints_again(h)) as again
   }
 }
+view screens(p: settings.DisplayPerson) {
+  stack {
+    text("{p.placement.len()}")
+    for entry in p.placement {
+      text("{entry.device} at {entry.x},{entry.y}")
+    }
+    button("Place the phone's screen", on: settings.place_display(p, device: "phone", output: "connector:DP-1", x: 3200, y: 0)) as place
+  }
+}
+
 "#;
 
 /// The resource a view names `ty` by, and where the session publishes it on this device.
@@ -456,5 +466,142 @@ fn control_hints_section(
     assert!(
         matches!(refused, Some(Err(_))),
         "a hint the shell does not have is refused"
+    );
+}
+
+/// One of the person's devices running this file's views: a host of its own, whose view's
+/// invocations the one settings service `services` answers, as each of the person's devices'
+/// sessions reaches the person's settings.
+fn device(services: &Rc<RefCell<Services>>) -> (Host, tilolang_tilo::tilolang::Compiled) {
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .expect("a host");
+    let metas = vec![platform_package(SECTIONS_APP).expect("the sections' package")];
+    for meta in &metas {
+        host.runtime()
+            .load_foreign(meta.clone())
+            .expect("the package loads");
+    }
+    let compiled = compile_package(VIEW, &IdsLock::new(), &metas)
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    host.load_compiled(&compiled).expect("the package loads");
+    host.runtime().set_invoker(Session {
+        services: Rc::clone(services),
+        callees: Callees {
+            apps: metas
+                .iter()
+                .map(|meta| (meta.app.clone(), meta.clone()))
+                .collect(),
+            published: metas.iter().map(|meta| meta.app.clone()).collect(),
+            addresses: tilolang_tilo::platform_apps::session_addresses().expect("its addresses"),
+            ..Callees::default()
+        },
+    });
+    (host, compiled)
+}
+
+/// The words `view` draws, in the order it draws them.
+fn texts(view: &ViewInstance) -> Vec<String> {
+    fn walk(node: &tilolang_tilo::runtime::UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Text"
+            && let Some(Value::Text(text)) = node.props.get("value")
+        {
+            out.push(text.clone());
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(view.tree(), &mut out);
+    out
+}
+
+/// A screen one of the person's devices placed is one entry of the person's setting, read by
+/// every device of theirs: the laptop places the phone's screen, and the phone's own view shows
+/// it where it was put.
+#[test]
+fn a_display_placed_on_one_device_is_where_another_devices_view_shows_it() {
+    let _home = tilo_test_env::TestHome::new().expect("a test home");
+    let settings = std::sync::Arc::new(settings_store::workspace::WorkspaceSettings::new());
+    settings.attach(settings_store::in_memory::Workspaces::new());
+    let _settings = settings_store::scoped_source(Some(settings));
+    ui::framework::read_settings_on(DEVICE);
+    let mut service = settings_sections::service::SettingsService::new();
+    tilo_service::Service::own_person(&mut service, "ada", &[]);
+    let mut services = Services::default();
+    services.add(Box::new(service));
+    let services = Rc::new(RefCell::new(services));
+
+    {
+        let (laptop, meta) = device(&services);
+        let declared = |name: &str| {
+            meta.meta
+                .views
+                .iter()
+                .find(|view| view.name == name)
+                .expect("the view's declaration")
+                .id
+                .clone()
+        };
+        let anchor = |name: &str| {
+            meta.meta
+                .views
+                .iter()
+                .flat_map(|view| &view.anchors)
+                .find(|anchor| anchor.name == name)
+                .expect("the button's anchor")
+                .id
+                .clone()
+        };
+        let (screens, published) = root("so.tilo.settings.sections#DisplayPerson");
+        assert_eq!(published, "settings/display-person");
+        publish(&laptop, &services, &screens, &published);
+        let mut mine = laptop
+            .open_resource(&screens, Some(&declared("screens")))
+            .expect("the view opens on the person's displays");
+        assert_eq!(texts(&mine), ["0"], "{:?}", mine.tree());
+        mine.press(&anchor("place"))
+            .expect("the button places the phone's screen");
+
+        assert_eq!(
+            reading(&services, &published)
+                .pointer("/placement")
+                .cloned(),
+            Some(serde_json::json!([{
+                "device": "phone",
+                "output": "connector:DP-1",
+                "order": 1024,
+                "placed": true,
+                "x": 3200,
+                "y": 0,
+            }])),
+            "the person's setting keeps one entry for the screen that was placed"
+        );
+    }
+
+    // The person's other device reads the same setting and shows the screen where it was put.
+    let (phone, meta) = device(&services);
+    let declared = |name: &str| {
+        meta.meta
+            .views
+            .iter()
+            .find(|view| view.name == name)
+            .expect("the view's declaration")
+            .id
+            .clone()
+    };
+    let (screens, published) = root("so.tilo.settings.sections#DisplayPerson");
+    publish(&phone, &services, &screens, &published);
+    let theirs = phone
+        .open_resource(&screens, Some(&declared("screens")))
+        .unwrap_or_else(|error| panic!("the view opens on the person's displays: {error:?}"));
+    assert_eq!(
+        texts(&theirs),
+        ["1", "phone at 3200,0"],
+        "{:?}",
+        theirs.tree()
     );
 }

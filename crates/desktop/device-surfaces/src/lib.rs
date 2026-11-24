@@ -74,7 +74,6 @@ pub fn device_surfaces() -> Vec<Surface> {
         tilo_system_service::time_zone_surface(),
         displays::surface(),
         displays::screen_surface(),
-        displays::person_displays_surface(),
         inputs::surface(),
         keyboard::surface(),
         privacy::surface(),

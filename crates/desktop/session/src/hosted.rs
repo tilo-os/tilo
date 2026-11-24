@@ -10,7 +10,8 @@ use ui::icons::Icon;
 pub use tilo_session_core::desktop::now_playing::Offer as MediaOffer;
 
 pub use tilo_device_surfaces::devices::{
-    AccessKey, ClipboardCopy, DeviceWorkspace, RowPart, SendableSound, SoundAsk, SoundRoute,
+    AccessKey, ClipboardCopy, DeviceDisplayView, DeviceWorkspace, RowPart, SendableSound, SoundAsk,
+    SoundRoute,
 };
 
 /// One of the person's devices a Bluetooth accessory can move to.
@@ -78,6 +79,9 @@ pub struct PersonalDevice {
     pub wakeable: bool,
     /// It plays the sound this device sends it.
     pub audio_output: bool,
+    /// The screens it drives, as the record of the person's devices says it.
+    #[serde(default)]
+    pub displays: Vec<DeviceDisplayView>,
     /// When a session of it was last with a host, in milliseconds since the Unix epoch; `0` when
     /// it never said.
     #[serde(default)]

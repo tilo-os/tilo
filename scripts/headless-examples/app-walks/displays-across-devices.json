@@ -18,57 +18,77 @@
   ],
   "live": "tl",
   "tl": {
-    "session_args": []
+    "id": "so.tilo.settings",
+    "package": "settings"
   },
   "steps": [
     {
       "id": "settings-on-laptop",
-      "said": "Open Settings on the laptop",
+      "said": "Open Settings on the laptop, on its screens",
       "ops": [
         {
-          "open": "settings"
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "press": "Displays"
+        },
+        {
+          "wait_for": "Arrangement"
+        },
+        {
+          "must": [
+            "Arrangement",
+            "Number the screens"
+          ]
         }
-      ]
+      ],
+      "budget_ms": 30000
     },
     {
       "id": "both-devices-listed",
-      "said": "Settings lists the laptop's two screens and the phone's",
+      "said": "The laptop reads the phone's screen from the record of the person's devices",
       "ops": [
         {
           "use": {
-            "app": "so.tilo.settings",
-            "action": "inspect-shared-displays",
+            "resource": "session:devices",
+            "action": "read",
             "expect": {
               "devices#len": 2
             },
             "keep": {
-              "revision": "layout.revision"
+              "laptop": "devices.0.id",
+              "laptop_output": "devices.0.displays.0.output"
             }
           }
         }
-      ]
+      ],
+      "budget_ms": 30000
     },
     {
-      "id": "place-phone",
-      "said": "Place the phone's screen right of the laptop's",
+      "id": "place-laptop",
+      "said": "Place the laptop's own screens at the origin, through their device's action",
       "ops": [
         {
           "use": {
-            "kind": "settings.device-display",
-            "action": "move-device-display",
-            "about": "phone",
+            "resource": "settings/display-person",
+            "action": "place-display",
             "args": {
-              "revision": "{revision}",
-              "x": 3200,
+              "device": "{laptop}",
+              "output": "{laptop_output}",
+              "x": 0,
               "y": 0
             }
           }
         }
-      ]
+      ],
+      "budget_ms": 30000
     },
     {
-      "id": "phone-sees-placement",
-      "said": "The phone's Settings shows the same placement",
+      "id": "phone-places-itself",
+      "said": "The phone opens its Settings and places its own screen right of the laptop's",
       "on": "phone",
       "ops": [
         {
@@ -76,14 +96,28 @@
         },
         {
           "use": {
-            "app": "so.tilo.settings",
-            "action": "inspect-shared-displays",
-            "expect": {
-              "devices#len": 2
+            "resource": "session:devices",
+            "action": "read",
+            "keep": {
+              "phone": "devices.0.id",
+              "phone_output": "devices.0.displays.0.output"
+            }
+          }
+        },
+        {
+          "use": {
+            "resource": "settings/display-person",
+            "action": "place-display",
+            "args": {
+              "device": "{phone}",
+              "output": "{phone_output}",
+              "x": 4480,
+              "y": 0
             }
           }
         }
-      ]
+      ],
+      "budget_ms": 120000
     },
     {
       "id": "pointer-crosses",
@@ -105,7 +139,34 @@
             "shared_input.pointer_shown": false
           }
         }
-      ]
+      ],
+      "budget_ms": 60000
+    },
+    {
+      "id": "both-read-the-placement",
+      "said": "Both devices read the one setting: two screens placed, each by its own device",
+      "ops": [
+        {
+          "use": {
+            "resource": "settings/display-person",
+            "action": "read",
+            "expect": {
+              "placement#len": 2
+            }
+          }
+        },
+        {
+          "on": "phone",
+          "use": {
+            "resource": "settings/display-person",
+            "action": "read",
+            "expect": {
+              "placement#len": 2
+            }
+          }
+        }
+      ],
+      "budget_ms": 60000
     }
   ]
 }
