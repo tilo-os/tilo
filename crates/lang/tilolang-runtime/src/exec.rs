@@ -572,6 +572,59 @@ impl Core {
         new: &crate::store::NewResource,
         id: Option<&str>,
     ) -> Result<ResourceRef, RuntimeError> {
+        let Some((pkg, initial, migrations)) = self.making(new) else {
+            let mut store = self.store.borrow_mut();
+            return Ok(match id {
+                Some(id) => store.create_with_id(new, id)?,
+                None => store.create(new)?,
+            });
+        };
+        let id = id.map_or_else(|| self.store.borrow_mut().fresh_id("r"), str::to_owned);
+        let txn = self.store.borrow_mut().begin()?;
+        match self.make_in(&pkg, initial.as_ref(), &migrations, txn, new, &id) {
+            Ok((made, note)) => {
+                self.store.borrow_mut().commit(txn, &note)?;
+                Ok(made)
+            }
+            Err(error) => {
+                self.store.borrow_mut().rollback(txn);
+                Err(error)
+            }
+        }
+    }
+
+    /// [`Self::make`] in the transaction `txn` a write already has open: a root nobody made
+    /// yet is made by the first write to it, so the records the write puts under it stand in a
+    /// resource the store holds, and what it starts with is in the same change.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::make`].
+    pub(crate) fn make_in_change(
+        &self,
+        new: &crate::store::NewResource,
+        id: &str,
+        txn: Txn,
+    ) -> Result<ResourceRef, RuntimeError> {
+        match self.making(new) {
+            Some((pkg, initial, migrations)) => self
+                .make_in(&pkg, initial.as_ref(), &migrations, txn, new, id)
+                .map(|(made, _)| made),
+            None => self
+                .store
+                .borrow_mut()
+                .create_in(txn, new, id)
+                .map_err(RuntimeError::from),
+        }
+    }
+
+    /// What [`Self::make`] writes beyond the store's own making of a resource: the package
+    /// whose type it is, with the initial action and migration marks the making carries, when
+    /// the type has any. `None` when the store's own making is all of it.
+    fn making(
+        &self,
+        new: &crate::store::NewResource,
+    ) -> Option<(Rc<Package>, Option<ActionMeta>, Vec<String>)> {
         let pkg = {
             let registry = self.registry.borrow();
             registry
@@ -603,31 +656,14 @@ impl Core {
                 .type_info(&new.ty)
                 .is_some_and(|(_, info)| crate::held::holds_any(&info))
         };
-        let Some(pkg) = pkg.filter(|_| {
+        pkg.filter(|_| {
             !derived
                 && (initial.is_some()
                     || holds
                     || !migrations.is_empty()
                     || !new.text_defaults.is_empty())
-        }) else {
-            let mut store = self.store.borrow_mut();
-            return Ok(match id {
-                Some(id) => store.create_with_id(new, id)?,
-                None => store.create(new)?,
-            });
-        };
-        let id = id.map_or_else(|| self.store.borrow_mut().fresh_id("r"), str::to_owned);
-        let txn = self.store.borrow_mut().begin()?;
-        match self.make_in(&pkg, initial.as_ref(), &migrations, txn, new, &id) {
-            Ok((made, note)) => {
-                self.store.borrow_mut().commit(txn, &note)?;
-                Ok(made)
-            }
-            Err(error) => {
-                self.store.borrow_mut().rollback(txn);
-                Err(error)
-            }
-        }
+        })
+        .map(|pkg| (pkg, initial, migrations))
     }
 
     /// [`Self::make`]'s writes in the transaction `txn`, and the note its change commits under.

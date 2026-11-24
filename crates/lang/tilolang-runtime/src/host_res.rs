@@ -736,6 +736,26 @@ impl Core {
                 info.name
             ));
         }
+        // A root nobody made yet is made by the first write to it: the record a collection
+        // insert puts under it stands in a resource the store holds, and a field written here
+        // has a resource to be written. It starts with what its type starts with, in this
+        // change, as the host makes it when it first opens it.
+        if r.target.item.is_none() && r.target.doc.starts_with("root-") {
+            let made = {
+                let store = self.store.borrow();
+                store.type_of(&r.target).is_ok()
+            };
+            if !made {
+                let Some(new) = self.registry.borrow().new_record(&r.target.ty) else {
+                    return trap(format!(
+                        "no type `{}` for the root `{}`",
+                        r.target.ty, r.target.doc
+                    ));
+                };
+                self.make_in_change(&new, &r.target.doc, txn)
+                    .map_err(|error| crate::engine::HostFail::Trap(error.to_string()))?;
+            }
+        }
         Ok(MutCtx {
             target: Rc::unwrap_or_clone(r.target),
             field: f,
