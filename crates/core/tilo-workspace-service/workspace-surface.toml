@@ -454,7 +454,7 @@ fields = [
   { path = "agents.*.sub.stands", type = { named = "Stands" } },
   { path = "agents.*.sub.since", type = "int" },
   { path = "agents.*.sub.line", type = "text" },
-  { path = "agents.*.sub.notes", type = { list = { named = "Note" } } },
+  { path = "agents.*.sub.notes", type = { list = { named = "AgentNote" } } },
   { path = "agents.*.sub.produced", type = { list = { named = "Produced" } } },
   { path = "agents.*.sub.coding", type = { option = { named = "Coding" } }, stored = "record" },
   { path = "agents.*.sub.coding.harness", type = "text" },
@@ -667,6 +667,15 @@ fields = [
 ]
 
 [[resources.types]]
+name = "AgentNote"
+fields = [
+  { name = "id", type = "text" },
+  { name = "by", type = "text" },
+  { name = "text", type = "text" },
+  { name = "at", type = "int" },
+]
+
+[[resources.types]]
 name = "AgentState"
 cases = [
   { name = "active" },
@@ -730,15 +739,6 @@ fields = [
 ]
 
 [[resources.types]]
-name = "Note"
-fields = [
-  { name = "id", type = "text" },
-  { name = "by", type = "text" },
-  { name = "text", type = "text" },
-  { name = "at", type = "int" },
-]
-
-[[resources.types]]
 name = "Produced"
 fields = [
   { name = "id", type = "text" },
@@ -794,7 +794,7 @@ fields = [
   { name = "stands", type = { named = "Stands" } },
   { name = "since", type = "int" },
   { name = "line", type = "text" },
-  { name = "notes", type = { list = { named = "Note" } } },
+  { name = "notes", type = { list = { named = "AgentNote" } } },
   { name = "produced", type = { list = { named = "Produced" } } },
   { name = "coding", type = { option = { named = "Coding" } } },
 ]

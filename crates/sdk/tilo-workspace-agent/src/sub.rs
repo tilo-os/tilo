@@ -114,7 +114,7 @@ impl fmt::Display for Stands {
 
 /// A note a sub-agent's starter gave it while it worked.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Note {
+pub struct AgentNote {
     /// Its id among the notes of its sub-agent.
     pub id: String,
     /// The agent that gave it, by its id.
@@ -149,7 +149,7 @@ pub struct Sub {
     /// why it could not work.
     pub line: String,
     /// The newest notes its starter gave it ([`MAX_NOTES`]), oldest first.
-    pub notes: Vec<Note>,
+    pub notes: Vec<AgentNote>,
     /// What it made, each a thing one can open ([`crate::Produced`]), oldest first.
     pub produced: Vec<crate::Produced>,
     /// Its work by a coding harness in a repository ([`crate::coding`]); `None` for a
@@ -619,7 +619,7 @@ impl WorkspaceAgents {
         self.steered_by(agent, &by)?;
         let (id, at) = (cx.id().to_string(), cx.now_ms());
         let sub = self.sub_mut(agent)?;
-        sub.notes.push(Note { id, by, text, at });
+        sub.notes.push(AgentNote { id, by, text, at });
         let over = sub.notes.len().saturating_sub(MAX_NOTES);
         sub.notes.drain(..over);
         Ok(())

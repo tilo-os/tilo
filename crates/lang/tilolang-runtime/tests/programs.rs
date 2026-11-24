@@ -129,7 +129,7 @@ mod cases {
                 &w.rt,
                 &agent(),
                 &format!(
-                    "let hits = find(\"notes.Note launch\")\nfor n in hits {{\n    tasks.new_task({}, title: \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
+                    "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.new_task({}, title: \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
                     w.list_literal()
                 ),
             );
@@ -160,7 +160,7 @@ mod cases {
             let reply = session.run(
                 &w.rt,
                 &agent(),
-                "let all = find(\"launch\")\nprint(all.of(notes.Note).len(), all.of(Task).len())",
+                "let all = find(\"launch\")\nprint(all.of(Note).len(), all.of(Task).len())",
             );
             assert_eq!(done(&reply), "2 0");
             assert_eq!(w.notes.len(), 3);
@@ -264,7 +264,7 @@ mod cases {
     fn a_printed_reference_is_input_to_the_next_program() {
         let w = world();
         let mut session = Session::new();
-        let found = session.run(&w.rt, &agent(), "find(\"notes.Note groceries\")");
+        let found = session.run(&w.rt, &agent(), "find(\"Note groceries\")");
         let out = done(&found);
         let literal = out.split_whitespace().next().unwrap().to_owned();
         assert!(literal.starts_with("@notes.Note:"), "{out}");
@@ -294,7 +294,7 @@ mod cases {
         assert!(word.contains("did you mean `print`?"), "{word}");
         let ty = rejected(&session.run(&w.rt, &agent(), "find(\"Notee launch\")"));
         assert!(ty.contains("did you mean `Note`?"), "{ty}");
-        done(&session.run(&w.rt, &agent(), "let hits = find(\"notes.Note launch\")"));
+        done(&session.run(&w.rt, &agent(), "let hits = find(\"Note launch\")"));
         let name = rejected(&session.run(&w.rt, &agent(), "print(hitz)"));
         assert!(name.contains("did you mean `hits`?"), "{name}");
         let field = rejected(&session.run(&w.rt, &agent(), "for n in hits { print(n.titel) }"));
