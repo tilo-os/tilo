@@ -1803,11 +1803,9 @@ impl Instance {
                 Ok(())
             }
             // A window draws no asking of its own: the shell's one asking view answers what was
-            // asked, through the dispatch.
-            ToApp::Answer(_) => Ok(()),
-            // No page call waits for an answer yet: the window's page runs nothing the app's
-            // actions ask of it.
-            ToApp::PageAnswer { .. } => Ok(()),
+            // asked, through the dispatch. And no page call waits for an answer yet: the window's
+            // page runs nothing the app's actions ask of it.
+            ToApp::Answer(_) | ToApp::PageAnswer { .. } => Ok(()),
             ToApp::PagePrompt { prompt } => {
                 self.page_prompts.push(prompt);
                 Ok(())

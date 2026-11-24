@@ -478,6 +478,37 @@ fn resources_named(app: &str, value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// A plain enum's case by its name, or an enum with payloads encoded whole: what an action's
+/// parameter of the enum `key` of `meta` takes for `chosen`, which `value` holds.
+fn enum_json(
+    meta: &Meta,
+    key: &tilolang_runtime::meta::TypeKey,
+    chosen: &tilolang_runtime::value::EnumValue,
+    value: &Value,
+) -> Result<Json, String> {
+    let declared = meta
+        .enums
+        .iter()
+        .find(|declared| declared.name == key.name)
+        .ok_or_else(|| format!("unknown enum `{}`", key.name))?;
+    let plain = declared
+        .variants
+        .iter()
+        .all(|variant| variant.fields.is_empty());
+    match declared
+        .variants
+        .iter()
+        .find(|variant| variant.id == chosen.variant)
+    {
+        Some(variant) if plain => Ok(Json::String(variant.name.clone())),
+        Some(_) => tilolang_runtime::value::to_json(value),
+        None => Err(format!(
+            "`{}` is not a case of {}",
+            chosen.variant, key.name
+        )),
+    }
+}
+
 /// The argument `value` of the type `ty`, as the API takes it: in the shape the action's
 /// published parameter declares ([`crate::surface::published_param`]), which the broker binds
 /// before it delivers, and which [`value_of`] reads back as the same value. A document by the
@@ -551,27 +582,7 @@ pub fn argument_json(
         // A plain enum's parameter chooses among its cases by name
         // ([`crate::surface::published_param`]); one with payloads takes the value encoded.
         (Ty::Enum(key), Value::Enum(chosen)) if key.app == meta.app => {
-            let declared = meta
-                .enums
-                .iter()
-                .find(|declared| declared.name == key.name)
-                .ok_or_else(|| format!("unknown enum `{}`", key.name))?;
-            let plain = declared
-                .variants
-                .iter()
-                .all(|variant| variant.fields.is_empty());
-            match declared
-                .variants
-                .iter()
-                .find(|variant| variant.id == chosen.variant)
-            {
-                Some(variant) if plain => Ok(Json::String(variant.name.clone())),
-                Some(_) => to_json(value),
-                None => Err(format!(
-                    "`{}` is not a case of {}",
-                    chosen.variant, key.name
-                )),
-            }
+            enum_json(meta, key, chosen, value)
         }
         // A record value — one built in the code rather than held in a collection — is data, as
         // `json.encode` writes it: its fields under their names, each as the value it holds.
