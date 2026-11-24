@@ -1645,7 +1645,7 @@ impl DirectSync {
             self.note_genesis(&authored);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        self.keep_channel(&authored);
+        self.keep_governance(&authored);
         let author = authored.from;
         let links = self.0.outgoing.send(authored).unwrap_or(0);
         tracing::debug!(
@@ -1656,21 +1656,31 @@ impl DirectSync {
         );
     }
 
-    /// Keep `authored` at this device's store when it is channel governance
-    /// and this device is the workspace's host on its links: what a device
-    /// that links later joins each channel's group from
-    /// ([`Store::keep_channel`]). Only the host keeps and hands it, so a
-    /// member's older copy never stands in for the newest.
+    /// Keep `authored` at this device's store when it is governance and this
+    /// device is the workspace's host on its links: what a device that links
+    /// later joins each channel's group from ([`Store::keep_channel`]) and is
+    /// replayed the workspace's own changes from
+    /// ([`Store::keep_workspace_governance`]). Only the host keeps and hands
+    /// it, so a member's older copy never stands in for the newest.
     #[cfg(not(target_arch = "wasm32"))]
-    fn keep_channel(&self, authored: &Authored) {
-        if !self.fans_out() || !carried_governance(&authored.message) {
+    fn keep_governance(&self, authored: &Authored) {
+        if !self.fans_out() {
+            return;
+        }
+        let channels = carried_governance(&authored.message);
+        if !channels && !matches!(authored.message, NeighbourMsg::SyncResp { .. }) {
             return;
         }
         let (Some(store), Ok(workspace)) = (&self.0.store, self.workspace()) else {
             return;
         };
-        if let Err(error) = store.keep_channel(workspace, authored.from, &authored.message) {
-            tracing::warn!(%error, "a channel's governance was not kept at the store; a device that links later asks its members for it");
+        let kept = if channels {
+            store.keep_channel(workspace, authored.from, &authored.message)
+        } else {
+            store.keep_workspace_governance(workspace, authored.from, &authored.message)
+        };
+        if let Err(error) = kept {
+            tracing::warn!(%error, "governance was not kept at the store; a device that links later asks its members for it");
         }
     }
 
@@ -3418,6 +3428,17 @@ impl DirectSync {
             }
             self.carry_governance(author, message, retained);
             return (false, None);
+        }
+        // A host keeps the workspace's own changes a device sends it, as it
+        // keeps the channel governance: a device that links to it later is
+        // replayed them from its store.
+        #[cfg(not(target_arch = "wasm32"))]
+        if matches!(&message, NeighbourMsg::SyncResp { .. }) {
+            self.keep_governance(&Authored {
+                from: author,
+                message: message.clone(),
+                published: false,
+            });
         }
         let heard = self.judge(author, message, retained, history).await;
         self.settle(heard)

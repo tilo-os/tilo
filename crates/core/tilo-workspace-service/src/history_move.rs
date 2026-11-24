@@ -380,6 +380,12 @@ fn keep(
             .map_err(|error| format!("{workspace}: {error}"))?;
         return Ok(());
     }
+    if matches!(message, NeighbourMsg::SyncResp { .. }) {
+        store
+            .keep_workspace_governance(workspace, author, message)
+            .map_err(|error| format!("{workspace}: {error}"))?;
+        return Ok(());
+    }
     let count = moved.not_kept.entry(message.kind().to_owned()).or_default();
     *count = count.saturating_add(1);
     Ok(())

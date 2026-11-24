@@ -98,8 +98,9 @@ impl WorkspaceDocuments {
         &self.signing_key
     }
 
-    /// Every kept body of `workspace_id`: each channel's governance, in the
-    /// order it was kept, then every kept write, in the store's order.
+    /// Every kept body of `workspace_id`: each channel's governance and each
+    /// change to the workspace's own state, in the order they were kept, then
+    /// every kept write, in the store's order.
     ///
     /// # Errors
     ///
@@ -222,6 +223,10 @@ impl WorkspaceDocuments {
         } else if message.governance_workspace().is_some() {
             self.store
                 .keep_channel(workspace_id, author, &message)
+                .map_err(|error| error.to_string())?;
+        } else {
+            self.store
+                .keep_workspace_governance(workspace_id, author, &message)
                 .map_err(|error| error.to_string())?;
         }
         Ok(host_order())
