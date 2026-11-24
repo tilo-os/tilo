@@ -88,6 +88,8 @@ mod e2e_publisher;
 mod e2e_removals;
 #[path = "e2e_scratchpad.rs"]
 mod e2e_scratchpad;
+#[path = "e2e_sheets.rs"]
+mod e2e_sheets;
 #[path = "e2e_snippets.rs"]
 mod e2e_snippets;
 #[path = "e2e_speed_test.rs"]

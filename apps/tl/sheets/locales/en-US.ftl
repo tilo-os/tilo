@@ -508,6 +508,22 @@ d-4kddm3qk-s = S
 
 d-4kddm3qk-pair = Pair
 
+d-7bar2fy5 = Fill down
+    .doc = Fills the rows under the first row of `range` from it: the first row copied down, counting on as a dragged fill handle does.
+    .w-there-is-nothing-below-the-first = There is nothing below the first row to fill
+
+d-7bar2fy5-s = S
+
+d-7bar2fy5-range = Range
+
+d-s7hn4a22 = Fill right
+    .doc = Fills the columns right of the first column of `range` from it: the first column copied across, counting on as a dragged fill handle does.
+    .w-there-is-nothing-right-of-the = There is nothing right of the first column to fill
+
+d-s7hn4a22-s = S
+
+d-s7hn4a22-range = Range
+
 d-fvh4tlq7 = Change the sheet
     .doc = Applies one structural change to the workbook and keeps every sheet as the engine leaves it: its cells, their formats and the cells shown bold, its name when the change renamed it, and the cells its charts and comments are about.
     .did = changed a sheet
@@ -578,6 +594,12 @@ d-uophjddh = Edit reply
     .w-write-a-reply-first = Write a reply first
 
 d-uophjddh-text = Text
+
+d-xnqm5thi = Delete reply
+    .doc = Deletes a reply.
+    .w-only-its-author-can-delete-a = Only its author can delete a reply
+
+d-xnqm5thi-r = R
 
 d-jk2p2gfj = Delete comment
     .doc = Deletes a comment and its replies.
@@ -660,6 +682,10 @@ d-2j6pbu2h = Upsert item~present
 
 d-2clifysf = Autosum~present
 
+d-wuzrpfk3 = Fill down~present
+
+d-d3esk7xt = Fill right~present
+
 d-r6i4ot7t = Add chart~present
 
 d-xx7my2go = Comment~present
@@ -672,6 +698,8 @@ d-4ei5hwub = Edit comment~present
 
 d-45othlx6 = Edit reply~present
 
+d-u5d6cfi4 = Delete reply~present
+
 d-d3azxjha = Delete comment~present
 
 d-vodfdztg = Import table~present
@@ -682,6 +710,9 @@ d-ibft2idy = Workbook
     .w-close = Close
     .w-nothing-said-about-this-sheet-yet = Nothing said about this sheet yet
     .w-resolved = Resolved
+    .w-edit-the-comment = Edit the comment
+    .w-save = Save
+    .w-cancel = Cancel
     .w-reply = Reply
     .w-reopen = Reopen
     .w-resolve = Resolve
@@ -690,9 +721,15 @@ d-ibft2idy = Workbook
     .w-comment = Comment
     .w-no-chart-over-this-sheet-yet = No chart over this sheet yet
     .w-nothing-in-to-chart = Nothing in { $range } to chart
+    .w-chart-title = Chart title
+    .w-cells-as-a1-d9 = Cells, as A1:D9
     .w-show-the-cells = Show the cells
+    .w-more = More
+    .w-rename-or-move-the-chart = Rename or move the chart…
+    .w-chart-the-chosen-cells = Chart the chosen cells
     .w-column-chart = Column chart
     .w-line-chart = Line chart
+    .w-delete-the-chart = Delete the chart
     .w-sheets = Sheets
     .w-add-sheet = Add sheet
     .w-sheet = Sheet
@@ -705,7 +742,6 @@ d-ibft2idy = Workbook
     .w-delete-the-sheet = Delete the sheet
     .w-rename-the-sheet = Rename the sheet
     .w-rename-2 = Rename
-    .w-cancel = Cancel
     .w-tab-colour-2 = Tab colour
     .w-done = Done
     .w-no-colour = No colour
@@ -722,6 +758,9 @@ d-stzolo66 = Sheet window
     .w-close = Close
     .w-nothing-said-about-this-sheet-yet = Nothing said about this sheet yet
     .w-resolved = Resolved
+    .w-edit-the-comment = Edit the comment
+    .w-save = Save
+    .w-cancel = Cancel
     .w-reply = Reply
     .w-reopen = Reopen
     .w-resolve = Resolve
@@ -730,9 +769,15 @@ d-stzolo66 = Sheet window
     .w-comment = Comment
     .w-no-chart-over-this-sheet-yet = No chart over this sheet yet
     .w-nothing-in-to-chart = Nothing in { $range } to chart
+    .w-chart-title = Chart title
+    .w-cells-as-a1-d9 = Cells, as A1:D9
     .w-show-the-cells = Show the cells
+    .w-more = More
+    .w-rename-or-move-the-chart = Rename or move the chart…
+    .w-chart-the-chosen-cells = Chart the chosen cells
     .w-column-chart = Column chart
     .w-line-chart = Line chart
+    .w-delete-the-chart = Delete the chart
     .w-sheets = Sheets
     .w-add-sheet = Add sheet
     .w-sheet = Sheet
@@ -745,7 +790,6 @@ d-stzolo66 = Sheet window
     .w-delete-the-sheet = Delete the sheet
     .w-rename-the-sheet = Rename the sheet
     .w-rename-2 = Rename
-    .w-cancel = Cancel
     .w-tab-colour-2 = Tab colour
     .w-done = Done
     .w-no-colour = No colour
@@ -760,3 +804,4 @@ d-b7vdig4c = Sheet row
     .w-cells = { $len } cells
 
 d-msl2xtvn = Reply row
+    .w-delete-reply = Delete reply

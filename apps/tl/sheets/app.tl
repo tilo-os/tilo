@@ -887,9 +887,12 @@ action fill_down(w: Workbook, s: Sheet, range: Text) (icon: .arrow_down, label: 
     require row_of(range_end(range)) > row_of(range_start(range)) "There is nothing below the first row to fill"
     let first = row_of(range_start(range))
     let end_row = row_of(range_end(range))
-    let left = column_of(range_start(range))
-    let right = column_of(range_end(range))
-    fill(w, s, ["{left}{first}:{right}{first}", "{left}{first + 1}:{right}{end_row}"])
+    let left = column_index(column_of(range_start(range)))
+    let right = column_index(column_of(range_end(range)))
+    for at in count_up(left, right) {
+        let column = column_letter(at)
+        fill(w, s, ["{column}{first}", "{column}{first + 1}:{column}{end_row}"])
+    }
 }
 
 /// Fills the columns right of the first column of `range` from it: the first column copied
@@ -900,14 +903,16 @@ action fill_right(w: Workbook, s: Sheet, range: Text) (icon: .arrow_right, label
     let bottom = row_of(range_end(range))
     let first = column_index(column_of(range_start(range)))
     let end_col = column_index(column_of(range_end(range)))
-    fill(
-        w,
-        s,
-        [
-            "{column_letter(first)}{top}:{column_letter(first)}{bottom}",
-            "{column_letter(first + 1)}{top}:{column_letter(end_col)}{bottom}",
-        ],
-    )
+    for row in count_up(top, bottom) {
+        fill(
+            w,
+            s,
+            [
+                "{column_letter(first)}{row}",
+                "{column_letter(first + 1)}{row}:{column_letter(end_col)}{row}",
+            ],
+        )
+    }
 }
 
 /// Applies one structural change to the workbook and keeps every sheet as the engine leaves it:

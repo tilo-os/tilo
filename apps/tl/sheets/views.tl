@@ -497,7 +497,7 @@ template view comment_card(w: Workbook, c: Comment, area: State<Text>) {
             rich_text(c.text)
         }
         for r in c.replies {
-            reply_row(w, c, r)
+            reply_row(c, r)
         }
         if replying {
             ui.RichInput(bind: reply_text, placeholder: "Reply") {
@@ -528,10 +528,24 @@ template view comment_card(w: Workbook, c: Comment, area: State<Text>) {
 }
 
 /// One answer to a comment.
-view reply_row(r: Reply) {
+view reply_row(c: Comment, r: Reply) {
     stack(gap: .tight) {
-        if let who = created(r)?.who {
-            text(who.name(), role: .caption, secondary: true)
+        row(gap: .tight, align: .center) {
+            if let who = created(r)?.who {
+                text(who.name(), role: .caption, secondary: true)
+            }
+            spacer()
+            if created(r)?.who == invoker {
+                ui.Button(
+                    "Delete reply",
+                    icon: .trash,
+                    icon_only: true,
+                    role: .plain,
+                    size: .small,
+                ) {
+                    on press: delete_reply(c, r)
+                }
+            }
         }
         rich_text(r.text)
     }
