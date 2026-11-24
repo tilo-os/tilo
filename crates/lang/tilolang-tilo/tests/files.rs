@@ -660,6 +660,14 @@ fn words(node: &UiNode, into: &mut Vec<String>) {
     }
 }
 
+/// Every kind of node a view holds, in order, this one first.
+fn kinds_of(node: &UiNode, into: &mut Vec<String>) {
+    into.push(node.kind.clone());
+    for child in &node.children {
+        kinds_of(child, into);
+    }
+}
+
 /// The keys of every list a view holds, whose rows are built as the window reads them.
 fn lists_of(view: &ViewInstance) -> Vec<String> {
     ["ui.VirtualList", "ui.TreeView", "ui.MediaGrid", "list"]
@@ -1037,8 +1045,22 @@ fn a_picture_shows_the_preview_the_device_made_and_the_entries_draw_larger_or_sm
 
     app.call("preview_step", vec![app.root_value()]);
     let mut window = app.window();
+    assert_eq!(
+        nodes_of(&mut window, "ui.CardGridCard").len(),
+        1,
+        "the picture stands as the grid's one card"
+    );
     let pictures = nodes_of(&mut window, "ui.Image");
-    assert_eq!(pictures.len(), 1, "the picture's card shows its preview");
+    assert_eq!(
+        pictures.len(),
+        1,
+        "the picture's card shows its preview: {}",
+        {
+            let mut kinds = Vec::new();
+            kinds_of(window.tree(), &mut kinds);
+            kinds.join(", ")
+        }
+    );
     assert!(
         matches!(
             pictures[0].props.get("src"),
