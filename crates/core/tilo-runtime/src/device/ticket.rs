@@ -34,10 +34,10 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction, FOUND, IDENTITIES, ISSUE,
-    LOG_IN, PENDING, PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS, RELEASE_HALF,
-    REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report, TICKET_LIFETIME_NS,
-    Ticket, UPDATE, USE_IDENTITY,
+    ALREADY_A_PERSONS, ANSWER_SIGN_IN, APPROVE, BACKUP, CERTIFY_KEY, Device, Direction, FOUND,
+    IDENTITIES, ISSUE, LOG_IN, PENDING, PROTECT_IDENTITY, PROVIDER, Place, RECOVERY_WORDS,
+    RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE, Report,
+    TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
@@ -85,10 +85,13 @@ pub(crate) fn provider(workspace: &str) -> CatalogueProvider {
 }
 
 /// The `tilo.device` page `query` asks for: the `devices` resource and its actions, resolved and
-/// invoked the way an app's are.
+/// invoked the way an app's are. Founding and restoring a person stay among them on a person's
+/// device, answered with [`ALREADY_A_PERSONS`], so whatever asks a device to found its person
+/// (a dev session's start, `tilo login --new-identity`) is told it has one rather than that the
+/// action is gone.
 #[must_use]
 pub(crate) fn catalogue(query: &CatalogueQuery) -> CataloguePage {
-    catalogue_of(query, |action| !matches!(action, FOUND | RESTORE))
+    catalogue_of(query, |_| true)
 }
 
 /// [`catalogue`] with only what a device answers before its person's services run: what it is,
@@ -1019,6 +1022,8 @@ impl Tickets {
                 && matches!(
                     request.target.address.action.as_str(),
                     INFO | ISSUE
+                        | FOUND
+                        | RESTORE
                         | LOG_IN
                         | PENDING
                         | APPROVE
@@ -1044,6 +1049,14 @@ impl Tickets {
                 || (request.target.address.resource == SERVER
                     && tilo_server::operations::ACTIONS
                         .contains(&request.target.address.action.as_str())))
+    }
+
+    /// Whether `request` asks this device, which serves a person, to found or restore one: refused
+    /// to whoever asks, since the answer only says the device has its person.
+    pub(crate) fn asks_for_a_person(request: &InvokeRequest) -> bool {
+        request.target.provider == PROVIDER
+            && request.target.address.resource == RESOURCE
+            && matches!(request.target.address.action.as_str(), FOUND | RESTORE)
     }
 
     /// Whether `request` only reads what the device is ([`INFO`]) or which identities it keeps,
@@ -1097,6 +1110,7 @@ impl Tickets {
         if !waiting {
             let answer = match action.as_str() {
                 INFO => Ok(device_info(&self.0.place, &self.0.key)),
+                FOUND | RESTORE => Err(anyhow!("{ALREADY_A_PERSONS}: it serves them")),
                 RECOVERY_WORDS => {
                     let (record, _) = rooted.expect("the caller's root is read for its words");
                     super::services::recovery_words_in(&record)

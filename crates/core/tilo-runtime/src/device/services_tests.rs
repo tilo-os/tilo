@@ -2018,3 +2018,46 @@ fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
         ended(invocation)
     );
 }
+
+const FOUND_ON_A_PERSONS_TEST: &str =
+    "device::services::tests::founding_on_a_persons_device_is_told_it_has_one";
+
+/// A device that serves its person, asked to found one (a dev session starting again, `tilo login
+/// --new-identity` on a set-up computer), answers that it is a person's already: the refusal its
+/// callers read to carry on, never an unknown action.
+#[test]
+fn founding_on_a_persons_device_is_told_it_has_one() {
+    use tilo_device_identity::login::{ALREADY_A_PERSONS, FOUND, PROVIDER, RESOURCE, RESTORE};
+
+    let Some(root) = isolated_root(FOUND_ON_A_PERSONS_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let (tree, agent) = daemon.connection_tree_in(None).unwrap();
+    for action in [FOUND, RESTORE] {
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: PROVIDER.into(),
+                address: tilo_actions::ActionAddress::new(RESOURCE, action),
+            },
+            argument: InvokeArgument::Json(serde_json::Map::new()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        };
+        let answered = tree
+            .invoke(&agent, request)
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten();
+        assert!(
+            matches!(&answered, Some(Ok(_))) && format!("{answered:?}").contains(ALREADY_A_PERSONS),
+            "{action} on a person's device is told it has one: {answered:?}"
+        );
+    }
+}

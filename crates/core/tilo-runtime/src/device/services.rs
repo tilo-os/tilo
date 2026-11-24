@@ -4679,7 +4679,8 @@ impl ActionProvider for RuntimeActionProvider {
         }
         if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)
-            && (self.is_the_person(caller)
+            && (Tickets::asks_for_a_person(&request)
+                || self.is_the_person(caller)
                 || (self
                     .session
                     .as_ref()
