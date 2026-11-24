@@ -30,6 +30,7 @@ pub mod device;
 pub mod disk_unlock;
 pub mod disks;
 pub mod drives;
+pub mod firewall;
 pub mod firmware;
 pub mod host_info;
 pub mod storage;
@@ -65,8 +66,9 @@ use update::Update;
 
 /// The resources' ids.
 pub use tilo_system_resources::{
-    CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIRMWARE, HOST_INFO, KEYBOARD_BACKLIGHT,
-    POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE, USERS, WINDOWS_COMPAT,
+    CODEC_PACK, CONTAINERS, DISK_UNLOCK, DISKS, DRIVES, FIREWALL, FIRMWARE, HOST_INFO,
+    KEYBOARD_BACKLIGHT, POWER, PRINTERS, PROCESSES, SCANNERS, STORAGE, SYSTEM_UPDATE, TIME_ZONE,
+    USERS, WINDOWS_COMPAT,
 };
 
 /// How often a device whose zone follows it looks where it is again: often
@@ -93,6 +95,7 @@ enum Part {
     Containers,
     Processes,
     Disks,
+    Firewall,
 }
 
 /// A change to one of the resources a privileged helper answers for an extension.
@@ -122,6 +125,7 @@ pub struct Readings {
     pub containers: tilo_system_resources::containers::Containers,
     pub processes: tilo_system_resources::processes::Processes,
     pub disks: tilo_system_resources::disks::Disks,
+    pub firewall: tilo_system_resources::firewall::Firewall,
 }
 
 fn read(system: &dyn System, live_profiles: bool) -> Readings {
@@ -151,6 +155,7 @@ fn read(system: &dyn System, live_profiles: bool) -> Readings {
         containers: system.containers(),
         processes: system.processes(),
         disks: system.disks(),
+        firewall: system.firewall(),
     }
 }
 
@@ -169,7 +174,23 @@ enum Landed {
         /// source's revision before that read so a newer daemon signal still wins.
         live_power_mode: Option<(u64, PowerMode)>,
     },
+    /// The kernel's drops read from this device's journal, with the window and the
+    /// moment it was read: a report of its own, not a fresh reading of the firewall.
+    Blocked {
+        action: String,
+        window_minutes: u32,
+        read_at_ms: u64,
+        result: Result<BlockedReport, String>,
+    },
 }
+
+/// What the kernel dropped in a window: its groups, the packets together, and what the report
+/// leaves out.
+type BlockedReport = (
+    Vec<tilo_system_resources::firewall::BlockedGroup>,
+    u64,
+    Option<String>,
+);
 
 /// Live power-profile readings followed beside the service's worker.
 struct LiveProfiles {
@@ -480,6 +501,10 @@ impl SystemService {
                 &mut readings.processes.problem,
             ),
             Part::Disks => (&mut readings.disks.pending, &mut readings.disks.problem),
+            Part::Firewall => (
+                &mut readings.firewall.pending,
+                &mut readings.firewall.problem,
+            ),
         }
     }
 
@@ -529,6 +554,16 @@ impl SystemService {
         readings.processes.problem = old.processes.problem.take();
         readings.disks.pending = std::mem::take(&mut old.disks.pending);
         readings.disks.problem = old.disks.problem.take();
+        // The blocked report is a read of its own: a plain reading of the firewall keeps the
+        // last one until another is asked for. Its own problem is the reading's.
+        readings.firewall.pending = std::mem::take(&mut old.firewall.pending);
+        readings.firewall.problem = old.firewall.problem.take();
+        readings.firewall.blocked = std::mem::take(&mut old.firewall.blocked);
+        readings.firewall.blocked_total = old.firewall.blocked_total;
+        readings.firewall.blocked_window_minutes = old.firewall.blocked_window_minutes;
+        readings.firewall.blocked_read_at_ms = old.firewall.blocked_read_at_ms;
+        readings.firewall.blocked_error = old.firewall.blocked_error.take();
+        readings.firewall.blocked_note = old.firewall.blocked_note.take();
         // A benchmark stays until the next one: a plain read does not clear it.
         if readings.disks.benchmark.is_none() {
             readings.disks.benchmark = old.disks.benchmark.take();
@@ -594,6 +629,29 @@ impl SystemService {
                     if !superseded {
                         self.readings.power.mode = Some(mode);
                     }
+                }
+            }
+            Landed::Blocked {
+                action,
+                window_minutes,
+                read_at_ms,
+                result,
+            } => {
+                let pending = &mut self.readings.firewall.pending;
+                if let Some(at) = pending.iter().position(|id| *id == action) {
+                    pending.remove(at);
+                }
+                let firewall = &mut self.readings.firewall;
+                match result {
+                    Ok((groups, total, note)) => {
+                        firewall.blocked = groups;
+                        firewall.blocked_total = total;
+                        firewall.blocked_window_minutes = window_minutes;
+                        firewall.blocked_read_at_ms = read_at_ms;
+                        firewall.blocked_error = None;
+                        firewall.blocked_note = note;
+                    }
+                    Err(error) => firewall.blocked_error = Some(error),
                 }
             }
         }
@@ -778,6 +836,42 @@ impl SystemService {
                 readings: Box::new(read(system, is_live(live_active.as_ref()))),
                 live_power_mode: None,
             }
+        });
+        Started::Accepted
+    }
+
+    /// Apply a configuration to this computer's firewalld, landing its answer and a fresh
+    /// reading of what firewalld holds.
+    fn start_firewall_apply(
+        &mut self,
+        action: &str,
+        config: tilo_system_resources::firewall::Firewall,
+    ) -> Started {
+        self.readings.firewall.pending.push(action.to_owned());
+        let action = action.to_owned();
+        let live_active = self.live_active_flag();
+        self.worker.run(move |system| {
+            let result = system.apply_firewall(&config).map(|_| ());
+            Landed::Changed {
+                part: Part::Firewall,
+                action,
+                result,
+                readings: Box::new(read(system, is_live(live_active.as_ref()))),
+                live_power_mode: None,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Read the kernel's drops from this device's journal, landing them as the blocked report.
+    fn start_blocked(&mut self, action: &str, window_minutes: u32) -> Started {
+        self.readings.firewall.pending.push(action.to_owned());
+        let action = action.to_owned();
+        self.worker.run(move |system| Landed::Blocked {
+            action,
+            window_minutes,
+            read_at_ms: crate::firewall::now_ms(),
+            result: system.blocked(window_minutes),
         });
         Started::Accepted
     }
@@ -1090,6 +1184,12 @@ pub fn disks_surface() -> tilo_resource::surface::Surface {
         tilo_system_resources::disks::Disks,
         tilo_system_resources::disks::DiskAction,
     >(DISKS, "Drives")
+}
+
+/// The `firewall` resource's surface, as a shell reads it over `so.tilo.device`.
+#[must_use]
+pub fn firewall_surface() -> tilo_resource::surface::Surface {
+    firewall::surface()
 }
 
 /// The `processes` resource's surface, as a shell reads it over `so.tilo.device`.
@@ -1815,6 +1915,40 @@ impl SystemService {
         Ok(self.start_process(id, change))
     }
 
+    /// An action on the `firewall` resource.
+    fn invoke_firewall(
+        &mut self,
+        published: &[ResourceSpec],
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        let action = decode::<tilo_system_resources::firewall::FirewallAction>(
+            published, resource, action, arguments,
+        )?;
+        let id = action.id();
+        match action {
+            tilo_system_resources::firewall::FirewallAction::Refresh => {
+                Ok(self.start_reread(Part::Firewall, id))
+            }
+            tilo_system_resources::firewall::FirewallAction::Apply { config } => {
+                let parsed: tilo_system_resources::firewall::Firewall =
+                    serde_json::from_str(&config).map_err(|error| {
+                        ApiError::InvalidArguments(format!("not a firewall configuration: {error}"))
+                    })?;
+                Ok(self.start_firewall_apply(id, parsed))
+            }
+            tilo_system_resources::firewall::FirewallAction::ReadBlocked { window_minutes } => {
+                if window_minutes == 0 {
+                    return Err(ApiError::InvalidArguments(
+                        "a report reads at least one minute".to_owned(),
+                    ));
+                }
+                Ok(self.start_blocked(id, window_minutes))
+            }
+        }
+    }
+
     /// An action on the `disks` resource.
     fn invoke_disks(
         &mut self,
@@ -1870,6 +2004,7 @@ impl Service for SystemService {
             containers::resource(&self.readings.containers),
             processes::resource(&self.readings.processes),
             disks::resource(&self.readings.disks),
+            firewall::resource(&self.readings.firewall),
         ]
     }
 
@@ -1892,6 +2027,7 @@ impl Service for SystemService {
             CONTAINERS => Some(reading(&self.readings.containers)),
             PROCESSES => Some(reading(&self.readings.processes)),
             DISKS => Some(reading(&self.readings.disks)),
+            FIREWALL => Some(reading(&self.readings.firewall)),
             _ => None,
         }
     }
@@ -1923,6 +2059,7 @@ impl Service for SystemService {
             CONTAINERS => self.invoke_containers(&published, resource, action, arguments),
             PROCESSES => self.invoke_processes(&published, resource, action, arguments),
             DISKS => self.invoke_disks(&published, resource, action, arguments),
+            FIREWALL => self.invoke_firewall(&published, resource, action, arguments),
             _ => Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
                 resource, action,
             ))),

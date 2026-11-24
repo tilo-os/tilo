@@ -344,6 +344,41 @@ pub trait System: Send + Sync {
         Err("this machine cannot measure its drives".to_owned())
     }
 
+    /// This computer's firewalld and the zones and rules it holds. A machine with no
+    /// firewalld answers with `serving: false`.
+    fn firewall(&self) -> tilo_system_resources::firewall::Firewall {
+        tilo_system_resources::firewall::Firewall::default()
+    }
+
+    /// Apply a configuration to this computer's firewalld, answering how many commands ran.
+    ///
+    /// # Errors
+    /// Why the configuration was refused, or which command failed.
+    fn apply_firewall(
+        &self,
+        _config: &tilo_system_resources::firewall::Firewall,
+    ) -> Result<usize, String> {
+        Err("this machine has no firewall to change".to_owned())
+    }
+
+    /// What the kernel dropped over the last `window_minutes`, busiest rule first.
+    ///
+    /// # Errors
+    /// Why the journal could not be read.
+    fn blocked(
+        &self,
+        _window_minutes: u32,
+    ) -> Result<
+        (
+            Vec<tilo_system_resources::firewall::BlockedGroup>,
+            u64,
+            Option<String>,
+        ),
+        String,
+    > {
+        Err("this machine has no system journal".to_owned())
+    }
+
     /// What this computer's process table and machine read as now. A machine with no system
     /// information service answers with `serving: false`.
     fn processes(&self) -> tilo_system_resources::processes::Processes {
@@ -704,6 +739,31 @@ impl System for OsSystem {
         device: &str,
     ) -> Result<tilo_system_resources::disks::Benchmark, String> {
         crate::disks::benchmark(device)
+    }
+
+    fn firewall(&self) -> tilo_system_resources::firewall::Firewall {
+        crate::firewall::reading()
+    }
+
+    fn apply_firewall(
+        &self,
+        config: &tilo_system_resources::firewall::Firewall,
+    ) -> Result<usize, String> {
+        crate::firewall::apply(config)
+    }
+
+    fn blocked(
+        &self,
+        window_minutes: u32,
+    ) -> Result<
+        (
+            Vec<tilo_system_resources::firewall::BlockedGroup>,
+            u64,
+            Option<String>,
+        ),
+        String,
+    > {
+        crate::firewall::blocked(window_minutes)
     }
 
     fn processes(&self) -> tilo_system_resources::processes::Processes {

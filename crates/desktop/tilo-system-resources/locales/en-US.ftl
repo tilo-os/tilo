@@ -83,3 +83,8 @@ so-tilo-system-disks-unmount = Close the drive
 so-tilo-system-disks-format = Erase the drive and write a new filesystem
 so-tilo-system-disks-benchmark = Measure the drive
 so-tilo-system-disks-eject = Eject the drive
+
+# Firewall
+so-tilo-system-firewall-refresh = Read this computer's firewalld again
+so-tilo-system-firewall-apply = Apply the configuration to this computer's firewalld
+so-tilo-system-firewall-read-blocked = Show what the kernel dropped

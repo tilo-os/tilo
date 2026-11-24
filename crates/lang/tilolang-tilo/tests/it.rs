@@ -30,6 +30,7 @@ mod disks;
 mod done_days;
 mod engines;
 mod feedback_picker;
+mod firewall;
 mod fixtures;
 mod foreign;
 mod gallery;

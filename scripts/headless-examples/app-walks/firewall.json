@@ -1,0 +1,86 @@
+{
+  "app": "firewall",
+  "said": "Firewall",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.firewall",
+    "package": "firewall"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Firewall on a fresh desktop",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "state",
+      "said": "The window shows this computer's zones, or says its firewalld is not running",
+      "ops": {
+        "tl": [
+          {
+            "offered": [
+              "Zones",
+              "Firewalld isn't available"
+            ]
+          },
+          {
+            "offered": [
+              "Try again",
+              "Read firewalld"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "views",
+      "said": "The rules, the services and the dropped traffic each have a view",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Rules",
+              "Try again"
+            ]
+          },
+          {
+            "press_any": [
+              "Services",
+              "Try again"
+            ]
+          },
+          {
+            "press_any": [
+              "Blocked",
+              "Try again"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ],
+      "dark": true
+    }
+  ]
+}

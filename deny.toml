@@ -24,7 +24,6 @@ exclude = [
     "diffmerge",
     "discord",
     "file-explorer",
-    "firewall",
     "mail",
     "maps",
     "monitor",

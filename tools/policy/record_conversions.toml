@@ -82,6 +82,12 @@ change = "removed"
 conversion = "apps/file-explorer/src/resource.rs:open"
 
 [[change]]
+kind = "firewall.config"
+app = "firewall"
+change = "removed"
+lost = "The zones and rules a workspace shared with the Rust app. The tilolang app keeps the same configuration in its own record and each device applies it, but an earlier resource is not converted: a new installation reads this device's firewalld."
+
+[[change]]
 kind = "firewall.applied"
 app = "firewall"
 change = "removed"

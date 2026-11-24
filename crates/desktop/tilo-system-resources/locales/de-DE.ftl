@@ -83,3 +83,8 @@ so-tilo-system-disks-unmount = Das Laufwerk schließen
 so-tilo-system-disks-format = Das Laufwerk löschen und ein neues Dateisystem schreiben
 so-tilo-system-disks-benchmark = Das Laufwerk messen
 so-tilo-system-disks-eject = Das Laufwerk auswerfen
+
+# Firewall
+so-tilo-system-firewall-refresh = Die Firewall dieses Rechners neu lesen
+so-tilo-system-firewall-apply = Die Konfiguration auf die Firewall dieses Rechners anwenden
+so-tilo-system-firewall-read-blocked = Zeigen, was der Kernel verworfen hat

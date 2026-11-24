@@ -12,8 +12,8 @@ use the separate [staged runtime signer](collection-staged-sign.md). Its signed
 layout remains outside this generic SDK adapter's two-executable policy.
 
 At the initial implementation's source revision, the plan contains 45 SDK apps.
-Ten manifests exclude macOS: containers, disks, firewall, logs, osk, print-centre,
-settings, store, vpn, windows. Browser supports macOS but is separately excluded
+Nine manifests exclude macOS: containers, disks, logs, osk, print-centre, settings,
+store, vpn, windows. Browser supports macOS but is separately excluded
 here: its CEF engine and helpers require its specialized packager. This is a
 **packager coverage gap**, not a claim that it cannot run on a Mac. See
 `scripts/browser/package.py`. This tool does not fabricate a generic replacement.

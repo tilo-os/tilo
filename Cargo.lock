@@ -4199,50 +4199,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
-name = "firewall"
-version = "0.1.0"
-dependencies = [
- "firewall",
- "firewall-model",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-bounded-command",
- "tilo-history",
- "tilo-settings-model",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
-name = "firewall-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "tilo-resource",
- "tilo-test-env",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "firewall-model-wasm"
-version = "0.1.0"
-dependencies = [
- "firewall-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "fixedbitset"
 version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18602,7 +18558,6 @@ dependencies = [
  "camera-model-wasm",
  "console-model-wasm",
  "diffmerge-model-wasm",
- "firewall-model-wasm",
  "logs-model-wasm",
  "maps-model-wasm",
  "poker-model-wasm",
@@ -26771,9 +26726,6 @@ dependencies = [
  "filedescriptor",
  "filetime",
  "find-msvc-tools",
- "firewall",
- "firewall-model",
- "firewall-model-wasm",
  "fixedbitset",
  "flagset",
  "flatbuffers",
