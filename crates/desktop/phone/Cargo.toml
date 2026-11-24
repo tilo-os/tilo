@@ -60,9 +60,9 @@ ed25519-dalek.workspace = true
 iroh.workspace = true
 # Notes, built from the tree and installed into the workspace the phone joins.
 tilolang-cli = { path = "../../../crates/lang/tilolang-cli" }
-# A workspace that runs Notes: its package, as the workspace's governance installs it.
+# A workspace that runs Notes: its package, installed through the workspace's published action.
 tilo-app-package = { path = "../../../crates/core/tilo-app-package" }
-tilo-peer-state = { path = "../../../crates/core/tilo-peer-state" }
+tilo-actions = { path = "../../../crates/core/actions" }
 hex.workspace = true
 # The server's Automerge workers are this test binary, started again.
 tilo-automerge-isolate.workspace = true

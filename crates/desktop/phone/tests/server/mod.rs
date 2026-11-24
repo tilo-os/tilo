@@ -13,8 +13,12 @@
 
 use std::path::{Path, PathBuf};
 
+use serde_json::json;
+use tilo_actions::remote::{
+    Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_address,
+};
 use tilo_device_identity::login::Entry;
-use tilo_peer_state::workspace_membership::{AppPayload, AppRelease, WorkspaceMembershipCommand};
 
 use crate::support;
 
@@ -104,25 +108,54 @@ impl Server {
         let manifest = read.meta.manifest.package.clone();
         let workspaces = self.host.workspaces();
         let file = workspaces.keep_app_file(&self.workspace, &bytes).unwrap();
-        let release = AppRelease {
-            app: manifest.id.clone(),
-            version: manifest.version.clone(),
-            surface: String::new(),
-            package: hex::encode(read.meta.id.0),
-            publisher: hex::encode(read.meta.root.publisher_identity),
-            file: Some(file),
-            dev: false,
-            pinned: false,
-            payload: AppPayload::Tapp,
+        let arguments = json!({
+            "app": manifest.id,
+            "version": manifest.version,
+            "package": hex::encode(read.meta.id.0),
+            "publisher": hex::encode(read.meta.root.publisher_identity),
+            "file": file,
+            "dev": false,
+        });
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+                address: workspace_governance_address(&self.workspace, "install-app"),
+            },
+            argument: InvokeArgument::Json(arguments.as_object().unwrap().clone()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
         };
-        self.runtime
-            .block_on(workspaces.govern_app(
-                &self.workspace,
-                &self.host.host_hint().host,
-                [3; 32],
-                WorkspaceMembershipCommand::InstallApp(release),
-            ))
-            .unwrap_or_else(|error| panic!("the workspace takes {}: {error}", manifest.id));
+        let cert = self.host.host_hint().host;
+        let person = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&self.workspace);
+        // The install runs on the server's runtime, where the workspace's providers answer.
+        let pending = {
+            let _entered = self.runtime.enter();
+            workspaces
+                .providers()
+                .invoke(&person, request)
+                .expect("the workspace publishes its apps' install")
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        pending.then(move |answer| {
+            let _ = sender.send(answer);
+        });
+        let receipt = receiver
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the workspace answers the install")
+            .expect("the install is answered, not abandoned")
+            .unwrap_or_else(|error| panic!("the workspace takes {}: {error:?}", manifest.id));
+        assert!(
+            matches!(receipt.status, ReceiptStatus::Completed { .. }),
+            "the workspace takes {}: {receipt:?}",
+            manifest.id
+        );
     }
 }
 
