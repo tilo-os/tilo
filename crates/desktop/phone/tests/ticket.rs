@@ -22,36 +22,15 @@ mod support;
 
 use server::{Server, WORKSPACE_NAME};
 
-/// Install Notes on the phone: built into a signed `.tapp` and installed into the phone's own
-/// app store, as a person installs an app on a device. The workspace's apps the daemon lists are
-/// the ones installed on the device it runs on.
-fn install_notes(scratch: &std::path::Path) {
-    let tapp = server::notes_tapp(scratch);
-    let store = package_store::layout::default_user_root().expect("the phone's app store");
-    let source = tapp.display().to_string();
-    package_store::PackageStore::at(&store)
-        .install(
-            std::io::BufReader::new(std::fs::File::open(&tapp).unwrap()),
-            move |_meta| {
-                Ok(package_store::Admission {
-                    pinned: false,
-                    attested_by: String::new(),
-                    source,
-                    held: false,
-                })
-            },
-            None,
-        )
-        .unwrap_or_else(|error| panic!("the phone's store takes Notes: {error}"));
-}
-
 #[test]
 fn a_phone_signs_in_with_a_ticket_and_sees_its_workspace_and_its_apps() {
-    let _home = support::Home::new();
+    let mut home = support::Home::new();
     let server = Server::start();
+    home.relay(&server.relay_url());
     let laptop = support::Issuing::start(server.runtime.handle(), &server.person, server.entry());
     let scratch = tempfile::tempdir().unwrap();
-    install_notes(scratch.path());
+    // The workspace runs Notes, its host keeping the package; the phone lists it once it joins.
+    server.install(&server::notes_tapp(scratch.path()));
     let mut phone =
         tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
     let before = support::shown(&phone);

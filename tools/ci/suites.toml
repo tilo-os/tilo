@@ -1688,7 +1688,7 @@ package = "tilo-session-client"
 # script the CI setup uses, so that script and the build it runs are read too.
 # The store's test reads an app's committed surface to check the types and verbs
 # it declares.
-inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh", "apps/phone/tests/support/"]
+inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/web/page-bundle.mjs", "tools/with-headless-audio.sh", "crates/core/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/core/tilo-browser-runtime/scripts/build.sh", "crates/desktop/phone/tests/support/"]
 readers = ["crates/core/session-client/tests/voice_browsers.rs", "crates/core/session-client/tests/headless_audio_lifetime.rs", "crates/core/session-client/src/device.rs", "crates/core/session-client/tests/support/mod.rs", "crates/core/session-client/tests/flow_laptop_phone_server.rs"]
 scope = { inputs = ["crates/core/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
@@ -1703,7 +1703,7 @@ readers = ["tools/test-env/tests/run_environment.rs"]
 package = "tilo-phone"
 # The phone's server tests build Notes from its tilolang package, from the tree.
 inputs = ["apps/tl/"]
-readers = ["apps/phone/tests/server/mod.rs"]
+readers = ["crates/desktop/phone/tests/server/mod.rs"]
 
 [[cargo]]
 package = "terminal"

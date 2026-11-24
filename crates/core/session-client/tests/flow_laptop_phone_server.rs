@@ -37,7 +37,7 @@ use tokio::task::block_in_place;
 
 /// The phone's own part, as the phone's tests drive it: its home and the laptop that prints its
 /// ticket.
-#[path = "../../../../apps/phone/tests/support/mod.rs"]
+#[path = "../../../../crates/desktop/phone/tests/support/mod.rs"]
 mod phone;
 use crate::support::{
     Device, HostSettings, TestHost, commit_change, enrol, entry_grant, record_of, redeem,

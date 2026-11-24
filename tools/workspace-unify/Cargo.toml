@@ -1201,7 +1201,7 @@ doc = false
 "tilo-pdf-reader" = { path = "../../crates/engines/pdf", default-features = false, features = [] }
 "tilo-peer-facts" = { path = "../../crates/core/peer-facts", default-features = false, features = [] }
 "tilo-peer-state" = { path = "../../crates/core/tilo-peer-state", default-features = false, features = ["test-support"] }
-"tilo-phone" = { path = "../../apps/phone", default-features = false, features = [] }
+"tilo-phone" = { path = "../../crates/desktop/phone", default-features = false, features = [] }
 "tilo-platform-caps" = { path = "../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
 "tilo-polkit-agent" = { path = "../../crates/os/polkit-agent", default-features = false, features = [] }
 "tilo-portal" = { path = "../../crates/desktop/portal", default-features = false, features = ["pipewire"] }
