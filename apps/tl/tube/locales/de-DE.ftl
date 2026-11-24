@@ -273,6 +273,7 @@ d-mufcicuu = Feed
     .w-play-all = Alle abspielen
     .w-videos-oldest-first = { $len } Videos, älteste zuerst
     .w-videos-you-keep-for-later-wait = Videos, die du für später behältst, warten hier, älteste zuerst
+    .w-settings = Einstellungen
 
 d-dfz6u5sa = Videoraster
 
@@ -343,6 +344,7 @@ d-w7mpbzm4 = Videoseite
     .w-refresh-comments = Kommentare aktualisieren
     .w-reply = Antworten
     .w-send = Senden
+    .w-comments-are-turned-off-in-settings = Kommentare sind in den Einstellungen ausgeschaltet.
 
 d-eijjevst = Wiedergabelistenseite
     .w-videos = { $video_count } Videos
@@ -641,3 +643,35 @@ d-ypapv6iy = Suchveröffentlichung
     .doc = Wie neu sie sind: `any`, `hour`, `today`, `week`, `month` oder `year`.
 
 d-zk3bb2v4 = Suche filtern~present
+
+d-4ioffkil = Wiedergabegeschwindigkeit
+    .doc = Wie schnell die Person schaut: jedes Video startet hier mit dieser Geschwindigkeit, auf jedem Gerät.
+
+d-4ioffkil-speed = Geschwindigkeit
+
+d-lumd7e36 = Kommentare
+    .doc = Zeigt die Kommentare unter einem Video.
+
+d-ntdvtknr = Kommentare zeigen
+    .doc = Ob die Seite eines Videos seine Kommentare zeigt.
+
+d-ntdvtknr-on = An
+
+d-t2l6coaj = Geschwindigkeit
+    .doc = Wie schnell der Player hier ein Video abspielt; bleibt beim Mitglied, sodass das nächste Video gleich startet.
+
+d-qynvz25p-filter-comments = Kommentare
+
+d-qynvz25p-filter-speed = Geschwindigkeit
+
+d-pol5o6e3 = Einstellungen
+    .w-playback = Wiedergabe
+    .w-play-the-next-video-on-its = Nächstes Video von selbst abspielen
+    .w-show-comments = Kommentare zeigen
+    .w-show-dislike-counts = Anzahl der Dislikes zeigen
+    .w-speed = Geschwindigkeit
+    .w-preferred-quality = Bevorzugte Qualität
+    .w-community-marks = Marken der Community
+    .w-skip-segments-sponsorblock-marks = Von SponsorBlock markierte Abschnitte überspringen
+    .w-community-titles-and-pictures-dearrow = Titel und Bilder der Community (DeArrow)
+    .w-dislike-counts-come-from-return-youtube = Die Zahlen stammen von Return YouTube Dislike, wie seine Nutzer abgestimmt haben.

@@ -240,6 +240,12 @@ d-7cyrtrv6 = Dearrow
 d-eyoonq3d = Dislikes
     .doc = Show how many people disliked a video, as Return YouTube Dislike estimates it.
 
+d-lumd7e36 = Comments
+    .doc = Show the comments under a video.
+
+d-t2l6coaj = Speed
+    .doc = How fast the player here plays a video, kept with the member so the next video starts at the same speed.
+
 d-qynvz25p-filter-member = Member
 
 d-qynvz25p-filter-autoplay = Autoplay
@@ -249,6 +255,10 @@ d-qynvz25p-filter-sponsorblock = Sponsorblock
 d-qynvz25p-filter-dearrow = Dearrow
 
 d-qynvz25p-filter-dislikes = Dislikes
+
+d-qynvz25p-filter-comments = Comments
+
+d-qynvz25p-filter-speed = Speed
 
 d-kgojom6f = Watch entry
     .doc = One video the person watched: when, and where they left off.
@@ -474,6 +484,16 @@ d-usutngoe = Dislike counts
 
 d-usutngoe-on = On
 
+d-ntdvtknr = Show comments
+    .doc = Whether a video's page shows its comments.
+
+d-ntdvtknr-on = On
+
+d-4ioffkil = Playback speed
+    .doc = How fast the person watches: every video here starts at this speed, on every device.
+
+d-4ioffkil-speed = Speed
+
 d-6lgqby4s = Search
     .doc = Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them.
     .w-type-something-to-search-for = Type something to search for
@@ -564,6 +584,7 @@ d-mufcicuu = Feed
     .w-watch-later = Watch later
     .w-liked-videos = Liked videos
     .w-history = History
+    .w-settings = Settings
     .w-recently-opened = Recently opened
     .w-nothing-on-the-watch-queue = Nothing on the watch queue
     .w-videos-you-keep-for-later-wait = Videos you keep for later wait here, oldest first
@@ -648,6 +669,7 @@ d-w7mpbzm4 = Video page
     .w-delete = Delete
     .w-send = Send
     .w-cancel = Cancel
+    .w-comments-are-turned-off-in-settings = Comments are turned off in Settings.
     .w-found-for = Found for { $found_for }
 
 d-eijjevst = Playlist page
@@ -657,6 +679,18 @@ d-eijjevst = Playlist page
     .w-loading-the-playlist = Loading the playlist
     .w-nothing-shown-from-this-playlist-yet = Nothing shown from this playlist yet
     .w-its-videos-appear-once-youtube-says = Its videos appear once YouTube says what it holds
+
+d-pol5o6e3 = Settings page
+    .w-playback = Playback
+    .w-play-the-next-video-on-its = Play the next video on its own
+    .w-show-comments = Show comments
+    .w-show-dislike-counts = Show dislike counts
+    .w-speed = Speed
+    .w-preferred-quality = Preferred quality
+    .w-community-marks = Community marks
+    .w-skip-segments-sponsorblock-marks = Skip segments SponsorBlock marks
+    .w-community-titles-and-pictures-dearrow = Community titles and pictures (DeArrow)
+    .w-dislike-counts-come-from-return-youtube = Dislike counts come from Return YouTube Dislike, as its users voted.
 
 d-z642pnnw = Video row
 

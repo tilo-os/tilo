@@ -199,6 +199,11 @@ type PlaybackPrefs {
     dearrow: Bool = true
     /// Show how many people disliked a video, as Return YouTube Dislike estimates it.
     dislikes: Bool = true
+    /// Show the comments under a video.
+    comments: Bool = true
+    /// How fast the player here plays a video, kept with the member so the next video starts at
+    /// the same speed.
+    speed: Float = 1.0
 }
 
 /// One video the person watched: when, and where they left off. Watched again, it moves to the
@@ -802,6 +807,29 @@ action set_dislikes(yt: YouTube, on: Bool) (icon: .thumbs_down, label: "Dislike 
     }
 }
 
+/// Whether a video's page shows its comments.
+action set_comments(yt: YouTube, on: Bool) (icon: .message_square, label: "Show comments") {
+    let mine = invoker
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.comments = on
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.comments = on
+    }
+}
+
+/// How fast the person watches: every video here starts at this speed, on every device.
+action set_speed(yt: YouTube, speed: Float) (icon: .gauge, label: "Playback speed") {
+    let mine = invoker
+    let chosen = speed.clamp(0.25, 2.0)
+    if let held = yt.playback.find(p -> p.member == mine) {
+        held.speed = chosen
+    } else {
+        let made = yt.playback.insert(PlaybackPrefs(member: mine))
+        made.speed = chosen
+    }
+}
+
 /// Searches YouTube: the service answers with channels, playlists and videos, written where the
 /// search view lists them. The answer arrives through the platform's network, never the app's.
 action search(yt: YouTube, query: Text = yt.search_text) (icon: .search) {
@@ -1128,6 +1156,9 @@ view feed(yt: YouTube) {
                     ui.NavItem("history", "History", icon: .history, count: mine.len()) {
                         on select: set(place, "history").then(end_search(yt))
                     }
+                    ui.NavItem("settings", "Settings", icon: .settings) {
+                        on select: set(place, "settings").then(end_search(yt))
+                    }
                 }
                 if not yt.subscriptions.is_empty() {
                     ui.NavSection("Subscriptions", collapsible: true) {
@@ -1186,6 +1217,8 @@ view feed(yt: YouTube) {
                                 video_grid(later, "")
                             }
                         }
+                    } else if here == "settings" {
+                        settings_page(yt)
                     } else if here == "liked" {
                         video_grid(liked, "Nothing liked yet")
                     } else if here == "trending" {
@@ -1496,8 +1529,9 @@ view video_page(v: Video) {
     // Why the player could not show the video, in its own words; empty while it plays or waits.
     state failed: Text = ""
     // How fast the player here plays, and the captions it shows: the window's own choices, which
-    // the player's gear menu sets and which outlast this page on this window.
-    state rate: Float = 1.0
+    // the player's gear menu sets and which outlast this page on this window. A rate of nought
+    // means the member has not changed it here yet, so their own speed applies.
+    state rate: Float = 0.0
     state caption_language: Text = ""
     // The comment the person is answering, when they are, and what they typed: the reply goes to
     // the workspace, so the composer stays beside the comment until it is sent.
@@ -1509,6 +1543,8 @@ view video_page(v: Video) {
     let held = if let playing = p { playing.track == v.key } else { false }
     let channel = yt.channels.find(c -> c.key == v.channel_key)
     let left = watched_before(yt, mine, v)?.progress ?? 0.0
+    let speed = if rate > 0.0 { rate } else { prefs_for(yt, mine)?.speed ?? 1.0 }
+    let shows_comments = prefs_for(yt, mine)?.comments ?? true
     std.page(v, canvas: true) {
         header: {
             button(like(v)) as like
@@ -1544,7 +1580,7 @@ view video_page(v: Video) {
                         playing: playing.state == .playing,
                         position: playing.at,
                         duration: v.duration.to_float(),
-                        rate: rate,
+                        rate: speed,
                         caption_language: caption_language,
                         live: v.live,
                         fill,
@@ -1568,7 +1604,9 @@ view video_page(v: Video) {
                             .then(skip_segment(v, share))
                             .then(autoplay_next(yt, playing, share))
                         on length(seconds: Float): playback.set_length(playing, seconds)
-                        on set_rate(chosen: Float): set(rate, chosen)
+                        // The speed the person chose is kept with their preferences, so the
+                        // next video and their other devices play at it too.
+                        on set_rate(chosen: Float): set(rate, chosen).then(set_speed(yt, chosen))
                         on select_captions(language: Text): set(caption_language, language)
                         on select_quality(quality: Text): play_at_quality(v, quality)
                         on fail(reason: Text): set(failed, reason)
@@ -1654,7 +1692,11 @@ view video_page(v: Video) {
             ui.Section("Description") {
                 text(v.description, role: .reading)
             }
-            comments_section(yt, v, reply_to, reply_text)
+            if shows_comments {
+                comments_section(yt, v, reply_to, reply_text)
+            } else {
+                text("Comments are turned off in Settings.", role: .caption, secondary: true)
+            }
             if v.found_for != "" {
                 ui.Chip("Found for {v.found_for}", icon: .search)
             }
@@ -1773,6 +1815,64 @@ view playlist_page(p: Playlist) {
             }
         } else {
             video_grid(videos, "")
+        }
+    }
+}
+
+/// How this member likes to watch: what follows them to every device. Every switch and choice is
+/// an action, so an agent sets one as a person does, and the same record is what the watch page
+/// reads.
+view settings_page(yt: YouTube) {
+    let mine = invoker
+    let prefs = prefs_for(yt, mine)
+    let speed = prefs?.speed ?? 1.0
+    let quality = quality_of(yt, mine)
+    stack(gap: .section) {
+        ui.Section("Playback") {
+            ui.Toggle(shown: prefs?.autoplay ?? false, label: "Play the next video on its own") {
+                on check(on): set_autoplay(yt, on)
+            }
+            ui.Toggle(shown: prefs?.comments ?? true, label: "Show comments") {
+                on check(on): set_comments(yt, on)
+            }
+            ui.Toggle(shown: prefs?.dislikes ?? true, label: "Show dislike counts") {
+                on check(on): set_dislikes(yt, on)
+            }
+            row(gap: .tight, align: .center, wrap: true) {
+                text("Speed", role: .caption)
+                for choice in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0] {
+                    ui.Button("{choice}×", toggled: speed == choice) {
+                        on press: set_speed(yt, choice)
+                    }
+                }
+            }
+            row(gap: .tight, align: .center, wrap: true) {
+                text("Preferred quality", role: .caption)
+                for choice in ["auto", "1080p", "720p", "480p"] {
+                    ui.Button(choice, toggled: quality == choice) {
+                        on press: set_quality(yt, choice)
+                    }
+                }
+            }
+        }
+        ui.Section("Community marks") {
+            ui.Toggle(
+                shown: prefs?.sponsorblock ?? true,
+                label: "Skip segments SponsorBlock marks",
+            ) {
+                on check(on): set_sponsorblock(yt, on)
+            }
+            ui.Toggle(
+                shown: prefs?.dearrow ?? true,
+                label: "Community titles and pictures (DeArrow)",
+            ) {
+                on check(on): set_dearrow(yt, on)
+            }
+            text(
+                "Dislike counts come from Return YouTube Dislike, as its users voted.",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
 }
