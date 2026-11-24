@@ -378,6 +378,11 @@ fn the_export_writes_one_json_object_a_line() {
 #[test]
 fn the_records_detail_shows_its_fields() {
     let app = Installed::new(READING);
+    app.call(
+        "choose",
+        vec![app.root_value(), Value::text("1760000000000000:kernel")],
+    )
+    .expect("the kernel's record is chosen");
     let window = app.window();
     let words = shown(&window);
     for wanted in [
@@ -410,5 +415,99 @@ fn a_computer_without_a_readable_journal_says_so() {
             .iter()
             .any(|text| text == "The system journal is not available on this device."),
         "{words:?}"
+    );
+}
+
+/// How many times `wanted` is shown.
+fn count(view: &ViewInstance, wanted: &str) -> usize {
+    shown(view).iter().filter(|text| text.as_str() == wanted).count()
+}
+
+/// The nodes of `kind`, in order.
+fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
+    let mut found = Vec::new();
+    fn walk<'a>(node: &'a UiNode, kind: &str, found: &mut Vec<&'a UiNode>) {
+        if node.kind == kind {
+            found.push(node);
+        }
+        for child in &node.children {
+            walk(child, kind, found);
+        }
+    }
+    walk(tree, kind, &mut found);
+    found
+}
+
+/// The first button under `node` whose words satisfy `wanted`.
+fn button<'a>(node: &'a UiNode, wanted: &dyn Fn(&str) -> bool) -> Option<&'a UiNode> {
+    if node.kind == "ui.Button" {
+        let mut said = Vec::new();
+        words(node, &mut said);
+        if said.iter().any(|text| wanted(text)) {
+            return Some(node);
+        }
+    }
+    node.children.iter().find_map(|child| button(child, wanted))
+}
+
+#[test]
+fn selection_auto_lands_on_errors_and_moves_through_the_document() {
+    let app = Installed::new(READING);
+    // The list shows each record once; the inspector's record is shown a second time.
+    let window = app.window();
+    assert_eq!(
+        count(&window, "renderer stalled 2 frames"),
+        2,
+        "the newest error is what the inspector lands on: {:?}",
+        shown(&window)
+    );
+    // Choosing another record writes it to the shared document.
+    let chosen = window
+        .tree()
+        .children
+        .iter()
+        .find_map(|node| button(node, &|text| text == "Show this record"))
+        .expect("a row's way into its detail");
+    window.fire(&chosen.key, "press").expect("the record is chosen");
+    let selected = app
+        .host
+        .runtime()
+        .read(&app.root, "selected")
+        .expect("the selection reads");
+    assert_ne!(selected, Value::text(""), "a record is written as chosen");
+    // A second window shows the same record: the selection is the document's, not a window's.
+    let second = app.window();
+    assert_eq!(
+        count(&second, "Linux version 7.0.9"),
+        2,
+        "the chosen record is the inspector's in every window: {:?}",
+        shown(&second)
+    );
+    assert_eq!(count(&second, "renderer stalled 2 frames"), 1);
+}
+
+#[test]
+fn the_live_tail_reads_in_the_window_not_the_workspaces_origin() {
+    let app = Installed::new(READING);
+    assert!(
+        of_kind(app.window().tree(), "ui.Timer").is_empty(),
+        "a window that follows nothing asks for nothing"
+    );
+    app.call("follow", vec![app.root_value(), Value::Bool(true)])
+        .expect("the journal is followed");
+    let window = app.window();
+    let timers = of_kind(window.tree(), "ui.Timer");
+    assert_eq!(timers.len(), 1, "the window carries the tail's clock");
+    window
+        .fire(&timers[0].key, "tick")
+        .expect("the tail's clock strikes");
+    let read_after = app.sent.asked("read-after");
+    let Value::Ref(on) = &read_after[0] else {
+        panic!("the verb is called on a resource: {read_after:?}")
+    };
+    assert_eq!(
+        &*on.target,
+        &reading(),
+        "the window's own device reads its journal"
     );
 }

@@ -176,13 +176,6 @@ d-yij3luub = Fenster
     .w-follow-live = Live folgen
     .w-refresh-journal = Journal aktualisieren
     .w-export-filtered-logs = Gefilterte Logs exportieren
-    .w-no-records-match = Keine Einträge passen
-    .w-the-filter-hides-every-record-this = Der Filter verbirgt jeden Eintrag dieses Journals.
-    .w-records-of = { $len } records of { $len2 }
-    .w-show-this-record = Diesen Eintrag zeigen
-    .w-this-record-is-already-shown = Dieser Eintrag wird bereits gezeigt
-    .w-no-record-selected = Kein Eintrag ausgewählt
-    .w-choose-a-record-to-see-its = Wähle einen Eintrag, um seine Felder zu sehen.
 
 d-p3un3cpt = Nicht verfügbar
     .w-the-journal-is-not-available = Das Journal ist nicht verfügbar
@@ -208,3 +201,24 @@ d-wfe6eitp = Eintragsdetail
     .w-fields = Felder
     .w-copy-message = Meldung kopieren
     .w-copy-entry = Eintrag kopieren
+
+d-4fs7ti3h = Journal
+    .w-clear-filters = Filter zurücksetzen
+    .w-no-records-match = Keine Einträge passen
+    .w-the-filter-hides-every-record-this = Der Filter verbirgt jeden Eintrag dieses Journals.
+    .w-records-of = { $len } von { $len2 } Einträgen
+    .w-show-this-record = Diesen Eintrag zeigen
+    .w-no-record-selected = Kein Eintrag ausgewählt
+    .w-choose-a-record-to-see-its = Wähle einen Eintrag, um seine Felder zu sehen.
+
+
+d-cctmzqe2 = Ausgewählter Eintrag
+    .doc = Der Eintrag, den die Detailansicht zeigt, nach dem eigenen Zeitstempel und Programm des Journals.
+
+d-j2hd2odo = Eintrag wählen
+    .doc = Zeigt die Felder eines Eintrags.
+    .w-this-record-is-already-shown = Dieser Eintrag wird bereits gezeigt
+
+d-j2hd2odo-key = Schlüssel
+
+d-kz4ajotr = Einen Eintrag wählen~present
