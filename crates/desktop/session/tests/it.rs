@@ -235,6 +235,8 @@ mod session;
 mod session_package;
 #[path = "settings_roam.rs"]
 mod settings_roam;
+#[path = "shared_checklist_between_devices.rs"]
+mod shared_checklist_between_devices;
 #[path = "shared_input.rs"]
 mod shared_input;
 #[path = "sheet_frames.rs"]

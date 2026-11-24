@@ -115,6 +115,7 @@ command = [
     "tilo-lock-screen:tilo-lock-screen", "osk:osk",
     "tilolang-process:tilolang-process", "launcher:tilo-launcher",
     "tilo-runtime:tilo-runtime=tilo-runtime/test-support",
+    "example-shared-checklist:example-shared-checklist",
 ]
 
 [[profile.default.scripts]]

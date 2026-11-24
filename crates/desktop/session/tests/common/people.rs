@@ -619,6 +619,9 @@ pub fn two_people_at_a_site_with_files() -> (Site, Person, Person, Device, Devic
 /// The app whose record a workspace's tree is.
 pub const FILES_APP: &str = "so.tilo.file-explorer";
 
+/// The example app whose one checklist is the workspace's record: a hand-written Rust app.
+pub const SHARED_CHECKLIST: &str = "so.tilo.example.shared-checklist";
+
 /// The two people's laptops in the site's workspace, each carrying what `install` puts in its
 /// store before its session starts, and the workspace letting `authored` author its records.
 pub fn two_people_at_a_site_carrying(
@@ -1979,6 +1982,13 @@ impl Device {
         super::dev_apps::install_named(&self.store(), &[tilo_app_id::apps::SCRATCHPAD]);
     }
 
+    /// Install the Shared Checklist example app in this device's store: the Rust app whose one
+    /// checklist is the workspace's record, so what either device writes the other's window
+    /// shows.
+    pub fn install_shared_checklist(&self) {
+        self.install(SHARED_CHECKLIST, shared_checklist_install());
+    }
+
     /// What this device publishes now, every page of it: its resources and their actions.
     pub fn actions(&self) -> Vec<CatalogueRow> {
         let mut query = CatalogueQuery {
@@ -2362,6 +2372,28 @@ fn end_group(mut child: Child) {
     }
 }
 
+/// The payload Shared Checklist is installed from here ([`stage_app`]), with the digest of its
+/// signed root: the example Rust app this run built, under the manifest and surface its example
+/// directory ships.
+fn shared_checklist_install() -> &'static (PathBuf, String) {
+    static INSTALL: std::sync::OnceLock<(PathBuf, String)> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        let directory =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/apps/shared-checklist");
+        stage_app(
+            "shared-checklist",
+            &directory,
+            &[(
+                tilo_test_env::sibling_binary(
+                    "example-shared-checklist",
+                    "example-shared-checklist",
+                ),
+                "example-shared-checklist",
+            )],
+        )
+    })
+}
+
 /// `app`'s payload staged in the build's own directory, as an install leaves a package: its
 /// manifest and the surface its package ships, the signed root and collection an install writes
 /// beside them, and each of `programs` the run built, hardlinked under `bin/` so a device pays for
@@ -2369,6 +2401,13 @@ fn end_group(mut child: Child) {
 /// person records the app keeps, only from a payload whose signature covers it: a payload staged
 /// without one is no install of the app at all.
 fn stage(app: &str, programs: &[(PathBuf, &str)]) -> (PathBuf, String) {
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../apps/{app}"));
+    stage_app(app, &directory, programs)
+}
+
+/// [`stage`] from `directory`: the app's own directory, holding the manifest it is installed from
+/// and the surface its package ships (an example app's `examples/apps/<name>` is one).
+fn stage_app(app: &str, directory: &Path, programs: &[(PathBuf, &str)]) -> (PathBuf, String) {
     use ed25519_dalek::Signer as _;
     use tilo_app_package::blobs::{BlobHash, Collection};
     use tilo_app_package::signed::SignedRoot;
@@ -2396,9 +2435,8 @@ fn stage(app: &str, programs: &[(PathBuf, &str)]) -> (PathBuf, String) {
     if let Some(catalog) = ui::font_catalog::catalog_root() {
         link_tree(&catalog, &payload.join("bin").join("fonts"));
     }
-    let manifest = manifest_of(app).into_bytes();
-    let surface_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../apps/{app}/surface.toml"));
+    let manifest = manifest_of(app, directory).into_bytes();
+    let surface_path = directory.join("surface.toml");
     let surface = std::fs::read(&surface_path)
         .unwrap_or_else(|error| panic!("{app}'s surface at {}: {error}", surface_path.display()));
     std::fs::write(payload.join("manifest.toml"), &manifest).expect("the app's manifest");
@@ -2425,11 +2463,11 @@ fn stage(app: &str, programs: &[(PathBuf, &str)]) -> (PathBuf, String) {
 }
 
 /// The manifest an app of this repository is installed from as one of this machine's stores
-/// installs it: the app's own description (`apps/<app>/tilo-app.toml`), without the runtime bundle
-/// it names. An installed desktop carries that bundle; a build runs on the machine it was built on.
-fn manifest_of(app: &str) -> String {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../../apps/{app}/tilo-app.toml"));
+/// installs it: the app's own description (`tilo-app.toml` in `directory`), without the runtime
+/// bundle it names. An installed desktop carries that bundle; a build runs on the machine it was
+/// built on.
+fn manifest_of(app: &str, directory: &Path) -> String {
+    let path = directory.join("tilo-app.toml");
     let manifest = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("{app}'s manifest at {}: {error}", path.display()));
     let mut kept = String::new();
