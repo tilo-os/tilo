@@ -345,6 +345,29 @@ mod tests {
         );
     }
 
+    /// A field the view builds again keeps telling every change: the listener its new props
+    /// carry hears the words as they are typed, as the one it was made with did.
+    #[test]
+    fn a_field_given_new_props_still_tells_every_change() {
+        use crate::component::{Event, Fired, Intent};
+        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let mut field = TextInput::from_props("search", TextInputProps::default());
+        assert!(field.set_props(TextInputProps {
+            changed: Event::View(Intent::new(&queue, "search", "changed")),
+            ..TextInputProps::default()
+        }));
+        Widget::set_focus(&mut field, true);
+        let mut doc = automerge::AutoCommit::new();
+        Dispatch::new().doc(&mut doc).send(
+            &mut field,
+            &WindowEvent::Ime(winit::event::Ime::Commit("a".into())),
+        );
+        let fired = queue.take();
+        assert_eq!(fired.len(), 1, "the change is told: {fired:?}");
+        assert_eq!(fired[0].event, "changed");
+        assert_eq!(fired[0].value, Some(crate::component::testing::text("a")));
+    }
+
     /// A field built as a secret masks what it holds, marks it protected, and keeps the value
     /// out of the accessibility tree: a view gives its API-key field this prop.
     #[test]
