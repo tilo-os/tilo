@@ -407,6 +407,63 @@ function start() {
   // server answered by opening the document again is sent again.
   const sent = [];
 
+  // ---- The page's call ----
+  // A view that shows a call asks the browser to carry it: its microphone, camera, screen and
+  // the workspace's live session are here, not where the view is laid out. The peer is opened
+  // the first time a view asks, as this browser's certified device, and its voice is the
+  // browser's own call (web/voice-peer.mjs, web/voice.mjs). A step this browser cannot carry is
+  // refused in its own words, never left unanswered.
+  let callPeer = null;
+  let callDriver = null;
+  const answerCall = answer => {
+    if (!link) return;
+    link.send({call_result: answer}).catch(() => {
+      page.dataset.callsLost = String(Number(page.dataset.callsLost ?? 0) + 1);
+    });
+  };
+  const pageCalls = async () => {
+    if (callDriver) return callDriver;
+    const {origin} = config.link;
+    const {chosenDisplayName, keptMembership} = await siteModule('workspaces.mjs');
+    const membership = keptMembership({host: {origin}});
+    if (!membership?.userPublicKey) throw new Error('this browser kept no membership here');
+    const {connectPeer, identityProfile} = await siteModule('peer.mjs');
+    const {idbStorage, openDeviceKey} = await siteModule('device-key.mjs');
+    const profile = identityProfile({userPublicKey: membership.userPublicKey}, origin);
+    const deviceKey = await openDeviceKey({profile, storage: idbStorage()});
+    callPeer = await connectPeer({
+      origin,
+      // The page's own workspace: a browser kept in several of the host's workspaces carries
+      // the call of the one this page shows.
+      workspace: config.address.workspace,
+      userPublicKey: membership.userPublicKey,
+      profile,
+      deviceKey,
+      displayName: chosenDisplayName(membership.userPublicKey) ?? '',
+      live: true,
+      // The call goes on for a device this browser already certified: a page never pairs one.
+      requireExistingCertificate: true,
+    });
+    const {createPageCalls} = await siteModule('page-calls.mjs');
+    callDriver = createPageCalls({peerVoice: callPeer.voice, send: answerCall});
+    return callDriver;
+  };
+  const carryCall = async step => {
+    try {
+      (await pageCalls()).apply(step);
+    } catch (error) {
+      console.warn('calls: the page could not carry a step', error);
+      answerCall({request_id: step.request_id, answer: {refused: 'This browser cannot carry the call here.'}});
+    }
+  };
+  const closeCalls = () => {
+    callDriver?.dispose();
+    callDriver = null;
+    callPeer?.dispose?.();
+    callPeer = null;
+  };
+  addEventListener('pagehide', closeCalls);
+
   const say = (state, words) => {
     page.dataset.state = state;
     page.textContent = words ?? '';
@@ -667,6 +724,9 @@ function start() {
 
   const answered = answer => {
     if (answer === 'loading') { say('loading'); return; }
+    // A call step is the server's own question, not the answer to one the page asked: it keeps
+    // the queue of asks where it is.
+    if (answer?.call) { void carryCall(answer.call); return; }
     page.dataset.answers = String(++heard);
     if (answer.changed) { restoring = true; patch(answer.changed); return; }
     unanswered = Math.max(0, unanswered - 1);

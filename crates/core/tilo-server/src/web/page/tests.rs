@@ -156,6 +156,20 @@ fn the_page_script_speaks_the_handshake_as_its_types_encode_it() {
 #[derive(Default)]
 struct Echo {
     closed: Mutex<Vec<u64>>,
+    /// The call steps its view asks for, and what the browser answered.
+    calls: Mutex<Vec<(u64, ui::native_media::Request)>>,
+    answered: Mutex<Vec<(u64, u64, tilo_server_protocol::page::CallAnswer)>>,
+    /// Wakes the page's stream when a step is queued.
+    waker: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl Echo {
+    /// The view asks the browser for `request`, as a press in a call view does.
+    fn ask_for_a_call(&self, request_id: u64, request: ui::native_media::Request) {
+        self.calls.lock().unwrap().push((request_id, request));
+        self.waker.notify_waiters();
+        self.waker.notify_one();
+    }
 }
 
 impl AppPages for Echo {
@@ -198,6 +212,26 @@ impl AppPages for Echo {
 
     fn close(&self, _: WorkspaceId, page: u64) {
         self.closed.lock().unwrap().push(page);
+    }
+
+    fn take_calls(&self, _: WorkspaceId, _: u64) -> Vec<(u64, ui::native_media::Request)> {
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+
+    fn answer_call(
+        &self,
+        page: u64,
+        request_id: u64,
+        answer: tilo_server_protocol::page::CallAnswer,
+    ) {
+        self.answered
+            .lock()
+            .unwrap()
+            .push((page, request_id, answer));
+    }
+
+    fn calls_waker(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        Some(std::sync::Arc::clone(&self.waker))
     }
 }
 
@@ -288,6 +322,94 @@ async fn a_workspace_only_stored_here_is_refused_and_opens_nothing() {
         pages.closed.lock().unwrap().is_empty(),
         "nothing was opened"
     );
+}
+
+#[tokio::test]
+async fn a_pages_view_asks_the_browser_for_a_call_step_and_hears_its_answer() {
+    use tilo_server_protocol::page::{CallAnswer, PageCall};
+    use ui::native_media::{Command, Request, Snapshot, State};
+
+    let pages = Echo::default();
+    let person = Caller::authenticated([1; 32], [2; 32]);
+    let (mut browser, served) = tokio::io::duplex(1 << 16);
+    let (recv, send) = tokio::io::split(served);
+    let address = PageAddress {
+        workspace: WORKSPACE.into(),
+        app: "chat".into(),
+        show: None,
+    };
+    let serving = serve_pages(&pages, &person, |_, _| async { Ok(true) }, recv, send);
+    let browsing = async {
+        ask(&mut browser, &PageAsk::Open(address)).await;
+        assert_eq!(answer(&mut browser).await, PageAnswer::Loading);
+        assert!(matches!(
+            answer(&mut browser).await,
+            PageAnswer::Shown { .. }
+        ));
+
+        // The view asked to join: the page's stream carries the step to the browser at once.
+        let join = Request {
+            version: 1,
+            intent: 1,
+            command: Command::Join {
+                channel_id: "standup".into(),
+            },
+        };
+        pages.ask_for_a_call(7, join.clone());
+        assert_eq!(
+            answer(&mut browser).await,
+            PageAnswer::Call(PageCall {
+                request_id: 7,
+                command: join,
+            })
+        );
+
+        // What the browser's own call answered goes back the same way, to the view.
+        let snapshot = Snapshot {
+            version: 1,
+            state: State::Live,
+            muted: true,
+            capture_active: false,
+            input_id: None,
+            inputs: Vec::new(),
+            issue: None,
+            inventory_revision: None,
+            publication: None,
+            publishers: Vec::new(),
+            rosters: Vec::new(),
+            speaking: Vec::new(),
+            camera: false,
+            screen: false,
+            deafened: false,
+            revision: 4,
+            pictures: Vec::new(),
+            pictures_cursor: 0,
+        };
+        ask(
+            &mut browser,
+            &PageAsk::CallResult {
+                request_id: 7,
+                answer: CallAnswer::Answered(snapshot.clone()),
+            },
+        )
+        .await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while pages.answered.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the browser's answer reached the page's view");
+        assert!(
+            matches!(
+                pages.answered.lock().unwrap().as_slice(),
+                [(1, 7, CallAnswer::Answered(got))] if *got == snapshot
+            ),
+            "the step's own answer, as the browser gave it"
+        );
+        drop(browser);
+    };
+    tokio::join!(serving, browsing);
 }
 
 #[test]

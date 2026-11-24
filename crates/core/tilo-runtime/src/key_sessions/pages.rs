@@ -371,13 +371,12 @@ impl Inner {
         request: Request,
     ) -> Option<tilo_actions::remote::Pending<Result<Snapshot, String>>> {
         let mut calls = self.calls.lock_recover();
+        let asked = WorkspaceId::parse(workspace);
         let page = calls
             .routes
             .iter()
             .filter(|(_, route)| {
-                route.workspace.to_string() == workspace
-                    && route.app == app
-                    && route.person == person
+                Some(route.workspace) == asked && route.app == app && route.person == person
             })
             .map(|(page, _)| *page)
             .max()?;
