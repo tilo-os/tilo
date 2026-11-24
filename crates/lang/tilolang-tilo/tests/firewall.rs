@@ -437,6 +437,21 @@ fn the_services_page_offers_each_service_its_switch() {
 }
 
 #[test]
+fn a_refused_apply_says_what_the_device_said() {
+    let refused = READING.replace(
+        "\"problem\": null",
+        "\"problem\": \"firewalld refused the configuration: ZONE_CONFLICT\"",
+    );
+    let app = Installed::new(&refused);
+    let window = app.window();
+    assert!(
+        has(&window, "firewalld refused the configuration"),
+        "the window says why the rules are not in force: {:?}",
+        shown(&window)
+    );
+}
+
+#[test]
 fn a_computer_without_a_running_firewall_says_so_and_how_to_try_again() {
     let app = Installed::new(MISSING);
     let window = app.window();

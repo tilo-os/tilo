@@ -728,23 +728,30 @@ view window(f: Firewall) {
                 on press: import_device(f)
             }
         }
-        if f.zones.is_empty() {
-            unavailable(f, now)
-        } else if let zone = zone_shown(f, chosen) {
-            zone_page(
-                f,
-                now,
-                zone,
-                adding,
-                editing,
-                as_service,
-                draft_service,
-                draft_port,
-                draft_proto,
-                draft_verdict,
-                draft_source,
-                pending_delete,
-            )
+        // What firewalld said when it refused what the configuration asked, so a rule the person
+        // changed never looks in force when it is not.
+        stack {
+            if let problem = now.problem {
+                ui.Banner(problem, kind: .error, icon: .triangle_alert)
+            }
+            if f.zones.is_empty() {
+                unavailable(f, now)
+            } else if let zone = zone_shown(f, chosen) {
+                zone_page(
+                    f,
+                    now,
+                    zone,
+                    adding,
+                    editing,
+                    as_service,
+                    draft_service,
+                    draft_port,
+                    draft_proto,
+                    draft_verdict,
+                    draft_source,
+                    pending_delete,
+                )
+            }
         }
     }
     add_rule_dialog(
