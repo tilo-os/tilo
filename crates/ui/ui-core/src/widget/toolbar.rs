@@ -2277,10 +2277,12 @@ mod tests {
                     "bound commands never run the imperative callback"
                 );
                 assert!(take_control_invocation(&mut toolbar).is_none());
+                // The More opens its menu directly, so once the menu closes behind the choice only
+                // a Save still shown in the row is bound.
                 assert_eq!(
                     control_action_bindings(&toolbar).len(),
-                    1,
-                    "after selecting, only the visible Save or overflow opener is mounted"
+                    usize::from(toolbar.is_shown(0)),
+                    "after selecting, only a visible Save is mounted"
                 );
                 refresh_control_action_availability(&mut toolbar, &std::collections::HashSet::new());
                 toolbar.lay_out_in(rect, &mut text, &theme);

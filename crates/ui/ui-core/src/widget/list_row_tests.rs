@@ -1510,17 +1510,34 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
         (400, 200),
     );
     assert!(driver.native_app_audit().is_certified());
-    assert!(driver.resources().iter().any(|resource| {
-        resource.id.as_str() == "tilo.control:contact-ada"
-            && resource.actions.iter().any(|action| action.id == "invoke")
-    }));
+    // Opening a row only shows something, so the row's open is published where an agent reaches
+    // it, as the press a screen reader sends.
+    let open = driver
+        .resources()
+        .into_iter()
+        .find(|resource| {
+            resource
+                .id
+                .as_str()
+                .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
+                && resource.label.starts_with("Ada Lovelace")
+                && resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "activate")
+        })
+        .expect("the row's open is published");
+    driver
+        .invoke_published(open.id.as_str(), "activate", &serde_json::Map::new())
+        .expect("an agent opens the row");
+    assert_eq!(calls.get(), 1);
     driver
         .perform_named("contact-ada", &crate::a11y::Action::Activate)
         .expect("the row enters through its action");
-    assert_eq!(calls.get(), 1);
+    assert_eq!(calls.get(), 2);
     let [x, y, w, h] = find(&driver.inspection().root, "ListRow").unwrap().rect;
     driver.click_at(x + w / 2.0, y + h / 2.0);
-    assert_eq!(calls.get(), 2, "a click runs the same action");
+    assert_eq!(calls.get(), 3, "a click runs the same action");
 }
 
 #[test]

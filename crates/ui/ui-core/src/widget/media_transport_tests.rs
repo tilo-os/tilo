@@ -190,16 +190,11 @@ fn each_control_invokes_the_action_the_app_handed_it() {
             "{control}"
         );
     }
-    for control in ["transport.queue", "transport.lyrics"] {
-        assert!(
-            matches!(
-                bindings.get(control),
-                Some(crate::widget::ControlBindingKind::Action(address))
-                    if address.resource == format!("tilo.control:{control}")
-            ),
-            "{control}: {:?}",
-            bindings.get(control)
-        );
+    // The queue and the lyrics show the app's own panels: presses the band hands back as events,
+    // bound to no action of the app's.
+    for id in ["transport.queue", "transport.lyrics"] {
+        assert!(control(&h, id).is_some(), "{id} is shown");
+        assert_eq!(bindings.get(id), None, "{id}");
     }
 }
 

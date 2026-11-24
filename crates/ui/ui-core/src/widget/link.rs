@@ -507,7 +507,13 @@ impl Widget for Link {
                     .with_state(AccessState::new().focusable(true)),
             ]);
         }
-        Some(node.with_keyed_action_routes(self.id.as_deref().unwrap_or("link")))
+        let node = node.with_keyed_action_routes(self.id.as_deref().unwrap_or("link"));
+        // A link its app names keeps that name across frames, so what it offers of its own (its
+        // "Copy link") is published where an agent reaches it.
+        Some(match &self.id {
+            Some(id) => node.with_semantic_key(id),
+            None => node,
+        })
     }
 }
 

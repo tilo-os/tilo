@@ -941,36 +941,22 @@ tilo_test_env::scenario! {
         assert!(rebuilt.focus_visible(), "the keyboard brings the ring back");
     }
 
+    // A button inside an ordinary container answers the press a screen reader sends it by name,
+    // the route that reaches it through every container it stands in.
     phase a_shared_button_answers_through_an_ordinary_container;
     {
         let clicks = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&clicks);
-        let mut column = crate::widget::Column::new().push(Box::new(
+        let column = crate::widget::Column::new().push(Box::new(
             Button::new("files.retry", "Retry").on_open(move || {
                 counted.fetch_add(1, Ordering::SeqCst);
             }),
         ));
-        let mut doc = AutoCommit::new();
-        let kind = tilo_actions::OperationKind::View;
-        let payload = br#""files.retry""#;
-
-        let started = crate::widget::ResourceOperation::local(
-            tilo_actions::InvocationId::new(),
-            kind,
-            "tilo.ui.control.invoke",
-            payload,
-        )
-        .start(
-            &mut column,
-            &mut crate::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        )
-        .unwrap();
-        assert!(
-            started
-                .and_then(super::super::ResourceOperationStart::completed)
-                .is_some()
-        );
+        let mut harness =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(column), (400, 120));
+        harness
+            .perform_named("files.retry", &crate::a11y::Action::Activate)
+            .expect("the press reaches the button through its container");
 
         assert_eq!(clicks.load(Ordering::SeqCst), 1);
     }
@@ -1315,7 +1301,6 @@ tilo_test_env::scenario! {
         }
 
         fn icon_only_effect_publishes_its_spoken_name() {
-            let doc = AutoCommit::new();
             let named = Button::new("private", "")
                 .with_icon(crate::icons::Icon::Shield)
                 .with_accessible_name("New Private Window")
@@ -1324,16 +1309,20 @@ tilo_test_env::scenario! {
                 .with_icon(crate::icons::Icon::Search)
                 .on_click(|| {})
                 .tooltip("Search");
+            // What a screen reader says, and what an agent shown the window finds the press by.
             for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
-                let resources = crate::widget::resources::resources(&button, &doc);
-                assert_eq!(resources.len(), 1);
-                assert_eq!(resources[0].label, name);
-                assert!(
-                    resources[0]
-                        .actions
-                        .iter()
-                        .all(|action| action.label == name)
+                let harness = crate::headless::FrameHarness::new(
+                    crate::State::new(),
+                    Box::new(crate::widget::Row::new().push(Box::new(button))),
+                    (400, 100),
                 );
+                let pressable: Vec<_> = harness
+                    .controls()
+                    .into_iter()
+                    .filter(|control| control.verbs.iter().any(|verb| verb == "activate"))
+                    .collect();
+                assert_eq!(pressable.len(), 1, "{pressable:?}");
+                assert_eq!(pressable[0].name.as_deref(), Some(name));
             }
         }
 
