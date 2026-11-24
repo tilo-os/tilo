@@ -587,15 +587,21 @@ pub fn published_resource(document: &str) -> String {
 /// resource its tree is published under ([`published_resource`]).
 #[must_use]
 pub fn written_node(document: &WrittenDocument<'_>) -> TreePath {
-    TreePath::workspace(document.workspace)
-        .app(document.app)
-        .resource(
-            if tilo_action_policy::roles::is_workspace_moderation(document.app, document.document) {
-                String::new()
-            } else {
-                published_resource(document.document)
-            },
-        )
+    let resource =
+        if tilo_action_policy::roles::is_workspace_moderation(document.app, document.document) {
+            String::new()
+        } else {
+            published_resource(document.document)
+        };
+    let app = TreePath::workspace(document.workspace).app(document.app);
+    // A record the workspace keeps apart (the vault, a mailbox's copies) is decided at its kind,
+    // as every reader of it decides it ([`crate::document_node`]), whether or not an app here
+    // publishes a surface for it.
+    match tilo_action_policy::roles::protected_resource_kind(document.app, &resource) {
+        Some(kind) => app.kind(kind),
+        None => app,
+    }
+    .resource(resource)
 }
 
 /// Decide a received op on `record`: a compaction as a write of the record

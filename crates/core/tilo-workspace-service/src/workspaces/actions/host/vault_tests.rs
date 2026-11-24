@@ -493,6 +493,104 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     server.shutdown().await;
 }
 
+/// The vault is a record the workspace keeps apart: a grant on the whole workspace, to an agent
+/// or to someone who is no member, reaches none of it. The agent's change still waits for its
+/// person, and the non-member is told what a caller asking for something that does not exist is
+/// told; nothing in the vault moves.
+#[tokio::test]
+async fn a_workspace_grant_writes_nothing_into_the_vault() {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let kept = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::ADD,
+        a_login("https://example.com"),
+    )
+    .await
+    .expect("Ada keeps a login");
+    let agent = as_ada.clone().delegated_to("assistant");
+    let (_, stranger) = guest_device();
+    let owner_person = Grantee::person(hex::encode(owner.user_public_key));
+    let everything = |id: &str, to: Grantee| {
+        Grant::new(
+            id,
+            to,
+            TreePath::workspace(&workspace),
+            KindSet::ALL,
+            Answer::Allow,
+            owner_person.clone(),
+        )
+    };
+    workspaces
+        .put_workspace_grants(
+            &workspace,
+            &owner,
+            [62; 32],
+            vec![
+                everything("test:agent-everywhere", Grantee::agent("assistant")),
+                everything(
+                    "test:stranger-everywhere",
+                    Grantee::person(hex::encode(stranger.user_public_key)),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+    for (action, argument) in [
+        (person_vault::ADD, a_login("https://attacker.example")),
+        (person_vault::REMOVE, json!({"item": kept["reference"]})),
+        (
+            person_vault::KEEP_ENTRY,
+            json!({"entry": an_entry("Planted", "planted")}),
+        ),
+    ] {
+        let by_agent = ask(
+            &service,
+            workspace_id,
+            (&ada, &agent),
+            action,
+            argument.clone(),
+        )
+        .await;
+        assert!(
+            matches!(by_agent, Err(ActionCallError::ConfirmationRequired { .. })),
+            "the agent, {action}: {by_agent:?}"
+        );
+        let by_stranger = ask(
+            &service,
+            workspace_id,
+            (&stranger, &caller(&stranger)),
+            action,
+            argument,
+        )
+        .await;
+        assert!(
+            matches!(by_stranger, Err(ActionCallError::UnknownAction)),
+            "a non-member, {action}: {by_stranger:?}"
+        );
+    }
+    let still = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::LIST,
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(still["items"], json!([kept]), "{still}");
+    server.shutdown().await;
+}
+
 /// An entry of the person's Passwords: what the app sends, secret included.
 fn an_entry(title: &str, password: &str) -> Value {
     let mut entry = accounts::SecretItem::login(title, NAME, password);
@@ -1683,8 +1781,8 @@ async fn a_code_generators_code_reads_where_its_seed_is() {
     )
     .await
     .expect("a seed is kept");
-    let item: person_vault::ItemRef =
-        serde_json::from_value(kept["reference"].clone()).expect("the item is named by its reference");
+    let item: person_vault::ItemRef = serde_json::from_value(kept["reference"].clone())
+        .expect("the item is named by its reference");
 
     let said = ask_at(
         &service,
