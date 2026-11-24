@@ -1114,6 +1114,9 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   signature: a person's device signs for its person, an agent with its own
   key, a visitor with theirs, and an app's call travels as the signed call it
   serves. The receiver never runs a forwarded call as the device that brought it.
+  Reads work the same way: a record, page, search or view opened for a person
+  reads with that person's grants, never with those of the person whose
+  device serves it.
 
 ### What goes
 
