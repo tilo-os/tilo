@@ -71,6 +71,53 @@ fn cleartext_changes_of(envelope: &SignedOp) -> Option<Vec<automerge::Change>> {
     )
 }
 
+/// Whether `member` lets a change's invoker take the action at `node`, the
+/// caller whose own signed call the change carries having its say too: a caller
+/// refused is named in `caller_refused`.
+fn allowing<'a>(
+    caller: Option<&'a CallerAccess>,
+    member: &'a MemberAccess,
+    cx: &'a tilo_action_policy::Context,
+    caller_refused: &'a std::cell::RefCell<Option<(String, String, ActionKind)>>,
+) -> impl Fn(Option<&tilo_action_policy::Acting>, &TreePath, ActionKind) -> bool + 'a {
+    move |invoker, node, kind| {
+        // The device that signed the change bounds it, whatever member the
+        // change names.
+        if collab_types::ChangeAuthor::answer(member, None, node, kind, cx)
+            != tilo_action_policy::Answer::Allow
+        {
+            return false;
+        }
+        let Some(acting) = invoker else {
+            return true;
+        };
+        // Who the change was written for: the member must be the device's
+        // own person or an agent it runs, or the caller whose own signed
+        // call the change carries. No one else's change may name them.
+        let by_signer = member.may_write_for(acting);
+        let by_caller = caller
+            .as_ref()
+            .is_some_and(|caller| caller.access.may_write_for(acting));
+        if !by_signer && !by_caller {
+            return false;
+        }
+        let mut allowed = !by_signer
+            || collab_types::ChangeAuthor::answer(member, Some(acting), node, kind, cx)
+                == tilo_action_policy::Answer::Allow;
+        // The caller asked for this action, so the member list must let
+        // them take it, not only the device that ran it for them.
+        if let Some(caller) = caller.as_ref()
+            && by_caller
+            && collab_types::ChangeAuthor::answer(&caller.access, Some(acting), node, kind, cx)
+                != tilo_action_policy::Answer::Allow
+        {
+            *caller_refused.borrow_mut() = Some((caller.person.clone(), node.to_string(), kind));
+            allowed = false;
+        }
+        allowed
+    }
+}
+
 /// `person`'s access under `policy`, held to the foreign-device bound on a
 /// `foreign` device and to `delegate`'s bound on a delegate's.
 fn access_of(
@@ -1267,47 +1314,7 @@ impl StatePeer {
         // but the caller was not: the node and kind the claim was decided at,
         // as the one builder of decision nodes names them.
         let caller_refused = std::cell::RefCell::new(None);
-        let allows = |invoker: Option<&tilo_action_policy::Acting>,
-                      node: &TreePath,
-                      kind: ActionKind| {
-            // The device that signed the change bounds it, whatever member the
-            // change names.
-            if collab_types::ChangeAuthor::answer(&member, None, node, kind, &cx)
-                != tilo_action_policy::Answer::Allow
-            {
-                return false;
-            }
-            let Some(acting) = invoker else {
-                return true;
-            };
-            // Who the change was written for: the member must be the device's
-            // own person or an agent it runs, or the caller whose own signed
-            // call the change carries. No one else's change may name them.
-            let by_signer = member.may_write_for(acting);
-            let by_caller = caller
-                .as_ref()
-                .is_some_and(|caller| caller.access.may_write_for(acting));
-            if !by_signer && !by_caller {
-                return false;
-            }
-            let mut allowed = !by_signer
-                || collab_types::ChangeAuthor::answer(&member, Some(acting), node, kind, &cx)
-                    == tilo_action_policy::Answer::Allow;
-            // The caller asked for this action, so the member list must let
-            // them take it, not only the device that ran it for them.
-            if let Some(caller) = caller.as_ref()
-                && by_caller
-            {
-                if collab_types::ChangeAuthor::answer(&caller.access, Some(acting), node, kind, &cx)
-                    != tilo_action_policy::Answer::Allow
-                {
-                    *caller_refused.borrow_mut() =
-                        Some((caller.person.clone(), node.to_string(), kind));
-                    allowed = false;
-                }
-            }
-            allowed
-        };
+        let allows = allowing(caller.as_ref(), &member, &cx, &caller_refused);
         // A write of a history one of the person's devices imported: what it made naming no one
         // is the person's, as the import step said.
         let imported = self
@@ -1338,6 +1345,7 @@ impl StatePeer {
             // agent its key is certified for.
             (imported.as_ref(), Some(&member.acting)),
         );
+        drop(allows);
         match decided {
             Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit {
                 by_governor: self.wrote_as_governor(source, history),
@@ -1492,6 +1500,47 @@ impl StatePeer {
         Ok(caller)
     }
 
+    /// The certificate the invocation a resource store's change keeps was made for, when the
+    /// change carries one that checks: none when it carries no signed invocation.
+    fn stamped_certificate(
+        &self,
+        app_id: &str,
+        route: &Route,
+        source: &[u8; 32],
+        envelope: &SignedOp,
+        change: &automerge::Change,
+    ) -> Result<Option<DeviceCert>, AuthorizeRefusal> {
+        let Some(stamp) = change.message().and_then(collab_types::Stamp::of_message) else {
+            return Ok(None);
+        };
+        if stamp.signed.is_none() {
+            return Ok(None);
+        }
+        let verified = tilo_server_protocol::invocation::verify_stamp(
+            &stamp,
+            &self.core.workspace,
+            app_id,
+            &self.core.revocations,
+        )
+        .map_err(|error| {
+            refused_invocation(
+                route,
+                source,
+                envelope,
+                &format!("the invocation a change made for a caller does not check: {error}"),
+            )
+        })?;
+        match verified {
+            Some(certificate) => Ok(Some(certificate)),
+            None => Err(refused_invocation(
+                route,
+                source,
+                envelope,
+                "a change made for a caller carries no invocation that caller signed",
+            )),
+        }
+    }
+
     /// The caller the changes `changes` of `envelope` name, each invocation
     /// they keep checked — in a history entry, or in a resource store's
     /// change in its stamp: what [`Self::recorded_caller`] asks of a received
@@ -1520,36 +1569,10 @@ impl StatePeer {
                     // A resource store's change keeps the invocation its
                     // caller signed in its stamp, where its history entry is
                     // the verb it ran.
-                    if let Some(stamp) = change.message().and_then(collab_types::Stamp::of_message)
-                        && stamp.signed.is_some()
+                    if let Some(certificate) =
+                        self.stamped_certificate(app_id, &route, source, envelope, change)?
                     {
-                        let verified = tilo_server_protocol::invocation::verify_stamp(
-                            &stamp,
-                            &self.core.workspace,
-                            app_id,
-                            &self.core.revocations,
-                        )
-                        .map_err(|error| {
-                            refused_invocation(
-                                &route,
-                                source,
-                                envelope,
-                                &format!(
-                                    "the invocation a change made for a caller does not check: {error}"
-                                ),
-                            )
-                        })?;
-                        match verified {
-                            Some(certificate) => break 'named certificate,
-                            None => {
-                                return Err(refused_invocation(
-                                    &route,
-                                    source,
-                                    envelope,
-                                    "a change made for a caller carries no invocation that caller signed",
-                                ));
-                            }
-                        }
+                        break 'named certificate;
                     }
                     // A change with no history entry names its maker in its own message, or is
                     // one every holder derives alike; one that names no one is refused, unless

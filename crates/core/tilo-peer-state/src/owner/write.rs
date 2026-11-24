@@ -289,48 +289,17 @@ impl NativeWorkspaceOwner {
                 // the writes are dropped once every device with the record's keys has.
                 let keys = self.0.history_keys.lock().clone();
                 if let Some(keys) = keys {
-                    let mut records = std::collections::BTreeSet::new();
-                    for (message, report) in &heard {
-                        let (
-                            NeighbourMsg::AppDocument {
-                                app_id,
-                                document_id,
-                                ..
-                            },
-                            Ok(_),
-                        ) = (message, report)
-                        else {
-                            continue;
-                        };
-                        if !records.insert((app_id.as_str(), document_id.as_str())) {
-                            continue;
-                        }
-                        let route = (app_id.as_str(), document_id.as_str());
-                        let checked = live
-                            .publication()
-                            .check_leading_checkpoint(route, &mut |write| {
-                                keys.open(workspace, write)
-                            });
-                        let verdict = match checked {
-                            Some((checkpoint, true)) => live
-                                .workspace_mut()
-                                .record_checkpoint_check(&device, route, &checkpoint, signed, now),
-                            Some((_, false)) => {
-                                tracing::warn!(
-                                    app = app_id.as_str(),
-                                    record = document_id.as_str(),
-                                    "a checkpoint does not hold what the writes it stands in for \
-                                     merge to: its readers read the writes instead"
-                                );
-                                Ok(false)
-                            }
-                            None => Ok(false),
-                        };
-                        match verdict {
-                            Ok(filed) => kept |= filed,
-                            Err(error) => unkept.push(error),
-                        }
-                    }
+                    let (filed, errors) = check_leading_checkpoints(
+                        live,
+                        &device,
+                        keys.as_ref(),
+                        &heard,
+                        signed,
+                        now,
+                        workspace,
+                    );
+                    kept |= filed;
+                    unkept.extend(errors);
                 }
                 signed.settled()?;
                 for error in unkept {
@@ -673,4 +642,68 @@ fn refusal_of(refused: crate::NotAdmitted) -> WriteRefusal {
         crate::NotAdmitted::Refused { reason, detail } => WriteRefusal::Declined { reason, detail },
         crate::NotAdmitted::ChangeRefused(refused) => WriteRefusal::ChangeRefused(refused),
     }
+}
+
+/// Check each record's leading checkpoint in `live` against the writes it stands in for, once
+/// they are here, and keep that this device did: the writes are dropped once every device with
+/// the record's keys has. Answers what was kept, and why nothing was.
+fn check_leading_checkpoints(
+    live: &mut crate::StatePeer,
+    device: &tilo_user_identity::DeviceCert,
+    keys: &dyn super::SealedHistoryKeys,
+    heard: &[&(
+        &NeighbourMsg,
+        &Result<crate::AdmissionReport, crate::AdmissionError>,
+    )],
+    signed: &dyn DeviceSigner,
+    now: SystemTime,
+    workspace: WorkspaceId,
+) -> (bool, Vec<String>) {
+    let mut kept = false;
+    let mut unkept = Vec::new();
+    let mut records = std::collections::BTreeSet::new();
+    for (message, report) in heard {
+        let (
+            NeighbourMsg::AppDocument {
+                app_id,
+                document_id,
+                ..
+            },
+            Ok(_),
+        ) = (message, report)
+        else {
+            continue;
+        };
+        if !records.insert((app_id.as_str(), document_id.as_str())) {
+            continue;
+        }
+        let route = (app_id.as_str(), document_id.as_str());
+        let checked = live
+            .publication()
+            .check_leading_checkpoint(route, &mut |write| keys.open(workspace, write));
+        let verdict = match checked {
+            Some((checkpoint, true)) => live.workspace_mut().record_checkpoint_check(
+                device,
+                route,
+                &checkpoint,
+                signed,
+                now,
+            ),
+            Some((_, false)) => {
+                tracing::warn!(
+                    app = app_id.as_str(),
+                    record = document_id.as_str(),
+                    "a checkpoint does not hold what the writes it stands in for \
+                     merge to: its readers read the writes instead"
+                );
+                Ok(false)
+            }
+            None => Ok(false),
+        };
+        match verdict {
+            Ok(filed) => kept |= filed,
+            Err(error) => unkept.push(error),
+        }
+    }
+    (kept, unkept)
 }

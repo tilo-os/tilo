@@ -387,7 +387,7 @@ impl LinkAdmit {
     /// not keep the workspace may send at all ([`Self::records_only`]), and a
     /// channel's commit only from a device admitted for its keys
     /// ([`Self::key_access`]).
-    fn permits(&self, own: [u8; 32], remote: [u8; 32], authored: &Authored) -> bool {
+    fn permits(self, own: [u8; 32], remote: [u8; 32], authored: &Authored) -> bool {
         // A device the host confined to one record writes that record and no
         // other: what it sends of another is refused here, as the same scope
         // refuses to send it another's frames. A hosted environment's device is

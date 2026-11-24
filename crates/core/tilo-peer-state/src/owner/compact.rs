@@ -98,38 +98,14 @@ impl NativeWorkspaceOwner {
             let ops = if let Some(ops) = drafted.take() {
                 ops
             } else {
-                {
-                    let group = collab_types::reader_group(
-                        workspace,
-                        named.as_deref().unwrap_or(collab_types::EVERY_MEMBER),
-                    )
-                    .ok_or("the record's channel names no group")?;
-                    let mut open = |write: &SignedOp| keys.open(group, write);
-                    let mut seal = |snapshot: &[u8]| {
-                        seal_for_document(
-                            keys,
-                            &candidate.peer,
-                            workspace,
-                            (app, record),
-                            named.as_deref(),
-                            snapshot,
-                            now,
-                        )
-                    };
-                    candidate
-                        .peer
-                        .clone()
-                        .publication()
-                        .draft_sealed_compaction(
-                            (app, record),
-                            named.as_deref(),
-                            None,
-                            &mut open,
-                            &mut seal,
-                            device,
-                            now,
-                        )?
-                }
+                Self::draft_compaction(
+                    &candidate,
+                    keys,
+                    workspace,
+                    (app, record),
+                    named.as_deref(),
+                    now,
+                )?
             };
             let mut signed_ops = Vec::with_capacity(ops.len());
             for op in &ops {
@@ -191,5 +167,45 @@ impl NativeWorkspaceOwner {
             self.keep_frame(workspace, &message)?;
         }
         Ok(1)
+    }
+
+    /// Draft the sealed compaction of `record` of `app` as it stands in `candidate`: the writes
+    /// this device signs and admits.
+    fn draft_compaction(
+        candidate: &super::NativeCommittedView,
+        keys: &dyn SealedHistoryKeys,
+        workspace: WorkspaceId,
+        (app, record): (&str, &str),
+        named: Option<&str>,
+        now: SystemTime,
+    ) -> Result<Vec<SignedOp>, String> {
+        let group =
+            collab_types::reader_group(workspace, named.unwrap_or(collab_types::EVERY_MEMBER))
+                .ok_or("the record's channel names no group")?;
+        let mut open = |write: &SignedOp| keys.open(group, write);
+        let mut seal = |snapshot: &[u8]| {
+            seal_for_document(
+                keys,
+                &candidate.peer,
+                workspace,
+                (app, record),
+                named,
+                snapshot,
+                now,
+            )
+        };
+        candidate
+            .peer
+            .clone()
+            .publication()
+            .draft_sealed_compaction(
+                (app, record),
+                named,
+                None,
+                &mut open,
+                &mut seal,
+                candidate.device().device_public_key,
+                now,
+            )
     }
 }

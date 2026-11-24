@@ -639,6 +639,59 @@ impl StatePeer {
     }
 }
 
+/// `document`'s history as `kept` opened it so far, or fresh from its cleartext part, which counts
+/// toward `maximum` and is refused when it is already past it.
+fn opened_history(
+    document: &PeerDocument,
+    kept: &mut KeptDocument,
+    maximum: usize,
+) -> Result<Opened, PeerDocumentReadError> {
+    let layout = document.doc.stored_layout();
+    let base = layout.base_len.saturating_add(layout.since_len);
+    if base > maximum {
+        return Err(PeerDocumentReadError::Capacity);
+    }
+    Ok(
+        match kept.0.take().filter(|opened| opened.continues(document)) {
+            Some(opened) => opened,
+            None => Opened {
+                base: document.doc.committed_document().get_heads(),
+                count: 0,
+                last: None,
+                size: base,
+                transfers: crate::document_frame::Transfers::default(),
+                captured: None,
+                stuck: Vec::new(),
+                waiting: Vec::new(),
+                refusing: super::sealed_compaction::RefusedChanges::default(),
+                refused: Vec::new(),
+                // The document's cleartext part as it stands, which is what a sealed history opens
+                // onto ([`super::sealed_compaction::open_sealed_after`]): a compaction folds the
+                // writes it opened into it and leaves the checkpoint it was covered by behind, so
+                // opening onto that checkpoint read a document as it was before its compaction.
+                document: (*document.doc).clone(),
+            },
+        },
+    )
+}
+
+/// Merge the writes of a look within a turn, answering whether the turn is over.
+fn merge_a_look(
+    opened: &mut Opened,
+    writes: &mut Vec<(usize, collab_types::DocumentMutation)>,
+    signers: &super::sealed_compaction::Signers<'_>,
+) -> Result<bool, PeerDocumentReadError> {
+    let (merged, waiting) = merge_some(
+        std::mem::take(&mut opened.document),
+        std::mem::take(writes),
+        signers,
+        (&mut opened.refusing, &mut opened.refused),
+    )?;
+    opened.document = merged;
+    *writes = waiting;
+    Ok(crate::opening::due())
+}
+
 /// `document`'s sealed history opened onto its cleartext document, continuing what `kept` opened
 /// of it before. A history that does not open leaves nothing kept; one that waits for the rest
 /// of a write's segments keeps what opened.
@@ -652,31 +705,7 @@ fn open_history<'a>(
 ) -> Result<&'a Automerge, PeerDocumentReadError> {
     // The cleartext document the history opens onto counts toward `maximum`: one already past it
     // is refused before anything of the history is opened.
-    let layout = document.doc.stored_layout();
-    let base = layout.base_len.saturating_add(layout.since_len);
-    if base > maximum {
-        return Err(PeerDocumentReadError::Capacity);
-    }
-    let mut opened = match kept.0.take().filter(|opened| opened.continues(document)) {
-        Some(opened) => opened,
-        None => Opened {
-            base: document.doc.committed_document().get_heads(),
-            count: 0,
-            last: None,
-            size: base,
-            transfers: crate::document_frame::Transfers::default(),
-            captured: None,
-            stuck: Vec::new(),
-            waiting: Vec::new(),
-            refusing: super::sealed_compaction::RefusedChanges::default(),
-            refused: Vec::new(),
-            // The document's cleartext part as it stands, which is what a sealed history opens
-            // onto ([`super::sealed_compaction::open_sealed_after`]): a compaction folds the
-            // writes it opened into it and leaves the checkpoint it was covered by behind, so
-            // opening onto that checkpoint read a document as it was before its compaction.
-            document: (*document.doc).clone(),
-        },
-    };
+    let mut opened = opened_history(document, kept, maximum)?;
     // Admission order may differ from causal order on a keyless replica. A
     // write whose sequences the record already holds is folded away: the
     // record cannot carry both changes of one writer's sequence, and the
@@ -794,15 +823,7 @@ fn open_history<'a>(
         opened.last = Some(op.signature);
         if in_turns && fresh >= WRITES_PER_LOOK && ops.peek().is_some() {
             fresh = 0;
-            let (merged, waiting) = merge_some(
-                std::mem::take(&mut opened.document),
-                std::mem::take(&mut writes),
-                &signers,
-                (&mut opened.refusing, &mut opened.refused),
-            )?;
-            opened.document = merged;
-            writes = waiting;
-            if crate::opening::due() {
+            if merge_a_look(&mut opened, &mut writes, &signers)? {
                 opened.waiting = writes;
                 kept.0 = Some(opened);
                 crate::opening::stopped();

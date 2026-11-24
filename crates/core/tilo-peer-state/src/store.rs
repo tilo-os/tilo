@@ -151,7 +151,7 @@ impl std::fmt::Debug for Store {
             .field("appetite", &self.appetite)
             .field("bytes", &held.bytes)
             .field("workspaces", &held.workspaces.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -466,6 +466,34 @@ fn records(bytes: &[u8]) -> (Vec<(u64, u64, Record<'_>)>, u64) {
     (found, at as u64)
 }
 
+/// Set `root`'s segments of a layout earlier than `kept` aside, to be packed again as this build
+/// writes them, and name where they are kept.
+fn set_aside_earlier(root: &Path, kept: u32) -> Result<PathBuf, StoreError> {
+    let earlier = root.join(EARLIER_SEGMENTS);
+    if (SEGMENTS_VERSION..FRAMES_VERSION).contains(&kept) {
+        if earlier.is_dir() {
+            if root.join(WORKSPACES).is_dir() {
+                fs::remove_dir_all(root.join(WORKSPACES))?;
+            }
+        } else if root.join(WORKSPACES).is_dir() {
+            fs::create_dir_all(&earlier)?;
+            fs::rename(root.join(WORKSPACES), earlier.join(WORKSPACES))?;
+        }
+    }
+    Ok(earlier)
+}
+
+/// Say that two frames with other bytes share one author's sequence number, which the store
+/// keeps and serves both of.
+fn beside(workspace: WorkspaceId, frame: &Frame) {
+    tracing::warn!(
+        %workspace,
+        author = %hex::encode(frame.lineage.author),
+        seq = frame.seq,
+        "two frames with other bytes at one author's sequence number; the store keeps and serves both"
+    );
+}
+
 impl Store {
     /// Open the store rooted at `root`, reading back the frames already
     /// there, and retire what `appetite` no longer allows.
@@ -487,17 +515,7 @@ impl Store {
         }
         // Segments of an earlier layout are set aside, and their frames packed again as this
         // build writes them. A packing a crash cut short starts again from what was set aside.
-        let earlier = root.join(EARLIER_SEGMENTS);
-        if (SEGMENTS_VERSION..FRAMES_VERSION).contains(&kept) {
-            if earlier.is_dir() {
-                if root.join(WORKSPACES).is_dir() {
-                    fs::remove_dir_all(root.join(WORKSPACES))?;
-                }
-            } else if root.join(WORKSPACES).is_dir() {
-                fs::create_dir_all(&earlier)?;
-                fs::rename(root.join(WORKSPACES), earlier.join(WORKSPACES))?;
-            }
-        }
+        let earlier = set_aside_earlier(&root, kept)?;
         fs::create_dir_all(root.join(WORKSPACES))?;
         let store = Self {
             root,
@@ -539,40 +557,7 @@ impl Store {
             // A checkpoint's retirements that a crash cut off before they
             // were synced are made again. A sealed compaction's writes stay
             // until every device with its record's keys checked it.
-            let checkpoints: Vec<(WorkspaceId, Lineage, Entry)> = held
-                .workspaces
-                .iter()
-                .flat_map(|(workspace, stored)| {
-                    stored.lineages.iter().filter_map(|(lineage, entries)| {
-                        let newest = newest_checkpoint(entries)?;
-                        let entry = entries.iter().rev().find(|entry| {
-                            entry.seq == newest && entry.retention == ContentRetention::Checkpoint
-                        })?;
-                        (entries.first()?.seq < newest).then_some((*workspace, *lineage, *entry))
-                    })
-                })
-                .collect();
-            let mut reading = Reading::default();
-            for (workspace, lineage, entry) in checkpoints {
-                let message = held.workspaces.get(&workspace).and_then(|stored| {
-                    tilo_failure::ignored!(
-                        "a checkpoint that does not read back retires its author's earlier frames by its sequence number",
-                        reading.frame(&store.root, workspace, stored, entry).ok()
-                    )
-                });
-                if let Some(unchecked) = message
-                    .as_ref()
-                    .and_then(|message| Unchecked::of(message, lineage, entry.check))
-                {
-                    held.workspaces
-                        .entry(workspace)
-                        .or_default()
-                        .unchecked
-                        .push(unchecked);
-                    continue;
-                }
-                retire_before(&store.root, workspace, lineage, entry.seq, &mut held);
-            }
+            store.retire_cut_off_checkpoints(&mut held);
             retire_to_appetite(&store.root, appetite, &mut held);
             sync_writers(&held)?;
             drop(held);
@@ -588,6 +573,46 @@ impl Store {
             fs::remove_dir_all(&earlier)?;
         }
         Ok(store)
+    }
+
+    /// Make again the retirements of the checkpoints in `held` that a crash cut off before they
+    /// were synced. A sealed compaction's writes stay until every device with its record's keys
+    /// checked it.
+    fn retire_cut_off_checkpoints(&self, held: &mut Held) {
+        let checkpoints: Vec<(WorkspaceId, Lineage, Entry)> = held
+            .workspaces
+            .iter()
+            .flat_map(|(workspace, stored)| {
+                stored.lineages.iter().filter_map(|(lineage, entries)| {
+                    let newest = newest_checkpoint(entries)?;
+                    let entry = entries.iter().rev().find(|entry| {
+                        entry.seq == newest && entry.retention == ContentRetention::Checkpoint
+                    })?;
+                    (entries.first()?.seq < newest).then_some((*workspace, *lineage, *entry))
+                })
+            })
+            .collect();
+        let mut reading = Reading::default();
+        for (workspace, lineage, entry) in checkpoints {
+            let message = held.workspaces.get(&workspace).and_then(|stored| {
+                tilo_failure::ignored!(
+                    "a checkpoint that does not read back retires its author's earlier frames by its sequence number",
+                    reading.frame(&self.root, workspace, stored, entry).ok()
+                )
+            });
+            if let Some(unchecked) = message
+                .as_ref()
+                .and_then(|message| Unchecked::of(message, lineage, entry.check))
+            {
+                held.workspaces
+                    .entry(workspace)
+                    .or_default()
+                    .unchecked
+                    .push(unchecked);
+                continue;
+            }
+            retire_before(&self.root, workspace, lineage, entry.seq, held);
+        }
     }
 
     /// The appetite this store was opened with.
@@ -744,12 +769,7 @@ impl Store {
                         .keys()
                         .any(|(lineage, seq, _)| *lineage == frame.lineage && *seq == frame.seq)
                 {
-                    tracing::warn!(
-                        %workspace,
-                        author = %hex::encode(frame.lineage.author),
-                        seq = frame.seq,
-                        "two frames with other bytes at one author's sequence number; the store keeps and serves both"
-                    );
+                    beside(workspace, frame);
                     outcome = Retained::Beside;
                 }
             }

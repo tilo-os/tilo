@@ -413,6 +413,30 @@ fn admission_of(
     })
 }
 
+/// When `person` is admitted: the batch's `written_ns` for the workspace's owner, else the time
+/// the workspace recorded them joining; refused when that is in the future past `now_ns`.
+fn admitted_at(
+    wanted: &WorkspacePolicy,
+    person: &str,
+    owner: bool,
+    (written_ns, now_ns): (u64, u64),
+) -> Result<u64, MembershipRefusal> {
+    let at_ns = if owner {
+        written_ns
+    } else {
+        let joined_ms = wanted.joined_at(person).ok_or_else(|| {
+            MembershipRefusal::Refused(format!("{person} is admitted at no recorded time"))
+        })?;
+        joined_ms.saturating_mul(1_000_000)
+    };
+    if at_ns > now_ns.saturating_add(ADMISSION_CLOCK_SKEW_NS) {
+        return Err(MembershipRefusal::Refused(format!(
+            "{person} is admitted in the future"
+        )));
+    }
+    Ok(at_ns)
+}
+
 /// The people the batch admits through invitations, each with the role
 /// their invitation gives and the device that redeemed it. Every receipt
 /// the batch adds to the workspace's log must be one: the invitation it
@@ -478,19 +502,7 @@ fn redemptions(
             // certificate admits them, however long after the invitation was
             // issued the change that records it was written.
             let owner = held.is_owner(&person) && wanted.is_owner(&person);
-            let at_ns = if owner {
-                written_ns
-            } else {
-                let joined_ms = wanted.joined_at(&person).ok_or_else(|| {
-                    MembershipRefusal::Refused(format!("{person} is admitted at no recorded time"))
-                })?;
-                joined_ms.saturating_mul(1_000_000)
-            };
-            if at_ns > now_ns.saturating_add(ADMISSION_CLOCK_SKEW_NS) {
-                return Err(MembershipRefusal::Refused(format!(
-                    "{person} is admitted in the future"
-                )));
-            }
+            let at_ns = admitted_at(wanted, &person, owner, (written_ns, now_ns))?;
             let grant = admission_of(
                 held,
                 workspace,

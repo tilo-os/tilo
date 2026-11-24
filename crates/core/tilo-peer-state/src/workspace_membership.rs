@@ -449,10 +449,7 @@ impl WorkspaceMembershipCommand {
     /// Validate the canonical identifier before entering the owner turn.
     pub fn validate(&self) -> Result<(), String> {
         if let Self::Lease { id, .. } | Self::KeepDone { id, .. } = self {
-            if id.is_empty() || id.len() > MAX_LEASE_ID || id.chars().any(char::is_control) {
-                return Err("invalid lease id".into());
-            }
-            return Ok(());
+            return valid_lease_id(id);
         }
         if let Self::AnswerSchedule {
             automation, mark, ..
@@ -461,12 +458,7 @@ impl WorkspaceMembershipCommand {
             automation, mark, ..
         } = self
         {
-            if [automation, mark].iter().any(|part| {
-                part.is_empty() || part.len() > MAX_LEASE_ID || part.chars().any(char::is_control)
-            }) {
-                return Err("invalid schedule answer".into());
-            }
-            return Ok(());
+            return valid_schedule_answer(automation, mark);
         }
         if let Self::AddAttestor(attestor) = self {
             return if crate::state::package_trust::valid_attestor(attestor) {
@@ -476,11 +468,7 @@ impl WorkspaceMembershipCommand {
             };
         }
         if let Self::RemoveAttestor { id } = self {
-            return if id.trim().is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
-                Err("invalid attestor id".into())
-            } else {
-                Ok(())
-            };
+            return valid_attestor_id(id);
         }
         if let Self::RevokePublisher { pubkey, .. } = self {
             return if crate::state::package_trust::valid_pubkey(pubkey) {
@@ -497,19 +485,10 @@ impl WorkspaceMembershipCommand {
             };
         }
         if let Self::RemoveRegistry { name } | Self::SetRegistryEnabled { name, .. } = self {
-            return if name.trim().is_empty()
-                || name.len() > 128
-                || name.chars().any(char::is_control)
-            {
-                Err("invalid registry name".into())
-            } else {
-                Ok(())
-            };
+            return valid_registry_name(name);
         }
         if let Self::SetRegistryChannel { name, channel } = self {
-            if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
-                return Err("invalid registry name".into());
-            }
+            valid_registry_name(name)?;
             if !crate::state::package_registries::CHANNELS.contains(&channel.as_str()) {
                 return Err("a registry offers `stable` or `development` releases".into());
             }
@@ -569,6 +548,41 @@ impl WorkspaceMembershipCommand {
         }
         Ok(())
     }
+}
+
+/// `id`, when it is one a lease or a schedule answer is named by: 1 to `MAX_LEASE_ID` bytes, no
+/// control characters.
+fn valid_lease_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > MAX_LEASE_ID || id.chars().any(char::is_control) {
+        return Err("invalid lease id".into());
+    }
+    Ok(())
+}
+
+/// `automation` and `mark`, when both are ids a lease is named by.
+fn valid_schedule_answer(automation: &str, mark: &str) -> Result<(), String> {
+    if [automation, mark].iter().any(|part| {
+        part.is_empty() || part.len() > MAX_LEASE_ID || part.chars().any(char::is_control)
+    }) {
+        return Err("invalid schedule answer".into());
+    }
+    Ok(())
+}
+
+/// `name`, when it names a package registry.
+fn valid_registry_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
+        return Err("invalid registry name".into());
+    }
+    Ok(())
+}
+
+/// `id`, when it names an attestor.
+fn valid_attestor_id(id: &str) -> Result<(), String> {
+    if id.trim().is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+        return Err("invalid attestor id".into());
+    }
+    Ok(())
 }
 
 /// Whether `agent` is an id a workspace names an agent by: lowercase, trimmed,
