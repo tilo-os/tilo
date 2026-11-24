@@ -17,8 +17,8 @@
 //! 1. the transport's device is the action's `source`, where the transport
 //!    names one, so a device may only ask as itself;
 //! 2. the signature is the source's ([`SignedDeviceAction::verify`]);
-//! 3. the invocation the request carries, if it carries one, is signed as
-//!    that same device ([`verify_invocation`]), is fresh, and its id names
+//! 3. the invocation the request carries, if it carries one, is signed
+//!    ([`verify_invocation`]), is fresh, and its id names
 //!    no other request this device admitted within the window
 //!    (`InvocationReplay`: [`ActionCallError::InvocationConflict`]
 //!    otherwise);
@@ -32,6 +32,14 @@
 //!    unrevoked, unexpired, its person a member, its delegation live
 //!    ([`StatePeer::permissions`]); or a key the workspace holds no certificate
 //!    for at all, a visitor ([`Caller::visitor`]), which acts for nobody.
+//!
+//! An invocation signed by another key than the source's is that key's call,
+//! which the source forwards: it is decided as its signer, with the signer's
+//! certificate and grants, and the source is recorded as the device that
+//! brought it ([`Caller::forwarder`]). Over a transport that names a device,
+//! only a device of the workspace forwards one. A call whose sender names
+//! another caller than the source and carries no signature of theirs is
+//! refused: the receiver never runs it as the device that brought it.
 //!
 //! A transport that names no device of its own (a page's session with its
 //! host, which proves the page to the host and the host to nobody) admits a
@@ -943,21 +951,17 @@ impl ActionService {
                     if let RemoteActionMessage::Invoke(request) = &action.message
                         && request.signed.is_some()
                     {
-                        let certificate = invocation_signer(
-                            &action.workspace,
-                            request,
-                            &revocations,
-                            now_ns(),
-                        )?;
+                        let certificate =
+                            invocation_signer(&action.workspace, request, &revocations, now_ns())?;
                         if certificate.device_public_key != source {
-                            // A transport that names no device of its own carries another
-                            // device's request to the one its opener reaches: the request runs
-                            // as the device that signed it there. One that names a device
-                            // carries only that device's own.
-                            if remote.is_some() {
-                                // The answer would reach a device that never asked.
+                            // Another key's signed call runs as that key, never as the device
+                            // that brought it. A transport that names no device of its own
+                            // carries it to the one its opener reaches. One that names a device
+                            // carries it only from a device of this workspace, which forwards
+                            // the calls of the people, agents and visitors it serves.
+                            if remote.is_some() && peer.permissions(source, now).is_err() {
                                 return Err(ActionCallError::Refused {
-                                    reason: "the invocation is signed by another key than the device asking"
+                                    reason: "a device outside the workspace forwards nobody's call"
                                         .into(),
                                 });
                             }
@@ -979,6 +983,20 @@ impl ActionService {
                 reason: "this device does not hold that workspace".into(),
             })??;
         let (acting, authority, certificate, opened) = decided;
+        // A call its device makes for someone else carries their signature: one that names
+        // another caller and carries none runs as nobody, and never as the device that sent it.
+        let own_call = |caller: Caller| -> Result<Caller, ActionCallError> {
+            if acting == source
+                && let Some(claimed) = claimed_invoker(&action.message)
+                && claimed.by != caller.acting().by
+            {
+                return Err(ActionCallError::Refused {
+                    reason: "the call is another caller's and carries no signature of theirs"
+                        .into(),
+                });
+            }
+            Ok(caller)
+        };
         // The device whose link brought another key's signed request: the window a host placed reads
         // whether its host's word stands for the person by it.
         let forwarded = |caller: Caller| {
@@ -1014,9 +1032,9 @@ impl ActionService {
                 ));
             }
             return Ok(Decided::Serve(Box::new(Admitted {
-                caller: forwarded(carrying(
+                caller: forwarded(own_call(carrying(
                     Caller::visitor(acting).in_workspace(action.workspace.clone()),
-                )),
+                ))?),
                 dispatcher: Arc::clone(&self.0.dispatcher),
             })));
         };
@@ -1041,7 +1059,7 @@ impl ActionService {
             _ => Caller::authenticated(certificate.user_public_key, acting),
         };
         Ok(Decided::Serve(Box::new(Admitted {
-            caller: forwarded(carrying(caller))
+            caller: forwarded(own_call(carrying(caller))?)
                 .in_workspace(action.workspace.clone())
                 .from_foreign_device(authority.acting.foreign_device),
             dispatcher: Arc::clone(&self.0.dispatcher),
@@ -1654,6 +1672,16 @@ fn invocation_signer(
             reason: format!("{}: {other}", other.code()),
         },
     })
+}
+
+/// Who an invocation `message` carries says it is for, when it says: the provenance its sender
+/// wrote, which grants nothing and is read only to refuse a call that names someone it does not
+/// carry the signature of.
+fn claimed_invoker(message: &RemoteActionMessage) -> Option<&tilo_action_policy::Acting> {
+    let RemoteActionMessage::Invoke(request) = message else {
+        return None;
+    };
+    Some(&request.context.as_ref()?.invoker.as_ref()?.acting)
 }
 
 /// Why the workspace's roster leaves a device without authority, as the

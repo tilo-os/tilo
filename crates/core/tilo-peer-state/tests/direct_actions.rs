@@ -1192,8 +1192,7 @@ fn signed_request(request: &InvokeRequest, cert: &DeviceCert, key: &SigningKey) 
     request
 }
 
-/// An invocation runs as the key that signed it: a request carrying another
-/// key's invocation is refused, one whose invocation was changed after signing
+/// An invocation runs as the key that signed it: one whose invocation was changed after signing
 /// is refused, the same id for another request is a conflict, and an invocation
 /// signed under a revoked or expired certificate runs nothing.
 #[tokio::test(flavor = "multi_thread")]
@@ -1244,14 +1243,6 @@ async fn an_invocation_runs_as_the_key_that_signed_it() {
         );
     }
     assert_eq!(dispatcher.asked().len(), 1, "nothing changed ran");
-
-    // Signed by another member's key and sent by this device: its answer would reach a device
-    // that never asked.
-    let others = signed_request(&invoke(InvocationId::new()), &a.1, &a.0);
-    let refused = invoke_as(&remote, &caller, others)
-        .await
-        .expect_err("an invocation another key signed is refused");
-    assert!(refusal(&refused).contains("another key"), "{refused:?}");
 
     // Signed under a certificate that has expired since.
     let mut expired = b.1.clone();
@@ -1565,4 +1556,143 @@ async fn a_device_with_no_certificate_reaches_only_the_entry() {
     router.shutdown().await.unwrap();
     host_endpoint.close().await;
     asker_endpoint.close().await;
+}
+
+/// The call `request` names `acting` as its caller, in what its sender says of it.
+fn naming(mut request: InvokeRequest, acting: &tilo_action_policy::Acting) -> InvokeRequest {
+    request.context = Some(tilo_actions::ActionContext {
+        invoker: Some(tilo_actions::ActionInvoker::admitted(acting)),
+        ..tilo_actions::ActionContext::default()
+    });
+    request
+}
+
+/// A device forwards the calls of the people, agents and visitors it serves to another device
+/// of the workspace as each of them signed it: the device that answers runs the call as its
+/// signer, with that key's grants, and records which device brought it. A call naming another
+/// caller without their signature runs as nobody, and a device outside the workspace forwards
+/// nobody's call.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forwarded_call_runs_as_the_one_who_signed_it() {
+    let started = tilo_clock::wall();
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let b = device(&root, 3);
+    let c = device(&root, 5);
+    let helper = agent_device(&root, 4);
+    let roster = vec![a.1.clone(), b.1.clone(), c.1.clone()];
+    let dispatcher = Arc::new(TestProvider::new());
+    let engine = Engine::serving(
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        a.0.clone(),
+        dispatcher.clone(),
+        Bounds::default(),
+    )
+    .await;
+    let delegation = Delegation::sign(
+        &root,
+        helper.1.device_public_key,
+        Delegate::Agent {
+            agent_id: "scribe".into(),
+        },
+        "Scribe",
+        [10, 20, 30],
+        DelegateScope {
+            workspaces: vec![WorkspaceId::parse(WORKSPACE).unwrap()],
+            apps: Vec::new(),
+        },
+        ns(started.checked_sub(Duration::from_secs(1)).unwrap()),
+        ns(started.checked_add(Duration::from_secs(3600)).unwrap()),
+    )
+    .unwrap();
+    assert!(
+        engine
+            .replica
+            .write(|peer| peer.governance_mut().admit_agent(
+                helper.1.clone(),
+                delegation,
+                &a.0,
+                started
+            ))
+            .unwrap()
+    );
+    let person = root.verifying_key().to_bytes();
+    let (b_endpoint, b_service) = asking(&b.0).await;
+    let forwarding = b_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
+    let b_caller = Caller::authenticated(person, b.1.device_public_key);
+
+    // The agent signed with its own key; the device that does not run the action brings it.
+    let agent_call = signed_request(&invoke(InvocationId::new()), &helper.1, &helper.0);
+    assert!(
+        matches!(
+            invoke_as(&forwarding, &b_caller, agent_call.clone()).await,
+            Ok(ReceiptStatus::Completed { .. })
+        ),
+        "the agent's forwarded call runs"
+    );
+    let ran_as = dispatcher.callers().pop().unwrap();
+    assert_eq!(
+        ran_as.acting().member_id(),
+        Some(&tilo_action_policy::MemberId::agent("scribe")),
+        "the call runs as the agent, never as the device that brought it"
+    );
+    assert_eq!(
+        ran_as.device_public_key(),
+        Some(&helper.1.device_public_key)
+    );
+    assert_eq!(ran_as.forwarder(), Some(&b.1.device_public_key));
+    assert_eq!(dispatcher.asked().pop().unwrap().signed, agent_call.signed);
+
+    // A person's call from another of their devices travels the same way.
+    let person_call = signed_request(&invoke(InvocationId::new()), &c.1, &c.0);
+    assert!(matches!(
+        invoke_as(&forwarding, &b_caller, person_call).await,
+        Ok(ReceiptStatus::Completed { .. })
+    ));
+    let ran_as = dispatcher.callers().pop().unwrap();
+    assert_eq!(ran_as.user_public_key(), Some(&person));
+    assert_eq!(ran_as.device_public_key(), Some(&c.1.device_public_key));
+    assert_eq!(ran_as.forwarder(), Some(&b.1.device_public_key));
+
+    // The device's own unsigned call runs as that device, forwarded by nobody.
+    let own = naming(invoke(InvocationId::new()), b_caller.acting());
+    assert!(matches!(
+        invoke_as(&forwarding, &b_caller, own).await,
+        Ok(ReceiptStatus::Completed { .. })
+    ));
+    let ran_as = dispatcher.callers().pop().unwrap();
+    assert_eq!(ran_as.device_public_key(), Some(&b.1.device_public_key));
+    assert_eq!(ran_as.forwarder(), None);
+
+    // The agent's call forwarded without its signature names the agent and proves nothing:
+    // it is refused, and never runs as the device that sent it.
+    let agent = Caller::delegated_agent("scribe", person, helper.1.device_public_key);
+    let before = dispatcher.asked().len();
+    let unsigned = naming(invoke(InvocationId::new()), agent.acting());
+    let refused = invoke_as(&forwarding, &b_caller, unsigned)
+        .await
+        .expect_err("an unsigned forward of another caller's call is refused");
+    assert!(
+        refusal(&refused).contains("carries no signature of theirs"),
+        "{refused:?}"
+    );
+    assert_eq!(dispatcher.asked().len(), before, "nothing ran");
+
+    // A device the workspace does not know brings the agent's signed call: refused.
+    let stranger = device(&SigningKey::from_bytes(&[9; 32]), 6);
+    let (stranger_endpoint, stranger_service) = asking(&stranger.0).await;
+    let from_outside = stranger_service.remote(&stranger_endpoint, &engine.addr(), WORKSPACE);
+    let carried = signed_request(&invoke(InvocationId::new()), &helper.1, &helper.0);
+    let refused = invoke_as(&from_outside, &b_caller, carried)
+        .await
+        .expect_err("a device outside the workspace forwards nobody's call");
+    assert!(
+        refusal(&refused).contains("outside the workspace"),
+        "{refused:?}"
+    );
+    assert_eq!(dispatcher.asked().len(), before, "nothing ran");
+
+    engine.close().await;
+    b_endpoint.close().await;
+    stranger_endpoint.close().await;
 }
