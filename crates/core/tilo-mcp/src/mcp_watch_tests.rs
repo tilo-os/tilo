@@ -80,7 +80,19 @@ impl Watched {
     /// A record of the workspace changed, `change` as its history lists it: both the watched
     /// resource's history and the workspace's feed report it.
     fn wrote(&self, change: &str) {
-        let entry = json!({"change": change, "sentence": "added one", "time_ms": 1});
+        self.did(change, "edited");
+    }
+
+    /// A record of the workspace changed, `change` as its history lists it, doing `what` to its
+    /// resource (`created`, `edited` or `removed`): both the watched resource's history and the
+    /// workspace's feed report it.
+    fn did(&self, change: &str, what: &str) {
+        let entry = json!({
+            "change": change,
+            "happened": what,
+            "sentence": "added one",
+            "time_ms": 1,
+        });
         self.notes.changed(entry.clone());
         self.feed.lock().unwrap().push(ResourceChanged {
             app: "so.tilo.notes".into(),
@@ -248,6 +260,48 @@ tilo_test_env::scenario! {
                 change["resources"],
                 json!([{"path": "notes", "app": "so.tilo.notes", "record": "notes.page:1"}]),
                 "the change names what it changed: {change}"
+            );
+        });
+    }
+
+    phase a_change_says_what_it_did_to_its_resource;
+    // Every change a watch reports says what it did to the resource beside the change's id:
+    // created, edited or removed, as the store read it from the change.
+    {
+        let host = Watched::new();
+        run(async {
+            let server = Arc::new(agent(&host));
+            let cursor = cursor_of(&server, json!({"wait_ms": 50})).await;
+            host.did("n1", "created");
+            host.did("n2", "edited");
+            host.did("n3", "removed");
+            let (watched, failed) = answer(
+                &server,
+                "tilo_watch",
+                json!({"cursor": cursor, "wait_ms": 1_000}),
+            )
+            .await;
+            assert!(!failed, "{watched}");
+            let changes: Vec<(String, String)> = watched["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["kind"] == "change")
+                .map(|event| {
+                    (
+                        event["change"].as_str().unwrap_or_default().to_owned(),
+                        event["what"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                changes,
+                [
+                    ("n1".to_owned(), "created".to_owned()),
+                    ("n2".to_owned(), "edited".to_owned()),
+                    ("n3".to_owned(), "removed".to_owned()),
+                ],
+                "{watched}"
             );
         });
     }

@@ -34,6 +34,7 @@ from ._errors import (
 )
 from ._models import (
     Event,
+    EventWhat,
     Hit,
     Invitation,
     Key,
@@ -70,6 +71,7 @@ __all__ = [
     "DaemonTransport",
     "Entry",
     "Event",
+    "EventWhat",
     "FieldMap",
     "Files",
     "Hit",

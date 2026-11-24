@@ -118,7 +118,7 @@ pub use catalogue::{
     ProvidedPackage, ProvidedResource, ResourceViewLocator, RowVisibility, ViewResourceQuery,
     compact, expand, rows_weight, truncate_resources, truncate_rows,
 };
-pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, ResourceChanged};
+pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, ResourceChanged, What};
 pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};
 pub use content_link::{
     CONTENT_LINK_TTL_SECS, CONTENT_LINKS_UNAVAILABLE, ContentLink, ContentLinkAsk, ContentLinkFile,

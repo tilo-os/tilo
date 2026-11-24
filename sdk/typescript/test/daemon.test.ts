@@ -9,7 +9,7 @@
 
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 
-import { Refused, Tilo, type Listing, type Row } from "../src/index.ts";
+import { Refused, Tilo, type Event, type Listing, type Row } from "../src/index.ts";
 
 const PROFILE = process.env.TILO_RUNTIME_PROFILE;
 const suite = PROFILE ? describe : describe.skip;
@@ -43,6 +43,26 @@ async function rows(listing: Listing): Promise<Row[]> {
 /** The Tasks app's action that makes a task, and the task list it adds it to. */
 const NEW_TASK = "so.tilo.tasks#new_task";
 const TASK_LIST = "so.tilo.tasks/tl:so.tilo.tasks";
+
+/** The id a call that made something names it by: its result's reference, or the resources of
+ * the answer it kept. */
+function made(answer: unknown): string {
+  if (typeof answer === "string") {
+    return answer;
+  }
+  const raw = answer as Record<string, unknown> | null;
+  if (typeof raw?.id === "string") {
+    return raw.id;
+  }
+  const found = raw?.resources;
+  if (!Array.isArray(found) || found.length === 0) {
+    throw new Error(`the call names what it made: ${JSON.stringify(answer)}`);
+  }
+  const first = found[0];
+  return typeof first === "string"
+    ? first
+    : String((first as Record<string, unknown>).id);
+}
 
 suite("a daemon", () => {
   test("serves its workspace", async () => {
@@ -97,6 +117,43 @@ suite("a daemon", () => {
 
     expect(event).not.toBeNull();
     expect(event?.kind).toBe("change");
+  });
+
+  test("says a new message was created and its edit was edited", async () => {
+    const workspace = tilo.workspace();
+    const channel = made(await workspace.do("so.tilo.chat#new_channel", { name: `sdk-watch-${once}` }));
+    const events = workspace.watch();
+    const seen: Event[] = [];
+    const watching = (async () => {
+      for await (const event of events) {
+        if (event.kind === "change") {
+          seen.push(event);
+        }
+      }
+    })();
+
+    // The daemon reads the watch from now: a change before it is registered is not one it saw.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const message = made(await workspace.do(`so.tilo.chat/${channel}#send`, { body: "first words" }));
+    await workspace.do(`so.tilo.chat/${message}#edit`, { body: "second words" });
+
+    const told = (): Event[] => seen.filter((event) => JSON.stringify(event.raw).includes(message));
+    const deadline = Date.now() + 30_000;
+    while (told().length < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    await events.return(undefined);
+    await watching;
+
+    const found = told();
+    expect(found.length).toBeGreaterThanOrEqual(2);
+    const sent = found[0];
+    const edited = found[found.length - 1];
+    // The store says what a change did to its record, next to `change`: the new message reads
+    // created and its edit reads edited, in the event's own `what`.
+    expect(sent?.what).toBe("created");
+    expect(edited?.what).toBe("edited");
+    expect(sent?.change).not.toBe(edited?.change);
   });
 
   test("throws a refusal with its code", async () => {

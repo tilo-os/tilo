@@ -627,9 +627,10 @@ fn first_wake(
 
 /// One change, as an agent or an API caller reads it: the resource it
 /// changed (the record, the item in it when the change names one), who made
-/// it, and the group it is a step of. The group's title is under `title`,
-/// its id under `group`, and the invocation under `invocation`, as the
-/// resource's own history names them.
+/// it, what it did to the resource (`what`: created, edited or removed, as the
+/// store read it from the change), and the group it is a step of. The group's
+/// title is under `title`, its id under `group`, and the invocation under
+/// `invocation`, as the resource's own history names them.
 fn change_event(path: &str, app: Option<&str>, record: Option<&str>, entry: &Value) -> Value {
     let mut resource = serde_json::Map::new();
     resource.insert("path".into(), json!(path));
@@ -638,14 +639,24 @@ fn change_event(path: &str, app: Option<&str>, record: Option<&str>, entry: &Val
             resource.insert(key.into(), json!(value));
         }
     }
-    if let Some(item) = entry.get("item").and_then(Value::as_str) {
+    if let Some(item) = entry
+        .get("item")
+        .and_then(Value::as_str)
+        .or_else(|| entry.get("resource").and_then(Value::as_str))
+    {
         resource.insert("item".into(), json!(item));
     }
+    let what = entry
+        .get("happened")
+        .and_then(Value::as_str)
+        .and_then(tilo_actions::remote::What::of_word)
+        .unwrap_or_default();
     let mut event = json!({
         "kind": "change",
         "path": path,
         "resources": [Value::Object(resource)],
         "change": entry.get("change").cloned().unwrap_or_default(),
+        "what": what.word(),
         "sentence": entry.get("sentence").cloned().unwrap_or_default(),
         "time_ms": entry.get("time_ms").cloned().unwrap_or_default(),
     });
@@ -857,6 +868,35 @@ mod tests {
         }
         assert_eq!(invocations.len(), INVOCATIONS_KEPT);
         assert_eq!(invocations[0].invocation, "going");
+    }
+
+    /// A change a watch reports says what it did to the resource beside its change id, as the
+    /// store read it from the change; an entry that names none (an older provider) reads as an
+    /// edit.
+    #[test]
+    fn a_change_event_says_what_it_did_to_its_resource() {
+        let events: Vec<(Value, Value)> = ["created", "edited", "removed"]
+            .into_iter()
+            .map(|what| {
+                let entry = json!({"change": "a1", "happened": what, "resource": "note:1"});
+                let event = change_event("notes/Todo", Some("notes"), None, &entry);
+                (event["what"].clone(), event["resources"].clone())
+            })
+            .collect();
+        assert_eq!(events[0].0, "created");
+        assert_eq!(events[1].0, "edited");
+        assert_eq!(events[2].0, "removed");
+        assert_eq!(
+            events[0].1,
+            json!([{"path": "notes/Todo", "app": "notes", "item": "note:1"}]),
+            "the change names the resource it did it to"
+        );
+        let entry = json!({"change": "b2"});
+        assert_eq!(
+            change_event("notes/Todo", Some("notes"), None, &entry)["what"],
+            "edited",
+            "a change whose entry says nothing reads as an edit"
+        );
     }
 
     /// A change a watch reports names the group it is a step of, as the

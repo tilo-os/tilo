@@ -603,6 +603,17 @@ impl VersionKind {
             _ => None,
         }
     }
+
+    /// What the change did to its resource, as a watcher of the resource reads it beside the
+    /// change's id.
+    #[must_use]
+    pub const fn what(self) -> tilo_actions::remote::What {
+        match self {
+            Self::Created => tilo_actions::remote::What::Created,
+            Self::Changed => tilo_actions::remote::What::Edited,
+            Self::Removed => tilo_actions::remote::What::Removed,
+        }
+    }
 }
 
 /// A resource linked to another ([`Store::linked`]): made from it, mentioning it in its rich

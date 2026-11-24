@@ -550,7 +550,7 @@ pub fn bound_key(view: &ViewInstance, field: &str) -> String {
 /// The documents a native app wrote, as a `legacy/*.hex` fixture keeps them: one document a line,
 /// its document id, a tab, and the saved Automerge document as hex. Each fixture was written by
 /// the native app's own code (`legacy/README.md` says how), never by hand.
-pub fn native_documents(fixture: &str) -> Vec<(String, automerge::AutoCommit)> {
+pub fn native_documents(fixture: &str) -> Vec<(String, tilo_resource::Doc)> {
     fixture
         .lines()
         .filter(|line| !line.is_empty())
@@ -561,7 +561,7 @@ pub fn native_documents(fixture: &str) -> Vec<(String, automerge::AutoCommit)> {
                 .chunks(2)
                 .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
                 .collect();
-            (id.to_owned(), automerge::AutoCommit::load(&bytes).unwrap())
+            (id.to_owned(), tilo_resource::Doc::load(&bytes).unwrap())
         })
         .collect()
 }

@@ -18,6 +18,44 @@ use super::{ActionCallError, Caller, Pending};
 pub const CHANGE_FEED_UNAVAILABLE: &str =
     "this provider keeps no feed of its records' changes; watch one resource by its path instead";
 
+/// What a change did to the resource it is a change of: it made it, edited it, or removed it. The
+/// store reads it from the recorded change, and every watcher of the workspace is told it beside
+/// the change's id, so no app works it out from what it saw before.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum What {
+    /// The resource's first recorded change, which made it.
+    Created,
+    /// A change to the resource itself.
+    #[default]
+    Edited,
+    /// The change that removed it.
+    Removed,
+}
+
+impl What {
+    /// The word an event carries it as: `created`, `edited` or `removed`.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Edited => "edited",
+            Self::Removed => "removed",
+        }
+    }
+
+    /// The [`Self::word`] `word` names.
+    #[must_use]
+    pub fn of_word(word: &str) -> Option<Self> {
+        match word {
+            "created" => Some(Self::Created),
+            "edited" => Some(Self::Edited),
+            "removed" => Some(Self::Removed),
+            _ => None,
+        }
+    }
+}
+
 /// One change to one record of the workspace.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceChanged {
@@ -27,8 +65,8 @@ pub struct ResourceChanged {
     pub record: String,
     /// The change as the record's `history` lists it: its `change` id, its
     /// `sentence`, `time_ms`, who made it (`actor`, `by`), the group it was a
-    /// step of (`title`, `group`, `group_kind`) and the invocation that made
-    /// it (`invocation`).
+    /// step of (`title`, `group`, `group_kind`), the invocation that made
+    /// it (`invocation`), and what it did to the resource (`happened`, a [`What`]).
     pub entry: serde_json::Value,
 }
 

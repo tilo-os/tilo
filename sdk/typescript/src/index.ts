@@ -64,6 +64,7 @@ export {
   type Action,
   type ActionAnswer,
   type Event,
+  type EventWhat,
   type Hit,
   type Invitation,
   type Key,

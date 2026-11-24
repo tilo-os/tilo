@@ -99,9 +99,58 @@ fn an_action_through_the_service_is_written_as_one_change() {
     );
 }
 
+/// A version says what it did to its resource, read from the store's own change: the change that
+/// made a note reads created and the one that retitled it reads edited, each beside its change
+/// id.
+#[test]
+fn a_versions_history_says_what_it_did_to_its_resource() {
+    let (mut service, _) = service();
+    let notebook = service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.kind == format!("tl.{APP}.Notebook"))
+        .expect("the notebook is published");
+    let note = new_note(&mut service);
+    let started = service
+        .invoke(&note, "retitle", &args(json!({"title": "Plan"})))
+        .unwrap();
+    assert!(
+        matches!(started, Started::Done(_)),
+        "the retitle is done once committed"
+    );
+    service.settle();
+    let Started::Done(output) = service
+        .invoke(notebook.id.as_str(), "history", &args(json!({"last": 50})))
+        .unwrap()
+    else {
+        panic!("a history verb is done once answered");
+    };
+    let listed = output.value.expect("the history lists its versions");
+    let said: Vec<(&str, &str)> = listed["versions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the history lists its versions: {listed}"))
+        .iter()
+        .filter(|version| version["resource"].as_str() == Some(note.as_str()))
+        .map(|version| {
+            (
+                version["happened"].as_str().unwrap_or_default(),
+                version["change"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        said.iter().map(|(what, _)| *what).collect::<Vec<_>>(),
+        ["created", "edited"],
+        "{listed}"
+    );
+    assert!(
+        said.iter().all(|(_, change)| !change.is_empty()),
+        "every version keeps its change id: {listed}"
+    );
+}
+
 /// Every text a tree shows, in its props.
-fn texts(node: &UiNode) -> Vec<String> {
-    crate::fixtures::nodes(node)
+fn texts(node: &UiNode) -> Vec<String> {    crate::fixtures::nodes(node)
         .into_iter()
         .flat_map(|node| node.props.values())
         .filter_map(|value| match value {

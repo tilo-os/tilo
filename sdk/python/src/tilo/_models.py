@@ -4,9 +4,23 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from ._errors import ProtocolError
+
+
+class EventWhat(StrEnum):
+    """What a change did to the resource it changed.
+
+    `CREATED` made it, `EDITED` changed it, and `REMOVED` took it away. The
+    store reads it from the recorded change; no caller works it out from what
+    it saw before.
+    """
+
+    CREATED = "created"
+    EDITED = "edited"
+    REMOVED = "removed"
 
 
 def _text(value: Any) -> str | None:
@@ -600,6 +614,17 @@ class Event:
     def change(self) -> str | None:
         """The change's own id in the app's history."""
         return _text(self.raw.get("change"))
+
+    @property
+    def what(self) -> EventWhat | None:
+        """What the change did to its resource; None for an event that is no change."""
+        value = _text(self.raw.get("what"))
+        if value is None:
+            return None
+        try:
+            return EventWhat(value)
+        except ValueError:
+            return None
 
     @property
     def sentence(self) -> str | None:

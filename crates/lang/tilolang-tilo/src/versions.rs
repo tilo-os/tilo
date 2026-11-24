@@ -10,7 +10,8 @@ use crate::host::Host;
 use crate::publish::{resource_id, split_published};
 
 /// `version`, of a resource of `app` that `host` reads, as its history lists it: the version,
-/// its resource by the id it is published under, and the label the app's history calls it by.
+/// its resource by the id it is published under, the label the app's history calls it by, and
+/// what it did to the resource.
 #[must_use]
 pub fn version_entry(host: &Host, app: &str, version: &Version) -> Json {
     let published = resource_id(app, &version.resource);
@@ -19,6 +20,12 @@ pub fn version_entry(host: &Host, app: &str, version: &Version) -> Json {
     if let Some(entry) = entry.as_object_mut() {
         entry.insert("resource".to_owned(), Json::String(published));
         entry.insert("label".to_owned(), Json::String(label));
+        // What the version did to the resource it is a version of, read from the store's own
+        // kind, beside the change's id.
+        entry.insert(
+            "happened".to_owned(),
+            Json::String(version.kind.what().word().to_owned()),
+        );
     }
     entry
 }

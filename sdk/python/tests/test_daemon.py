@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from tilo import AsyncTilo, Event, Refused, Workspace
+from tilo import AsyncTilo, Event, EventWhat, Refused, Workspace
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("TILO_RUNTIME_PROFILE"),
@@ -71,9 +71,15 @@ async def test_the_sdk_drives_the_daemon() -> None:
 
 
 def made(answer: object) -> str:
-    """The id a call that made something names it by."""
+    """The id a call that made something names it by: its result's reference, or the resources
+    of the answer it kept."""
     raw = getattr(answer, "raw", answer)
-    found = raw.get("resources") if isinstance(raw, dict) else None
+    if isinstance(raw, str):
+        return raw
+    assert isinstance(raw, dict), f"the call names what it made: {raw!r}"
+    if isinstance(raw.get("id"), str):
+        return raw["id"]
+    found = raw.get("resources")
     assert isinstance(found, list) and found, f"the call names what it made: {raw!r}"
     first = found[0]
     return first if isinstance(first, str) else first["id"]
@@ -111,13 +117,14 @@ async def test_a_new_message_and_its_edit_are_told_apart_in_one_conversation() -
         told = [event for event in seen if message in str(event.raw)]
         sent, edited = told[0], told[-1]
         # The store says what a change did to its record, next to `change`: the new message
-        # reads created and its edit reads edited, in the same field of the event.
-        said = [name for name, value in sent.raw.items() if value == "created"]
-        assert said, ("the new message's event says it was created", sent.raw)
-        assert any(edited.raw.get(name) == "edited" for name in said), (
-            "the edit's event says it was edited, in the same field",
+        # reads created and its edit reads edited, in the event's own `what`.
+        assert sent.what is EventWhat.CREATED, (
+            "the new message's event says it was created",
             sent.raw,
+        )
+        assert edited.what is EventWhat.EDITED, (
+            "the edit's event says it was edited",
             edited.raw,
         )
-        records = {r.get("record") for r in sent.resources} & {r.get("record") for r in edited.resources}
-        assert records - {None}, ("both name the conversation's record", sent.raw, edited.raw)
+        items = {r.get("item") for r in sent.resources} & {r.get("item") for r in edited.resources}
+        assert items - {None}, ("both name the message they changed", sent.raw, edited.raw)

@@ -26,7 +26,7 @@ pub mod review;
 use std::collections::HashSet;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ChangeHash, Patch, PatchAction, Prop};
+use automerge::{AutoCommit, ChangeHash, Patch, PatchAction, Prop, ReadDoc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_actions::{
@@ -691,6 +691,17 @@ fn entry(
         entry.insert("by".into(), by(version).into());
     }
     entry.insert("time_ms".into(), version.time_ms.into());
+    // What the change did to the resource it is a version of, read from the change itself as the
+    // store reads it, and which resource that was: a watcher is told both beside the change's id
+    // rather than working them out from what it saw before.
+    if let Some((what, item)) = happened(doc, version) {
+        entry.insert("happened".into(), what.word().into());
+        if context.is_none()
+            && let Some(item) = item
+        {
+            entry.insert("item".into(), item.into());
+        }
+    }
     if let Some(named) =
         context.and_then(|context| tilo_actions::contract::readers_named(&context.facets))
     {
@@ -721,6 +732,38 @@ fn entry(
         entry.insert("checkpoint".into(), json!(named));
     }
     Value::Object(entry)
+}
+
+/// What `version` did to the resource it is a change of, and that resource's id, as the store
+/// reads the change: it made the resource, removed it, or edited it. `None` for a document
+/// whose changes are not resources kept in the store, which a watcher reads as an edit.
+fn happened(
+    doc: &AutoCommit,
+    version: &Version,
+) -> Option<(tilo_actions::remote::What, Option<String>)> {
+    use tilo_actions::remote::What;
+    let committed = doc.committed_document();
+    let change = committed.get_change_by_hash(&version.hash)?;
+    let touched = tilo_resource_store::touches(committed, "", &change)?;
+    let made = touched.resources.iter().find(|(_, touch)| touch.made);
+    let removed = touched.resources.iter().find(|(_, touch)| touch.removed);
+    let what = if made.is_some() {
+        What::Created
+    } else if removed.is_some() {
+        What::Removed
+    } else {
+        What::Edited
+    };
+    // The resource the change is about: the one it made or removed, else the one it touched when
+    // it touched a single resource.
+    let item = made
+        .or(removed)
+        .map(|(id, _)| id.clone())
+        .or_else(|| match touched.resources.len() {
+            1 => touched.resources.keys().next().cloned(),
+            _ => None,
+        });
+    Some((what, item))
 }
 
 /// One version of the resource as an in-app history list shows it: what
@@ -1404,6 +1447,54 @@ mod tests {
                 Some(true)
             );
         }
+    }
+
+    /// Every change says what it did to the resource it is a version of, read from the change
+    /// itself as the store reads it: the change that made it, one that edited it, and the one
+    /// that removed it, each with its change id.
+    #[test]
+    fn a_change_says_whether_it_made_edited_or_removed_its_resource() {
+        let mut doc = AutoCommit::new();
+        let note = doc
+            .put_object(ROOT, "r:note1", automerge::ObjType::Map)
+            .unwrap();
+        doc.put(&note, "k", "tl.test.Note").unwrap();
+        let fields = doc
+            .put_object(&note, "f", automerge::ObjType::Map)
+            .unwrap();
+        doc.put(&fields, "title", "Plan").unwrap();
+        doc.commit();
+        doc.put(&fields, "title", "Plan B").unwrap();
+        doc.commit();
+        doc.delete(ROOT, "r:note1").unwrap();
+        doc.commit();
+
+        let entries = entries_after(&doc, &[], &TestWords);
+        let said: Vec<(&str, &str, &str)> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry["change"].as_str().unwrap_or_default(),
+                    entry["happened"].as_str().unwrap_or_default(),
+                    entry["item"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            said.iter()
+                .map(|(_change, what, item)| (*what, *item))
+                .collect::<Vec<_>>(),
+            [
+                ("created", "note1"),
+                ("edited", "note1"),
+                ("removed", "note1"),
+            ],
+            "{entries:?}"
+        );
+        assert!(
+            said.iter().all(|(change, _, _)| !change.is_empty()),
+            "every change keeps its id: {entries:?}"
+        );
     }
 
     /// One step of `actor`'s adding `words` at the end of `body`, under a

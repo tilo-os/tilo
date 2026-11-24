@@ -542,6 +542,18 @@ function personOf(raw: Record<string, unknown>): Person {
 }
 
 /**
+ * What a change did to the resource it changed: `created` made it, `edited`
+ * changed it, and `removed` took it away. The store reads it from the
+ * recorded change; no caller works it out from what it saw before.
+ */
+export type EventWhat = "created" | "edited" | "removed";
+
+/** `value` as an {@link EventWhat}, or null for anything else. */
+export function eventWhatOf(value: unknown): EventWhat | null {
+  return value === "created" || value === "edited" || value === "removed" ? value : null;
+}
+
+/**
  * One thing the workspace's stream told: a change, an invocation starting or
  * finishing, or who is there. `cursor` is where the stream has read up to
  * after it: reconnecting with it resumes after this event.
@@ -552,6 +564,8 @@ export interface Event {
   cursor: string | null;
   path: string | null;
   change: string | null;
+  /** What the change did to its resource; null for an event that is no change. */
+  what: EventWhat | null;
   sentence: string | null;
   /** Who made the change. */
   by: string | null;
@@ -588,6 +602,7 @@ export function eventOf(kind: string | null, data: unknown, cursor: string | nul
     cursor,
     path: textOf(raw.path),
     change: textOf(raw.change),
+    what: eventWhatOf(raw.what),
     sentence: textOf(raw.sentence),
     by: textOf(raw.by),
     resources: Array.isArray(raw.resources)
