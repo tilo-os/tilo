@@ -322,6 +322,10 @@ async fn a_moderation_turn_reads_a_persons_changes_and_takes_them_back_in_one_ru
     crate::surfaces::decide_receipt(&scratch.path().join("surfaces"));
     let server = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
     let workspace = workspaces.create("Moderation").await.unwrap().workspace;
     let owner = hex::encode(cert.user_public_key);
     create_watching_agent(&workspaces, &workspace, &cert).await;
@@ -415,6 +419,10 @@ async fn a_moderation_turn_is_refused_when_the_saver_may_not() {
     crate::surfaces::decide_receipt(&scratch.path().join("surfaces"));
     let server = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(crate::workspaces::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
     let workspace = workspaces.create("Moderation").await.unwrap().workspace;
     let owner = hex::encode(cert.user_public_key);
     create_watching_agent(&workspaces, &workspace, &cert).await;
