@@ -14,6 +14,9 @@ path = "src/lib.rs"
 # its bundle into `assets/tilo/apps`.
 [package.metadata.tilo-app]
 tilolang = ["../../../apps/tl/notes", "../../../apps/tl/chat"]
+# The APK serves the person's workspace files to Android's own picker: its manifest carries the
+# documents provider whose native side this library exports.
+workspace-files = true
 
 [features]
 # A thin build links the toolkit dynamically, so `tilolang dev` reloads the app in place.
@@ -31,6 +34,8 @@ tilolang-tilo = { path = "../../../crates/lang/tilolang-tilo" }
 tilo-app-window = { path = "../../../crates/sdk/tilo-app-window" }
 tilo-render-protocol = { path = "../../../crates/ui/tilo-render-protocol" }
 tilo-paths = { path = "../../../crates/platform/tilo-paths" }
+# The type of a file the workspace holds, by its name, as a file picker shows it.
+tilo-mime = { path = "../../../crates/platform/tilo-mime" }
 # The platform a window with no session stands on: the packages it loads, its words and clock.
 tilolang-window = { path = "../../../crates/lang/tilolang-window" }
 # An app the person opens runs in tilolang-process's in-process window.
@@ -44,6 +49,10 @@ serde_json.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# Android's documents API reaches the phone's device through the app's own Java classes.
+jni = "0.21.1"
+
 [dev-dependencies]
 tempfile.workspace = true
 # The phone's places, set as its launch sets them and put back after the test.
@@ -55,7 +64,7 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 # The person's server the phone signs in to, and the `keep_app_file` that hands it a package
 # without a device's session.
 test-server = { path = "../../../tools/test-server" }
-tilo-workspace-service = { path = "../../../crates/core/tilo-workspace-service", features = ["test-support"] }
+tilo-workspace-service = { path = "../../../crates/core/tilo-workspace-service", features = ["files", "test-support"] }
 tilo-server-protocol = { path = "../../../crates/core/tilo-server-protocol" }
 tilo-user-identity = { path = "../../../crates/core/tilo-user-identity" }
 tilo-clock = { path = "../../../crates/platform/tilo-clock" }

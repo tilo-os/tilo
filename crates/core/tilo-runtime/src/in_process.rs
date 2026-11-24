@@ -5,6 +5,10 @@
 //! installed them into and the packages this device fetched from it.
 //! Nothing here holds state of its own: the daemon keeps the login, the workspaces and their apps.
 
+mod files;
+
+pub use files::{FileEntry, FileKind};
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

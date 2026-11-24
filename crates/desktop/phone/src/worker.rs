@@ -14,8 +14,11 @@ use tilo_runtime::in_process::{App, Device, Devices};
 /// approved, a workspace joined there, an app installed, all reach the phone within it.
 const READ_AGAIN: Duration = Duration::from_secs(2);
 
-/// What the phone's view asks of its device.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How long a file provider's ask waits for its answer: a change of the workspace waits for the
+/// devices that keep it to take it, and one that took longest still answers here.
+const ANSWER_WITHIN: Duration = Duration::from_secs(90);
+
+/// What the phone's view, or a file provider outside it, asks of its device.
 pub enum Ask {
     /// Sign in with a ticket another of the person's devices printed.
     LogIn(String),
@@ -23,6 +26,9 @@ pub enum Ask {
     Found,
     /// Show the apps of this workspace.
     Workspace(String),
+    /// Work on the daemon that another thread waits on, answered where the daemon lives: what a
+    /// file provider asks when Android calls it, off the view's own loop.
+    Files(Box<dyn FnOnce(&mut Device) + Send>),
 }
 
 /// What the worker last read of the device, and how often it changed: the origin writes it
@@ -75,6 +81,15 @@ impl Worker {
         let _ = self.asks.send(ask);
     }
 
+    /// The worker's side a file provider holds: its asks run on the thread that keeps the
+    /// daemon.
+    #[must_use]
+    pub fn files(&self) -> Files {
+        Files {
+            asks: self.asks.clone(),
+        }
+    }
+
     /// What the worker last read.
     #[must_use]
     pub fn seen(&self) -> Seen {
@@ -82,6 +97,35 @@ impl Worker {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+}
+
+/// A file provider's side of the phone's device: each ask runs on the thread that keeps the
+/// daemon, and this waits for its answer. A person signs in and their workspaces arrive there,
+/// so a provider started before both sees them as soon as the view does.
+#[derive(Clone)]
+pub struct Files {
+    asks: Sender<Ask>,
+}
+
+impl Files {
+    /// Do `work` with the device, on the thread that keeps it, and answer what it answered.
+    ///
+    /// # Errors
+    /// The phone's daemon is not running, or it ended before it answered.
+    pub fn ask<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Device) -> T + Send + 'static,
+    ) -> Result<T, String> {
+        let (answer, answered) = std::sync::mpsc::channel();
+        self.asks
+            .send(Ask::Files(Box::new(move |device| {
+                let _ = answer.send(work(device));
+            })))
+            .map_err(|_| "the phone's daemon is not running".to_owned())?;
+        answered
+            .recv_timeout(ANSWER_WITHIN)
+            .map_err(|_| "the phone's daemon did not answer in time".to_owned())
     }
 }
 
@@ -101,6 +145,11 @@ fn serve(mut device: Device, asked: &Receiver<Ask>, seen: &Mutex<Seen>, wake: &d
                 }
             }
             Ok(Ask::Workspace(chosen)) => workspace = Some(chosen),
+            // A file provider's ask is answered here and changes nothing the view shows.
+            Ok(Ask::Files(work)) => {
+                work(&mut device);
+                continue;
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }

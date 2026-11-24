@@ -43,10 +43,12 @@ use tilo_peer_state::owner::WriteRefusal;
 
 pub mod access;
 mod folders;
+pub mod paths;
 mod puts;
 pub mod socket;
 
 pub use folders::{FOLDERS_APP, Folder, FolderList, Folders};
+pub use paths::{Entry, EntryKind, Paths};
 pub use puts::Puts;
 
 /// How long the serving device's word that it holds a write is waited for. It answers only the

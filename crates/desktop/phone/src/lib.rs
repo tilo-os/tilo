@@ -16,6 +16,11 @@
 pub mod bundles;
 pub mod view;
 pub mod worker;
+/// The person's workspace files as the phone's file provider shows them.
+pub mod workspace_files;
+
+#[cfg(target_os = "android")]
+mod android;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -86,6 +91,16 @@ fn signed_manifest() -> Option<tilo_app_package::Manifest> {
 #[cfg(not(target_os = "android"))]
 fn signed_manifest() -> Option<tilo_app_package::Manifest> {
     None
+}
+
+/// The phone's device as a file provider reaches it: the same worker the view asks, started here
+/// when Android calls a provider before any window of the app opened in this process. A person
+/// signs in in the app, and the provider's roots are theirs as soon as the view's are.
+///
+/// # Errors
+/// The daemon did not start.
+pub fn files() -> Result<worker::Files, String> {
+    worker().map(worker::Worker::files)
 }
 
 /// The apps the phone opens: those the APK carries; elsewhere (a test, a developer's computer)

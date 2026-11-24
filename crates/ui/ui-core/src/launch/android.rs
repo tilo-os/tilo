@@ -120,30 +120,43 @@ fn install_environment(app: &AndroidApp) {
         crate::diag!("tilo: the activity reports no internal data path");
         return;
     };
-    let mut vars: Vec<(&str, std::ffi::OsString)> = super::android_env::directories(&files)
+    install_environment_in(&files);
+    if let Some(locale) = locale(app) {
+        set_var("LANG", format!("{locale}.UTF-8").into());
+    }
+}
+
+/// [`install_environment`]'s directories for an app whose `getFilesDir()` is `files`: what a
+/// process the system started without an activity installs, as a file provider's is, so the
+/// device daemon it starts reads and keeps everything in the app's sandbox too.
+pub fn install_environment_in(files: &std::path::Path) {
+    let mut vars: Vec<(&str, std::ffi::OsString)> = super::android_env::directories(files)
         .into_iter()
         .map(|(name, dir)| {
             let _ = std::fs::create_dir_all(&dir);
             (name, dir.into_os_string())
         })
         .collect();
-    if let Some(locale) = locale(app) {
-        vars.push(("LANG", format!("{locale}.UTF-8").into()));
-    }
     // The process belongs to the activity; there is no runtime host to
     // re-exec under, as a Linux launch would.
     vars.push(("TILO_RUNTIME_STANDALONE", "1".into()));
     for (name, value) in vars {
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "android_main runs before the app starts any thread that reads the environment; this is the process's launcher environment"
-        )]
-        // SAFETY: called first thing in `android_main`, before the app or the
-        // toolkit spawns threads; the only other threads are the JVM's and
-        // android-activity's, which do not read the C environment.
-        unsafe {
-            std::env::set_var(name, value);
-        }
+        set_var(name, value);
+    }
+}
+
+/// Put `name` in the process's environment before any Tilo code reads it: the JVM's own threads
+/// were started by the system, and the C environment is read by Tilo's code alone.
+fn set_var(name: &str, value: std::ffi::OsString) {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "android_main runs before the app starts any thread that reads the environment; this is the process's launcher environment"
+    )]
+    // SAFETY: no Tilo thread runs yet — `android_main` calls this first, and a file provider
+    // calls it from `onCreate` before it starts the daemon — and the threads the system started
+    // (the JVM's, android-activity's) read no variable Tilo sets here.
+    unsafe {
+        std::env::set_var(name, value);
     }
 }
 

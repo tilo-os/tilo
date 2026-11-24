@@ -1007,9 +1007,17 @@ fn xml_escape(text: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// The `AndroidManifest.xml` of an APK whose activity loads `lib<lib_name>.so`.
+/// The `AndroidManifest.xml` of an APK whose activity loads `lib<lib_name>.so`. `workspace_files`
+/// declares the app's documents provider, which serves the person's workspace files to Android's
+/// own pickers: only the app whose library answers it (`workspace-files` in its
+/// `[package.metadata.tilo-app]`) carries the entry.
 #[must_use]
-pub fn android_manifest(app: &AndroidMetadata, lib_name: &str, debuggable: bool) -> String {
+pub fn android_manifest(
+    app: &AndroidMetadata,
+    lib_name: &str,
+    debuggable: bool,
+    workspace_files: bool,
+) -> String {
     let id = xml_escape(&app.application_id);
     let permissions = app
         .permissions
@@ -1021,6 +1029,27 @@ pub fn android_manifest(app: &AndroidMetadata, lib_name: &str, debuggable: bool)
             );
             text
         });
+    let documents = if workspace_files {
+        format!(
+            r#"
+        <!-- The person's workspaces as roots of the system file picker: the Files app and every
+             app's file chooser browse the workspace's folders and open and save its files.
+             MANAGE_DOCUMENTS keeps it to the system, which is what replaces the picker. -->
+        <provider
+            android:name="so.tilo.android.TiloWorkspaceFiles"
+            android:authorities="{id}.tilo.workspace"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+"#
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
@@ -1077,7 +1106,7 @@ pub fn android_manifest(app: &AndroidMetadata, lib_name: &str, debuggable: bool)
             android:authorities="{id}.tilo.files"
             android:exported="false"
             android:grantUriPermissions="true" />
-    </application>
+{documents}    </application>
 </manifest>
 "#,
         code = app.version_code,
@@ -1622,7 +1651,12 @@ fn stage_apk(
     let manifest_path = stage.join("AndroidManifest.xml");
     std::fs::write(
         &manifest_path,
-        android_manifest(metadata, &lib_name, debuggable),
+        android_manifest(
+            metadata,
+            &lib_name,
+            debuggable,
+            serves_workspace_files(app_dir),
+        ),
     )?;
     set_epoch(stage)?;
 
@@ -1680,6 +1714,24 @@ fn copy_standalone_fonts(source: &Path, destination: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether `[package.metadata.tilo-app]` declares `workspace-files`, which the APK's manifest
+/// then carries the app's documents provider for: the library exports what serves it.
+fn serves_workspace_files(app_dir: &Path) -> bool {
+    let manifest_path = app_dir.join("Cargo.toml");
+    std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|manifest| {
+            manifest
+                .get("package")
+                .and_then(|package| package.get("metadata"))
+                .and_then(|metadata| metadata.get("tilo-app"))
+                .and_then(|app| app.get("workspace-files"))
+                .and_then(toml::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 /// The directories `[package.metadata.tilo-app]` names in `tilolang`, resolved against `app_dir`:
@@ -2936,13 +2988,19 @@ type = "gui"
             let mut metadata =
                 AndroidMetadata::from_manifest("field-notes", &manifest("off", "")).expect("metadata");
             metadata.label = "Notes & <Things>".to_owned();
-            let xml = android_manifest(&metadata, "field_notes", false);
+            let xml = android_manifest(&metadata, "field_notes", false, true);
             assert!(xml.contains(r#"package="so.example.field_notes""#));
             assert!(xml.contains(r#"android:versionCode="1002003""#));
             assert!(xml.contains(r#"android:label="Notes &amp; &lt;Things&gt;""#));
             assert!(xml.contains(r#"android:value="field_notes""#));
             assert!(xml.contains(r#"android:debuggable="false""#));
             assert!(xml.contains(r#"android:authorities="so.example.field_notes.tilo.files""#));
+            // The app's own documents provider only where its library serves the workspace files.
+            assert!(xml.contains(r#"android:authorities="so.example.field_notes.tilo.workspace""#));
+            assert!(xml.contains("android.content.action.DOCUMENTS_PROVIDER"));
+            let without = android_manifest(&metadata, "field_notes", false, false);
+            assert!(!without.contains("TiloWorkspaceFiles"));
+            assert!(!without.contains("DOCUMENTS_PROVIDER"));
             assert!(xml.contains("android.permission.POST_NOTIFICATIONS"));
             assert!(!xml.contains("android.permission.INTERNET"));
         }
