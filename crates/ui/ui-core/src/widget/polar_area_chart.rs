@@ -293,6 +293,24 @@ impl PolarAreaMarks {
             .collect();
     }
 
+    /// The ink a label reads in: the sector's own ink where it stands inside the sector, and
+    /// the page's where it stands beside the circle, since that is what it is drawn on.
+    fn label_ink(&self, index: usize, slot: usize, outside: bool, theme: &Theme) -> Color {
+        if outside {
+            return theme.tokens.colors.text_primary;
+        }
+        let fill = self.data.get(index).map_or_else(
+            || theme.tokens.colors.text_primary,
+            |datum| Self::color(datum, slot, theme),
+        );
+        // Dark words on a dark sector would not be read: the ink keeps its contrast.
+        theme.tokens.colors.ink_on(
+            fill,
+            theme.tokens.colors.text_primary,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        )
+    }
+
     fn draw_labels(
         &self,
         scene: &mut Scene,
@@ -306,10 +324,6 @@ impl PolarAreaMarks {
             if text.is_empty() {
                 continue;
             }
-            let fill = self.data.get(*index).map_or_else(
-                || theme.tokens.colors.text_primary,
-                |datum| Self::color(datum, *slot, theme),
-            );
             if let Some([from, to]) = leader {
                 scene.stroke(
                     &Stroke::new(1.0),
@@ -322,12 +336,7 @@ impl PolarAreaMarks {
             tr.draw_style(
                 scene,
                 &text,
-                // Dark words on a dark sector would not be read: the ink keeps its contrast.
-                theme.tokens.colors.ink_on(
-                    fill,
-                    theme.tokens.colors.text_primary,
-                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
-                ),
+                self.label_ink(*index, *slot, leader.is_some(), theme),
                 transform * Affine::translate((rect.x0, rect.y0)),
                 None,
                 &style,
@@ -686,6 +695,32 @@ mod tests {
         let chart = placed(months(), 1000.0, &Theme::light());
         assert_eq!(chart.marks.labels.len(), 12);
         assert!(chart.marks.legend.is_empty());
+    }
+
+    /// A label reads on what it stands on: its sector's fill where it stands inside, and the
+    /// page where it stands beside the circle, in both themes.
+    #[test]
+    fn a_label_reads_on_what_it_stands_on() {
+        for theme in [Theme::light(), Theme::dark()] {
+            for (data, width) in [(months(), 1000.0), (weeks(), 1000.0), (months(), 358.0)] {
+                let chart = placed(data, width, &theme);
+                for (index, slot, _, leader) in &chart.marks.labels {
+                    let outside = leader.is_some();
+                    let ink = chart.marks.label_ink(*index, *slot, outside, &theme);
+                    let ground = if outside {
+                        theme.tokens.colors.surfaces.base
+                    } else {
+                        let datum = &chart.marks.data[*index];
+                        PolarAreaMarks::color(datum, *slot, &theme)
+                    };
+                    assert!(
+                        crate::a11y::contrast_ratio(ink, ground)
+                            >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                        "at {width}: {ink:?} on {ground:?} is under 4.5:1"
+                    );
+                }
+            }
+        }
     }
 
     /// Weeks whose labels are too long for their wedges stand outside them with leader lines at
