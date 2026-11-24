@@ -209,14 +209,17 @@ impl Work {
     }
 }
 
-/// A field's value as tilolang writes one: none for `none`, the value inside `some`, else the
-/// value itself.
+/// A field's value as tilolang writes one: the value inside the tag a json field carries
+/// (`json`), none for `none`, the value inside `some`, else the value itself.
 fn unwrapped(held: Option<Value>) -> Option<Value> {
     match held? {
         Value::Null => None,
         Value::Object(tagged) if tagged.len() == 1 && tagged.contains_key("none") => None,
         Value::Object(mut tagged) if tagged.len() == 1 && tagged.contains_key("some") => {
             tagged.remove("some").and_then(|some| unwrapped(Some(some)))
+        }
+        Value::Object(mut tagged) if tagged.len() == 1 && tagged.contains_key("json") => {
+            tagged.remove("json").and_then(|json| unwrapped(Some(json)))
         }
         other => Some(other),
     }
