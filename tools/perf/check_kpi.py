@@ -4,11 +4,12 @@
 The measurements come from the harnesses that run on a device; the budgets
 here are what a person is owed on that class of device:
 
-- `session_perf`, a desktop frame-path measurement — build,
+- `session_perf`, the session's frame-path measurement — build,
   first frame, a steady frame, a typing frame, idle frames that did work; it
-  names its profile (`arriving` for the native session, `apps` for the page,
-  `activities` for the floating layer's cards), and a device class keeps one
-  budget table per profile because they fill a window differently;
+  names its profile (`arriving` for the shell on an untouched desktop, `apps`
+  for the shell with a note window in each place, `activities` for the floating
+  layer's cards over it), and a device class keeps one budget table per
+  profile because they fill the screen differently;
 - `startup_marks` (`tools/perf/startup_marks.py`) — the native session's own
   startup marks, from process start to the first presented frame.
 
@@ -36,9 +37,9 @@ BUDGETS = REPO / "tools" / "perf" / "kpi-budgets.toml"
 #: fields of that kind's JSON.
 KINDS = ("session", "startup_marks")
 
-#: The profiles a session measurement names: the native session draws chrome
-#: over its windows, the page draws chrome and its apps, and the floating layer
-#: draws activity cards over a shell.
+#: The profiles a session measurement names: the shell arrives on an untouched
+#: desktop, stands with a note window in each place, and carries the floating
+#: layer's activity cards over it.
 PROFILES = ("arriving", "apps", "activities")
 
 

@@ -94,16 +94,29 @@ case $group in
     exit "$status"
     ;;
   render)
-    # What a person notices: what a frame costs while it animates and while a
-    # document is typed into, and what frames offered at rest cost: the
-    # toolkit's own 4K redraw (ui-perf) and the framework's scaling with item
-    # counts.
+    # What a person notices: how long the session takes to draw the tilolang
+    # shell's first frame, what a frame costs while the shell shows something
+    # moving and while a note is typed into, and what frames offered at rest
+    # cost. session_perf measures the session's own loop, which draws the
+    # shell, per profile: `arriving` is the shell on an untouched desktop,
+    # `apps` the shell with a note window in each place, `activities` the
+    # floating layer's live activity cards over it. Its budgets are
+    # [devices.x86.session.*] in tools/perf/kpi-budgets.toml, so a phase over
+    # budget fails this check.
+    # Around it: the toolkit's own 4K redraw (ui-perf) and the framework's
+    # scaling with item counts.
+    cargo build --locked --release -p tilo-session --example session_perf
     cargo build --locked --release -p ui-examples --example ui-perf
     cargo build --locked --release -p tilo-app --features test-support --example framework-scaling
     test -r "$VK_DRIVER_FILES"
     examples=$target/release/examples
     env_json release lavapipe kvm > "$out/env.json"
     status=0
+    for profile in arriving apps activities; do
+      TILO_PERF_DEVICE=x86 "$examples/session_perf" --profile "$profile" \
+        --json "$out/session-$profile.json" || status=$?
+    done
+    python3 tools/perf/check_kpi.py check "$out"/session-*.json || status=$?
     python3 scripts/perf/render_bench.py timing "$examples/ui-perf" \
       --env-json "$out/env.json" --out "$out" --records "$out/render.jsonl" || status=$?
     for plan in "5000,50000 open framework-open" "5000 scroll framework-scroll" "500,1000,2500 focus framework-focus"; do

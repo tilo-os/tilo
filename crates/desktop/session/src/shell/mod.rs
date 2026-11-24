@@ -263,6 +263,9 @@ impl Shell {
         theme: ui::Theme,
         state: Option<&std::path::Path>,
     ) -> Result<Self, String> {
+        // What the person waits for before the shell can draw: its package compiled, its record
+        // read and its views made. The frame path after this is each frame's own cost.
+        tilo_startup_metrics::mark("shell-build-start");
         let packages = compile()?;
         let app = packages
             .last()
@@ -302,6 +305,7 @@ impl Shell {
         // switch: a shell that starts already knows what its person may pick (shell.md §6).
         shell.refresh_styles();
         shell.follow_deadline(None);
+        tilo_startup_metrics::mark("shell-build-done");
         Ok(shell)
     }
 
