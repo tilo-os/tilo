@@ -1060,7 +1060,7 @@ fn update_from_listing(
             "Updating {} {version} -> {} ({}/{total})…",
             app.display_name,
             app.version,
-            index + 1,
+            index.saturating_add(1),
         );
         let _ = std::io::stdout().flush();
         let mut progress = progress_reporter();
@@ -1112,6 +1112,10 @@ fn report_unreachable(items: &[app_cli::UnreachableRegistry]) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per repository command, each printing what the desktop answered"
+)]
 fn repo(cmd: RepoCmd) -> ExitCode {
     use app_cli::config;
     let sockets = tilo_control::client::sockets_from_env();
