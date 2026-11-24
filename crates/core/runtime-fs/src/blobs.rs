@@ -147,11 +147,10 @@ fn no_public_content() -> BlobError {
 
 /// Serve `listener` on a thread of its own.
 pub fn spawn_blob_server(
-    listener: std::os::unix::net::UnixListener,
+    listener: tilo_socket::Listener,
     backend: Arc<dyn BlobBackend>,
     runtime: tokio::runtime::Handle,
 ) -> io::Result<std::thread::JoinHandle<()>> {
-    listener.set_nonblocking(true)?;
     std::thread::Builder::new()
         .name("fs-blobs".into())
         .spawn(move || {
@@ -166,7 +165,7 @@ pub fn spawn_blob_server(
                 }
             };
             local_runtime.block_on(async move {
-                let listener = match tokio::net::UnixListener::from_std(listener) {
+                let listener = match tilo_socket::tokio::listener(listener) {
                     Ok(listener) => listener,
                     Err(error) => {
                         eprintln!("document media socket unusable: {error}");
@@ -197,7 +196,7 @@ pub fn spawn_blob_server(
 /// Serve one accepted connection: read its handoff, then answer frames until
 /// the peer goes away.
 pub async fn serve_connection(
-    mut stream: tokio::net::UnixStream,
+    mut stream: tilo_socket::tokio::Stream,
     backend: Arc<dyn BlobBackend>,
     runtime: tokio::runtime::Handle,
 ) -> io::Result<()> {

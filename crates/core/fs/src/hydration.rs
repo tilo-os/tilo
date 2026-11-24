@@ -583,7 +583,6 @@ impl Hydrator {
     /// cloned from the area where the filesystem shares extents.
     pub async fn export_local(&self, manifest_hash: Hash, dest: &std::path::Path) -> Result<bool> {
         use std::io::Write as _;
-        use std::os::unix::fs::PermissionsExt as _;
 
         let Some(manifest) = self.local_manifest_index(manifest_hash).await else {
             return Ok(false);
@@ -615,8 +614,9 @@ impl Hydrator {
                 file.write_all(&bytes)?;
             }
         }
-        file.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o400))?;
+        let mut read_only = file.as_file().metadata()?.permissions();
+        read_only.set_readonly(true);
+        file.as_file().set_permissions(read_only)?;
         file.persist(dest).map_err(|error| error.error)?;
         Ok(true)
     }

@@ -18,7 +18,7 @@ pub mod availability;
 pub mod cache_policy;
 #[cfg(feature = "filesystem")]
 pub mod caps_file;
-#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+#[cfg(all(feature = "filesystem", any(target_os = "linux", target_os = "macos")))]
 pub mod change_signal;
 #[cfg(feature = "filesystem")]
 pub mod clock;
@@ -32,12 +32,14 @@ pub mod document_media;
 #[cfg(feature = "filesystem")]
 pub mod durable_backup;
 #[cfg(feature = "filesystem")]
+pub mod errno;
+#[cfg(feature = "filesystem")]
 pub mod eviction;
 #[cfg(feature = "filesystem")]
 pub mod file_watch;
 #[cfg(feature = "filesystem")]
 pub mod fs;
-#[cfg(all(feature = "filesystem", not(target_os = "android")))]
+#[cfg(all(feature = "filesystem", any(target_os = "linux", target_os = "macos")))]
 pub mod fuse_session;
 #[cfg(feature = "filesystem")]
 pub mod hydration;
@@ -66,9 +68,9 @@ pub mod smart_monitor;
 #[cfg(feature = "filesystem")]
 pub mod storage;
 pub mod store;
-/// macOS's working folder while its file provider extension cannot yet write one: built for the
-/// Mac alone, and for the unit tests that keep it honest on any host.
-#[cfg(all(feature = "filesystem", unix, any(target_os = "macos", test)))]
+/// The workspace's folder where nothing mounts it: Windows', and macOS's while its file provider
+/// extension cannot yet write one; built for the unit tests that keep it honest on any host too.
+#[cfg(all(feature = "filesystem", any(target_os = "macos", windows, test)))]
 pub mod sync_folder;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;

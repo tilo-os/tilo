@@ -60,7 +60,40 @@ mod imp {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod imp {
+    use std::io;
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::path::Path;
+
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    use super::Space;
+
+    pub fn space(path: &Path) -> io::Result<Space> {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let (mut available, mut capacity, mut free) = (0_u64, 0_u64, 0_u64);
+        // SAFETY: a NUL-terminated wide path and three writable counters.
+        let done = unsafe {
+            GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &raw mut available,
+                &raw mut capacity,
+                &raw mut free,
+            )
+        };
+        if done == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Space {
+            capacity,
+            free,
+            available,
+        })
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 mod imp {
     use std::io;
     use std::path::Path;

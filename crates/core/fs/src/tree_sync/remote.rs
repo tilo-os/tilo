@@ -449,12 +449,9 @@ async fn linked_once(
     wakes: &mpsc::UnboundedSender<Wake>,
 ) -> Result<(), String> {
     let stream = tilo_files::native::socket::connect(socket)
-        .and_then(|stream| {
-            stream.set_nonblocking(true)?;
-            tokio::net::UnixStream::from_std(stream)
-        })
+        .and_then(tilo_files::native::socket::tokio::from_std)
         .map_err(|error| format!("connect to {}: {error}", socket.display()))?;
-    let (mut reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = tokio::io::split(stream);
     FRAMING
         .write_value_async(
             &mut writer,

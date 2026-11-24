@@ -2,6 +2,7 @@
 //! the process that asked, carried out on this mount's tree and store, and replied to.
 
 use super::*;
+use std::os::unix::ffi::OsStrExt as _;
 
 impl Filesystem for QuickFS {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), io::Error> {

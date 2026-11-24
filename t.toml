@@ -4613,6 +4613,16 @@ requires = ["arch=x86_64"]
 on = ["idle"]
 
 [[check]]
+name = "windows/x86_64-platform"
+# The platform tests Wine cannot show (tools/ci/windows/wine-skip.txt): a pipe's access list and
+# its first instance, identity storage's private directories, and apps confined in their
+# AppContainers. They need Windows itself.
+run = "bash tools/ci/windows/native-test.sh /target/windows/x86_64/runtime"
+needs = ["build/windows-runtime-x86_64"]
+requires = ["os=windows"]
+default = false
+
+[[check]]
 name = "wine/windows-x86_64-install"
 # Fetches from mirrors, registries and release hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }

@@ -338,8 +338,6 @@ pub fn serve_socket(
     socket: &Path,
     media: Arc<DocumentMedia>,
 ) -> Result<std::thread::JoinHandle<()>> {
-    use std::os::unix::fs::PermissionsExt;
-
     match std::fs::symlink_metadata(socket) {
         Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_dir() => {
             anyhow::bail!("{} is not a socket path", socket.display());
@@ -349,7 +347,13 @@ pub fn serve_socket(
         Err(error) => return Err(error.into()),
     }
     let listener = tilo_files::native::socket::bind(socket)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
+    // A Unix socket is reached by whoever its mode lets in; a named pipe is this account's alone
+    // from the moment it is made.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o660))?;
+    }
     let handle = runtime_fs::blobs::spawn_blob_server(
         listener,
         media as Arc<dyn BlobBackend>,

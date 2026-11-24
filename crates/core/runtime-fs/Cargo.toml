@@ -18,6 +18,8 @@ path = "src/lib.rs"
 tilo-fs-client = { version = "0.1.0", path = "../tilo-fs-client" }
 tilo-advisory-lock = { version = "0.1.0", path = "../../platform/advisory-lock" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# The document-media server listens on this login's local socket: a Unix socket, or a named pipe on Windows.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket", features = ["tokio"] }
 blake3.workspace = true
 cap-std = "3.4.6"
 rustix = { workspace = true, features = ["fs", "process"] }

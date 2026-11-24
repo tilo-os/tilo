@@ -45,10 +45,9 @@ pub enum LeaseSource {
 /// Splits a root-relative path into its name components. Anything that is not a plain name (`..`, a
 /// root, a prefix) is refused.
 pub fn path_components(rel: &Path) -> Result<Vec<Vec<u8>>, i32> {
-    use std::os::unix::ffi::OsStrExt as _;
     rel.components()
         .map(|c| match c {
-            Component::Normal(name) => Ok(name.as_bytes().to_vec()),
+            Component::Normal(name) => Ok(name.as_encoded_bytes().to_vec()),
             Component::CurDir => Ok(Vec::new()),
             _ => Err(libc::EINVAL),
         })
@@ -81,7 +80,7 @@ fn posix_of(ns: &crate::namespace::Namespace, ino: u64, dir: bool) -> PosixAttrs
 }
 
 fn to_errno(error: &std::io::Error) -> i32 {
-    error.raw_os_error().unwrap_or(EIO)
+    crate::errno::code(error)
 }
 
 impl QuickFS {
@@ -219,7 +218,7 @@ impl QuickFS {
         attrs: PosixAttrs,
         fence: Option<VersionFence>,
     ) -> std::io::Result<()> {
-        let code = std::io::Error::from_raw_os_error;
+        let code = crate::errno::error;
         let components = path_components(rel).map_err(code)?;
         let Some((name, parents)) = components.split_last() else {
             return Err(code(EISDIR));
@@ -266,7 +265,7 @@ impl QuickFS {
         fence: Option<VersionFence>,
         workspace: Option<collab_types::WorkspaceId>,
     ) -> std::io::Result<()> {
-        let code = std::io::Error::from_raw_os_error;
+        let code = crate::errno::error;
         if fence.is_some() {
             let ino = self
                 .create_empty_file_stamped(parent, name, mtime_ms)
@@ -620,7 +619,6 @@ impl QuickFS {
     /// The entries of the directory at `rel`, as [`Self::tree_snapshot`]
     /// describes them.
     pub fn list_path(&self, rel: &Path) -> Result<Vec<TreeEntry>, i32> {
-        use std::os::unix::ffi::OsStrExt as _;
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
         if !self.ino_in_view(ino) {
@@ -634,8 +632,7 @@ impl QuickFS {
             .into_iter()
             .filter(|(_, _, name)| name != "." && name != "..")
             .filter_map(|(_, _, name)| {
-                let name = std::ffi::OsStr::from_bytes(name.as_bytes());
-                self.entry_at(&rel.join(name))
+                self.entry_at(&rel.join(crate::node::host_name(name.as_bytes())))
             })
             .collect())
     }

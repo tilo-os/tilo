@@ -41,7 +41,7 @@ pub struct StorageAuthority {
 
 /// Serve the narrow storage protocol. The caller owns socket placement and
 /// permissions; no document bytes or mutation operations are exposed here.
-pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthority) {
+pub async fn serve(listener: tilo_socket::tokio::Listener, authority: StorageAuthority) {
     loop {
         let Ok((mut stream, _)) = listener.accept().await else {
             continue;

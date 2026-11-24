@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write as _};
-use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -24,14 +23,55 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    fn of(meta: &fs::Metadata) -> Self {
+    /// The stamp of `path`, whose own metadata (not a link's target's) is `meta`.
+    #[cfg_attr(
+        unix,
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "Windows reads the file's id from the file, which can fail"
+        )
+    )]
+    fn of(path: &Path, meta: &fs::Metadata) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            let _ = path;
+            Ok(Self::with_id(meta, unix_id(meta)))
+        }
+        #[cfg(not(unix))]
+        {
+            let stamp = tilo_files::native::FileStamp::of(path)?
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+            Ok(Self::with_id(meta, folded(stamp.id())))
+        }
+    }
+
+    /// The stamp of the open `file`.
+    fn of_file(file: &fs::File) -> io::Result<Self> {
+        let meta = file.metadata()?;
+        #[cfg(unix)]
+        {
+            Ok(Self::with_id(&meta, unix_id(&meta)))
+        }
+        #[cfg(not(unix))]
+        {
+            let stamp = tilo_files::native::FileStamp::of_file(file)?;
+            Ok(Self::with_id(&meta, folded(stamp.id())))
+        }
+    }
+
+    fn with_id(meta: &fs::Metadata, (dev, ino): (u64, u64)) -> Self {
+        let mtime_ns = meta
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |since| {
+                i128::try_from(since.as_nanos()).unwrap_or(i128::MAX)
+            });
         Self {
             size: meta.len(),
-            mtime_ns: i128::from(meta.mtime())
-                .saturating_mul(1_000_000_000)
-                .saturating_add(i128::from(meta.mtime_nsec())),
-            dev: meta.dev(),
-            ino: meta.ino(),
+            mtime_ns,
+            dev,
+            ino,
         }
     }
 
@@ -47,20 +87,38 @@ pub struct LocalEntry {
 }
 
 pub fn stat(path: &Path) -> io::Result<Option<LocalEntry>> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) => Ok(entry_of(&meta)),
+    match fs::symlink_metadata(path).and_then(|meta| entry_of(path, &meta)) {
+        Ok(entry) => Ok(entry),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
 }
 
 /// Symbolic links and special files are neither followed nor imported.
-fn entry_of(meta: &fs::Metadata) -> Option<LocalEntry> {
+fn entry_of(path: &Path, meta: &fs::Metadata) -> io::Result<Option<LocalEntry>> {
     let kind = meta.file_type();
-    (kind.is_dir() || kind.is_file()).then(|| LocalEntry {
+    if !(kind.is_dir() || kind.is_file()) {
+        return Ok(None);
+    }
+    Ok(Some(LocalEntry {
         dir: kind.is_dir(),
-        stamp: Stamp::of(meta),
-    })
+        stamp: Stamp::of(path, meta)?,
+    }))
+}
+
+/// A Unix file's device and inode.
+#[cfg(unix)]
+fn unix_id(meta: &fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt as _;
+    (meta.dev(), meta.ino())
+}
+
+/// A Windows file's volume and its 128-bit id, folded to the 64 bits a stamp keeps: NTFS ids fit
+/// in the low half, which is kept as it is.
+#[cfg(not(unix))]
+fn folded((volume, file): (u64, u128)) -> (u64, u64) {
+    let (high, low) = ((file >> 64) as u64, file as u64);
+    (volume, low ^ high)
 }
 
 /// Every plain file and directory below `root`, by `/`-separated relative path;
@@ -82,7 +140,13 @@ pub fn scan(root: &Path) -> io::Result<BTreeMap<String, LocalEntry>> {
             if ignored(&name) {
                 continue;
             }
-            let Some(local) = entry.metadata().ok().as_ref().and_then(entry_of) else {
+            let path = entry.path();
+            let Some(local) = entry
+                .metadata()
+                .and_then(|meta| entry_of(&path, &meta))
+                .ok()
+                .flatten()
+            else {
                 continue;
             };
             let rel = if dir.is_empty() {
@@ -109,7 +173,7 @@ pub fn write_atomically(path: &Path, bytes: &[u8], mtime_ms: u64) -> io::Result<
     tilo_files::native::atomic::write_streaming(path, |file| {
         file.write_all(bytes)?;
         file.set_modified(mtime)?;
-        stamp = Some(Stamp::of(&file.metadata()?));
+        stamp = Some(Stamp::of_file(file)?);
         Ok(())
     })?;
     stamp.ok_or_else(|| io::Error::other("the streamed write computed no stamp"))
@@ -141,5 +205,5 @@ pub fn remove_host_files(dir: &Path) -> io::Result<()> {
 
 pub fn create_dir(path: &Path) -> io::Result<Stamp> {
     fs::create_dir_all(path)?;
-    Ok(Stamp::of(&fs::symlink_metadata(path)?))
+    Stamp::of(path, &fs::symlink_metadata(path)?)
 }

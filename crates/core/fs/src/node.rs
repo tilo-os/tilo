@@ -1,14 +1,14 @@
 //! A node's attributes as the tree keeps them. Where a mount presents the tree (Linux and macOS)
-//! they are FUSE's own types, handed to the kernel unchanged. An Android app mounts nothing, so
-//! there they are plain types with the same fields.
+//! they are FUSE's own types, handed to the kernel unchanged. Without FUSE (an Android app, Windows)
+//! nothing is mounted, so there they are plain types with the same fields.
 
-#[cfg(not(target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use fuser::{FileAttr, FileType, INodeNo};
 
-#[cfg(target_os = "android")]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use plain::{FileAttr, FileType, INodeNo};
 
-#[cfg(target_os = "android")]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod plain {
     use std::time::SystemTime;
 
@@ -52,5 +52,42 @@ mod plain {
         pub rdev: u32,
         pub blksize: u32,
         pub flags: u32,
+    }
+}
+
+/// A name as the tree keeps it (bytes) as the host's own: the same bytes on Unix; on Windows, whose
+/// names are Unicode, the name read as UTF-8, with what is not UTF-8 replaced.
+#[must_use]
+pub fn host_name(name: &[u8]) -> std::borrow::Cow<'_, std::ffi::OsStr> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        std::borrow::Cow::Borrowed(std::ffi::OsStr::from_bytes(name))
+    }
+    #[cfg(not(unix))]
+    {
+        match String::from_utf8_lossy(name) {
+            std::borrow::Cow::Borrowed(name) => {
+                std::borrow::Cow::Borrowed(std::ffi::OsStr::new(name))
+            }
+            std::borrow::Cow::Owned(name) => std::borrow::Cow::Owned(name.into()),
+        }
+    }
+}
+
+/// The user and group a node is shown as owned by: this process's own, which on Unix the mount's
+/// files are. Windows has no numeric owner; a node there is shown as owned by user and group 0.
+#[must_use]
+pub fn owner() -> (u32, u32) {
+    #[cfg(unix)]
+    {
+        (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        (0, 0)
     }
 }

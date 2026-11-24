@@ -3,8 +3,6 @@
 //! cost follows the changes and not the tree.
 
 use std::collections::{BTreeSet, HashMap};
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use super::{Namespace, ROOT_ID};
@@ -101,7 +99,7 @@ impl Namespace {
             }
             hops = hops.saturating_sub(1);
             let (parent, name) = self.tree.placement.get(cur)?;
-            names.push(OsStr::from_bytes(name.as_bytes()));
+            names.push(crate::node::host_name(name.as_bytes()));
             cur = parent;
         }
         Some(names.into_iter().rev().collect())

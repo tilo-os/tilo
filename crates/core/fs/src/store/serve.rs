@@ -179,7 +179,7 @@ async fn export_bao(files: Arc<FileArea>, msg: ExportBaoMsg) {
         }
         Source::Chunk { file, offset, len } => {
             let bytes = tokio::task::spawn_blocking(move || {
-                use std::os::unix::fs::FileExt as _;
+                use tilo_files::native::FileAt as _;
                 let mut bytes = vec![0_u8; len as usize];
                 file.read_exact_at(&mut bytes, offset)?;
                 Ok::<_, std::io::Error>(bytes)

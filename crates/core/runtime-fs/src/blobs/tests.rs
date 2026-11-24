@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::Mutex;
 
 use runtime_portal::NotAvailable;
@@ -162,7 +161,7 @@ impl Harness {
     fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("blobs.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let listener = tilo_socket::bind(&socket).unwrap();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -184,7 +183,7 @@ impl Harness {
     }
 
     fn app(&self, workspace: &str, app: &str) -> BlobClient {
-        let mut stream = StdUnixStream::connect(&self.socket).unwrap();
+        let mut stream = tilo_socket::connect(&self.socket).unwrap();
         write_handoff(
             &mut stream,
             &BlobActor::App(BlobScope::new(workspace, app).unwrap()),
@@ -520,15 +519,14 @@ fn recording_client() -> Recorded {
         content: Arc::clone(&content),
         writes: Arc::clone(&writes),
     });
-    let (app_end, server_end) = StdUnixStream::pair().unwrap();
-    server_end.set_nonblocking(true).unwrap();
+    let (app_end, server_end) = tilo_socket::pair().unwrap();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         runtime.block_on(async move {
-            let server_end = tokio::net::UnixStream::from_std(server_end).unwrap();
+            let server_end = tilo_socket::tokio::from_std(server_end).unwrap();
             let _ = serve_connected(server_end, recording).await;
         });
     });
@@ -682,7 +680,7 @@ where
     F: FnOnce(Arc<Object>) -> Fut,
     Fut: Future<Output = ()>,
 {
-    let mut stream = StdUnixStream::connect(&harness.socket).unwrap();
+    let mut stream = tilo_socket::connect(&harness.socket).unwrap();
     write_handoff(
         &mut stream,
         &BlobActor::App(BlobScope::new("workspace-1", "so.tilo.photos").unwrap()),

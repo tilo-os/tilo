@@ -1,5 +1,5 @@
 //! A plain folder mirroring the workspace both ways, for hosts where the
-//! workspace is not mounted: stock macOS, or a Linux desktop without FUSE.
+//! workspace is not mounted: Windows, stock macOS, or a Linux desktop without FUSE.
 //!
 //! The folder is an ordinary directory any program on the host can use.
 //! The workspace stays the authority. A change made in the folder enters it
@@ -43,7 +43,8 @@
 //! a file.
 //!
 //! [`SyncFolder::watch`] runs passes on change: `FSEvents` on macOS, `inotify`
-//! on Linux, and a periodic pass that picks up workspace changes.
+//! on Linux, `ReadDirectoryChangesW` on Windows, and a periodic pass that picks
+//! up workspace changes.
 
 mod baseline;
 mod local;
@@ -221,7 +222,7 @@ fn rel(path: &str) -> &Path {
 }
 
 fn errno(errno: i32) -> io::Error {
-    io::Error::from_raw_os_error(errno)
+    crate::errno::error(errno)
 }
 
 fn depth(path: &str) -> usize {

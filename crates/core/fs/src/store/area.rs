@@ -24,10 +24,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::ops::Range;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use tilo_files::native::FileAt as _;
 
 use bytes::Bytes;
 use fs_content::RangeSet;
@@ -1919,7 +1919,7 @@ pub fn read_entry_unlocked(
     key: &AreaKey,
     max_bytes: u64,
 ) -> io::Result<Option<Vec<u8>>> {
-    use std::os::unix::fs::MetadataExt as _;
+    use tilo_files::native::FileStamp;
     let path = data_dir(dir).join(hex::encode(key));
     let listed = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -1929,6 +1929,9 @@ pub fn read_entry_unlocked(
     if !listed.is_file() || listed.len() > max_bytes {
         return Ok(None);
     }
+    let Some(stamp) = FileStamp::of(&path)? else {
+        return Ok(None);
+    };
     let file = match File::open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -1937,7 +1940,7 @@ pub fn read_entry_unlocked(
     // The file read must be the one inspected: an entry replaced in between is simply not read this
     // time.
     let opened = file.metadata()?;
-    if (opened.dev(), opened.ino()) != (listed.dev(), listed.ino()) || opened.len() > max_bytes {
+    if FileStamp::of_file(&file)? != stamp || opened.len() > max_bytes {
         return Ok(None);
     }
     let mut bytes = Vec::with_capacity(usize::try_from(opened.len()).unwrap_or(0));

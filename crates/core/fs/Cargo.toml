@@ -47,6 +47,7 @@ filesystem = [
     "dep:tilo-user-identity",
     "dep:tilo-power-mgmt",
     "dep:tilo-nm",
+    "dep:host-fs",
     "document-media",
     "dep:libc",
     "dep:rustix",
@@ -97,6 +98,8 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # session's collaboration broker, the same path the launcher hands apps.
 tilo-paths.workspace = true
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# This login's local sockets on the runtime: a Unix socket, or a named pipe on Windows.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket", features = ["tokio"] }
 anyhow.workspace = true
 bytes.workspace = true
 clap = { workspace = true, optional = true }
@@ -138,6 +141,8 @@ tilo-power-mgmt = { version = "0.1.0", path = "../../os/power", default-features
 # NetworkManager's connectivity and primary-connection metering, followed by
 # signal, for the same policy.
 tilo-nm = { version = "0.1.0", path = "../../os/tilo-nm", optional = true }
+# How much room the disk under the cache has left, on every host, for the same policy.
+host-fs = { version = "0.1.0", path = "../host-fs", optional = true }
 runtime-fs = { version = "0.1.0", path = "../runtime-fs", optional = true }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true }
 libc = { workspace = true, optional = true }

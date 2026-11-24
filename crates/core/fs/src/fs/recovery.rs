@@ -2,8 +2,6 @@
 //! has the content they were derived from, kept as a sibling copy when it does not, and left
 //! staged when neither is possible yet.
 
-use std::io;
-
 use crate::acl::Access;
 
 use super::{QuickFS, VersionSource, commit_errno, is_permanent_commit_failure, unsaved_copy_name};
@@ -109,7 +107,7 @@ impl QuickFS {
                 }
                 Err(errno) => eprintln!(
                     "staged bytes for {label} could not be restored ({}); kept in {}",
-                    io::Error::from_raw_os_error(errno),
+                    crate::errno::error(errno),
                     store.dir().display()
                 ),
             }

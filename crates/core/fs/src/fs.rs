@@ -1,11 +1,11 @@
-// An Android app mounts nothing: the parts of the filesystem only its FUSE adapter calls have
-// no caller there.
+// Without FUSE (an Android app, Windows) nothing is mounted: the parts of the filesystem only its
+// FUSE adapter calls have no caller there.
 #![cfg_attr(
-    target_os = "android",
+    not(any(target_os = "linux", target_os = "macos")),
     allow(
         dead_code,
         unused_imports,
-        reason = "only the FUSE adapter uses them, and Android mounts nothing"
+        reason = "only the FUSE adapter uses them, and nothing is mounted without FUSE"
     )
 )]
 //! The FUSE operations, and the filtered view they serve.
@@ -23,22 +23,20 @@
 //! than writing over state the app cannot see. The capability model cannot produce
 //! that situation: a `Restrict` is a ceiling and every verb implies `Read`, so
 //! reaching it needs a direct [`crate::acl::AclEntry`] with `write` but not `read`.
+use crate::errno::EDQUOT;
 use crate::node::{FileAttr, FileType, INodeNo};
-#[cfg(not(target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use fuser::{
     BackingId, BsdFileFlags, Errno, FileHandle, Filesystem, FopenFlags, Generation, InitFlags,
     KernelConfig, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite,
     ReplyXattr, Request, TimeOrNow, WriteFlags,
 };
-use libc::{
-    EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EROFS,
-};
+use libc::{EBUSY, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -185,7 +183,7 @@ impl BufferState {
 /// system, so reads through a passthrough handle are not re-checked against the ACL.
 /// Registering one needs `CAP_SYS_ADMIN` in the initial user namespace; the first
 /// refusal disables passthrough for the mount.
-#[cfg(not(target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct Passthrough {
     dir: std::path::PathBuf,
     kernel_ready: std::sync::atomic::AtomicBool,
@@ -193,7 +191,7 @@ struct Passthrough {
     backing: Mutex<HashMap<u64, (BackingId, std::fs::File)>>,
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Passthrough {
     fn usable(&self) -> bool {
         self.kernel_ready.load(Ordering::Acquire) && !self.disabled.load(Ordering::Acquire)
@@ -229,13 +227,11 @@ pub(crate) enum VersionSource<'a> {
 
 /// Create `dir` owner-only and remove stage files a previous run left.
 fn prepare_stage_dir(dir: &std::path::Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::create_dir_all(dir)?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    tilo_files::native::private::directory(dir)?;
     for entry in std::fs::read_dir(dir)?.flatten() {
         if entry
             .file_name()
-            .as_bytes()
+            .as_encoded_bytes()
             .starts_with(write_stage::STAGE_FILE_PREFIX.as_bytes())
         {
             let _ = std::fs::remove_file(entry.path());
@@ -260,7 +256,7 @@ const fn is_permanent_commit_failure(errno: i32) -> bool {
 }
 
 fn commit_errno(error: &io::Error) -> i32 {
-    error.raw_os_error().unwrap_or(EIO)
+    crate::errno::code(error)
 }
 
 /// The ceiling for a memory-backed stage. Sparse disk-backed stages do not allocate their
@@ -489,7 +485,7 @@ impl AclVisibleDocumentIndex {
 
 pub mod activity;
 mod attributes;
-#[cfg(not(target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod fuse;
 mod listing;
 pub mod native_ops;
@@ -528,7 +524,7 @@ pub struct QuickFS {
     /// The content each inode's kernel page cache was filled from, so an `open` of
     /// unchanged content keeps the cache and an open after any change drops it.
     kernel_cached: Mutex<HashMap<u64, Option<Hash>>>,
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     passthrough: Option<Passthrough>,
     /// Who the files on the mount are presented as owned by (`None`: each caller).
     owner: Option<(u32, u32)>,
@@ -586,7 +582,7 @@ pub struct QuickFS {
 
     /// Tells inotify of the changes the kernel did not make; `None` leaves watchers to
     /// poll.
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     change_signal: Option<Arc<crate::change_signal::ChangeSignal>>,
     /// The requests the mount is answering, for a process ending to wait for.
     activity: Arc<activity::Activity>,
@@ -615,7 +611,7 @@ impl QuickFS {
             commit_locks: Mutex::new(HashMap::new()),
             unsaved: None,
             kernel_cached: Mutex::new(HashMap::new()),
-            #[cfg(not(target_os = "android"))]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             passthrough: None,
             owner: None,
             open_file_handles: Mutex::new(HashMap::new()),
@@ -641,7 +637,7 @@ impl QuickFS {
             changeset_open: AtomicBool::new(false),
             announce_held: AtomicBool::new(false),
 
-            #[cfg(not(target_os = "android"))]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             change_signal: None,
             activity: Arc::default(),
             #[cfg(test)]
@@ -923,7 +919,7 @@ impl QuickFS {
             }
             Err(errno) => {
                 self.buffer_states().entry(ino).or_default().failure = Some(errno);
-                let detail = io::Error::from_raw_os_error(errno).to_string();
+                let detail = crate::errno::error(errno).to_string();
                 match self.unsaved.as_ref().filter(|_| workspace.is_none()) {
                     Some(store) => match self.stage_unsaved(
                         store,
@@ -1101,7 +1097,7 @@ impl QuickFS {
         if new_size == 0 {
             return self.commit_content(ino, &[]);
         }
-        let (stage, _) = self.new_stage(ino).map_err(io::Error::from_raw_os_error)?;
+        let (stage, _) = self.new_stage(ino).map_err(crate::errno::error)?;
         let stage = stage.shared();
         stage.lock().set_len(new_size)?;
         self.fill_stage(&stage)?;
@@ -1187,14 +1183,14 @@ impl QuickFS {
             Ok(path) => {
                 eprintln!(
                     "inode {ino} could not take another version ({}); its bytes were kept as {path}",
-                    io::Error::from_raw_os_error(errno)
+                    crate::errno::error(errno)
                 );
                 self.clear_unsaved(ino);
                 self.drop_buffer(ino);
             }
             Err(copy_errno) => eprintln!(
                 "inode {ino} could not take another version and no copy could be created ({}); bytes stay in memory and staged",
-                io::Error::from_raw_os_error(copy_errno)
+                crate::errno::error(copy_errno)
             ),
         }
     }
@@ -1252,7 +1248,7 @@ impl QuickFS {
                 Some(offset) => guard.write(offset, data),
                 None => guard.append(data),
             };
-            outcome.map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
+            outcome.map_err(|error| crate::errno::code(&error))?;
             stage.note_len(&guard);
             // The generation moves under the stage lock, so a commit's
             // generation always describes the bytes it committed.
@@ -1318,7 +1314,7 @@ impl QuickFS {
             }
             guard
                 .set_len(new_size)
-                .map_err(|error| error.raw_os_error().unwrap_or(EIO))?;
+                .map_err(|error| crate::errno::code(&error))?;
             stage.note_len(&guard);
             self.note_buffer_mutation(ino, opened, base);
             drop(guard);
@@ -1489,7 +1485,7 @@ impl QuickFS {
     /// Offer kernel passthrough for read-only opens of fully local files, with backing
     /// files under `dir`. Takes effect only when the kernel negotiates it at `init`.
     #[must_use]
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn with_passthrough(mut self, dir: std::path::PathBuf) -> Self {
         self.passthrough = Some(Passthrough {
             dir,
@@ -1517,7 +1513,7 @@ impl QuickFS {
     /// the file still has; otherwise no flag, which makes the kernel drop the cache.
     /// Buffered inodes never keep it, and neither do files whose payload is
     /// not resident, so "Free Local Space" also frees the kernel's copy.
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn open_cache_flags(&self, ino: u64) -> FopenFlags {
         if self.inode_workspace(ino).is_some() {
             self.kernel_cached.lock_recover().remove(&ino);
@@ -1538,7 +1534,7 @@ impl QuickFS {
 
     /// A read-only backing file holding exactly the current content of `ino`, when
     /// passthrough is usable and every chunk is local.
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn passthrough_backing(&self, ino: u64) -> Option<std::fs::File> {
         let passthrough = self.passthrough.as_ref().filter(|p| p.usable())?;
         if self.payload_not_resident(ino) || self.buffers().contains_key(&ino) {
@@ -1896,7 +1892,7 @@ impl QuickFS {
     /// lists; its worker raises the signals once the mount is up
     /// ([`crate::change_signal`]).
     #[must_use]
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn with_change_signal(mut self, signal: Arc<crate::change_signal::ChangeSignal>) -> Self {
         self.change_signal = Some(signal);
         self
@@ -2893,7 +2889,7 @@ impl QuickFS {
         clippy::significant_drop_tightening,
         reason = "the open-handle snapshot must remain stable across authorization and inode validation"
     )]
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn check_open_handle_access(
         &self,
         ino: u64,
@@ -2975,7 +2971,7 @@ impl QuickFS {
             return Vec::new();
         };
         let extension_of = |name: &[u8]| {
-            std::path::Path::new(OsStr::from_bytes(name))
+            std::path::Path::new(&*crate::node::host_name(name))
                 .extension()
                 .and_then(OsStr::to_str)
                 .map(str::to_ascii_lowercase)
@@ -3165,7 +3161,7 @@ impl QuickFS {
         let workspace = self.inode_workspace(ino);
         if let Some(stage) = self.stage(ino) {
             if stage.lock().workspace() != workspace {
-                return Err(io::Error::from_raw_os_error(ENOENT));
+                return Err(crate::errno::error(ENOENT));
             }
             return self.read_stage_blocking(&stage, 0, u64::MAX);
         }
@@ -3229,7 +3225,7 @@ impl QuickFS {
             .path_for(ino)
             .and_then(|path| self.hydrator.scoped_workspace(&path));
         if current != workspace {
-            return Err(io::Error::from_raw_os_error(libc::EXDEV));
+            return Err(crate::errno::error(libc::EXDEV));
         }
         Ok(())
     }
@@ -3252,7 +3248,7 @@ impl QuickFS {
         if let Some((fault_ino, errno)) = *self.commit_fault.lock_recover()
             && fault_ino == ino
         {
-            return Err(io::Error::from_raw_os_error(errno));
+            return Err(crate::errno::error(errno));
         }
         let (hash, byte_len) = match stored {
             Some((hash, len)) => (Some(hash), len),
@@ -3260,15 +3256,13 @@ impl QuickFS {
         };
         if workspace.is_some() {
             self.check_access(ino, Access::Write)
-                .map_err(io::Error::from_raw_os_error)?;
+                .map_err(crate::errno::error)?;
         }
         let (expected_hash, expected_len, stamp) = {
             let ns = self.ns();
             self.check_version_scope(&ns, ino, workspace)?;
             let expected_hash = ns.hash_for(ino);
-            let attr = ns
-                .getattr(ino)
-                .ok_or_else(|| io::Error::from_raw_os_error(ENOENT))?;
+            let attr = ns.getattr(ino).ok_or_else(|| crate::errno::error(ENOENT))?;
             if expected_hash == hash && attr.size == byte_len {
                 return Ok(());
             }
@@ -3288,7 +3282,7 @@ impl QuickFS {
             if !installed
                 && (ns.hash_for(ino) != expected_hash || current_len != Some(expected_len))
             {
-                return Err(io::Error::from_raw_os_error(EBUSY));
+                return Err(crate::errno::error(EBUSY));
             }
             if let Some(fence) = fence
                 && let Some(record) = ns.document_id_for(ino)
@@ -3357,9 +3351,9 @@ impl QuickFS {
         Ok(ino)
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn remove_entry(&self, parent: INodeNo, name: &OsStr, expect_dir: bool, reply: ReplyEmpty) {
-        match self.delete_named(parent.0, name.as_bytes(), expect_dir) {
+        match self.delete_named(parent.0, name.as_encoded_bytes(), expect_dir) {
             Ok(()) => reply.ok(),
             Err(error) => reply.error(to_errno(error)),
         }
@@ -3429,14 +3423,14 @@ impl QuickFS {
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn to_errno(e: i32) -> Errno {
-    io::Error::from_raw_os_error(e).into()
+    crate::errno::error(e).into()
 }
 
 /// Reply to a `getxattr` following the two-call protocol: `size == 0` asks for the
 /// length; a non-zero size must fit the value, else `ERANGE`.
-#[cfg(not(target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn reply_xattr_bytes(reply: ReplyXattr, bytes: &[u8], size: u32) {
     if size == 0 {
         reply.size(u32::try_from(bytes.len()).unwrap_or(u32::MAX));
@@ -4054,7 +4048,7 @@ fn pinned_candidate_is_current(
 
 /// The ACL accesses an open of the given mode requires: read for `O_RDONLY`, write for
 /// `O_WRONLY`, both for `O_RDWR`.
-#[cfg(not(target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn required_accesses(mode: OpenAccMode) -> &'static [Access] {
     match mode {
         OpenAccMode::O_RDONLY => &[Access::Read],

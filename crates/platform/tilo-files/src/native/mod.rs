@@ -37,6 +37,8 @@ pub mod lock;
 pub mod mapped;
 pub mod migration;
 pub mod nofollow;
+mod positioned;
+pub use positioned::FileAt;
 pub mod private;
 pub(crate) mod rename;
 pub use rename::{FileRename, rename_file_noreplace};

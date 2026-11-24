@@ -18,10 +18,10 @@
 
 use std::io;
 use std::ops::Range;
-use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use tilo_files::native::FileAt as _;
 
 use iroh_blobs::Hash;
 
@@ -90,14 +90,14 @@ struct MemoryBacking {
 
 impl MemoryBacking {
     fn reserve(&mut self, len: u64) -> io::Result<()> {
-        super::check_staged_size(len).map_err(io::Error::from_raw_os_error)?;
+        super::check_staged_size(len).map_err(crate::errno::error)?;
         let growth = len.saturating_sub(self.reserved);
         if growth == 0 {
             return Ok(());
         }
         let mut total = self.budget.reserved.load(Ordering::Acquire);
         loop {
-            super::check_staged_growth(total, growth).map_err(io::Error::from_raw_os_error)?;
+            super::check_staged_growth(total, growth).map_err(crate::errno::error)?;
             match self.budget.reserved.compare_exchange_weak(
                 total,
                 total.saturating_add(growth),
@@ -139,11 +139,11 @@ impl Drop for MemoryBacking {
 }
 
 fn resize_bytes(bytes: &mut Vec<u8>, len: u64) -> io::Result<()> {
-    let len = usize::try_from(len).map_err(|_| io::Error::from_raw_os_error(libc::EFBIG))?;
+    let len = usize::try_from(len).map_err(|_| crate::errno::error(libc::EFBIG))?;
     if len > bytes.len() {
         bytes
             .try_reserve_exact(len.saturating_sub(bytes.len()))
-            .map_err(|_| io::Error::from_raw_os_error(libc::ENOSPC))?;
+            .map_err(|_| crate::errno::error(libc::ENOSPC))?;
     }
     bytes.resize(len, 0);
     Ok(())
@@ -284,7 +284,7 @@ impl WriteStage {
     pub(super) fn write(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
         let end = offset
             .checked_add(data.len() as u64)
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+            .ok_or_else(|| crate::errno::error(libc::EINVAL))?;
         let previous_reservation = if let Backing::Memory(memory) = &mut self.backing {
             // Even a small write into a huge base eventually materializes the
             // whole memory stage at commit. Refuse it before allocating.
@@ -369,18 +369,18 @@ impl WriteStage {
     fn put(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
         match &mut self.backing {
             Backing::Memory(memory) => {
-                let start = usize::try_from(offset)
-                    .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+                let start =
+                    usize::try_from(offset).map_err(|_| crate::errno::error(libc::EINVAL))?;
                 let end = start
                     .checked_add(data.len())
-                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+                    .ok_or_else(|| crate::errno::error(libc::EINVAL))?;
                 if memory.bytes.len() < end {
                     memory.resize(end as u64)?;
                 }
                 memory
                     .bytes
                     .get_mut(start..end)
-                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?
+                    .ok_or_else(|| crate::errno::error(libc::EINVAL))?
                     .copy_from_slice(data);
                 Ok(())
             }
@@ -394,7 +394,7 @@ impl WriteStage {
         let end = range.end.min(self.len);
         let start = range.start.min(end);
         let want = usize::try_from(end.saturating_sub(start))
-            .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+            .map_err(|_| crate::errno::error(libc::EINVAL))?;
         let mut out = Vec::new();
         resize_bytes(&mut out, want as u64)?;
         match &self.backing {

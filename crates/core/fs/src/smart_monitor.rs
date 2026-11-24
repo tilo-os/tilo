@@ -2,8 +2,6 @@
 //! unreadable or ambiguous signal denies it rather than guessing, and foreground
 //! hydration is unaffected.
 
-use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,22 +63,7 @@ fn storage_values_allow(blocks: u64, available: u64, fragment_size: u64) -> bool
 }
 
 fn storage_allows(path: &Path) -> bool {
-    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
-        return false;
-    };
-    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: `path` is NUL-terminated and `stats` points to writable storage;
-    // the value is read only after libc reports success.
-    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
-        return false;
-    }
-    // SAFETY: the successful call above initialized the complete structure.
-    let stats = unsafe { stats.assume_init() };
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let (blocks, available) = (stats.f_blocks, stats.f_bavail);
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let (blocks, available) = (u64::from(stats.f_blocks), u64::from(stats.f_bavail));
-    storage_values_allow(blocks, available, stats.f_frsize)
+    host_fs::space(path).is_ok_and(|space| storage_values_allow(space.capacity, space.available, 1))
 }
 
 fn sample(cache_root: &Path, network: Option<&NmWatch>) -> PredictivePolicy {

@@ -11,9 +11,9 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::os::unix::fs::FileExt as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tilo_files::native::FileAt as _;
 
 use tokio::sync::Notify;
 

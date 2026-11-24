@@ -34,6 +34,22 @@ impl FileStamp {
         }
     }
 
+    /// The stamp of `file`, already open: what was read through it is what the stamp names, which
+    /// a second look by path cannot promise once the file may be replaced in between.
+    ///
+    /// # Errors
+    /// The open file cannot be examined.
+    pub fn of_file(file: &std::fs::File) -> io::Result<Self> {
+        platform::of_file(file)
+    }
+
+    /// The file it stamps: its volume and its id there, which a rename keeps and a replacement does
+    /// not.
+    #[must_use]
+    pub fn id(self) -> (u64, u128) {
+        (self.volume, self.file)
+    }
+
     /// Old enough that a later write cannot share its modification time ([`SETTLE`]).
     #[must_use]
     pub fn settled(self) -> bool {
@@ -55,7 +71,14 @@ mod platform {
     use std::os::unix::fs::MetadataExt as _;
 
     pub fn of(path: &Path) -> io::Result<FileStamp> {
-        let metadata = std::fs::metadata(path)?;
+        stamp(&std::fs::metadata(path)?)
+    }
+
+    pub fn of_file(file: &std::fs::File) -> io::Result<FileStamp> {
+        stamp(&file.metadata()?)
+    }
+
+    fn stamp(metadata: &std::fs::Metadata) -> io::Result<FileStamp> {
         Ok(FileStamp {
             volume: metadata.dev(),
             file: u128::from(metadata.ino()),
@@ -105,8 +128,12 @@ mod platform {
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
             .open(path)?;
-        let id: FILE_ID_INFO = information(&file, FileIdInfo)?;
-        let basic: FILE_BASIC_INFO = information(&file, FileBasicInfo)?;
+        of_file(&file)
+    }
+
+    pub fn of_file(file: &std::fs::File) -> io::Result<FileStamp> {
+        let id: FILE_ID_INFO = information(file, FileIdInfo)?;
+        let basic: FILE_BASIC_INFO = information(file, FileBasicInfo)?;
         let metadata = file.metadata()?;
         Ok(FileStamp {
             volume: id.VolumeSerialNumber,
@@ -123,6 +150,10 @@ mod platform {
     use super::{FileStamp, Path, io};
 
     pub fn of(_path: &Path) -> io::Result<FileStamp> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
+
+    pub fn of_file(_file: &std::fs::File) -> io::Result<FileStamp> {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 }

@@ -32,27 +32,12 @@ use tilo_action_policy::MemberId;
 
 use crate::acl::{AclHandle, IdentityKey, WorkspaceAcl};
 use crate::file_watch::FileChanges;
+use tilo_files::native::FileStamp;
 use tilo_lock::MutexRecover as _;
 
-/// Identifies a version of the file (so an unchanged file costs one `stat`), including the inode since a rename-over-target producer can collide on length + mtime.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Stamp {
-    inode: u64,
-    len: u64,
-    mtime: Option<std::time::SystemTime>,
-}
-
-impl Stamp {
-    fn of(meta: &std::fs::Metadata) -> Self {
-        use std::os::unix::fs::MetadataExt;
-        Self {
-            inode: meta.ino(),
-            len: meta.len(),
-            mtime: meta.modified().ok(),
-        }
-    }
-}
-
+/// A version of the file is its [`FileStamp`] (so an unchanged file costs one `stat`): it names the
+/// file itself, not only its length and modification time, which a rename-over-target producer can
+/// repeat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refresh {
     /// The file is byte-identical to the last one loaded. Nothing swapped.
@@ -76,7 +61,7 @@ pub struct CapabilityFile {
     members: Vec<MemberId>,
     handle: AclHandle,
     /// The version last successfully loaded. `None` once observed missing, so reappearance always reloads.
-    seen: Mutex<Option<Stamp>>,
+    seen: Mutex<Option<FileStamp>>,
 }
 
 impl CapabilityFile {
@@ -124,9 +109,9 @@ impl CapabilityFile {
 
     /// Re-read the file if changed and swap the result into the live mount; cheap to call often (an unchanged file costs one `stat`).
     pub fn refresh(&self) -> Refresh {
-        let meta = match std::fs::metadata(&self.path) {
-            Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let stamp = match FileStamp::of(&self.path) {
+            Ok(Some(stamp)) => stamp,
+            Ok(None) => {
                 let mut seen = self.seen.lock_recover();
                 if seen.is_none() {
                     // Already observed missing and already denying.
@@ -141,7 +126,6 @@ impl CapabilityFile {
             Err(e) => return Refresh::Failed(format!("{}: {e}", self.path.display())),
         };
 
-        let stamp = Stamp::of(&meta);
         {
             let seen = self.seen.lock_recover();
             if *seen == Some(stamp) {
@@ -182,8 +166,8 @@ impl CapabilityFile {
                 source,
             }
         })?;
-        if let Ok(meta) = std::fs::metadata(&self.path) {
-            *self.seen.lock_recover() = Some(Stamp::of(&meta));
+        if let Ok(Some(stamp)) = FileStamp::of(&self.path) {
+            *self.seen.lock_recover() = Some(stamp);
         }
         Ok(n)
     }
@@ -228,16 +212,16 @@ fn build(identity: IdentityKey, caps: &[CapOverride], members: &[MemberId]) -> W
     WorkspaceAcl::from_capabilities(identity, caps, members, None)
 }
 
-fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, Stamp), CapsError> {
+fn read_capabilities(path: &Path) -> Result<(Vec<CapOverride>, FileStamp), CapsError> {
     let mut file = std::fs::File::open(path).map_err(|source| CapsError::Read {
         path: path.to_path_buf(),
         source,
     })?;
     // Stamp from the same open file, not a second `stat`: a rewrite in between could pair the new stamp with the old bytes.
-    let stamp = Stamp::of(&file.metadata().map_err(|source| CapsError::Read {
+    let stamp = FileStamp::of_file(&file).map_err(|source| CapsError::Read {
         path: path.to_path_buf(),
         source,
-    })?);
+    })?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|source| CapsError::Read {

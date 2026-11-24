@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use crate::node::{FileAttr, FileType};
-#[cfg(not(target_os = "android"))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use fuser::Request;
 
 use super::{QuickFS, TTL, child_path};
@@ -32,7 +32,7 @@ impl QuickFS {
         }
         attr
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn presented_to(&self, req: &Request, mut attr: FileAttr) -> FileAttr {
         let (uid, gid) = self.owner.unwrap_or_else(|| (req.uid(), req.gid()));
         attr.uid = uid;

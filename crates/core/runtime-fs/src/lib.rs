@@ -21,7 +21,6 @@ pub use grants::{
 pub use native::{
     FsAppendHandle, FsDirectoryCursor, FsSession, NativeFileAccess, NativeGrantAuthority,
 };
-#[cfg(unix)]
 pub mod blobs;
 #[cfg(unix)]
 pub mod directory;
