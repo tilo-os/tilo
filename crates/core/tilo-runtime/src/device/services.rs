@@ -2922,12 +2922,6 @@ impl RuntimeServices for Daemon {
 }
 
 impl Daemon {
-    /// The apps this profile has installed: what a launch request resolves against, so what
-    /// runs is the package this computer holds and never a program a caller names.
-    pub(crate) fn apps(&self) -> &Arc<apps::Apps> {
-        &self.apps
-    }
-
     /// The person's provider in `workspace`: every action of one answered locally, as apps and the
     /// person's input are.
     ///

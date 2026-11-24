@@ -1088,8 +1088,7 @@ pub(crate) struct Endpoint<H> {
 }
 
 /// A launcher's request to start an app on this computer, with what the connection sent with it.
-type LaunchTake =
-    Arc<dyn Fn(Stream, &[u8], Vec<runtime_portal::process_link::Descriptor>) + Send + Sync>;
+type LaunchTake = dyn Fn(Stream, &[u8], Vec<runtime_portal::process_link::Descriptor>) + Send + Sync;
 
 /// The endpoint every agent of this computer's login reaches at its device socket: the
 /// daemon's own workspace, as the native endpoint serves the person's apps, each connection a
@@ -1680,7 +1679,7 @@ fn is_launch_request(request: &[u8]) -> bool {
 /// launch path a window takes, so the launch record exists before the app's connection does, and
 /// tells the caller it started.
 #[cfg(unix)]
-fn launch_take(session: &Arc<Daemon>) -> LaunchTake {
+fn launch_take(session: &Arc<Daemon>) -> Arc<LaunchTake> {
     let session = Arc::downgrade(session);
     Arc::new(move |mut stream, request, descriptors| {
         let reply = match start_requested(&session, request, descriptors) {
