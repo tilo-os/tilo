@@ -26,7 +26,6 @@ fn row(id: &str, label: &str) -> RosterRow {
         working_in: None,
         working_app: None,
         status: None,
-        recent: Vec::new(),
         followable: true,
         availability: ui::Availability::Available,
         joined: None,
@@ -49,12 +48,12 @@ fn screen(app: &str) -> Screen {
     }
 }
 
-fn paint(overlay: &mut PeopleOverlay, rows: &[RosterRow], expanded: Option<&str>) {
-    paint_in(overlay, rows, expanded, Rect::new(0.0, 0.0, 1400.0, 900.0));
+fn paint(overlay: &mut PeopleOverlay, rows: &[RosterRow]) {
+    paint_in(overlay, rows, Rect::new(0.0, 0.0, 1400.0, 900.0));
 }
 
-fn paint_in(overlay: &mut PeopleOverlay, rows: &[RosterRow], expanded: Option<&str>, host: Rect) {
-    paint_over(overlay, rows, expanded, host, false, &[]);
+fn paint_in(overlay: &mut PeopleOverlay, rows: &[RosterRow], host: Rect) {
+    paint_over(overlay, rows, host, false, &[]);
 }
 
 /// The roster kept on screen at an edge, each person's screen under their row.
@@ -66,7 +65,6 @@ fn paint_kept(
     paint_over(
         overlay,
         rows,
-        None,
         Rect::new(0.0, 0.0, 900.0, 900.0),
         true,
         screens,
@@ -78,7 +76,6 @@ fn paint_kept(
 fn paint_over(
     overlay: &mut PeopleOverlay,
     rows: &[RosterRow],
-    expanded: Option<&str>,
     host: Rect,
     pinned: bool,
     screens: &[(String, Option<Screen>)],
@@ -101,7 +98,7 @@ fn paint_over(
             panel: None,
             screens,
             followed_id: None,
-            expanded_id: expanded,
+            following_pairs: &[],
             waved: &[],
             waved_until: None,
         },
@@ -117,7 +114,7 @@ tilo_test_env::scenario! {
     // the list begins.
     {
         let mut overlay = PeopleOverlay::default();
-        paint(&mut overlay, &[row("ada", "Ada")], None);
+        paint(&mut overlay, &[row("ada", "Ada")]);
         assert!(overlay.headings.is_empty(), "{:?}", overlay.headings);
         assert_eq!(overlay.rows[0].rect.y0, overlay.body.y0);
     }
@@ -131,7 +128,7 @@ tilo_test_env::scenario! {
         agent.member = tilo_action_policy::MemberId::agent("claude");
         let rows = vec![row("ada", "Ada"), agent];
         let mut overlay = PeopleOverlay::default();
-        paint_in(&mut overlay, &rows, None, Rect::new(0.0, 0.0, 390.0, 844.0));
+        paint_in(&mut overlay, &rows, Rect::new(0.0, 0.0, 390.0, 844.0));
         let place = overlay
             .rows
             .iter()
@@ -208,7 +205,7 @@ tilo_test_env::scenario! {
         assert!(!says_automatically(&agent));
         let rows = vec![row("ada", "Ada"), agent];
         let mut overlay = PeopleOverlay::default();
-        paint(&mut overlay, &rows, None);
+        paint(&mut overlay, &rows);
         assert!(
             overlay.rows[1].working_in.area() > 0.0,
             "the line stands under the agent's row: {:?}",
@@ -246,7 +243,7 @@ tilo_test_env::scenario! {
         );
         for width in [1400.0, 390.0, 360.0] {
             let mut overlay = PeopleOverlay::default();
-            paint_in(&mut overlay, &rows, None, Rect::new(0.0, 0.0, width, 900.0));
+            paint_in(&mut overlay, &rows, Rect::new(0.0, 0.0, width, 900.0));
             let place = overlay.rows[0].clone();
             if place.said.area() > 0.0 {
                 assert!(
@@ -463,15 +460,9 @@ tilo_test_env::scenario! {
     {
         let mut agent = row("scribe", "Release Notes Agent");
         agent.member = tilo_action_policy::MemberId::agent("claude");
-        let mut ada = row("ada", "Ada");
-        ada.recent = vec![RecentChange {
-            text: "Rewrote the intro and two headings".into(),
-            when: "4 min ago".into(),
-            entry: Some([1; 16]),
-        }];
-        let rows = vec![agent, ada, row("ben", "Ben")];
+        let rows = vec![agent, row("ada", "Ada"), row("ben", "Ben")];
         let mut overlay = PeopleOverlay::default();
-        paint(&mut overlay, &rows, None);
+        paint(&mut overlay, &rows);
 
         let order: Vec<usize> = overlay.rows.iter().map(|place| place.index).collect();
         assert_eq!(order, vec![1, 2, 0], "people first, then agents");
@@ -500,17 +491,8 @@ tilo_test_env::scenario! {
                 ada_place.rect.x0 + 80.0,
                 ada_place.rect.center().y
             )),
-            PeopleHit::ToggleDetails(1),
-            "Ada has recent changes: her row opens"
-        );
-        let ben_place = overlay.rows[1].clone();
-        assert_eq!(
-            overlay.hit_test(Point::new(
-                ben_place.rect.x0 + 80.0,
-                ben_place.rect.center().y
-            )),
             PeopleHit::Absorb,
-            "nothing recent: nothing to open"
+            "a row's body is no control of its own"
         );
         assert_eq!(overlay.rows[2].wave, Rect::ZERO, "nobody waves at software");
         assert_eq!(
@@ -526,7 +508,7 @@ tilo_test_env::scenario! {
     // Only you: the roster says nobody else is here, and still offers Invite.
     {
         let mut overlay = PeopleOverlay::default();
-        paint(&mut overlay, &[], None);
+        paint(&mut overlay, &[]);
         assert!(overlay.rows.is_empty());
         assert!(overlay.invite_rect().area() > 0.0);
         let snapshot = overlay.accessibility_snapshot();
@@ -539,67 +521,4 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_open_row_leads_to_history_and_the_keyboard_reaches_every_control;
-    // An open row shows what the person changed with the way into History; the keyboard reaches every control without a pointer.
-    {
-        let _settled = ui::motion::testing::settled();
-        let mut ada = row("ada", "Ada");
-        ada.recent = vec![
-            RecentChange {
-                text: "Rewrote the intro".into(),
-                when: "4 min ago".into(),
-                entry: Some([1; 16]),
-            },
-            RecentChange {
-                text: "Added a heading".into(),
-                when: "9 min ago".into(),
-                entry: Some([2; 16]),
-            },
-        ];
-        let rows = vec![ada, row("ben", "Ben")];
-        let mut overlay = PeopleOverlay::default();
-        paint(&mut overlay, &rows, Some("ada"));
-        paint(&mut overlay, &rows, Some("ada"));
-        let changes = overlay.rows[0].changes;
-        assert!(changes.area() > 0.0, "the open row has its link to History");
-        assert_eq!(
-            overlay.hit_test(changes.center()),
-            PeopleHit::OpenChanges(0)
-        );
-        assert_eq!(
-            overlay.rows[0].change_rows.len(),
-            2,
-            "each change is listed"
-        );
-        let second = overlay.rows[0].change_rows[1];
-        assert_eq!(
-            overlay.hit_test(second.center()),
-            PeopleHit::OpenChange(0, 1),
-            "each change opens History at itself"
-        );
-        assert_eq!(overlay.change_target(0, 1), Some(("Ada", Some([2; 16]))));
-
-        let mut reached = Vec::new();
-        for _ in 0..overlay.focus_order().len() {
-            overlay.key(&Key::Named(NamedKey::Tab), false);
-            reached.push(overlay.keyboard_focus);
-        }
-        for wanted in [
-            PeopleHit::ToggleDetails(0),
-            PeopleHit::Wave(0),
-            PeopleHit::Follow(0),
-            PeopleHit::OpenChange(0, 0),
-            PeopleHit::OpenChange(0, 1),
-            PeopleHit::OpenChanges(0),
-            PeopleHit::Wave(1),
-            PeopleHit::Follow(1),
-            PeopleHit::Invite,
-        ] {
-            assert!(reached.contains(&Some(wanted)), "{wanted:?} is reachable");
-        }
-        assert_eq!(
-            overlay.key(&Key::Named(NamedKey::Escape), false),
-            Some(PeopleHit::Dismiss)
-        );
-    }
 }

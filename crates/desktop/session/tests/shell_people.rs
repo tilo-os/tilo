@@ -322,25 +322,32 @@ fn a_phones_who_is_here_is_a_sheet_a_press_above_puts_away() {
     );
     open_who_is_here(&mut session);
 
-    let (_, close_y, _, _) = session
-        .shell_control("Close")
-        .expect("the sheet's own close");
+    // The panel itself, as a reader finds it: where it stands is what a sheet is.
+    let tree = shell_tree(&session);
+    let panel = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::Dialog && node.label() == Some("People"))
+        .and_then(|(_, node)| node.bounds())
+        .expect("the sheet is a dialog named People with bounds");
     assert!(
-        close_y > 400.0,
-        "the roster's panel stands at the shell's foot on a phone: Close at {close_y}"
+        panel.y1 > 844.0 - 64.0,
+        "the sheet stands at the shell's foot on a phone: {panel:?}"
     );
-    let (x, _, w, _) = session
-        .shell_control("Invite someone")
-        .expect("the sheet offers the invite");
-    let left = x;
-    let right = 390.0 - (x + w);
+    assert!(
+        panel.y0 > 300.0,
+        "the sheet is the lower part of the screen, not the whole of it: {panel:?}"
+    );
+    let left = panel.x0;
+    let right = 390.0 - panel.x1;
     assert!(
         left > 0.0 && (left - right).abs() < 1.0,
         "the sheet spans the shell between equal gutters: {left} leading, {right} trailing"
     );
+    let above = panel.y0 - 120.0;
 
     // A press above the sheet puts it away.
-    click(&mut session, (195.0, close_y - 120.0));
+    click(&mut session, (195.0, above));
     until(&mut session, "the sheet gone", |session| {
         crate::common::shell_here(session) != "people"
     });
@@ -351,13 +358,14 @@ fn a_phones_who_is_here_is_a_sheet_a_press_above_puts_away() {
     );
 }
 
-/// Ten thousand people open a roster that builds only the rows it shows, and the keyboard reaches
-/// the last of them: a long list costs the screenful, not the workspace.
+/// A workspace of thousands opens a roster that builds only the rows it shows, and the keyboard
+/// reaches the last of them: a long list costs the screenful, not the workspace. (The list's own
+/// ten-thousand case is held in the toolkit's `a_list_held_to_its_most_height_builds_only_what_it_shows`.)
 #[test]
 fn a_workspace_of_thousands_opens_only_the_rows_who_is_here_shows() {
     let _settled = ui::motion::testing::settled();
     let mut session = session_over(WIDTH, HEIGHT);
-    let thousands = 10_000usize;
+    let thousands = 2_000usize;
     // The first of them wears a name no row holds: what a row does with a name longer than it is
     // part of what a workspace of thousands has to keep working.
     let long_name = format!("Ada {}", "Assistance ".repeat(24));
@@ -396,7 +404,7 @@ fn a_workspace_of_thousands_opens_only_the_rows_who_is_here_shows() {
         "a roster of {thousands} builds the rows it shows, not all of them: {built}"
     );
     assert!(
-        !has_row(&session, "Person 9999"),
+        !has_row(&session, "Person 1999"),
         "the last person is not built until the list reaches them"
     );
 
@@ -412,7 +420,7 @@ fn a_workspace_of_thousands_opens_only_the_rows_who_is_here_shows() {
     assert!(on_list, "Tab reaches the list of who is here");
     key(&mut session, KEY_END);
     until(&mut session, "the last person", |session| {
-        has_row(session, "Person 9999")
+        has_row(session, "Person 1999")
     });
     assert!(
         session.shell_refusals().is_empty(),

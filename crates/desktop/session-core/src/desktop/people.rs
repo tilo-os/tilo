@@ -28,8 +28,6 @@ pub struct RosterRow {
     pub working_app: Option<String>,
     /// Short member intention, marked by its [`LineSource`] so model-suggested words cannot be mistaken for a direct quote.
     pub status: Option<RosterStatus>,
-    /// What they changed recently in this workspace, newest first: a row with none does not open.
-    pub recent: Vec<RecentChange>,
     pub followable: bool,
     /// How available they say they are (idle and away come on their own).
     pub availability: ui::Availability,
@@ -41,6 +39,8 @@ pub struct RosterRow {
     pub joined_line: Option<String>,
     /// The voice channel they are in, if any.
     pub call: Option<String>,
+    /// The voice channel of theirs this device may join from their row: one they are in and this person is not.
+    pub join: Option<VoiceChannel>,
 }
 
 impl RosterRow {
@@ -51,19 +51,13 @@ impl RosterRow {
     }
 }
 
-/// One recent change of someone's, as History records it.
+/// One voice channel's call, by the app, record and channel that hold it: what joining it asks of the app that owns it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecentChange {
-    /// History's own summary of it ("Edited Welcome").
-    pub text: String,
-    /// How long ago, already worded ("4 min ago").
-    pub when: String,
-    /// The History entry it opens at; `None` opens their changes.
-    pub entry: Option<[u8; 16]>,
+pub struct VoiceChannel {
+    pub app: String,
+    pub record: String,
+    pub channel: String,
 }
-
-/// Changes an open row lists before "Their changes" takes over.
-pub const RECENT_CHANGES_SHOWN: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterStatus {

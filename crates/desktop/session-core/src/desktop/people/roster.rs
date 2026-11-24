@@ -174,7 +174,6 @@ fn row_of(workspace: &Workspace, member: &Member, here: &Present) -> RosterRow {
             }),
         // Everyone here can be followed, software included: following an agent that has published
         // no view yet keeps its run in front as that arrives.
-        recent: Vec::new(),
         followable: true,
         availability: here.availability,
         // When the workspace admitted them: what a row nobody named is told apart by.

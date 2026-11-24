@@ -15,7 +15,7 @@ use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_desktop_model::Layout;
 use tilo_session_core::desktop::here::Screen;
 use tilo_session_core::desktop::host::chrome::ChromeIntent;
-use tilo_session_core::desktop::navigation::{ActivityView, ChromeEffect, LayoutEffect};
+use tilo_session_core::desktop::navigation::LayoutEffect;
 use tilo_session_core::desktop::people::{RosterRow, roster_rows};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::{Look, Published};
@@ -215,7 +215,6 @@ struct Shown {
     /// where they are to themselves.
     screens: Vec<(String, Option<Screen>)>,
     workspace: String,
-    expanded: Option<String>,
     /// Whom the wave they sent goes to, and since when.
     waved: Option<(String, ui::time::Instant)>,
     /// Where the pointer was over the shell: the panel opens under it.
@@ -234,9 +233,7 @@ struct Shown {
 
 impl Shown {
     /// Close the roster, for the next opening to find empty.
-    fn close(&mut self) {
-        self.expanded = None;
-    }
+    fn close(&mut self) {}
 
     /// Whether the roster stands kept at an edge of the shell, drawn and pressed where it waits: a
     /// pin waiting away with nobody else here does not.
@@ -680,14 +677,6 @@ impl Panel {
                 shown.close();
                 self.open.set(false);
             }
-            PeopleHit::ToggleDetails(index) => {
-                let id = shown.rows.get(index).map(|row| row.id.clone());
-                shown.expanded = shown
-                    .expanded
-                    .clone()
-                    .filter(|open| Some(open) != id.as_ref())
-                    .or(id);
-            }
             PeopleHit::Follow(index) => {
                 if let Some(id) = shown.rows.get(index).map(|row| row.id.clone()) {
                     self.follow_person(&id, true);
@@ -763,25 +752,6 @@ impl Panel {
         self.sync
             .as_ref()
             .map_or(0, |sync| sync.presence_revision())
-    }
-
-    /// Open this workspace's activity at what `author` changed.
-    fn open_activity(&self, author: &str) {
-        let workspace = self.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|workspace| workspace.id().to_string())
-        });
-        let Some(workspace) = workspace else {
-            return;
-        };
-        let command = ChromeEffect::Activity {
-            workspace,
-            view: ActivityView::CatchUp,
-            author: Some(author.to_owned()),
-        };
-        if let Err(error) = self.handle.dispatch(command) {
-            tracing::warn!(%error, "activity could not open for that person");
-        }
     }
 
     /// Where everyone here points, drawn by the one rule both hosts draw pointers by: over the
@@ -986,7 +956,6 @@ impl Panel {
         let pinned = shown.pinned.is_some() && !shown.sheet();
         let sheet = shown.sheet();
         let followed = self.sync.as_ref().and_then(|sync| sync.own().following);
-        let expanded = shown.expanded.clone();
         let workspace = shown.workspace.clone();
         let rows = shown.rows.clone();
         let screens = shown.screens.clone();
@@ -1018,7 +987,6 @@ impl Panel {
             panel,
             screens: &screens,
             followed_id: followed.as_deref(),
-            expanded_id: expanded.as_deref(),
             waved: &waved,
             waved_until,
         };
@@ -1343,6 +1311,3 @@ impl Widget for Panel {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
-#[path = "people_scale_tests.rs"]
-mod scale_tests;
