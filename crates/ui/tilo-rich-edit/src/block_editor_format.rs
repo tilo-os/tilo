@@ -448,6 +448,53 @@ impl BlockEditor {
         changed
     }
 
+    /// Make the selected paragraphs a quote, or a paragraph again when every one of them
+    /// already is a quote: the paragraph panel's Quote style. Code and tables stay what they
+    /// are. `false` when nothing changed.
+    pub fn toggle_quote(&mut self) -> bool {
+        self.note_edit_anywhere();
+        if self.read_only {
+            return false;
+        }
+        let Some(range) = self.selected_block_range() else {
+            return false;
+        };
+        let targets: Vec<usize> = range
+            .clone()
+            .filter(|index| {
+                self.blocks.get(*index).is_some_and(|block| {
+                    block.kind.is_editable()
+                        && !matches!(
+                            block.kind,
+                            BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                        )
+                })
+            })
+            .collect();
+        if targets.is_empty() {
+            return false;
+        }
+        let off = targets.iter().all(|index| {
+            self.blocks
+                .get(*index)
+                .is_some_and(|block| matches!(block.kind, BlockKind::Quote))
+        });
+        let kind = if off {
+            BlockKind::Paragraph
+        } else {
+            BlockKind::Quote
+        };
+        let mut changed = false;
+        for index in targets {
+            changed |= self.try_convert_to(index, kind.clone());
+        }
+        if changed {
+            self.edit_scope.widen(EditScope::Blocks(range));
+            self.dirty = true;
+        }
+        changed
+    }
+
     pub const HEADING_LEVELS: std::ops::RangeInclusive<u8> = 1..=3;
 
     pub fn set_heading(&mut self, level: Option<u8>) -> bool {
@@ -583,6 +630,8 @@ impl BlockEditor {
                         "heading 1" | "heading1" => self.set_heading(Some(1)),
                         "heading 2" | "heading2" => self.set_heading(Some(2)),
                         "heading 3" | "heading3" => self.set_heading(Some(3)),
+                        "quote" => self.toggle_quote(),
+                        "list item" | "list" | "bulleted list" => self.toggle_list(false),
                         _ => false,
                     };
                     named || kind
@@ -758,6 +807,25 @@ mod tests {
         assert_eq!(editor.blocks[0].style.style.as_deref(), Some("Heading 2"));
         assert_eq!(editor.blocks[0].kind, BlockKind::Heading(2));
         assert!(editor.format_asked(Some("style:Body:6".into())));
+        assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
+    }
+    /// The Quote and list styles the paragraph panel offers make the paragraph that kind, and
+    /// asking for the same style again gives the paragraph back.
+    #[test]
+    fn quote_and_list_styles_make_the_paragraph_that_kind() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("said this")]);
+        editor.focus_block(0, CursorPlacement::End);
+
+        assert!(editor.format_asked(Some("style:Quote:1".into())));
+        assert_eq!(editor.blocks[0].kind, BlockKind::Quote);
+        assert_eq!(editor.blocks[0].style.style.as_deref(), Some("Quote"));
+        assert!(editor.format_asked(Some("style:Quote:2".into())));
+        assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
+
+        assert!(editor.format_asked(Some("style:List item:3".into())));
+        assert!(matches!(editor.blocks[0].kind, BlockKind::Bullet { .. }));
+        assert!(editor.format_asked(Some("style:List item:4".into())));
         assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
     }
     /// A tracked insertion and a tracked deletion are one document's change: accepting keeps
