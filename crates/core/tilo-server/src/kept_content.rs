@@ -1967,10 +1967,10 @@ mod tests {
     #[test]
     fn with_no_policy_a_three_gibibyte_file_is_over_no_limit() {
         use tilo_action_policy::content::MIB;
-        let kept = BTreeMap::new();
+        let mut state = State::default();
         let limits = KeptLimits::default();
         assert_eq!(
-            KeptContent::over(&kept, &limits, &[1_u8; 32], 3 * 1024 * MIB, 0),
+            KeptContent::over(&mut state, &limits, "w", &[1_u8; 32], 3 * 1024 * MIB, 0),
             None
         );
         for limit in [
