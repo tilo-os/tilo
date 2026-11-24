@@ -1248,7 +1248,11 @@ impl Level {
                         && let Some(published) = reader.item_alone(&first)
                         && let Some(weight) = std::num::NonZeroUsize::new(published.actions.len())
                     {
-                        index = (skip.saturating_sub(row) / weight.get()).min(len);
+                        index = skip
+                            .saturating_sub(row)
+                            .checked_div(weight.get())
+                            .unwrap_or(0)
+                            .min(len);
                         row = row.saturating_add(index.saturating_mul(weight.get()));
                     }
                     while index < len {

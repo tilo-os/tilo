@@ -155,7 +155,10 @@ fn viewer_person(viewer: &Actor, access: &MemberAccess) -> PersonId {
     viewer
         .member_id()
         .and_then(MemberId::person_id)
-        .map_or_else(|| PersonId::from(access.person_id().unwrap_or_default()), PersonId::from)
+        .map_or_else(
+            || PersonId::from(access.person_id().unwrap_or_default()),
+            PersonId::from,
+        )
 }
 
 impl MemberRecordReads {
@@ -185,8 +188,8 @@ impl MemberRecordReads {
 
 impl tilo_resource_store::RecordReader for MemberRecordReads {
     fn reader_of(&self, actor: &Actor, kind: &str, id: &str) -> Option<PersonId> {
-        let state = self.state.lock().ok()?;
-        let state = state.as_ref()?;
+        let guard = self.state.lock().ok()?;
+        let state = guard.as_ref()?;
         let workspace = TreePath::workspace(state.access.workspace());
         let node = match state.kinds.get(kind) {
             Some((app, named)) => workspace.app(app).kind(named).resource(id.to_owned()),
@@ -195,16 +198,18 @@ impl tilo_resource_store::RecordReader for MemberRecordReads {
         if !reads_node(&state.access, &state.me, actor, &node) {
             return None;
         }
-        match actor.member_id()? {
-            MemberId::Person(person) => Some(PersonId::from(person.clone())),
+        let reader = match actor.member_id()? {
+            MemberId::Person(person) => Some(person.clone()),
             MemberId::Agent(agent) => state
                 .access
                 .policy
                 .agents
                 .get(agent.as_str())
                 .map(|member| PersonId::from(member.for_person.as_str())),
-            _ => None,
-        }
+            MemberId::Bot(_) => None,
+        };
+        drop(guard);
+        reader
     }
 }
 
