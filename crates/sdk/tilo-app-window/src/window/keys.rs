@@ -105,6 +105,16 @@ pub(super) fn shortcut_action_where(
 }
 
 fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {
+    // A control that cannot be pressed now does not answer its key either: a click on it does
+    // nothing. `enabled` reaches the window as a flag (surfaces) or as the 0 a view's Bool prop
+    // travels as.
+    let disabled = matches!(
+        node.props.get("enabled"),
+        Some(Value::Bool(false) | Value::Int(0))
+    );
+    if disabled {
+        return None;
+    }
     // A command the control offers is one registration whether the view wrote it out as a menu
     // item's node or handed the control the actions it offers: its key and the event that runs
     // it travel in the value, and the press fires that event either way, while the control
@@ -238,4 +248,33 @@ pub(super) fn shortcut_declared(node: &UiNode, key: &str) -> Option<ui::platform
     node.children
         .iter()
         .find_map(|child| shortcut_declared(child, key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A control that cannot be pressed now does not answer its key: a click on it does nothing.
+    #[test]
+    fn a_disabled_control_takes_no_key() {
+        let mut button = UiNode::empty("ui.Button", "save");
+        button.props.insert("key".to_owned(), Value::text("Ctrl+S"));
+        button.events.insert(
+            "press".to_owned(),
+            tilo_render_protocol::patch::Event::default(),
+        );
+        let pressed = ui::platform::Shortcut::from("Ctrl+S");
+        for off in [Value::Bool(false), Value::Int(0)] {
+            button.props.insert("enabled".to_owned(), off);
+            assert!(
+                declared_action(&button, &pressed).is_none(),
+                "a dimmed control does not answer its key"
+            );
+        }
+        button.props.insert("enabled".to_owned(), Value::Bool(true));
+        assert!(
+            declared_action(&button, &pressed).is_some(),
+            "an enabled control answers it"
+        );
+    }
 }

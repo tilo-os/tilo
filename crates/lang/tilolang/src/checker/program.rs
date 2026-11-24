@@ -59,6 +59,8 @@ pub fn check_program(
         shown_fns: std::collections::HashSet::new(),
         showing_result: false,
         answers: std::collections::HashMap::new(),
+        control_keys: Vec::new(),
+        last_shortcut: None,
     };
     c.begin(Ctx::Program, params, Ty::Unit, export);
     c.st.written = Written::Program;

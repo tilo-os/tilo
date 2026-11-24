@@ -736,7 +736,10 @@ impl Checker<'_> {
             let Some(plan) = self.plan_union(&ty, &patterns, span) else {
                 return;
             };
-            let bodies = self.union_arms(tmp, &ty, &plan, |c, i| c.ui_stmts(&arms[i].body, parent));
+            let group = self.next_branch();
+            let bodies = self.union_arms(tmp, &ty, &plan, |c, i| {
+                c.in_arm(group, i, &arms[i].body, parent);
+            });
             let bodies = bodies.into_iter().map(|(s, ())| s).collect();
             let chain = Self::union_chain(tmp, &ty, &plan, bodies);
             self.st_extend(chain);
@@ -745,11 +748,12 @@ impl Checker<'_> {
         let Some((shape, plan)) = self.plan_match(&ty, &patterns, span) else {
             return;
         };
+        let group = self.next_branch();
         let mut bodies = Vec::new();
-        for (arm, index) in arms.iter().zip(&plan) {
+        for (arm_at, (arm, index)) in arms.iter().zip(&plan).enumerate() {
             self.push_sink();
             self.bind_pattern(&shape, tmp, &ty, *index, &arm.pattern);
-            self.ui_stmts(&arm.body, parent);
+            self.in_arm(group, arm_at, &arm.body, parent);
             bodies.push(self.pop_sink());
         }
         let chain = Self::chain(&shape, tmp, &ty, bodies, plan);

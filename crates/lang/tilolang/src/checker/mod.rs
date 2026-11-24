@@ -142,6 +142,11 @@ struct FnState {
     /// Who `invoker` is outside an action: the person looking, who would invoke it.
     invoker: Invoker,
     ui: UiPlace,
+    /// The arms of the branches the view being lowered stands in, innermost last: a key in one arm
+    /// of an `if` or a `match` is not drawn beside a key in another.
+    arms: Vec<(u32, usize)>,
+    /// How many branch groups the declaration made.
+    branches: u32,
     /// For a view made of a loop body, the declared view it was written in.
     owner_view: Option<String>,
     fors: usize,
@@ -298,6 +303,13 @@ pub(crate) struct Expanding {
     pub id: Option<String>,
 }
 
+/// One control's `key:`: the view it stands in, the key, where it is written, the action its press
+/// runs when it runs one, and the branch arms it stands in.
+type ControlKey = (String, String, Span, Option<String>, Vec<(u32, usize)>);
+
+/// One key already seen in a view, with the branch arms it stands in.
+type SeenKey = (String, String, Vec<(u32, usize)>);
+
 pub(crate) struct Checker<'a> {
     env: &'a Env,
     diags: &'a mut Vec<Diagnostic>,
@@ -353,6 +365,15 @@ pub(crate) struct Checker<'a> {
     /// expression, which a lambda the store answers reads in place of a call to one
     /// ([`crate::search::lambda_pred_with`]).
     answers: std::collections::HashMap<String, (Vec<String>, ast::Expr)>,
+    /// Each control's `key:` and where it is written, by the id of the view it stands in, with the
+    /// action its press runs when it runs one and the branch arms it stands in: a view's controls
+    /// answer the keys while it is shown, so two of them in one view, or a view-state control that
+    /// an action of the window already answers, is a conflict (E090) — unless the two stand in
+    /// branches no view draws together.
+    control_keys: Vec<ControlKey>,
+    /// The `key:` a control just read, with where it stands: what its block's press, lowered after
+    /// its arguments, is matched to ([`Self::key_presses`]).
+    last_shortcut: Option<(String, Span)>,
 }
 
 /// The functions of `module` whose body is one expression, by name: what a predicate reads in
@@ -454,6 +475,8 @@ fn lower(
         protected: BTreeSet::new(),
         view_edges: Vec::new(),
         answers: answers(module),
+        control_keys: Vec::new(),
+        last_shortcut: None,
     };
     // A view's `protect capture`, before any body is read: what it shows may be left out of a
     // capture wherever it is.
@@ -672,6 +695,7 @@ fn lower(
             );
         }
     }
+    c.check_shortcuts();
     let capture_protected = c.protected_closure();
     let view_calls = c.view_edges;
     let module = ir::Module {
@@ -716,6 +740,8 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         shown_fns: std::collections::HashSet::new(),
         showing_result: false,
         answers: std::collections::HashMap::new(),
+        control_keys: Vec::new(),
+        last_shortcut: None,
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     c.st.proposes = true;
@@ -775,9 +801,12 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         shown_fns: std::collections::HashSet::new(),
         showing_result: false,
         answers: std::collections::HashMap::new(),
+        control_keys: Vec::new(),
+        last_shortcut: None,
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
+    c.check_shortcuts();
     let f = c.end(FuncKind::Block, "b_main", "b_main");
     BlockResult {
         module: ir::Module {
@@ -831,9 +860,114 @@ pub(crate) fn conv(c: Option<Conv>, e: Ex, ty: Ty) -> Ex {
     }
 }
 
+/// Whether a view can draw both places: no branch group they share puts them in different arms, so
+/// an `if`'s two sides, or a `match`'s two arms, never answer the same press together.
+fn arms_together(a: &[(u32, usize)], b: &[(u32, usize)]) -> bool {
+    a.iter().all(|(group, arm)| {
+        b.iter()
+            .find(|(held, _)| held == group)
+            .is_none_or(|(_, other)| other == arm)
+    })
+}
+
 impl Checker<'_> {
     fn err(&mut self, code: &str, span: Span, msg: impl Into<String>) {
         self.diags.push(Diagnostic::new(code, span, msg));
+    }
+
+    /// A control's `key:`: the shortcut its press answers while the view that writes it is shown.
+    /// A key written as text is checked with the parser an action's `key:` uses and kept in one
+    /// spelling, so the shortcut a control shows and the one a press matches are the same text,
+    /// and `true` says it is handled; one computed where the view runs (`false`) is left to the
+    /// caller, which types it as the prop it is. Where the key is written is kept for
+    /// [`Self::check_shortcuts`], since a key answers a view, not a file.
+    fn shortcut_prop(&mut self, n: LocalId, name: &str, value: &ast::Expr) -> bool {
+        self.last_shortcut = None;
+        let Some(text) = crate::resolve::plain_text(value) else {
+            return false;
+        };
+        match crate::resolve::shortcut_text(&text) {
+            Ok(key) => {
+                self.control_keys.push((
+                    self.st.view_id.clone(),
+                    key.clone(),
+                    value.span,
+                    None,
+                    self.st.arms.clone(),
+                ));
+                self.last_shortcut = Some((key.clone(), value.span));
+                self.prop(Ex::local(n, Ty::View), name, Ex::str(&key), value.span);
+            }
+            Err(said) => {
+                self.err("E090", value.span, said);
+                let _ = self.expr(value, None);
+            }
+        }
+        true
+    }
+
+    /// What a control whose `key:` was just read presses: the first action of the app its handler
+    /// names, if any. A control that runs an action shows a command's shortcut, so a key an action
+    /// already answers is its own; a control whose press only sets view state has no such claim,
+    /// and shadowing an action's key is ambiguous.
+    fn key_presses(&mut self, key: &str, span: Span, press: Option<&ast::Expr>) {
+        let action = press.and_then(|press| {
+            self.env
+                .callables
+                .iter()
+                .filter(|c| c.own && c.kind == CKind::Action)
+                .find(|c| native::mentions(press, &[c.name.as_str()]).is_some())
+                .map(|c| c.name.clone())
+        });
+        if let Some(record) = self
+            .control_keys
+            .iter_mut()
+            .find(|(_, held, at, _, _)| held == key && *at == span)
+        {
+            record.3 = action;
+        }
+    }
+
+    /// One key one meaning: two controls of a view cannot answer the same press, and a control whose
+    /// press only sets view state cannot answer one an action of the window already does. A control
+    /// that runs an action shows that command's shortcut, as a menu row does. Reporting it here,
+    /// where every view has been lowered, keeps the check in one place however a view was expanded.
+    fn check_shortcuts(&mut self) {
+        let action_keys: Vec<(String, String)> = self
+            .env
+            .callables
+            .iter()
+            .filter(|c| c.own && c.kind == CKind::Action)
+            .filter_map(|c| c.present.key.clone().map(|key| (key, c.name.clone())))
+            .collect();
+        let mut seen: Vec<SeenKey> = Vec::new();
+        for (view, key, span, presses, arms) in self.control_keys.clone() {
+            if let Some((_, action)) = action_keys.iter().find(|(held, _)| *held == key)
+                && presses.is_none()
+            {
+                self.err(
+                    "E090",
+                    span,
+                    format!(
+                        "`{key}` is already the action `{action}`'s key: a control that only changes view state cannot answer the same press"
+                    ),
+                );
+                continue;
+            }
+            if seen.iter().any(|(held_view, held, held_arms)| {
+                *held_view == view && *held == key && arms_together(held_arms, &arms)
+            }) {
+                self.err(
+                    "E090",
+                    span,
+                    format!(
+                        "`{key}` is already a control's key in this view: two controls cannot answer the same press"
+                    ),
+                );
+                continue;
+            }
+            seen.push((view, key, arms));
+        }
     }
 
     fn show(&self, ty: &Ty) -> String {

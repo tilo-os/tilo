@@ -45,7 +45,8 @@ pub struct ButtonProps {
     pub description: Option<String>,
     /// The plain key that presses it while its window has the keyboard (and, on a row's action, while that
     /// row is selected), as the app declared it (`key: "e"`): the host answers it beside the pressed
-    /// control's own event.
+    /// control's own event. A control of the view's own press shows it beside the label as the keyboard
+    /// in use spells it; a button for an action keeps its face, its key shown where the action is listed.
     #[component(data)]
     pub key: Option<String>,
     /// The plain keys that press it while its window has the keyboard, each as the app declared
@@ -110,7 +111,7 @@ impl Described for Button {
             size,
             enabled,
             description,
-            key: _,
+            key: shortcut_key,
             keys: _,
             count,
             dot,
@@ -157,6 +158,15 @@ impl Described for Button {
         if let Some(group) = group {
             button = button.with_menu_group(group);
         }
+        // The key the view declared answers its press and shows beside the label, as a menu row's
+        // does, so the shortcut stays discoverable where no menu lists it. A button for an action
+        // keeps its face: the action's key is shown where the action is listed, and the bar's
+        // controls stay as the app laid them out.
+        if let Some(key) = shortcut_key.filter(|key| !key.trim().is_empty())
+            && !matches!(&press, Event::Action(_))
+        {
+            button = button.shortcut_hint(crate::platform::Shortcut::from(key.as_str()));
+        }
         match press {
             Event::None => button,
             Event::Action(binding) => button.on_action(binding),
@@ -183,6 +193,13 @@ impl Described for Button {
         } else {
             props.label == self.label && heard == self.accessible_name.as_deref()
         };
+        // The shortcut the view declared shows beside the label, so a key the app or the person
+        // moved rebuilds the face that names it. A key computed to nothing is no hint.
+        let shortcut = props
+            .key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+            .map(crate::platform::Shortcut::from);
         let same_face = named
             && props.faces.len() == self.faces.len()
             && props
@@ -194,6 +211,7 @@ impl Described for Button {
             && role == self.role
             && size == self.control_size
             && props.toggled.is_some() == self.toggled.is_some()
+            && shortcut == self.declared_key()
             && self.shows_count(count_content(props.count, props.dot).as_ref(), props.alert)
             && props.in_menu == self.is_menu_only()
             && props.group == self.menu_group

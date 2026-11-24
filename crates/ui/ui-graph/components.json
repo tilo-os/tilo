@@ -674,7 +674,7 @@
         },
         {
           "name": "key",
-          "doc": "The plain key that presses it while its window has the keyboard (and, on a row's action, while that row is selected), as the app declared it (`key: \"e\"`): the host answers it beside the pressed control's own event.",
+          "doc": "The plain key that presses it while its window has the keyboard (and, on a row's action, while that row is selected), as the app declared it (`key: \"e\"`): the host answers it beside the pressed control's own event. A control of the view's own press shows it beside the label as the keyboard in use spells it; a button for an action keeps its face, its key shown where the action is listed.",
           "type": {
             "option": "text"
           },

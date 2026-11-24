@@ -73,6 +73,12 @@ view contact_row(c: Contact) {
   action that ends that field's edit (`on press: blur()`), and an editor the view rebuilds for
   another record — a deck's next slide in its notes editor — lets the keyboard go on its own,
   so what the person types next never lands in a record they did not choose.
+- A control takes the key that answers its press, as an action takes the key that runs it:
+  `ui.Button("Basic", key: "Ctrl+1") { on press: set(mode, 0) }` fires the same handler a click
+  does while the window has the keyboard, and the button shows the shortcut beside its label.
+  Only the controls a view draws now answer: one inside an `if` that is false takes nothing.
+  Two controls of one view cannot answer the same key, and a control that only sets view state
+  cannot answer one an action of the window answers, which the checker refuses.
 - A document's running text is placed like any other component:
   `ui.BlockEditor(bind: doc.body, placeholder: "Write")`. It declares a binding to the field as
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same

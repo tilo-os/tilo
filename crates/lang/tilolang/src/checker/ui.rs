@@ -282,6 +282,21 @@ impl Checker<'_> {
         self.emit(Stmt::Return(Some(Ex::local(root, Ty::View))));
     }
 
+    /// A branch group of its own: the arms of one `if`, `if let` or `match`, whose keys are not
+    /// drawn together.
+    pub(super) fn next_branch(&mut self) -> u32 {
+        let group = self.st.branches;
+        self.st.branches = self.st.branches.saturating_add(1);
+        group
+    }
+
+    /// Lowers `stmts` as arm `arm` of the branch group `group`.
+    pub(super) fn in_arm(&mut self, group: u32, arm: usize, stmts: &[UiStmt], parent: LocalId) {
+        self.st.arms.push((group, arm));
+        self.ui_stmts(stmts, parent);
+        self.st.arms.pop();
+    }
+
     pub(super) fn ui_stmts(&mut self, stmts: &[UiStmt], parent: LocalId) {
         for s in stmts {
             match &s.kind {
@@ -302,28 +317,30 @@ impl Checker<'_> {
                 }
                 UiKind::If { cond, then, els } => {
                     let c = self.expr_as(cond, &Ty::Bool);
+                    let group = self.next_branch();
                     self.push_sink();
-                    self.ui_stmts(then, parent);
+                    self.in_arm(group, 0, then, parent);
                     let t = self.pop_sink();
                     self.push_sink();
                     if let Some(e) = els {
-                        self.ui_stmts(e, parent);
+                        self.in_arm(group, 1, e, parent);
                     }
                     let f = self.pop_sink();
                     self.emit(Stmt::If(c, t, f));
                 }
                 UiKind::IfLet { binds, then, els } => {
+                    let group = self.next_branch();
                     let out = self.if_let(
                         binds,
                         |c| {
                             c.push_sink();
-                            c.ui_stmts(then, parent);
+                            c.in_arm(group, 0, then, parent);
                             c.pop_sink()
                         },
                         |c| {
                             c.push_sink();
                             if let Some(e) = els {
-                                c.ui_stmts(e, parent);
+                                c.in_arm(group, 1, e, parent);
                             }
                             c.pop_sink()
                         },
@@ -696,6 +713,7 @@ impl Checker<'_> {
             .builds
             .map_or_else(|| p.name.to_string(), crate::toolkit::kind);
         let n = self.new_node(&kind, key);
+        self.last_shortcut = None;
         let mut pos = 0usize;
         for a in args {
             if a.name.is_none() && self.is_flag(Some(p), &a.value) {
@@ -717,8 +735,28 @@ impl Checker<'_> {
                 "`show` takes the resource to draw: `show(r)`",
             );
         }
+        // The `key:` this control just read, matched to the action its block's press runs once
+        // that is lowered.
+        let shortcut = if p.named.contains(&"key") {
+            self.last_shortcut.take()
+        } else {
+            None
+        };
         if let Some(block) = &c.block {
             self.child_block(p.name, block, n);
+            // The key this control declares is no conflict when its press runs the very action
+            // that answers it.
+            if let Some((key, span)) = shortcut {
+                let pressed = block.iter().find_map(|s| match &s.kind {
+                    ast::UiKind::On { event, action, .. }
+                        if event.name == "press" || event.name == "choose" =>
+                    {
+                        Some(&**action)
+                    }
+                    _ => None,
+                });
+                self.key_presses(&key, span, pressed);
+            }
         }
         n
     }
@@ -993,6 +1031,26 @@ impl Checker<'_> {
                 vec![node, Ex::str(name), v],
                 Ty::Unit,
             )));
+        } else if name == "key" {
+            if !self.shortcut_prop(n, name, value) {
+                // A key the control computes where the view runs: an `Option<Text>` shows only
+                // when it holds one.
+                let v = self.expr(value, Some(&Ty::Option(Box::new(Ty::Text))));
+                match &v.ty {
+                    Ty::Option(held) if **held == Ty::Text => {
+                        self.set_when_some(&node, name, v, &Ty::Text, value.span);
+                    }
+                    Ty::Error | Ty::Text => self.prop(node, name, v, value.span),
+                    found => {
+                        let t = self.show(found);
+                        self.err(
+                            "E020",
+                            value.span,
+                            format!("`key:` is a shortcut: Text, or an Option of one; found {t}"),
+                        );
+                    }
+                }
+            }
         } else {
             let v = self.expr(value, None);
             if matches!(name, "min" | "max") && !matches!(v.ty, Ty::Length(_) | Ty::Error) {
