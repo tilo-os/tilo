@@ -667,11 +667,11 @@ impl ToggleGroup {
         let changed = descriptions.into_iter().zip(self.segments.iter_mut()).fold(
             false,
             |changed, (why, segment)| {
-                if segment.description != why {
+                if segment.description == why {
+                    changed
+                } else {
                     segment.description = why;
                     true
-                } else {
-                    changed
                 }
             },
         );
