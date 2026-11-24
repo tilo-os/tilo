@@ -2,9 +2,12 @@
 name = "tilo-app-module"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
-license.workspace = true
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
 description = "Later builds of a running app whose payload is its module: the directory each generation is published into, and the file that names the current one."
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 

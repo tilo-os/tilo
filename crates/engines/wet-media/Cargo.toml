@@ -2,8 +2,12 @@
 name = "tilo-wet-media"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
-license.workspace = true
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+description = "Deterministic simulations of real paint (watercolour, oil) over vector marks: the same marks give the same pixels on every machine."
+repository.workspace = true
+homepage.workspace = true
 
 # Deterministic wet-media simulation (watercolour, oil) over vector marks.
 # Kept free of the UI and GPU stacks: every member re-simulates the same
