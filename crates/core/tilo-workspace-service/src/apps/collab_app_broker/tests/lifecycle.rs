@@ -323,7 +323,7 @@ fn an_unattested_launch_is_told_why_it_was_refused() {
         }
     });
     assert!(
-        error.contains("not an authenticated shell-managed process"),
+        error.contains("is not one this computer made"),
         "the refused app must learn why, not see its connection reset: {error}",
     );
     assert!(
@@ -392,7 +392,7 @@ async fn launcher_attestation_decides_on_one_look() {
                     refusal
                         .error
                         .to_string()
-                        .contains("not an authenticated shell-managed process"),
+                        .contains("is not one this computer made"),
                     "{}",
                     refusal.error
                 );

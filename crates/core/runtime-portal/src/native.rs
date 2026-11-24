@@ -110,6 +110,16 @@ mod unix {
                 .ok_or_else(|| {
                     invalid("inherited runtime connections are incomplete or malformed")
                 })?;
+            // An ordinary child keeps the environment strings, not the transfer: the process
+            // that took those connections closed them before it started this one. A name whose
+            // descriptor is gone is a handoff this process did not receive, so it attaches
+            // itself rather than reading a stale name as a malformed handoff.
+            // SAFETY: fcntl only inspects a descriptor number here; it borrows nothing.
+            if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0
+                && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF)
+            {
+                return Ok(false);
+            }
             // SAFETY: getpeername only inspects an existing descriptor; it does
             // not borrow ownership or close descriptors belonging to SDK code.
             let connected = unsafe {

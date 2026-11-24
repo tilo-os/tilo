@@ -19496,6 +19496,7 @@ dependencies = [
  "anyhow",
  "app-catalogue",
  "app-cli",
+ "base64 0.22.1",
  "blake3",
  "ed25519-dalek 3.0.0",
  "fuser",
