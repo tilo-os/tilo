@@ -1560,3 +1560,40 @@ d-o5w6ulql = Hinweise über Fenstern
 d-b5qgd2ou = Streifenleiste
     .w-of = { $number } von { $len }
     .w-new-strip = Neuer Streifen
+
+d-ssbg6dg6 = Bildschirm
+    .doc = Der Bildschirm, auf dem dieses Gerät den Streifen zeigt, nach seiner Kennung (`device.screen.output`): jeder Teil der Shell zeichnet die Streifen seines eigenen Bildschirms.
+
+d-w25t6rl7-filter-display = Bildschirm
+
+d-nynnosmh = Ein Streifen auf
+    .doc = Fügt einen Streifen mit dem Namen `name` bei `width` zu `row` hinzu, gezeigt auf `display`, und gibt seinen Schlüssel zurück.
+
+d-nynnosmh-row = Zeile
+
+d-nynnosmh-name = Name
+
+d-nynnosmh-width = Breite
+
+d-nynnosmh-display = Bildschirm
+
+d-dk2iupmd = Erkennungskarte
+
+d-7j4334cw = Live-Plakette
+    .w-live = { $live_name }, live
+    .w-more-live = Noch { $value } live
+
+d-7ex6327x = Live-Bereich
+    .w-live-now = Jetzt live
+
+d-zvzdkdpt = Live-Zeile
+    .w-on = Auf { $device }
+
+d-y6wi32pw = Live-Kartenbedienung
+    .w-show-on-the-bar = In der Leiste zeigen
+    .w-keep-off-the-bar = Aus der Leiste lassen
+    .w-put-away = Weglegen
+
+d-pyekmhbz = Native Zeile
+
+d-rdhhbeao = Live-Bedienelement
