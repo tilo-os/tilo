@@ -1329,9 +1329,23 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     use tilo_actions::remote::ActionProvider as _;
     use tilo_actions::remote::asked::{AskedKeeping, AskedStore, Offer, Resolve};
 
+    // The person is the one this account founded here: their root is kept for this account
+    // alone, where only a call arriving as it signs with it.
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    home.env()
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    let account = rustix::process::geteuid().as_raw();
     let workspace = tilo_desktop_model::WorkspaceId::new();
     let (issuer, state, key, cert, _paths) =
-        super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
+        super::workspaces::ServiceWorkspaces::test_of_account_person(account).await;
+    issuer.found(workspace, "Home").await.unwrap();
+    let account_dir = super::services::account_identity_dir(account).unwrap();
+    // The device without the root is another computer, whose identity store keeps no root of
+    // theirs: this one's store, until the device that keeps it comes online below.
+    let keeping_store = home.config().to_owned();
+    let rootless_store_dir = home.root().join("rootless-config");
+    std::fs::create_dir_all(&rootless_store_dir).unwrap();
+    home.env().set("XDG_CONFIG_HOME", &rootless_store_dir);
     let copies = issuer.copies();
     let tickets = |root: RootSource, at: &str, cert: &DeviceCert| {
         Tickets::new(
@@ -1419,7 +1433,13 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     let at = rootless_store
         .record(&invocation.0.to_string())
         .expect("the call is kept as its asked record");
-    let kept = copies.asked_kept().await;
+    // The record is written to the workspace by a task of its own, after the call is answered.
+    let deadline = tilo_test_env::hang_deadline();
+    let mut kept = copies.asked_kept().await;
+    while !kept.iter().any(|ask| ask.at == at) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        kept = copies.asked_kept().await;
+    }
     let ask = kept
         .iter()
         .find(|ask| ask.at == at)
@@ -1459,9 +1479,10 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     );
 
     // A device that keeps the root comes online and takes the record up.
+    home.env().set("XDG_CONFIG_HOME", &keeping_store);
     let holder_key = cert.device_public_key;
-    let holder = tickets(root_in(state.path().to_path_buf()), "holder", &cert);
-    let root = root_in(state.path().to_path_buf())().unwrap().unwrap();
+    let holder = tickets(root_in(account_dir.clone()), "holder", &cert);
+    let root = root_in(account_dir)().unwrap().unwrap();
     // The person's own workspace keeps their devices record. A computer that keeps their root
     // founds it, at the id their key names, the first time they need it, as it does now.
     issuer

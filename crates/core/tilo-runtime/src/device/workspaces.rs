@@ -1138,6 +1138,37 @@ impl ServiceWorkspaces {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
+        Self::test_of_device(directory, paths).await
+    }
+
+    /// [`Self::test_of_person`] for the person the account `uid` founded on this computer: their
+    /// root kept for that account alone, where a call arriving as it signs with it, and this
+    /// computer's one device key certified by it.
+    pub(crate) async fn test_of_account_person(
+        uid: u32,
+    ) -> (
+        Arc<Self>,
+        tempfile::TempDir,
+        ed25519_dalek::SigningKey,
+        tilo_user_identity::DeviceCert,
+        tilo_device_identity::IdentityPaths,
+    ) {
+        let paths = tilo_api::calls::device_keys();
+        super::services::found_account_person(&paths, "Synthetic runtime", uid).unwrap();
+        Self::test_of_device(tempfile::tempdir().unwrap(), paths).await
+    }
+
+    /// The service kept below `directory` as the device whose key and certificate are at `paths`.
+    async fn test_of_device(
+        directory: tempfile::TempDir,
+        paths: tilo_device_identity::IdentityPaths,
+    ) -> (
+        Arc<Self>,
+        tempfile::TempDir,
+        ed25519_dalek::SigningKey,
+        tilo_user_identity::DeviceCert,
+        tilo_device_identity::IdentityPaths,
+    ) {
         let key = tilo_device_identity::persist::read_device_key(&paths.device_privkey).unwrap();
         let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         let identity = DeviceIdentity::held(
