@@ -682,6 +682,31 @@ fn read_into(mut reader: impl std::io::Read, output: &Arc<Mutex<RunOutput>>) {
     }
 }
 
+fn listing_entries(listing: &Listing) -> Vec<Value> {
+    let folders = listing.folders().iter().map(|(name, path)| {
+        json!({
+            "name": name,
+            "path": path.to_string_lossy(),
+            "folder": true,
+            "size": 0,
+            "modified": 0,
+            "hidden": name.starts_with('.'),
+        })
+    });
+    let files = listing.files().iter().map(|(name, path)| {
+        let stamp = disk::Stamp::of(path).unwrap_or_default();
+        json!({
+            "name": name,
+            "path": path.to_string_lossy(),
+            "folder": false,
+            "size": stamp.len,
+            "modified": stamp.mtime.unwrap_or(0),
+            "hidden": name.starts_with('.'),
+        })
+    });
+    folders.chain(files).collect()
+}
+
 /// Register this crate as the engine of the code editor: what the session calls once at its
 /// start, before any app asks.
 pub fn register() {

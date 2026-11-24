@@ -86,7 +86,7 @@ pub fn load(path: &Path) -> Result<Loaded, LoadError> {
     Ok(Loaded {
         text,
         stamp: Stamp {
-            mtime: md.modified().ok(),
+            mtime: Stamp::of(path).ok().and_then(|stamp| stamp.mtime),
             len: md.len(),
         },
     })
