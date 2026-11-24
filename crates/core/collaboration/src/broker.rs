@@ -3559,15 +3559,15 @@ async fn drive_shovel(
                             // The route learns its keys (or that it waits)
                             // before the edits that waited for it go out.
                             if let Some(fetch) = key_fetch.take() {
-                                apply_fetched_keys(&routes, fetch.await, &mut *signer.lock().await, &inbound_tx)
+                                Box::pin(apply_fetched_keys(&routes, fetch.await, &mut *signer.lock().await, &inbound_tx))
                                     .await;
                             }
                             let round = key_schedule.join_round();
                             let mut signing = signer.lock().await;
                             if let Some(fetch) =
-                                refresh_keys(&routes, &mut signing, &inbound_tx, &round).await
+                                Box::pin(refresh_keys(&routes, &mut signing, &inbound_tx, &round)).await
                             {
-                                apply_fetched_keys(&routes, fetch.await, &mut signing, &inbound_tx)
+                                Box::pin(apply_fetched_keys(&routes, fetch.await, &mut signing, &inbound_tx))
                                     .await;
                             }
                         }
@@ -3675,7 +3675,7 @@ async fn drive_shovel(
             }, if key_fetch.is_some() =>
             {
                 key_fetch = None;
-                if apply_fetched_keys(&routes, fetched, &mut *signer.lock().await, &inbound_tx).await {
+                if Box::pin(apply_fetched_keys(&routes, fetched, &mut *signer.lock().await, &inbound_tx)).await {
                     key_schedule.restart();
                 }
                 // Routes told to ask while the round was out ask now.
@@ -4096,13 +4096,26 @@ async fn drive_shovel(
             // before its first edit rather than at the next round. Only
             // sending waits for that; the routes keep receiving.
             if let Some(fetch) = key_fetch.take() {
-                apply_fetched_keys(&routes, fetch.await, &mut *signer.lock().await, &inbound_tx)
-                    .await;
+                Box::pin(apply_fetched_keys(
+                    &routes,
+                    fetch.await,
+                    &mut *signer.lock().await,
+                    &inbound_tx,
+                ))
+                .await;
             }
             let round = key_schedule.join_round();
             let mut signing = signer.lock().await;
-            if let Some(fetch) = refresh_keys(&routes, &mut signing, &inbound_tx, &round).await {
-                apply_fetched_keys(&routes, fetch.await, &mut signing, &inbound_tx).await;
+            if let Some(fetch) =
+                Box::pin(refresh_keys(&routes, &mut signing, &inbound_tx, &round)).await
+            {
+                Box::pin(apply_fetched_keys(
+                    &routes,
+                    fetch.await,
+                    &mut signing,
+                    &inbound_tx,
+                ))
+                .await;
             }
         }
     }
@@ -6190,7 +6203,7 @@ async fn refresh_keys(
         }
         _ => {
             tracing::debug!(target: KEY_ROUNDS, "collab: asking the host for channel keys");
-            refresh_all_route_keys(routes, signer, inbound_tx, round).await;
+            Box::pin(refresh_all_route_keys(routes, signer, inbound_tx, round)).await;
             return None;
         }
     };
@@ -6240,7 +6253,7 @@ async fn apply_fetched_keys(
         {
             changed |= update_route_keys(route, reply, asked);
         }
-        if !held_inbound::deliver_waiting(route, signer, inbound_tx).await {
+        if !Box::pin(held_inbound::deliver_waiting(route, signer, inbound_tx)).await {
             return changed;
         }
     }
@@ -6268,7 +6281,7 @@ async fn refresh_all_route_keys(
         {
             refresh_route_keys(route, signer).await;
         }
-        if !held_inbound::deliver_waiting(route, signer, inbound_tx).await {
+        if !Box::pin(held_inbound::deliver_waiting(route, signer, inbound_tx)).await {
             return;
         }
     }

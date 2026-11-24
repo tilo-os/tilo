@@ -208,10 +208,6 @@ enum DeviceClass {
 }
 
 impl DeviceClass {
-    fn capabilities(self) -> DeviceCapabilities {
-        DeviceCapabilities::primary()
-    }
-
     /// A device holding the root never keeps a capped (foreign) certificate
     /// an earlier build gave it, and a throwaway never one that does not
     /// expire. Any certificate that
@@ -1307,7 +1303,7 @@ fn issue_device_certificate_at(
         user_public_key: identity.group_public_key(),
         device_public_key,
         device_label: device_label.into(),
-        capabilities: class.capabilities(),
+        capabilities: DeviceCapabilities::primary(),
         issued_at_ns,
         expires_at_ns,
         signature: [0; 64],

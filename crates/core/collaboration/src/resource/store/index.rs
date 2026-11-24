@@ -260,7 +260,7 @@ impl Index {
             Some(held) if held == kind.as_str() => {}
             Some(_) => {
                 if let Some(entry) = self.records.get_mut(record.as_str()) {
-                    entry.kind = kind.as_str().to_owned();
+                    kind.as_str().clone_into(&mut entry.kind);
                 }
             }
             None => {
