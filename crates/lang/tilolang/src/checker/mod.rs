@@ -176,6 +176,25 @@ struct FnState {
     /// The resource the call of an action at the span is made from (`ask(a).made_from(m)` in an
     /// action): the call it names runs as a change of its own, made from it.
     made_from: Option<(Span, Ex)>,
+    /// What the action call just checked answers, when it is an action a view applies: the type a
+    /// handler's binding takes ([`Checker::handler_block`]).
+    last_action: Option<Ty>,
+}
+
+/// The name a call names its action by, as source wrote it (`add_box`, or `notes.add`), for the
+/// words a handler's binding is refused with.
+fn called(e: &ast::Expr) -> String {
+    let ast::ExprKind::Call { callee, .. } = &e.kind else {
+        return "this action".to_owned();
+    };
+    match &callee.kind {
+        ast::ExprKind::Ident(name) => name.clone(),
+        ast::ExprKind::Field { base, name } => match &base.kind {
+            ast::ExprKind::Ident(ns) => format!("{ns}.{}", name.name),
+            _ => name.name.clone(),
+        },
+        _ => "this action".to_owned(),
+    }
 }
 
 /// Refuse initial content that makes itself again: a type whose initial action inserts a
@@ -279,6 +298,9 @@ pub(crate) struct Checker<'a> {
     /// What each view answers a request to show an item with ([`ir::ViewShow`]); their functions
     /// follow the arguments.
     shows: Vec<(ir::Func, ir::ViewShow)>,
+    /// How many handlers' steps after a binding were made: each is a function of its own, named by
+    /// the view's id and this count ([`Checker::answer_steps`]).
+    answer_n: usize,
     words: Vec<crate::meta::WordMeta>,
     /// What each offered action writes, with where it is declared: read once the bodies are checked,
     /// to find one command written twice.
@@ -386,6 +408,7 @@ fn lower(
         states: Vec::new(),
         at_event: Vec::new(),
         shows: Vec::new(),
+        answer_n: 0,
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
@@ -616,6 +639,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         states: Vec::new(),
         at_event: Vec::new(),
         shows: Vec::new(),
+        answer_n: 0,
         words: Vec::new(),
         protected: BTreeSet::new(),
         view_edges: Vec::new(),
@@ -671,6 +695,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         states: Vec::new(),
         at_event: Vec::new(),
         shows: Vec::new(),
+        answer_n: 0,
         words: Vec::new(),
         protected: BTreeSet::new(),
         view_edges: Vec::new(),
@@ -1314,8 +1339,13 @@ impl Checker<'_> {
             Some(w) => self.expr_as(value, w),
             None => self.expr(value, None),
         };
+        let ty = want.unwrap_or_else(|| ex.ty.clone());
+        self.bind_written(name, ty, ex, value);
+    }
+
+    /// Binds the checked value `ex` to `name`, refusing one with no value to hold.
+    fn bind_written(&mut self, name: &str, mut ty: Ty, ex: Ex, value: &ast::Expr) {
         let sym = self.sym_of(value);
-        let mut ty = want.unwrap_or_else(|| ex.ty.clone());
         if ty == Ty::Unit {
             self.err(
                 "E020",
@@ -1328,6 +1358,206 @@ impl Checker<'_> {
         if let Some(sym) = sym {
             self.st.syms.insert(id, sym);
         }
+    }
+
+    /// The action a view's handler applies when its event fires. A handler written as a block may
+    /// bind the answer an action call gives (`let id = add_box(b)`): the steps after the binding
+    /// are their own function, which the runtime runs once the action answers, with the answer
+    /// where the name is. An action that is refused or fails answers nothing, and those steps do
+    /// not run. Any other handler is one action, as it was.
+    pub(super) fn handler(&mut self, e: &ast::Expr) -> Ex {
+        match &e.kind {
+            ast::ExprKind::Block(b) => self.handler_block(b),
+            _ => self.expr_as(e, &Ty::Action),
+        }
+    }
+
+    fn handler_block(&mut self, b: &ast::Block) -> Ex {
+        self.push_sink();
+        for (i, s) in b.stmts.iter().enumerate() {
+            let last = b.stmts.get(i + 1).is_none();
+            if last
+                && let ast::StmtKind::Expr(expr) = &s.kind
+            {
+                let act = self.expr_as(expr, &Ty::Action);
+                let stmts = self.pop_sink();
+                return Ex::new(Ek::Seq(stmts, Box::new(act)), Ty::Action);
+            }
+            let ast::StmtKind::Let { name, ty, value } = &s.kind else {
+                self.stmt(s);
+                continue;
+            };
+            if ty.is_some() {
+                self.let_stmt(&name.name, ty.as_ref(), value);
+                continue;
+            }
+            self.st.last_action = None;
+            let answer = self.expr(value, None);
+            let declared = self.st.last_action.take();
+            if answer.ty != Ty::Action {
+                let ty = answer.ty.clone();
+                self.bind_written(&name.name, ty, answer, value);
+                continue;
+            }
+            let declared = declared.filter(|ty| !ty.is_error());
+            let bound = match declared {
+                Some(ty) if ty != Ty::Unit => Some(ty),
+                other => {
+                    if other.is_some() {
+                        self.err(
+                            "E148",
+                            value.span,
+                            format!(
+                                "`{}` answers nothing, so `{}` has no answer to hold: an action a handler binds says what it answers, as `action {}(...) -> Text`",
+                                called(value),
+                                name.name,
+                                called(value),
+                            ),
+                        );
+                    } else {
+                        self.err(
+                            "E148",
+                            value.span,
+                            format!(
+                                "`{}` takes the answer of an action's call, and this is an action value, not one: bind `act(args)` for an action that answers a value",
+                                name.name,
+                            ),
+                        );
+                    }
+                    None
+                }
+            };
+            let Some(answer_ty) = bound else {
+                self.bind_written(&name.name, Ty::Error, answer, value);
+                continue;
+            };
+            let (id, captures) = self.answer_steps(&name.name, &answer_ty, &b.stmts[i + 1..], s.span);
+            let act = Ex::host(
+                Imp::ActAnswer,
+                vec![answer, Ex::str(&id), captures],
+                Ty::Action,
+            );
+            let stmts = self.pop_sink();
+            return Ex::new(Ek::Seq(stmts, Box::new(act)), Ty::Action);
+        }
+        self.err(
+            "E063",
+            b.span,
+            "a handler ends with the action it applies: add its last step, such as `set(editing, id)`",
+        );
+        let _ = self.pop_sink();
+        Ex::error()
+    }
+
+    /// The steps of a handler after it binds the action's `answer` to `bind`, as a function of the
+    /// answer and of what else they read: a view's state, what the event carries, and the view's
+    /// own values. Exported like an argument computed at the event, and the runtime runs it with
+    /// the answer once the action gives one. Returns its id and the values it is handed besides
+    /// the answer.
+    fn answer_steps(
+        &mut self,
+        bind: &str,
+        answer: &Ty,
+        rest: &[ast::Stmt],
+        span: Span,
+    ) -> (String, Ex) {
+        let rest = ast::Expr {
+            kind: ast::ExprKind::Block(ast::Block {
+                stmts: rest.to_vec(),
+                span,
+            }),
+            span,
+        };
+        let mut names = BTreeSet::new();
+        boundary::names_in(&rest, &mut names);
+        names.remove(bind);
+        let mut params = vec![ParamInfo {
+            name: bind.to_owned(),
+            ty: answer.clone(),
+            default: None,
+            place: false,
+            label: None,
+            entry: false,
+        }];
+        let mut captures = Vec::new();
+        let mut boxed = Vec::new();
+        for name in &names {
+            let (ty, arg) = if let Some(state) = self.state_named(name) {
+                (state.ty.clone(), Self::state_at(&state))
+            } else if let Some((local, ty)) = self.lookup(name) {
+                if self.st.event_scalars.contains(&local) {
+                    boxed.push(name.clone());
+                }
+                (ty.clone(), Ex::local(local, ty))
+            } else {
+                continue;
+            };
+            params.push(ParamInfo {
+                name: name.clone(),
+                ty,
+                default: None,
+                place: false,
+                label: None,
+                entry: false,
+            });
+            captures.push(arg);
+        }
+        let n = self.answer_n;
+        self.answer_n = self.answer_n.saturating_add(1);
+        let id = format!("{}~answer{n}", self.st.view_id);
+        let outer = std::mem::take(&mut self.st);
+        self.begin(Ctx::View, &params, Ty::Action, &outer.view_id);
+        self.st.ns.clone_from(&outer.ns);
+        self.st.types.clone_from(&outer.types);
+        self.st.press = true;
+        // The state the steps read or set is the view's: `set(editing, id)` names it as the view
+        // does, though the steps run in a frame of their own.
+        for name in &names {
+            let Some(declared) = outer.states.get(name) else {
+                continue;
+            };
+            let Some((local, ty)) = self.lookup(name) else {
+                continue;
+            };
+            self.st.states.insert(
+                name.clone(),
+                StateRef {
+                    id: declared.id.clone(),
+                    ty,
+                    local,
+                },
+            );
+        }
+        // The scalars an event carries come boxed until it fires; the steps read them plain.
+        for name in &boxed {
+            if let Some((local, Ty::Option(inner))) = self.lookup(name) {
+                let plain = self.declare(name, (*inner).clone());
+                self.emit(Stmt::Set(
+                    plain,
+                    Self::unwrap_opt(Ex::local(local, Ty::Option(inner.clone())), &inner),
+                ));
+            }
+        }
+        let value = self.handler(&rest);
+        self.emit(Stmt::Return(Some(value)));
+        let name = format!("{} after an action's answer", outer.view_id);
+        let export = ir::at_event_export(&id);
+        self.at = self.outer_at;
+        let mut f = self.end(ir::FuncKind::Fn, &name, &export);
+        f.nparams = params.len();
+        self.st = outer;
+        self.at_event.push((
+            f,
+            ir::AtEventFn {
+                func: 0,
+                id: id.clone(),
+                name,
+                params,
+                result: Ty::Action,
+            },
+        ));
+        let captures = self.arg_list(captures);
+        (id, captures)
     }
 
     /// Binds the checked value `ex` to the new local `name`; `written` is the value as source wrote

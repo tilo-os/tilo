@@ -27,6 +27,12 @@ pub const OPEN_ACTION: &str = "$open";
 /// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
 pub const THEN_ACTION: &str = "$then";
 
+/// The action of a handler that binds an action's answer (`let id = add_box(b)`): its arguments
+/// are the action, the id of the function of the steps after the binding, and the values those
+/// steps are handed besides the answer. The steps run when the action answers, and not when it
+/// is refused or fails.
+pub const ANSWER_ACTION: &str = "$answer";
+
 /// The action of a row's keys (`shortcut` on a `ui.ListItem`): run the action of the row's item
 /// the key pressed names, where it applies. Its arguments are the keys, each with what it runs,
 /// and the key pressed.
@@ -364,6 +370,28 @@ impl Core {
         self.ret_h(Value::Action(ActionRef {
             action: THEN_ACTION.to_owned(),
             args: vec![first, next],
+            author,
+            from: None,
+        }))
+    }
+
+    /// `let id = act(args)` in a handler: `act`, and the steps after the binding, run with the
+    /// answer once `act` gives one. The steps are the function `id` names, handed the answer and
+    /// the values `captures` holds.
+    fn act_answer(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let first = self.val(a.h(0)?)?;
+        if !matches!(first, Value::Action(_)) {
+            return trap(format!(
+                "a handler binds the answer of an action, not {}",
+                first.kind_name()
+            ));
+        }
+        let id = self.text(a.h(1)?)?;
+        let captures = self.val(a.h(2)?)?;
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: ANSWER_ACTION.to_owned(),
+            args: vec![first, Value::Text(id), captures],
             author,
             from: None,
         }))
@@ -745,6 +773,7 @@ impl Core {
             }
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
+            Imp::ActAnswer => self.act_answer(a),
             Imp::ActChoose => self.act_choose(a, CHOOSE_ACTION),
             Imp::ActChooseFolder => self.act_choose(a, CHOOSE_FOLDER_ACTION),
             Imp::ActSave => self.act_save(a),

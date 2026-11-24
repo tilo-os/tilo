@@ -308,6 +308,22 @@ the view's own declared state may compute from it, with field reads and `fn` cal
 value is a function the runtime runs at the press, so it uses no action. View state is the
 person's presentation, so this never changes a resource outside an action.
 
+A handler written as a block may bind the answer an action gives:
+
+```
+on press: {
+    let id = add_box(s)
+    set(editing, id)
+}
+```
+
+`let id = add_box(s)` holds what the action answers — the box's id — and the steps after it run
+once it does, so the view is set to the box the press made and the next key typed lands there.
+The name has the action's declared result type, so `set` and anything else read it as that value;
+an action declares its answer with `-> Text`, and binding one that answers nothing is refused. The
+answer is the invocation's own, never a poll: an action that is refused or fails answers none, so
+none of the steps after the binding run, and the refusal shows as any refused action does.
+
 ## Opening
 
 What opening a resource does is an `opened action` on its type. The system's one open path runs

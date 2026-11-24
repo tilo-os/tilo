@@ -300,6 +300,9 @@ imports! {
     ActSet = "act_set" ([H, H] -> [H]);
     WindowState = "window_state" ([H, H, H] -> []);
     ActThen = "act_then" ([H, H] -> [H]);
+    // `let id = act(args)` in a handler: `act`, and the steps after the binding, which the
+    // runtime runs with the answer once `act` gives one.
+    ActAnswer = "act_answer" ([H, H, H] -> [H]);
     ActMadeFrom = "act_made_from" ([H, H] -> [H]);
     ActMany = "act_many" ([H] -> [H]);
     ActOpen = "act_open" ([H, H, I32] -> [H]);

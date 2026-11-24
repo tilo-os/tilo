@@ -14,9 +14,9 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION, CHOOSE_FOLDER_ACTION,
-    KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION,
-    SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, UNDO_ACTION,
+    ANSWER_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
+    CHOOSE_FOLDER_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION,
+    RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -984,6 +984,7 @@ impl ViewInstance {
             MARK_SEEN_ACTION => self.mark_seen(aref),
             THEN_ACTION => self.run_then(aref, gesture),
             SHORTCUT_ACTION => self.platform_shortcut(aref, gesture),
+            ANSWER_ACTION => self.answer_steps(aref, gesture),
             CHOOSE_ACTION => self.platform_choose(aref, false),
             CHOOSE_FOLDER_ACTION => self.platform_choose(aref, true),
             SAVE_ACTION => self.platform_save(aref),
@@ -1155,6 +1156,71 @@ impl ViewInstance {
             }
             Ok(InvokeOutcome::Done(Value::Unit))
             }
+
+    /// The steps of a handler after it binds an action's answer: the action runs first, and only
+    /// an answer it gives runs the steps, as the view's own code in a frame of its window. An
+    /// action that is refused, fails, or waits on a call answers none, so nothing after the
+    /// binding runs.
+    fn answer_steps(
+        &self,
+        aref: &ActionRef,
+        gesture: Option<&str>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let [Value::Action(first), Value::Text(id), Value::List(captures)] =
+            aref.args.as_slice()
+        else {
+            return Err(RuntimeError::BadArgs("a malformed handler answer".into()));
+        };
+        // The steps after a binding run only on the answer its action gives: an action
+        // that is refused, fails, or waits on a call answers none.
+        match self.run_in(first, gesture)? {
+            InvokeOutcome::Done(answer) => {
+                let Some(module) = aref.author.as_ref() else {
+                    return Err(RuntimeError::NotFound(
+                        "the module a handler's steps are in".into(),
+                    ));
+                };
+                // The steps are the view's own code, so they run in a frame of its
+                // window: what they read and set is that window's state.
+                let Some(package) = self.core.registry.borrow().package(module) else {
+                    return Err(RuntimeError::NotFound(format!("module {module}")));
+                };
+                let Some(steps) = package.meta.at_event.iter().find(|f| f.id == *id) else {
+                    return Err(RuntimeError::NotFound(format!(
+                        "the steps after a binding: `{id}`"
+                    )));
+                };
+                let mut given = Vec::with_capacity(captures.len().saturating_add(1));
+                given.push(answer);
+                for capture in captures {
+                    given.push(match capture {
+                        Value::State { key, scalar } => self.state_now(key, *scalar),
+                        other => other.clone(),
+                    });
+                }
+                let next = self.core.call_in_view(
+                    &package,
+                    &tilolang::ir::at_event_export(id),
+                    &steps.params,
+                    &given,
+                    &self.live.window,
+                    &self.live.viewer,
+                    &steps.result,
+                )?;
+                match next {
+                    Value::Action(mut next) => {
+                        self.read_states(&mut next)?;
+                        self.run_in(&next, gesture)
+                    }
+                    other => Err(RuntimeError::BadArgs(format!(
+                        "a handler's steps answer an action, not {}",
+                        other.kind_name()
+                    ))),
+                }
+            }
+            other => Ok(other),
+        }
+    }
 
     /// Whether the follow-up `next` of a `then` applies to what it acts on, as its `applies`
     /// conditions say. One that does not is passed over: `applies` says the action is not
@@ -1829,7 +1895,16 @@ pub struct Held {
 fn fill_event(aref: &mut ActionRef, value: Option<&Value>, keys: Held) -> Result<(), ()> {
     for arg in &mut aref.args {
         match arg {
-            Value::Action(inner) if aref.action == THEN_ACTION => fill_event(inner, value, keys)?,
+            Value::Action(inner) if aref.action == THEN_ACTION || aref.action == ANSWER_ACTION => {
+                fill_event(inner, value, keys)?;
+            }
+            // What a handler's steps are handed besides the answer (`let id = act(x)`): the
+            // values it keeps, filled where they hold the event's.
+            Value::List(items) if aref.action == ANSWER_ACTION => {
+                for item in items {
+                    fill_event_value(item, value, keys)?;
+                }
+            }
             held => fill_event_value(held, value, keys)?,
         }
     }

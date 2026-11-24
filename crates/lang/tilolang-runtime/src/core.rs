@@ -20,8 +20,7 @@ use crate::store::Store;
 use crate::value::Value;
 
 use Imp::{
-    Abort, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder, ActMadeFrom, ActMany,
-    ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo, Actions, ActorApp, ActorEq,
+    Abort, ActAnswer, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo, Actions, ActorApp, ActorEq,
     ActorId, ActorKind, ActorName, ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength,
     CallFn, CallInputs, CallMembers, CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture,
     CanvasExport, CanvasFind, CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen,
@@ -734,7 +733,7 @@ impl Core {
             VaultCode => self.vault_import(a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
             | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | UiBindStateAt
-            | StateGet | StateAt | ArgAt | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen
+            | StateGet | StateAt | ArgAt | ActSet | ActThen | ActAnswer | ActMadeFrom | ActMany | ActOpen
             | ActUndo | ChangeView | UiActions | UiAction | ActChoose | ActChooseFolder
             | ActSave | ActCall | ActCallInput | ActCallVolume | ActRunLine => {
                 self.ui_import(imp, a)

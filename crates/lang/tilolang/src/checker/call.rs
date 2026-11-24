@@ -1006,7 +1006,7 @@ impl Checker<'_> {
         }
     }
 
-    fn arg_list(&mut self, args: Vec<Ex>) -> Ex {
+    pub(super) fn arg_list(&mut self, args: Vec<Ex>) -> Ex {
         let ty = Ty::List(Box::new(Ty::Error));
         let tmp = self.fresh(ty.clone());
         let mut stmts = vec![Stmt::Set(
@@ -1052,6 +1052,8 @@ impl Checker<'_> {
 
     fn action_value(&mut self, c: &Callable, bound: Vec<Ex>) -> Ex {
         self.st.facts.action_values.insert(Self::action_ref(c));
+        // What the call answers, for a handler that binds it: `let id = add_box(b)`.
+        self.st.last_action = Some(c.result.clone());
         let list = self.arg_list(bound);
         // A block's whole expression is the proposal: the host records it as one instead of
         // applying it.

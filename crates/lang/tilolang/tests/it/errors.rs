@@ -1091,3 +1091,78 @@ fn codes_header(options: &str, body: &str) -> Vec<String> {
         Err(d) => d.into_iter().map(|d| d.code).collect(),
     }
 }
+
+/// A view whose button runs `steps` as its handler, over a slide with an action that answers a
+/// `Text` and one that answers nothing.
+fn handler(steps: &str) -> String {
+    format!(
+        "type Slide {{\n    title: Text\n}}\n\
+         action make(s: Slide) -> Text {{\n    return s.id()\n}}\n\
+         action bump(s: Slide) {{\n    s.title = \"bumped\"\n}}\n\
+         view editor(s: Slide) {{\n    state editing: Text = \"\"\n    state count: Int = 0\n    \
+         ui.Button(\"Go\") {{\n        on press: {{\n{steps}        }}\n    }}\n}}\n"
+    )
+}
+
+tilo_test_env::scenario! {
+    /// E148: a handler's `let` takes the answer an action gives, so an action that answers
+    /// nothing has none to hold, and the answer is the action's declared type: the steps after
+    /// the binding read it as that type.
+    fn handler_binds_an_actions_answer_e148;
+
+    phase an_action_that_answers_nothing_has_no_answer_to_bind;
+    {
+        let got = handler("            let a = bump(s)\n            set(editing, \"\")\n");
+        let refused = compile_with(&format!("app t.x \"X\"\n{got}"), &[]).expect_err("refused");
+        assert_eq!(
+            refused.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(),
+            ["E148"],
+            "{refused:#?}"
+        );
+        assert!(
+            refused[0].message.contains("`bump` answers nothing"),
+            "{refused:#?}"
+        );
+        // An action value that is no call of a declared action has no answer either.
+        let none = handler("            let a = set(count, 1)\n            set(editing, \"\")\n");
+        let refused = compile_with(&format!("app t.x \"X\"\n{none}"), &[]).expect_err("refused");
+        assert!(
+            refused.iter().any(|d| d.code == "E148"),
+            "{refused:#?}"
+        );
+    }
+
+    phase a_binding_after_a_binding_reads_both_answers;
+    {
+        // The steps after a binding may bind another action's answer: each waits for its own.
+        let twice = handler(
+            "            let first = make(s)\n            let second = make(s)\n            set(editing, second)\n",
+        );
+        let got = codes(&twice);
+        assert!(got.is_empty(), "{got:?}\n{twice}");
+    }
+
+    phase steps_after_the_binding_take_what_the_event_carries;
+    {
+        // What a field's `submit` carries is one of the action's arguments, as an event value
+        // is anywhere: the steps it runs read it as they read the answer.
+        let source = "type Slide {\n    title: Text\n}\n\
+             action retitle(s: Slide, title: Text) -> Text {\n    s.title = title\n    return s.id()\n}\n\
+             view editor(s: Slide) {\n    state editing: Text = \"\"\n    \
+             ui.TextInput(placeholder: \"Title\") {\n        \
+             on submit(text: Text): {\n            let id = retitle(s, text)\n            set(editing, id)\n        }\n    \n}}\n";
+        let got = codes(source);
+        assert!(got.is_empty(), "{got:?}\n{source}");
+    }
+
+    phase the_answer_is_the_actions_declared_type;
+    {
+        let fine = handler("            let id = make(s)\n            set(editing, id)\n");
+        let diags = codes(&fine);
+        assert!(diags.is_empty(), "{diags:?}\n{fine}");
+        // The binding is `Text`, not the action: an `Int` state cannot take it.
+        let wrong = handler("            let id = make(s)\n            set(count, id)\n");
+        let got = codes(&wrong);
+        assert!(got.iter().any(|c| c == "E020"), "{got:?}\n{wrong}");
+    }
+}

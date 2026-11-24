@@ -1231,7 +1231,7 @@ impl Checker<'_> {
         action: &ast::Expr,
     ) -> Ex {
         let Some(param) = param else {
-            return self.expr_as(action, &Ty::Action);
+            return self.handler(action);
         };
         let Some(carried) = &e.value else {
             self.err(
@@ -1326,7 +1326,7 @@ impl Checker<'_> {
             };
             self.emit(Stmt::Set(local, value));
         }
-        let act = self.expr_as(action, &Ty::Action);
+        let act = self.handler(action);
         let stmts = self.pop_sink();
         Ex::new(crate::ir::Ek::Seq(stmts, Box::new(act)), Ty::Action)
     }
@@ -1337,10 +1337,24 @@ impl Checker<'_> {
     /// fires. View state is the person's presentation, so only a `set` of it may compute: an action
     /// on a resource takes the value as it is, so what it is called with is what was chosen.
     fn takes_event_value(&self, e: &ast::Expr, name: &str) -> bool {
+        let names = [name];
+        // A handler's steps take it in any of the ways below, one step at a time.
+        if let ExprKind::Block(b) = &e.kind {
+            let mut taken = false;
+            for value in block_values(b) {
+                if super::native::mentions(value, &names).is_none() {
+                    continue;
+                }
+                if !self.takes_event_value(value, name) {
+                    return false;
+                }
+                taken = true;
+            }
+            return taken;
+        }
         let ExprKind::Call { callee, args, .. } = &e.kind else {
             return false;
         };
-        let names = [name];
         if let ExprKind::Field { base, name: then } = &callee.kind
             && then.name == "then"
             && let [next] = args.as_slice()
@@ -1702,6 +1716,26 @@ fn press_ty() -> Ty {
         app: crate::host::HOST_APP.to_string(),
         name: crate::host::PRESS_TYPE.to_string(),
     })
+}
+
+/// The expressions a block's statements carry: each `let`'s value, each statement's expression, an
+/// assignment's value, a loop's list and body, and a return's value. A handler written as a block
+/// takes what its event carries in one of them.
+fn block_values(b: &ast::Block) -> Vec<&ast::Expr> {
+    let mut out = Vec::new();
+    for s in &b.stmts {
+        match &s.kind {
+            ast::StmtKind::Let { value, .. }
+            | ast::StmtKind::Expr(value)
+            | ast::StmtKind::Assign { value, .. } => out.push(value),
+            ast::StmtKind::For { iter, body, .. } => {
+                out.push(iter);
+                out.extend(block_values(body));
+            }
+            ast::StmtKind::Return(value) => out.extend(value.iter()),
+        }
+    }
+    out
 }
 
 /// Whether values of `ty` hold actions offered to the person (`List<Action>`).
