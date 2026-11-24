@@ -21,7 +21,11 @@
 pub mod backend;
 #[cfg(feature = "connector")]
 pub mod connector;
+// The cache directory the live client keeps its answers in, and the words it fetches: both
+// reach the network the connector process holds and nothing else in this crate does.
+#[cfg(feature = "live")]
 mod files;
+#[cfg(feature = "live")]
 pub mod lyrics;
 pub mod origin;
 #[cfg(any(unix, windows))]

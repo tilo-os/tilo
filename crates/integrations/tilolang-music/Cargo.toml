@@ -14,8 +14,9 @@ runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-p
 # YouTube Music's own client, as Music reached it: each query compiled once beside rustypipe.
 tilo-innertube = { path = "../tilo-innertube", optional = true }
 rustypipe = { workspace = true, features = ["rustls-no-provider"], optional = true }
-# The app runtime rustypipe's connections live on, and its TLS provider.
-ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true }
+# The app runtime the lyrics are fetched on and rustypipe's connections live on, and its TLS
+# provider: the origin asks what it holds without this site's client too.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 # The device's network: the queries, the pictures and the songs an answer names, fetched here
 # because the app's window never has one.
 tilo-net = { path = "../../platform/tilo-net", default-features = false, features = ["blocking"], optional = true }
@@ -38,7 +39,7 @@ default = ["live", "connector"]
 # The YouTube Music client, and the connector process that holds it: the network the tilolang
 # host never has. A build without it, or a session with no connector running, answers from a
 # test's own service instead.
-live = ["dep:tilo-innertube", "dep:rustypipe", "dep:ui", "dep:tilo-net", "dep:tilo-spotify", "dep:reqwest"]
+live = ["dep:tilo-innertube", "dep:rustypipe", "dep:tilo-net", "dep:tilo-spotify", "dep:reqwest"]
 # The connector process's loop: the action API it takes instances from, and the socket each
 # reaches it over (`tilo-launcher run --tilolang-connector music`).
 connector = ["dep:runtime-portal"]

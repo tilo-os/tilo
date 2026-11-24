@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+// The catalogue backend's methods the live service asks.
+#[cfg(feature = "live")]
 use crate::backend::MusicBackend as _;
 
 /// A song, as the service says it is.
@@ -489,6 +491,8 @@ impl Service for Live {
     }
 }
 
+/// What the live service reads of an item the catalogue's home page lists.
+#[cfg(feature = "live")]
 impl Item {
     /// An item read as the kind the home page said it is: a home tile names a song, an album,
     /// an artist or a playlist, and the record it is written as carries that kind.

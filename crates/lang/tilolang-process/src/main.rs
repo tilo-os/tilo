@@ -88,22 +88,35 @@ fn launched() -> std::process::ExitCode {
 
 /// Run the connector of the origin `origin` this process was started as
 /// (`TILO_TILOLANG_CONNECTOR`), on the API the launcher handed it, until the session closes
-/// the API: the origin's own connector, from the crate that implements it.
+/// the API: the origin's own connector, from the crate that implements it, or the library that
+/// holds it beside this binary.
 #[cfg(all(unix, feature = "app-launch"))]
 fn run_connector(origin: &str) -> Result<(), String> {
     match origin {
         "imap" => tilolang_mail::run_connector(origin),
         "caldav" => tilolang_calendar::run_connector(origin),
-        "youtube" => {
-            let service: std::sync::Arc<dyn tilolang_youtube::Service> =
-                std::sync::Arc::new(tilolang_youtube::Live::new());
-            tilolang_youtube::connector::run(&service)
-        }
-        "music" => {
-            let service: std::sync::Arc<dyn tilolang_music::Service> =
-                std::sync::Arc::new(tilolang_music::Live::new());
-            tilolang_music::connector::run(&service)
-        }
+        // YouTube's client and the connector loop over it are their own library in the bundle:
+        // this process is started for that role alone, and opens it here. Every other launch of
+        // this binary maps none of it.
+        "youtube" => connector_of("libtilo_youtube_engine.so", origin),
+        "music" => connector_of("libtilo_music_engine.so", origin),
         other => Err(format!("there is no connector for the origin `{other}`")),
     }
 }
+/// Run the connector library `library` (its file name, as in the runtime bundle) serves, for the
+/// origin `origin` this process was started as.
+#[cfg(all(unix, feature = "app-launch"))]
+fn connector_of(library: &str, origin: &str) -> Result<(), String> {
+    // SAFETY: the library is one this build ships, built with this runtime: a connector
+    // exporting the one entry whose `ConnectorApi` shares this build's types.
+    let connector = unsafe { tilo_engine_loader::connector(library) }
+        .map_err(|why| format!("the {origin} connector did not open: {why}"))?;
+    if connector.origin != origin {
+        return Err(format!(
+            "{library} serves `{}`, not the origin `{origin}` this process was started as",
+            connector.origin
+        ));
+    }
+    (connector.run)()
+}
+

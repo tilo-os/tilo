@@ -18404,6 +18404,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-music-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "tilolang-music",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-native-media"
 version = "0.1.0"
 dependencies = [
@@ -22029,6 +22039,16 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "x11rb",
+]
+
+[[package]]
+name = "tilo-youtube-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "tilolang-youtube",
+ "workspace-hack",
 ]
 
 [[package]]

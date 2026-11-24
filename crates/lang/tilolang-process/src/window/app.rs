@@ -116,6 +116,10 @@ impl ResourceApp for TlApp {
                 "tilolang-open-failed",
             )));
         };
+        // A window with no session reaches the outside services its instance keeps in step
+        // through the connectors this launch starts; a hosted window's host reaches them over
+        // the connections its session handed it.
+        #[cfg(unix)]
         if cx.mode() == ui::framework::RunMode::Live {
             live_origins(&mut window);
         }
@@ -174,29 +178,197 @@ fn in_process(
 }
 
 /// Keep the types of the package whose origin is a video or music site in step with it: the
-/// client asks, and the origin, in native code with the network, writes what they answer. A mail
-/// server's types are kept only by the connector the session starts, which the session tells the
-/// workspace's accounts and their sign-ins: a window outside a tilolang host reaches none.
+/// client asks, and the origin, in native code with the network, writes what they answer. A
+/// window that runs its instance here has no more network than a host has, so it reaches the
+/// service through the connector the system runs for the origin, as a session's host reaches the
+/// connector its daemon starts: the connector is this binary's own connector role, started once
+/// for the window. A mail server's types are kept only by the connector the session starts,
+/// which the session tells the workspace's accounts and their sign-ins: a window outside a
+/// tilolang host reaches none.
+#[cfg(all(unix, feature = "app-launch"))]
 fn live_origins(window: &mut super::hosted::HostedWindow) {
     let Some(meta) = installed() else {
         return;
     };
-    if tilolang_tilo::origin::uses_origin(meta, "youtube") {
+    for origin in ["youtube", "music"] {
+        if !tilolang_tilo::origin::uses_origin(meta, origin) {
+            continue;
+        }
         let wake = ui::wake::WakeHandle::new();
-        let origin = tilolang_youtube::origin(
-            std::sync::Arc::new(tilolang_youtube::service::Live::new()),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        );
         let waker = std::sync::Arc::new(move || wake.wake());
-        window.add_origin(tilolang_youtube::waking(origin, waker));
+        match connector_origin(origin, waker) {
+            Ok(origin) => window.add_origin(origin),
+            Err(error) => {
+                tracing::error!(%error, origin, "the app's origin is not kept in step with its service")
+            }
+        }
     }
-    if tilolang_tilo::origin::uses_origin(meta, "music") {
-        let wake = ui::wake::WakeHandle::new();
-        let origin = tilolang_music::origin(
-            std::sync::Arc::new(tilolang_music::service::Live::new()),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        );
-        let waker = std::sync::Arc::new(move || wake.wake());
-        window.add_origin(tilolang_music::waking(origin, waker));
+}
+
+/// The origin `origin` kept in step through the connector process this launch starts for it over
+/// a socket pair, waking the instance with `wake` when an answer is ready. The connector runs as
+/// this binary's connector role (`TILO_TILOLANG_CONNECTOR`), which opens the origin's own library
+/// from the runtime bundle: the process every app runs links none of the service's client.
+///
+/// # Errors
+///
+/// No socket pair, no connector process, the connector not taking the connection, or the origin
+/// not attaching to it.
+#[cfg(all(unix, feature = "app-launch"))]
+fn connector_origin(
+    origin: &'static str,
+    wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+) -> Result<tilolang_tilo::origin::SharedOrigin, String> {
+    // Only reached where a connector process can be told its socket: the launcher's service
+    // descriptor on Linux, the process link on macOS. Elsewhere the window has no connector.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        /// What became of the connector started for an origin, by origin: one is started per
+        /// window, and a view of the window shown again is handed the same one. An origin belongs
+        /// to the thread that draws the window, so this is the window's own.
+        type Started = std::collections::BTreeMap<
+            &'static str,
+            Result<tilolang_tilo::origin::SharedOrigin, String>,
+        >;
+        thread_local! {
+            static STARTED: std::cell::RefCell<Started> =
+                const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+        }
+        STARTED.with(|started| {
+            let mut started = started.borrow_mut();
+            if let Some(earlier) = started.get(origin) {
+                return earlier.clone();
+            }
+            let attached: Result<tilolang_tilo::origin::SharedOrigin, String> =
+                spawn_connector(origin).and_then(|stream| match origin {
+                    "youtube" => tilolang_youtube::remote_origin(stream, wake)
+                        .map(|origin| origin as tilolang_tilo::origin::SharedOrigin),
+                    "music" => tilolang_music::remote_origin(stream, wake)
+                        .map(|origin| origin as tilolang_tilo::origin::SharedOrigin),
+                    other => Err(format!("there is no connector for the origin `{other}`")),
+                });
+            started.insert(origin, attached.clone());
+            attached
+        })
     }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (origin, wake);
+        Err("this host starts no connector for a window without a session".to_owned())
+    }
+}
+
+/// The window's end of a connection to the connector of `origin`, which this starts as this
+/// binary's connector role over a socket pair the connector takes its service socket from.
+///
+/// # Errors
+///
+/// A socket the connection cannot be made over, the connector not starting, or the connector not
+/// taking the connection.
+#[cfg(all(
+    unix,
+    feature = "app-launch",
+    any(target_os = "linux", target_os = "macos")
+))]
+fn spawn_connector(origin: &'static str) -> Result<tilo_socket::Stream, String> {
+    use runtime_portal::origin_connector;
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::process::CommandExt as _;
+
+    let (ours, theirs) = origin_connector::pair()
+        .map_err(|error| format!("no socket for the {origin} connector: {error}"))?;
+    let mut command = connector_command()?;
+    command.env(origin_connector::ORIGIN_ENV, origin).env(
+        connector_socket_env(),
+        origin_connector::CHILD_FD.to_string(),
+    );
+    // The launcher places a connector's socket at `CHILD_FD`; so does this, in the child alone.
+    let socket = theirs.as_raw_fd();
+    // SAFETY: `pre_exec` runs between fork and exec, where only async-signal-safe calls belong:
+    // `dup2` is one, and it writes the descriptor the child reads its socket from.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(socket, origin_connector::CHILD_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("the {origin} connector did not start: {error}"))?;
+    // The child holds the socket now; the window's copy closes so the connector ends with it.
+    drop(theirs);
+    // The connector runs until this window lets its socket go, which it does as the window's
+    // process ends: reap it then, off the frame.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    let (instance, connector_end) = origin_connector::connection()
+        .map_err(|error| format!("no connection to the {origin} connector: {error}"))?;
+    origin_connector::send_attachment(&ours, &connector_end)
+        .map_err(|error| format!("the {origin} connector took no connection: {error}"))?;
+    // The connector keeps answering on its socket until the window's end closes: that end stays
+    // open for as long as this process, since the connector lives as long as the window does.
+    kept_open()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(ours);
+    Ok(instance.into())
+}
+
+/// The window's ends of the connectors' sockets, kept open for the process's life.
+#[cfg(all(
+    unix,
+    feature = "app-launch",
+    any(target_os = "linux", target_os = "macos")
+))]
+fn kept_open() -> &'static std::sync::Mutex<Vec<runtime_portal::origin_connector::Descriptor>> {
+    static KEPT: std::sync::OnceLock<
+        std::sync::Mutex<Vec<runtime_portal::origin_connector::Descriptor>>,
+    > = std::sync::OnceLock::new();
+    KEPT.get_or_init(Default::default)
+}
+
+/// The program the connector role runs: this one, the runtime's app process, which runs the
+/// origin's connector when started as it (`TILO_TILOLANG_CONNECTOR`) instead of a window.
+#[cfg(all(
+    unix,
+    feature = "app-launch",
+    not(feature = "test-support"),
+    any(target_os = "linux", target_os = "macos")
+))]
+fn connector_command() -> Result<std::process::Command, String> {
+    let program =
+        std::env::current_exe().map_err(|error| format!("this process's own program: {error}"))?;
+    Ok(std::process::Command::new(program))
+}
+
+/// The program the connector role runs in a test: this test binary, running one child test as the
+/// connector over the socket it is handed, as the runtime's own process runs the real connector.
+#[cfg(all(unix, feature = "app-launch", feature = "test-support"))]
+fn connector_command() -> Result<std::process::Command, String> {
+    let program =
+        std::env::current_exe().map_err(|error| format!("this test's own program: {error}"))?;
+    let mut command = std::process::Command::new(program);
+    command.args([
+        "--exact",
+        "hosted::origins::the_connector_process",
+        "--nocapture",
+    ]);
+    Ok(command)
+}
+
+/// The variable the connector finds its socket in: the launcher's service descriptor for the
+/// origin connector on Linux, and the process link on macOS.
+#[cfg(all(unix, feature = "app-launch", target_os = "linux"))]
+fn connector_socket_env() -> String {
+    runtime_portal::session_services::fd_env(runtime_portal::origin_connector::SERVICE)
+}
+
+/// The variable the connector finds its socket in on macOS, where the connector's socket is its
+/// process link.
+#[cfg(all(unix, feature = "app-launch", target_os = "macos"))]
+fn connector_socket_env() -> String {
+    runtime_portal::process_link::FD_ENV.to_owned()
 }
