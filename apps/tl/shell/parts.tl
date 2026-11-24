@@ -80,11 +80,11 @@ view crashed_card(w: device.Window) {
                     row(gap: .tight, align: .center, wrap: true) {
                         if let label = e.retry {
                             ui.Button(label) {
-                                on press: session.reopen_closed(app: w.app_key)
+                                on press: session.reopen_closed(window: w.key)
                             }
                         } else {
                             ui.Button("Reopen") {
-                                on press: session.reopen_closed(app: w.app_key)
+                                on press: session.reopen_closed(window: w.key)
                             }
                         }
                         ui.Button("Dismiss", role: .plain) {

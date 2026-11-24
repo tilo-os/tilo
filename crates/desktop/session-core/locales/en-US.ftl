@@ -1219,7 +1219,6 @@ hung-app-wait = Wait
 hung-app-force-quit = Force quit
 shell-wait-window = Keep waiting for { $window }
 shell-force-quit-window = Force quit { $window }
-shell-reopen-window = Reopen { $window }
 activities-layer = Activities
 activity-collapse = Put away
 activity-close = Close
@@ -1304,7 +1303,6 @@ so-tilo-layout-launchpad = Choose a card
 so-tilo-layout-move-to-display = Move to another display
 so-tilo-layout-search = Search the desktop
 so-tilo-layout-step-focus = Step through the windows
-so-tilo-layout-reopen-window = Reopen the app
 so-tilo-layout-wait-window = Keep waiting
 
 # Parameter descriptions of the declared vocabularies, read as `<label>-<argument>`.

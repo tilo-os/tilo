@@ -269,6 +269,20 @@ struct Windows {
 }
 
 impl Windows {
+    /// `tab` no longer answers for an app that ended: its window came back, or is asked for again.
+    /// What the app's answer said goes once no other tab says it.
+    fn forget_crash(&self, tab: TabId) {
+        let app = self.crashed.borrow_mut().remove(&tab);
+        let Some(app) = app else {
+            return;
+        };
+        let still_shown = self.crashed.borrow().values().any(|known| *known == app);
+        if !still_shown {
+            self.answers.borrow_mut().remove(&app);
+            self.titles.borrow_mut().remove(&app);
+        }
+    }
+
     /// The app `tab` answers for, and what it says in place of the window: the app is gone but
     /// its tab stays until the person decides what to do, saying why with the name it had, and
     /// Reopen to try again. `None` for a tab that answers for nothing.
@@ -410,7 +424,14 @@ impl TileSource for Windows {
     /// the session's launch record knows which of this machine's apps that is.
     /// An app that still shows another window opens a new one there, rather
     /// than raising that one and leaving the restored tab empty.
-    fn reopened(&mut self, _: &Workspace, tab: &Tab) {
+    fn reopened(&mut self, _: &Workspace, tab: &Tab, launch: Option<&str>) {
+        // A window an app's end took: the card that said so goes with the window coming back,
+        // and the app is asked for it on what it showed, as the launch it came from asked.
+        if let Some(launch) = launch {
+            self.forget_crash(tab.id);
+            ask_again(&self.held, &self.launches, launch, tab.id);
+            return;
+        }
         let TileContent::LocalApp { app_id, note, .. } = &tab.tile else {
             return;
         };
@@ -708,14 +729,15 @@ impl DesktopPolicy {
 
     /// Make `tab`, the last window of the app `asked` names, the place that says what became of
     /// it: still on the desktop, or put back where it was when the window went away by itself
-    /// (never a window the person closed). False when it is neither.
+    /// (never a window the person closed). Its close stays remembered with `asked`, so the card's
+    /// Reopen, the person's reopen of exactly this window, brings it back on what it showed.
+    /// False when it is neither.
     fn answer_where_it_was(&self, tab: TabId, asked: &str, title: &str) -> bool {
         let mut tree = self.handle.read(Clone::clone);
-        let placed = tree.tab(tab).is_some()
-            || tree
-                .workspaces
-                .iter_mut()
-                .any(|workspace| workspace.reopen_closed_tab(tab).is_some());
+        let placed = tree
+            .workspaces
+            .iter_mut()
+            .any(|workspace| workspace.hold_ended(tab, asked));
         if !placed {
             return false;
         }
@@ -790,17 +812,6 @@ impl DesktopPolicy {
         self.handle.rebuild(tab);
     }
 
-    /// Ask the app that left its answer in `tab` for its window again, in that same tab: what
-    /// the card's Reopen does, and a shell's own card asks for by a verb. False for a tab that
-    /// answers for no app.
-    pub fn reopen_in(&mut self, tab: TabId) -> bool {
-        let Some((app, _)) = self.tiles.answer_in(tab) else {
-            return false;
-        };
-        ask_again(&self.held, &self.launches, &app, tab);
-        true
-    }
-
     /// Say `answer` in every tab that answers for `asked`, as a [`Self::failed_at`] left them.
     pub fn answer_again(&mut self, asked: &str, answer: Outcome) {
         self.answers.borrow_mut().insert(asked.to_owned(), answer);
@@ -857,15 +868,7 @@ impl DesktopPolicy {
     /// again.
     fn keep_answer_gone(&self, tab: TabId) {
         self.handle.set_ended_answer(tab, None);
-        let app = self.crashed.borrow_mut().remove(&tab);
-        let Some(app) = app else {
-            return;
-        };
-        let still_shown = self.crashed.borrow().values().any(|known| *known == app);
-        if !still_shown {
-            self.answers.borrow_mut().remove(&app);
-            self.titles.borrow_mut().remove(&app);
-        }
+        self.tiles.forget_crash(tab);
     }
 
     /// The host's side of the surface, for everything else it shows.
@@ -1311,6 +1314,7 @@ impl DesktopPolicy {
         self.handle
             .dispatch(ChromeEffect::ReopenClosed {
                 app: Some(app.to_owned()),
+                window: None,
             })
             .is_ok()
     }

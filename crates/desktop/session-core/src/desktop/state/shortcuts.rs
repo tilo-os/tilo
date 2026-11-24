@@ -55,7 +55,10 @@ impl DesktopHandle {
             }
             // The window the person closed last comes back where it was.
             ShortcutAction::ReopenClosedTab => {
-                self.perform(ChromeEffect::ReopenClosed { app: None });
+                self.perform(ChromeEffect::ReopenClosed {
+                    app: None,
+                    window: None,
+                });
             }
             ShortcutAction::ToggleMaximize => {
                 self.choose_focused_row(&[window_menu::MAXIMIZE, window_menu::RESTORE]);

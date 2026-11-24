@@ -1255,7 +1255,6 @@ hung-app-wait = Warten
 hung-app-force-quit = Erzwungen beenden
 shell-wait-window = Weiter auf { $window } warten
 shell-force-quit-window = { $window } erzwungen beenden
-shell-reopen-window = { $window } erneut öffnen
 activities-layer = Aktivitäten
 activity-collapse = Weglegen
 activity-close = Schließen
@@ -1340,7 +1339,6 @@ so-tilo-layout-launchpad = Eine Karte wählen
 so-tilo-layout-move-to-display = Auf eine andere Anzeige verschieben
 so-tilo-layout-search = Den Desktop durchsuchen
 so-tilo-layout-step-focus = Durch die Fenster wechseln
-so-tilo-layout-reopen-window = Die App erneut öffnen
 so-tilo-layout-wait-window = Weiter warten
 
 # Parameterbeschreibungen der deklarierten Vokabulare, als `<Label>-<Argument>` gelesen.
