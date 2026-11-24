@@ -41,8 +41,9 @@ use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
     ActionCatalog, AskRequest, AutomationInvocationId, Binding, FOCUS_DO_NOT_DISTURB,
     FOCUS_SCHEDULE, InvocationHooks, InvocationMode, InvocationOutcome, InvocationReport,
-    InvocationTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule,
-    Shortcut, StepPath, StopWatch, TriggerSpec, shortcut_id_of, shortcut_resource_id,
+    InvocationTrigger, ResourceTarget, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION,
+    SHORTCUTS_APP_ID, Schedule, Selector, Shortcut, Step, StepKind, StepPath, StopWatch,
+    TriggerSpec, shortcut_id_of, shortcut_resource_id,
 };
 use tilo_desktop_model::Workspace;
 
@@ -63,6 +64,10 @@ pub const STOP_ALL_ACTION: &str = "stop-all";
 pub const PAUSE_ACTION: &str = "pause";
 /// Let a paused shortcut's triggers fire it again.
 pub const RESUME_ACTION: &str = "resume";
+/// What a draft would save as: its least grant and what the checker finds wrong with it.
+pub const INSPECT_ACTION: &str = "inspect";
+/// What one argument of a draft's step may be bound to, as the checker accepts it.
+pub const CHOICES_ACTION: &str = "choices";
 
 /// How long a running step is left before it is observed again, when its
 /// host cannot say when it changes. The broker's own api can, so this is
@@ -87,6 +92,8 @@ pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
         PAUSE_ACTION,
         RESUME_ACTION,
         COUNT_ACTION,
+        INSPECT_ACTION,
+        CHOICES_ACTION,
     ]
     .into_iter()
     .filter_map(library_descriptor)
@@ -202,6 +209,70 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
                     "properties": {
                         "count": {"type": "integer"},
                         "reached": {"type": "boolean"}
+                    }
+                }),
+            },
+        ),
+        INSPECT_ACTION => (
+            "Check a shortcut draft",
+            "What this draft would save as: the least grant its steps need, and every problem the checker finds before saving",
+            vec![shortcut_param()],
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["grant", "permissions", "problems"],
+                    "properties": {
+                        "grant": {"type": "array", "items": {"type": "object"}},
+                        "permissions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["label", "kind"],
+                                "properties": {
+                                    "label": {"type": "string"},
+                                    "kind": {"type": "string"}
+                                }
+                            }
+                        },
+                        "problems": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["path", "message"],
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "message": {"type": "string"}
+                                }
+                            }
+                        }
+                    }
+                }),
+            },
+        ),
+        CHOICES_ACTION => (
+            "What a step argument may be bound to",
+            "Every input, variable and earlier step output the checker accepts for one parameter of a draft's step",
+            vec![
+                shortcut_param(),
+                ActionParam::required(
+                    "path",
+                    ParamType::Text,
+                    "The step's position, like 0 or 2.then.1",
+                ),
+                ActionParam::required("param", ParamType::Text, "The parameter to bind"),
+            ],
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["binding", "describes"],
+                        "properties": {
+                            "binding": {},
+                            "describes": {"type": "string"}
+                        }
                     }
                 }),
             },
@@ -610,6 +681,14 @@ pub enum LibraryOperation {
         id: String,
         every: u64,
     },
+    /// What the draft would save as: its least grant, and what the checker finds wrong with it.
+    Inspect(Box<Shortcut>),
+    /// What the parameter `param` of the step at `path` may be bound to.
+    Choices {
+        shortcut: Box<Shortcut>,
+        path: String,
+        param: String,
+    },
 }
 
 /// Decode an invocation of library action `action` from its argument slot.
@@ -641,6 +720,20 @@ pub fn decode_library(action: &str, argument: Option<&str>) -> Result<LibraryOpe
     Ok(match action {
         CREATE_ACTION => LibraryOperation::Create(shortcut()?),
         UPDATE_ACTION => LibraryOperation::Update(shortcut()?),
+        INSPECT_ACTION => LibraryOperation::Inspect(Box::new(shortcut()?)),
+        CHOICES_ACTION => LibraryOperation::Choices {
+            shortcut: Box::new(shortcut()?),
+            path: bound
+                .text("path")
+                .ok_or("`path` is required")?
+                .trim()
+                .to_string(),
+            param: bound
+                .text("param")
+                .ok_or("`param` is required")?
+                .trim()
+                .to_string(),
+        },
         DELETE_ACTION => LibraryOperation::Delete(
             bound
                 .text("id")
@@ -679,6 +772,53 @@ pub fn decode_library(action: &str, argument: Option<&str>) -> Result<LibraryOpe
         },
         _ => LibraryOperation::List,
     })
+}
+
+/// The checker's step path for an editor path such as `2.then.1`.
+fn editor_path(path: &str) -> StepPath {
+    let mut out = StepPath::root();
+    for segment in path.split('.').filter(|segment| !segment.is_empty()) {
+        out = match segment {
+            "then" => out.then_branch(),
+            "else" => out.else_branch(),
+            "each" => out.each(None),
+            index => index
+                .parse()
+                .map_or_else(|_| out.clone(), |index| out.child(index)),
+        };
+    }
+    out
+}
+
+/// The block and index of a step path: `2.then.1` is step 1 of block `2.then`; `0` is step 0 of
+/// the top level.
+fn split_path(path: &str) -> Option<(&str, usize)> {
+    let (block, index) = match path.rsplit_once('.') {
+        Some((block, index)) => (block, index),
+        None => ("", path),
+    };
+    Some((block, index.parse().ok()?))
+}
+
+/// The steps of the block a block address names: `""`, `2.then`, `2.else` or `3.each`.
+fn block_at<'a>(steps: &'a [Step], block: &str) -> Option<&'a [Step]> {
+    if block.is_empty() {
+        return Some(steps);
+    }
+    let (owner, branch) = block.rsplit_once('.')?;
+    let step = step_at(steps, owner)?;
+    match (&step.kind, branch) {
+        (StepKind::If { then, .. }, "then") => Some(then),
+        (StepKind::If { otherwise, .. }, "else") => Some(otherwise),
+        (StepKind::ForEach { body, .. }, "each") => Some(body),
+        _ => None,
+    }
+}
+
+/// The step at a path such as `2.then.1`.
+fn step_at<'a>(steps: &'a [Step], path: &str) -> Option<&'a Step> {
+    let (block, index) = split_path(path)?;
+    block_at(steps, block)?.get(index)
 }
 
 /// Who is saving a shortcut, and what it is checked against.
@@ -774,6 +914,95 @@ pub fn plan_library(
                     resources: vec![resource],
                 },
             });
+        }
+        LibraryOperation::Inspect(draft) => {
+            let draft = *draft;
+            let permissions = tilo_automation::grant::least_privilege(&draft.steps, context.catalog);
+            let grant = tilo_automation::grant::rules(&permissions);
+            let candidate = Shortcut { grant, ..draft };
+            let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
+            let problems: Vec<Value> =
+                match tilo_automation::check(&candidate, context.catalog, &resolver) {
+                    Ok(()) => Vec::new(),
+                    Err(errors) => errors
+                        .iter()
+                        .map(|error| {
+                            serde_json::json!({
+                                "path": error.path.as_str(),
+                                "message": error.to_string(),
+                            })
+                        })
+                        .collect(),
+                };
+            let permissions: Vec<Value> = permissions
+                .iter()
+                .map(|permission| {
+                    serde_json::json!({
+                        "label": permission.label,
+                        "kind": permission.kind.phrase(),
+                    })
+                })
+                .collect();
+            return Ok(LibraryPlan::Answer(ActionOutput {
+                value: Some(serde_json::json!({
+                    "grant": candidate.grant,
+                    "permissions": permissions,
+                    "problems": problems,
+                })),
+                resources: Vec::new(),
+            }));
+        }
+        LibraryOperation::Choices {
+            shortcut,
+            path,
+            param,
+        } => {
+            let shortcut = *shortcut;
+            let step = step_at(&shortcut.steps, &path)
+                .ok_or_else(|| format!("there is no step `{path}`"))?;
+            let StepKind::Invoke {
+                action, resource, ..
+            } = &step.kind
+            else {
+                return Err(format!("step `{path}` is not an action"));
+            };
+            let target = match resource {
+                Selector::Fixed(id) => ResourceTarget::Id(id),
+                Selector::FirstOfKind(kind) => ResourceTarget::Kind(kind),
+                Selector::FromBinding(_) => ResourceTarget::Any,
+            };
+            let row = context
+                .catalog
+                .find(action, target)
+                .ok_or("the app no longer offers this action")?;
+            let param = row
+                .action
+                .as_ref()
+                .and_then(|descriptor| {
+                    descriptor
+                        .params
+                        .iter()
+                        .find(|known| known.name.as_ref() == param.as_str())
+                })
+                .ok_or_else(|| format!("`{param}` is not one of its parameters"))?;
+            let choices: Vec<Value> = tilo_automation::binding_options(
+                &shortcut,
+                context.catalog,
+                &editor_path(&path),
+                param,
+            )
+            .into_iter()
+            .map(|option| {
+                serde_json::json!({
+                    "binding": option.binding,
+                    "describes": option.describes,
+                })
+            })
+            .collect();
+            return Ok(LibraryPlan::Answer(ActionOutput {
+                value: Some(serde_json::json!(choices)),
+                resources: Vec::new(),
+            }));
         }
         LibraryOperation::Create(shortcut) => (shortcut, false),
         LibraryOperation::Update(shortcut) => (shortcut, true),
@@ -1411,10 +1640,179 @@ pub fn readable_folder(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::remote::{CatalogueResource, CatalogueRow};
     use tilo_automation::SavedShortcut;
 
     fn shortcut(json: Value) -> Shortcut {
         serde_json::from_value(json).expect("shortcut JSON")
+    }
+
+    /// One action a catalogue offers on a resource of an app.
+    fn row(
+        app: &str,
+        resource: &str,
+        kind: &str,
+        action: &str,
+        params: Vec<ActionParam>,
+        contract: ActionContract,
+    ) -> CatalogueRow {
+        CatalogueRow {
+            offered: None,
+            provider: format!("{app}#1"),
+            app_id: app.into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: resource.into(),
+                kind: kind.into(),
+                label: resource.into(),
+                presentation: None,
+            },
+            action: Some(ActionDescriptor {
+                did: None,
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                address: ActionAddress::new(resource, action),
+                resource_kind: kind.into(),
+                resource_label: resource.into(),
+                action_label: action.into(),
+                keywords: Vec::new(),
+                icon: None,
+                description: None,
+                locus: ExecutionLocus::ClientLocal,
+                kind: OperationKind::Document,
+                contract,
+                input: InputSpec::None,
+                params,
+                view: None,
+            }),
+            has_children: false,
+            visibility: None,
+            surface: None,
+        }
+    }
+
+    fn notes_catalog() -> ActionCatalog {
+        ActionCatalog::new(vec![row(
+            "so.tilo.notes",
+            "notes.note:1",
+            "notes.note",
+            "write",
+            vec![ActionParam::required(
+                "body",
+                ParamType::Text,
+                "What to write",
+            )],
+            ActionContract {
+                kind: ActionKind::Undoable,
+                ..ActionContract::default()
+            },
+        )])
+    }
+
+    fn draft() -> Shortcut {
+        shortcut(serde_json::json!({
+            "id": "draft",
+            "name": "Draft",
+            "inputs": [{"name": "body", "ty": "text", "required": true, "description": "What to write"}],
+            "steps": [{
+                "id": "write",
+                "step": "invoke",
+                "action": {"app": "so.tilo.notes", "kind": "notes.note", "action": "write"},
+                "resource": {"fixed": "notes.note:1"},
+                "args": {}
+            }]
+        }))
+    }
+
+    tilo_test_env::scenario! {
+        fn a_draft_is_inspected_and_what_its_arguments_may_be_is_listed;
+
+        phase inspecting_a_draft_answers_its_least_grant_and_its_problems;
+        {
+            let slot = |value: Value| format!("{ARGUMENTS_JSON_PREFIX}{value}");
+            let draft = draft();
+            let operation = decode_library(
+                INSPECT_ACTION,
+                Some(&slot(serde_json::json!({"shortcut": draft.clone()}))),
+            )
+            .expect("the draft inspects");
+            let catalog = notes_catalog();
+            let keymap = ShortcutConfig::default();
+            let workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Office");
+            let saver = tilo_action_policy::MemberId::person("ada");
+            let plan = plan_library(
+                &workspace,
+                operation,
+                &SaveContext {
+                    catalog: &catalog,
+                    saver: &saver,
+                    keymap: &keymap,
+                    fixed_label: &|_| String::new(),
+                },
+            )
+            .expect("the draft is checked");
+            let LibraryPlan::Answer(output) = plan else {
+                panic!("inspection changes nothing: {plan:?}");
+            };
+            let value = output.value.expect("its answer");
+            assert!(
+                value["grant"].as_array().is_some_and(|rules| !rules.is_empty()),
+                "the step's least grant: {value}"
+            );
+            let permissions = value["permissions"].as_array().expect("permissions");
+            assert!(
+                permissions.iter().any(|permission| permission["label"]
+                    .as_str()
+                    .is_some_and(|label| label.contains("write"))),
+                "the grant as a person reads it: {value}"
+            );
+            let problems = value["problems"].as_array().expect("problems");
+            assert!(
+                problems.iter().any(|problem| problem["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("body"))),
+                "the unfilled parameter is named: {value}"
+            );
+        }
+
+        phase the_choices_for_an_argument_are_what_the_checker_accepts;
+        {
+            let slot = |value: Value| format!("{ARGUMENTS_JSON_PREFIX}{value}");
+            let operation = decode_library(
+                CHOICES_ACTION,
+                Some(&slot(serde_json::json!({
+                    "shortcut": draft(),
+                    "path": "0",
+                    "param": "body",
+                }))),
+            )
+            .expect("the choices are asked");
+            let catalog = notes_catalog();
+            let keymap = ShortcutConfig::default();
+            let workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Office");
+            let saver = tilo_action_policy::MemberId::person("ada");
+            let plan = plan_library(
+                &workspace,
+                operation,
+                &SaveContext {
+                    catalog: &catalog,
+                    saver: &saver,
+                    keymap: &keymap,
+                    fixed_label: &|_| String::new(),
+                },
+            )
+            .expect("the choices are read");
+            let LibraryPlan::Answer(output) = plan else {
+                panic!("choices change nothing: {plan:?}");
+            };
+            let value = output.value.expect("its answer");
+            assert!(
+                value.as_array().is_some_and(|choices| choices.iter().any(
+                    |choice| choice["binding"] == serde_json::json!({"input": "body"})
+                )),
+                "the shortcut's input is a choice: {value}"
+            );
+        }
     }
 
     tilo_test_env::scenario! {
@@ -1492,6 +1890,11 @@ mod tests {
                     "shortcuts#list",
                     "shortcuts#stop",
                     "shortcuts#stop-all",
+                    "shortcuts#pause",
+                    "shortcuts#resume",
+                    "shortcuts#count",
+                    "shortcuts#inspect",
+                    "shortcuts#choices",
                     "shortcuts.shortcut:tidy#run",
                 ]
             );
