@@ -1130,7 +1130,6 @@ fn writable<'a>(
 
 /// The agent that asks about a workspace's calendars, where one does.
 struct Assistant {
-    person: [u8; 32],
     workspace: String,
     agent: String,
     /// Whether the workspace's policy asks its person before it changes a
@@ -1873,7 +1872,6 @@ impl Workspaces {
             self.inner.models.mail_reach(),
         );
         let assistant = reach.agent.clone().map(|agent| Assistant {
-            person: reach.person,
             workspace,
             agent,
             asks: reach.answer != tilo_action_policy::Answer::Allow,

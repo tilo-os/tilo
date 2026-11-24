@@ -1272,25 +1272,6 @@ impl ServerAgents {
         }
     }
 
-    /// The agents of `workspace` its host runs, by id.
-    async fn agents(&self, workspace: &str) -> Result<BTreeMap<String, Agent>, String> {
-        let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let Some(agents) = self
-            .read::<WorkspaceAgents>(workspace, AGENTS_OWNER, &record)
-            .await?
-        else {
-            return Ok(BTreeMap::new());
-        };
-        // An agent is the workspace's: it works here for whichever member asks it, whoever
-        // made it, and each turn is held to what the person who asked may do now.
-        Ok(agents
-            .agents
-            .iter()
-            .filter(|agent| agent.is_active() && agent.mcp_client.is_none())
-            .map(|agent| (agent.id.0.clone(), agent.clone()))
-            .collect())
-    }
-
     async fn read<R: tilo_resource::Resource>(
         &self,
         workspace: &str,
@@ -1326,7 +1307,6 @@ impl ServerAgents {
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .serving_ask(&turn.request),
             agent,
-            person,
             workspace: workspace.to_owned(),
             workspace_id,
         };
@@ -1443,8 +1423,13 @@ impl ServerAgents {
                 };
                 let keeping = keeping.as_ref();
                 let web = self.web(workspace);
+                // What this server keeps of what was learned about the person, where the turn
+                // is their own keeper's conversation with the agent: the newest facts, as data.
+                let told = learned::learned_for(&self.workspaces, workspace, &turn)
+                    .await
+                    .map(|known| learned::told(&known));
                 Box::pin(work(
-                    model, &scope, &mut turn, budget, &mut reply, going, keeping, web,
+                    model, &scope, &mut turn, budget, &mut reply, going, keeping, told, web,
                 ))
                 .await
             }
@@ -1536,23 +1521,8 @@ impl ServerAgents {
         Ok(Some(work))
     }
 
-    /// The model `turn` is worked with, or why none works on it, in words its person reads.
-    ///
-    /// The workspace pays, so its own model answers: the one it linked for work its agents do.
-    /// Once it linked a provider its settings decide alone, and a choice that cannot be used is
-    /// said, never replaced by a model somebody else pays for. A workspace that linked nothing is
-    /// told what to link.
-    async fn model_for(
-        &self,
-        place: (&str, WorkspaceId),
-        turn: &Turn,
-        day: &str,
-    ) -> Result<Model, String> {
-        self.model_for_turn(place, turn, day, Arc::default()).await
-    }
-
-    /// [`Self::model_for`], for a turn its person may stop: a call of the workspace's model that
-    /// is under way ends once `stop` is set.
+    /// The model `turn` is worked with, or why none works on it, in words its person reads: a
+    /// call of the workspace's model that is under way ends once `stop` is set.
     async fn model_for_turn(
         &self,
         (workspace, workspace_id): (&str, WorkspaceId),
@@ -1790,8 +1760,6 @@ struct TurnScope {
     /// The agent as its own approved key, working for the person who asked
     /// ([`ServerAgents::agent_caller`]).
     agent: Caller,
-    /// The person who asked.
-    person: [u8; 32],
     workspace: String,
     workspace_id: WorkspaceId,
 }
@@ -2464,6 +2432,7 @@ async fn work(
     reply: &mut Reply,
     going: &going::Going,
     keeping: Option<&learned::Keeping>,
+    told: Option<String>,
     web: web_search::Web,
 ) -> (Outcome, u64, TurnUsage) {
     let Some(turns) = tokio::task::spawn_blocking(move || model())
@@ -2491,13 +2460,14 @@ async fn work(
     let mut own_tools = learned::with_tools(Vec::new(), keeping);
     own_tools.extend(shares::tools(turn));
     own_tools.extend(web_search::definitions());
-    // What this server keeps of what was learned about the person, where the turn is their own
-    // keeper's conversation with the agent: the newest facts, as data, beside its instructions.
-    let known = learned::learned_for(&self.workspaces, workspace, turn).await;
-    let instructions = match &known {
-        Some(known) => format!("{}{}", instructions::for_turn(turn), learned::told(known)),
+    // What was learned about the person, where the turn is their own keeper's conversation
+    // with the agent, is told beside its instructions as data.
+    let instructions = match told {
+        Some(told) => format!("{}{}", instructions::for_turn(turn), told),
         None => instructions::for_turn(turn),
     };
+    // What the turn is told: what came before in its conversation, its instructions with what
+    // was learned about its person, its own tools beside the agent tools, and what it may spend.
     let asked = tilo_agent_turn::Asked {
         history: instructions::history(&turn.history),
         own_tools,

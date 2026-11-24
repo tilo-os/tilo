@@ -405,54 +405,6 @@ impl Workspaces {
         self.admit_entering(workspace, device, now).await
     }
 
-    /// An invitation for `device`'s own person to redeem `workspace` with, as a device that
-    /// entered it does: at their own role, an Editor's at most, so it hands them nothing the
-    /// member list does not. Asking for it is no invitation of anyone, so it needs no grant to
-    /// invite.
-    ///
-    /// # Errors
-    ///
-    /// The person is no member there, or the invitation cannot be recorded.
-    pub(super) async fn own_invitation(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        (request_id, expires_at_ns): ([u8; 32], u64),
-        address: &iroh_base::EndpointAddr,
-    ) -> Result<IssuedInvitation, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let issued = {
-            let governed = self.workspace(workspace).await?;
-            let mut governed = governed.lock().await;
-            let person = hex::encode(device.user_public_key);
-            let policy = governed
-                .peer()
-                .governance()
-                .governed_policy()
-                .map_err(CollaborationError::new)?;
-            let role = match policy.active_role(&person) {
-                Some(role @ (Role::Viewer | Role::Commenter)) => role,
-                Some(_) => Role::Editor,
-                None => {
-                    return Err(CollaborationError::new(
-                        tilo_action_policy::Refusal::NotAMember(person).to_string(),
-                    ));
-                }
-            };
-            let request = IssueInvitationRequest {
-                request_id,
-                role,
-                recipient_user_public_key: Some(device.user_public_key),
-                invitee_name: None,
-                expires_at_ns,
-                inviter_name: self.member_name(&governed, device),
-            };
-            self.stage_issue(&mut governed, device, request, false, address, now)?
-        };
-        self.written(workspace, false).await?;
-        Ok(issued)
-    }
-
     /// Admit `device`, whose entry was decided, to `workspace`; a key keeps
     /// the grant it entered under. Returns whether governance changed.
     #[expect(

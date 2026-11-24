@@ -3115,12 +3115,19 @@ impl RuntimeActionProvider {
                 })?;
             let run = tilo_mcp::agent_id(&caller);
             // The connection is here from the moment it opens, before it asks anything, and
-            // says what it is when its client does.
+            // says what it is when its client does. The device its admission certified is what
+            // the person's MCP server lists the run under.
             if let Some(execution) = caller.execution_id() {
+                let cert = provider
+                    .session
+                    .as_ref()
+                    .map(|session| session.admission.certificate().clone());
                 provider.workspaces.copies().agent_opened(
                     &execution.to_string(),
                     &workspace,
                     tilo_mcp::session_api::UNNAMED_CLIENT,
+                    cert.as_ref(),
+                    &Arc::new(tokio::sync::Notify::new()),
                 );
             }
             Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_session(run))

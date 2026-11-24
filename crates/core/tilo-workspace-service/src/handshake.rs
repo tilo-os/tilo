@@ -296,13 +296,6 @@ fn queue_closed() -> HandshakeError {
     }
 }
 
-fn timed_out() -> HandshakeError {
-    HandshakeError::Io {
-        stage: "handshake",
-        source: std::io::Error::new(std::io::ErrorKind::TimedOut, "handshake timed out"),
-    }
-}
-
 // Both entry points use this path: one permit and one timeout, never an
 // authenticate -> authenticate_hello nesting. Passing the budget explicitly
 // also lets tests exercise exhaustion without racing other endpoints' tests.

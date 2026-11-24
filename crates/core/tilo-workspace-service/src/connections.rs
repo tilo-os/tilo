@@ -120,12 +120,8 @@ impl Calling<'_> {
 /// One command of a kept connection, as whoever decides a call of it reads
 /// it.
 pub(crate) struct Callable {
-    /// The connection's address, as kept.
-    pub(crate) address: String,
-    /// The site that address names: the system's word for the service.
+    /// The site the connection's address names: the system's word for the service.
     pub(crate) site: String,
-    /// The name the service gives itself. The service's own word.
-    pub(crate) name: String,
     /// Whether an agent asks its person before it calls the command.
     pub(crate) asks: bool,
     /// What names the command's definition as the service last listed it.
@@ -149,8 +145,6 @@ pub(crate) fn callable(
         site: site(reach, &kept.address)?,
         asks: found.asks(),
         digest: found.digest.clone(),
-        address: kept.address,
-        name: kept.name,
     })
 }
 

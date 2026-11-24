@@ -4,31 +4,19 @@
 //! grants decide each step, the agent capped at what its person may do and at what a device lets
 //! its agents do, and only while the session goes ([`AppBrokerState::turn_session_goes`]).
 //!
-//! A step the grants ask first about is put to the person on the host's sheet
-//! ([`crate::apps::app_actions::AppActionConsentPrompter`]), the same sheet apps' questions use:
-//!
-//! - while the sheet is up the caller waits; the caller leaving, the session ending or the person
-//!   dismissing the sheet withdraws the question, and the caller hears why;
-//! - the person allowing it answers with a token naming that one invocation, which the caller
-//!   invokes again with; "allow for this agent" also keeps a grant on the session for its later
-//!   steps like it;
-//! - the person declining refuses it, in the words every declined step is refused in.
+//! A step the grants ask first about waits as the person's asked record, answered by them on one
+//! of their own devices, as every other call that asks first does.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
-    InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
+    InvocationState, InvokeRequest, Pending,
 };
 
 use super::AppBrokerState;
 use super::action_provider::ConnectionActionProvider;
 use super::published_invocation::InvocationCaller;
-use crate::apps::app_actions::{AGENT_SESSION_ASK, AppActionConsentPrompter};
-
-/// How often a waiting question looks whether its session still goes.
-const STILL_GOES_EVERY: Duration = Duration::from_millis(500);
 
 struct Inner {
     provider: ConnectionActionProvider,
@@ -76,15 +64,6 @@ impl AppBrokerState {
     }
 }
 
-impl AppBrokerState {
-    fn consent_prompter(&self) -> Option<Arc<dyn AppActionConsentPrompter>> {
-        self.app_action_consent
-            .read()
-            .ok()
-            .and_then(|prompter| prompter.clone())
-    }
-}
-
 impl AgentConnection {
     fn state(&self) -> &Arc<AppBrokerState> {
         &self.0.provider.state
@@ -104,101 +83,6 @@ impl AgentConnection {
         }
         self.goes()
             .map_err(|reason| ActionCallError::Unavailable { reason })
-    }
-
-    /// Put `request` to the session's person on the host's sheet and wait for their answer: the
-    /// confirmation the caller invokes it again with, or why not.
-    async fn ask_person(
-        &self,
-        request: &InvokeRequest,
-    ) -> Result<ConfirmedInvocation, ActionCallError> {
-        let state = Arc::clone(self.state());
-        let caller = &self.0.caller;
-        let person = caller
-            .acting_for_person()
-            .ok_or(ActionCallError::NotPermitted)?
-            .to_owned();
-        let question = state
-            .approval_question(caller, &person, request)?
-            .ok_or(ActionCallError::UnknownAction)?;
-        let nobody = || ActionCallError::Unavailable {
-            reason: "nobody is at this desktop to answer the agent's question".into(),
-        };
-        let prompter = state.consent_prompter().ok_or_else(nobody)?;
-        let mut asked = question.request.clone();
-        asked.handle = format!("{AGENT_SESSION_ASK}{}", request.invocation.0);
-        asked.agent_session = Some(self.0.session.clone());
-        let label = asked.action_label.clone();
-        let handle = asked.handle.clone();
-        let answer = prompter.ask(asked).ok_or_else(nobody)?;
-        let mut asking = Asking {
-            prompter,
-            handle,
-            answered: false,
-        };
-        let answer = self.answer_to(answer, &label).await?;
-        asking.answered = true;
-        if matches!(
-            answer.lifetime,
-            Some(
-                tilo_action_policy::Lifetime::Session | tilo_action_policy::Lifetime::UntilRevoked
-            )
-        ) && let (Some(grant), Some(sessions)) = (
-            question.answer.clone(),
-            state.services.agent_sessions.as_ref(),
-        ) {
-            sessions.keep_answer(&self.0.session, grant);
-        }
-        state.approval_answer(&question, request, &answer.edits)
-    }
-
-    /// The person's answer on the sheet to the question about `label`, waited for while the
-    /// session goes: why not, where it ended or the person dismissed it.
-    async fn answer_to(
-        &self,
-        mut answer: tokio::sync::oneshot::Receiver<crate::apps::app_actions::AppActionAnswer>,
-        label: &str,
-    ) -> Result<crate::apps::app_actions::AppActionAnswer, ActionCallError> {
-        let refused = |reason: String| ActionCallError::Refused { reason };
-        let answer = loop {
-            tokio::select! {
-                answer = &mut answer => break answer,
-                () = tilo_rt::sleep(STILL_GOES_EVERY) => {
-                    if let Err(reason) = self.goes() {
-                        return Err(refused(format!(
-                            "the question about {label} was withdrawn: {reason}"
-                        )));
-                    }
-                }
-            }
-        };
-        let Ok(answer) = answer else {
-            return Err(refused(format!(
-                "the question about {label} was withdrawn: the person dismissed it"
-            )));
-        };
-        if !answer.allowed() {
-            return Err(refused(format!(
-                "{}: the person declined {label}",
-                tilo_actions::draft::DECLINED
-            )));
-        }
-        Ok(answer)
-    }
-}
-
-/// A question on the sheet, withdrawn unless it was answered.
-struct Asking {
-    prompter: Arc<dyn AppActionConsentPrompter>,
-    handle: String,
-    answered: bool,
-}
-
-impl Drop for Asking {
-    fn drop(&mut self) {
-        if !self.answered {
-            self.prompter.withdraw(&self.handle);
-        }
     }
 }
 

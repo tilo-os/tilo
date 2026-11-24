@@ -25,9 +25,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh_base::EndpointAddr;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::CopyRole;
@@ -1567,21 +1567,6 @@ fn host_invocation(action: &str, arguments: Map<String, Value>) -> InvokeRequest
     }
 }
 
-/// What a host operation produced, from its receipt.
-fn receipt_output(status: ReceiptStatus) -> Result<Value, String> {
-    match status {
-        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(json!({}))),
-        // The other server's own words, as its refusal or failure says them.
-        ReceiptStatus::Rejected {
-            error: tilo_actions::remote::ActionCallError::Refused { reason },
-        } => Err(reason),
-        ReceiptStatus::Rejected { error } => Err(error.to_string()),
-        ReceiptStatus::Failed { error } => Err(error.message),
-        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
-            Err("the other server did not finish it".into())
-        }
-    }
-}
 
 /// `value` as the hand-over sends it: postcard in hex.
 fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {

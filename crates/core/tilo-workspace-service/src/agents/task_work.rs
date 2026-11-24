@@ -586,11 +586,6 @@ impl Held {
         !self.assignee.is_empty() && self.assignee.contains(&triggered::names(member))
     }
 
-    /// Whether an agent is doing it.
-    pub(super) fn with_an_agent(&self) -> bool {
-        self.agent().is_some()
-    }
-
     /// The agent doing it, by its id, when an agent is.
     pub(super) fn agent(&self) -> Option<String> {
         /// The id under `agent` anywhere in `value`.
@@ -605,11 +600,6 @@ impl Held {
             }
         }
         agent_in(&serde_json::from_str(&self.assignee).ok()?)
-    }
-
-    /// Whether `member` gave it to the agent doing it.
-    pub(super) fn given_by(&self, member: &tilo_action_policy::MemberId) -> bool {
-        !self.assigned_by.is_empty() && self.assigned_by.contains(&triggered::names(member))
     }
 
     /// Whether a person gave it to the agent doing it.

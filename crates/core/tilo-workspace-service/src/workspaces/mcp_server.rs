@@ -192,13 +192,6 @@ impl McpServer {
     }
 }
 
-impl super::Workspaces {
-    /// The session of `device` that `stop` ends has ended.
-    pub(crate) fn agent_session_ended(&self, device: &[u8; 32], stop: &Arc<tokio::sync::Notify>) {
-        self.inner.mcp_server.ended(device, stop);
-    }
-}
-
 /// The device a grant id ([`Grant::id`]) names.
 fn grant_device(grant: &str) -> Option<[u8; 32]> {
     hex::decode(grant).ok()?.try_into().ok()

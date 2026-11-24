@@ -223,7 +223,7 @@ pub(super) async fn answer(shell: Option<Shell>, call: ShellCall) -> Result<Repl
                 &services,
                 &shell.caller,
                 workspace,
-                caller.map(|caller| *caller),
+                caller,
                 &frame,
             )
             .await?,

@@ -257,11 +257,6 @@ use web_time::SystemTime;
 
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 pub(crate) use actions::ADD_MEMBER as ADD_MEMBER_ACTION;
-#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-pub(crate) use actions::{
-    ADD_ATTESTOR, ADD_REGISTRY, DISABLE_REGISTRY, ENABLE_REGISTRY, REGISTRY_CHANNEL,
-    REMOVE_ATTESTOR, REMOVE_REGISTRY, REVOKE_PUBLISHER,
-};
 pub(crate) use actions::{GovernedServer, ServiceWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};
@@ -2330,48 +2325,6 @@ impl Workspaces {
             .get(workspace)
             .cloned()
             .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))
-    }
-
-    /// The membership answer a page builds its replica of `workspace_id` from
-    /// as it joins it: the workspace's roster, its revocations and its
-    /// governance as one message, answered for `device`, the link's certified
-    /// device. What follows such an answer is admitted like any governance
-    /// ([`tilo_peer_state::owner::NativeWorkspaceOwner::install_vouched`]). Built
-    /// only for a device a subscription is answered with: it is as large as the
-    /// workspace.
-    pub(crate) async fn subscriber_bootstrap(
-        &self,
-        workspace_id: WorkspaceId,
-        device: &DeviceCert,
-    ) -> Option<Vec<u8>> {
-        use tilo_peer_state::join::{JoinBootstrap, JoinTransportResponse};
-        use tilo_peer_state::join_log::GovernanceMessages as _;
-        let workspace = self.workspace(&workspace_id.to_string()).await.ok()?;
-        let governed = workspace.lock().await;
-        let peer = governed.peer();
-        let now = tilo_clock::wall();
-        let role = peer.role(&device.device_public_key, now).ok()?;
-        let host = self.inner.host.cert.clone();
-        // The roster names what the device holds before the governance it is sent with,
-        // or could not take from it: every other member device's certificate arrives
-        // with the governance.
-        let certified_roster =
-            peer.roster_beside_governance(&[device.device_public_key, host.device_public_key], now);
-        let governance = peer.governance_messages().ok()?;
-        postcard::to_stdvec(&JoinTransportResponse::MembershipComplete(JoinBootstrap {
-            version: 1,
-            invite_id: [0; 32],
-            device_cert: device.clone(),
-            role,
-            workspace_id: governed.workspace_id(),
-            host,
-            certified_roster,
-            revocations: peer.revocations(),
-            records: Vec::new(),
-            governance_messages: governance,
-            generation: governed.record.generation,
-        }))
-        .ok()
     }
 
     /// Hold the workspace, admitting only the members its signed list names,

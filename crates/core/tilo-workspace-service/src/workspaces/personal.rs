@@ -434,27 +434,47 @@ struct AgentSession {
     name: String,
     /// The person stopped this session: it stays ended, however long its connection is held.
     stopped: bool,
+    /// The certificate the connection was admitted with, where the transport certified the
+    /// device that runs the agent: what the person's MCP server lists the run under.
+    cert: Option<DeviceCert>,
+    /// Ends the run from the person's MCP server's listing.
+    stop: Arc<tokio::sync::Notify>,
 }
 
 impl Workspaces {
     /// A connection in `workspace` opened, admitted in the run `execution`: its agent is present
-    /// on this device from now on, called `name` until its client says what it is.
-    pub fn agent_opened(&self, execution: &str, workspace: &str, name: &str) {
+    /// on this device from now on, called `name` until its client says what it is. `cert` is the
+    /// device the connection was admitted for, where the transport certified one, and `stop`
+    /// ends the run from the person's MCP server's listing.
+    pub fn agent_opened(
+        &self,
+        execution: &str,
+        workspace: &str,
+        name: &str,
+        cert: Option<&DeviceCert>,
+        stop: &Arc<tokio::sync::Notify>,
+    ) {
         self.inner.agent_sessions.0.lock_recover().insert(
             execution.to_owned(),
             AgentSession {
                 workspace: workspace.to_owned(),
                 name: name.to_owned(),
                 stopped: false,
+                cert: cert.cloned(),
+                stop: Arc::clone(stop),
             },
         );
+        // The person's MCP server lists the run while it lasts.
+        if let Some(cert) = cert {
+            self.note_agent(cert, name, stop);
+        }
         presence_changed();
     }
 
     /// The client of `execution`'s connection named itself: who is here calls its session
-    /// `client` from now on.
+    /// `client` from now on, as the person's MCP server does.
     pub fn agent_named(&self, execution: &str, client: &str) {
-        {
+        let listed = {
             let mut sessions = self.inner.agent_sessions.0.lock_recover();
             let Some(session) = sessions
                 .get_mut(execution)
@@ -463,21 +483,46 @@ impl Workspaces {
                 return;
             };
             session.name = client.to_owned();
+            session
+                .cert
+                .clone()
+                .map(|cert| (cert, Arc::clone(&session.stop)))
+        };
+        if let Some((cert, stop)) = listed {
+            self.note_agent(&cert, client, &stop);
         }
         presence_changed();
     }
 
-    /// The connection of `execution` ended: its agent leaves who is here.
+    /// The connection of `execution` ended: its agent leaves who is here, and the person's MCP
+    /// server says its run ended.
     pub fn agent_closed(&self, execution: &str) {
-        let removed = self
+        let Some(session) = self
             .inner
             .agent_sessions
             .0
             .lock_recover()
             .remove(execution)
-            .is_some();
-        if removed {
-            presence_changed();
+        else {
+            return;
+        };
+        self.agent_session_ended(&session);
+        presence_changed();
+    }
+
+    /// The person's MCP server and the device's record say `session`'s run ended: the session
+    /// leaves the listing, and the device's record says when it was here last.
+    fn agent_session_ended(&self, session: &AgentSession) {
+        let Some(cert) = &session.cert else {
+            return;
+        };
+        self.inner
+            .mcp_server
+            .ended(&cert.device_public_key, &session.stop);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let workspaces = self.clone();
+            let cert = cert.clone();
+            runtime.spawn(async move { workspaces.session_ended(&cert).await });
         }
     }
 

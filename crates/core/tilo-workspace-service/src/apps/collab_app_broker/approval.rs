@@ -325,6 +325,13 @@ impl AppBrokerState {
         let (completer, pending) = tilo_actions::remote::pending();
         let state = Arc::clone(self);
         let request = request.clone();
+        // An answer allowing the step for its agent session is kept on the session, for its
+        // later steps like this one.
+        let session = caller
+            .acting()
+            .agent_session
+            .as_ref()
+            .map(|session| session.as_str().to_owned());
         // The person answers in their own time; nothing here holds a
         // runtime while they decide.
         let spawned = std::thread::Builder::new()
@@ -346,6 +353,21 @@ impl AppBrokerState {
                     state.show_waiting(&question, &request, false);
                     completer.complete(Err(ActionCallError::NotPermitted));
                     return;
+                }
+                // Allowed for the session it runs in, the step is kept as a grant on it: the
+                // agent asks no more about its later steps like this one.
+                if matches!(
+                    answer.lifetime,
+                    Some(
+                        tilo_action_policy::Lifetime::Session
+                            | tilo_action_policy::Lifetime::UntilRevoked
+                    )
+                ) && let (Some(grant), Some(session), Some(sessions)) = (
+                    &question.answer,
+                    &session,
+                    state.services.agent_sessions.as_ref(),
+                ) {
+                    sessions.keep_answer(session, grant.clone());
                 }
                 completer.complete(state.approval_answer(&question, &request, &answer.edits));
             });

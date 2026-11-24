@@ -80,8 +80,6 @@ pub const REMINDER: &str = "reminder";
 pub const BRIEF: &str = "brief";
 /// What a turn is said to be started by: something that happened, or a time that comes round.
 pub const EVENT: &str = "event";
-/// The longest a starter's name is said, as Chat keeps one.
-const MAX_LABEL_BYTES: usize = 120;
 /// The most an instruction says of its event's note.
 const MAX_NOTE_BYTES: usize = 6 * 1024;
 

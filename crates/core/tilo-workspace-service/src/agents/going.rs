@@ -89,13 +89,9 @@ pub(super) enum Handed {
 
 impl Going {
     /// The ask it answers now.
+    #[cfg(test)]
     pub(super) fn ask(&self) -> Ask {
         self.ask.lock_recover().clone()
-    }
-
-    /// Its person stopped it: it ends at its next step.
-    pub(super) fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
     }
 
     pub(super) fn stopped(&self) -> bool {
