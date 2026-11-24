@@ -718,7 +718,8 @@ impl WorkspaceService {
     /// `None` when no thread could start, and the caller makes the write itself.
     #[must_use]
     pub fn writes_runtime(&self) -> Option<tokio::runtime::Handle> {
-        self.writes
+        let runtime = self
+            .writes
             .get_or_init(|| {
                 WritesThread::start()
                     .inspect_err(|error| {
@@ -727,7 +728,14 @@ impl WorkspaceService {
                     .ok()
             })
             .as_ref()
-            .map(|writes| writes.runtime.clone())
+            .map(|writes| writes.runtime.clone());
+        // The records this service serves carry their writes there too: a write waits on the key
+        // service or a link, and the thread that asked for it may be a record's reactor, which
+        // the write needs to run what it awaited.
+        if let Some(runtime) = &runtime {
+            self.workspaces.carry_record_writes_on(runtime.clone());
+        }
+        runtime
     }
 
     /// The ALPN handlers to register on the embedder's router: workspace join,

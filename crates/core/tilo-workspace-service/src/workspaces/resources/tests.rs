@@ -19,7 +19,11 @@ use tilo_resource_store::wire::{Command, Reply};
 use tilo_resource_store::{Cell, Query, Resource, Stamp, Store, Value};
 
 use super::super::Workspaces;
-use super::super::fixtures::{TestGroupKeys, declare_app, governor_with, test_host_holding};
+use tilo_actions::remote::CatalogueQuery;
+
+use super::super::fixtures::{
+    TestGroupKeys, TestHost, declare_app, governor_with, test_host_holding,
+};
 use super::super::sealed_documents::fixtures::member_device;
 use crate::apps::services::ResourceRequestContext;
 
@@ -1715,4 +1719,229 @@ async fn let_in(keys: &TestGroupKeys, workspace: &str) {
         .expect("the group takes part")
         .expect("the group opens");
     keys.hand_every_member_of(&group, workspace);
+}
+
+/// The route of `APP`'s record of `workspace`: what a read of the record names.
+fn record_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
+    tilo_peer_state::document_frame::DocumentRoute {
+        app_id: APP.into(),
+        cluster_id: workspace.into(),
+        document: String::new(),
+    }
+}
+
+/// A workspace holding `tasks` tasks of `APP`'s record: the server, the directory it keeps the
+/// workspace in, the workspaces, the workspace's id and the person whose device holds it.
+async fn workspace_of_tasks(
+    tasks: usize,
+) -> (TestHost, tempfile::TempDir, Workspaces, String, String) {
+    // The server keeps the workspace's documents there: the directory lives as long as the
+    // caller keeps it.
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let created = workspaces.create("Tasks").await.unwrap();
+    let workspace = created.workspace;
+    let mut writer = Writer::for_member(&workspaces, &workspace, key.clone(), &cert).await;
+    for at in 0..tasks {
+        writer
+            .put(
+                &workspaces,
+                &workspace,
+                &format!("t-{at}"),
+                &format!("Task {at}"),
+            )
+            .await;
+    }
+    let person = hex::encode(cert.user_public_key);
+    (server, dir, workspaces, workspace, person)
+}
+
+/// A page of a record answers while the workspace's own lock is held, as a write holds it while
+/// it waits for this device's keys or for a link: a record's reads take the store the workspace
+/// reads through without its lock, so one write in flight never stops the pages an app reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_read_answers_while_a_write_holds_the_workspace() {
+    let (server, _dir, workspaces, workspace, person) = workspace_of_tasks(40).await;
+    let route = record_route(&workspace);
+    let listed = workspaces
+        .record_page(&workspace, &route, &person, &CatalogueQuery::default())
+        .expect("the record publishes a page")
+        .rows
+        .len();
+    assert!(listed >= 40, "the record lists every task: {listed}");
+    // The lock a write holds from the moment it is drafted until its change is kept.
+    let state = workspaces.workspace(&workspace).await.unwrap();
+    let held = state.lock().await;
+    let (answered, page) = std::sync::mpsc::channel();
+    let reader = workspaces.clone();
+    let (workspace, route, person) = (workspace.clone(), route.clone(), person.clone());
+    std::thread::spawn(move || {
+        let page = reader.record_page(&workspace, &route, &person, &CatalogueQuery::default());
+        let _ = answered.send(page.map(|page| page.rows.len()));
+    });
+    let read = page.recv_timeout(std::time::Duration::from_secs(5));
+    drop(held);
+    assert_eq!(
+        read.expect("a page of the record answers while the workspace's lock is held"),
+        Some(listed),
+        "the page read lists every task"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// A page of a record answers while the record's index reads every resource of it: the pass and
+/// the page read share the workspace's one store a command at a time, never whole passes, so a
+/// page answers within a bound a pass over the whole record cannot set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn page_reads_answer_while_the_records_index_reads_it() {
+    let (server, _dir, workspaces, workspace, person) = workspace_of_tasks(400).await;
+    let route = record_route(&workspace);
+    // What one page costs with nothing else reading the record.
+    let mut quiet = Vec::new();
+    for _ in 0..5 {
+        let started = std::time::Instant::now();
+        workspaces
+            .record_page(&workspace, &route, &person, &CatalogueQuery::default())
+            .expect("the record publishes a page");
+        quiet.push(started.elapsed());
+    }
+    quiet.sort();
+    let quiet = quiet[quiet.len() / 2];
+    // The index's pass over every resource of the record, over and over, beside the pages.
+    let indexing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let passes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let indexer = {
+        let workspaces = workspaces.clone();
+        let (workspace, person) = (workspace.clone(), person.clone());
+        let indexing = Arc::clone(&indexing);
+        let passes = Arc::clone(&passes);
+        std::thread::spawn(move || {
+            while indexing.load(std::sync::atomic::Ordering::Relaxed) {
+                workspaces
+                    .record_entries(&workspace, APP, None, &person)
+                    .expect("the record's entries read");
+                passes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+    };
+    let mut took = Vec::new();
+    for _ in 0..20 {
+        let started = std::time::Instant::now();
+        workspaces
+            .record_page(&workspace, &route, &person, &CatalogueQuery::default())
+            .expect("the record publishes a page");
+        took.push(started.elapsed());
+    }
+    indexing.store(false, std::sync::atomic::Ordering::Relaxed);
+    indexer.join().unwrap();
+    assert!(
+        passes.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "the index read the record while the pages were read"
+    );
+    let slowest = took.iter().max().copied().unwrap_or_default();
+    println!(
+        "a page read: {:?} quiet, {:?} slowest beside the index; {} passes",
+        quiet,
+        slowest,
+        passes.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    // Every page answers in the time one page takes, plus what one command of the pass may hold
+    // the store for: a page never waits for a pass to finish.
+    assert!(
+        slowest <= quiet * 20 + std::time::Duration::from_millis(100),
+        "a page read waits for the index's pass: {slowest:?} beside a quiet {quiet:?}"
+    );
+    drop(workspaces);
+    server.shutdown().await;
+}
+
+/// Tasks' root, made in a workspace that runs a version of the app — as every workspace that
+/// installed the catalogue's apps runs one: a record this device writes names that version's
+/// surface, so the write is merged instead of held for a version nobody names, and the root is
+/// made once rather than attempted again every time a page is read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_built_in_apps_root_is_made_where_the_workspace_runs_the_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (key, cert) = governor_with(tilo_user_identity::DeviceCapabilities::member());
+    let server = test_host_holding(dir.path(), &key, &cert, keys).await;
+    let workspaces = server.workspaces().clone();
+    workspaces.set_member_device(Arc::new(super::super::MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    let created = workspaces.create("Tasks").await.unwrap();
+    let workspace = created.workspace;
+    let mut writer = Writer::for_member(&workspaces, &workspace, key.clone(), &cert).await;
+    let surface = crate::tl_records::built_in_surface(APP).expect("Tasks is built into this build");
+    let (_, canonical) =
+        collab_types::surface::SurfaceFile::kept(&surface).expect("the built-in surface reads");
+    // The version the workspace runs names its surface by the hash of the file it keeps, as an
+    // installed release does.
+    let release = tilo_peer_state::workspace_membership::AppRelease {
+        app: APP.into(),
+        version: "1.0.0".into(),
+        surface: blake3::hash(canonical.as_bytes()).to_hex().to_string(),
+        package: "00".repeat(32),
+        publisher: "00".repeat(32),
+        file: None,
+        dev: true,
+        pinned: false,
+        payload: tilo_peer_state::workspace_membership::AppPayload::Tapp,
+    };
+    workspaces
+        .commit_own_membership(
+            &workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallApp(release),
+            None,
+        )
+        .await
+        .unwrap();
+    // One task through this device's own store, so the record holds something to root.
+    writer.put(&workspaces, &workspace, "t-0", "Task 0").await;
+    let person = hex::encode(cert.user_public_key);
+    let route = record_route(&workspace);
+    assert!(
+        workspaces
+            .own_route_keys(&route, true)
+            .await
+            .expect("the workspace answers for its keys")
+            .is_ok(),
+        "the record's channel keys are here"
+    );
+    let packages = crate::tl_records::built_in(APP)
+        .unwrap()
+        .expect("Tasks is built into this build");
+    let viewer = crate::tl_records::member(tilo_actions::MemberId::person(person.clone()));
+    let root = workspaces
+        .with_tl_record(&workspace, &packages, (viewer, &person), |opened| {
+            opened
+                .host()
+                .root_of(APP)
+                .map(|root| root.id_string())
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .expect("the root is made");
+    // The root the launcher shows a window on: read back through the record as a page reads it.
+    assert!(
+        root.starts_with("root-"),
+        "the record names a root resource: {root}"
+    );
+    assert!(
+        workspaces
+            .record_page(&workspace, &route, &person, &CatalogueQuery::default())
+            .is_some(),
+        "the record reads back once its root is made"
+    );
+    drop(workspaces);
+    server.shutdown().await;
 }

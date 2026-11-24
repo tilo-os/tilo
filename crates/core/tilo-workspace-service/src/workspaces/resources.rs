@@ -71,8 +71,10 @@ fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// One workspace's store, and where it keeps its documents.
 pub(super) struct Resources {
     /// Behind a lock of its own: the store reads documents through a source no two threads
-    /// share.
-    store: std::sync::Mutex<Store>,
+    /// share. A reader holds it apart from the workspace's lock
+    /// ([`super::readings::Reading`]), so what a record reads answers while a write of the
+    /// workspace waits on the key service or a link.
+    store: std::sync::Arc<std::sync::Mutex<Store>>,
     root: PathBuf,
     /// Each document in memory, by when it was last written.
     used: BTreeMap<String, Instant>,
@@ -225,7 +227,7 @@ impl Resources {
             }
         }
         Self {
-            store: std::sync::Mutex::new(store),
+            store: std::sync::Arc::new(std::sync::Mutex::new(store)),
             root,
             used,
             unsnapshotted,
@@ -259,24 +261,24 @@ impl Resources {
 
     /// Show the live resources again when the store's moved since they were last shown.
     fn publish_live(&mut self) {
+        use tilo_lock::MutexRecover as _;
         let Some((rows, reader)) = self.live.clone() else {
             return;
         };
-        let store = self
-            .store
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let revision = store.live_revision();
+        let revision = self.store.lock_recover().live_revision();
         if self.live_shown == Some(revision) {
             return;
         }
         self.live_shown = Some(revision);
         let may_read = tilo_resource_store::wire::reads_as(&reader);
-        let shown = store
+        let workspace = self.workspace.clone();
+        let shown: Vec<crate::live::LiveRow> = self
+            .store
+            .lock_recover()
             .live(&may_read)
             .into_iter()
             .map(|live| crate::live::LiveRow {
-                workspace: self.workspace.clone(),
+                workspace: workspace.clone(),
                 kind: live.kind,
                 id: live.id,
                 device: live.device,
@@ -284,7 +286,7 @@ impl Resources {
                 since: live.since,
             })
             .collect();
-        rows.show(&self.workspace, shown);
+        rows.show(&workspace, shown);
     }
 
     /// The store, for the tests of a device's own writes to it.
@@ -295,10 +297,15 @@ impl Resources {
     }
 
     /// The store, while its workspace is held alone.
-    fn store_mut(&mut self) -> &mut Store {
-        self.store
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn store_mut(&mut self) -> std::sync::MutexGuard<'_, Store> {
+        use tilo_lock::MutexRecover as _;
+        self.store.lock_recover()
+    }
+
+    /// The store as a reader outside the workspace's lock holds it: the same store, read a
+    /// command at a time.
+    pub(super) fn shared(&self) -> std::sync::Arc<std::sync::Mutex<Store>> {
+        std::sync::Arc::clone(&self.store)
     }
 
     /// Place the reader sets the store writes by `policy` from now on: an agent a resource's
@@ -384,16 +391,29 @@ impl Resources {
     /// after a stop that never ran (a killed process) reads the same.
     fn kept(&mut self, doc: &str, before: &[ChangeHash]) -> Result<(), String> {
         let root = self.root.clone();
-        let Some(document) = self.store_mut().document(doc) else {
-            return Ok(());
-        };
-        if document.get_heads() == before {
-            return Ok(());
-        }
         let docs = root.join(DOCS);
         fs::create_dir_all(&docs).map_err(|error| error.to_string())?;
         let path = docs.join(file_name(doc));
         let snapshot = root.join(INDEX).join(file_name(doc));
+        let append = !before.is_empty() && path.exists();
+        // The document is saved while the store's lock is held: what is written is what the
+        // store has now, not what it had when the lock was taken.
+        let bytes = {
+            let store = self.store_mut();
+            let Some(document) = store.document(doc) else {
+                return Ok(());
+            };
+            if document.get_heads() == before {
+                return Ok(());
+            }
+            let bytes = if append {
+                document.save_after(before)
+            } else {
+                document.save()
+            };
+            drop(store);
+            bytes
+        };
         // The snapshot goes before the change it no longer holds: a write killed between
         // them leaves the document whole for the next start to read.
         match fs::remove_file(&snapshot) {
@@ -401,13 +421,13 @@ impl Resources {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.to_string()),
         }
-        if before.is_empty() || !path.exists() {
-            write_whole(&path, &document.save())
-        } else {
+        if append {
             fs::OpenOptions::new()
                 .append(true)
                 .open(&path)
-                .and_then(|mut file| file.write_all(&document.save_after(before)))
+                .and_then(|mut file| file.write_all(&bytes))
+        } else {
+            write_whole(&path, &bytes)
         }
         .map_err(|error| error.to_string())?;
         self.used.insert(doc.to_owned(), tilo_clock::now());
@@ -434,9 +454,13 @@ impl Resources {
         reader: String,
     ) -> tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page> {
         let (pages, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let store = self.store_mut();
-        let watch = store.watch(&query.kind);
-        let page = store.query(&query, &may_read(reader.clone()));
+        let (watch, page) = {
+            let mut store = self.store_mut();
+            let watch = store.watch(&query.kind);
+            let page = store.query(&query, &may_read(reader.clone()));
+            drop(store);
+            (watch, page)
+        };
         let shown = page.resources.clone();
         if pages.send(page).is_ok() {
             self.opened.insert(
@@ -449,7 +473,7 @@ impl Resources {
                 },
             );
         } else {
-            store.unwatch(watch);
+            self.store_mut().unwatch(watch);
         }
         receiver
     }
@@ -458,33 +482,50 @@ impl Resources {
     /// changed, and lets go of every query whose app no longer holds it.
     #[cfg(feature = "apps")]
     fn tell_opened(&mut self) {
+        use tilo_lock::MutexRecover as _;
         if self.opened.is_empty() {
             return;
         }
-        let store = self
-            .store
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let changed = store.changed();
-        self.opened.retain(|watch, open| {
-            if open.pages.is_closed() {
-                store.unwatch(*watch);
-                return false;
+        let changed = self.store_mut().changed();
+        let closed: Vec<u64> = self
+            .opened
+            .iter()
+            .filter(|(_, open)| open.pages.is_closed())
+            .map(|(watch, _)| *watch)
+            .collect();
+        if !closed.is_empty() {
+            let mut store = self.store_mut();
+            for watch in closed {
+                store.unwatch(watch);
             }
-            if !changed.contains(watch) {
-                return true;
-            }
-            let page = store.query(&open.query, &may_read(open.reader.clone()));
+        }
+        self.opened.retain(|_, open| !open.pages.is_closed());
+        let due: Vec<u64> = self
+            .opened
+            .keys()
+            .filter(|watch| changed.contains(watch))
+            .copied()
+            .collect();
+        for watch in due {
+            let Some(open) = self.opened.get(&watch) else {
+                continue;
+            };
+            let page = {
+                let store = self.store.lock_recover();
+                store.query(&open.query, &may_read(open.reader.clone()))
+            };
+            let Some(open) = self.opened.get_mut(&watch) else {
+                continue;
+            };
             if page.resources == open.shown {
-                return true;
+                continue;
             }
             open.shown.clone_from(&page.resources);
-            let sent = open.pages.send(page).is_ok();
-            if !sent {
-                store.unwatch(*watch);
+            if open.pages.send(page).is_err() {
+                self.store_mut().unwatch(watch);
+                self.opened.remove(&watch);
             }
-            sent
-        });
+        }
     }
 
     /// Lets every document nobody wrote for [`IDLE`] go from memory, kept whole with its
@@ -670,16 +711,20 @@ impl GovernedWorkspace {
         &mut self,
         mut query: tilo_resource_store::Query,
     ) -> Vec<(String, tilo_resource_store::Indexed)> {
-        let store = self.resources.store_mut();
         let mut found = Vec::new();
-        loop {
-            let page = store.query(&query, &|_| true);
-            found.extend(page.resources);
-            match page.next {
-                Some(next) => query.after = Some(next),
-                None => return found,
+        {
+            let store = self.resources.store_mut();
+            loop {
+                let page = store.query(&query, &|_| true);
+                found.extend(page.resources);
+                match page.next {
+                    Some(next) => query.after = Some(next),
+                    None => break,
+                }
             }
+            drop(store);
         }
+        found
     }
 
     /// The resource `id` of `kind` in the store, as its index holds it ([`Store::get`]).
@@ -694,18 +739,19 @@ impl GovernedWorkspace {
     /// The workspace's store, with the types and verbs of every app surface the device knows
     /// (`surfaces`) declared: what this device's writes and the members' are judged by.
     #[cfg(any(feature = "apps", feature = "agents"))]
-    fn store_with_surfaces(
-        &mut self,
+    fn store_with_surfaces<'a>(
+        &'a mut self,
         surfaces: &collab_types::app_surface::Surfaces,
-    ) -> &mut Store {
+    ) -> std::sync::MutexGuard<'a, Store> {
         let named = surfaces.registered();
         if self.resources.declared != named {
             self.resources.declared = named;
-            for file in surfaces.every() {
-                for surface in &file.resources {
-                    self.resources
-                        .store_mut()
-                        .declare(Schema::from_surface(surface));
+            {
+                let mut store = self.resources.store_mut();
+                for file in surfaces.every() {
+                    for surface in &file.resources {
+                        store.declare(Schema::from_surface(surface));
+                    }
                 }
             }
             // A type that says when it is live lists what the store held before it said so.
@@ -910,6 +956,10 @@ impl GovernedWorkspace {
         // one frame holds it.
         let [mut envelope] = <[_; 1]>::try_from(envelopes)
             .map_err(|_| "a resource change is larger than one frame".to_owned())?;
+        // The write names the version of the app the workspace runs, as a change of its record
+        // names it: a change that names none — as a record this device writes on its own would —
+        // is held in a workspace that runs a version, and waits for a version nobody ever names.
+        envelope.surface = peer.running_surface(app);
         if envelope.encryption.is_some() && !founding {
             let kinds =
                 std::iter::once((write.change.hash().0, self.resources.written_kinds(write)))
@@ -946,8 +996,9 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
         let store = governed.store_with_surfaces(&self.inner.host.surfaces);
-        let answer = tilo_resource_store::wire::read(store, command, &may_read(person.to_owned()))
+        let answer = tilo_resource_store::wire::read(&store, command, &may_read(person.to_owned()))
             .unwrap_or(tilo_resource_store::wire::Reply::Written);
+        drop(store);
         drop(governed);
         Ok(answer)
     }
@@ -959,7 +1010,7 @@ impl Workspaces {
     pub(crate) async fn take_documents(&self, workspace: &str, documents: Vec<(String, Vec<u8>)>) {
         let state = self.workspace(workspace).await.unwrap();
         let mut governed = state.lock().await;
-        let store = governed.store_with_surfaces(&self.inner.host.surfaces);
+        let mut store = governed.store_with_surfaces(&self.inner.host.surfaces);
         for (doc, bytes) in documents {
             store.load(&doc, &bytes).unwrap();
         }
@@ -994,7 +1045,7 @@ impl Workspaces {
             return false;
         }
         #[cfg(any(feature = "apps", feature = "agents"))]
-        self.store_of(&mut *governed);
+        drop(self.store_of(&mut *governed));
         if let Err(error) = governed
             .take_resources(author, (app_id, document_id), envelope, readers.as_deref())
             .await
@@ -1063,7 +1114,7 @@ impl Workspaces {
         // knows, so they are declared before the change reaches it, as a restored write finds
         // them ([`Self::replay_resource_write`]): a store that declared none admits none.
         #[cfg(any(feature = "apps", feature = "agents"))]
-        self.store_of(&mut governed);
+        drop(self.store_of(&mut governed));
         if governed
             .take_resources(author, (app_id, document_id), envelope, readers.as_deref())
             .await?
@@ -1158,7 +1209,7 @@ impl Workspaces {
             Some(write.readers.clone()),
         )
         .await?;
-        candidate
+        let taken = candidate
             .receive_from(
                 tilo_peer_state::TransportOrigin::RetainedServerDelta(author),
                 message,
@@ -1168,7 +1219,18 @@ impl Workspaces {
         let opened = candidate
             .publication()
             .opened_document(app, document, &mut keys.open())?
-            .ok_or("the staged resource document could not be opened")?;
+            .ok_or_else(|| {
+                // A write the workspace keeps nothing of is held back or refused: saying only
+                // that its document does not open leaves the reason nowhere.
+                format!(
+                    "the workspace took no write of {document} of {app}: held back {} (waiting for \
+                     {}), duplicate {}, refused {}",
+                    taken.deferred,
+                    taken.incomplete.as_deref().unwrap_or("nothing"),
+                    taken.duplicate,
+                    taken.rejected
+                )
+            })?;
         if !Automerge::load(&opened.document)
             .map_err(|error| error.to_string())?
             .has_change(&write.change.hash())
@@ -1233,54 +1295,111 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Answer an app's read `command` from the store of the workspace `state` holds, with only
-    /// what `device`'s person may read.
+    /// Answer a read of `workspace`'s store, `command`, as `context`'s reader reads it: what an
+    /// app's window, or the agent engine, reads of the store it writes in.
     #[cfg(feature = "apps")]
-    async fn resource_read(
+    async fn read_store(
         &self,
-        state: &tokio::sync::Mutex<GovernedWorkspace>,
+        context: &crate::apps::services::ResourceRequestContext,
+        workspace: &str,
+        command: &tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        let reader = person_reading(context.reader());
+        self.resource_read(workspace, &reader, command).await
+    }
+
+    /// Answer an app's read `command` from the workspace `workspace` holds, with only what
+    /// `reader` may read: the store a [`super::readings::Reading`] keeps is read without the
+    /// workspace's lock, a command at a time, so a read never waits for a write that waits on
+    /// the key service or a link, nor for the index of the record to be brought up to date.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or the store cannot read it.
+    #[cfg(any(feature = "apps", feature = "agents"))]
+    pub(crate) async fn resource_read(
+        &self,
+        workspace: &str,
         reader: &str,
         command: &tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
-        use tilo_resource_store::wire::{Command, Reply, read};
-        let may_read = may_read(reader.to_owned());
-        let mut governed = state.lock().await;
-        let store = self.store_of(&mut governed);
-        let answer = match command {
-            Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
-                Reply::Versions(
-                    store
-                        .read_versions(kind, id)
-                        .map_err(|error| error.to_string())?,
-                )
-            }
-            Command::VersionEnd { kind, id, last } if store.get(kind, id, &may_read).is_some() => {
-                Reply::Versions(
-                    store
-                        .read_version_end(kind, id, *last)
-                        .map_err(|error| error.to_string())?
-                        .into_iter()
-                        .collect(),
-                )
-            }
-            // A record the caller may not read has no versions for them.
-            Command::Versions { .. } | Command::VersionEnd { .. } => Reply::Versions(Vec::new()),
-            Command::ChildrenAt {
-                parent,
-                change,
-                from,
-            } => Reply::ChildrenAt(
-                store
-                    .read_children_at(parent, change, &may_read)
-                    .map_err(|error| error.to_string())?
-                    .map(|children| tilo_resource_store::wire::PastChildren::page(children, *from)),
-            ),
-            _ => read(store, command, &may_read).unwrap_or(Reply::Written),
-        };
-        drop(governed);
-        Ok(answer)
+        if let Some(answer) = self.read_record_now(workspace, reader, command) {
+            return answer;
+        }
+        // A workspace whose reading is not kept here reads as it opens: it waits for the
+        // workspace's lock once.
+        let reading = self
+            .reading_of(workspace)
+            .await
+            .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
+        read_from(&reading, reader, command)
     }
 
+    /// Answer `command`, a read of `workspace`'s record as `reader` reads it, from the store the
+    /// workspace is read through, without its lock: `None` when this server does not know what it
+    /// is read through yet, and the read waits for the workspace once
+    /// ([`Self::resource_read`]). A record's reads answer here: no reactor, and no thread of its
+    /// own.
+    #[cfg(feature = "agents")]
+    pub(crate) fn read_record_now(
+        &self,
+        workspace: &str,
+        reader: &str,
+        command: &tilo_resource_store::wire::Command,
+    ) -> Option<Result<tilo_resource_store::wire::Reply, String>> {
+        self.inner
+            .readings
+            .held(workspace)
+            .map(|reading| read_from(&reading, reader, command))
+    }
+}
+
+/// Answer a read `command` of an app's record from `reading`'s store, with only what `reader`
+/// may read: the one store the workspace holds, without the workspace's lock.
+#[cfg(any(feature = "apps", feature = "agents"))]
+fn read_from(
+    reading: &super::readings::Reading,
+    reader: &str,
+    command: &tilo_resource_store::wire::Command,
+) -> Result<tilo_resource_store::wire::Reply, String> {
+    use tilo_lock::MutexRecover as _;
+    use tilo_resource_store::wire::{Command, Reply, read};
+    let may_read = may_read(reader.to_owned());
+    let mut store = reading.store.lock_recover();
+    let answer = match command {
+        Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
+            Reply::Versions(
+                store
+                    .read_versions(kind, id)
+                    .map_err(|error| error.to_string())?,
+            )
+        }
+        Command::VersionEnd { kind, id, last } if store.get(kind, id, &may_read).is_some() => {
+            Reply::Versions(
+                store
+                    .read_version_end(kind, id, *last)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .collect(),
+            )
+        }
+        // A record the caller may not read has no versions for them.
+        Command::Versions { .. } | Command::VersionEnd { .. } => Reply::Versions(Vec::new()),
+        Command::ChildrenAt {
+            parent,
+            change,
+            from,
+        } => Reply::ChildrenAt(
+            store
+                .read_children_at(parent, change, &may_read)
+                .map_err(|error| error.to_string())?
+                .map(|children| tilo_resource_store::wire::PastChildren::page(children, *from)),
+        ),
+        _ => read(&store, command, &may_read).unwrap_or(Reply::Written),
+    };
+    Ok(answer)
+}
+
+impl Workspaces {
     /// Commit `command` as an update of the fields of a resource every member reads that stays
     /// where it is, when it is one: `false` for any other command, which is drafted whole.
     #[cfg(feature = "apps")]
@@ -1435,14 +1554,13 @@ impl Workspaces {
             .await?;
             return Ok(tilo_resource_store::wire::Reply::Written);
         }
+        if !writing {
+            return self.read_store(context, workspace, &command).await;
+        }
         let state = self
             .workspace(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        if !writing {
-            let reader = person_reading(context.reader());
-            return self.resource_read(&state, &reader, &command).await;
-        }
         let governed = state.lock_owned().await;
         if let Some(viewer) = context.viewer() {
             may_write_as_viewer(&governed, viewer, context.app_id(), &unserved)?;
@@ -1469,16 +1587,16 @@ impl Workspaces {
         command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, RecordFailure> {
         let device = self.signing_device();
+        if !command.writes() {
+            return self
+                .resource_read(workspace, reader, &command)
+                .await
+                .map_err(RecordFailure::Failed);
+        }
         let state = self
             .workspace(workspace)
             .await
             .map_err(|error| RecordFailure::Failed(error.to_string()))?;
-        if !command.writes() {
-            return self
-                .resource_read(&state, reader, &command)
-                .await
-                .map_err(RecordFailure::Failed);
-        }
         let governed = state.lock_owned().await;
         self.write_resources(governed, device, app, command)
             .await
@@ -1575,6 +1693,9 @@ impl Workspaces {
         command: tilo_resource_store::wire::Command,
     ) -> Result<tilo_resource_store::wire::Reply, String> {
         use tilo_resource_store::wire::Reply;
+        // The store's types and verbs are declared before the first write, not by a read that
+        // came before it: a store nobody read yet places a write by what its surfaces name.
+        drop(self.store_of(&mut governed));
         if self
             .put_in_place(&mut governed, &device, app, &command)
             .await?
@@ -1584,7 +1705,7 @@ impl Workspaces {
         }
 
         let (writes, refusal) =
-            match tilo_resource_store::wire::draft(self.store_of(&mut governed), command) {
+            match tilo_resource_store::wire::draft(&mut self.store_of(&mut governed), command) {
                 Ok(writes) => (writes, None),
                 Err(refused) => (refused.written, Some(refused.error.to_string())),
             };
@@ -1660,7 +1781,10 @@ impl Workspaces {
     /// ([`GovernedWorkspace::store_with_surfaces`]), its live resources shown where this service
     /// shows them ([`Self::show_live`]).
     #[cfg(any(feature = "apps", feature = "agents"))]
-    fn store_of<'a>(&self, governed: &'a mut GovernedWorkspace) -> &'a mut Store {
+    fn store_of<'a>(
+        &self,
+        governed: &'a mut GovernedWorkspace,
+    ) -> std::sync::MutexGuard<'a, Store> {
         if let (Some(rows), Ok(device)) = (self.inner.live.get(), self.member_identity()) {
             rows.here_is(device.device());
             governed
@@ -1691,7 +1815,7 @@ impl Workspaces {
                 continue;
             };
             let mut governed = state.lock().await;
-            self.store_of(&mut governed);
+            drop(self.store_of(&mut governed));
         }
     }
 }
@@ -1756,7 +1880,7 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
-        self.store_of(&mut governed);
+        drop(self.store_of(&mut governed));
         Ok(governed.resources.open_query(query, reader))
     }
 }
