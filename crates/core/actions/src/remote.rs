@@ -1590,6 +1590,16 @@ impl ActionCallError {
         }
     }
 
+    /// What the provider said in its own words, for the person reading it: the reason a refusal
+    /// of its own carries, without the code a caller matches on, else the sentence of its variant.
+    #[must_use]
+    pub fn own_words(&self) -> String {
+        match self {
+            Self::Refused { reason } => reason.clone(),
+            other => other.to_string(),
+        }
+    }
+
     /// The request is malformed for this action.
     #[must_use]
     pub fn invalid_request(reason: impl Into<String>) -> Self {

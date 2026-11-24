@@ -226,8 +226,10 @@ impl DenyReason {
     /// away: a device whose key its person's root retired is told with the entry
     /// that retires it, as a refused hello is
     /// ([`tilo_server_protocol::auth::server_refusal`]), so the device keeps the
-    /// entry and refuses its own key rather than asking its host again. Every
-    /// other denial is [`Self::refusal`]'s.
+    /// entry and refuses its own key rather than asking its host again. A device
+    /// revoked for a reason that is its person's is told only that it was
+    /// removed, as a refused hello tells it. Every other denial is
+    /// [`Self::refusal`]'s.
     #[must_use]
     pub fn refusal_for(
         self,
@@ -238,6 +240,11 @@ impl DenyReason {
             && let Some(entry) = revocations.retired(&peer.user_public_key, &peer.device_public_key)
         {
             return tilo_server_protocol::refusal::Refusal::Revoked(Box::new(entry.clone()));
+        }
+        // A list that cannot be read refuses too, and is no removal: the device is told what
+        // every other denial says.
+        if self == Self::Revoked && revocations.refuses(&peer.cert) {
+            return tilo_server_protocol::refusal::Refusal::DeviceRevoked;
         }
         self.refusal()
     }

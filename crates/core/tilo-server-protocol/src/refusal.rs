@@ -55,6 +55,11 @@ pub enum Refusal {
     /// list on a link that carried only that: the row is in, and the device
     /// dials again as the member device it now is.
     Listed,
+    /// The person's root revoked the dialling device's key, for a reason that
+    /// is the person's ([`Self::Revoked`] carries the entry of a retired one):
+    /// the device is told it was removed, and no more. Its own key is the one
+    /// revoked, so this says nothing it cannot know of itself.
+    DeviceRevoked,
 }
 
 /// A person's own workspace keeps as much as the host keeps for them, so the
@@ -70,6 +75,8 @@ pub const PLAIN_NOT_GRANTED: &str =
 pub const PLAIN_NOT_A_MEMBER: &str = "You're no longer a member of this workspace.";
 /// The workspace is gone.
 pub const PLAIN_DELETED: &str = "This workspace was deleted.";
+/// The person's root removed this device from their devices.
+pub const PLAIN_DEVICE_REVOKED: &str = "This device was removed from your devices.";
 /// Anything else.
 pub const PLAIN_REFUSED: &str = "The workspace didn't accept this change.";
 
@@ -91,6 +98,7 @@ impl Refusal {
             Self::NotGranted(_) => "not_granted",
             Self::NotAllowed(_) => "not_allowed",
             Self::NotAMember(_) | Self::Revoked(_) => "not_a_member",
+            Self::DeviceRevoked => "device_revoked",
             Self::NotAdmitted => "not_admitted",
             Self::WorkspaceDeleted => "workspace_deleted",
             Self::Offline => "offline",
@@ -109,6 +117,7 @@ impl Refusal {
             Self::NotGranted(_) => PLAIN_NOT_GRANTED.into(),
             Self::NotAllowed(_) => PLAIN_NOT_ALLOWED.into(),
             Self::NotAMember(_) | Self::Revoked(_) | Self::NotAdmitted => PLAIN_NOT_A_MEMBER.into(),
+            Self::DeviceRevoked => PLAIN_DEVICE_REVOKED.into(),
             Self::WorkspaceDeleted => PLAIN_DELETED.into(),
             Self::NotReady
             | Self::Offline
@@ -140,6 +149,7 @@ impl std::fmt::Display for Refusal {
             Self::Conflict => f.write_str("operation id already committed with different content"),
             Self::Other(detail) => f.write_str(detail),
             Self::Listed => f.write_str("the device is on the member list now: dial again"),
+            Self::DeviceRevoked => f.write_str("the device's key was revoked by its person's root"),
         }
     }
 }
@@ -164,6 +174,11 @@ mod tests {
             assert_eq!(Refusal::NotAllowed("x".into()).plain(), PLAIN_NOT_ALLOWED);
             assert_eq!(Refusal::NotAMember("x".into()).plain(), PLAIN_NOT_A_MEMBER);
             assert_eq!(Refusal::Other("new".into()).plain(), PLAIN_REFUSED);
+            assert_eq!(
+                Refusal::DeviceRevoked.plain(),
+                PLAIN_DEVICE_REVOKED,
+                "a removed device is told so, not that it lost a membership"
+            );
         }
 
         phase it_travels_whole;
@@ -172,6 +187,7 @@ mod tests {
                 Refusal::NotReady,
                 Refusal::NotGranted("the author is not granted Undoable".into()),
                 Refusal::Other("something".into()),
+                Refusal::DeviceRevoked,
             ] {
                 let bytes = postcard::to_allocvec(&refusal).unwrap();
                 assert_eq!(postcard::from_bytes::<Refusal>(&bytes).unwrap(), refusal);
