@@ -7,4 +7,3 @@ tilo-identity-workspaces-place-workspace = Einen Arbeitsbereich in der Liste ver
 tilo-identity-workspaces-show-workspace = Einen Arbeitsbereich auf einem Gerät zeigen oder dort ausblenden
 tilo-identity-workspaces-host-workspace = Sagen, welches Gerät einen Arbeitsbereich bereitstellt
 tilo-identity-workspaces-reach-workspace = Sagen, wo der Host eines Arbeitsbereichs erreichbar ist
-tilo-identity-workspaces-name-device = Ein Gerät benennen

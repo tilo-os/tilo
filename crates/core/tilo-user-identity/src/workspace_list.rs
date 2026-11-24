@@ -22,7 +22,7 @@ pub const KIND: &str = "tilo.identity.workspaces";
 
 /// The most workspaces the list names.
 pub const MAX_WORKSPACES: usize = 4096;
-/// The longest name the list keeps of a workspace or a device.
+/// The longest name the list keeps of a workspace.
 const MAX_NAME: usize = 256;
 /// The most bytes of one host address, hex.
 const MAX_ADDRESS: usize = 16 * 1024;
@@ -34,8 +34,6 @@ pub struct WorkspaceList {
     pub workspaces: Collection<ListedWorkspace>,
     /// The workspaces taken off the list, by id, with when (ms since the epoch).
     pub left: BTreeMap<String, i64>,
-    /// The person's devices that show their workspaces, by key (hex), with the name each reads by.
-    pub devices: BTreeMap<String, String>,
 }
 
 /// One workspace of the list.
@@ -116,15 +114,6 @@ impl WorkspaceList {
     #[must_use]
     pub fn went(&self, workspace: WorkspaceId) -> bool {
         self.get(workspace).is_none() && self.left.contains_key(&workspace.to_string())
-    }
-
-    /// The person's devices that show their workspaces, with the name each reads by.
-    #[must_use]
-    pub fn named_devices(&self) -> Vec<([u8; 32], String)> {
-        self.devices
-            .iter()
-            .filter_map(|(key, name)| Some((key_of(key)?, name.clone())))
-            .collect()
     }
 
     fn entry(&mut self, workspace: &str) -> Result<&mut ListedWorkspace, Refusal> {
@@ -237,15 +226,6 @@ impl WorkspaceList {
             return Err(Refusal::new("a host's address is postcard bytes in hex"));
         }
         self.entry(&workspace)?.addresses.insert(device, address);
-        Ok(())
-    }
-
-    /// Name `device` among the person's devices that show their workspaces.
-    #[action(housekeeping)]
-    pub fn name_device(&mut self, device: String, name: String) -> Result<(), Refusal> {
-        validate_key(&device)?;
-        validate_name(&name)?;
-        self.devices.insert(device, name);
         Ok(())
     }
 }

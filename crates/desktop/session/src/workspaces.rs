@@ -31,6 +31,7 @@ use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::SheetState as _;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tilo_user_identity::{ListedWorkspace, WorkspaceList};
+use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices, KeyKind};
 
 use crate::directory;
 use crate::followed_resource::FollowedResource;
@@ -131,8 +132,12 @@ pub(crate) struct Personal {
     /// were asked at: one ask per hint, so a workspace whose host has not answered yet is not asked
     /// for again on every pass. A newer hint the person's devices say is a new ask.
     asked: BTreeMap<WorkspaceId, tilo_peer_state::join::TransportHint>,
-    /// The reading of the list the last pass saw: one that moved since is news to an open sheet.
-    seen: u64,
+    /// The person's devices as their own workspace names them ([`DEVICES`]), followed beside the
+    /// list: what a workspace's settings offer to show it on.
+    devices: Option<FollowedResource<Devices>>,
+    /// The readings of the list and of the devices the last pass saw: one that moved since is news
+    /// to an open sheet.
+    seen: (u64, u64),
     /// The workspaces whose host has not taken this device in yet that the person was told of:
     /// once each, not on every ask that times out.
     told_awaiting: BTreeSet<WorkspaceId>,
@@ -247,7 +252,8 @@ impl Personal {
             borrowed: BTreeSet::new(),
             hosts: BTreeMap::new(),
             asked: BTreeMap::new(),
-            seen: 0,
+            devices: None,
+            seen: (0, 0),
             told_awaiting: BTreeSet::new(),
             ask_again: BTreeMap::new(),
             seed: None,
@@ -263,14 +269,23 @@ impl Personal {
         wake: tilo_service::Wake,
     ) {
         let person = self.identity.device_cert.user_public_key;
+        let own = tilo_server_protocol::servers::person_workspace_id(&person);
+        let member = tilo_action_policy::PersonId::from_root(person);
         self.list = Some(FollowedResource::follow(
             daemon,
             (
-                &tilo_server_protocol::servers::person_workspace_id(&person),
+                &own,
                 tilo_user_identity::workspace_list::APP,
                 tilo_user_identity::workspace_list::RESOURCE,
             ),
-            tilo_action_policy::PersonId::from_root(person).as_str(),
+            member.as_str(),
+            None,
+            std::sync::Arc::clone(&wake),
+        ));
+        self.devices = Some(FollowedResource::follow(
+            daemon,
+            (&own, DEVICES.0, DEVICES.1),
+            member.as_str(),
             None,
             wake,
         ));
@@ -283,12 +298,12 @@ impl Personal {
         Some(list.get())
     }
 
-    /// Whether the list moved since the last time this was asked.
+    /// Whether the list or the person's devices moved since the last time this was asked.
     fn moved(&mut self) -> bool {
-        let Some(list) = &self.list else {
-            return false;
-        };
-        let revision = list.revision();
+        let revision = (
+            self.list.as_ref().map_or(0, FollowedResource::revision),
+            self.devices.as_ref().map_or(0, FollowedResource::revision),
+        );
         let moved = revision != self.seen;
         self.seen = revision;
         moved
@@ -417,8 +432,8 @@ impl Personal {
             .is_none_or(|host| host == self.device)
     }
 
-    /// What changed on this shell since the last pass, as writes of `list`: this device named
-    /// among the person's devices, new and renamed workspaces, ones taken off the shell here, and
+    /// What changed on this shell since the last pass, as writes of `list`: new and renamed
+    /// workspaces, ones taken off the shell here, and
     /// a new order. A workspace the list does not name is listed when it appeared here since the
     /// last pass, or this device hosts it or nothing does yet (it is being made here): a workspace
     /// taken off the list elsewhere, or joined through an invitation, is neither.
@@ -430,13 +445,6 @@ impl Personal {
         let now = shown(handle);
         let before = self.passed.as_ref().unwrap_or(&now);
         let mut writes = Vec::new();
-        let device = hex::encode(self.device);
-        if let Some(label) =
-            tilo_user_identity::device_name(&self.identity.device_cert.device_label)
-            && list.devices.get(&device).map(String::as_str) != Some(label)
-        {
-            writes.push(WorkspaceList::NAME_DEVICE.with((device.clone(), label.to_owned())));
-        }
         for (workspace, name) in &now {
             let id = *workspace;
             if id.is_nil()
@@ -667,7 +675,24 @@ impl Personal {
         let Some(entry) = list.get(workspace) else {
             return Vec::new();
         };
-        let mut devices = list.named_devices();
+        // The person's devices as their own workspace names them: an agent's or a script's key
+        // shows no desktop, and a device their root took back shows nothing.
+        let person = self.identity.device_cert.user_public_key;
+        let mut devices: Vec<([u8; 32], String)> = self
+            .devices
+            .as_ref()
+            .filter(|devices| devices.held().is_some())
+            .map(|devices| devices.get().listed(&person))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|listed| listed.device.kind == KeyKind::Device && !listed.device.revoked)
+            .map(|listed| {
+                (
+                    listed.cert.device_public_key,
+                    listed.device.called(&listed.cert),
+                )
+            })
+            .collect();
         if !devices.iter().any(|(device, _)| *device == self.device) {
             let label = self.identity.device_cert.device_label.clone();
             devices.push((self.device, label));
@@ -1716,8 +1741,27 @@ mod tests {
         }
 
         /// A session of theirs on the device `device`, called `label`, following their list.
+        /// Their own workspace keeps the device among their devices, as every device of theirs
+        /// keeps itself there.
         fn device(&self, device: u8, label: &str) -> Personal {
-            let mut personal = Personal::open(identity(1, device, label));
+            let identity = identity(1, device, label);
+            let keep = Devices::keeping(&identity.device_cert).expect("a certificate encodes");
+            let workspaces = self.daemon.workspaces().clone();
+            let own = tilo_server_protocol::servers::person_workspace_id(
+                &identity.device_cert.user_public_key,
+            );
+            tilo_rt::app()
+                .block_on(async move {
+                    tilo_workspace_service::workspaces::person_workspace::apply_on(
+                        &workspaces,
+                        &own,
+                        DEVICES,
+                        keep,
+                    )
+                    .await
+                })
+                .expect("the person's own workspace keeps the device");
+            let mut personal = Personal::open(identity);
             personal.follow(&self.daemon.shell(), std::sync::Arc::new(|| {}));
             personal
         }
@@ -1748,12 +1792,18 @@ mod tests {
         adoption
     }
 
-    /// Read `personal`'s list again now, as the follow does once the daemon wrote it.
+    /// Read `personal`'s list and the person's devices again now, as the follows do once the daemon
+    /// wrote them.
     fn fresh(personal: &Personal) {
         personal
             .list
             .as_ref()
             .expect("the list is followed")
+            .refresh();
+        personal
+            .devices
+            .as_ref()
+            .expect("the devices are followed")
             .refresh();
     }
 
@@ -1825,13 +1875,6 @@ mod tests {
             "the list names it, hosted by the device that made it"
         );
         let list = laptop.read().expect("the list reads");
-        assert_eq!(
-            list.devices
-                .get(&hex::encode(key(0x21)))
-                .map(String::as_str),
-            Some("The laptop"),
-            "the device names itself among the person's devices"
-        );
         assert!(
             laptop.publish_local(&laptop_shell, &list).is_empty(),
             "a pass with nothing new writes nothing"
@@ -2005,20 +2048,15 @@ mod tests {
             .expect("a fresh session holds one workspace");
         let mut phone = person.device(0x23, tilo_user_identity::UNNAMED_PRIMARY_DEVICE);
         pass(&mut phone, &shell);
+        fresh(&phone);
         let choices = phone.device_choices(own);
-        let here = choices.iter().find(|choice| choice.here).expect("its row");
+        let [here] = choices.as_slice() else {
+            panic!("the phone is offered once: {choices:?}");
+        };
+        assert!(here.here);
         assert_eq!(
             here.label, "",
             "the stand-in provisioning fills in is no name of the person's"
-        );
-        assert!(
-            phone
-                .read()
-                .expect("the list reads")
-                .devices
-                .get(&hex::encode(key(0x23)))
-                .is_none(),
-            "and it is no name to list this device by either"
         );
     }
 
