@@ -162,15 +162,12 @@ fn percent_decode(value: &str) -> String {
                 let byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
                 Some((byte, tail))
             });
-        match escaped {
-            Some((byte, tail)) => {
-                out.push(byte);
-                rest = tail;
-            }
-            None => {
-                out.push(one);
-                rest = after;
-            }
+        if let Some((byte, tail)) = escaped {
+            out.push(byte);
+            rest = tail;
+        } else {
+            out.push(one);
+            rest = after;
         }
     }
     String::from_utf8_lossy(&out).into_owned()

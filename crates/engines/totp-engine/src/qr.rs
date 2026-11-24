@@ -30,11 +30,11 @@ fn luma_of(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
             u32::from(pixel.get(1).copied().unwrap_or(0)),
             u32::from(pixel.get(2).copied().unwrap_or(0)),
         );
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the weighted sum of three bytes is at most 255"
-        )]
-        let grey = ((r * 299 + g * 587 + b * 114) / 1000) as u8;
+        let weighted = r
+            .saturating_mul(299)
+            .saturating_add(g.saturating_mul(587))
+            .saturating_add(b.saturating_mul(114));
+        let grey = u8::try_from(weighted / 1000).unwrap_or(u8::MAX);
         out.push(grey);
     }
     out
@@ -75,35 +75,32 @@ mod tests {
 
     /// A QR code of `data`, rasterised to a greyscale image with clean finder patterns.
     fn render(data: &str) -> (u32, u32, Vec<u8>) {
-        use qrcode::{EcLevel, QrCode};
+        use qrcode::{Color, EcLevel, QrCode};
+        const SCALE: usize = 6;
+        const QUIET: usize = 4;
         let code = QrCode::with_error_correction_level(data.as_bytes(), EcLevel::M).unwrap();
         let modules = code.to_colors();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "a QR code's side is a count of modules, far below u32"
-        )]
-        let dim = (modules.len() as f64).sqrt() as usize;
-        let (scale, quiet) = (6usize, 4usize);
-        let side = (dim + quiet * 2) * scale;
-        let mut out = vec![255u8; side * side];
-        for y in 0..dim {
-            for x in 0..dim {
-                if modules[y * dim + x] == qrcode::Color::Dark {
-                    for dy in 0..scale {
-                        for dx in 0..scale {
-                            let px = (x + quiet) * scale + dx;
-                            let py = (y + quiet) * scale + dy;
-                            out[py * side + px] = 0;
-                        }
-                    }
-                }
-            }
-        }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "a rendered code's side is a few hundred pixels"
-        )]
-        let side = side as u32;
+        let margin = vec![Color::Light; QUIET];
+        let rows: Vec<Vec<Color>> = modules
+            .chunks(code.width())
+            .map(|row| margin.iter().chain(row).chain(&margin).copied().collect())
+            .collect();
+        let across = rows.first().unwrap().len();
+        let quiet_row = vec![Color::Light; across];
+        let out: Vec<u8> = std::iter::repeat_n(&quiet_row, QUIET)
+            .chain(&rows)
+            .chain(std::iter::repeat_n(&quiet_row, QUIET))
+            .flat_map(|row| {
+                let line: Vec<u8> = row
+                    .iter()
+                    .flat_map(|module| {
+                        std::iter::repeat_n(if *module == Color::Dark { 0 } else { 255 }, SCALE)
+                    })
+                    .collect();
+                std::iter::repeat_n(line, SCALE).flatten()
+            })
+            .collect();
+        let side = u32::try_from(across.checked_mul(SCALE).unwrap()).unwrap();
         (side, side, out)
     }
 
