@@ -342,10 +342,7 @@ impl ImagerApp {
                     write_frac: 0.36,
                     verify_frac: 0.0,
                     rate_bps: 0,
-                    error: Some(
-                        "The drive was disconnected while it was being written. Reconnect it, then review and retry."
-                            .into(),
-                    ),
+                    error: Some(crate::setup::strings::t("imager-status-drive-disconnected")),
                 };
             }
             "drive-empty" | "drive-internal" => {
@@ -741,9 +738,16 @@ impl ImagerApp {
         let downloading = self.downloading_release() == Some(index);
         let secondary = if downloading {
             let progress = self.release_progress();
-            let stage = progress
-                .as_ref()
-                .map_or("Preparing", |progress| progress.phase.as_str());
+            let stage = progress.as_ref().map_or_else(
+                || crate::setup::strings::t("imager-stage-preparing"),
+                |progress| {
+                    if progress.phase.as_str() == "verifying" {
+                        crate::setup::strings::t("imager-stage-verifying")
+                    } else {
+                        crate::setup::strings::t("imager-stage-downloading")
+                    }
+                },
+            );
             match self
                 .release_progress()
                 .and_then(|progress| progress.completed.zip(progress.total))
@@ -751,14 +755,14 @@ impl ImagerApp {
                 Some((done, total)) if total > 0 => CATALOG.t_args(
                     "imager-release-progress",
                     &[
-                        ("stage", ui::i18n::ArgValue::Text(stage.to_string())),
+                        ("stage", ui::i18n::ArgValue::Text(stage.clone())),
                         (
                             "percent",
                             ui::i18n::ArgValue::Number((done * 100 / total) as f64),
                         ),
                     ],
                 ),
-                _ => stage.to_string(),
+                _ => stage,
             }
         } else if release.local_path.is_empty() {
             CATALOG.t_args(
@@ -889,44 +893,55 @@ impl ImagerApp {
         )))
     }
 
-    fn review_rows(&self) -> Vec<(&'static str, String)> {
+    fn review_rows(&self) -> Vec<(String, String)> {
+        use crate::setup::strings::t;
         let mut rows = vec![(
-            "Image",
+            t("imager-review-image"),
             self.source
                 .as_ref()
-                .map_or_else(|| "None selected".into(), |s| s.name.clone()),
+                .map_or_else(|| t("imager-review-none"), |s| s.name.clone()),
         )];
         if let Some(source) = &self.source {
-            rows.push(("Image size", fmt_size(source.size)));
+            rows.push((t("imager-review-image-size"), fmt_size(source.size)));
         }
         rows.push((
-            "Drive",
+            t("imager-review-drive"),
             self.target()
-                .map_or_else(|| "None selected".into(), |d| d.model.clone()),
+                .map_or_else(|| t("imager-review-none"), |d| d.model.clone()),
         ));
         if let Some(drive) = self.target() {
-            rows.push(("Device", drive.dev_path()));
+            rows.push((t("imager-review-device"), drive.dev_path()));
         }
         if let Some(target) = self.target() {
-            rows.push(("Space", self.capacity_message(target)));
+            rows.push((t("imager-review-space"), self.capacity_message(target)));
         }
-        rows.push(("Setup", self.review_setup()));
+        rows.push((t("imager-review-setup"), self.review_setup()));
         rows
     }
 
     fn review_setup(&self) -> String {
+        use crate::setup::strings::{t, t_args};
         if self.customizable() {
-            format!(
-                "Pre-configured for {} on {}",
-                self.profile.user.username, self.profile.hostname
+            t_args(
+                "imager-review-preconfigured",
+                &[
+                    (
+                        "user",
+                        ui::i18n::ArgValue::from(self.profile.user.username.clone()),
+                    ),
+                    (
+                        "hostname",
+                        ui::i18n::ArgValue::from(self.profile.hostname.clone()),
+                    ),
+                ],
             )
         } else if let Some(hostname) = crate::handoff::chosen_hostname(&self.profile) {
-            crate::setup::strings::t_args(
+            t_args(
                 "imager-review-setup-hostname",
                 &[("hostname", ui::i18n::ArgValue::from(hostname))],
             )
         } else {
-            "Written unchanged, then verified".to_string()
+            t("imager-review-unchanged")
         }
     }
 
@@ -994,6 +1009,16 @@ impl ImagerApp {
                     .arrives_in_place(),
             )),
         ))
+    }
+
+    fn phase_text(phase: JobPhase) -> String {
+        crate::setup::strings::t(match phase {
+            JobPhase::Idle => "imager-phase-idle",
+            JobPhase::Writing => "imager-phase-writing",
+            JobPhase::Verifying => "imager-phase-verifying",
+            JobPhase::Success => "imager-phase-success",
+            JobPhase::Failed => "imager-phase-failed",
+        })
     }
 
     fn phase(&self) -> (f64, String) {
@@ -1077,32 +1102,34 @@ impl ImagerApp {
         body
     }
 
-    fn done_ok_copy(&self) -> (&'static str, String) {
+    fn done_ok_copy(&self) -> (String, String) {
+        use crate::setup::strings::{t, t_args};
         let image = self
             .source
             .as_ref()
-            .map_or("The image", |s| s.name.as_str());
-        let drive = self.target().map_or("the drive", |d| d.model.as_str());
-        match self.action {
-            Action::Install => (
-                "Tilo is installed",
-                format!(
-                    "{image} was written to {drive} and verified. Remove the installation media and restart."
-                ),
+            .map_or_else(|| t("imager-done-image"), |s| s.name.clone());
+        let drive = self
+            .target()
+            .map_or_else(|| t("imager-done-drive"), |d| d.model.clone());
+        let written = match self.action {
+            Action::Install => "imager-done-installed-body",
+            Action::Flash if self.offers_eject() => "imager-done-ready-eject",
+            Action::Flash => "imager-done-ready-remove",
+        };
+        let headline = match self.action {
+            Action::Install => "imager-done-installed-title",
+            Action::Flash => "imager-done-ready-title",
+        };
+        (
+            t(headline),
+            t_args(
+                written,
+                &[
+                    ("image", ui::i18n::ArgValue::Text(image)),
+                    ("drive", ui::i18n::ArgValue::Text(drive)),
+                ],
             ),
-            Action::Flash => (
-                "The drive is ready",
-                if self.offers_eject() {
-                    format!(
-                        "{image} was written to {drive} and verified. Eject it before you take it out."
-                    )
-                } else {
-                    format!(
-                        "{image} was written to {drive} and verified. You can safely remove the drive."
-                    )
-                },
-            ),
-        }
+        )
     }
 
     fn done_body(&self) -> Column {
@@ -1126,14 +1153,15 @@ impl ImagerApp {
                     .caption(crate::setup::strings::t("installer-state-stopped"))
                     .size(ProgressRingSize::Large)
                     .tone(Tone::Danger),
-                if self.action == Action::Install {
-                    "The installation failed"
+                crate::setup::strings::t(if self.action == Action::Install {
+                    "imager-done-install-failed"
                 } else {
-                    "Writing failed"
-                },
-                self.progress.error.clone().unwrap_or_else(|| {
-                    "The drive may be incomplete. Review the plan before trying again.".into()
+                    "imager-done-write-failed"
                 }),
+                self.progress
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| crate::setup::strings::t("imager-done-incomplete")),
             )
         };
         page::stack()
@@ -1142,7 +1170,7 @@ impl ImagerApp {
             .push(Box::new(
                 page::related()
                     .push(Box::new(
-                        Self::centred(headline, TextRole::Title).with_heading_level(1),
+                        Self::centred(&headline, TextRole::Title).with_heading_level(1),
                     ))
                     .push(Box::new(
                         Self::centred(&detail, TextRole::Body)
@@ -1184,20 +1212,31 @@ impl ImagerApp {
         }
         self.submit(Imager::SELECT_SOURCE.with(src.clone()));
         self.source = Some(src.clone());
-        self.set_status(&format!(
-            "Selected {} — {}",
-            src.name,
-            if self.source_is_official(src) {
-                "official release verified"
-            } else {
-                "local image, written as-is"
-            }
+        self.set_status(&crate::setup::strings::t_args(
+            "imager-status-selected",
+            &[
+                ("name", ui::i18n::ArgValue::from(src.name.clone())),
+                (
+                    "kind",
+                    ui::i18n::ArgValue::Text(crate::setup::strings::t(
+                        if self.source_is_official(src) {
+                            "imager-status-official"
+                        } else {
+                            "imager-status-local"
+                        },
+                    )),
+                ),
+            ],
         ));
         self.dirty = true;
     }
     fn image_request() -> PickRequest {
-        PickRequest::open("Choose a disk image", "Choose").filter(
-            FileFilter::new("Disk images")
+        PickRequest::open(
+            &crate::setup::strings::t("imager-drop-title"),
+            &crate::setup::strings::t("imager-picker-choose"),
+        )
+        .filter(
+            FileFilter::new(&crate::setup::strings::t("imager-picker-images"))
                 .glob("*.iso")
                 .glob("*.img")
                 .glob("*.raw")
@@ -1207,7 +1246,7 @@ impl ImagerApp {
     fn take_chosen_image(&mut self, chosen: Option<ui::portal::ChosenHandle>) -> EffectAnswer {
         self.dirty = true;
         let Some(chosen) = chosen else {
-            self.set_status("File selection cancelled.");
+            self.set_status(&crate::setup::strings::t("imager-status-pick-cancelled"));
             return Ok(Effected::done());
         };
         let reference = chosen.reference().to_path_buf();
@@ -1224,12 +1263,12 @@ impl ImagerApp {
     fn download_release(&mut self, index: usize, release: TiloRelease) {
         self.dirty = true;
         if self.release_download.is_some() {
-            self.set_status("A Tilo installer download is already in progress.");
+            self.set_status(&crate::setup::strings::t("imager-status-download-busy"));
             return;
         }
-        self.set_status(&format!(
-            "Downloading and verifying {}…",
-            release.display_name()
+        self.set_status(&crate::setup::strings::t_args(
+            "imager-status-downloading",
+            &[("name", ui::i18n::ArgValue::from(release.display_name()))],
         ));
         let control = crate::release::DownloadControl::default();
         let worker = control.clone();
@@ -1255,12 +1294,12 @@ impl ImagerApp {
     }
     fn cancel_release_download(&mut self) -> Result<(), String> {
         let Some(download) = &self.release_download else {
-            return Err("No Tilo installer download is running".into());
+            return Err(crate::setup::strings::t("imager-status-no-download"));
         };
         download.control.cancel();
-        self.set_status(
-            "Cancelling safely… The verified partial download will be kept for resume.",
-        );
+        self.set_status(&crate::setup::strings::t(
+            "imager-status-download-cancelling",
+        ));
         self.dirty = true;
         Ok(())
     }
@@ -1275,10 +1314,13 @@ impl ImagerApp {
                     .zip(progress.total)
                     .and_then(|(done, total)| done.saturating_mul(100).checked_div(total))
                     .unwrap_or(0);
-                format!("Downloading Tilo installer… {percent}%")
+                crate::setup::strings::t_args(
+                    "imager-status-download-progress",
+                    &[("percent", ui::i18n::ArgValue::from(percent))],
+                )
             }
-            "verifying" => "Cryptographically verifying the Tilo installer…".into(),
-            _ => "Preparing the verified Tilo installer image…".into(),
+            "verifying" => crate::setup::strings::t("imager-status-download-verifying"),
+            _ => crate::setup::strings::t("imager-status-download-preparing"),
         }
     }
     fn finish_release_download(&mut self, result: Result<Source, String>) {
@@ -1293,7 +1335,7 @@ impl ImagerApp {
                     release.local_path.clone_from(&source.path);
                 }
                 self.select_source(&source);
-                self.set_status("Tilo installer downloaded and cryptographically verified.");
+                self.set_status(&crate::setup::strings::t("imager-status-download-verified"));
             }
             Err(error) => self.set_status(&error),
         }
@@ -1304,9 +1346,7 @@ impl ImagerApp {
             return;
         };
         if !drive.is_media_target() {
-            self.set_status(
-                "Internal and system disks can only be installed from the booted Tilo medium.",
-            );
+            self.set_status(&crate::setup::strings::t("imager-status-internal-disk"));
             self.dirty = true;
             return;
         }
@@ -1365,24 +1405,27 @@ impl ImagerApp {
             ));
         }
         if !self.startup_write_state_reconciled {
-            return Err(("restoring_write_state", "Restoring the previous image-write state; wait for drive review before starting another write".into()));
+            return Err((
+                "restoring_write_state",
+                crate::setup::strings::t("imager-write-refused-restoring"),
+            ));
         }
         if self.job_control.is_some() {
             return Err((
                 "write_in_progress",
-                "An image write is already in progress".into(),
+                crate::setup::strings::t("imager-write-refused-busy"),
             ));
         }
         if !self.writer().is_available() {
             return Err((
                 "write_backend_disabled",
-                "Raw-device writing is disabled; enable the privileged Imager backend first".into(),
+                crate::setup::strings::t("imager-write-refused-disabled"),
             ));
         }
         if self.source.is_none() {
             return Err((
                 "incomplete_plan",
-                "Select an image source and target drive before writing".into(),
+                crate::setup::strings::t("imager-write-refused-incomplete"),
             ));
         }
         Ok(())
@@ -1403,7 +1446,7 @@ impl ImagerApp {
         let target = self
             .media_target(device)
             .and_then(|index| self.targets.get(index))
-            .ok_or("Select an image source and target drive before writing")?;
+            .ok_or_else(|| crate::setup::strings::t("imager-write-refused-incomplete"))?;
         let required = self.required_capacity().ok_or_else(|| {
             crate::setup::strings::t(
                 if self.source.as_ref().is_none_or(|source| source.size == 0) {
@@ -1509,7 +1552,7 @@ impl ImagerApp {
         match start {
             crate::write::JobStart::Started => {
                 let (Some(rx), Some(control)) = (rx, control) else {
-                    return refuse("The writer could not start in this window.".into());
+                    return refuse(crate::setup::strings::t("imager-write-refused-no-window"));
                 };
                 Self::start_write_job(&self.port, rx, control.clone(), src_size);
                 self.job_control = Some(control);
@@ -1521,37 +1564,40 @@ impl ImagerApp {
                     rate_bps: 0,
                     error: None,
                 };
-                self.set_status(&format!(
-                    "{} → {} (writing)",
-                    self.source
-                        .as_ref()
-                        .map(|s| s.name.clone())
-                        .unwrap_or_default(),
-                    tgt.dev_path()
+                self.set_status(&crate::setup::strings::t_args(
+                    "imager-status-writing-to",
+                    &[
+                        (
+                            "name",
+                            ui::i18n::ArgValue::from(
+                                self.source
+                                    .as_ref()
+                                    .map(|s| s.name.clone())
+                                    .unwrap_or_default(),
+                            ),
+                        ),
+                        ("drive", ui::i18n::ArgValue::from(tgt.dev_path())),
+                    ],
                 ));
                 self.goto(Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => {
-                return refuse("Confirmation does not match — write refused.".into());
+                return refuse(crate::setup::strings::t(
+                    "imager-write-refused-confirmation",
+                ));
             }
             crate::write::JobStart::TooSmall => {
-                return refuse("Image is larger than the drive — write refused.".into());
+                return refuse(crate::setup::strings::t("imager-write-refused-too-large"));
             }
             crate::write::JobStart::UnsafeTarget => {
-                return refuse(
-                    "Internal and system disks can only be installed from the booted Tilo medium."
-                        .into(),
-                );
+                return refuse(crate::setup::strings::t("imager-status-internal-disk"));
             }
             crate::write::JobStart::Incomplete => {
-                return refuse("Select a source and drive before writing.".into());
+                return refuse(crate::setup::strings::t("imager-write-refused-selection"));
             }
             crate::write::JobStart::InvalidProfile(message) => return refuse(message),
             crate::write::JobStart::WriteDisabled => {
-                return refuse(
-                    "Raw-device writing is disabled; enable the privileged Imager backend first."
-                        .into(),
-                );
+                return refuse(crate::setup::strings::t("imager-write-refused-disabled"));
             }
         }
         self.dirty = true;
@@ -1770,7 +1816,9 @@ impl ImagerApp {
         if self.progress.phase == JobPhase::Failed {
             self.progress = Progress::default();
             self.goto(Step::Confirm);
-            self.set_status("Review the image and drive, then confirm the target again to retry.");
+            self.set_status(&crate::setup::strings::t(
+                "imager-status-review-and-confirm",
+            ));
             return;
         }
         self.progress = Progress::default();
@@ -1831,17 +1879,23 @@ impl ImagerApp {
     }
     fn do_rescan(&mut self) -> bool {
         if self.live {
-            let Some(t) = imager_backend::probe::probe() else {
-                self.set_status("Drive rescan failed. Check the system disk tools and try again.");
+            let Some(found) = imager_backend::probe::probe() else {
+                self.set_status(&crate::setup::strings::t("imager-rescan-failed"));
                 self.dirty = true;
                 return false;
             };
-            self.apply_drive_inventory(t);
+            self.apply_drive_inventory(found);
             let n = self.targets.len();
             let removable = self.removable_count();
-            self.set_status(&format!("Rescanned — {removable} removable, {n} total"));
+            self.set_status(&crate::setup::strings::t_args(
+                "imager-rescan-summary",
+                &[
+                    ("removable", ui::i18n::ArgValue::from(removable)),
+                    ("total", ui::i18n::ArgValue::from(n)),
+                ],
+            ));
         } else {
-            self.set_status("Rescanned drives");
+            self.set_status(&crate::setup::strings::t("imager-rescan-done"));
         }
         self.selected = self.selected.filter(|i| *i < self.targets.len());
         self.dirty = true;
@@ -1898,14 +1952,14 @@ impl ImagerApp {
                         let code = result?.ok_or(
                             "the image customization helper did not recognize its request",
                         )?;
-                        app.set_status("Image customization complete");
+                        app.set_status(&crate::setup::strings::t("imager-status-customized"));
                         app.dirty = true;
                         Ok(Effected::value(serde_json::json!({ "exit_code": code })))
                     },
                 ))
             }
             ImagerEffect::ChooseImage => {
-                self.set_status("Opening the file picker…");
+                self.set_status(&crate::setup::strings::t("imager-status-opening-picker"));
                 self.dirty = true;
                 Ok(
                     cx.choose_handle(Self::image_request(), |app: &mut Self, chosen, _| {
@@ -1965,14 +2019,14 @@ impl ImagerApp {
             statuses.push(EffectStatus::unavailable(
                 ImagerEffect::CANCEL_DOWNLOAD,
                 "no_download",
-                "No Tilo installer download is running",
+                crate::setup::strings::t("imager-status-no-download"),
             ));
         }
         if self.source.is_none() || self.target().is_none() {
             statuses.push(EffectStatus::unavailable(
                 ImagerEffect::EXPORT_CONFIG,
                 "incomplete_plan",
-                "Select an image source and target drive first",
+                crate::setup::strings::t("imager-write-refused-incomplete"),
             ));
         }
         statuses
@@ -1984,10 +2038,15 @@ impl ImagerApp {
             .filter(|target| target.is_media_target())
             .map(|target| self.target_row(target))
             .collect::<Vec<_>>();
-        let phase = self.progress.phase.key();
         rows.push(LiveRow::typed::<ImageWrite>(
             "imager.job",
-            format!("Image write: {phase}"),
+            crate::setup::strings::t_args(
+                "imager-status-write-phase",
+                &[(
+                    "phase",
+                    ui::i18n::ArgValue::Text(Self::phase_text(self.progress.phase)),
+                )],
+            ),
         ));
         if let Some(download) = &self.release_download {
             let name = self
@@ -1996,15 +2055,21 @@ impl ImagerApp {
                 .map(TiloRelease::display_name)
                 .unwrap_or_default();
             let detail = self.release_progress().map_or_else(
-                || "Preparing".to_owned(),
+                || crate::setup::strings::t("imager-stage-preparing"),
                 |progress| Self::download_status(&progress),
             );
             rows.push(
-                LiveRow::typed::<InstallerDownload>("imager.download", format!("Download {name}"))
-                    .presentation(tilo_actions::ResourcePresentation {
-                        detail: Some(detail),
-                        ..tilo_actions::ResourcePresentation::default()
-                    }),
+                LiveRow::typed::<InstallerDownload>(
+                    "imager.download",
+                    crate::setup::strings::t_args(
+                        "imager-row-download",
+                        &[("name", ui::i18n::ArgValue::Text(name))],
+                    ),
+                )
+                .presentation(tilo_actions::ResourcePresentation {
+                    detail: Some(detail),
+                    ..tilo_actions::ResourcePresentation::default()
+                }),
             );
         }
         rows
@@ -2119,7 +2184,7 @@ impl ImagerApp {
             }
             Command::Dropped(path) => match imager_backend::probe::inspect_source(&path) {
                 Some(source) => self.select_source(&source),
-                None => self.fail("That file is not a readable disk image."),
+                None => self.fail(&crate::setup::strings::t("imager-image-unreadable")),
             },
             Command::Release(index) => {
                 if self.release_download.is_none() {

@@ -85,10 +85,11 @@ mod tests {
         host.harness()
             .press_window_part(ToolbarEvent::Action { id: RESCAN.into() });
         host.settle();
+        let rescanned = crate::setup::strings::t("imager-rescan-done");
         assert_eq!(
             host.with_widget::<ImagerApp, _>(|app| app.status.clone())
                 .as_deref(),
-            Some("Rescanned drives")
+            Some(rescanned.as_str())
         );
 
         let _ = at(Step::Source);

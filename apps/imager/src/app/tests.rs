@@ -78,7 +78,10 @@ fn unchanged_disk_review_discloses_the_authored_hostname() {
     present(&mut app, &doc);
     app.goto(Step::Confirm);
     assert!(!app.customizable());
-    assert_eq!(app.review_setup(), "Written unchanged, then verified");
+    assert_eq!(
+        app.review_setup(),
+        crate::setup::strings::t("imager-review-unchanged")
+    );
 
     Imager::paths()
         .profile
@@ -94,7 +97,7 @@ fn unchanged_disk_review_discloses_the_authored_hostname() {
     let setup = app
         .review_rows()
         .into_iter()
-        .find(|(label, _)| *label == "Setup")
+        .find(|(label, _)| *label == crate::setup::strings::t("imager-review-setup"))
         .unwrap()
         .1;
     assert!(setup.contains("reviewed-host"), "{setup}");
@@ -333,7 +336,7 @@ fn wizard_semantics_labels_live_regions_and_keyboard_order() {
     assert!(
         app.review_rows()
             .into_iter()
-            .find(|(label, _)| *label == "Image")
+            .find(|(label, _)| *label == crate::setup::strings::t("imager-review-image"))
             .unwrap()
             .1
             .contains("lenovo-83ed only")
