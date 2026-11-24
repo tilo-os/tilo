@@ -1034,6 +1034,10 @@ workspace vault, despite their names.
   own workspace from its ticket and certificate, and reads the list of the
   person's workspaces from it, so that list never names the own workspace
   itself.
+  Which servers keep a workspace is recorded in that workspace, the own one
+  included: a server keeping the person's own workspace reads that there. Only
+  the person's own devices, their own servers included, hold its keys; a server
+  of anyone else stores its sealed frames and writes nothing.
 
 ### What goes
 
