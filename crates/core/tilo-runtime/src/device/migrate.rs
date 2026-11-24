@@ -135,11 +135,26 @@ impl Daemon {
     /// through the vault's own `add`, and taken out of the keeper only once the vault keeps it.
     /// An entry the vault already keeps tagged for that app and purpose is not added again, so a
     /// second start adds nothing.
-    pub fn adopt_kept_secrets(self: &Arc<Self>) {
+    pub fn adopt_kept_secrets(&self) {
+        use std::sync::atomic::Ordering;
+        if self.old_secrets.load(Ordering::Acquire) {
+            return;
+        }
         let Ok(workspace) = self.mcp_workspace(None) else {
-            tracing::debug!("no workspace is here yet: the old keeper's secrets wait");
             return;
         };
+        let workspaces = self.workspaces();
+        let held = tilo_rt::app()
+            .block_on(workspaces.state(&workspace))
+            .ok()
+            .flatten()
+            .is_some();
+        if !held {
+            // The person's workspace is not here yet: the first app launched in it founds it,
+            // and adopts them then.
+            return;
+        }
+        self.old_secrets.store(true, Ordering::Release);
         let person = hex::encode(self.workspaces().device_cert().user_public_key);
         let workspaces = self.workspaces();
         walk_old_keeper(

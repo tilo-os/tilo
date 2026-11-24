@@ -101,6 +101,9 @@ pub struct Daemon {
     /// The links of the shells this daemon starts ([`Self::start_shell`]).
     shell_links: Arc<tilo_workspace_service::apps::shell::ShellLinks>,
     workspaces: Arc<ServiceWorkspaces>,
+    /// Whether this run walked the old keeper's kept secrets into the person's vault: done once
+    /// the workspace is held, so an app launch costs no keyring read after the first.
+    old_secrets: std::sync::atomic::AtomicBool,
     _identity: IdentityBrokerHandle,
     workspace: String,
     actor: String,
@@ -1954,6 +1957,7 @@ impl Daemon {
             other_devices: other_devices(&workspaces),
             apps,
             workspaces,
+            old_secrets: std::sync::atomic::AtomicBool::new(false),
             _identity: identity_broker,
             workspace: workspace_id,
             actor,
@@ -2835,6 +2839,9 @@ impl RuntimeServices for Daemon {
         self.first
             .found_if_theirs(&self.workspace)
             .map_err(io::Error::other)?;
+        // The workspace is here now: the secrets the apps the move carried over kept in this
+        // device's old keeper are the person's vault items from now on.
+        self.adopt_kept_secrets();
         // The app's collaboration connection, opened here, names this launch, which the
         // collaboration service attests it as.
         self.apps.launching(app_id, &self.workspace);
