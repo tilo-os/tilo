@@ -19,13 +19,18 @@
 ///
 /// Every choice it offers is the session's action: going to a window is `session.focus`, the
 /// same as a press on its strip.
+///
+/// The panel holds the screen while it is up: the display behind it is dimmed, and assistive
+/// technology reads it as a dialog named for what the walk crosses, with the keys it answers to
+/// said under that name.
 view switcher() {
     let all = device.windows.all
         .filter(w -> w.workspace_key == front_workspace())
         .sort_by(w -> w.recency)
     let pick = all.find(w -> w.focused)
     let front_app = if let p = pick { p.app_key } else { "" }
-    let windows = if device.overlays.switcher_scope == "app" {
+    let app_scope = device.overlays.switcher_scope == "app"
+    let windows = if app_scope {
         all.filter(w -> w.app_key == front_app)
     } else { all }
     let count = windows.len()
@@ -35,12 +40,20 @@ view switcher() {
     let shown = windows.filter(
         w -> walk_place(windows, w) >= from and walk_place(windows, w) < from + per_page,
     )
-    let this_app = if device.overlays.switcher_scope == "app" {
+    let this_app = if app_scope {
         if let p = pick { p.origin_app } else { "" }
     } else { "" }
     let paged = if count > per_page { "{at} of {count}" } else { "" }
     row(fill, align: .center, distribute: .center, padding: .related) {
-        ui.FloatingPanel {
+        ui.FloatingPanel(
+            modal: true,
+            label: if app_scope { "Switch windows of this app" } else { "Switch windows" },
+            description: if app_scope {
+                "This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay."
+            } else {
+                "Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay."
+            },
+        ) {
             body: {
                 if count == 0 {
                     ui.EmptyState(

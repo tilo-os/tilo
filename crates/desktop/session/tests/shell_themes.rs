@@ -805,3 +805,90 @@ fn open_window(session: &mut Session, app: &str) -> u64 {
     step(session, 1);
     tab
 }
+
+/// The switcher dims what it covers, in a light theme and a dark one: the panel holds the screen
+/// while it is up, so the page behind it is darker under the theme's scrim (and lighter again
+/// once it goes), never the shell at full brightness.
+#[test]
+fn the_switcher_dims_what_it_covers_in_light_and_dark() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session, 200);
+    for app in [NOTES, MAIL] {
+        open_window(&mut session, app);
+    }
+    assert!(
+        reached(&mut session, |session| crate::common::windows(session)
+            .len()
+            == 2),
+        "the shell holds two windows: {:?}",
+        crate::common::windows(&session)
+    );
+
+    // A point at the leading edge of the screen, half way down: well clear of the panel the
+    // switcher centres, under the bar and off the dock.
+    let at = (8, crate::common::HEIGHT / 2);
+    for theme in [Theme::ALL[1], Theme::ALL[0]] {
+        choose_theme(&mut session, theme);
+        step(&mut session, 40);
+        let plain = frame(&mut session);
+        let before = brightness(&plain, at).unwrap_or_else(|| panic!("{} has a screen", theme.name));
+
+        session
+            .invoke(
+                "desktop:overlays",
+                "walk-switcher",
+                json!({ "steps": 1, "scope": "workspace" })
+                    .as_object()
+                    .expect("an object"),
+            )
+            .unwrap_or_else(|error| panic!("the walk starts: {error:?}"));
+        assert!(
+            reached(&mut session, crate::common::switcher_revealed),
+            "in {} the switcher's panel comes up once the walk is held",
+            theme.name
+        );
+        step(&mut session, 60);
+        let up = crate::common::shot(
+            &mut session,
+            if theme.light {
+                "switcher-dimmed-light"
+            } else {
+                "switcher-dimmed-dark"
+            },
+        );
+        let dimmed = brightness(&up, at).unwrap_or_else(|| panic!("{} has a screen", theme.name));
+
+        // The sampled point is outside the panel: the cards stand a card's width away.
+        let card = crate::common::windows(&session)
+            .first()
+            .and_then(|window| switcher_card(&session, window))
+            .unwrap_or_else(|| panic!("in {} a card stands in the switcher", theme.name));
+        assert!(
+            card[0] > f64::from(at.0) + 40.0,
+            "in {} the point stands clear of the panel: {card:?}",
+            theme.name
+        );
+        assert!(
+            dimmed + 10 < before,
+            "in {} the switcher dims what it covers: {before} to {dimmed}",
+            theme.name
+        );
+
+        session
+            .invoke("desktop:overlays", "commit-switcher", &Map::new())
+            .unwrap_or_else(|error| panic!("the walk ends: {error:?}"));
+        assert!(
+            reached(&mut session, |session| crate::common::shell_here(session)
+                == "none"),
+            "in {} the panel goes down when the walk is let go",
+            theme.name
+        );
+    }
+}
+
+/// How bright the pixel at `(x, y)` is, as the sum of its channels: what a scrim lowers.
+fn brightness(shot: &Screenshot, at: (i32, i32)) -> Option<u32> {
+    let pixel = shot.pixel(u32::try_from(at.0).ok()?, u32::try_from(at.1).ok()?)?;
+    Some(pixel[..3].iter().map(|channel| u32::from(*channel)).sum())
+}

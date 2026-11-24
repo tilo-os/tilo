@@ -2645,3 +2645,56 @@ fn walk_switcher_in_app_scope_closes_when_no_window_is_in_front() {
     );
     assert!(switcher::panel(&session).is_none());
 }
+
+/// The switcher's dialog as assistive technology reads it: what it is named, and the line after
+/// that name.
+fn switcher_dialog(session: &Session) -> Option<(String, String)> {
+    for (_, _, tree) in session.a11y_windows() {
+        for (_, node) in tree.nodes {
+            if node.role() == ui::accesskit::Role::Dialog {
+                return Some((
+                    node.label().unwrap_or_default().to_owned(),
+                    node.description().unwrap_or_default().to_owned(),
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// The switcher is a dialog a screen reader hears: named for what the walk crosses, with the keys
+/// it answers to said after that name — the workspace's walk with Tab and the arrow keys, the app's
+/// with ` — never an unnamed panel over the windows.
+#[test]
+fn the_switcher_is_a_named_dialog_a_screen_reader_hears() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = switcher::session();
+    switcher::hold_alt_tab(&mut session);
+    until(&mut session, "the panel's dialog", |session| {
+        switcher_dialog(session).is_some()
+    });
+    let (name, description) = switcher_dialog(&session).expect("the panel reads as a dialog");
+    assert_eq!(
+        name, "Switch windows",
+        "the walk over this workspace is named"
+    );
+    assert_eq!(
+        description,
+        "Windows in this workspace, most recently used first. Hold Alt and press Tab or the \
+         arrow keys to move, release Alt to switch, or press Escape to stay.",
+        "the keys the walk answers to are said after its name"
+    );
+
+    // Alt+` walks the app in front's windows, and the dialog says so.
+    switcher::key(&mut session, switcher::KEY_GRAVE, true);
+    switcher::key(&mut session, switcher::KEY_GRAVE, false);
+    until(&mut session, "the app-scope dialog", |session| {
+        switcher_dialog(session).is_some_and(|(name, _)| name == "Switch windows of this app")
+    });
+    let (_, app_description) = switcher_dialog(&session).expect("the app's panel reads");
+    assert!(
+        app_description.contains("press ` to move"),
+        "the app's walk says the key that walks it: {app_description:?}"
+    );
+    switcher::key(&mut session, switcher::KEY_LEFTALT, false);
+}
