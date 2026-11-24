@@ -171,6 +171,10 @@ impl ServerAddress {
         port: Option<u16>,
     ) -> Result<iroh::Endpoint, LinkError> {
         let relay = self.relay().cloned();
+        // A page has no endpoint to reach its server from: its joins are its device service's.
+        // A native device binds one whatever its links' carrier, since it takes a workspace in
+        // itself, over the join protocol the host answers on its endpoint.
+        #[cfg(target_arch = "wasm32")]
         if self.carrier == Carrier::WebTransport {
             return Err(LinkError::Unavailable(
                 "a server reached over WebTransport is dialled without an endpoint".into(),
