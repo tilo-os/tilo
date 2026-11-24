@@ -45,16 +45,21 @@ impl LaunchpadAppAction {
         }
     }
 
-    /// The app action that asks `ask` of the agent of `client` ("Claude Code"): its own action in
-    /// Console, on the resource Console publishes for it, which also brings its card forward.
+    /// The app action that asks `ask` of the agent of `client` ("Claude Code"): Console's own,
+    /// by the client its card is of, so the card, a palette and an agent all reach that client
+    /// and no other. The action makes the client's card and acts on it, one path for every way in.
     #[must_use]
     pub fn ask_agent(client: &str, ask: AgentAsk) -> Self {
+        let mut arguments = serde_json::Map::new();
+        if ask.takes_client() {
+            arguments.insert("client".to_owned(), serde_json::json!(client));
+        }
         Self {
-            app_id: "so.tilo.console".to_owned(),
+            app_id: CONSOLE_APP.to_owned(),
             display_name: "Console".to_owned(),
-            resource: format!("console.agent:{client}"),
+            resource: CONSOLE_RESOURCE.to_owned(),
             action: ask.action().to_owned(),
-            arguments: serde_json::Map::new(),
+            arguments,
         }
     }
 
@@ -63,14 +68,22 @@ impl LaunchpadAppAction {
     #[must_use]
     pub fn connect_agent() -> Self {
         Self {
-            app_id: "so.tilo.console".to_owned(),
+            app_id: CONSOLE_APP.to_owned(),
             display_name: "Console".to_owned(),
-            resource: "console.effects".to_owned(),
-            action: "view-connect".to_owned(),
+            resource: CONSOLE_RESOURCE.to_owned(),
+            action: "open_connect".to_owned(),
             arguments: serde_json::Map::new(),
         }
     }
 }
+
+/// The app whose resource the launchpad's agent verbs act on, and the published resource of its
+/// package: a verb that takes only the client stands there, not on a card the caller would have
+/// to name first.
+pub const CONSOLE_APP: &str = "so.tilo.console";
+/// The kind Console's root document is published under (`tl.<app id>.Window`), which its verbs
+/// that act on it stand on, while its window is open or closed.
+pub const CONSOLE_RESOURCE: &str = "tl.so.tilo.console.Window";
 
 /// A welcome verb of the empty shell, declared once: the card that shows it,
 /// the host action that offers it to search and agents, and the app action it
@@ -269,9 +282,8 @@ impl LaunchpadAction {
     }
 }
 
-/// What a person asks of an agent from its face's card. Each is the agent's own action in Console
-/// (`console.agent:<client>`), which also brings its card forward: nothing done to an agent
-/// happens out of sight.
+/// What a person asks of an agent from its face's card. Each is Console's own action, by the
+/// client its card is of: nothing done to an agent happens out of sight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentAsk {
     /// Pull its card out into a window beside the work.
@@ -283,16 +295,22 @@ pub enum AgentAsk {
 }
 
 impl AgentAsk {
-    /// The action of the agent's resource in Console it is.
+    /// The action of Console's package resource it is.
     #[must_use]
     pub const fn action(self) -> &'static str {
         match self {
-            Self::Card => "view-agent",
-            Self::Stop => "stop-agent",
-            Self::UndoSession => "undo-agent-run",
-            Self::TakeOver => "take-over-agent",
-            Self::Revoke => "revoke-agent",
+            Self::Card => "open",
+            Self::Stop => "stop_client",
+            Self::UndoSession => "undo_client_session",
+            Self::TakeOver => "take_over_client",
+            Self::Revoke => "revoke_client",
         }
+    }
+
+    /// Whether the action is asked for one client, by its name: opening Console asks for none.
+    #[must_use]
+    pub const fn takes_client(self) -> bool {
+        !matches!(self, Self::Card)
     }
 }
 
@@ -502,6 +520,49 @@ mod tests {
                     );
                 }
             }
+        }
+
+        phase a_persons_card_reaches_its_client_through_consoles_own_actions;
+        // Each ask is Console's own action on its package resource, by the client its card is
+        // of: two clients' cards ask two clients, and none names a resource of an app Console
+        // no longer has.
+        {
+            let stop = LaunchpadAppAction::ask_agent("Cursor", AgentAsk::Stop);
+            assert_eq!(stop.app_id, CONSOLE_APP);
+            assert_eq!(stop.resource, CONSOLE_RESOURCE);
+            assert_eq!(stop.action, "stop_client");
+            assert_eq!(
+                stop.arguments.get("client"),
+                Some(&serde_json::json!("Cursor"))
+            );
+            let theirs = LaunchpadAppAction::ask_agent("Claude Code", AgentAsk::Stop);
+            assert_eq!(
+                theirs.arguments.get("client"),
+                Some(&serde_json::json!("Claude Code")),
+                "each card asks for its own client"
+            );
+            for (ask, action) in [
+                (AgentAsk::Stop, "stop_client"),
+                (AgentAsk::UndoSession, "undo_client_session"),
+                (AgentAsk::TakeOver, "take_over_client"),
+                (AgentAsk::Revoke, "revoke_client"),
+            ] {
+                let made = LaunchpadAppAction::ask_agent("Cursor", ask);
+                assert_eq!(made.action, action);
+                assert_eq!(
+                    made.arguments.get("client"),
+                    Some(&serde_json::json!("Cursor")),
+                    "{action} names the client"
+                );
+            }
+            let card = LaunchpadAppAction::ask_agent("Cursor", AgentAsk::Card);
+            assert_eq!(card.action, "open");
+            assert!(card.arguments.is_empty(), "opening asks for no client");
+            let connect = LaunchpadAppAction::connect_agent();
+            assert_eq!(connect.app_id, CONSOLE_APP);
+            assert_eq!(connect.resource, CONSOLE_RESOURCE);
+            assert_eq!(connect.action, "open_connect");
+            assert!(connect.arguments.is_empty());
         }
     }
 }

@@ -50,7 +50,10 @@ default view client_card for AgentCard
 /// person's own work seen through what their agents did: every session of every agent across the
 /// workspaces this device holds, and the clients that acted here.
 view console(w: Window) {
-    state place: Text = w.place
+    // Empty until the person chooses a place: the window opens where the root says, so an action
+    // that sets it (`open_connect`) lands there, and the person's choice wins from then on.
+    state place: Text = ""
+    let shown = if place == "" { w.place } else { place }
     state agent_filter: Text = ""
     state workspace_filter: Text = ""
     let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
@@ -61,9 +64,9 @@ view console(w: Window) {
     if behind(w, sessions, server) {
         every 1s: publish(w)
     }
-    ui.NavShell(content_kind: .page, title: place_title(place), sidebar_title: "Console") {
+    ui.NavShell(content_kind: .page, title: place_title(shown), sidebar_title: "Console") {
         sidebar: {
-            ui.NavList(selected: place) {
+            ui.NavList(selected: shown) {
                 ui.NavItem("agents", "Agents", icon: .bot) {
                     on select: set(place, "agents")
                 }
@@ -79,11 +82,11 @@ view console(w: Window) {
             }
         }
         content: {
-            if place == "agents" {
+            if shown == "agents" {
                 agents(w, sessions, server, agent_filter, workspace_filter)
-            } else if place == "workspaces" {
+            } else if shown == "workspaces" {
                 workspaces(server)
-            } else if place == "connect" {
+            } else if shown == "connect" {
                 connect(server)
             } else {
                 usage()
@@ -220,6 +223,41 @@ action let_agent_go_on(c: AgentCard) {
     if let grant = grant_of(server, c.client) {
         mcp.go_on(mcp.server, session: mcp.AgentSessionRef(grant: grant.id, session: grant.agent))
     }
+}
+
+/// Stops the client's working session, keeping its grant: the card's own Stop, by the client a
+/// card, a palette or an agent names.
+action stop_client(w: Window, client: Text) {
+    stop_agent(agent_card(w, client))
+}
+
+/// Stops the client's session and opens what it changed last: the card's own Take over, by the
+/// client a card, a palette or an agent names.
+action take_over_client(w: Window, client: Text) {
+    take_over_agent(agent_card(w, client))
+}
+
+/// Takes back every change of the client's newest session: the card's own Undo session, by the
+/// client a card, a palette or an agent names.
+destructive action undo_client_session(w: Window, client: Text) {
+    undo_agent_session(agent_card(w, client))
+}
+
+/// Takes back the grant the client came in by: the card's own Revoke, by the client a card, a
+/// palette or an agent names.
+destructive action revoke_client(w: Window, client: Text) {
+    revoke_agent(agent_card(w, client))
+}
+
+/// Lets a stopped client's calls through again: the card's own Let it go on, by the client a
+/// card, a palette or an agent names.
+action let_client_go_on(w: Window, client: Text) {
+    let_agent_go_on(agent_card(w, client))
+}
+
+/// Shows how an agent or another computer connects as this person: the window opens at Connect.
+action open_connect(w: Window) {
+    w.place = "connect"
 }
 
 /// Agents: every session across the workspaces, narrowed by the agent and the workspace the
