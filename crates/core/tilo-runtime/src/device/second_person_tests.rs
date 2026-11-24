@@ -83,7 +83,13 @@ fn a_second_person_signs_in_certifies_their_key_and_works_in_the_workspace_as_it
     let person = bo.group_public_key();
     assert_ne!(person, daemon.cert.user_public_key, "Bo is another person");
 
-    // Ada makes Bo an editor of the computer's workspace.
+    // Ada makes Bo an editor of the computer's workspace: her first need of it founds it, as a
+    // call of hers in it does on a computer with no login.
+    assert_eq!(
+        daemon.first.found_blocking().as_deref(),
+        Ok(daemon.workspace.as_str()),
+        "Ada's workspace is founded at the id her key names"
+    );
     let (workspaces, workspace, cert) = (
         Arc::clone(&daemon.workspaces),
         daemon.workspace.clone(),
@@ -173,10 +179,20 @@ fn a_second_person_signs_in_certifies_their_key_and_works_in_the_workspace_as_it
     let put = puts(BO)
         .expect("Bo's key reaches the workspace's content")
         .expect("Bo's key puts content into the workspace");
+    // A put answers each file's reference; the store is asked about its hash.
+    let hashes: Vec<String> = put
+        .iter()
+        .map(|content| {
+            content
+                .strip_prefix("tilo.content:")
+                .expect("a put answers a content reference")
+                .to_owned()
+        })
+        .collect();
     let have = line_client(&socket, BO)
         .content_puts()
         .expect("Bo's key reaches the workspace's content")
-        .have(&anyone, &put)
+        .have(&anyone, &hashes)
         .unwrap();
     assert_eq!(have, [true], "what Bo put is in the workspace");
 
