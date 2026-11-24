@@ -866,8 +866,8 @@ fn base64(bytes: &[u8]) -> String {
 
 /// A device nobody set up founds no person by itself: it stays its device alone until its own
 /// account starts one (`devices#found`), as a laptop's first command does through the place every
-/// client finds the daemon at. Another account may not, and a device with a person starts no
-/// other.
+/// client finds the daemon at. An account that is a stranger to this daemon may not, and a device
+/// with a person starts no other.
 #[test]
 fn a_device_founds_its_person_only_when_its_own_account_asks() {
     use io::{BufRead as _, Write as _};
@@ -940,7 +940,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
 
     let (refused, why) = found(OTHER);
     assert!(refused, "another account started a person: {why}");
-    assert!(why.contains("set up from"), "{why}");
+    assert!(why.contains("only an account signed in"), "{why}");
     assert_eq!(ask(OWN, json!({"native": "account#who"}))["claimed"], false);
 
     // The laptop's first command: through the place every client finds the daemon at.
@@ -1239,13 +1239,25 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     assert_eq!(status(BOB)["workspace"], "");
     assert_eq!(who(ROOT)["person"], Value::Null);
 
-    // She leaves: only root says so. Her account stays the device's person, as the one that set
-    // them up.
+    // She leaves: only root says so. Her person's root is opened only while she is signed in, so
+    // her account is served no more; it stays the account that set the device's person up.
     let leaving = json!({"uid": ADA});
     assert!(act(ADA, "seats#left", leaving.clone()).0);
     let (failed, left) = act(ROOT, "seats#left", leaving);
     assert!(!failed && left.contains("true"), "{left}");
-    assert_eq!(who(ADA)["person"], hex::encode(person));
+    assert_eq!(who(ADA)["person"], Value::Null);
+    assert_eq!(
+        status(ADA)["workspace"],
+        "",
+        "an account that left is served"
+    );
+    assert_eq!(
+        admission.recorded_person(ADA),
+        Some(tilo_api::daemon::admission::AccountPerson {
+            person,
+            device: true
+        })
+    );
     assert_eq!(who(BOB)["person"], Value::Null);
 }
 

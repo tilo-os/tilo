@@ -339,20 +339,32 @@ impl Seats {
             .then_some((signing, cert))
     }
 
-    /// Whether the account `seat` may make a person ([`FOUND`]): its own account, or an account
-    /// signed in on the computer, while that account has no person yet.
+    /// Whether the account `seat` may make a person ([`FOUND`]) and has none yet: `Ok(false)`
+    /// when it has one already, and refused when it is no account that makes one. Under the
+    /// system unit any account signed in on the computer makes its own person; a person's own
+    /// daemon makes one for its own account while the device has none. Root under the system
+    /// unit, an account nobody signed in and a stranger to a person's own daemon make none.
     ///
     /// [`FOUND`]: tilo_device_identity::login::FOUND
-    pub(crate) fn founds(&self, seat: Seat) -> bool {
+    pub(crate) fn may_found(&self, seat: Seat) -> Result<bool, &'static str> {
+        const NOT_SIGNED_IN: &str =
+            "only an account signed in on this computer starts a person on it";
         if seat.uid == u32::MAX {
-            return false;
+            return Err(NOT_SIGNED_IN);
         }
         if !self.admission.system() {
-            return seat.admitted == Admitted::Device && !self.admission.has_person(seat.uid);
+            return if seat.admitted == Admitted::Device {
+                Ok(!self.device.claimed())
+            } else {
+                Err(NOT_SIGNED_IN)
+            };
         }
-        seat.uid != ROOT
-            && (seat.admitted == Admitted::Device || self.admission.signed_in_now(seat.uid))
-            && !self.admission.has_person(seat.uid)
+        if seat.uid == ROOT
+            || seat.admitted != Admitted::Device && !self.admission.signed_in_now(seat.uid)
+        {
+            return Err(NOT_SIGNED_IN);
+        }
+        Ok(!self.admission.has_person(seat.uid))
     }
 
     /// Whether this daemon serves every account of the computer, each with its own person.
@@ -643,11 +655,18 @@ impl Seats {
                     self.keys.lock_recover().insert(uid, key);
                     return Ok(json!({"founding": true, "shell": false}));
                 };
+                // The device's own person is the account recorded as having set them up here,
+                // never one that only names them: naming them would act as them.
+                if self.device.person() == Some(named) {
+                    return Err(format!(
+                        "account {uid} is not the account this computer's person was set up from"
+                    ));
+                }
+                // Another person, whose identity another device of theirs holds: the account acts
+                // as a key of theirs once their root certified it.
                 let held = tilo_api::daemon::admission::AccountPerson {
                     person: named,
-                    // The account a certificate already names this device for is the person it
-                    // serves; another account is a person whose identity another device holds.
-                    device: self.device.person() == Some(named),
+                    device: false,
                 };
                 self.admission
                     .founded_by_as(uid, held.person, held.device)?;

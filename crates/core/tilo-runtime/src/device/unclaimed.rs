@@ -25,7 +25,8 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    ANOTHER_PERSONS_WORDS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE, RESTORE,
+    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE,
+    RESTORE,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -382,17 +383,28 @@ impl DeviceOnly {
     ) -> Result<String, Refusal> {
         // A person is made by an account on this computer, one per account: a computer whose
         // device's person is set up starts another person for the next account that signs in.
-        let Some(seated) = self
-            .1
-            .as_ref()
-            .filter(|seated| seated.seats.founds(seated.seat.clone()))
-        else {
+        // A daemon that is not the system's serves one person, so a device a person's
+        // certificate names starts no other on it.
+        let system = self.1.as_ref().is_some_and(|seated| seated.seats.system());
+        if !system && self.claimed() {
+            return Err(format!("{ALREADY_A_PERSONS}: it serves them").into());
+        }
+        let Some(seated) = self.1.as_ref() else {
             return Err(
-                "this account already made a person on this computer, or is not signed in to it"
+                "only an account signed in on this computer starts a person on it"
                     .to_owned()
                     .into(),
             );
         };
+        if !seated
+            .seats
+            .may_found(seated.seat.clone())
+            .map_err(str::to_owned)?
+        {
+            return Err(
+                format!("{ALREADY_A_PERSONS}: this account's person is set up here").into(),
+            );
+        }
         let person = make(seated)?;
         seated.seats.founded_by(seated.seat.clone(), person)?;
         // A person founded while this daemon serves has their root marked and their asks served
