@@ -83,7 +83,7 @@ postfix    = primary { "." ident | "?." ident [ "(" [ arg { "," arg } ] ")" ]
 arg        = [ ident ":" ] expr ;                       (* `invoke(act(args), by: who, at: time, from: r)` in a scenario *)
 primary    = int | float | length | duration | calendar | string | "true" | "false" | reference
            | ident | "root" type
-           | "." ident [ "(" [ arg { "," arg } ] ")" ]             (* enum value: .some(x), .primary *)
+           | "." case [ "(" [ arg { "," arg } ] ")" ]             (* enum value: .some(x), .primary *)
            | "(" expr { "," expr } ")" | "[" [ expr { "," expr } ] "]"
            | block | if | match ;
 if         = "if" ( expr | let_binds ) block [ "else" ( if | block ) ] ;
@@ -112,6 +112,8 @@ Tokens:
   true false try merge proposal`. `window`, `lens`, `root`, `default`, `row`, `scenario`,
   `primary`, `destructive`, `migration`, `views` and `template` are keywords only
   where the grammar above uses them.
+- `case` is an `ident`, or a keyword the platform names a case by: the icon `.type` reads the
+  platform's `type` icon. A declaration is still named only by an `ident`.
 - `length` is a number with `rem`, `dp` or `fr` (`11rem`); `duration` an integer with `s`, `m`,
   `h`, `d` or `w` (`-7d`).
 - `calendar` is a day `2026-06-29` (a Date), an instant `2026-06-29T07:02Z` or

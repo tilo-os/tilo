@@ -226,7 +226,7 @@ impl Checker<'_> {
                 types,
                 args,
                 ..
-            } => self.call(callee, types, args, e.span),
+            } => self.call(callee, types, args, e.span, exp),
             ExprKind::Try(inner) => self.try_expr(inner, e.span),
             ExprKind::Suggest(inner) => self.suggest_expr(inner, e.span),
             ExprKind::Root(t) => self.root_of(t, e.span),

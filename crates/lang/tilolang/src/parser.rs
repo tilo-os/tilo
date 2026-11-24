@@ -411,6 +411,30 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A case's name after `.`: an identifier, or a keyword the platform names a case by (the
+    /// icon `.type`). A declaration still cannot be named by a keyword.
+    fn variant_name(&mut self) -> PResult<Ident> {
+        match self.peek().clone() {
+            Tok::Ident(name) => {
+                let span = self.bump().span;
+                Ok(Ident {
+                    name,
+                    span,
+                    from_template_of: None,
+                })
+            }
+            Tok::Kw(k) => {
+                let span = self.bump().span;
+                Ok(Ident {
+                    name: k.to_owned(),
+                    span,
+                    from_template_of: None,
+                })
+            }
+            _ => self.unexpected("a variant name"),
+        }
+    }
+
     fn app_id(&mut self) -> PResult<String> {
         let mut out = self.ident("an app id such as `so.tilo.counter`")?.name;
         loop {
@@ -2410,9 +2434,9 @@ impl<'a> Parser<'a> {
                     "an action is invoked by calling it: write `act(args)`, without `do`",
                 );
             }
-            Tok::Dot if matches!(self.peek_at(1), Tok::Ident(_)) => {
+            Tok::Dot if matches!(self.peek_at(1), Tok::Ident(_) | Tok::Kw(_)) => {
                 self.bump();
-                let name = self.ident("a variant name")?;
+                let name = self.variant_name()?;
                 let args = if self.is(&Tok::LParen) {
                     self.bump();
                     let args = self.args()?;

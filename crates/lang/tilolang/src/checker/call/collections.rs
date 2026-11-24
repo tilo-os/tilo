@@ -24,7 +24,7 @@ impl Checker<'_> {
                     from_template_of: None,
                 },
             );
-            return self.value_method(r, name, args, span);
+            return self.value_method(r, name, args, span, None);
         }
         let m = name.name.as_str();
         if let (Ty::Map(t), "get" | "keys") = (&f.ty, m) {
@@ -83,7 +83,7 @@ impl Checker<'_> {
                     from_template_of: None,
                 },
             );
-            return self.value_method(r, name, args, span);
+            return self.value_method(r, name, args, span, None);
         }
         if self.st.ctx != Ctx::Action {
             let who = self.st.ctx.word();
@@ -369,7 +369,7 @@ impl Checker<'_> {
             span: name.span,
             from_template_of: None,
         };
-        let gone = self.higher_order(read, t, &filter, args, span);
+        let gone = self.higher_order(read, t, &filter, args, span, None);
         if gone.ty.is_error() {
             return Ex::error();
         }

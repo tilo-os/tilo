@@ -210,6 +210,12 @@ tilo_test_env::scenario! {
         assert!(codes(src).is_empty(), "{:?}", codes(src));
     }
 
+    phase a_case_literal_reads_the_element_type_of_its_list_and_map;
+    {
+        let src = "enum Currency {\n    usd\n    eur\n}\nfn f() -> List<Currency> {\n    let all: List<Currency> = [.usd, .eur]\n    all\n}\nfn g() -> List<Currency> {\n    let names: List<Text> = [\"a\"]\n    names.map(n -> .usd)\n}\n";
+        assert!(codes(src).is_empty(), "{:?}", codes(src));
+    }
+
     phase options_are_taken_apart_only_by_match;
     // USER REQUIREMENT (2026-10-20): "Remove the old `none` literal, `is_some`, `.value`/unwrap-style
     // access from the surface language".

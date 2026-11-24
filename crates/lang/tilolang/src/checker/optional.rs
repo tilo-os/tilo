@@ -294,7 +294,7 @@ impl Checker<'_> {
         let item = Ex::local(bound, inner.clone());
         let v = match args {
             None => self.field_read(item, name),
-            Some(args) => self.value_method(item, name, args, span),
+            Some(args) => self.value_method(item, name, args, span, None),
         };
         let stmts = self.pop_sink();
         if v.ty.is_error() {

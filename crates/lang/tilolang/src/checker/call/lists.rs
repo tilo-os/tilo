@@ -19,6 +19,7 @@ impl Checker<'_> {
         name: &ast::Ident,
         args: &[ast::Arg],
         span: Span,
+        want: Option<&Ty>,
     ) -> Ex {
         let m = name.name.as_str();
         // A count says how many items there are: a collection the store lists as it reads it is read to its end
@@ -86,7 +87,16 @@ impl Checker<'_> {
             self.bind_local(&place.name, fl.idx_local);
         }
         let (result, result_ty) = if m == "map" {
-            let v = self.expr(&body, None);
+            // The result's element type says what a case the lambda answers is (`.usd` in a
+            // `List<Currency>`): check the body against it when the call's type is known.
+            let wanted = match want {
+                Some(Ty::List(t)) => Some((**t).clone()),
+                _ => None,
+            };
+            let v = match &wanted {
+                Some(t) => self.expr_as(&body, t),
+                None => self.expr(&body, None),
+            };
             let out_ty = Ty::List(Box::new(v.ty.clone()));
             let out = self.fresh(out_ty.clone());
             self.emit(Stmt::Eval(Self::push_item(

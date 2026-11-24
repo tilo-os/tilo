@@ -37,6 +37,7 @@ impl Checker<'_> {
         types: &[ast::TypeExpr],
         args: &[ast::Arg],
         span: Span,
+        want: Option<&Ty>,
     ) -> Ex {
         if let ExprKind::Ident(name) = &callee.kind
             && name == "Map"
@@ -170,7 +171,7 @@ impl Checker<'_> {
                 {
                     return ex;
                 }
-                self.method(base, name, args, span)
+                self.method(base, name, args, span, want)
             }
             _ => {
                 self.err("E026", callee.span, "only a name or a method can be called");
@@ -1763,6 +1764,7 @@ impl Checker<'_> {
         name: &ast::Ident,
         args: &[ast::Arg],
         span: Span,
+        want: Option<&Ty>,
     ) -> Ex {
         // `Date.parse(text, near: now)` stands on the type, which is not a value, so it is read
         // before the receiver.
@@ -1791,10 +1793,10 @@ impl Checker<'_> {
                 return self.container_method(b, &key, &f, name, args, span);
             }
             let r = self.field_read(b, fname);
-            return self.value_method(r, name, args, span);
+            return self.value_method(r, name, args, span, want);
         }
         let r = self.expr(recv, None);
-        self.value_method(r, name, args, span)
+        self.value_method(r, name, args, span, want)
     }
 
     /// `act(args).made_from(r)` in an action or a program: the call of `act`, made from `r`.
@@ -3262,6 +3264,7 @@ impl Checker<'_> {
         name: &ast::Ident,
         args: &[ast::Arg],
         span: Span,
+        want: Option<&Ty>,
     ) -> Ex {
         let m = name.name.as_str();
         if let Some(ex) = self.text_math(r.clone(), name, args, span) {
@@ -3777,7 +3780,7 @@ impl Checker<'_> {
                 "map" | "flat_map" | "filter" | "any" | "all" | "find" | "count",
             ) => {
                 let elem = (**t).clone();
-                self.higher_order(r, &elem, name, args, span)
+                self.higher_order(r, &elem, name, args, span, want)
             }
             (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "first" | "last") if args.is_empty() => {
                 let elem = (**t).clone();

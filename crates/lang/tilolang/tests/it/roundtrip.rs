@@ -146,6 +146,12 @@ tilo_test_env::scenario! {
         assert_eq!(print_of(src), src);
     }
 
+    phase a_keyword_names_a_case_after_a_dot;
+    {
+        let src = "app t.x \"X\"\n\nview v() {\n    ui.Button(\"Text\", icon: .type)\n}\n";
+        assert_eq!(print_of(src), src);
+    }
+
     phase doc_comments_are_kept;
     {
         let out = print_of(&fixture("counter.tl"));
