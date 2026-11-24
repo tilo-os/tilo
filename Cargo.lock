@@ -21035,6 +21035,7 @@ dependencies = [
  "postcard",
  "rand_core 0.10.0",
  "runtime-collab",
+ "serde",
  "serde_json",
  "tilo-actions",
  "tilo-lock",

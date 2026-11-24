@@ -95,3 +95,16 @@ a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
 a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
 speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
 speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann
+
+# The speakers resource's actions
+so-tilo-device-speakers-apply-calibration = Behalten, was eine Messung ergeben hat
+so-tilo-device-speakers-cancel-calibration = Eine Messung abbrechen, ohne etwas davon zu behalten
+so-tilo-device-speakers-create-group = Eine Gruppe aus Lautsprechern deiner Geräte bilden
+so-tilo-device-speakers-delete-group = Eine Gruppe entfernen
+so-tilo-device-speakers-dismiss-calibration = Eine fertige Messung verwerfen, ohne sie zu behalten
+so-tilo-device-speakers-identify = Einen kurzen Ton auf einem Ausgang abspielen, damit man den Lautsprecher erkennt
+so-tilo-device-speakers-revert-calibration = Die Korrektur von vor der zuletzt behaltenen wiederherstellen
+so-tilo-device-speakers-start-calibration = Jeden Lautsprecher einer Gruppe mit den Mikrofonen deiner Geräte messen
+so-tilo-device-speakers-stop-using-as-output = Wieder auf den eigenen Ausgängen dieses Geräts abspielen
+so-tilo-device-speakers-update-group = Den Namen oder die Lautsprecher einer Gruppe ändern
+so-tilo-device-speakers-use-as-output = Alles, was dieses Gerät abspielt, auf einer Gruppe abspielen, wie auf einem gewählten Ausgang

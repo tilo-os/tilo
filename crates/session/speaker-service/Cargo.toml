@@ -18,6 +18,7 @@ rand_core.workspace = true
 runtime-collab = { path = "../../core/runtime-collab" }
 tilo-actions = { path = "../../core/actions" }
 tilo-resource = { path = "../../core/tilo-resource" }
+serde.workspace = true
 serde_json.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-network-actor = { path = "../../desktop/network-actor" }

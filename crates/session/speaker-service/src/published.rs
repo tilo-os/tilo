@@ -10,10 +10,9 @@ use serde::{Deserialize, Serialize};
 use tilo_network_actor::fabric::link::FabricLink;
 
 use runtime_collab::{
-    CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneRun,
-    CalibrationMicrophoneState, CalibrationPhaseInfo, MicrophoneStatus, SpeakerCommand,
-    SpeakerDeviceInfo, SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec, SpeakerMemberStatus,
-    SpeakerPlaybackInfo, SpeakerRoleSpec, SpeakerSnapshot,
+    CalibrationInfo, CalibrationMemberInfo, CalibrationMicrophoneRun, CalibrationPhaseInfo,
+    MicrophoneStatus, SpeakerCommand, SpeakerDeviceInfo, SpeakerGroupInfo, SpeakerMemberInfo,
+    SpeakerMemberSpec, SpeakerMemberStatus, SpeakerPlaybackInfo, SpeakerRoleSpec, SpeakerSnapshot,
 };
 
 /// One endpoint a device plays through or records from.
@@ -49,7 +48,9 @@ pub struct SpeakerDevice {
 }
 
 /// Where a speaker stands in a group: a named channel, or a point in the room around the person.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(tag = "role", rename_all = "kebab-case")]
 pub enum SpeakerRole {
     #[default]
@@ -60,11 +61,17 @@ pub enum SpeakerRole {
     SurroundLeft,
     SurroundRight,
     /// Millimetres from the listening position: `x` right, `y` ahead, `z` up.
-    Room { x_mm: i32, y_mm: i32, z_mm: i32 },
+    Room {
+        x_mm: i32,
+        y_mm: i32,
+        z_mm: i32,
+    },
 }
 
 /// Where one member of a group stands right now.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum SpeakerMemberState {
     /// Consented (or the leader's own output) and online.
@@ -83,7 +90,9 @@ pub enum SpeakerMemberState {
 }
 
 /// A member's calibration correction, in display units.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default)]
 pub struct SpeakerTrim {
     pub delay_ms: f64,
@@ -115,7 +124,9 @@ pub enum SpeakerPlayback {
     /// A member does not have the playing device's clock yet.
     SyncingClocks,
     /// A member could not get the playing device's clock in time.
-    ClockFailed { reason: String },
+    ClockFailed {
+        reason: String,
+    },
 }
 
 impl Default for SpeakerPlayback {
@@ -125,7 +136,9 @@ impl Default for SpeakerPlayback {
 }
 
 /// Whether one device's microphone can listen while a group is calibrated.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum SpeakerMicrophoneState {
     /// This device, or a device that already allowed it.
@@ -141,7 +154,9 @@ pub enum SpeakerMicrophoneState {
 }
 
 /// One device's microphone, as a candidate to calibrate a group with.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default)]
 pub struct SpeakerMicrophone {
     pub device: String,
@@ -187,7 +202,9 @@ pub enum CalibrationMemberState {
         output_latency_ms: Option<f64>,
         acoustic_ms: Option<f64>,
     },
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
 }
 
 impl Default for CalibrationMemberState {
@@ -217,10 +234,15 @@ pub enum CalibrationMicrophoneState {
     Listening,
     /// Heard `heard` speakers; `rejected` of its readings disagreed with the other microphones
     /// and were set aside.
-    Used { heard: i32, rejected: i32 },
+    Used {
+        heard: i32,
+        rejected: i32,
+    },
     /// Heard none of the speakers: too far away.
     NotHeard,
-    Failed { reason: String },
+    Failed {
+        reason: String,
+    },
 }
 
 impl Default for CalibrationMicrophoneState {
@@ -241,7 +263,9 @@ pub struct CalibrationMicrophone {
 }
 
 /// Where a group's calibration run stands.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum CalibrationPhase {
     /// Remote microphones were asked and have not all answered.
@@ -364,11 +388,9 @@ fn playback(playback: &SpeakerPlaybackInfo) -> SpeakerPlayback {
         SpeakerPlaybackInfo::Playing => SpeakerPlayback::Playing,
         SpeakerPlaybackInfo::Connecting => SpeakerPlayback::Connecting,
         SpeakerPlaybackInfo::SyncingClocks => SpeakerPlayback::SyncingClocks,
-        SpeakerPlaybackInfo::ClockFailed { reason } => {
-            SpeakerPlayback::ClockFailed {
-                reason: reason.clone(),
-            }
-        }
+        SpeakerPlaybackInfo::ClockFailed { reason } => SpeakerPlayback::ClockFailed {
+            reason: reason.clone(),
+        },
     }
 }
 
@@ -416,11 +438,11 @@ const fn phase(phase: CalibrationPhaseInfo) -> CalibrationPhase {
     }
 }
 
-fn member_progress(state: &CalibrationMemberState) -> CalibrationMemberState {
+fn member_progress(state: &runtime_collab::CalibrationMemberState) -> CalibrationMemberState {
     match state {
-        CalibrationMemberState::Waiting => CalibrationMemberState::Waiting,
-        CalibrationMemberState::Measuring => CalibrationMemberState::Measuring,
-        CalibrationMemberState::Measured {
+        runtime_collab::CalibrationMemberState::Waiting => CalibrationMemberState::Waiting,
+        runtime_collab::CalibrationMemberState::Measuring => CalibrationMemberState::Measuring,
+        runtime_collab::CalibrationMemberState::Measured {
             delay_ms,
             level_db,
             output_latency_ms,
@@ -431,9 +453,11 @@ fn member_progress(state: &CalibrationMemberState) -> CalibrationMemberState {
             output_latency_ms: *output_latency_ms,
             acoustic_ms: *acoustic_ms,
         },
-        CalibrationMemberState::Failed { reason } => CalibrationMemberState::Failed {
-            reason: reason.clone(),
-        },
+        runtime_collab::CalibrationMemberState::Failed { reason } => {
+            CalibrationMemberState::Failed {
+                reason: reason.clone(),
+            }
+        }
     }
 }
 
@@ -441,21 +465,34 @@ fn heard(count: u8) -> i32 {
     i32::from(count)
 }
 
-fn microphone_use(state: &CalibrationMicrophoneState) -> CalibrationMicrophoneState {
+fn microphone_use(
+    state: &runtime_collab::CalibrationMicrophoneState,
+) -> CalibrationMicrophoneState {
     match state {
-        CalibrationMicrophoneState::AwaitingConsent => {
+        runtime_collab::CalibrationMicrophoneState::AwaitingConsent => {
             CalibrationMicrophoneState::AwaitingConsent
         }
-        CalibrationMicrophoneState::Declined => CalibrationMicrophoneState::Declined,
-        CalibrationMicrophoneState::Listening => CalibrationMicrophoneState::Listening,
-        CalibrationMicrophoneState::Used { heard, rejected } => CalibrationMicrophoneState::Used {
-            heard: heard(*heard),
+        runtime_collab::CalibrationMicrophoneState::Declined => {
+            CalibrationMicrophoneState::Declined
+        }
+        runtime_collab::CalibrationMicrophoneState::Listening => {
+            CalibrationMicrophoneState::Listening
+        }
+        runtime_collab::CalibrationMicrophoneState::Used {
+            heard: speakers,
+            rejected,
+        } => CalibrationMicrophoneState::Used {
+            heard: heard(*speakers),
             rejected: heard(*rejected),
         },
-        CalibrationMicrophoneState::NotHeard => CalibrationMicrophoneState::NotHeard,
-        CalibrationMicrophoneState::Failed { reason } => CalibrationMicrophoneState::Failed {
-            reason: reason.clone(),
-        },
+        runtime_collab::CalibrationMicrophoneState::NotHeard => {
+            CalibrationMicrophoneState::NotHeard
+        }
+        runtime_collab::CalibrationMicrophoneState::Failed { reason } => {
+            CalibrationMicrophoneState::Failed {
+                reason: reason.clone(),
+            }
+        }
     }
 }
 
@@ -483,11 +520,7 @@ fn calibration(calibration: &CalibrationInfo) -> SpeakerCalibration {
         group: calibration.group.clone(),
         phase: phase(calibration.phase),
         members: calibration.members.iter().map(member_measured).collect(),
-        microphones: calibration
-            .microphones
-            .iter()
-            .map(microphone_run)
-            .collect(),
+        microphones: calibration.microphones.iter().map(microphone_run).collect(),
         listening_label: calibration.listening_label.clone().unwrap_or_default(),
         message: calibration.message.clone().unwrap_or_default(),
     }
@@ -495,7 +528,9 @@ fn calibration(calibration: &CalibrationInfo) -> SpeakerCalibration {
 
 /// One speaker of a group as an action names it: the device, which of its outputs, and where it
 /// stands.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
 #[serde(default)]
 pub struct SpeakerMemberChoice {
     /// The device's fabric id, as the reading lists it.
@@ -563,7 +598,7 @@ pub enum SpeakerEffect {
     /// Remove a group
     #[effect(kind = "outside")]
     #[effect(own_device)]
-    #[effect(risk = tilo_actions::RiskLevel::Destructive)]
+    #[effect(destructive)]
     DeleteGroup {
         /// The group's id, as the reading lists it
         #[param("The group's id")]
