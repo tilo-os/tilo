@@ -109,11 +109,15 @@ fn a_widgets_own_nodes_are_elements_a_press_acts_on() {
             "{html}"
         );
     }
+    // A row is numbered by what it acts on, so its number holds while rows come and go.
     let id = numbers(&html)
         .into_iter()
-        .find(|&id| page.path(id).is_some_and(|path| path.ends_with("#1")))
+        .find(|&id| {
+            page.path(id)
+                .is_some_and(|path| path.ends_with("#note-Eggs"))
+        })
         .expect("the second row is numbered");
-    assert_eq!(page.path(id), Some("Root[0]/List[0]#1"));
+    assert_eq!(page.path(id), Some("Root[0]/List[0]#note-Eggs"));
 }
 
 /// What a widget only paints is its picture, and what acts in it stands over the picture where
@@ -269,6 +273,22 @@ fn shown(frame: &mut crate::headless::FrameHarness) -> Composition {
     composition
 }
 
+/// The opening tag of the first element of `html` whose tag holds `mark`, and what follows it.
+fn element_with<'a>(html: &'a str, mark: &str) -> &'a str {
+    let at = html
+        .find(mark)
+        .unwrap_or_else(|| panic!("no element with {mark}: {html}"));
+    &html[html[..at].rfind('<').expect("a tag")..]
+}
+
+/// The number the page gave the element whose tag holds `mark`.
+fn number_of(html: &str, mark: &str) -> u32 {
+    numbers(element_with(html, mark))
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("the element with {mark} is numbered: {html}"))
+}
+
 #[test]
 fn an_iso_date_time_or_span_is_a_time() {
     for time in [
@@ -309,14 +329,6 @@ fn a_picked_date_is_a_time_on_the_page() {
     );
 }
 
-/// The opening tag of the first element of `html` whose tag holds `mark`, and what follows it.
-fn element_with<'a>(html: &'a str, mark: &str) -> &'a str {
-    let at = html
-        .find(mark)
-        .unwrap_or_else(|| panic!("no element with {mark}: {html}"));
-    &html[html[..at].rfind('<').expect("a tag")..]
-}
-
 /// A link is the browser's own link to its address, saying its words.
 #[test]
 fn a_link_is_a_link_to_its_address() {
@@ -334,6 +346,115 @@ fn a_link_is_a_link_to_its_address() {
     assert!(
         link.contains(">Read the docs</a>"),
         "its words: {link:.300}"
+    );
+}
+
+/// What a person does in a field on the page is the field's own: the keyboard moving onto it,
+/// the words typed into it and the caret moved in them come back as its actions, and the page
+/// follows each.
+#[test]
+fn a_fields_focus_words_and_caret_come_from_the_page() {
+    let mut frame = framed(Box::new(crate::widget::TextInput::local()), (400, 80));
+    let mut page = Page::new();
+    let html = page.render(&shown(&mut frame));
+    assert!(
+        page.patch(&shown(&mut frame)).is_empty(),
+        "an unchanged frame sends nothing"
+    );
+    let id = number_of(&html, "data-a=\"value\"");
+    let path = page.path(id).expect("the field's widget").to_owned();
+
+    frame
+        .perform_semantic_named(&path, None, &crate::a11y::Action::Focus)
+        .expect("the field takes the keyboard");
+    let html = page.render(&shown(&mut frame));
+    let body = &html[..html.find('>').expect("the body's tag")];
+    assert!(
+        body.contains(&format!("data-focus=\"{id}\"")),
+        "the page puts its caret where the window's is: {body}"
+    );
+
+    frame
+        .perform_semantic_named(
+            &path,
+            None,
+            &crate::a11y::Action::SetValue("Buy oat milk".to_owned()),
+        )
+        .expect("the words are set");
+    let patches = page.patch(&shown(&mut frame));
+    assert!(
+        patches
+            .iter()
+            .any(|patch| patch.html.contains("value=\"Buy oat milk\"")),
+        "the field's new words come back: {patches:?}"
+    );
+
+    frame
+        .perform_semantic_named(
+            &path,
+            None,
+            &crate::a11y::Action::SetSelection {
+                anchor: 4,
+                focus: 7,
+            },
+        )
+        .expect("the caret is moved");
+    assert_eq!(
+        frame
+            .widget_mut::<crate::widget::TextInput>()
+            .expect("the field")
+            .selection_anchor_focus_public(),
+        Some((4, 7)),
+        "\"oat\" chosen on the page is chosen in the field"
+    );
+}
+
+/// A dark theme is a dark page: the browser draws its own parts dark, and the words and grounds
+/// take the theme's colours and its type's spacing.
+#[test]
+fn a_dark_theme_is_a_dark_page() {
+    let light = theme_css(&crate::Theme::light());
+    let dark = theme_css(&crate::Theme::dark());
+    assert!(light.contains("color-scheme:light"), "{light}");
+    assert!(dark.contains("color-scheme:dark"), "{dark}");
+    let text = |css: &str| {
+        css.split("--tilo-text:")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .expect("the words' colour")
+            .to_owned()
+    };
+    assert_ne!(
+        text(&light),
+        text(&dark),
+        "the words are in each theme's ink"
+    );
+    for role in ["title", "heading", "body", "label", "caption", "code"] {
+        assert!(
+            dark.contains(&format!("--tilo-{role}-tracking:")),
+            "the {role} type's spacing: {dark}"
+        );
+    }
+    let html = document("Notes", &crate::Theme::dark(), "", "");
+    assert!(html.contains(&dark), "the page carries its theme");
+}
+
+/// A window well in a real frame is where the page's host shows that place's window.
+#[test]
+fn a_window_well_holds_what_its_host_shows_for_the_window() {
+    let mut frame = framed(
+        Box::new(crate::widget::WindowWell::new("tab-7")),
+        (640, 400),
+    );
+    let mut page = Page::new();
+    page.wells.insert(
+        "tab-7".to_owned(),
+        "<a href=\"/w/ws/notes\">Notes</a>".to_owned(),
+    );
+    let html = page.render(&shown(&mut frame));
+    assert!(
+        html.contains("data-well=\"tab-7\"><a href=\"/w/ws/notes\">Notes</a>"),
+        "the host's window stands in its well: {html}"
     );
 }
 
