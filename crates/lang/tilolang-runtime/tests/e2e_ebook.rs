@@ -1149,6 +1149,99 @@ action open_window(resource: host.Resource) {
             );
         }
 
+        phase a_books_details_are_edited_through_its_page;
+        {
+            let books = Books::new();
+            let book = books.open();
+            assert_eq!(books.said(&book, "title"), "The Tide Glass");
+            let mut window = books.book_window(&book);
+            // The page's own control opens the form, filled with what the book says now.
+            let details = of_kind(window.tree(), "ui.Button")
+                .into_iter()
+                .find(|button| text_prop(button, "label") == "Book details")
+                .expect("the book's page offers its details")
+                .key
+                .clone();
+            window.fire(&details, "press").unwrap();
+            window.poll_patches().unwrap();
+            let dialog = of_kind(window.tree(), "ui.ModalDialog")[0];
+            assert_eq!(text_prop(dialog, "title"), "Book details");
+            assert!(
+                matches!(
+                    dialog.props.get("open"),
+                    Some(Value::Bool(true)) | Some(Value::Int(1))
+                ),
+                "the form stands open: {:?}",
+                dialog.props
+            );
+            let title_field = of_kind(window.tree(), "ui.TextInput")[0].key.clone();
+            window
+                .edit(&title_field, &Value::text("The Tide Glass, corrected"))
+                .unwrap();
+            // A book without a title is not saved: the form's Save waits for one.
+            window.edit(&title_field, &Value::text("   ")).unwrap();
+            window.poll_patches().unwrap();
+            let dialog = of_kind(window.tree(), "ui.ModalDialog")[0];
+            assert!(
+                matches!(
+                    dialog.props.get("primary_enabled"),
+                    Some(Value::Bool(false)) | Some(Value::Int(0))
+                ),
+                "a book without a title cannot be saved: {:?}",
+                dialog.props
+            );
+            window
+                .edit(&title_field, &Value::text("The Tide Glass, corrected"))
+                .unwrap();
+            window.poll_patches().unwrap();
+            let dialog = of_kind(window.tree(), "ui.ModalDialog")[0].key.clone();
+            window.fire(&dialog, "act_primary").unwrap();
+            window.poll_patches().unwrap();
+            assert_eq!(
+                books.said(&book, "title"),
+                "The Tide Glass, corrected",
+                "the page's Save writes the title the person typed"
+            );
+            let header = of_kind(window.tree(), "ui.NavShell")[0];
+            assert_eq!(
+                text_prop(header, "title"),
+                "The Tide Glass, corrected",
+                "the page is called what the book is called now"
+            );
+            // The rest of the book's facts are typed on it too.
+            books.call(
+                "set_author",
+                books.args("set_author", &[("b", Value::resource(&book)), ("author", Value::text("Ada Ferrer"))]),
+            );
+            books.call(
+                "set_subject",
+                books.args("set_subject", &[("b", Value::resource(&book)), ("subject", Value::text("Fable"))]),
+            );
+            books.call(
+                "set_language",
+                books.args("set_language", &[("b", Value::resource(&book)), ("language", Value::text("de"))]),
+            );
+            assert_eq!(books.said(&book, "author"), "Ada Ferrer");
+            assert_eq!(books.said(&book, "subject"), "Fable");
+            assert_eq!(books.said(&book, "language"), "de");
+            // A cover is a picture the person chooses, and taken off again.
+            let picture = Value::file(books.device.keeping(
+                "cover.png",
+                "image/png",
+                &[0x89, b'P', b'N', b'G'],
+            ));
+            books.call(
+                "set_cover",
+                books.args("set_cover", &[("b", Value::resource(&book)), ("picture", picture)]),
+            );
+            assert_ne!(books.said(&book, "cover"), "", "the picture stands on the book");
+            books.call(
+                "clear_cover",
+                books.args("clear_cover", &[("b", Value::resource(&book))]),
+            );
+            assert_eq!(books.said(&book, "cover"), "");
+        }
+
         phase a_note_is_edited_and_a_passage_is_copied;
         {
             let books = Books::new();

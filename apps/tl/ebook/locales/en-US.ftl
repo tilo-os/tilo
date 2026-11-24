@@ -294,6 +294,42 @@ d-mjbtpsjr = Remove book
     .doc = Takes a book off the shelf, its chapters and marks with it.
     .did = removed a book
 
+d-sf2gg5er = Set title
+    .doc = Gives `b` the title a person reads it by.
+    .did = renamed a book
+    .w-a-book-has-a-title = A book has a title
+
+d-sf2gg5er-title = Title
+
+d-xuk6dlhn = Set author
+    .doc = Gives `b` its author, or leaves it without one.
+    .did = changed a book's author
+
+d-xuk6dlhn-author = Author
+
+d-bucrle2g = Set subject
+    .doc = Gives `b` the subject line its card and its shelf filters say.
+    .did = changed a book's subject
+
+d-bucrle2g-subject = Subject
+
+d-wiyccdh7 = Set language
+    .doc = Sets the language `b` is set in, for its hyphenation.
+    .did = changed a book's language
+    .w-a-book-is-set-in-a = A book is set in a language
+
+d-wiyccdh7-language = Language
+
+d-td7khtuv = Set cover
+    .doc = Puts `picture` on `b` as its cover.
+    .did = changed a book's cover
+
+d-td7khtuv-picture = Picture
+
+d-gbskw33x = Clear cover
+    .doc = Takes a cover off `b`, so its card draws the book's own art.
+    .did = took a book's cover off
+
 d-xiofub57 = Record at
     .doc = Where the person reading is in `b`: their own record, changed in place so its history says where they read and when.
 
@@ -512,6 +548,10 @@ d-ob6iyicm = Clear found
 
 d-oxd7kaud = Watch folder~present
 
+d-rrm3aih4 = Set title~present
+
+d-qxsrdlbw = Set language~present
+
 d-w4cgekcm = Show passage~present
 
 d-om3e7iv4 = Set shelf sort~present
@@ -568,6 +608,7 @@ d-jnthvtdd = Found books
 d-tntic6tx = Book page
     .w-contents = Contents
     .w-justified = Justified
+    .w-book-details = Book details
     .w-reading-settings = Reading settings
     .w-bookmarks = Bookmarks
     .w-chapter = Chapter { $value }
@@ -601,6 +642,12 @@ d-tntic6tx = Book page
     .w-cancel = Cancel
     .w-comment-on-the-highlight = Comment on the highlight
     .w-send-comment = Send comment
+    .w-title = Title
+    .w-author = Author
+    .w-subject = Subject
+    .w-language-as-en-or-de = Language, as `en` or `de`
+    .w-choose-a-cover = Choose a cover
+    .w-take-the-cover-off = Take the cover off
 
 d-uxr7ymrf = Chapter page
     .w-read-in = Read in { $title }

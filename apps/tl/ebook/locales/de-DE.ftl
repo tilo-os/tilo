@@ -537,6 +537,13 @@ d-tntic6tx = Buchseite
     .w-edit-the-note = Die Notiz bearbeiten
     .w-finished = Beendet
     .w-save = Speichern
+    .w-book-details = Buchdetails
+    .w-title = Titel
+    .w-author = Autor
+    .w-subject = Thema
+    .w-language-as-en-or-de = Sprache, als `en` oder `de`
+    .w-choose-a-cover = Cover wählen
+    .w-take-the-cover-off = Cover abnehmen
 
 d-uxr7ymrf = Kapitelseite
     .w-read-in = In { $title } lesen
@@ -611,3 +618,55 @@ d-t53zqwaz-text = Text
 d-om3e7iv4 = Regalreihenfolge setzen~present
 
 d-7n672gfq = Notiztext bearbeiten~present
+
+d-sf2gg5er = Titel setzen
+
+d-sf2gg5er-title = Titel
+
+d-xuk6dlhn = Autor setzen
+
+d-xuk6dlhn-author = Autor
+
+d-bucrle2g = Thema setzen
+
+d-bucrle2g-subject = Thema
+
+d-wiyccdh7 = Sprache setzen
+
+d-wiyccdh7-language = Sprache
+
+d-td7khtuv = Cover setzen
+
+d-td7khtuv-picture = Bild
+
+d-gbskw33x = Cover entfernen
+
+d-rrm3aih4 = Titel setzen
+
+d-qxsrdlbw = Sprache setzen
+
+d-sf2gg5er = Gibt `b` den Titel, unter dem eine Person es liest.
+    .doc = Gibt `b` den Titel, unter dem eine Person es liest.
+    .did = benannte ein Buch um
+    .w-a-book-has-a-title = Ein Buch hat einen Titel
+
+d-xuk6dlhn = Gibt `b` seinen Autor, oder lässt es ohne einen.
+    .doc = Gibt `b` seinen Autor, oder lässt es ohne einen.
+    .did = änderte den Autor eines Buchs
+
+d-bucrle2g = Gibt `b` die Themenzeile, die seine Karte und seine Regalfilter sagen.
+    .doc = Gibt `b` die Themenzeile, die seine Karte und seine Regalfilter sagen.
+    .did = änderte das Thema eines Buchs
+
+d-wiyccdh7 = Setzt die Sprache, in der `b` gesetzt ist, für seine Silbentrennung.
+    .doc = Setzt die Sprache, in der `b` gesetzt ist, für seine Silbentrennung.
+    .did = änderte die Sprache eines Buchs
+    .w-a-book-is-set-in-a = Ein Buch ist in einer Sprache gesetzt
+
+d-td7khtuv = Legt `picture` als Cover auf `b`.
+    .doc = Legt `picture` als Cover auf `b`.
+    .did = änderte das Cover eines Buchs
+
+d-gbskw33x = Nimmt ein Cover von `b`, damit seine Karte die eigene Kunst des Buchs zeichnet.
+    .doc = Nimmt ein Cover von `b`, damit seine Karte die eigene Kunst des Buchs zeichnet.
+    .did = nahm das Cover eines Buchs ab

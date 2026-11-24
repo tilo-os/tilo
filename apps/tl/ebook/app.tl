@@ -284,6 +284,38 @@ destructive action remove_book(b: Book) (did: "removed a book") {
     library.books.remove(b)
 }
 
+/// Gives `b` the title a person reads it by.
+action set_title(b: Book, title: Text) (did: "renamed a book") {
+    require title.trim() != "" "A book has a title"
+    b.title = title.trim()
+}
+
+/// Gives `b` its author, or leaves it without one.
+action set_author(b: Book, author: Text) (did: "changed a book's author") {
+    b.author = author.trim()
+}
+
+/// Gives `b` the subject line its card and its shelf filters say.
+action set_subject(b: Book, subject: Text) (did: "changed a book's subject") {
+    b.subject = subject.trim()
+}
+
+/// Sets the language `b` is set in, for its hyphenation.
+action set_language(b: Book, language: Text) (did: "changed a book's language") {
+    require language.trim() != "" "A book is set in a language"
+    b.language = language.trim()
+}
+
+/// Puts `picture` on `b` as its cover.
+action set_cover(b: Book, picture: File) (did: "changed a book's cover") {
+    b.cover = picture.url
+}
+
+/// Takes a cover off `b`, so its card draws the book's own art.
+action clear_cover(b: Book) (did: "took a book's cover off") {
+    b.cover = ""
+}
+
 /// Where the person reading is in `b`: their own record, changed in place so its history says
 /// where they read and when.
 action record_at(b: Book, who: Actor, chapter: Int, block: Int, page: Int, place: Float) uses time {
@@ -1111,6 +1143,12 @@ view book_page(b: Book) {
     state note_text: RichText = RichText("")
     state commenting: Option<Mark> = .none
     state comment_text: RichText = RichText("")
+    // What the book's own details are edited to before they are saved.
+    state details: Bool = false
+    state edit_title: Text = b.title
+    state edit_author: Text = b.author
+    state edit_subject: Text = b.subject
+    state edit_language: Text = b.language
     let lib = root Library
     let open_chapter = b.chapters.at(chapter)
     let chapter_marks = b.marks.filter(m -> m.chapter == chapter)
@@ -1120,6 +1158,9 @@ view book_page(b: Book) {
         actions: {
             ui.Button("Justified", icon: .align_justify, icon_only: true, toggled: lib.justified) {
                 on press: set_justified(lib, not lib.justified)
+            }
+            ui.Button("Book details", icon: .pencil, icon_only: true) {
+                on press: set(details, true)
             }
             ui.Button("Reading settings", icon: .settings, icon_only: true) {
                 on press: open(lib)
@@ -1332,6 +1373,39 @@ view book_page(b: Book) {
                 }
             }
         }
+    }
+    ui.ModalDialog(
+        title: "Book details",
+        open: details,
+        primary: "Save",
+        secondary: "Cancel",
+        primary_enabled: edit_title.trim() != "",
+    ) {
+        body: {
+            stack(gap: .related) {
+                ui.TextInput(bind: edit_title, placeholder: "Title", autofocus: true)
+                ui.TextInput(bind: edit_author, placeholder: "Author")
+                ui.TextInput(bind: edit_subject, placeholder: "Subject")
+                ui.TextInput(bind: edit_language, placeholder: "Language, as `en` or `de`")
+                row(gap: .related, align: .center) {
+                    ui.Button("Choose a cover", icon: .image) {
+                        on press: file.choose(set_cover(b), accept: ["image/*"])
+                    }
+                    if b.cover != "" {
+                        ui.Button("Take the cover off", icon: .trash_2) {
+                            on press: clear_cover(b)
+                        }
+                    }
+                }
+            }
+        }
+        on act_primary: set_title(b, edit_title)
+            .then(set_author(b, edit_author))
+            .then(set_subject(b, edit_subject))
+            .then(set_language(b, edit_language))
+            .then(set(details, false))
+        on act_secondary: set(details, false)
+        on dismiss: set(details, false)
     }
 }
 
