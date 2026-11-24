@@ -1640,6 +1640,42 @@ tilo_test_env::scenario! {
             assert!(asked.iter().all(|request| request.target.address.action != "open"));
         });
     }
+
+    phase an_address_of_an_installed_apps_type_starts_it_and_reaches_its_resource;
+    {
+        // A cold link names an app the device never ran by what it publishes: its type. The
+        // address is resolved by the app's kind, which starts it without a window and reaches
+        // what the kind names, as a path that names the app does.
+        let host = Notes::new(false);
+        run(async {
+            let server = agent(&host);
+            let (text, failed) = tool(&server, "tilo_ls", json!({"path": "notes.page"})).await;
+            assert!(!failed, "{text}");
+            assert!(text.contains("Todo"), "the pages of the kind: {text}");
+            let (text, failed) = tool(
+                &server,
+                "tilo_do",
+                json!({"path": "notes.page/Todo#rename", "args": {"title": "Errands"}}),
+            )
+            .await;
+            assert!(!failed, "{text}");
+            let asked = host.invoked.lock().unwrap().clone();
+            assert_eq!(
+                asked
+                    .iter()
+                    .map(|request| request.target.address.action.as_str())
+                    .collect::<Vec<_>>(),
+                ["start", "rename"],
+                "the app is started without a window, then the action runs on its resource"
+            );
+            assert!(
+                asked
+                    .iter()
+                    .all(|request| request.target.address.action != "open"),
+                "reading a kind opens no window of the person's"
+            );
+        });
+    }
 }
 
 tilo_test_env::scenario! {

@@ -1690,16 +1690,29 @@ pub fn app_names(ids: &[String]) -> Vec<String> {
 impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     /// The app a kind names (`tasks.tracker` is the Tasks app's tracker), as
     /// the app id and the provider serving it: a kind begins with the app it
-    /// belongs to. `None` when the name is no kind or its app does not run.
+    /// belongs to. `None` when the name is no kind, or its app is not here or
+    /// is not the agent's to open.
+    ///
+    /// An app that is installed but not running is started without a window,
+    /// as an action on it is: a cold link addresses a resource of the app the
+    /// device never showed, and the app that publishes it serves its kind once
+    /// it runs.
     pub async fn app_of_type(&self, name: &str) -> Option<(String, String, bool)> {
         let app = type_address(name)?;
-        let AppRef::Running {
-            app_id,
-            provider,
-            pinned,
-        } = self.app_ref(app).await.ok()?
-        else {
-            return None;
+        let (app_id, provider, pinned) = match self.app_ref(app).await.ok()? {
+            AppRef::Running {
+                app_id,
+                provider,
+                pinned,
+            } => (app_id, provider, pinned),
+            AppRef::Installed {
+                app_id,
+                opens: true,
+            } => {
+                let provider = self.started_provider(&app_id, None).await.ok()?;
+                (app_id, provider, false)
+            }
+            AppRef::Installed { opens: false, .. } => return None,
         };
         if pinned {
             return Some((app_id, provider, pinned));
