@@ -1,8 +1,8 @@
 # Discord auf Deutsch. Keys are the declarations' stable ids (app.ids); the source's words are written from the package's sources.
 
-d-so-tilo-discord-preview = Discord
+d-so-tilo-discord = Discord
 
-d-so-tilo-discord-preview-keywords = discord, chat, server, kanäle
+d-so-tilo-discord-keywords = discord, chat, server, kanäle
 
 d-dxitdnte = Discord
     .doc = Ein verbundenes Discord-Konto: der Server, den es überbrückt, was die Bridge von beiden Seiten kennt, und wer hier sein Discord-Konto verknüpft hat.

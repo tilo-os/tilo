@@ -1565,12 +1565,6 @@ readers = [
 ]
 
 [[cargo]]
-package = "discord"
-# The fixture writes the legacy record the migration test reads back.
-inputs = ["crates/lang/tilolang-tilo/tests/legacy/rust_discord.hex"]
-readers = ["apps/discord/tests/native_discord_fixture.rs"]
-
-[[cargo]]
 package = "tilo-collab-types"
 # Every app's committed surface must parse as a receiver reads it.
 inputs = ["apps/*/surface.toml"]

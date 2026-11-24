@@ -143,8 +143,6 @@ members = [
     "crates/ui/ui-macros",
     "crates/sdk/view-macros",
     "crates/sdk/tilo-rich-text",
-    "apps/discord",
-    "crates/engines/discord-bridge",
     "crates/engines/discord-wire",
     "crates/engines/discord-worker",
     "crates/engines/tilo-page-raster",

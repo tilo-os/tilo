@@ -94,7 +94,7 @@ function fakeWorkspace({ accounts = [account()], messages = {}, webAnswer = null
   };
   const ws = {
     async read(path) {
-      if (path === "so.tilo.discord.preview/accounts") return { accounts: held() };
+      if (path === "so.tilo.discord/accounts") return { accounts: held() };
       const fields = reads.get(path);
       if (!fields) throw new Error(`no message at ${path}`);
       return { fields };
@@ -208,7 +208,7 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   expect(relay.args.avatar).toBe("https://cdn.discordapp.com/avatars/3001/abc.png?size=128");
   expect(
     workspace.done.some(
-      (call) => call.address === "so.tilo.discord.preview#map" && call.args.discord === "777",
+      (call) => call.address === "so.tilo.discord#map" && call.args.discord === "777",
     ),
   ).toBe(true);
 
@@ -218,7 +218,7 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   workspace.message(message, messageFields({ body: "hello" }));
   workspace.say(change({ item: "messages/m1" }));
   await until(() => workspace.requests.length >= 1, "the send");
-  const carried = workspace.done.find((call) => call.address === "so.tilo.discord.preview#send_there");
+  const carried = workspace.done.find((call) => call.address === "so.tilo.discord#send_there");
   expect(carried?.args.op).toMatchObject({ op: "send", channel: "456", content: "hello" });
   const send = workspace.requests[0];
   expect(send.url).toBe("https://discord.com/api/v10/webhooks/555?wait=true");
@@ -228,12 +228,12 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   expect(sent.avatar_url).toBe("https://cdn.discordapp.com/avatars/3001/abc.png?size=128");
   expect(sent.content).toBe("hello");
   await until(
-    () => workspace.done.some((call) => call.address === "so.tilo.discord.preview#map" &&
+    () => workspace.done.some((call) => call.address === "so.tilo.discord#map" &&
       call.args.discord === "9001"),
     "the mapping",
   );
   const mapped = workspace.done.find(
-    (call) => call.address === "so.tilo.discord.preview#map" && call.args.discord === "9001",
+    (call) => call.address === "so.tilo.discord#map" && call.args.discord === "9001",
   );
   expect(mapped.args.tilo).toBe(`${CONVERSATION}/messages/m1`);
   expect(mapped.args.kind).toBe("message");
@@ -243,7 +243,7 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   workspace.say(change({ item: "messages/m1", time: 2000 }));
   await until(() => workspace.requests.length >= 2, "the edit");
   expect(
-    workspace.done.some((call) => call.address === "so.tilo.discord.preview#edit_there"),
+    workspace.done.some((call) => call.address === "so.tilo.discord#edit_there"),
   ).toBe(true);
   const edit = workspace.requests[1];
   expect(edit.url).toBe("https://discord.com/api/v10/webhooks/555/messages/9001");
@@ -255,7 +255,7 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   workspace.say(change({ item: "messages/m1", time: 3000 }));
   await until(() => workspace.requests.length >= 3, "the reaction");
   expect(
-    workspace.done.some((call) => call.address === "so.tilo.discord.preview#react_there"),
+    workspace.done.some((call) => call.address === "so.tilo.discord#react_there"),
   ).toBe(true);
   const reacted = workspace.requests[2];
   expect(reacted.method).toBe("PUT");
@@ -272,7 +272,7 @@ test("a message goes each way, and an edit, a deletion and a reaction follow", a
   expect(deleted.url).toBe("https://discord.com/api/v10/webhooks/555/messages/9001");
   expect(
     workspace.done.some(
-      (call) => call.address === "so.tilo.discord.preview#unmap" &&
+      (call) => call.address === "so.tilo.discord#unmap" &&
         call.args.tilo === `${CONVERSATION}/messages/m1`,
     ),
   ).toBe(true);
@@ -312,7 +312,7 @@ test("a generic change sends a new message once, and the bridge's own relay send
   workspace.say(
     change({
       item: "messages/m2",
-      actor: { by: { app: "so.tilo.discord.preview" }, app: "so.tilo.discord.preview" },
+      actor: { by: { app: "so.tilo.discord" }, app: "so.tilo.discord" },
       time: 2000,
     }),
   );
@@ -327,7 +327,7 @@ test("a generic change sends a new message once, and the bridge's own relay send
     "written here",
   ]);
   expect(
-    workspace.done.filter((call) => call.address === "so.tilo.discord.preview#send_there"),
+    workspace.done.filter((call) => call.address === "so.tilo.discord#send_there"),
   ).toHaveLength(2);
 
   workspace.finish();
@@ -454,7 +454,7 @@ test("a thread started here is started on Discord under the message it answers",
   await until(() => workspace.requests.length > 0, "the thread");
   expect(
     workspace.done.some(
-      (call) => call.address === "so.tilo.discord.preview#start_thread_there" &&
+      (call) => call.address === "so.tilo.discord#start_thread_there" &&
         call.args.op.message === "9001" &&
         call.args.op.name === "topic",
     ),
@@ -465,13 +465,13 @@ test("a thread started here is started on Discord under the message it answers",
   expect(JSON.parse(workspace.requests[0].body).name).toBe("topic");
   await until(
     () => workspace.done.some(
-      (call) => call.address === "so.tilo.discord.preview#map" &&
+      (call) => call.address === "so.tilo.discord#map" &&
         call.args.kind === "thread" && call.args.discord === "7001",
     ),
     "the thread's mapping",
   );
   const mapped = workspace.done.find(
-    (call) => call.address === "so.tilo.discord.preview#map" && call.args.kind === "thread",
+    (call) => call.address === "so.tilo.discord#map" && call.args.kind === "thread",
   );
   expect(mapped.args.tilo).toBe(`${CONVERSATION}/threads/t1`);
   expect(mapped.args.root).toBe(CONVERSATION);
@@ -531,7 +531,7 @@ test("a server connected after the program started opens the gateway then", asyn
 
   // The person connects the server: the record changes, and the gateway opens then.
   connected = true;
-  workspace.said("so.tilo.discord.preview/accounts", { kind: "change" });
+  workspace.said("so.tilo.discord/accounts", { kind: "change" });
   await until(() => gateways.length === 1, "the gateway after connecting");
 
   workspace.finish();
@@ -563,7 +563,7 @@ test("a conversation paired after the gateway opened is carried at once", async 
     { kind: "channel", tilo: CONVERSATION, discord: "456" },
     { kind: "webhook", tilo: CONVERSATION, discord: "555" },
   ];
-  workspace.said("so.tilo.discord.preview/accounts", { kind: "change" });
+  workspace.said("so.tilo.discord/accounts", { kind: "change" });
   await until(() => reads > opened, "the record read again");
 
   workspace.message(`chat/${RECORD}/messages/m1`, messageFields({ body: "hello" }));

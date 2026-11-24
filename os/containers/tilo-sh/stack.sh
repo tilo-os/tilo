@@ -1684,7 +1684,7 @@ lay_out_lounge() {
     local stamp container=$repo/os/containers/tilo-lounge
     stamp=$(made_from "$programs/tilo-runtime" "$programs/discord-worker" "$fonts/manifest.toml" \
       "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
-      "$container/entrypoint.sh" "$repo/apps/discord/bridge/program.json")
+      "$container/entrypoint.sh")
     if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-runtime ]]; then
       TILO_LOUNGE_SURFACE_COMMIT=$commit \
         bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \

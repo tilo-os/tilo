@@ -1,4 +1,4 @@
-app so.tilo.discord.preview "Discord" (
+app so.tilo.discord "Discord" (
     icon: .discord,
     category: .network,
     tagline: "Discord servers in the workspace's conversations",
@@ -452,7 +452,7 @@ fn moderates(who: Actor) -> Bool {
 /// Whether `who` is the bridge's own program, carrying the workspace's changes to Discord: the
 /// app's process the daemon attested, which the invoker names in `app`.
 fn the_bridge(who: Actor) -> Bool {
-    (who.app() ?? "") == "so.tilo.discord.preview"
+    (who.app() ?? "") == "so.tilo.discord"
 }
 
 /// Whether `who` may change the bridge's own setup and server on Discord: the workspace's

@@ -165,10 +165,6 @@
       "libraries": 15536850,
       "tests": 300500200
     },
-    "discord": {
-      "libraries": 38668709,
-      "tests": 1561266984
-    },
     "discord-wire": {
       "libraries": 5307509,
       "tests": 31956672

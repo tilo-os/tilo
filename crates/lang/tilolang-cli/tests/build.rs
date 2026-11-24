@@ -884,7 +884,7 @@ fn the_discord_bridge_packages_its_program_as_the_entrypoint() {
     };
     let apps = package::build(&options, &identity).unwrap();
     let built = apps.last().expect("the package is built");
-    assert_eq!(built.app, "so.tilo.discord.preview");
+    assert_eq!(built.app, "so.tilo.discord");
     let manifest =
         Manifest::from_toml_str(&std::fs::read_to_string(&built.manifest).unwrap()).unwrap();
     let entrypoint = manifest.entrypoint.as_ref().expect("an entrypoint");

@@ -1965,7 +1965,7 @@ fn chat_holds_no_service_type_and_shows_an_outside_author_from_its_own_fields() 
     let (bridge, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
     let bridge_meta = bridge
         .host
-        .package("so.tilo.discord.preview")
+        .package("so.tilo.discord")
         .expect("the Discord package")
         .meta;
     for name in [

@@ -13,7 +13,7 @@ const DISCORD_IDS: &str = include_str!("../../../../apps/tl/discord/app.ids");
 const CHAT: &str = include_str!("../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../apps/tl/chat/app.ids");
 const CHAT_APP: &str = "so.tilo.chat";
-const APP: &str = "so.tilo.discord.preview";
+const APP: &str = "so.tilo.discord";
 /// The item the person's token was put in, as the vault addresses it: 32 hexadecimal digits.
 const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
 

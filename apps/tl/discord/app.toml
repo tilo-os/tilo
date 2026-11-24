@@ -2,7 +2,7 @@
 # attested as this app. Its held connection carries the Discord gateway and the call lane a
 # paired voice channel's call is bridged through, placed on one device.
 [package]
-id = "so.tilo.discord.preview"
+id = "so.tilo.discord"
 kind = "app"
 optional-runtimes = ["bun/1.4.5+bun"]
 

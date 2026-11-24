@@ -25,4 +25,5 @@ when the commit matches the pending one (and `OwnCommitMismatch` when it does
 not), so `process_commit` merges the pending commit on that variant and
 treats a mismatch like any other invalid commit. The worker's voice tests,
 which run the whole DAVE handshake against davey sessions in the fake Discord,
-cover it (`apps/discord/worker/tests/voice.rs`).
+cover it (`crates/engines/discord-worker/tests/voice.rs`), as does the tilolang Discord bridge's
+own DAVE test (`apps/tl/discord/test/dave.test.js`).

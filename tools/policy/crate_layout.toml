@@ -90,7 +90,6 @@ core = [
     "tilo-runtime-collab -> tilo-settings-store",
     "tilo-runtime-portal -> tilo-formats",
     "tilo-server -> app-cli",
-    "tilo-server -> discord",
     "tilo-server -> install-plan",
     "tilo-server -> install-profile-model",
     "tilo-server -> linux-vm",

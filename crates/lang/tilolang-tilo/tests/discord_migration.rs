@@ -16,17 +16,10 @@ fn documents() -> Vec<(String, automerge::AutoCommit)> {
     native_documents(include_str!("legacy/rust_discord.hex"))
 }
 
-/// The app of today under the id the old app kept: the document the server it bridged lives in,
-/// which the preview id keeps apart until the app takes its id back.
-fn source() -> String {
-    DISCORD.replacen("app so.tilo.discord.preview", "app so.tilo.discord", 1)
-}
-
 /// The app of today on a workspace of its own, handed what the native app kept as a device start
 /// hands a native app's documents to the package that carries them over.
 fn opened(documents: &[(String, automerge::AutoCommit)]) -> Replica {
-    let source = source();
-    let (replica, _) = Replica::new("ada", Workspace::new(), &[(source.as_str(), DISCORD_IDS)]);
+    let (replica, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
     replica.host.runtime().set_earlier(APP, documents);
     replica
 }
@@ -267,8 +260,7 @@ fn a_second_device_makes_no_duplicates() {
     assert_eq!(ada.host.migrate(), 1, "the migration carries it");
     let held = account(&ada);
 
-    let source = source();
-    let grace = ada.fork("grace", &[(source.as_str(), DISCORD_IDS)]);
+    let grace = ada.fork("grace", &[(DISCORD, DISCORD_IDS)]);
     grace.host.runtime().set_earlier(APP, &documents);
     assert_eq!(
         grace.host.migrate(),
@@ -284,8 +276,7 @@ fn a_second_device_makes_no_duplicates() {
 
 #[test]
 fn a_device_opened_before_the_native_documents_arrive_carries_them_once_they_do() {
-    let source = source();
-    let (replica, _) = Replica::new("ada", Workspace::new(), &[(source.as_str(), DISCORD_IDS)]);
+    let (replica, _) = Replica::new("ada", Workspace::new(), &[(DISCORD, DISCORD_IDS)]);
     let root = replica.host.root_of(APP).expect("the root");
     replica.commit();
     assert!(
@@ -315,8 +306,8 @@ fn only_the_discord_apps_own_process_carries_the_bridge() {
         )],
         None,
     );
-    let root = ada.host.root_of("so.tilo.discord.preview").unwrap();
-    let package = ada.host.package("so.tilo.discord.preview").unwrap();
+    let root = ada.host.root_of(APP).unwrap();
+    let package = ada.host.package(APP).unwrap();
     let action = |name: &str| {
         package
             .meta
@@ -353,7 +344,7 @@ fn only_the_discord_apps_own_process_carries_the_bridge() {
         ]
     };
     let own = ada.host.runtime().invoke_action(
-        &Actor::App(AppId::from("so.tilo.discord.preview")),
+        &Actor::App(AppId::from("so.tilo.discord")),
         (layout.as_str(), layout_args()),
     );
     assert!(matches!(own, Ok(InvokeOutcome::Done(_))), "{own:?}");

@@ -198,3 +198,9 @@ kinds = [
 app = "settings"
 change = "removed"
 lost = "What a person set in each settings section, kept in the per-profile settings document. Each section is a resource of the workspace now (`settings/<section>`, `devices/<id>/settings/<section>`), which the session publishes and Settings shows, and nothing reads the old document, so every section starts at its defaults."
+
+[[change]]
+kind = "discord.guild"
+app = "discord"
+change = "removed"
+conversion = "apps/tl/discord/app.tl:carry_native_discord"

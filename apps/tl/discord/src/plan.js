@@ -8,7 +8,7 @@
 /// Chat's app id and this app's: the id its package declares, which the launcher names to every
 /// process it starts.
 export const CHAT = "so.tilo.chat";
-export const SELF = process.env.TILO_PACKAGE_ID || "so.tilo.discord.preview";
+export const SELF = process.env.TILO_PACKAGE_ID || "so.tilo.discord";
 
 /// Discord takes a message of 2000 characters; the rest is said by the cut.
 export const MAX_CONTENT = 2000;

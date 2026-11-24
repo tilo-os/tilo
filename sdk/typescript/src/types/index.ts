@@ -14,7 +14,6 @@
  * ```
  */
 
-export * as discord from "./discord.ts";
 export * as messages from "./messages.ts";
 export * as osk from "./osk.ts";
 export * as poker from "./poker.ts";
@@ -41,7 +40,7 @@ export * as containers from "./containers.ts";
 export * as counter from "./counter.ts";
 export * as dbClient from "./db_client.ts";
 export * as diffmerge from "./diffmerge.ts";
-export * as preview from "./preview.ts";
+export * as discord from "./discord.ts";
 export * as discussion from "./discussion.ts";
 export * as diskUsage from "./disk_usage.ts";
 export * as disks from "./disks.ts";

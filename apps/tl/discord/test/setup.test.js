@@ -153,7 +153,7 @@ test("the release is asked again once the person allowed the app to read the ite
     async release(item) {
       if (waits.length === 0) {
         throw new Error(
-          "so.tilo.discord.preview may not read this vault item yet: your person is asked " +
+          "so.tilo.discord may not read this vault item yet: your person is asked " +
             "whether it may, once. Call again once they allowed it.",
         );
       }
