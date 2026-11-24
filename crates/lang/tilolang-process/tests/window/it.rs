@@ -12,6 +12,11 @@
     reason = "a failed unwrap or index in a test is its assertion"
 )]
 
+/// What the process holds allocated is metered, so a test bounds what an operation keeps by the
+/// bytes it holds, not by pages the allocator has yet to hand back.
+#[global_allocator]
+static ALLOCATOR: tilo_test_env::allocation::Meter = tilo_test_env::allocation::Meter;
+
 #[allow(
     dead_code,
     reason = "each test reads what it needs of the change marks"

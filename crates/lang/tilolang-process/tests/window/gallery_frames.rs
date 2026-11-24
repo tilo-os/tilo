@@ -159,30 +159,19 @@ fn the_gallery_reads_only_the_faces_its_text_is_set_in() {
     .expect("the gallery opens in a window");
 }
 
-/// The process's resident memory in KiB, as the kernel counts it.
-fn resident_kib() -> u64 {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status.lines().find_map(|line| {
-                line.strip_prefix("VmRSS:")?
-                    .trim()
-                    .trim_end_matches("kB")
-                    .trim()
-                    .parse()
-                    .ok()
-            })
-        })
-        .unwrap_or(0)
+/// What the process holds allocated, in MiB: the bytes its pages and caches keep, not the pages
+/// the allocator has yet to hand back to the kernel, which grow and shrink with no leak.
+fn held_mib() -> usize {
+    tilo_test_env::allocation::held() / (1024 * 1024)
 }
 
-/// Every page once, and then again: the second round costs what the first did, each switch
-/// solves its layout without measuring its leaves over and over, and coming back to pages holds
-/// no more memory.
+/// Every page once, and then again, twice more: the second round costs what the first did, each
+/// switch solves its layout without measuring its leaves over and over, and coming back to pages
+/// holds no more memory.
 fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
     let mut rounds = Vec::new();
-    let mut resident = vec![resident_kib()];
-    for _ in 0..2 {
+    let mut held = vec![held_mib()];
+    for _ in 0..4 {
         let _ = ui::profiling::layout_counts::take();
         let mut callbacks = 0_usize;
         for y in ROWS {
@@ -223,7 +212,7 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
             callbacks = callbacks.saturating_add(calls(&scopes, "ui.callback_scope"));
         }
         let solved = ui::profiling::layout_counts::take();
-        resident.push(resident_kib());
+        held.push(held_mib());
         // A solve that answers a container from its cache measures each leaf a few times a
         // switch; one that solves nested grids again for every constraint probed measured
         // the Feedback page alone some 12,000 times, and one whose controls state their own
@@ -236,14 +225,16 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
         );
         rounds.push(callbacks);
     }
-    let grown =
-        |round: usize| resident[round].saturating_sub(resident[round.saturating_sub(1)]) / 1024;
+    // The first round pays what showing a page costs once (its fonts, pictures and caches) and
+    // the second what is first paid on coming back to one. Past them, two more rounds hold no
+    // more than the second did: a page that kept what it showed would hold more each round. The
+    // caches hold a few MiB more or less from round to round as they fill and let go.
+    let shown = held[1].saturating_sub(held[0]);
+    let again = held[4].saturating_sub(held[2]);
     assert!(
-        grown(1) <= 32 && grown(2) <= 4,
-        "every page shown holds at most 32 MiB more, and showing them again holds no more: \
-         {} MiB, then {} MiB",
-        grown(1),
-        grown(2)
+        shown <= 32 && again <= 4,
+        "every page shown holds at most 32 MiB more, and showing them twice more holds no more: \
+         {shown} MiB, then {again} MiB ({held:?} MiB after each round)"
     );
     let (first, second) = (rounds[0], rounds[1]);
     assert!(
