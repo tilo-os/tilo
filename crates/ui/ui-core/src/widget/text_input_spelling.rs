@@ -88,6 +88,77 @@ impl super::TextInput {
         self.spell_cache_key = Some((self.spell_language.clone(), checked));
     }
 
+    /// What a menu offers on the misspelled word this field has selected: the corrections, and
+    /// whether the person may keep the word. `None` when the selection is not a misspelled word,
+    /// so a menu falls back to its other rows.
+    pub fn spelling_menu(&mut self) -> Option<super::SpellingMenu> {
+        if self.read_only || !self.checks_spelling() {
+            return None;
+        }
+        self.activate_spelling();
+        self.refresh_spelling();
+        let (start, end) = self.selection_range()?;
+        if start >= end || !self.spell_spans.contains(&(start, end)) {
+            return None;
+        }
+        let word = self.text.get(start..end)?.to_string();
+        let suggestions = spellcheck::suggestions_for_language(&self.spell_language, &word, 3);
+        let can_add = self
+            .personal_spelling
+            .as_ref()
+            .is_some_and(|personal| personal.snapshot.is_some());
+        Some(super::SpellingMenu {
+            word,
+            start,
+            end,
+            suggestions,
+            can_add,
+        })
+    }
+
+    /// Replace the misspelled word the menu was made for with `replacement`, as one undo step.
+    pub fn replace_spelling(
+        &mut self,
+        start: usize,
+        end: usize,
+        original: &str,
+        replacement: &str,
+    ) -> bool {
+        if self
+            .replace_step(start..end, original, replacement)
+            .is_none()
+        {
+            return false;
+        }
+        self.spell_cache_key = None;
+        self.refresh_spelling();
+        true
+    }
+
+    /// Keep `word` as spelled right for this person, in every field and every document.
+    pub fn add_word_to_dictionary(&mut self, word: &str) {
+        let result = crate::personal_dictionary::snapshot().and_then(|snapshot| {
+            crate::personal_dictionary::edit(
+                snapshot.revision,
+                crate::personal_dictionary::Edit::Add(
+                    crate::personal_dictionary::Word::new(word, None)?,
+                ),
+            )
+        });
+        if let Err(error) = result {
+            tracing::warn!(%error, "could not add the shared personal word");
+        }
+        self.spell_cache_key = None;
+        self.refresh_spelling();
+    }
+
+    /// Stop marking `word` in this field, leaving the person's dictionary as it was.
+    pub fn ignore_word_in_field(&mut self, word: &str) {
+        self.ignored_spellings.insert(word.to_lowercase());
+        self.spell_cache_key = None;
+        self.refresh_spelling();
+    }
+
     /// Misspelled words of `range` (whole lines of the text), in text bytes.
     pub(super) fn misspelled_in(&mut self, range: Range<usize>) -> Vec<(usize, usize)> {
         self.spell_dictionary

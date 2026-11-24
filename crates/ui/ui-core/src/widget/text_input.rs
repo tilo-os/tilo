@@ -154,6 +154,20 @@ pub struct TextActionResult {
     pub replacement: String,
 }
 
+/// What a menu offers on the misspelled word a field has selected: the word itself, where it
+/// stands, the corrections the dictionary suggests, and whether the person may keep it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpellingMenu {
+    pub word: String,
+    /// The word's byte range in the field's text.
+    pub start: usize,
+    pub end: usize,
+    /// Corrections, the likeliest first.
+    pub suggestions: Vec<String>,
+    /// Whether the person's own dictionary is readable, so "Add to dictionary" can work.
+    pub can_add: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TextInputKind {
     #[default]

@@ -989,6 +989,9 @@ text-menu-heading-3 = Überschrift 3
 text-menu-body-text = Fließtext
 text-menu-bulleted-list = Aufzählung
 text-menu-numbered-list = Nummerierte Liste
+# A misspelled word a person keeps; $word is the word as they typed it.
+text-menu-add-to-dictionary = „{ $word }“ zum Wörterbuch hinzufügen
+text-menu-ignore-spelling = In diesem Feld ignorieren
 
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = { $label } öffnen

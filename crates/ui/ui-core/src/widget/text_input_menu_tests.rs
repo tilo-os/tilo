@@ -663,3 +663,56 @@ fn a_click_on_send_to_opens_the_box_in_the_fields_menus_place() {
     );
     assert_eq!(ti.value(), "hello world", "nothing beneath was edited");
 }
+
+/// A misspelled word the person selected offers its corrections, can be corrected as one step,
+/// and can be kept: ignored in this field, or added to the person's dictionary.
+#[test]
+fn a_misspelled_word_offers_corrections_and_can_be_kept() {
+    let services = crate::process::ProcessServices::null();
+    let _host = crate::process::enter(&services);
+
+    let mut input = TextInput::local()
+        .with_spell_language("en-US")
+        .with_initial_value("teh");
+    input.set_focus(true);
+    input.spell_dictionary = Some(spellcheck::Dictionary::from_words([
+        "the", "tea", "ten",
+    ]));
+    input.select_all();
+    let menu = input.spelling_menu().expect("a misspelled word has a menu");
+    assert_eq!(menu.word, "teh");
+    assert_eq!((menu.start, menu.end), (0, 3));
+    assert!(
+        menu.suggestions.iter().any(|word| word == "the"),
+        "the corrections are offered: {:?}",
+        menu.suggestions
+    );
+
+    assert!(input.replace_spelling(menu.start, menu.end, "teh", "the"));
+    assert_eq!(input.value(), "the", "the word is corrected");
+    assert!(
+        input.spelling_menu().is_none(),
+        "a word the dictionary knows is not misspelled"
+    );
+
+    let mut kept = TextInput::local()
+        .with_spell_language("en-US")
+        .with_initial_value("qwordz");
+    kept.set_focus(true);
+    kept.select_all();
+    assert!(kept.spelling_menu().is_some(), "qwordz is misspelled");
+    kept.ignore_word_in_field("qwordz");
+    assert!(
+        kept.spelling_menu().is_none(),
+        "the word is kept in this field"
+    );
+
+    // A field that does not spell prose (a secret) has no spelling menu at all.
+    let mut secret = TextInput::local()
+        .with_secret(true)
+        .with_spell_language("en-US")
+        .with_initial_value("teh");
+    secret.set_focus(true);
+    secret.select_all();
+    assert!(secret.spelling_menu().is_none());
+}

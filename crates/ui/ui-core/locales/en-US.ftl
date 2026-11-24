@@ -994,6 +994,9 @@ text-menu-heading-3 = Heading 3
 text-menu-body-text = Body text
 text-menu-bulleted-list = Bulleted list
 text-menu-numbered-list = Numbered list
+# A misspelled word a person keeps; $word is the word as they typed it.
+text-menu-add-to-dictionary = Add “{ $word }” to dictionary
+text-menu-ignore-spelling = Ignore in this field
 
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = Open { $label }

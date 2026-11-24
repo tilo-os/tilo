@@ -20,6 +20,17 @@ enum TextMenuAction {
     Mark(Mark),
     List { ordered: bool },
     Heading(Option<u8>),
+    /// Correct the misspelled word the menu was opened on.
+    Spelling {
+        start: usize,
+        end: usize,
+        original: String,
+        replacement: String,
+    },
+    /// Keep the misspelled word as spelled right for this person.
+    AddToDictionary(String),
+    /// Stop marking the word in this document only.
+    IgnoreSpelling(String),
 }
 
 /// The text menu and what each of its rows does.
@@ -247,11 +258,49 @@ impl BlockEditor {
             .focused
             .and_then(|index| self.blocks.get(index))
             .map(|block| block.kind.clone());
-        // The rows every text's menu begins with, then what this editor formats.
-        let mut rows: Vec<(MenuItem, Option<TextMenuAction>)> = EditingCommand::rows(selected)
-            .into_iter()
-            .map(|(item, command)| (item, Some(TextMenuAction::Clipboard(command))))
-            .collect();
+        // The rows every text's menu begins with, then what this editor formats. A misspelled
+        // word under the menu leads with its corrections and the ways to keep it.
+        let spelling = self
+            .focused
+            .and_then(|index| self.blocks.get_mut(index))
+            .and_then(|block| block.line.inner_mut().spelling_menu());
+        let mut rows: Vec<(MenuItem, Option<TextMenuAction>)> = Vec::new();
+        if let Some(spelling) = spelling {
+            let word = spelling.word.clone();
+            for replacement in spelling.suggestions {
+                rows.push((
+                    MenuItem::action(replacement.clone(), || {}),
+                    Some(TextMenuAction::Spelling {
+                        start: spelling.start,
+                        end: spelling.end,
+                        original: word.clone(),
+                        replacement,
+                    }),
+                ));
+            }
+            if spelling.can_add {
+                rows.push((
+                    MenuItem::action(
+                        ui::i18n::widget_format(
+                            "text-menu-add-to-dictionary",
+                            &[("word", word.clone().into())],
+                        ),
+                        || {},
+                    ),
+                    Some(TextMenuAction::AddToDictionary(word.clone())),
+                ));
+            }
+            rows.push((
+                MenuItem::action(ui::i18n::widget_text("text-menu-ignore-spelling"), || {}),
+                Some(TextMenuAction::IgnoreSpelling(word)),
+            ));
+            rows.push((MenuItem::separator(), None));
+        }
+        rows.extend(
+            EditingCommand::rows(selected)
+                .into_iter()
+                .map(|(item, command)| (item, Some(TextMenuAction::Clipboard(command)))),
+        );
         rows.push((MenuItem::separator(), None));
         for (key, mark, shortcut) in [
             ("text-menu-bold", Mark::Bold, Some("B")),
@@ -337,6 +386,47 @@ impl BlockEditor {
             }
             TextMenuAction::Heading(level) => {
                 self.set_heading(level);
+            }
+            TextMenuAction::Spelling {
+                start,
+                end,
+                original,
+                replacement,
+            } => {
+                let replaced = self
+                    .focused
+                    .and_then(|index| self.blocks.get_mut(index))
+                    .is_some_and(|block| {
+                        block
+                            .line
+                            .inner_mut()
+                            .replace_spelling(start, end, &original, &replacement)
+                    });
+                if replaced {
+                    self.edit_pending = true;
+                    self.commit_pending = true;
+                }
+            }
+            TextMenuAction::AddToDictionary(word) => {
+                if let Some(line) = self
+                    .focused
+                    .and_then(|index| self.blocks.get_mut(index))
+                    .map(|block| &mut block.line)
+                {
+                    line.inner_mut().add_word_to_dictionary(&word);
+                }
+            }
+            TextMenuAction::IgnoreSpelling(word) => {
+                let ignored = self
+                    .focused
+                    .and_then(|index| self.blocks.get_mut(index))
+                    .is_some_and(|block| {
+                        block.line.inner_mut().ignore_word_in_field(&word);
+                        true
+                    });
+                if ignored {
+                    self.edit_pending = true;
+                }
             }
         }
         self.dirty = true;
