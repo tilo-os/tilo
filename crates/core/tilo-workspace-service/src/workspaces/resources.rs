@@ -1521,7 +1521,7 @@ impl Workspaces {
     /// what search reads of one document at a time, from the store the workspace is read
     /// through, without its lock. `None` when this server does not know what the workspace is
     /// read through yet.
-    #[cfg(feature = "agents")]
+    #[cfg(any(feature = "apps", feature = "agents"))]
     pub(crate) fn held_resources(
         &self,
         workspace: &str,
@@ -1589,6 +1589,7 @@ fn read_from(
 impl Workspaces {
     /// Commit `command` as an update of the fields of a resource every member reads that stays
     /// where it is, when it is one: `false` for any other command, which is drafted whole.
+    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn put_in_place(
         &self,
         governed: &mut GovernedWorkspace,
@@ -1776,6 +1777,7 @@ impl Workspaces {
     /// # Errors
     /// [`RecordFailure::Refused`] when the store or the workspace refused a write, with why;
     /// [`RecordFailure::Failed`] when the workspace is not held here.
+    #[cfg(any(feature = "apps", feature = "agents"))]
     pub async fn record_command(
         &self,
         workspace: &str,
@@ -1881,6 +1883,7 @@ impl Workspaces {
 
     /// Carry out the write `command` of `app` on the workspace `governed` holds, as `device`,
     /// holding the workspace until the last of its frames is kept.
+    #[cfg(any(feature = "apps", feature = "agents"))]
     async fn write_resources(
         &self,
         mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
@@ -2171,6 +2174,7 @@ pub fn person_reading(caller: &tilo_actions::remote::Caller) -> String {
 /// Refuse the writes `unserved` (each a resource type and the verb the app named it by) that the
 /// caller `viewer`, whom the device opened this view of `app` for, may not make: a view runs
 /// with its viewer's permissions, never the device's.
+#[cfg(feature = "apps")]
 fn may_write_as_viewer(
     governed: &GovernedWorkspace,
     viewer: &tilo_actions::remote::Caller,
