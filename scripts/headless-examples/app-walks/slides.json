@@ -63,6 +63,37 @@
       ]
     },
     {
+      "id": "words-menu",
+      "said": "Right-press the words for the shared editor's formatting menu",
+      "ops": [
+        {
+          "right_click": "Slide"
+        },
+        {
+          "must": {
+            "see": [
+              {
+                "menuitem": "Bold"
+              },
+              {
+                "menuitem": "Italic"
+              },
+              {
+                "menuitem": "Bulleted list"
+              },
+              {
+                "menuitem": "Numbered list"
+              }
+            ],
+            "within": 15
+          }
+        },
+        {
+          "key": "Escape"
+        }
+      ]
+    },
+    {
       "id": "style",
       "said": "Make the chosen words bold and centred",
       "ops": [

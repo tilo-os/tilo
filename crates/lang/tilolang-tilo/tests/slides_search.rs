@@ -155,7 +155,10 @@ fn notes_bound_to(host: &Host, tree: &tilolang_runtime::UiNode) -> Vec<String> {
         if let Some((target, name)) = node.binding.as_ref().and_then(|binding| binding.field())
             && *name == field
         {
-            out.push(tilolang_tilo::publish::resource_id(APP, &target.id_string()));
+            out.push(tilolang_tilo::publish::resource_id(
+                APP,
+                &target.id_string(),
+            ));
         }
         pending.extend(&node.children);
     }
@@ -170,7 +173,11 @@ fn deck(host: &Host) -> (ResourceRef, Vec<ResourceRef>) {
         "add_slides",
         vec![Value::resource(&deck), Value::text(OUTLINE), Value::none()],
     );
-    let slides = match host.runtime().read(&deck, "slides").expect("the deck's slides") {
+    let slides = match host
+        .runtime()
+        .read(&deck, "slides")
+        .expect("the deck's slides")
+    {
         Value::List(items) => items
             .into_iter()
             .filter_map(|item| match item {
@@ -193,6 +200,47 @@ fn slide_saying(host: &Host, slides: &[ResourceRef], words: &str) -> ResourceRef
         })
         .cloned()
         .unwrap_or_else(|| panic!("a slide whose notes say {words}"))
+}
+
+/// The box of `slide` whose words say `words`, by its id.
+fn box_saying(host: &Host, slide: &ResourceRef, words: &str) -> String {
+    match host
+        .runtime()
+        .read(slide, "elements")
+        .expect("the slide's elements")
+    {
+        Value::List(items) => items.into_iter().find_map(|item| match item {
+            Value::Ref(element) => match host.runtime().read(&element.target, "body") {
+                Ok(Value::Rich(rich)) if rich.written_text().contains(words) => {
+                    Some(element.target.id_string())
+                }
+                _ => None,
+            },
+            _ => None,
+        }),
+        other => panic!("a slide's elements are a list: {other:?}"),
+    }
+    .unwrap_or_else(|| panic!("a box saying {words}"))
+}
+
+/// The box the window's stage has chosen, as the stage was sent: the element its `chosen` prop
+/// names.
+fn chosen_box(tree: &tilolang_runtime::UiNode) -> Option<String> {
+    fn text(value: &Value) -> Option<&str> {
+        match value {
+            Value::Text(text) => Some(text.as_str()),
+            Value::Opt(Some(inner)) => text(inner),
+            _ => None,
+        }
+    }
+    let mut pending = vec![tree];
+    while let Some(node) = pending.pop() {
+        if node.kind == "ui.Stage" && node.props.get("name").and_then(text) == Some("Slide") {
+            return node.props.get("chosen").and_then(text).map(str::to_owned);
+        }
+        pending.extend(&node.children);
+    }
+    None
 }
 
 /// The slide of `slides` that holds a text box saying `words`.
@@ -257,12 +305,9 @@ fn anchor_of(hit: &tilo_desktop_search::Hit) -> String {
 
 /// What the window was told to show in the settle after `anchor` was opened.
 fn open(window: &mut Instance, window_end: &mut End, anchor: &str) -> Vec<String> {
-    window
-        .open_requests()
-        .borrow_mut()
-        .push(OpenEffect::Open {
-            anchor: anchor.to_owned(),
-        });
+    window.open_requests().borrow_mut().push(OpenEffect::Open {
+        anchor: anchor.to_owned(),
+    });
     let mut asked = Vec::new();
     for _ in 0..4 {
         window.update();
@@ -297,9 +342,7 @@ fn a_search_inside_one_deck_finds_its_slides_and_opens_the_one_chosen() {
         "the hit is anchored at the paragraph, not the slide: {anchor}"
     );
     assert!(
-        !hits
-            .iter()
-            .any(|hit| hit.title.contains("harbour")),
+        !hits.iter().any(|hit| hit.title.contains("harbour")),
         "a text box of another slide is not this sentence: {hits:#?}"
     );
 
@@ -350,10 +393,17 @@ fn a_text_box_is_found_and_opening_it_shows_its_slide() {
     );
 
     open(&mut window, &mut window_end, &anchor);
+    let tree = window.root_tree().expect("the window's tree");
     let route_id = tilolang_tilo::publish::resource_id(APP, &route.id_string());
     assert_eq!(
-        notes_bound_to(&host, &window.root_tree().expect("the window's tree")),
+        notes_bound_to(&host, &tree),
         [route_id],
         "opening the text box shows the slide it stands on"
+    );
+    let box_id = box_saying(&host, &route, "harbour");
+    assert_eq!(
+        chosen_box(&tree).as_deref(),
+        Some(box_id.as_str()),
+        "and the box the hit named is the chosen one, not just its slide"
     );
 }

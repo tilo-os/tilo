@@ -190,6 +190,8 @@ default view deck for Deck
 
 default view slide_page for Slide
 
+default view box_page for Element
+
 /// A deck starts with one title slide holding an empty title and subtitle, so a live launch opens
 /// on nothing that pretends to be content.
 initial action start(d: Deck) {
@@ -335,7 +337,10 @@ action duplicate_current_slide(d: Deck, showing: Text) (icon: .copy, label: "Dup
 }
 
 /// Copies an element in place on its slide, a little down and across from it.
-action duplicate_element(s: Slide, e: Element) -> Element (icon: .layers, label: "Duplicate object") {
+action duplicate_element(s: Slide, e: Element) -> Element (
+    icon: .layers,
+    label: "Duplicate object",
+) {
     let copy = s.elements.insert(
         Element(
             kind: e.kind,
@@ -378,9 +383,7 @@ action reorder_slides(d: Deck, ids: List<Text>) (label: "Move the slide") {
     let moved = d.slides.find(s -> s.id() == (ids.at(0) ?? ""))
     let target = d.slides.find(s -> s.id() == (ids.at(1) ?? ""))
     if let s = moved {
-        if let before = target {
-            d.slides.move(s, before: before)
-        }
+        if let before = target { d.slides.move(s, before: before) }
     }
 }
 
@@ -1349,6 +1352,11 @@ view deck(d: Deck) {
     // A slide opened from search or from another app lands here, in the deck's own window: the
     // rail, the stage and the properties follow it, and the notes editor binds its notes.
     on show(s: Slide): set(current, s.id()).then(set(properties, true))
+    // A box opened from search lands on the slide it stands on with the box chosen: the hit named
+    // the box, so the person gets the box's properties and its words, not just its slide.
+    on show(e: Element): if let s = box_slide(e) {
+        set(current, s.id()).then(set(chosen, e.id())).then(set(properties, true))
+    } else { set(chosen, "none") }
     let shown = current_slide(d, current)
     ui.Fullscreen(
         showing: presenting,
@@ -1502,6 +1510,32 @@ view slide_page(s: Slide) {
                 }
             }
         }
+    }
+}
+
+/// A box on its own, for a search that found its words in it and for an agent that opens it:
+/// the slide it stands on with the box chosen, and the words it holds. The deck's window answers
+/// showing a box in place, so this page is what a window that cannot shows it through.
+view box_page(e: Element) {
+    let d = root Deck
+    if let s = box_slide(e) {
+        ui.NavShell(content_kind: .page, title: slide_title(s, d.slides.index_of(s) ?? 0)) {
+            content: {
+                ui.Scroll {
+                    stack(gap: .group, padding: .related) {
+                        slide_picture(d, s, "Slide", .none)
+                        ui.Text("The box's words", role: .caption, secondary: true)
+                        ui.BlockEditor(bind: e.body, placeholder: "Add text", size: e.font_size)
+                    }
+                }
+            }
+        }
+    } else {
+        ui.EmptyState(
+            "This box's slide is gone",
+            message: "The slide it stood on is no longer in the deck",
+            icon: .type,
+        )
     }
 }
 
@@ -2247,6 +2281,17 @@ fn previous_slide(d: Deck, current: Text) -> Option<Slide> {
 /// The element of a slide with this key, if it is there.
 fn element_in(s: Slide, key: Text) -> Option<Element> {
     s.elements.find(x -> x.id() == key)
+}
+
+/// The slide the box `e` stands on, when the deck still holds it.
+fn box_slide(e: Element) -> Option<Slide> {
+    let d = root Deck
+    for s in d.slides {
+        if s.elements.any(x -> x.id() == e.id()) {
+            return .some(s)
+        }
+    }
+    .none
 }
 
 /// The element after `key` on the slide, around to the first.
