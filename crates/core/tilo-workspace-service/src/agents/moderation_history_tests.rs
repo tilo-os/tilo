@@ -226,8 +226,7 @@ async fn grant_scout(workspaces: &crate::workspaces::Workspaces, workspace: &str
 /// messages they post in it.
 async fn general(workspaces: &crate::workspaces::Workspaces, workspace: &str, owner: &[u8; 32]) {
     let scout = tilo_actions::remote::Caller::delegated_agent(SCOUT, *owner, [7; 32])
-        .in_workspace(workspace)
-        .held_to(Vec::new());
+        .in_workspace(workspace);
     crate::tl_records::provided::calls::call(
         workspaces,
         &scout,
