@@ -22,7 +22,7 @@ mod offered;
 mod published;
 pub mod rows;
 
-pub use published::{Published, PublishedReading, published, reading, readings};
+pub use published::{Published, published, reading};
 pub use rows::{PackageAbout, PackageRow, RowState};
 
 /// A file a change names: a path in an image build, `tilo.content:<hash>` for bytes a caller
@@ -623,7 +623,9 @@ fn fetch_runtime(
                 offer.registry, offer.runtime
             ))
         })?;
-    if !offered.tapp_root_hash_hex.eq_ignore_ascii_case(offer.package)
+    if !offered
+        .tapp_root_hash_hex
+        .eq_ignore_ascii_case(offer.package)
         || !offered
             .publisher_pubkey_hex
             .eq_ignore_ascii_case(offer.publisher)

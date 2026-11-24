@@ -87,13 +87,10 @@ use tilo_actions::remote::server_account::{NextStep, NextStepKind, Reason, Refus
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, ActionProvider, Caller,
     CataloguePage, CatalogueProvider, CatalogueQuery, Completer, Confirmation, InvocationReceipt,
-    InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    pending, provider_workspace, workspace_provider,
+    InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage, pending,
+    provider_workspace, workspace_provider,
 };
-use tilo_actions::{
-    ActionFailure, ActionKind, ActionSpec, EncodedAction, ExecutionMode, InvocationUpdate,
-    OperationKind, ResourceSpec,
-};
+use tilo_actions::{ActionFailure, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use tilo_workspace_service::agents::windows::{
@@ -120,37 +117,38 @@ const RECORD: &str = "browser";
 /// The label the workspace shows a Linux apps session's device under.
 pub const APPS_DEVICE_LABEL: &str = "Linux apps";
 
+/// Browser, as the app this host places, is a declared type: the thing a workspace opens here.
+struct HostedBrowser;
+
+impl tilo_resource::words::RowType for HostedBrowser {
+    const KIND: &'static str = tilo_actions::remote::APPLICATION_RESOURCE_KIND;
+    const LABEL: &'static str = TITLE;
+}
+
+/// What a hosted Browser offers: opening it, which places its window in the workspace's VM here
+/// and answers once the window is up.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+// The operation is the app's own, as [`PROVIDER`] names it: a declaration cannot name a constant.
+#[effect(operation = "so.tilo.browser")]
+pub enum HostedBrowserOpen {
+    /// Open the workspace's Browser in its VM, answering once its window is live. Starting the
+    /// session takes as long as its VM takes to wake, so the call runs as a job and its caller
+    /// follows it meanwhile.
+    #[effect(kind = "outside", job)]
+    Open,
+}
+
 /// What this host publishes: Browser's open, the action a workspace starts Browser by
 /// (`app.so.tilo.browser#open`), which places its window in the workspace's VM here. A caller
 /// naming the address reaches this host whichever provider token it asks under.
 fn published() -> Vec<ResourceSpec> {
-    let mut spec = ResourceSpec::new(
-        format!("{APPLICATION_RESOURCE_PREFIX}{APP}"),
-        tilo_actions::remote::APPLICATION_RESOURCE_KIND,
-        TITLE,
-    );
-    spec.app_id = Some(APP.to_owned());
-    let type_id = format!("{PROVIDER}/{APPLICATION_OPEN_ACTION}");
-    let encoded = type_id.clone();
-    let mut action = ActionSpec::typed_operation(
-        APPLICATION_OPEN_ACTION,
-        format!("Open {TITLE}"),
-        "",
-        OperationKind::Effect,
-        type_id,
-        Vec::new(),
-        move |_| EncodedAction {
-            type_id: encoded.clone(),
-            payload: Vec::new(),
-        },
-    );
-    let contract = &mut action.type_mut().contract;
-    contract.kind = ActionKind::Outside;
-    // Starting the session takes as long as its VM takes to wake: the call is answered once the
-    // window is up, and followed meanwhile as any background action is.
-    contract.execution = ExecutionMode::Background { cancellable: false };
-    spec.actions.push(action);
-    vec![spec]
+    let mut resource =
+        tilo_resource::offer::<HostedBrowserOpen>(tilo_resource::typed_resource::<HostedBrowser>(
+            format!("{APPLICATION_RESOURCE_PREFIX}{APP}"),
+            TITLE,
+        ));
+    resource.app_id = Some(APP.to_owned());
+    vec![resource]
 }
 
 /// Make this host the person's stand-in approver, from their root:

@@ -22,6 +22,27 @@ so-tilo-layout-read = Lies das Layout: die Workspaces, Streifen und Fenster dara
 so-tilo-layout-place = Öffne ein Fenster einer App im Layout, als das des Aufrufers: neben dem vordersten Fenster, auf dem Record, das es nennt, oder dem der App eigenen. Ein Record, den ein Fenster bereits zeigt, bleibt, wo er ist.
 so-tilo-layout-close = Schließe ein Fenster im Layout, überall wo es gezeigt wird. Sein Record bleibt im Workspace.
 
+# Was der Paket-Cache eines Geräts anbietet, wie sein Daemon es veröffentlicht.
+so-tilo-packages-collect = Zurückgewinnen, was nichts mehr braucht
+so-tilo-packages-verify = Die installierten Apps gegen ihre Pakete prüfen
+so-tilo-packages-runtime-install = Eine Laufzeit bauen und installieren
+so-tilo-packages-runtime-fetch = Eine Laufzeit holen und installieren, die ein Repository anbietet
+so-tilo-packages-runtime-remove = Eine Laufzeit entfernen
+so-tilo-packages-runtime-pin = Eine Laufzeit behalten
+so-tilo-packages-runtime-unpin = Eine Laufzeit freigeben, wenn nichts mehr auf ihr läuft
+so-tilo-packages-image-add = Ein Umgebungsabbild hinzufügen
+so-tilo-packages-image-remove = Ein Umgebungsabbild entfernen
+so-tilo-packages-image-fetch = Ein Umgebungsabbild holen
+so-tilo-packages-flatpak-remote-add = Ein Flatpak-Repository hinzufügen
+so-tilo-packages-flatpak-remote-remove = Ein Flatpak-Repository entfernen
+so-tilo-packages-flatpak-remote-enable = Ein Flatpak-Repository aktivieren
+so-tilo-packages-flatpak-remote-disable = Ein Flatpak-Repository deaktivieren
+so-tilo-packages-flatpak-flathub = Flathub hinzufügen
+so-tilo-packages-flatpak = Was die Flatpak-Installation dieses Geräts enthält
+so-tilo-packages-flatpak-catalogue = Die Apps, die ein Flatpak-Repository anbietet
+so-tilo-packages-catalogue = Die Apps, die ein Tilo-Repository anbietet
+so-tilo-packages-runtime-offer = Der Build einer Laufzeit, den ein Tilo-Repository anbietet
+
 agent-tools-resource = Agentenwerkzeuge
 agent-tools-list = Werkzeuge auflisten
 agent-tools-list-detail = Listet die Werkzeuge, mit denen ein Agent in seiner Sitzung arbeitet.

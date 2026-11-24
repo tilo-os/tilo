@@ -24,10 +24,7 @@ use tilo_actions::remote::{
     InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
     Reservation, ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake,
 };
-use tilo_actions::{
-    ActionFailure, ActionKind, ActionOutput, ActionSpec, EncodedAction, InvocationId,
-    InvocationUpdate, OperationKind, ResourceSpec,
-};
+use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 
 use super::control::DeviceContent;
@@ -191,51 +188,196 @@ pub fn resource(device: &[u8; 32]) -> String {
     format!("devices/{}/packages", hex::encode(device))
 }
 
+/// The cache as a declared type: the device's packages, runtimes and environment images.
+#[derive(tilo_resource::Row)]
+#[row(kind = "devices.packages", label = "Packages")]
+struct Packages;
+
+/// The changes a caller asks the cache for: each one action of the daemon's
+/// (`devices/<device>/packages#<id>`), with its parameters, and the [`Change`](package_actions::Change)
+/// it makes.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+// The operation is the provider's own, as [`PROVIDER`] names it: a declaration cannot name a
+// constant.
+#[effect(operation = "so.tilo.packages")]
+pub enum PackageChanges {
+    /// Reclaim what nothing needs: apps past the size cap, orphaned trees, runtime builds no
+    /// package runs on.
+    #[effect(kind = "outside")]
+    Collect {
+        #[param("List what would go, removing nothing.")]
+        dry_run: Option<bool>,
+        #[param("How long a runtime no app names yet is kept, in seconds.")]
+        grace_secs: Option<u64>,
+        #[param("The cache's size cap in bytes; 0 evicts no app for size.")]
+        max_store_bytes: Option<u64>,
+    },
+    /// Check the installed apps against their packages.
+    #[effect(kind = "outside")]
+    Verify {
+        #[param("The app whose installed tree is checked; every installed app's when absent.")]
+        app: Option<String>,
+    },
+    /// Build a runtime bundle from the host root's files `from` and install it.
+    #[effect(kind = "outside")]
+    RuntimeInstall {
+        #[param("The runtime build, as `tilo-runtime/<version>` names it.")]
+        version: String,
+        #[param(
+            "The host root's files the bundle takes, each `{\"path\": \"/lib64/…\", \"file\": \
+             {\"source\": \"tilo.content:<hash>\"}}`; the device's own host root when absent."
+        )]
+        from: Option<Vec<serde_json::Value>>,
+        #[param("The architecture it is built for.")]
+        arch: Option<String>,
+        #[param("The identity that signs it: `{\"source\": \"tilo.content:<hash>\"}`.")]
+        identity: Option<serde_json::Value>,
+        #[param("Replace a bundle of that version.")]
+        force: Option<bool>,
+    },
+    /// Fetch and install a runtime a repository offers.
+    #[effect(kind = "outside")]
+    RuntimeFetch {
+        #[param("The repository, by the name the workspace's registries give it.")]
+        registry: String,
+        #[param("The runtime build, as `tilo-runtime/<version>` names it.")]
+        runtime: String,
+        #[param(
+            "The package root the offer names, 64 hex characters: another package is refused."
+        )]
+        package: String,
+        #[param("The publisher key the offer names, 64 hex characters.")]
+        publisher: String,
+    },
+    /// Remove a runtime.
+    #[effect(kind = "outside")]
+    RuntimeRemove {
+        #[param("The runtime build, as `tilo-runtime/<version>` names it.")]
+        version: String,
+    },
+    /// Keep a runtime.
+    #[effect(kind = "outside")]
+    RuntimePin {
+        #[param("The runtime build, as `tilo-runtime/<version>` names it.")]
+        version: String,
+    },
+    /// Let a runtime go when nothing runs on it.
+    #[effect(kind = "outside")]
+    RuntimeUnpin {
+        #[param("The runtime build, as `tilo-runtime/<version>` names it.")]
+        version: String,
+    },
+    /// Add an environment image.
+    #[effect(kind = "outside")]
+    ImageAdd {
+        #[param(
+            "The image's .tapp: `{\"source\": \"tilo.content:<hash>\"}`, its bytes put first."
+        )]
+        file: serde_json::Value,
+        #[param("A publisher key, in hex, this image may be signed by.")]
+        publisher: Option<String>,
+        #[param("The registry its payload blobs are fetched from.")]
+        payload_from: Option<String>,
+        #[param(
+            "The workspace's trust: `{attestors: [{id, pubkey_hex, scope}], revoked: \
+             [{pubkey_hex, reason}]}`."
+        )]
+        trust: Option<serde_json::Value>,
+    },
+    /// Remove an environment image.
+    #[effect(kind = "outside")]
+    ImageRemove {
+        #[param("The image's package id, `tapp:<hex>`.")]
+        id: String,
+    },
+    /// Fetch an environment image.
+    #[effect(kind = "outside")]
+    ImageFetch {
+        #[param("The image's package id, `tapp:<hex>`.")]
+        id: String,
+        #[param("The registry to fetch it from when no store holds it.")]
+        registry: String,
+        #[param(
+            "The workspace's trust: `{attestors: [{id, pubkey_hex, scope}], revoked: \
+             [{pubkey_hex, reason}]}`."
+        )]
+        trust: Option<serde_json::Value>,
+    },
+    /// Add a Flatpak repository.
+    #[effect(kind = "outside")]
+    FlatpakRemoteAdd {
+        #[param("The remote's name on this device, such as flathub.")]
+        name: String,
+        #[param("The repository URL to read it from.")]
+        url: String,
+    },
+    /// Remove a Flatpak repository.
+    #[effect(kind = "outside")]
+    FlatpakRemoteRemove {
+        #[param("The remote's name on this device.")]
+        name: String,
+    },
+    /// Enable a Flatpak repository.
+    #[effect(kind = "outside")]
+    FlatpakRemoteEnable {
+        #[param("The remote's name on this device.")]
+        name: String,
+    },
+    /// Disable a Flatpak repository.
+    #[effect(kind = "outside")]
+    FlatpakRemoteDisable {
+        #[param("The remote's name on this device.")]
+        name: String,
+    },
+    /// Add Flathub.
+    #[effect(kind = "outside")]
+    FlatpakFlathub,
+}
+
+/// What the cache answers about the device, changing nothing: its Flatpak installation, the apps a
+/// configured Flatpak or Tilo repository offers, and a repository's runtime builds.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.packages")]
+pub enum PackageReadings {
+    /// What this device's Flatpak installation has.
+    #[effect(kind = "read")]
+    Flatpak,
+    /// The apps a Flatpak repository offers.
+    #[effect(kind = "read")]
+    FlatpakCatalogue {
+        #[param("The remote's name on this device.")]
+        name: String,
+    },
+    /// The apps a Tilo repository offers.
+    #[effect(kind = "read")]
+    Catalogue {
+        #[param("The repository, by the name the workspace's registries give it.")]
+        registry: String,
+        #[param(
+            "Ask the repository now (the default); false reads the catalogue this device last \
+             accepted from it, without the network."
+        )]
+        fresh: Option<bool>,
+    },
+    /// The build of a runtime a Tilo repository offers.
+    #[effect(kind = "read")]
+    RuntimeOffer {
+        #[param("The repository, by the name the workspace's registries give it.")]
+        registry: String,
+        #[param("The runtime build, as `tilo-runtime/<version>` names it.")]
+        runtime: String,
+    },
+}
+
 impl PackageCache {
     /// The cache of the device whose key is `device`, rooted at `root`, reading what callers put
     /// from `content`.
     #[must_use]
     pub fn new(device: &[u8; 32], root: &Path, content: Arc<DeviceContent>) -> Self {
         let resource = resource(device);
-        let mut spec = ResourceSpec::new(&resource, "devices.packages", "Packages");
-        for published in package_actions::published() {
-            let type_id = format!("{PROVIDER}/{}", published.id);
-            let encoded = type_id.clone();
-            let mut action = ActionSpec::typed_operation(
-                published.id,
-                published.label,
-                "",
-                OperationKind::Effect,
-                type_id,
-                published.params(),
-                move |_| EncodedAction {
-                    type_id: encoded.clone(),
-                    payload: Vec::new(),
-                },
-            );
-            action.type_mut().contract.kind = ActionKind::Outside;
-            spec.actions.push(action);
-        }
-        // What the cache answers about the device, changing nothing: its Flatpak installation, the
-        // apps a configured Flatpak or Tilo repository offers, and a repository's runtime builds.
-        for reading in package_actions::readings() {
-            let type_id = format!("{PROVIDER}/{}", reading.id);
-            let encoded = type_id.clone();
-            let mut action = ActionSpec::typed_operation(
-                reading.id,
-                reading.label,
-                "",
-                OperationKind::Effect,
-                type_id,
-                reading.params(),
-                move |_| EncodedAction {
-                    type_id: encoded.clone(),
-                    payload: Vec::new(),
-                },
-            );
-            action.type_mut().contract.kind = ActionKind::Read;
-            spec.actions.push(action);
-        }
+        let spec = tilo_resource::offer::<PackageReadings>(tilo_resource::offer::<PackageChanges>(
+            tilo_resource::typed_resource::<Packages>(&resource, "Packages"),
+        ));
         let rows = Arc::new(Rows {
             resource: resource.clone(),
             root: root.to_owned(),

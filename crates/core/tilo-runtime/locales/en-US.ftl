@@ -22,6 +22,27 @@ so-tilo-layout-read = Read the layout: the workspaces, strips and windows on it,
 so-tilo-layout-place = Open a window of an app on the layout, as the caller's: beside the window in front, on the record it names or the app's own. A record a window shows already stays where it is.
 so-tilo-layout-close = Close a window on the layout, everywhere it is shown. Its record stays in the workspace.
 
+# What a device's package cache offers, as its daemon publishes it.
+so-tilo-packages-collect = Reclaim what nothing needs
+so-tilo-packages-verify = Check the installed apps against their packages
+so-tilo-packages-runtime-install = Build and install a runtime
+so-tilo-packages-runtime-fetch = Fetch and install a runtime a repository offers
+so-tilo-packages-runtime-remove = Remove a runtime
+so-tilo-packages-runtime-pin = Keep a runtime
+so-tilo-packages-runtime-unpin = Let a runtime go when nothing runs on it
+so-tilo-packages-image-add = Add an environment image
+so-tilo-packages-image-remove = Remove an environment image
+so-tilo-packages-image-fetch = Fetch an environment image
+so-tilo-packages-flatpak-remote-add = Add a Flatpak repository
+so-tilo-packages-flatpak-remote-remove = Remove a Flatpak repository
+so-tilo-packages-flatpak-remote-enable = Enable a Flatpak repository
+so-tilo-packages-flatpak-remote-disable = Disable a Flatpak repository
+so-tilo-packages-flatpak-flathub = Add Flathub
+so-tilo-packages-flatpak = What this device's Flatpak installation has
+so-tilo-packages-flatpak-catalogue = The apps a Flatpak repository offers
+so-tilo-packages-catalogue = The apps a Tilo repository offers
+so-tilo-packages-runtime-offer = The build of a runtime a Tilo repository offers
+
 # The steps of an agent session's tools, as the daemon lists them.
 agent-tools-resource = Agent tools
 agent-tools-list = List the tools
