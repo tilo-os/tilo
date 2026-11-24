@@ -66,7 +66,7 @@ impl ShellDispatch {
     async fn ask_as(
         shell: &ShellClient,
         workspace: Option<String>,
-        caller: Option<Vec<u8>>,
+        caller: Option<tilo_actions::remote::KeptCaller>,
         message: RemoteActionMessage,
     ) -> Result<RemoteActionMessage, ActionCallError> {
         let unavailable = |reason: String| ActionCallError::Unavailable { reason };
@@ -103,11 +103,11 @@ impl ShellDispatch {
         let workspace = caller.workspace().map(str::to_owned);
         let named = named(caller);
         self.0.runtime.spawn(async move {
-            let asked = match named {
-                Ok(named) => Self::ask_as(&shell, workspace, named, message).await,
-                Err(error) => Err(error),
-            };
-            done.complete(asked.and_then(answer));
+            done.complete(
+                Self::ask_as(&shell, workspace, named, message)
+                    .await
+                    .and_then(answer),
+            );
         });
         result
     }
@@ -207,21 +207,14 @@ fn unexpected() -> ActionCallError {
 
 /// Who the daemon decides a call as: `None` for the person the shell's link was made for (and for
 /// the shell's own system work, which the link carries as that person), else the caller itself,
-/// an app or an agent acting for them, kept ([`tilo_actions::remote::KeptCaller`]) as JSON.
-fn named(caller: &Caller) -> Result<Option<Vec<u8>>, ActionCallError> {
+/// an app or an agent acting for them.
+fn named(caller: &Caller) -> Option<tilo_actions::remote::KeptCaller> {
     let acting = caller.acting();
     let person = acting.is_person()
         && acting.app().is_none()
         && !caller.is_session_delegated()
         && !caller.is_foreign_device();
-    if person || caller.is_system() {
-        return Ok(None);
-    }
-    serde_json::to_vec(&caller.kept())
-        .map(Some)
-        .map_err(|error| ActionCallError::Unavailable {
-            reason: format!("the caller does not encode: {error}"),
-        })
+    (!person && !caller.is_system()).then(|| caller.kept())
 }
 
 /// A read of a record outside its app, asked of the daemon, which holds the workspaces and decides
@@ -243,15 +236,13 @@ impl ResourceReads for ShellDispatch {
             read,
         };
         self.0.runtime.spawn(async move {
-            let asked = match named {
-                Ok(named) => Self::ask_as(&shell, workspace, named, message).await,
-                Err(error) => Err(error),
-            };
             done.complete(
-                asked.unwrap_or_else(|error| RemoteActionMessage::ResourceReading {
-                    correlation,
-                    result: Err(error),
-                }),
+                Self::ask_as(&shell, workspace, named, message)
+                    .await
+                    .unwrap_or_else(|error| RemoteActionMessage::ResourceReading {
+                        correlation,
+                        result: Err(error),
+                    }),
             );
         });
         result
@@ -487,9 +478,7 @@ async fn serve(
         return Err("a provider the shell serves answers calls alone".to_owned());
     };
     // Who the call is the daemon's word, on the link it made for this shell alone.
-    let caller = serde_json::from_slice::<tilo_actions::remote::KeptCaller>(&caller)
-        .map_err(|error| format!("the call names no caller: {error}"))?
-        .carried();
+    let caller = caller.carried();
     let mut message = RemoteActionFrame::decode(&frame)
         .map_err(|error| error.to_string())?
         .message;

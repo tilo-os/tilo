@@ -413,11 +413,12 @@ async fn a_person_and_who_acts_for_them_read_here_and_nobody_acting_for_nobody()
     h.admit_scribe().await;
     let person = h.person();
     assert!(document(&h.read(&person, &h.kitchen, "").await));
-    // An app reads another app's record as the person whose session runs it.
+    // The device's reader of its workspaces knows no app's declared grant, so it reads nothing for
+    // an app: an app reads through a reader that bounds it by what it declares.
     let messages = Caller::local_app("so.tilo.messages")
         .acting_for(h.person.clone())
         .in_workspace(h.kitchen.clone());
-    assert!(document(&h.read(&messages, &h.kitchen, "").await));
+    assert!(not_read(&h.read(&messages, &h.kitchen, "").await));
     // An agent the person's own device handed its session to reads no record outside its app;
     // nor does an agent or an app acting for nobody.
     for caller in [
@@ -576,15 +577,11 @@ async fn before_sign_in_the_device_reads_the_workspace_founded_on_it_alone() {
     let device = Caller::local_person(h.person.clone()).in_workspace(h.kitchen.clone());
     let read = read_with(std::sync::Arc::clone(&reads), &device, &h.kitchen, "").await;
     assert!(document(&read), "{read:?}");
-    // Garden's owner is the device's own person, so its grants would allow the read: it is
-    // refused because nobody signed in, and the device founded only Kitchen.
-    for caller in [
-        settings.clone(),
-        Caller::local_person(h.person.clone()).in_workspace(h.garden.clone()),
-    ] {
-        let read = read_with(std::sync::Arc::clone(&reads), &caller, &h.garden, "").await;
-        assert!(not_read(&read), "{read:?}");
-    }
+    // Garden's owner is the device's own person, so its grants would allow its person's read: an
+    // app that names nobody reads it no more, as the device founded only Kitchen. A caller that
+    // names the person is decided by Garden's governance, as any other.
+    let read = read_with(std::sync::Arc::clone(&reads), &settings, &h.garden, "").await;
+    assert!(not_read(&read), "{read:?}");
     // Nothing reads as this device but what runs on it: no agent, and no other person.
     let agent = Caller::local_agent("scribe")
         .acting_for(h.person.clone())
@@ -597,5 +594,55 @@ async fn before_sign_in_the_device_reads_the_workspace_founded_on_it_alone() {
     let stranger = Caller::local_person("someone else").in_workspace(h.kitchen.clone());
     let read = read_with(reads, &stranger, &h.kitchen, "").await;
     assert!(not_read(&read), "{read:?}");
+    h.server.shutdown().await;
+}
+
+/// The reader of a device's dispatch, its apps declaring what `declared` says of each: Notes its
+/// notes alone, every other app nothing of its own.
+fn dispatch_reads(
+    h: &Host,
+) -> (
+    std::sync::Arc<dyn ResourceReads>,
+    crate::apps::collab_broker::AppActionBroker,
+) {
+    let membership = crate::apps::test_support::WorkspaceTree::default().shared();
+    let declared: crate::apps::app_actions::AppResourceKindsResolver =
+        std::sync::Arc::new(|app: &str| {
+            if app == NOTES {
+                vec!["Note".to_owned()]
+            } else {
+                Vec::new()
+            }
+        });
+    let services = crate::apps::services::ProcessServices {
+        app_resource_kinds: Some(declared),
+        ..membership.services()
+    };
+    let broker = crate::apps::collab_app_broker::AppBrokerState::test_broker_with_authority(
+        membership.authority(),
+        services,
+    );
+    let reads = super::RecordReads::with_apps(h.workspaces(), broker.state(), None);
+    (reads, broker)
+}
+
+/// An app reads as the one actor the dispatch decides its calls as: bounded by the kinds it
+/// declares in its own resources, and as the person it acts for elsewhere.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_reads_no_kind_outside_what_it_declares() {
+    let h = host().await;
+    let (reads, _broker) = dispatch_reads(&h);
+    let notes = Caller::local_app(NOTES)
+        .acting_for(h.person.clone())
+        .in_workspace(h.kitchen.clone());
+    // The record is of no kind Notes declares: Notes may not read it, though its person may.
+    let read = read_with(std::sync::Arc::clone(&reads), &notes, &h.kitchen, "").await;
+    assert!(not_read(&read), "{read:?}");
+    // Another app reads Notes' record as its person, which declares nothing there.
+    let messages = Caller::local_app("so.tilo.messages")
+        .acting_for(h.person.clone())
+        .in_workspace(h.kitchen.clone());
+    let read = read_with(reads, &messages, &h.kitchen, "").await;
+    assert!(document(&read), "{read:?}");
     h.server.shutdown().await;
 }

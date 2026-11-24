@@ -266,14 +266,13 @@ pub enum Ask {
     },
     /// A call of the provider the endpoint serves on `channel` ([`shell::ShellCall::Provide`]):
     /// a `tilo_actions::remote::RemoteActionFrame` request, as the device's dispatch admitted it,
-    /// answered as [`Answer::Action`]. `caller` is who the dispatch admitted it for (a
-    /// `tilo_actions::remote::KeptCaller` as JSON), which only the device's daemon says, on the
-    /// link it made for its own shell. What the person typed into the ask an approved call
+    /// answered as [`Answer::Action`]. `caller` is who the dispatch admitted it for, which only
+    /// the device's daemon says, on the link it made for its own shell. What the person typed into the ask an approved call
     /// answers travels beside the frame in `typed`, on this local connection alone, never in it.
     Action {
         channel: Handle,
         frame: Vec<u8>,
-        caller: Vec<u8>,
+        caller: tilo_actions::remote::KeptCaller,
         typed: shell::Typed,
     },
 }
@@ -701,7 +700,7 @@ mod tests {
                 ask: Ask::Action {
                     channel: Handle(2),
                     frame: br#"{"version":1}"#.to_vec(),
-                    caller: b"{}".to_vec(),
+                    caller: tilo_actions::remote::Caller::local_person("someone").kept(),
                     typed,
                 },
             };

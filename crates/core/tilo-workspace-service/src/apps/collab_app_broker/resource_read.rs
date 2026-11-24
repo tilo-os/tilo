@@ -28,22 +28,23 @@ impl AppBrokerState {
     }
 
     /// Who `caller`, a caller inside this device, reads `workspace`'s records as: the caller as
-    /// the read is decided in that workspace, for the person signed in here, or before anyone
-    /// signs in, this device in the workspace it founded. Its execution must still run.
+    /// the read is decided in that workspace, for the person it names. Its execution must still
+    /// run. With nobody signed in here, a caller that names nobody (an app on this device) reads
+    /// as this device in the workspace it founded.
     ///
     /// The workspace a caller's connection was admitted to decides nothing about another one it
     /// names: the read is decided there, for the caller's actor as it is in that workspace.
     ///
     /// # Errors
     /// A caller that reads no records here: one that reads for nobody, or before sign-in, one
-    /// that is not this device's own.
+    /// that names nobody outside the workspace founded here.
     pub(crate) fn reading_caller(
         &self,
         caller: &Caller,
         workspace: &str,
     ) -> Result<Caller, ActionCallError> {
         super::action_provider::check_execution(caller)?;
-        if self.services.local_person.is_none() {
+        if self.services.local_person.is_none() && names_nobody(caller) {
             return self.device_reader(caller, workspace);
         }
         if person_reading(caller).is_none() {
@@ -300,6 +301,20 @@ fn agent_person(caller: &Caller) -> Option<(&str, &str)> {
         return None;
     }
     Some((caller.acting_for_person()?, caller.workspace()?))
+}
+
+/// Whether `caller` names no person to read for: an app acting for nobody, or a person with no
+/// id, as what runs on a device nobody signed in on calls.
+fn names_nobody(caller: &Caller) -> bool {
+    let acting = caller.acting();
+    let nobody = |person: Option<&str>| person.is_none_or(str::is_empty);
+    if acting.is_agent() || acting.is_bot() || acting.is_automation() {
+        return false;
+    }
+    match acting.app() {
+        Some(_) => nobody(caller.acting_for_person()),
+        None => nobody(acting.person_id()),
+    }
 }
 
 /// Whose device certificate reads for `caller`: an agent's person, the person themself reading

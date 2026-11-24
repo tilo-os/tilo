@@ -162,14 +162,6 @@ fn short(id: &str) -> &str {
     id.get(..12).unwrap_or(id)
 }
 
-#[allow(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde's skip_serializing_if passes the field by reference"
-)]
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
 /// An automation: saved steps with triggers, running for the member who owns
 /// it. Not a member.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
@@ -360,31 +352,76 @@ impl std::fmt::Display for Actor {
 /// Who made a change, and who they acted for, as a tree: an automation a person
 /// set up, run by an agent, for two people, is
 /// `Automation(1) for [Agent(1) for [Person(Q), Person(X)]]`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// A text format (JSON) writes only what the tree names, as every history entry and signed claim
+/// already holds it; a positional format (the shell's link) writes every field, since it reads
+/// field by field and cannot tell a left-out field from the next one.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct Acting {
     pub by: Actor,
     /// The app the change was made through.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub app: Option<AppId>,
     /// The agent session that acted, when an agent did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub agent_session: Option<AgentSessionId>,
     /// What started the work: the chat message, the issue.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cause: Option<ResourceId>,
     /// A person working from a device that is not theirs.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub foreign_device: bool,
     /// An agent a person's own device handed its session to, acting for that
     /// person: it carries the delegation a device gives its agents
     /// ([`Self::handed_preset`]). A claim the signer of a change makes,
     /// honoured only from the device of the person it acts for
     /// ([`Self::signed_by`]).
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub handed: bool,
     /// Who this actor acted for. Empty for a person acting themselves.
-    #[serde(default, rename = "for", skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, rename = "for")]
     pub acted_for: Vec<Acting>,
+}
+
+impl Serialize for Acting {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        // What a text format leaves out is what the tree does not name.
+        let every = !serializer.is_human_readable();
+        let mut out = serializer.serialize_struct("Acting", 7)?;
+        out.serialize_field("by", &self.by)?;
+        if every || self.app.is_some() {
+            out.serialize_field("app", &self.app)?;
+        } else {
+            out.skip_field("app")?;
+        }
+        if every || self.agent_session.is_some() {
+            out.serialize_field("agent_session", &self.agent_session)?;
+        } else {
+            out.skip_field("agent_session")?;
+        }
+        if every || self.cause.is_some() {
+            out.serialize_field("cause", &self.cause)?;
+        } else {
+            out.skip_field("cause")?;
+        }
+        if every || self.foreign_device {
+            out.serialize_field("foreign_device", &self.foreign_device)?;
+        } else {
+            out.skip_field("foreign_device")?;
+        }
+        if every || self.handed {
+            out.serialize_field("handed", &self.handed)?;
+        } else {
+            out.skip_field("handed")?;
+        }
+        if every || !self.acted_for.is_empty() {
+            out.serialize_field("for", &self.acted_for)?;
+        } else {
+            out.skip_field("for")?;
+        }
+        out.end()
+    }
 }
 
 impl Acting {

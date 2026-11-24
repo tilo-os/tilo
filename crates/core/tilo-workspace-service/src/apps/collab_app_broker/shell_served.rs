@@ -165,16 +165,11 @@ impl LinkProvider {
                 .encode()
                 .map_err(|error| error.to_string())
                 .and_then(|frame| {
-                    serde_json::to_vec(&caller.kept())
-                        .map(|caller| (frame, caller))
-                        .map_err(|error| error.to_string())
-                })
-                .and_then(|(frame, caller)| {
                     let (answer, answered) = oneshot::channel();
                     let ask = Ask::Action {
                         channel: self.channel,
                         frame,
-                        caller,
+                        caller: caller.kept(),
                         typed,
                     };
                     self.asks

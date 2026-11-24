@@ -212,8 +212,8 @@ impl RecordReads {
     }
 
     /// Whether `caller` reads `address` as the actor it is in the workspace the address names,
-    /// by that workspace's governed policy: an app acting for a person, an agent for its person,
-    /// each the smaller of its own grant and theirs. A caller inside this device that the
+    /// by that workspace's governed policy: an app acting for a person, bounded by the kinds it
+    /// declares, an agent for its person, each the smaller of its own grant and theirs. A caller inside this device that the
     /// workspace did not admit as a device reads as the apps here name it (the person signed in,
     /// or before anyone signs in, this device in the workspace it founded).
     #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
@@ -239,8 +239,11 @@ impl RecordReads {
                 _ => caller.clone(),
             },
         };
+        // An app reads as the one actor the dispatch decides its calls as, bounded by what it
+        // declares; a reader with no apps to say that reads nothing for an app.
         let actor = match &broker {
             Some(broker) => broker.caller_actor(&decided, &address.workspace),
+            None if decided.acting().app().is_some() => return Err(refused()),
             None => tilo_broker_core::actor::BrokerActor::for_caller(&decided),
         };
         let seconds = now
