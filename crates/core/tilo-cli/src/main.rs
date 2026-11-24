@@ -1131,7 +1131,7 @@ fn run_hosted(
     workspace: Option<String>,
     cmd: Cmd,
     spelling: &tilo_control::front::Spelling,
-) -> Result<Result<ExitCode>, Cmd> {
+) -> Result<Result<ExitCode>, Box<Cmd>> {
     let needs_workspace = || anyhow::anyhow!("name the workspace: -w <name or id>");
     let reach = api::Reach { key_file, json };
     Ok(match cmd {
@@ -1179,7 +1179,7 @@ fn run_hosted(
         Cmd::Migrate { json, cmd } if workspace.is_some() => {
             migrate::run(cmd, json, workspace.as_deref())
         }
-        other => return Err(other),
+        other => return Err(Box::new(other)),
     })
 }
 
@@ -1339,6 +1339,28 @@ fn ticket_from_stdin(cmd: &mut Cmd) -> Result<()> {
     Ok(())
 }
 
+/// `tilo login --new`: a person's new identity here, with the tickets it issues.
+fn new_identity(name: Option<&str>, json: bool, tickets: &[String]) -> Result<ExitCode> {
+    let tickets = tickets
+        .iter()
+        .map(|kind| {
+            tilo_api::daemon::TicketKind::parse(kind)
+                .ok_or_else(|| anyhow!("{kind} is no ticket kind: `server` or `device`"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    identity::new_identity(name, json, &tickets)
+}
+
+/// `tilo boot ENTRY`: boot one deployment once, with the argument a fixed unit cannot carry
+/// without becoming a way to run anything.
+fn boot_once(entry: &str) -> Result<ExitCode> {
+    require_system_provider()?;
+    if !is_root() {
+        bail!("booting a specific deployment once needs root:\n  sudo tilo boot {entry}");
+    }
+    run_helper_directly(&["boot", entry])
+}
+
 fn run(mut cli: Cli) -> Result<ExitCode> {
     ticket_from_stdin(&mut cli.cmd)?;
     if cli.key_file.is_none() {
@@ -1357,7 +1379,7 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         &spelling,
     ) {
         Ok(answered) => return answered,
-        Err(cmd) => cmd,
+        Err(cmd) => *cmd,
     };
     match cmd {
         Cmd::Do { .. }
@@ -1387,16 +1409,7 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
             json,
             tickets,
             ..
-        } => {
-            let tickets = tickets
-                .iter()
-                .map(|kind| {
-                    tilo_api::daemon::TicketKind::parse(kind)
-                        .ok_or_else(|| anyhow!("{kind} is no ticket kind: `server` or `device`"))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            identity::new_identity(name.as_deref(), json, &tickets)
-        }
+        } => new_identity(name.as_deref(), json, &tickets),
         Cmd::Login {
             ticket,
             agent,
@@ -1432,18 +1445,7 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
             )
         }
         Cmd::Update { yes } => update_everything(yes),
-        Cmd::Boot { entry } => {
-            require_system_provider()?;
-            // No unit for this one: it names an entry, and a fixed unit cannot carry an argument
-            // without becoming a way to run anything.
-            if !is_root() {
-                bail!(
-                    "booting a specific deployment once needs root:\n  \
-                     sudo tilo boot {entry}"
-                );
-            }
-            run_helper_directly(&["boot", &entry])
-        }
+        Cmd::Boot { entry } => boot_once(&entry),
         Cmd::Repair => {
             require_system_provider()?;
             print_repair_help();

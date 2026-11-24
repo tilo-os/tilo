@@ -307,12 +307,11 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
 }
 
 /// The workspace this computer's daemon serves, where its `devices` actions are asked: the one
-/// its login names, else the one it founded.
-async fn served(client: &Calls) -> Result<String> {
-    match login::home().filter(Device::reaches_a_server) {
-        Some(device) => Ok(device.workspace),
-        None => client.founded_workspace().await,
-    }
+/// its login names, when that login reaches a server.
+fn named_workspace() -> Option<String> {
+    login::home()
+        .filter(Device::reaches_a_server)
+        .map(|device| device.workspace)
 }
 
 /// This computer's certificate: its login's, else the one its person's root here signed for it.
@@ -479,7 +478,10 @@ pub fn rename(which: &str, name: &str) -> Result<ExitCode> {
         let client = daemon().await?;
         let devices = devices(&client).await?;
         let target = pick(&devices, which)?;
-        let workspace = served(&client).await?;
+        let workspace = match named_workspace() {
+            Some(workspace) => workspace,
+            None => client.founded_workspace().await?,
+        };
         client
             .act(
                 Some(&workspace),
@@ -566,7 +568,10 @@ pub fn revoke(which: &str, why: Why, yes: bool) -> Result<ExitCode> {
                 target.label
             );
         }
-        let workspace = served(&client).await?;
+        let workspace = match named_workspace() {
+            Some(workspace) => workspace,
+            None => client.founded_workspace().await?,
+        };
         client
             .act(
                 Some(&workspace),

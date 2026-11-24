@@ -308,7 +308,7 @@ pub fn invocations(
             .unwrap_or_default();
         let shown: Vec<Value> = items.iter().skip(offset).take(page).cloned().collect();
         let end = offset.saturating_add(shown.len());
-        let mut listed = fields.clone();
+        let mut listed = fields;
         if let Some(fields) = listed.as_object_mut() {
             fields.insert("items".to_owned(), Value::Array(shown));
             match (end < items.len()).then(|| end.to_string()) {
@@ -1118,7 +1118,7 @@ mod tests {
             None
         );
 
-        exports_a_key_of_its_own(dir.path(), &root, &device, &mut env);
+        exports_a_key_of_its_own(dir.path(), &root, &device, &env);
     }
 
     /// A key `tilo do account/keys#create --out FILE` wrote (the key alone, as the SDKs take it)
@@ -1128,7 +1128,7 @@ mod tests {
         dir: &Path,
         root: &ed25519_dalek::SigningKey,
         device: &crate::login::Device,
-        env: &mut tilo_test_env::ScopedEnv,
+        env: &tilo_test_env::ScopedEnv,
     ) {
         use std::os::unix::fs::PermissionsExt as _;
         let _ = env;
@@ -1248,7 +1248,7 @@ mod tests {
                             },
                             || {
                                 write_secret(&path, &serde_json::to_vec_pretty(&first).unwrap())
-                                    .unwrap()
+                                    .unwrap();
                             },
                         );
                     });
