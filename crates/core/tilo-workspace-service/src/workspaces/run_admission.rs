@@ -217,11 +217,15 @@ impl Workspaces {
                 .map_err(|_| "the workspace is held neither here nor as a member copy")?;
             Pinned::Own
         };
+        // A run of this device's own person, whose root certifies this very device, is on their
+        // own device. Any other certificate is a foreign device, as is one its root issued for a
+        // foreign device.
+        let on_own_device = own.device_public_key == self.device_cert().device_public_key
+            && !own.capabilities.foreign
+            && tilo_user_identity::verify_device_cert(own).is_ok();
         let caller = Caller::authenticated(own.user_public_key, own.device_public_key)
             .in_workspace(workspace)
-            // Preserve the standalone host's existing foreign-device restriction,
-            // including when a signed certificate permits a stronger device.
-            .from_foreign_device(true)
+            .from_foreign_device(!on_own_device)
             .in_new_execution();
         if caller.acting().person_id() != Some(actor) {
             caller.retire_execution();
