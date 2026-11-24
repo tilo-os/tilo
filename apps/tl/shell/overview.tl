@@ -89,7 +89,9 @@ fn access_words() -> Text {
         std.say("Shared with {name}")
     } else if others.len() == 2 {
         std.say("Shared with {name} and {second}")
-    } else { std.say("Shared with {name} and {more} others") }
+    } else {
+        std.say("Shared with {name} and {more} others")
+    }
 }
 
 /// One strip: its windows as places leading to trailing, each at its share of the strip's

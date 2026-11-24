@@ -230,7 +230,21 @@ pub struct FloatingPanel {
     pointer: Point,
     /// What holds it: the room it is dragged in, and the corner its place is counted from.
     room: Rect,
+    /// What hears the width the person drew its trailing edge out or in to: a panel with one
+    /// resizes when that edge is dragged.
+    resized: Option<Box<dyn FnMut(f64)>>,
+    /// A drag of its trailing edge in flight: the pointer's x and the width when it took hold.
+    resize: Option<(f64, f64)>,
+    /// Its width changed under a drag and its layout must be solved again.
+    width_changed: bool,
 }
+
+/// How far either side of its trailing edge a press takes hold of a resizable panel's edge.
+const EDGE_GRIP: f64 = 5.0;
+/// The narrowest and widest a person can draw a panel: room for a line of words, and no wider
+/// than a card reads.
+const RESIZE_MIN: f64 = 200.0;
+const RESIZE_MAX: f64 = 640.0;
 
 /// The least the pointer moves before a press on a panel's header counts as a drag.
 const DRAG_SLOP: f64 = 4.0;
@@ -295,6 +309,80 @@ impl FloatingPanel {
             drag: None,
             pointer: Point::ZERO,
             room: Rect::ZERO,
+            resized: None,
+            resize: None,
+            width_changed: false,
+        }
+    }
+
+    /// Resize when the person drags its trailing edge, and tell `resized` the width they let it
+    /// go at, in logical pixels: the panel follows the edge as it moves.
+    #[must_use]
+    pub fn resizable(mut self, resized: impl FnMut(f64) + 'static) -> Self {
+        self.resized = Some(Box::new(resized));
+        self
+    }
+
+    /// Whether its trailing edge resizes it.
+    #[must_use]
+    pub fn is_resizable(&self) -> bool {
+        self.resized.is_some()
+    }
+
+    /// Whether `point` takes hold of the trailing edge.
+    fn on_edge(&self, point: Point) -> bool {
+        self.resized.is_some()
+            && (point.x - self.rect.x1).abs() <= EDGE_GRIP
+            && point.y >= self.rect.y0
+            && point.y <= self.rect.y1
+    }
+
+    /// A drag of the trailing edge: taken by a press on it, followed while it moves, and told
+    /// where it let go. Whether the event was the edge's.
+    fn resize_event(&mut self, event: &WindowEvent, ctx: &crate::widget::EventCtx<'_>) -> bool {
+        use winit::event::{ElementState, MouseButton};
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let pointer = ctx.logical(position);
+                let Some((from, width)) = self.resize else {
+                    return false;
+                };
+                self.pointer = pointer;
+                let wanted = (width + pointer.x - from)
+                    .clamp(RESIZE_MIN, RESIZE_MAX)
+                    .round();
+                if self.width.map(f64::from) != Some(wanted) {
+                    self.width = Some(crate::num::f32_of_f64(wanted));
+                    self.width_changed = true;
+                }
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if !self.on_edge(self.pointer) {
+                    return false;
+                }
+                self.resize = Some((self.pointer.x, self.rect.width()));
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.resize.take().is_none() {
+                    return false;
+                }
+                let width = self.width.map_or(self.rect.width(), f64::from);
+                if let Some(resized) = &mut self.resized {
+                    resized(width);
+                }
+                true
+            }
+            _ => false,
         }
     }
 
@@ -372,7 +460,11 @@ impl FloatingPanel {
 
     /// [`Self::width`] after construction; `None` takes its content's width.
     pub fn set_width(&mut self, px: Option<f32>) {
-        self.width = px;
+        // The person's hand on its edge wins over the width a view last said, until they let go.
+        if self.resize.is_none() && self.width != px {
+            self.width = px;
+            self.width_changed = true;
+        }
     }
 
     /// What assistive technology calls it, and the one line said after that name.
@@ -900,6 +992,14 @@ impl Widget for FloatingPanel {
                 ..
             }
         );
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = ctx.logical(position);
+        }
+        // The trailing edge of a resizable panel is its own grip, before anything inside it.
+        if self.resized.is_some() && self.resize_event(event, ctx) {
+            *ctx.handled = true;
+            return;
+        }
         if self.moved.is_some() && !press && self.drag_event(event, ctx) {
             *ctx.handled = true;
             return;
@@ -960,6 +1060,31 @@ impl Widget for FloatingPanel {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.resize.is_some() || self.on_edge(point))
+            .then_some(winit::window::CursorIcon::EwResize)
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.resize.is_some()
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.width_changed
+            || crate::widget::defaults::is_layout_dirty(&|visit| self.for_each_child(visit))
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.width_changed || {
+            crate::widget::defaults::layout_needs_measure(&|visit| self.for_each_child(visit))
+                .unwrap_or_else(|| self.is_layout_dirty())
+        }
+    }
+
+    fn layout_measured(&mut self) {
+        self.width_changed = false;
     }
 
     /// A panel that names itself reads as the thing it is: a modal panel is a dialog, holding the

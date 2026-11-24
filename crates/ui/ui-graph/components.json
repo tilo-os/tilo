@@ -5727,6 +5727,11 @@
           }
         },
         {
+          "name": "resized",
+          "doc": "The person drew its trailing edge out or in and let it go: carries the width it rests at, in logical pixels. A panel with this resizes when that edge is dragged, following it.",
+          "value": "float"
+        },
+        {
           "name": "dismiss",
           "doc": "A press landed off the panel, on nothing of its own: a panel with this is dismissed by it."
         }
