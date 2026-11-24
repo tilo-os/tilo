@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use crate::disk;
 
@@ -79,38 +79,17 @@ pub enum Msg {
 pub struct Job {
     rx: Receiver<Msg>,
     cancel: Arc<AtomicBool>,
-    finished: bool,
 }
 
 impl Job {
-    #[expect(
-        dead_code,
-        reason = "a search is asked whether it finished by its status; the flag stays for the walk's own reads"
-    )]
-    pub fn is_finished(&self) -> bool {
-        self.finished
-    }
-
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
     pub fn drain(&mut self) -> Vec<Msg> {
         let mut out = Vec::new();
-        loop {
-            match self.rx.try_recv() {
-                Ok(msg) => {
-                    if matches!(msg, Msg::Done { .. }) {
-                        self.finished = true;
-                    }
-                    out.push(msg);
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.finished = true;
-                    break;
-                }
-            }
+        while let Ok(msg) = self.rx.try_recv() {
+            out.push(msg);
         }
         out
     }
@@ -135,11 +114,7 @@ pub fn start(root: &Path, query: Query) -> Job {
                 send_cancellable(&tx, msg, &worker_cancel)
             });
         });
-    Job {
-        rx,
-        cancel,
-        finished: false,
-    }
+    Job { rx, cancel }
 }
 
 fn send_cancellable(tx: &SyncSender<Msg>, mut msg: Msg, cancel: &AtomicBool) -> bool {
@@ -541,14 +516,15 @@ mod tests {
         let d = fixture();
         let mut job = start(d.path(), q("needle"));
         let mut hits = Vec::new();
+        let mut finished = false;
         tilo_test_env::wait_until("the worker to report Done", || {
             for msg in job.drain() {
                 match msg {
                     Msg::Hits(h) => hits.extend(h),
-                    Msg::Done { .. } => {}
+                    Msg::Done { .. } => finished = true,
                 }
             }
-            job.is_finished()
+            finished
         });
         assert_eq!(hits.len(), 2);
     }

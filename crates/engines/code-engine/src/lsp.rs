@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use tilo_test_env::SpawnUnderEnvLock;
 use lsp_types::notification::{
     DidChangeTextDocument, DidOpenTextDocument, DidSaveTextDocument, Initialized, Notification,
     Progress as ProgressNotification, PublishDiagnostics,
@@ -961,13 +963,12 @@ impl LspClient {
     /// A client to a process that reads what it is sent and never answers.
     #[cfg(test)]
     pub(crate) fn inert() -> LspClient {
-        let child = Command::new(std::env::current_exe().expect("test executable"))
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
             .arg("--list")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .spawn_locked()
             .expect("spawn inert test executable");
-        let mut child = child;
         let stdin = child.stdin.take().expect("piped stdin");
         let (_tx, rx) = mpsc::channel();
         LspClient {
