@@ -22,6 +22,19 @@ fn writer() -> PermissionContext {
     )
 }
 
+/// The store's answer to the asked record a call was kept as, as its resend carries it: these
+/// tests stand in for the device that answers.
+fn approval() -> tilo_actions::remote::asked::Approval {
+    tilo_actions::remote::asked::Approval::new(
+        tilo_actions::remote::asked::RecordRef {
+            workspace: TEST_WORKSPACE.to_owned(),
+            record: format!("invocations/{}", tilo_actions::InvocationId::new().0),
+            device: None,
+        },
+        None,
+    )
+}
+
 fn attached(app: &TestApp<TallyApp>, permissions: PermissionContext) -> AttachedView {
     let definition = definition::<TallyApp>();
     AttachedView::open(
@@ -56,7 +69,7 @@ tilo_test_env::scenario! {
                 .any(|operation| operation.address == bump),
             "the view offers what a person's window offers"
         );
-        view.invoke(&bump, &serde_json::Map::new(), false).unwrap();
+        view.invoke(&bump, &serde_json::Map::new(), None).unwrap();
         assert!(view.landed().is_some(), "the action ran in the view");
         let changes = view
             .take_changes()
@@ -90,7 +103,7 @@ tilo_test_env::scenario! {
             "Count",
             "agent-session",
         )));
-        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
         view.set_context(None);
         assert_eq!(count(&view), 1);
 
@@ -123,7 +136,7 @@ tilo_test_env::scenario! {
             false,
         )
         .unwrap();
-        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
         merge(&mut app, &mut view);
         let invoker = app
             .versions()
@@ -142,7 +155,7 @@ tilo_test_env::scenario! {
         let before = app.versions().len();
         view.invoke_typed(
             &Invoke::group([Tally::RENAME.with("guests"), Tally::RENAME.with("members")]),
-            false,
+            None,
         )
         .unwrap();
         merge(&mut app, &mut view);
@@ -154,7 +167,7 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<TallyApp>::new().unwrap();
         let mut view = attached(&app, writer());
-        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
         let last = view
             .read(|doc| tilo_resource::history::versions(&mut doc.clone()))
             .unwrap()
@@ -191,7 +204,7 @@ tilo_test_env::scenario! {
             PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
         let mut view = attached(&app, reader);
         let bump = tilo_actions::ActionAddress::new("test.tally", "bump");
-        assert!(view.invoke(&bump, &serde_json::Map::new(), false).is_err());
+        assert!(view.invoke(&bump, &serde_json::Map::new(), None).is_err());
         assert!(view.take_changes().unwrap().is_none());
     }
 
@@ -204,7 +217,7 @@ tilo_test_env::scenario! {
         assert!(view.operations().is_empty());
         // Refused as an edit the agent may not make, never as one the app
         // does not have: an agent told that looks for another way.
-        let refused = view.invoke_typed(&Tally::BUMP.invoke(), false).map(drop);
+        let refused = view.invoke_typed(&Tally::BUMP.invoke(), None).map(drop);
         assert!(
             matches!(
                 &refused,
@@ -238,10 +251,10 @@ tilo_test_env::scenario! {
         // The named action, and the ways any value of it is invoked: a typed edit, a group of
         // them, a field edit. Each admits only the values the grant reaches.
         assert_eq!(actions, ["bump", "apply", "group", "field-edit"]);
-        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
         assert_eq!(count(&view), 1);
         assert!(
-            view.invoke_typed(&Tally::RENAME.with("guests"), false)
+            view.invoke_typed(&Tally::RENAME.with("guests"), None)
                 .is_err()
         );
         assert_eq!(count(&view), 1);
@@ -347,7 +360,7 @@ tilo_test_env::scenario! {
             KindSet::READ_UNDOABLE,
         );
         let mut view = attached(&app, only_bump);
-        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
         all_refused(
             asked(&mut view, "rename", &Tally::RENAME.with("guests")),
             "an agent granted bump alone",
@@ -394,7 +407,7 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<TallyApp>::new().unwrap();
         let mut view = attached(&app, writer());
-        view.invoke_typed(&Tally::BUMP.invoke(), false).unwrap();
+        view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
 
         let taken = view.while_resources_busy(AttachedView::take_changes).unwrap();
         let error = taken.expect_err("a change that could not be collected is not 'nothing changed'");
@@ -411,7 +424,7 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<TallyApp>::new().unwrap();
         let mut view = attached(&app, writer());
-        view.invoke_typed(&Tally::RENAME.with("ours"), false)
+        view.invoke_typed(&Tally::RENAME.with("ours"), None)
             .unwrap();
         app.invoke(Tally::BUMP.invoke()).unwrap();
         let theirs = DocumentMutation::Snapshot(app.read_document(|doc| doc.clone().save()));
@@ -487,7 +500,7 @@ tilo_test_env::scenario! {
         };
         let mut before = String::new();
         for entry in ["lamps", "chairs"] {
-            let (_, acting) = observe(|| view.invoke_typed(&Log::ASK.with(entry), false).unwrap());
+            let (_, acting) = observe(|| view.invoke_typed(&Log::ASK.with(entry), None).unwrap());
             assert_eq!(frames(&acting), 0, "the action lays nothing out");
             assert_eq!(answer(&view), before, "reading the record lays nothing out");
             assert!(view.take_changes().unwrap().is_some(), "the ask leaves alone");
@@ -538,7 +551,7 @@ tilo_test_env::scenario! {
             (&mut first, "from the first page"),
             (&mut second, "from the second page"),
         ] {
-            page.invoke_typed(&Tally::RENAME.with(name), false).unwrap();
+            page.invoke_typed(&Tally::RENAME.with(name), None).unwrap();
             let Some(DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes)) =
                 page.take_changes().unwrap()
             else {
@@ -638,7 +651,7 @@ tilo_test_env::scenario! {
         assert_eq!(publications(&reading), 0, "and read again as it was");
         assert_eq!(again, first.0);
 
-        view.invoke_typed(&Tally::RENAME.with("visitors"), false)
+        view.invoke_typed(&Tally::RENAME.with("visitors"), None)
             .unwrap();
         let renamed = tree(&view);
         assert_ne!(renamed, first.0, "what the view did is published");
@@ -729,23 +742,24 @@ fn asked(
     vec![
         (
             format!("{action} by its address"),
-            view.invoke(&address, &typed.arguments, false).map(drop),
+            view.invoke(&address, &typed.arguments, None).map(drop),
         ),
         (
             format!("{action} by its address, confirmed"),
-            view.invoke(&address, &typed.arguments, true).map(drop),
+            view.invoke(&address, &typed.arguments, Some(&approval()))
+                .map(drop),
         ),
         (
             format!("{action} by its typed reference"),
-            view.invoke_typed(typed, true).map(drop),
+            view.invoke_typed(typed, Some(&approval())).map(drop),
         ),
         (
             format!("{action} in a group"),
-            view.invoke_typed(&group, true).map(drop),
+            view.invoke_typed(&group, Some(&approval())).map(drop),
         ),
         (
             format!("{action} as an applied action"),
-            view.invoke_typed(&applied, true).map(drop),
+            view.invoke_typed(&applied, Some(&approval())).map(drop),
         ),
     ]
 }

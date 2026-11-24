@@ -1028,18 +1028,17 @@ impl AttachedView {
             .collect()
     }
 
-    /// Perform the operation `address` names through the view, for the
-    /// member: permission, confirmation and strict argument binding
-    /// exactly as for a person's click (`confirmed` when the person it acts
-    /// for confirmed it). The change it made leaves with
-    /// [`Self::take_changes`].
+    /// Perform the operation `address` names through the view, for the member:
+    /// permission, confirmation and strict argument binding exactly as for a
+    /// person's click, `approval` being the answer to its asked record on the
+    /// resend. The change it made leaves with [`Self::take_changes`].
     pub fn invoke(
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<ActionOutput, ApiError> {
-        self.invoke_appearing(address, arguments, confirmed, None)
+        self.invoke_appearing(address, arguments, approval, None)
     }
 
     /// [`Self::invoke`] showing `appearance`, which the API already admitted
@@ -1052,11 +1051,11 @@ impl AttachedView {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
         appearance: Option<tilo_actions::Appearance>,
     ) -> Result<ActionOutput, ApiError> {
         let invoker = self.invoker_appearing(appearance);
-        self.invoke_as(invoker, address, arguments, confirmed)
+        self.invoke_as(invoker, address, arguments, approval)
     }
 
     /// Whom [`Self::invoke_appearing`] admits an operation for: the
@@ -1088,9 +1087,9 @@ impl AttachedView {
         invoker: tilo_actions::ActionInvoker,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<ActionOutput, ApiError> {
-        let (_, started) = self.start_as(invoker, address, arguments, confirmed)?;
+        let (_, started) = self.start_as(invoker, address, arguments, approval)?;
         // It answers once what it submitted is applied to the document; what
         // the view makes of that is made when the view is next read. A job
         // it started answers by itself.
@@ -1113,10 +1112,10 @@ impl AttachedView {
         invoker: tilo_actions::ActionInvoker,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
         within: ui_core::time::Duration,
     ) -> Result<ActionOutput, ApiError> {
-        let (invocation, started) = self.start_as(invoker, address, arguments, confirmed)?;
+        let (invocation, started) = self.start_as(invoker, address, arguments, approval)?;
         if let Some(output) = started.completed() {
             self.settle_acted();
             return Ok(output);
@@ -1165,7 +1164,7 @@ impl AttachedView {
         invoker: tilo_actions::ActionInvoker,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<
         (
             tilo_actions::InvocationId,
@@ -1189,9 +1188,6 @@ impl AttachedView {
         // shows, which whoever next reads the view lays out.
         self.moved();
         let frame = &mut **self.frame.get_mut();
-        // What the caller already answered for the person stands in for the approve their ask
-        // would come back with.
-        let approval = confirmed.then(|| frame.approval());
         frame.start_bound_job_within(
             Some(invoker),
             Some(&ambient),
@@ -1200,7 +1196,7 @@ impl AttachedView {
                 address: address.clone(),
             },
             arguments,
-            approval.as_ref(),
+            approval,
         )
     }
 
@@ -1214,7 +1210,7 @@ impl AttachedView {
     pub fn invoke_typed<R: tilo_resource::Resource>(
         &mut self,
         invoke: &tilo_resource::Invoke<R>,
-        confirmed: bool,
+        approval: Option<&tilo_actions::remote::asked::Approval>,
     ) -> Result<ActionOutput, ApiError> {
         if let Some(refusal) = invoke.refusal() {
             return Err(ApiError::InvalidArguments(refusal.to_owned()));
@@ -1241,43 +1237,8 @@ impl AttachedView {
         self.invoke(
             &ActionAddress::new(id.as_str(), invoke.id),
             &invoke.arguments,
-            confirmed,
+            approval,
         )
-    }
-
-    /// [`Self::invoke`] acting at `place` instead of at the member's
-    /// caret: `place` is given as the operation's place parameter
-    /// (`#[param(place)]`), and the member lands there.
-    ///
-    /// # Errors
-    /// As [`Self::invoke`]; refused as invalid arguments when the operation
-    /// takes no place.
-    pub fn invoke_at(
-        &mut self,
-        place: &tilo_resource::Place,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        confirmed: bool,
-    ) -> Result<ActionOutput, ApiError> {
-        let resources = self.resources();
-        let param = tilo_actions::api::survey(&resources)
-            .into_iter()
-            .find(|entry| &entry.address == address)
-            .ok_or_else(|| ApiError::Unknown(address.clone()))?
-            .params
-            .iter()
-            .find(|param| param.is_place())
-            .map(|param| param.name.to_string())
-            .ok_or_else(|| {
-                ApiError::InvalidArguments(format!("`{}` takes no place to act at", address.action))
-            })?;
-        let mut arguments = arguments.clone();
-        arguments.insert(
-            param,
-            serde_json::to_value(place)
-                .map_err(|error| ApiError::InvalidArguments(error.to_string()))?,
-        );
-        self.invoke(address, &arguments, confirmed)
     }
 
     /// The task the member carries out from now on (`None`: none),

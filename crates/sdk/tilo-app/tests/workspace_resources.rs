@@ -551,7 +551,7 @@ fn a_view_with_no_window_holds_the_workspaces_emoji_once_told_what_the_workspace
     let add = tilo_actions::ActionAddress::new(emoji::KIND, "add-emoji");
     let party = add_party();
     first
-        .invoke(&add, party.as_object().unwrap(), false)
+        .invoke(&add, party.as_object().unwrap(), None)
         .unwrap();
     let mut sent = first.take_resources_beside_changes().unwrap();
     assert_eq!(sent.len(), 1, "the emoji, and nothing else it keeps");

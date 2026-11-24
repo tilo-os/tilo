@@ -320,10 +320,10 @@ tilo_test_env::scenario! {
         .unwrap();
         let remark = Memo::REMARK.with("an agent's remark").build(0).unwrap();
         let line = Memo::ADD_LINE.with("an agent's line").build(0).unwrap();
-        view.invoke_typed(&Invoke::<Memo>::apply(&remark).unwrap(), false)
+        view.invoke_typed(&Invoke::<Memo>::apply(&remark).unwrap(), None)
             .expect("the agent remarks");
         assert!(
-            view.invoke_typed(&Invoke::<Memo>::apply(&line).unwrap(), false)
+            view.invoke_typed(&Invoke::<Memo>::apply(&line).unwrap(), None)
                 .is_err()
         );
         let memo = view
@@ -366,14 +366,14 @@ tilo_test_env::scenario! {
                 .unwrap()
         };
 
-        view.invoke_typed(&Invoke::<Memo>::apply(&mine).unwrap(), false)
+        view.invoke_typed(&Invoke::<Memo>::apply(&mine).unwrap(), None)
             .expect("the field its person let it write");
         assert_eq!(memo(&view).title, "Mine");
 
         // The same typed edit, another field: refused as a permission the
         // workspace does not give, and it writes nothing.
         let refused = view
-            .invoke_typed(&Invoke::<Memo>::apply(&other).unwrap(), false)
+            .invoke_typed(&Invoke::<Memo>::apply(&other).unwrap(), None)
             .expect_err("another field");
         assert!(
             matches!(
@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         let refused = view
-            .invoke_typed(&elsewhere, false)
+            .invoke_typed(&elsewhere, None)
             .expect_err("a field edit of another field");
         assert!(
             matches!(
@@ -423,7 +423,7 @@ tilo_test_env::scenario! {
             false,
         )
         .unwrap();
-        whole.invoke_typed(&elsewhere, false).expect("a writer");
+        whole.invoke_typed(&elsewhere, None).expect("a writer");
         assert_eq!(memo(&whole).lines.len(), 1);
     }
 }

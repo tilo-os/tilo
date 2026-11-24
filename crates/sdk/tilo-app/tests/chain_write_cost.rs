@@ -164,7 +164,7 @@ fn work_for_one_more_card(cards: usize) -> Vec<(&'static str, usize)> {
     let mut keeper = copy_for(&app, "bo");
     let put = tilo_actions::ActionAddress::new(chain_resource_id(&BoardPart::chain()), "put");
     let before: Vec<String> = (0..cards).map(|n| format!("card {n}")).collect();
-    writer.invoke(&put, &putting(&before), false).unwrap();
+    writer.invoke(&put, &putting(&before), None).unwrap();
     let parts = hand_over(&mut writer, &mut keeper);
     assert_eq!(parts.len(), 1, "every card went into the one part");
     // Each copy is read once: what the cards before cost is behind it.
@@ -177,7 +177,7 @@ fn work_for_one_more_card(cards: usize) -> Vec<(&'static str, usize)> {
             writer.descriptor(&put).is_some(),
             "the writer is offered it"
         );
-        writer.invoke(&put, &one, false).unwrap();
+        writer.invoke(&put, &one, None).unwrap();
         let changed = hand_over(&mut writer, &mut keeper);
         assert_eq!(changed, parts, "the card went into the same part");
         let _ = keeper.wanted_resources();
@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
         let mut keeper = copy_for(&app, "bo");
         let put = tilo_actions::ActionAddress::new(chain_resource_id(&BoardPart::chain()), "put");
         let cards: Vec<String> = (0..200).map(|n| format!("card {n}")).collect();
-        writer.invoke(&put, &putting(&cards), false).unwrap();
+        writer.invoke(&put, &putting(&cards), None).unwrap();
         let handed = writer.take_resources_beside_changes().unwrap();
         assert_eq!(handed.len(), 1, "every card went into the one part");
         tilo_automerge::shared::clear();

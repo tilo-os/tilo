@@ -483,9 +483,15 @@ fn start(
         instance_id,
         address: tilo_actions::ActionAddress::new("test.post", action),
     };
+    let approval = app.harness().approval();
     let (invocation, started) = app
         .harness()
-        .start_bound_job_for(None, &address, arguments.as_object().unwrap(), true)
+        .start_bound_job_for(
+            None,
+            &address,
+            arguments.as_object().unwrap(),
+            Some(&approval),
+        )
         .unwrap();
     assert!(
         started.completed().is_none(),

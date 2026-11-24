@@ -54,9 +54,15 @@ fn start_causal_action(
         instance_id,
         address: tilo_actions::ActionAddress::new("test.mailbox", action),
     };
+    let approval = app.harness().approval();
     let (invocation, started) = app
         .harness()
-        .start_bound_job_for(None, &address, arguments.as_object().unwrap(), true)
+        .start_bound_job_for(
+            None,
+            &address,
+            arguments.as_object().unwrap(),
+            Some(&approval),
+        )
         .unwrap();
     assert!(
         started.completed().is_none(),
@@ -752,13 +758,14 @@ fn start_named_receipt(app: &mut TestApp<MailApp>, action: &str) -> tilo_actions
         instance_id: app.harness().component_instance_id().unwrap(),
         address: tilo_actions::ActionAddress::new("test.mailbox", action),
     };
+    let approval = app.harness().approval();
     let (invocation, started) = app
         .harness()
         .start_bound_job_for(
             Some(tilo_actions::ActionInvoker::agent("receipt-writer")),
             &address,
             &serde_json::Map::new(),
-            true,
+            Some(&approval),
         )
         .unwrap();
     assert!(started.completed().is_none());
@@ -1099,9 +1106,10 @@ tilo_test_env::scenario! {
             instance_id,
             address: tilo_actions::ActionAddress::new("test.mailbox", "tally"),
         };
+        let approval = app.harness().approval();
         let (_, started) = app
             .harness()
-            .start_bound_job_for(None, &address, &serde_json::Map::new(), true)
+            .start_bound_job_for(None, &address, &serde_json::Map::new(), Some(&approval))
             .unwrap();
         assert!(started.completed().is_none());
         let reply = NESTED_REPLY.with(|saved| saved.borrow_mut().take().unwrap());
