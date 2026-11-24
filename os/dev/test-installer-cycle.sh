@@ -143,8 +143,14 @@ copy_evidence() {
   # The installer's own answer on its console, as it stood when the run
   # failed: why a screen was missing rather than only that it was.
   if [ -n "${console:-}" ] && [ -S "$console" ]; then
-    python3 "$dev_dir/installer-console.py" --socket "$console" state-dump --pretty \
-      > "$out/$label-console-state.json" 2>&1 || true
+    # Its state when it answers; why it did not when it does not.
+    local state_file="$out/$label-console-state.json"
+    if python3 "$dev_dir/installer-console.py" --socket "$console" state --save "$state_file" \
+      >/dev/null 2>"$state_file.err"; then
+      rm -f "$state_file.err"
+    else
+      mv -f "$state_file.err" "$state_file"
+    fi
   fi
   "$vm" status > "$out/$label-vm-status.txt" 2>&1 || true
 }
@@ -587,8 +593,15 @@ ic invoke set-passphrase@installer \
   --secret passphrase=TILO_PASS --secret confirmation=TILO_PASS \
   || die "installer rejected the configured startup secret"
 ic invoke next@installer || die "installer rejected the configured startup secret"
-ic wait-step review --save "$out/03-review.json" \
+# The profile answers Options, but the installer never skips the media-codec
+# consent: it asks every time, and the cycle declines.
+ic wait-step media --save "$out/03-media.json" \
   || die "installer rejected the configured startup secret"
+[ "$(field "$out/03-media.json" /media/codecs)" = false ] \
+  || die "the media step offered codecs already chosen"
+ic invoke next@installer || die "installer did not let the media codecs be skipped"
+ic wait-step review --save "$out/03-review.json" \
+  || die "installer did not reach Review after the media step"
 field "$out/03-review.json" /options/hostname | grep -Eqi 'cycle.?tilo' \
   || die "Review did not show the configured hostname"
 "$vm" shot 03-review >/dev/null && cp -f "$run/03-review.png" "$out/03-review.png" || true
