@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.discord.preview@d1a0118dc884c252";
+export const SURFACE = "so.tilo.discord.preview@f7926374a09a0505";
 
 /** What kind of place a Discord channel is. One of "text", "voice", "category", "thread". */
 export type ChannelKind = "text" | "voice" | "category" | "thread";
@@ -164,11 +164,6 @@ export interface OfferSignInArgs {
   state_sha256: string;
   display_name?: string;
   avatar?: string;
-}
-
-/** The arguments of `keep_offer`. */
-export interface KeepOfferArgs {
-  offered: LinkOffer;
 }
 
 /** The arguments of `complete_link`. */
@@ -397,7 +392,7 @@ export interface Discord extends tilo.Resource {
   }): Promise<void>;
   /** Runs `start_sign_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   start_sign_inMany(items: StartSignInArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Offers a Discord account for linking, from the server: `/link` answered with a one-time token, whose check this is. */
+  /** Offers a Discord account for linking, from the server: `/link` answered with a one-time token, whose check this is. The offer stands ten minutes, replacing any run out and any other offer kept under the same check. */
   offer_link(args: {
     check: string;
     discord_user: string;
@@ -419,12 +414,6 @@ export interface Discord extends tilo.Resource {
   }): Promise<void>;
   /** Runs `offer_sign_in` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   offer_sign_inMany(items: OfferSignInArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Keeps an offer for ten minutes, dropping those run out. */
-  keep_offer(args: {
-    offered: LinkOffer;
-  }): Promise<void>;
-  /** Runs `keep_offer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  keep_offerMany(items: KeepOfferArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Links the Discord account a one-time token offers to the person looking. The offer is used up, and a link the person had before is replaced. */
   complete_link(args: {
     proof: string;
@@ -602,7 +591,7 @@ export interface Discord extends tilo.Resource {
 
 /** The actions `Discord` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DISCORD_ACTIONS = ["open_setup", "open_setupMany", "close_setup", "close_setupMany", "clear_problem", "clear_problemMany", "ask_token", "ask_tokenMany", "keep_token", "keep_tokenMany", "find_servers", "find_serversMany", "found_servers", "found_serversMany", "choose_server", "choose_serverMany", "found_channels", "found_channelsMany", "choose_channel", "choose_channelMany", "back_to_servers", "back_to_serversMany", "setup_failed", "setup_failedMany", "bridge_server", "bridge_serverMany", "connect", "connectMany", "observe_layout", "observe_layoutMany", "map", "mapMany", "unmap", "unmapMany", "connect_account", "connect_accountMany", "start_sign_in", "start_sign_inMany", "offer_link", "offer_linkMany", "offer_sign_in", "offer_sign_inMany", "keep_offer", "keep_offerMany", "complete_link", "complete_linkMany", "set_sign_in", "set_sign_inMany", "answer_interaction", "rename_link", "rename_linkMany", "set_link_photo", "set_link_photoMany", "unlink", "unlinkMany", "unlink_mine", "unlink_mineMany", "block_persona", "block_personaMany", "unblock_persona", "unblock_personaMany", "remember_avatar", "remember_avatarMany", "finish_import", "finish_importMany", "send_there", "edit_there", "delete_there", "react_there", "unreact_there", "start_thread_there", "create_webhook", "apply_channel", "delete_channel_there", "arrange_channels", "may_mirror", "may_change", "apply_role", "delete_role", "set_member_roles", "kick", "ban", "unban", "set_overwrite", "fetch_asset", "apply_emoji", "delete_emoji", "settle_emoji", "settle_emojiMany", "report_voice", "report_voiceMany", "pump"] as const;
+export const DISCORD_ACTIONS = ["open_setup", "open_setupMany", "close_setup", "close_setupMany", "clear_problem", "clear_problemMany", "ask_token", "ask_tokenMany", "keep_token", "keep_tokenMany", "find_servers", "find_serversMany", "found_servers", "found_serversMany", "choose_server", "choose_serverMany", "found_channels", "found_channelsMany", "choose_channel", "choose_channelMany", "back_to_servers", "back_to_serversMany", "setup_failed", "setup_failedMany", "bridge_server", "bridge_serverMany", "connect", "connectMany", "observe_layout", "observe_layoutMany", "map", "mapMany", "unmap", "unmapMany", "connect_account", "connect_accountMany", "start_sign_in", "start_sign_inMany", "offer_link", "offer_linkMany", "offer_sign_in", "offer_sign_inMany", "complete_link", "complete_linkMany", "set_sign_in", "set_sign_inMany", "answer_interaction", "rename_link", "rename_linkMany", "set_link_photo", "set_link_photoMany", "unlink", "unlinkMany", "unlink_mine", "unlink_mineMany", "block_persona", "block_personaMany", "unblock_persona", "unblock_personaMany", "remember_avatar", "remember_avatarMany", "finish_import", "finish_importMany", "send_there", "edit_there", "delete_there", "react_there", "unreact_there", "start_thread_there", "create_webhook", "apply_channel", "delete_channel_there", "arrange_channels", "may_mirror", "may_change", "apply_role", "delete_role", "set_member_roles", "kick", "ban", "unban", "set_overwrite", "fetch_asset", "apply_emoji", "delete_emoji", "settle_emoji", "settle_emojiMany", "report_voice", "report_voiceMany", "pump"] as const;
 
 /** The `tl.so.tilo.discord.preview.Discord` kind at `path`. */
 export function discord(ws: tilo.Workspace, path: string): Discord {

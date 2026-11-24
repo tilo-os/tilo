@@ -34743,7 +34743,7 @@
           "discord_user",
           "user_name"
         ],
-        "description": "Offers a Discord account for linking, from the server: `/link` answered with a one-time\ntoken, whose check this is."
+        "description": "Offers a Discord account for linking, from the server: `/link` answered with a one-time\ntoken, whose check this is. The offer stands ten minutes, replacing any run out and any\nother offer kept under the same check."
       },
       "tl.so.tilo.discord.preview.Discord.offer_sign_in.Arguments": {
         "type": "object",
@@ -34774,47 +34774,6 @@
           "state_sha256"
         ],
         "description": "Offers the account that signed in on Discord's consent page, to the person who started the\nround trip `state_sha256` names."
-      },
-      "tl.so.tilo.discord.preview.Discord.keep_offer.Arguments": {
-        "type": "object",
-        "properties": {
-          "offered": {
-            "pick": "resource",
-            "properties": {
-              "app": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "id": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "kind": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "record": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "kind",
-              "id",
-              "label"
-            ],
-            "resource_kind": "tl.so.tilo.discord.preview.LinkOffer",
-            "type": "object"
-          }
-        },
-        "required": [
-          "offered"
-        ],
-        "description": "Keeps an offer for ten minutes, dropping those run out."
       },
       "tl.so.tilo.discord.preview.Discord.complete_link.Arguments": {
         "type": "object",
@@ -97499,12 +97458,6 @@
       "resource": "tl.so.tilo.discord.preview.Discord",
       "action": "offer_sign_in",
       "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Discord.offer_sign_in.Arguments"
-    },
-    {
-      "app": "so.tilo.discord.preview",
-      "resource": "tl.so.tilo.discord.preview.Discord",
-      "action": "keep_offer",
-      "arguments": "#/components/schemas/tl.so.tilo.discord.preview.Discord.keep_offer.Arguments"
     },
     {
       "app": "so.tilo.discord.preview",
