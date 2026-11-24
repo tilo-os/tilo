@@ -5,9 +5,10 @@
 // them. Discord's own records keep what joins the two sides; Chat keeps conversations and the
 // generic words a bridge uses (a relayed author, an outside id, a service).
 
-/// Chat's app id and this app's.
+/// Chat's app id and this app's: the id its package declares, which the launcher names to every
+/// process it starts.
 export const CHAT = "so.tilo.chat";
-export const SELF = "so.tilo.discord";
+export const SELF = process.env.TILO_PACKAGE_ID || "so.tilo.discord.preview";
 
 /// Discord takes a message of 2000 characters; the rest is said by the cut.
 export const MAX_CONTENT = 2000;

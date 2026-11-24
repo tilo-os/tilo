@@ -181,7 +181,7 @@ test("a call keeps what it made joined to the Discord id it was", async () => {
     map: { kind: "message", discord: "777", origin: "discord", persona: "3001" },
   });
   expect(done[0].address).toBe("so.tilo.chat#relay");
-  expect(done[1].address).toBe("so.tilo.discord#map");
+  expect(done[1].address).toBe("so.tilo.discord.preview#map");
   expect(done[1].args.tilo).toBe("tl:so.tilo.chat:made1");
   expect(done[1].args.discord).toBe("777");
 });

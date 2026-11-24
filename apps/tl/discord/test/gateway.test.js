@@ -1,0 +1,158 @@
+import { test, expect } from "bun:test";
+import { connect, INTENTS } from "../src/gateway.js";
+
+/// Wait until `check()` is true, or fail the test after `timeout`.
+async function until(check, what, timeout = 3_000) {
+  const end = Date.now() + timeout;
+  while (!check()) {
+    if (Date.now() > end) throw new Error(`waited for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/// A fake Discord gateway: Hello, then whatever the test sends to the identified client.
+function fakeGateway() {
+  const received = [];
+  let socket = null;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, server) {
+      if (server.upgrade(request)) return;
+      return new Response("a gateway speaks WebSocket alone", { status: 400 });
+    },
+    websocket: {
+      open(ws) {
+        ws.send(JSON.stringify({ op: 10, d: { heartbeat_interval: 60 } }));
+      },
+      message(ws, raw) {
+        const frame = JSON.parse(String(raw));
+        received.push(frame);
+        if (frame.op === 1) ws.send(JSON.stringify({ op: 11 }));
+        if (frame.op === 2) {
+          socket = ws;
+          ws.send(
+            JSON.stringify({
+              op: 0,
+              s: 1,
+              t: "READY",
+              d: {
+                session_id: "s1",
+                resume_gateway_url: `ws://127.0.0.1:${server.port}`,
+                user: { id: "900", username: "bridge" },
+              },
+            }),
+          );
+          ws.send(
+            JSON.stringify({
+              op: 0,
+              s: 2,
+              t: "GUILD_CREATE",
+              d: {
+                id: "123",
+                channels: [
+                  { id: "456", type: 0, name: "design", position: 0 },
+                  { id: "457", type: 4, name: "Text", position: 1 },
+                  { id: "458", type: 2, name: "Call", position: 2 },
+                ],
+                roles: [],
+                emojis: [{ id: "22", name: "party" }],
+              },
+            }),
+          );
+        }
+      },
+    },
+  });
+  return {
+    url: `ws://127.0.0.1:${server.port}/`,
+    received,
+    send(frame) {
+      socket.send(JSON.stringify(frame));
+    },
+    stop() {
+      server.stop(true);
+    },
+  };
+}
+
+test("the gateway identifies with the bridge's intents and carries Discord's events", async () => {
+  const discord = fakeGateway();
+  const events = [];
+  const client = await connect({
+    token: "MTIz.GxYz.abcdefghij0123456789AB",
+    url: discord.url,
+    onEvent: (event) => events.push(event),
+  });
+  expect(client.user.id).toBe("900");
+
+  const identify = discord.received.find((frame) => frame.op === 2);
+  expect(identify.d.token).toBe("MTIz.GxYz.abcdefghij0123456789AB");
+  expect(identify.d.intents).toBe(INTENTS);
+  expect(INTENTS).toBe(34_447);
+
+  await until(() => events.some((event) => event.source === "LAYOUT_CHANGED"), "the layout");
+  const layout = events.find((event) => event.source === "LAYOUT_CHANGED").payload;
+  expect(layout.channels.map((channel) => [channel.id, channel.kind, channel.name])).toEqual([
+    ["456", "text", "design"],
+    ["457", "category", "Text"],
+    ["458", "voice", "Call"],
+  ]);
+  expect(layout.emojis).toEqual([{ id: "22", name: "party", animated: false }]);
+
+  discord.send({
+    op: 0,
+    s: 3,
+    t: "MESSAGE_CREATE",
+    d: {
+      id: "777",
+      channel_id: "456",
+      guild_id: "123",
+      content: "look at this",
+      timestamp: "2026-11-24T09:00:00.000Z",
+      author: { id: "3001", username: "ada", avatar: "abc" },
+    },
+  });
+  discord.send({
+    op: 0,
+    s: 4,
+    t: "MESSAGE_UPDATE",
+    d: { id: "777", channel_id: "456", content: "look at this again" },
+  });
+  discord.send({ op: 0, s: 5, t: "MESSAGE_DELETE", d: { id: "777", channel_id: "456" } });
+  discord.send({
+    op: 0,
+    s: 6,
+    t: "MESSAGE_REACTION_ADD",
+    d: {
+      message_id: "777",
+      channel_id: "456",
+      user_id: "3001",
+      emoji: { name: "🎉" },
+      member: { user: { username: "ada" } },
+    },
+  });
+  discord.send({
+    op: 0,
+    s: 7,
+    t: "GUILD_MEMBER_UPDATE",
+    d: { guild_id: "123", user: { id: "3001", username: "ada", avatar: "abc" }, roles: ["5"] },
+  });
+
+  await until(() => events.length >= 6, "the events");
+  const by = (source) => events.find((event) => event.source === source).payload;
+  const created = by("MESSAGE_CREATED");
+  expect(created.id).toBe("777");
+  expect(created.channel_id).toBe("456");
+  expect(created.content).toBe("look at this");
+  expect(created.author).toEqual({ id: "3001", name: "ada", avatar: "abc", bot: false });
+  expect(by("MESSAGE_UPDATED").content).toBe("look at this again");
+  expect(by("MESSAGE_DELETED").id).toBe("777");
+  const reaction = by("REACTION_ADDED");
+  expect(reaction.message_id).toBe("777");
+  expect(reaction.user_name).toBe("ada");
+  expect(by("MEMBER_CHANGED").roles).toEqual(["5"]);
+
+  await until(() => discord.received.some((frame) => frame.op === 1), "a heartbeat");
+  client.destroy();
+  discord.stop();
+});

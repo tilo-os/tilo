@@ -6,7 +6,7 @@
 // needs in this process: every other request names a vault item and the request is answered
 // with the secret added server-side.
 
-import { mapKey } from "./plan.js";
+import { SELF } from "./plan.js";
 
 export class Calls {
   /// `ws`: the SDK workspace (`ws.do`, `ws.read`, `ws.watch`, `ws.vault.*`).
@@ -25,7 +25,7 @@ export class Calls {
     const made = referenceId(result);
     if (call.map && made) {
       const tilo = call.app === "so.tilo.chat" ? publishedOf(made) : made;
-      await this.ws.do("so.tilo.discord#map", {
+      await this.ws.do(`${SELF}#map`, {
         kind: call.map.kind,
         tilo,
         discord: call.map.discord,
