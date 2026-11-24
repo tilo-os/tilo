@@ -373,6 +373,10 @@ impl App {
             .detected_from(&event, synthesized_touch);
         if let Some(environment) = detected_interaction {
             app.set_interaction_environment(environment);
+            // The tree a widget builds takes up the way it is reached (a finger's target, a
+            // hover's fade), so this event lands on the tree built for its modality: the frame
+            // after the input would replace what the input itself opened.
+            let _ = app.build_tree_before_input();
         }
         if history_input {
             // History's own chrome took this input: what widgets queued runs in no frame that
