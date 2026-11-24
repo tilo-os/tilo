@@ -428,10 +428,6 @@ fn session_read(c: Camera) -> ScanSession {
     c.sessions.first() ?? ScanSession()
 }
 
-fn actions(word: Text, raw: Text) -> Bool {
-    code_actions(raw).contains(word)
-}
-
 /// Takes what the engine kept as the capture the app hands on.
 // ---------------------------------------------------------------- actions
 action register_capture(c: Camera, capture: SharedCapture) uses time {

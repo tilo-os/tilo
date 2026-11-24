@@ -137,7 +137,6 @@ Wifi.auth = r4cfx2eg
 Wifi.hidden = cpvlblyf
 Wifi.password = vjej4gya
 Wifi.ssid = lzomebum
-actions = alis4bro
 arm_timer@Camera = g4pcikmm
 capture@Camera = bb47r4i7
 capture_page@Camera = oujb6up2
@@ -224,3 +223,6 @@ viewfinder = mim6ysmz
 viewfinder_shapes = f2ca5dkn
 wifi_of = gaeyum2i
 without_scheme = hoj66us4
+
+# retired
+actions = alis4bro

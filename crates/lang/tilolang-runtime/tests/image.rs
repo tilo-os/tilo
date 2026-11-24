@@ -101,9 +101,15 @@ action imported_folder(s: Shelf, files: List<File>) (label: "Import folder") {
 
 view shelf(s: Shelf) {
     stack {
-        button(file.choose(imported(s)))
-        button(file.choose(imported_one(s)))
-        button(file.choose_folder(imported_folder(s)))
+        ui.Button("Import many") {
+            on press: file.choose(imported(s))
+        }
+        ui.Button("Import one") {
+            on press: file.choose(imported_one(s))
+        }
+        ui.Button("Import folder") {
+            on press: file.choose_folder(imported_folder(s))
+        }
     }
 }
 "#;
@@ -215,7 +221,7 @@ view shelf(s: Shelf) {
                 .invoke_action(
                     &self.me,
                     (
-                        action,
+                        self.app.action(action).as_str(),
                         vec![Value::resource(&self.shelf), Value::file(file.clone())],
                     ),
                 )

@@ -535,9 +535,9 @@ action add(l: Tasks, title: Text) {
 
 type Network {
     name: Text
-    asks: List<Text> = []
-    answered: List<Text> = []
-    keys: List<Text> = []
+    asks: List<Text>
+    answered: List<Text>
+    keys: List<Text>
 }
 
 view join_form(n: Network) {
@@ -558,7 +558,7 @@ action join(n: Network, answers: List<Text>) (label: "Join") {
 }
 
 action ask(n: Network, what: Text) {
-    n.asks.insert(what)
+    n.asks = n.asks + [what]
 }
 "#;
 
