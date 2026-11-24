@@ -1,14 +1,16 @@
-//! An app's public surface as a receiver reads it: the `surface.toml` its
-//! package ships, kept as content by hash.
+//! An app's public surface as a receiver reads it: the compiled form
+//! (`surface.json`) its package ships, kept as content by hash.
 //!
 //! A signed op names the surface its changes are decided against
 //! ([`crate::SignedOp::surface`]). A surface is kept and addressed in one
-//! form ([`canonical`]): its JSON with every object's keys in order, so a
-//! package's `surface.toml` and a built-in app's compiled form of the same
-//! surface have one address. A receiver reads those bytes from its content
-//! store by that hash (`tilo-content`: they reach a device from the registry
-//! or its peers as any content does), parses them once, and decides each
-//! change's claim against the resource it names
+//! form ([`canonical`]): its JSON with every object's keys in order and no
+//! insignificant whitespace, so the same surface always has one address. An
+//! author writes `surface.toml`; only the build tools compile it
+//! (`tilo-surface-compile`), and everything the system commits, addresses,
+//! hashes and sends is the compiled form. A receiver reads those bytes from
+//! its content store by that hash (`tilo-content`: they reach a device from
+//! the registry or its peers as any content does), parses them once, and
+//! decides each change's claim against the resource it names
 //! ([`crate::receipt::ReceiptSurface`]). Until the bytes are here the op is
 //! held.
 
@@ -55,36 +57,30 @@ pub struct SurfaceFile {
 }
 
 impl SurfaceFile {
-    /// Parse a `surface.toml`, and the bytes it is kept and addressed by
-    /// ([`canonical`]).
+    /// Read the compiled form of a surface (`surface.json`, written by
+    /// `tilo_resource::committed_surface!` for a built-in app and compiled
+    /// by the build tools from an author's `surface.toml`).
     ///
     /// # Errors
-    /// Bytes that are not a surface file.
-    pub fn kept(bytes: &[u8]) -> Result<(Self, String), String> {
+    /// Bytes that are not the canonical compiled form of a surface: the
+    /// authored TOML included, which has no address the system gave it.
+    pub fn compiled(bytes: &[u8]) -> Result<Self, String> {
         let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
-        // Through a JSON value: the surface types are then read by the
-        // JSON deserializer the rest of the runtime already compiles, not by
-        // a second, TOML-specific copy of their whole deserializer.
-        let value: serde_json::Value = toml::from_str(text).map_err(|error| error.to_string())?;
-        let file = serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
-        Ok((file, canonical(&value)))
+        Self::from_json(text)
     }
 
-    /// Parse a `surface.toml`.
+    /// [`Self::compiled`] over text.
     ///
     /// # Errors
-    /// Bytes that are not a surface file.
-    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
-        Self::kept(bytes).map(|(file, _)| file)
-    }
-
-    /// Read a surface in the JSON form `tilo_resource::committed_surface!`
-    /// wrote from its `surface.toml` at build time.
-    ///
-    /// # Errors
-    /// JSON that is not a surface.
+    /// `json` that is not the canonical compiled form of a surface.
     pub fn from_json(json: &str) -> Result<Self, String> {
-        serde_json::from_str(json).map_err(|error| error.to_string())
+        let value: serde_json::Value = serde_json::from_str(json).map_err(|error| {
+            format!("not the compiled form of a surface (canonical JSON): {error}")
+        })?;
+        if canonical(&value) != json {
+            return Err("not the canonical compiled form of a surface".to_owned());
+        }
+        serde_json::from_value(value).map_err(|error| error.to_string())
     }
 
     /// Whether this app declares that it reads a resource kind of the app
@@ -231,15 +227,7 @@ impl ContentSurfaces {
         if blake3::hash(&bytes).as_bytes() != hash {
             return None;
         }
-        // Kept since surfaces are addressed by their JSON form, or by an
-        // earlier build, which kept and addressed each as its `surface.toml`:
-        // the changes that build wrote name those bytes, and stay readable.
-        let text = std::str::from_utf8(&bytes).ok()?;
-        let file = Arc::new(
-            SurfaceFile::from_json(text)
-                .or_else(|_| SurfaceFile::parse(&bytes))
-                .ok()?,
-        );
+        let file = Arc::new(SurfaceFile::compiled(&bytes).ok()?);
         self.parsed.lock_recover().insert(*hash, Arc::clone(&file));
         Some(file)
     }
@@ -353,7 +341,7 @@ writes = ["document", "comments.*"]
 "#;
 
     fn surfaces() -> (ContentSurfaces, [u8; 32]) {
-        let (_, kept) = SurfaceFile::kept(FILE.as_bytes()).expect("the fixture is a surface");
+        let kept = tilo_surface_compile::compile(FILE).expect("the fixture is a surface");
         let hash = *blake3::hash(kept.as_bytes()).as_bytes();
         let hex = hex::encode(hash);
         (
@@ -455,11 +443,16 @@ writes = ["document", "comments.*"]
             assert!(forged.surface(&document, None, Some(&hash)).is_none());
         }
 
-        phase a_surface_an_earlier_build_kept_as_its_file_decides_claims;
-        // An earlier build kept and named each surface as its `surface.toml`,
-        // by the hash of those bytes: the changes it wrote stay decided.
+        phase a_surface_in_its_authored_form_is_refused;
+        // Only the compiled form is a surface: the `surface.toml` an author
+        // writes is compiled by the build tools, and bytes of it at runtime
+        // are no surface, whatever hash they came under.
         {
             let hash = *blake3::hash(FILE.as_bytes()).as_bytes();
+            assert!(
+                SurfaceFile::compiled(FILE.as_bytes()).is_err(),
+                "the authored TOML is not the compiled form"
+            );
             let hex = hex::encode(hash);
             let source = ContentSurfaces::new(move |_, wanted| {
                 (wanted == hex).then(|| FILE.as_bytes().to_vec())
@@ -469,57 +462,45 @@ writes = ["document", "comments.*"]
                 app: "notes",
                 document: "p1",
             };
-            let surface = source
-                .surface(&document, Some("notes.page"), Some(&hash))
-                .expect("the file an earlier build kept is its surface");
-            assert_eq!(surface.kind(), "notes.page");
-            assert_eq!(
-                surface.verb("comment"),
-                Some((ActionKind::Undoable, Some("comments".into())))
+            assert!(
+                source
+                    .surface(&document, Some("notes.page"), Some(&hash))
+                    .is_none(),
+                "the authored form decides nothing"
             );
         }
 
-        phase every_committed_surface_parses_and_its_generated_form_reads_as_it_does;
+        phase every_surface_is_the_compiled_form_of_its_author_file;
         {
             let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
             let mut parsed = 0;
             for app in std::fs::read_dir(apps).unwrap() {
-                let file = app.unwrap().path().join("surface.toml");
+                let file = app.unwrap().path().join("surface.json");
                 if !file.is_file() {
                     continue;
                 }
                 let bytes = std::fs::read(&file)
                     .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
-                let (surface, kept) = SurfaceFile::kept(&bytes)
+                let text = std::str::from_utf8(&bytes).expect("a surface file is UTF-8");
+                assert_eq!(
+                    canonical_json(text).as_deref(),
+                    Some(text),
+                    "{} is the canonical compiled form",
+                    file.display()
+                );
+                let surface = SurfaceFile::compiled(&bytes)
                     .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
                 assert!(surface.own_resource().is_some(), "{}", file.display());
+                // It is what the authored file beside it compiles to.
+                let authored = file.with_file_name("surface.toml");
+                let compiled = tilo_surface_compile::compile_file(&authored)
+                    .unwrap_or_else(|error| panic!("{}: {error}", authored.display()));
                 assert_eq!(
-                    SurfaceFile::parse(&bytes).expect("it parses"),
-                    surface,
-                    "{}",
-                    file.display()
-                );
-                // The form `committed_surface!` writes for a built-in app reads as the
-                // file does, and is kept as the package's file of it is.
-                let generated = serde_json::to_string(
-                    &toml::from_str::<serde_json::Value>(
-                        std::str::from_utf8(&bytes).expect("a surface file is UTF-8"),
-                    )
-                    .expect("a committed surface is TOML"),
-                )
-                .expect("a surface is JSON");
-                assert_eq!(
-                    SurfaceFile::from_json(&generated)
-                        .unwrap_or_else(|error| panic!("{}: {error}", file.display())),
-                    surface,
-                    "{}",
-                    file.display()
-                );
-                assert_eq!(
-                    canonical_json(&generated).as_deref(),
-                    Some(kept.as_str()),
-                    "{} is one address as a package's file and as a built-in's",
-                    file.display()
+                    compiled,
+                    text,
+                    "{} is the compiled form of {}",
+                    file.display(),
+                    authored.display()
                 );
                 parsed += 1;
             }

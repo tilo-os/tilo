@@ -21,14 +21,15 @@ fn krate() -> Tokens {
     quote!(#name)
 }
 
-/// The app's committed `surface.toml` (the file its package ships) as JSON,
-/// read while the crate that expands it is built: `Option<&'static str>`,
+/// The app's surface, compiled from the `surface.toml` an author
+/// writes while the crate that expands it is built: `Option<&'static str>`,
 /// `Some` when it has a `surface.toml` at its root, else `None`.
 ///
-/// The JSON is the file's own content, so the shell's built-in apps and the
-/// web desktop read their surfaces without a TOML parser. A file that does not
-/// parse fails the build, where such a process would otherwise find that the
-/// surface declares nothing.
+/// The value is the canonical compiled form (`tilo_surface_compile`), the one
+/// form the system commits, addresses and sends, so the shell's built-in apps
+/// and the web desktop read their surfaces without a TOML parser. A file that
+/// does not parse fails the build, where such a process would otherwise find
+/// that the surface declares nothing.
 #[proc_macro]
 pub fn committed_surface(_input: TokenStream) -> TokenStream {
     let path = std::env::var_os("CARGO_MANIFEST_DIR")
@@ -47,16 +48,7 @@ pub fn committed_surface(_input: TokenStream) -> TokenStream {
                 .into();
         }
     };
-    let value: serde_json::Value = match toml::from_str(&text) {
-        Ok(value) => value,
-        Err(error) => {
-            let error = format!("{}: {error}", path.display());
-            return syn::Error::new(Span::call_site(), error)
-                .to_compile_error()
-                .into();
-        }
-    };
-    let json = match serde_json::to_string(&value) {
+    let json = match tilo_surface_compile::compile(&text) {
         Ok(json) => json,
         Err(error) => {
             let error = format!("{}: {error}", path.display());

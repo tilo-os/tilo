@@ -130,6 +130,7 @@ members = [
     "crates/sdk/tilo-process-services",
     "crates/ui/tilo-formats",
     "crates/core/tilo-resource",
+    "crates/core/tilo-surface-compile",
     "crates/ui/tilo-component-scan",
     "crates/ui/tilo-rich-edit",
     "crates/core/tilo-resource-macros",

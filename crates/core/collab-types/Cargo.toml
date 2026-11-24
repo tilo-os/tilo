@@ -67,8 +67,6 @@ tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 automerge.workspace = true
 tilo-automerge.workspace = true
-# The app surface a receiver decides claims against, read from surface.toml.
-toml.workspace = true
 blake3.workspace = true
 # A continuation's claim is read from its action's JSON payload.
 serde_json.workspace = true
@@ -76,6 +74,8 @@ serde_json.workspace = true
 [dev-dependencies]
 # `scenario!`: one test function holds the cases of one subject.
 tilo-test-env = { path = "../../../tools/test-env" }
+# The build tool that compiles an author's `surface.toml` for the fixtures.
+tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }
 
 [[test]]
 name = "it"

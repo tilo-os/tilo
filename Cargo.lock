@@ -16268,9 +16268,8 @@ dependencies = [
  "tilo-paths",
  "tilo-presence-types",
  "tilo-resource",
- "tilo-resource-plain",
+ "tilo-surface-compile",
  "tilo-test-env",
- "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",
  "web-time",
@@ -19491,9 +19490,8 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "serde_json",
  "syn 2.0.117",
- "toml 1.0.6+spec-1.1.0",
+ "tilo-surface-compile",
  "workspace-hack",
 ]
 
@@ -19502,9 +19500,6 @@ name = "tilo-resource-plain"
 version = "0.1.0"
 dependencies = [
  "serde",
- "tilo-actions",
- "tilo-clock",
- "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -20869,6 +20864,16 @@ dependencies = [
  "tilo-image-codec",
  "tilo-model-client",
  "tilo-segment",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-surface-compile"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-canonical-json",
+ "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
 

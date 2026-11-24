@@ -21,9 +21,9 @@ quote = "1"
 # `extra-traits`: the effect derive compares types (`PartialEq` on `syn::Type`), which the
 # workspace gets from other crates but a build of the published crate does not.
 syn = { version = "2", features = ["full", "extra-traits"] }
-# `committed_surface!` reads an app's `surface.toml` while it builds.
+# `committed_surface!` embeds an app's compiled surface and checks it is canonical.
 serde_json.workspace = true
-toml.workspace = true
+tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
 
 [lints]
 workspace = true

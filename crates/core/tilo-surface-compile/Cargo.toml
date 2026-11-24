@@ -1,0 +1,23 @@
+[package]
+name = "tilo-surface-compile"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+repository.workspace = true
+homepage.workspace = true
+description = "Compiles an app's authored surface.toml into the canonical compiled surface the system commits, addresses, hashes and sends."
+
+[lib]
+name = "tilo_surface_compile"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json.workspace = true
+tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
+toml.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

@@ -1,14 +1,15 @@
 //! Which app surface the changes an app makes are decided against.
 //!
-//! Every signed op names the content hash of its app's `surface.toml`
-//! ([`crate::SignedOp::surface`]), the file the app's package ships at
-//! its payload root. Whoever starts the app names that file
-//! ([`SURFACE_FILE_ENV`]) and its hash ([`SURFACE_HASH_ENV`]): the launcher
-//! the file in the package it runs, `tilolang run`/`dev` the app's committed
-//! file. The app reads it, checks the hash and registers it
-//! ([`register_named`]); an app's own binary does not carry the file. A host
-//! that runs an app in its own process (the shell's built-in apps, the web
-//! build) carries its committed file's JSON form instead
+//! Every signed op names the content hash of its app's compiled surface
+//! (`surface.json`, [`crate::surface::SurfaceFile`]): the build tool compiles
+//! it from the `surface.toml` an author writes, and that compiled form is what
+//! an author's package ships at its payload root and a built-in app carries.
+//! Whoever starts the app names that file ([`SURFACE_FILE_ENV`]) and its hash
+//! ([`SURFACE_HASH_ENV`]): the launcher the file in the package it runs,
+//! `tilolang run`/`dev` the app's committed file. The app reads it, checks the
+//! hash and registers it ([`register_named`]); an app's own binary does not
+//! carry the file. A host that runs an app in its own process (the shell's
+//! built-in apps, the web build) carries its compiled file's text instead
 //! ([`register_built_in`]). Either way the surface is kept as one form
 //! ([`crate::surface::canonical`]), whose hash the changes name; the bytes
 //! are kept in the app's content store, from where they reach the devices
@@ -84,48 +85,42 @@ impl Surfaces {
         self.count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
-    /// Name `json`, the JSON form `tilo_resource::committed_surface!` wrote of the committed
-    /// surface of an app a host runs in its own process (built into the host, no package of its
-    /// own), for `app_id`, unless a package already named one.
+    /// Name `json`, the compiled surface of an app a host runs in its own process (built into the
+    /// host, no package of its own), for `app_id`, unless a package already named one.
     pub fn register_built_in(&self, app_id: &str, json: &'static str) {
-        let Some(kept) = crate::surface::canonical_json(json) else {
+        if crate::surface::canonical_json(json).as_deref() != Some(json) {
             tracing::warn!(
                 app = app_id,
-                "the app's committed surface is not JSON; it declares no resources, reads or footprints"
+                "the app's built-in surface is not the canonical compiled form; it declares no resources, reads or footprints"
             );
             return;
-        };
-        let hash = *blake3::hash(kept.as_bytes()).as_bytes();
+        }
+        let hash = *blake3::hash(json.as_bytes()).as_bytes();
         if let std::collections::btree_map::Entry::Vacant(entry) =
             self.named.lock_recover().entry(app_id.to_owned())
         {
-            let bytes = if kept == json {
-                json.as_bytes()
-            } else {
-                held_bytes(hash, kept.as_bytes())
-            };
-            let parsed = crate::surface::SurfaceFile::from_json(&kept);
-            entry.insert(Named::new(app_id, hash, bytes, parsed));
+            let parsed = crate::surface::SurfaceFile::from_json(json);
+            entry.insert(Named::new(app_id, hash, json.as_bytes(), parsed));
             self.arrived();
         }
     }
 
-    /// Name `bytes`, the surface file the signed package `app_id` ships, as the one it runs
-    /// with, replacing any held before (an update of the app). A file that is not a surface
-    /// names none.
+    /// Name `bytes`, the compiled surface (`surface.json`) the signed package `app_id` ships, as
+    /// the one it runs with, replacing any held before (an update of the app). Bytes that are not
+    /// the canonical compiled form name none.
     pub fn register_package(&self, app_id: &str, bytes: &[u8]) {
-        let (file, kept) = match crate::surface::SurfaceFile::kept(bytes) {
-            Ok(kept) => kept,
+        let file = match crate::surface::SurfaceFile::compiled(bytes) {
+            Ok(file) => file,
             Err(error) => {
                 tracing::warn!(
                     app = app_id,
                     %error,
-                    "the app's surface file does not parse; it declares no resources, reads or footprints"
+                    "the app's surface is not the compiled form; it declares no resources, reads or footprints"
                 );
                 return;
             }
         };
-        let hash = *blake3::hash(kept.as_bytes()).as_bytes();
+        let hash = *blake3::hash(bytes).as_bytes();
         if self
             .named
             .lock_recover()
@@ -135,7 +130,7 @@ impl Surfaces {
             return;
         }
         // Kept for the process's life, once per distinct surface.
-        let bytes = held_bytes(hash, kept.as_bytes());
+        let bytes = held_bytes(hash, bytes);
         self.named
             .lock_recover()
             .insert(app_id.to_owned(), Named::new(app_id, hash, bytes, Ok(file)));
@@ -221,7 +216,7 @@ pub fn arrived() {
     Surfaces::process().arrived();
 }
 
-/// Name `bytes`, the surface file whoever started the app named, for
+/// Name `bytes`, the compiled surface whoever started the app named, for
 /// `app_id`, when they hash to `hash`, the hash it was named with.
 pub fn register_named(app_id: &str, bytes: &[u8], hash: &str) -> Result<(), String> {
     let expected =
@@ -235,17 +230,17 @@ pub fn register_named(app_id: &str, bytes: &[u8], hash: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// Name `json`, the JSON form `tilo_resource::committed_surface!` wrote of
-/// the committed surface of an app a host runs in its own process (built
-/// into the host, no package of its own), for `app_id`, unless a package
-/// already named one.
+/// Name `json`, the compiled surface an app a host runs in its own process
+/// (built into the host, no package of its own) carries, for `app_id`,
+/// unless a package already named one.
 pub fn register_built_in(app_id: &str, json: &'static str) {
     Surfaces::process().register_built_in(app_id, json);
 }
 
-/// Name `bytes`, the surface file the signed package `app_id` ships, as the
-/// one it runs with, replacing any its host held before (an update of the
-/// app). A file that is not a surface names none.
+/// Name `bytes`, the compiled surface (`surface.json`) the signed package
+/// `app_id` ships, as the one it runs with, replacing any its host held
+/// before (an update of the app). Bytes that are not the compiled form name
+/// none.
 pub fn register_package(app_id: &str, bytes: &[u8]) {
     Surfaces::process().register_package(app_id, bytes);
 }
@@ -415,14 +410,21 @@ pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
 mod tests {
     use super::*;
 
+    /// The compiled form of the authored surface `toml`, as the build tools write it.
+    fn compiled(toml: &str) -> String {
+        tilo_surface_compile::compile(toml).expect("a surface")
+    }
+
     tilo_test_env::scenario! {
         /// The surfaces this process holds, each case under an app id no other case names.
         fn a_registered_surface_is_held_under_its_app_and_decides_what_it_names;
 
         phase only_the_kinds_a_surface_marks_are_the_persons;
         {
-            static FILE: &[u8] = b"[[resources]]\nkind = \"test.shared\"\nlabel = \"Shared\"\nversion = 1\n\n[[resources]]\nkind = \"test.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n";
-            register_package("test.person-kinds", FILE);
+            let file = compiled(
+                "[[resources]]\nkind = \"test.shared\"\nlabel = \"Shared\"\nversion = 1\n\n[[resources]]\nkind = \"test.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n",
+            );
+            register_package("test.person-kinds", file.as_bytes());
             assert_eq!(person_resource_types("test.person-kinds"), ["test.history"]);
             assert!(keeps_person_resource("test.person-kinds", "test.history"));
             assert!(!keeps_person_resource("test.person-kinds", "test.shared"));
@@ -431,18 +433,19 @@ mod tests {
 
         phase a_launched_package_surface_replaces_the_one_held;
         {
-            register_package(
-                "test.package-surface",
-                b"[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 1\n",
+            let first = compiled(
+                "[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 1\n",
             );
-            let package = b"[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 2\n\n[[resources]]\nkind = \"test.pkg-history\"\nlabel = \"History\"\nperson = true\nversion = 1\n".to_vec();
-            register_package("test.package-surface", &package);
-            let (_, kept) = crate::surface::SurfaceFile::kept(&package).expect("a surface");
+            register_package("test.package-surface", first.as_bytes());
+            let package = compiled(
+                "[[resources]]\nkind = \"test.pkg\"\nlabel = \"Pkg\"\nversion = 2\n\n[[resources]]\nkind = \"test.pkg-history\"\nlabel = \"History\"\nperson = true\nversion = 1\n",
+            );
+            register_package("test.package-surface", package.as_bytes());
             assert_eq!(
                 hash_of("test.package-surface"),
-                Some(*blake3::hash(kept.as_bytes()).as_bytes())
+                Some(*blake3::hash(package.as_bytes()).as_bytes())
             );
-            assert_eq!(bytes_of("test.package-surface"), Some(kept.as_bytes()));
+            assert_eq!(bytes_of("test.package-surface"), Some(package.as_bytes()));
             assert_eq!(
                 person_resource_types("test.package-surface"),
                 ["test.pkg-history"]
@@ -451,22 +454,38 @@ mod tests {
 
         phase a_named_surface_registers_only_when_it_hashes_to_its_name;
         {
-            let file = b"[[resources]]\nkind = \"test.named\"\nlabel = \"Named\"\nversion = 1\n";
-            let hash = blake3::hash(file).to_hex().to_string();
+            let file = compiled(
+                "[[resources]]\nkind = \"test.named\"\nlabel = \"Named\"\nversion = 1\n",
+            );
+            let hash = blake3::hash(file.as_bytes()).to_hex().to_string();
 
             let other = hex::encode([1; 32]);
-            assert!(register_named("test.surface-a", file, &other).is_err());
-            assert!(register_named("test.surface-a", file, "not hex").is_err());
+            assert!(register_named("test.surface-a", file.as_bytes(), &other).is_err());
+            assert!(register_named("test.surface-a", file.as_bytes(), "not hex").is_err());
             assert_eq!(hash_of("test.surface-a"), None, "nothing named");
 
-            register_named("test.surface-a", file, &hash).unwrap();
-            let (_, kept) = crate::surface::SurfaceFile::kept(file).expect("a surface");
+            register_named("test.surface-a", file.as_bytes(), &hash).unwrap();
             assert_eq!(
                 hash_of("test.surface-a"),
-                Some(*blake3::hash(kept.as_bytes()).as_bytes())
+                Some(*blake3::hash(file.as_bytes()).as_bytes())
             );
-            assert_eq!(bytes_of("test.surface-a"), Some(kept.as_bytes()));
+            assert_eq!(bytes_of("test.surface-a"), Some(file.as_bytes()));
             assert_eq!(parse_hash(&hex::encode([7; 32])), Some([7; 32]));
+        }
+
+        phase a_surface_in_the_authored_form_names_none;
+        {
+            let toml = b"[[resources]]\nkind = \"test.toml\"\nlabel = \"Toml\"\nversion = 1\n";
+            let hash = blake3::hash(toml).to_hex().to_string();
+            register_named("test.surface-toml", toml, &hash)
+                .expect("it hashes to its name");
+            assert_eq!(
+                hash_of("test.surface-toml"),
+                None,
+                "the authored form is not a surface a change is decided against"
+            );
+            register_package("test.surface-toml", toml);
+            assert_eq!(bytes_of("test.surface-toml"), None);
         }
 
         phase a_built_in_surface_never_replaces_a_packages;
@@ -478,7 +497,7 @@ mod tests {
             assert_eq!(
                 primary_kind("test.built-in"),
                 Some("test.built".to_owned()),
-                "the committed form is what decides, without the file here"
+                "the compiled form is what decides, without the file here"
             );
             assert!(
                 every()
@@ -486,13 +505,14 @@ mod tests {
                     .any(|file| file.resources.first().is_some_and(|r| r.kind == "test.built")),
                 "every surface this process carries is here, parsed"
             );
-            let package = b"[[resources]]\nkind = \"test.built\"\nlabel = \"Built\"\nversion = 1\n".to_vec();
-            register_package("test.built-in", &package);
+            let package = compiled(
+                "[[resources]]\nkind = \"test.built\"\nlabel = \"Built\"\nversion = 1\n",
+            );
+            register_package("test.built-in", package.as_bytes());
             register_built_in("test.built-in", BUILT_JSON);
-            let (_, kept) = crate::surface::SurfaceFile::kept(&package).expect("a surface");
             assert_eq!(
                 bytes_of("test.built-in"),
-                Some(kept.as_bytes()),
+                Some(package.as_bytes()),
                 "the package's stays"
             );
         }
