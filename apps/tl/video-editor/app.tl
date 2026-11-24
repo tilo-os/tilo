@@ -1037,7 +1037,7 @@ action absorb(p: Project, file: File) -> Text {
                         palette: p.media.len(),
                     ),
                 )
-                adopt_probe(p, made, probed)
+                adopt_probe(p, made, text)
                 draw_swatch(made, 200)
                 if made.has_audio or made.form == .audio { hear(made) }
                 ""
@@ -1046,20 +1046,26 @@ action absorb(p: Project, file: File) -> Text {
     }
 }
 
-/// Writes what the device read of a source onto it: what it is, how long it runs, its size and
-/// rate, and whether it carries sound.
-action adopt_probe(p: Project, m: Media, probed: Probed) {
-    m.form = form_of(probed.kind)
-    m.duration = if probed.kind == "image" { 5.0 } else { probed.duration }
-    m.width = probed.width
-    m.height = probed.height
-    m.fps = probed.fps
-    m.has_audio = probed.has_audio
-    if not p.explicit_format and probed.width > 0 and probed.height > 0 {
-        p.width = probed.width
-        p.height = probed.height
-        if probed.fps > 0.0 {
-            p.fps = probed.fps
+/// Writes what the device read of a source onto it, as the engine said it: what it is, how long
+/// it runs, its size and rate, and whether it carries sound. An action is handed the engine's
+/// words rather than the decoded `Probed`, which is a value no resource holds.
+action adopt_probe(p: Project, m: Media, said: Text) {
+    match json.decode<Probed>(said) {
+        .err(why) => mark_missing(p, m, why),
+        .ok(probed) => {
+            m.form = form_of(probed.kind)
+            m.duration = if probed.kind == "image" { 5.0 } else { probed.duration }
+            m.width = probed.width
+            m.height = probed.height
+            m.fps = probed.fps
+            m.has_audio = probed.has_audio
+            if not p.explicit_format and probed.width > 0 and probed.height > 0 {
+                p.width = probed.width
+                p.height = probed.height
+                if probed.fps > 0.0 {
+                    p.fps = probed.fps
+                }
+            }
         }
     }
 }
@@ -1073,7 +1079,7 @@ action refresh_source(p: Project, m: Media) {
             .err(why) => mark_missing(p, m, why),
             .ok(probed) => {
                 m.missing = false
-                adopt_probe(p, m, probed)
+                adopt_probe(p, m, text)
                 draw_swatch(m, 200)
                 if m.has_audio or m.form == .audio { hear(m) }
                 trouble(p, "")
@@ -1096,7 +1102,7 @@ action relink(p: Project, m: Media, file: File) (icon: .link, label: "Relink the
                 m.missing = false
                 m.still = ""
                 m.peaks = []
-                adopt_probe(p, m, probed)
+                adopt_probe(p, m, text)
                 draw_swatch(m, 200)
                 if m.has_audio or m.form == .audio { hear(m) }
                 trouble(p, "")
