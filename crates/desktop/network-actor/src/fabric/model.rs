@@ -4,7 +4,7 @@
 //! applies one policy model to media, clipboard, roaming preferences, secret
 //! references and cross-screen input.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -148,45 +148,6 @@ pub enum PersonalFabricAction {
         lease_nonce: [u8; 16],
         event: FabricInputEvent,
     },
-    /// Retired: Nearby Send is the device daemon's now, carried over its action
-    /// service, so no build sends these. Kept in their places so a frame an
-    /// earlier build wrote still reads as itself; each is refused.
-    RetiredNearbyDrop {
-        file_name: String,
-        content_hash: [u8; 32],
-        bytes: Vec<u8>,
-    },
-    RetiredNearbyDropResult {
-        request_id: [u8; 16],
-        file_name: String,
-        accepted: bool,
-    },
-    RetiredNearbyTransferOffer {
-        transfer_id: [u8; 16],
-        name: String,
-        kind: u8,
-        total_bytes: u64,
-        content_hash: [u8; 32],
-    },
-    RetiredNearbyTransferReady {
-        request_id: [u8; 16],
-        transfer_id: [u8; 16],
-        committed_offset: u64,
-        prefix_hash: [u8; 32],
-    },
-    RetiredNearbyTransferCancel {
-        request_id: [u8; 16],
-        transfer_id: [u8; 16],
-    },
-    RetiredNearbyTransferRestart {
-        request_id: [u8; 16],
-        transfer_id: [u8; 16],
-    },
-    RetiredNearbyTransferResult {
-        request_id: [u8; 16],
-        transfer_id: [u8; 16],
-        accepted: bool,
-    },
     /// Ephemeral, policy-redacted notification state. Authorship comes only
     /// from the authenticated envelope source; the payload names no device.
     NotificationProject {
@@ -201,35 +162,6 @@ pub enum PersonalFabricAction {
     NotificationInvoke {
         id: crate::fabric::notification::ContinuityNotificationId,
         action_key: String,
-    },
-    /// Request one fixed-profile virtual gamepad on the exact target. The
-    /// payload contains semantic controls only: descriptors, HID reports,
-    /// serials, and arbitrary evdev codes are not representable.
-    GamepadForwardRequest {
-        forwarding_id: [u8; 16],
-        app_id: String,
-        workspace_id: String,
-        session_id: String,
-        label: String,
-    },
-    /// Target acknowledgement. A nonzero lease nonce is minted only after
-    /// the constrained virtual device exists on that certified target.
-    GamepadForwardGrant {
-        forwarding_id: [u8; 16],
-        accepted: bool,
-        lease_nonce: [u8; 16],
-    },
-    /// One logical event for the exact target-issued lease. Replay and rate
-    /// checks are enforced again by the target's privileged broker.
-    GamepadForwardEvent {
-        forwarding_id: [u8; 16],
-        lease_nonce: [u8; 16],
-        sequence: u64,
-        event: os_actions::ForwardedGamepadEvent,
-    },
-    GamepadForwardStop {
-        forwarding_id: [u8; 16],
-        lease_nonce: [u8; 16],
     },
     /// Request a shell-owned, live audio route. Local `PipeWire` node identities
     /// never cross the certified-device boundary. Appending wire variants is
@@ -269,17 +201,12 @@ pub enum PersonalFabricAction {
     },
     /// Source-side cancellation before target consent has minted an
     /// authorization. Exact authenticated source/session binding is required.
-    RemoteAudioCancel {
-        session_id: [u8; 16],
-    },
+    RemoteAudioCancel { session_id: [u8; 16] },
     /// Fabric clock probe, sent only while something on the prober holds
     /// this peer's clock in sync. `sent_us` is the prober's
     /// `CLOCK_MONOTONIC` send time in microseconds, echoed back so the
     /// report closes a four-timestamp exchange. Carries nothing else.
-    FabricClockProbe {
-        nonce: [u8; 16],
-        sent_us: u64,
-    },
+    FabricClockProbe { nonce: [u8; 16], sent_us: u64 },
     /// The reporter's receive and reply times for one clock probe, from
     /// which the prober estimates clock offset and skew.
     FabricClockReport {
@@ -391,73 +318,12 @@ pub enum PersonalFabricAction {
         sweep: [u8; 16],
         hearing: crate::fabric::speaker_group::SpeakerHearing,
     },
-    /// The legacy app windows this device shows right now, each at the size it shows it.
-    /// The device running a listed window streams that one window here and stops once a
-    /// refresh no longer lists it or the refreshes stop. `decode` is what this device's
-    /// hardware decoders take, so the host encodes nothing they would hand back to the
-    /// CPU.
-    WindowViews {
-        views: Vec<WindowView>,
-        decode: Vec<HardwareDecode>,
-    },
-    /// Certify a device the sender paired: the devices that can approve it
-    /// ask their person (the shell's device certification). The ask,
-    /// postcard-encoded.
-    CertifyAsk {
-        ask: Vec<u8>,
-    },
-    /// A device's postcard-encoded answer to a [`Self::CertifyAsk`].
-    CertifyAnswer {
-        answer: Vec<u8>,
-    },
     /// What the pointer under `lease_nonce` carried across to the
     /// receiving device in the middle of a drag. The drag goes on there.
     DragCarried {
         lease_nonce: [u8; 16],
         drag: CarriedDrag,
     },
-}
-
-/// Upper bound on the windows one [`PersonalFabricAction::WindowViews`] lists:
-/// more than a person can see at once on any one screen.
-pub const MAX_WINDOW_VIEWS: usize = 32;
-/// Largest window side, in logical pixels, a viewer may ask for.
-pub const MAX_WINDOW_VIEW_SIDE: u32 = 8192;
-
-/// One legacy app window a device shows: the workspace tab holding it and the
-/// tile's size in logical pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WindowView {
-    pub tab: u64,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// One codec a device decodes in hardware, with the largest picture its
-/// decoder takes when it has a limit.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HardwareDecode {
-    /// The codec's stream label (`h264`, `vp9`, `av1`, `hevc-main10`).
-    pub codec: String,
-    pub max: Option<(u32, u32)>,
-}
-
-impl HardwareDecode {
-    fn valid(&self) -> bool {
-        media::StreamCodec::from_wire_label(&self.codec).is_some()
-            && self.max.is_none_or(|(width, height)| {
-                (2..=MAX_WINDOW_VIEW_SIDE).contains(&width)
-                    && (2..=MAX_WINDOW_VIEW_SIDE).contains(&height)
-            })
-    }
-}
-
-impl WindowView {
-    fn valid(&self) -> bool {
-        self.tab != 0
-            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.width)
-            && (1..=MAX_WINDOW_VIEW_SIDE).contains(&self.height)
-    }
 }
 
 /// Ephemeral action envelope authenticated by the exact QUIC device route.
@@ -652,21 +518,6 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::WindowViews { views, decode } => {
-                let mut tabs = BTreeSet::new();
-                let mut codecs = BTreeSet::new();
-                if views.len() > MAX_WINDOW_VIEWS
-                    || !views
-                        .iter()
-                        .all(|view| view.valid() && tabs.insert(view.tab))
-                    || decode.len() > media::StreamCodec::ALL.len()
-                    || !decode
-                        .iter()
-                        .all(|codec| codec.valid() && codecs.insert(codec.codec.as_str()))
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::SpeakerGroupDecision { group, .. }
             | PersonalFabricAction::SpeakerListenDecision { group, .. }
             | PersonalFabricAction::SpeakerGroupLeave { group } => {
@@ -709,12 +560,6 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::CertifyAsk { ask: message }
-            | PersonalFabricAction::CertifyAnswer { answer: message } => {
-                if message.is_empty() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::FabricClockProbe { nonce, .. } => {
                 if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
@@ -724,15 +569,6 @@ impl PersonalFabricActionEnvelope {
                 if !report.valid() {
                     return Err(FabricError::InvalidAction);
                 }
-            }
-            PersonalFabricAction::RetiredNearbyDrop { .. }
-            | PersonalFabricAction::RetiredNearbyDropResult { .. }
-            | PersonalFabricAction::RetiredNearbyTransferOffer { .. }
-            | PersonalFabricAction::RetiredNearbyTransferReady { .. }
-            | PersonalFabricAction::RetiredNearbyTransferCancel { .. }
-            | PersonalFabricAction::RetiredNearbyTransferRestart { .. }
-            | PersonalFabricAction::RetiredNearbyTransferResult { .. } => {
-                return Err(FabricError::InvalidAction);
             }
             PersonalFabricAction::NotificationProject { notification } => {
                 if !notification.validate_at(now_unix_ms) {
@@ -752,58 +588,6 @@ impl PersonalFabricActionEnvelope {
                     || action_key.len() > 128
                     || action_key.chars().any(char::is_control)
                 {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::GamepadForwardRequest {
-                forwarding_id,
-                app_id,
-                workspace_id,
-                session_id,
-                label,
-            } => {
-                if forwarding_id == &[0; 16]
-                    || !valid_fabric_identifier(app_id, 256)
-                    || !valid_fabric_identifier(workspace_id, 128)
-                    || !valid_fabric_identifier(session_id, 256)
-                    || label.is_empty()
-                    || label.len() > 128
-                    || label.chars().any(char::is_control)
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::GamepadForwardGrant {
-                forwarding_id,
-                accepted,
-                lease_nonce,
-            } => {
-                if forwarding_id == &[0; 16]
-                    || (*accepted && lease_nonce == &[0; 16])
-                    || (!*accepted && lease_nonce != &[0; 16])
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::GamepadForwardEvent {
-                forwarding_id,
-                lease_nonce,
-                sequence,
-                event,
-            } => {
-                if forwarding_id == &[0; 16]
-                    || lease_nonce == &[0; 16]
-                    || *sequence == 0
-                    || !event.is_valid()
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::GamepadForwardStop {
-                forwarding_id,
-                lease_nonce,
-            } => {
-                if forwarding_id == &[0; 16] || lease_nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }

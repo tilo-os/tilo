@@ -496,10 +496,9 @@ impl crate::Session {
                 self.shared.notifications.borrow_mut().answered(&envelope.action);
             }
             // Nothing on this session holds a media offer, and what the person's devices send each
-            // other that no service here carries — accessories, files, calls,
-            // displays, wake — is dropped rather than half-acted on. The speaker services and the
-            // certification above answer for theirs; the rest reach here only when their own
-            // preconditions refuse.
+            // other that no service here carries — accessories, calls, wake — is dropped rather
+            // than half-acted on. The speaker services answer for theirs; the rest reach here only
+            // when their own preconditions refuse.
             PersonalFabricAction::MediaAccepted { .. }
             | PersonalFabricAction::MediaRejected { .. }
             | PersonalFabricAction::MediaCancelled { .. }
@@ -507,28 +506,10 @@ impl crate::Session {
             // part in no fabric that could carry them.
             | PersonalFabricAction::Input { .. }
             | PersonalFabricAction::DragCarried { .. }
-            // A Nearby Send is the device daemon's, carried over its action service: these are
-            // frames an earlier build wrote, and none reaches a session.
-            | PersonalFabricAction::RetiredNearbyDrop { .. }
-            | PersonalFabricAction::RetiredNearbyDropResult { .. }
-            | PersonalFabricAction::RetiredNearbyTransferOffer { .. }
-            | PersonalFabricAction::RetiredNearbyTransferReady { .. }
-            | PersonalFabricAction::RetiredNearbyTransferCancel { .. }
-            | PersonalFabricAction::RetiredNearbyTransferRestart { .. }
-            | PersonalFabricAction::RetiredNearbyTransferResult { .. }
-            | PersonalFabricAction::GamepadForwardRequest { .. }
-            | PersonalFabricAction::GamepadForwardGrant { .. }
-            | PersonalFabricAction::GamepadForwardEvent { .. }
-            | PersonalFabricAction::GamepadForwardStop { .. }
             // A clock probe is answered where its frame arrived and a report measured from there,
             // so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
             | PersonalFabricAction::FabricClockReport { .. }
-            | PersonalFabricAction::WindowViews { .. }
-            // No device of the person certifies another over the fabric any more: an ask or an
-            // answer from an older device is dropped.
-            | PersonalFabricAction::CertifyAsk { .. }
-            | PersonalFabricAction::CertifyAnswer { .. }
             | PersonalFabricAction::SpeakerGroupInvite { .. }
             | PersonalFabricAction::SpeakerGroupDecision { .. }
             | PersonalFabricAction::SpeakerGroupLeave { .. }

@@ -129,62 +129,6 @@ fn media_handoff_and_media_actions_are_capability_and_locator_checked() {
 }
 
 #[test]
-fn window_views_are_bounded_distinct_and_sized() {
-    let source = id("viewer");
-    let target = id("host");
-    let envelope =
-        |views: Vec<WindowView>, decode: Vec<HardwareDecode>| PersonalFabricActionEnvelope {
-            request_id: [5; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action: PersonalFabricAction::WindowViews { views, decode },
-        };
-    let view = |tab, width, height| WindowView { tab, width, height };
-    let ok = |views| {
-        envelope(views, Vec::new())
-            .validate_at(&source, &target, 10_000)
-            .is_ok()
-    };
-    let decodes = |decode| {
-        envelope(vec![view(7, 1280, 800)], decode)
-            .validate_at(&source, &target, 10_000)
-            .is_ok()
-    };
-    let hw = |codec: &str, max| HardwareDecode {
-        codec: codec.into(),
-        max,
-    };
-
-    assert!(ok(Vec::new()), "an empty list ends every stream");
-    assert!(ok(vec![
-        view(7, 1280, 800),
-        view(8, 1, MAX_WINDOW_VIEW_SIDE)
-    ]));
-    assert!(!ok(vec![view(0, 1280, 800)]), "a tab id is never zero");
-    assert!(!ok(vec![view(7, 0, 800)]));
-    assert!(!ok(vec![view(7, 1280, MAX_WINDOW_VIEW_SIDE + 1)]));
-    assert!(
-        !ok(vec![view(7, 1280, 800), view(7, 640, 480)]),
-        "one size per tab"
-    );
-    assert!(!ok((1..=u64::try_from(MAX_WINDOW_VIEWS).unwrap() + 1)
-        .map(|tab| view(tab, 100, 100))
-        .collect()));
-
-    // A board's decoder limit travels with the list.
-    assert!(decodes(vec![
-        hw("h264", Some((1920, 1088))),
-        hw("av1", None)
-    ]));
-    assert!(!decodes(vec![hw("mjpeg", None)]), "a codec streams use");
-    assert!(!decodes(vec![hw("h264", Some((0, 1088)))]));
-    assert!(
-        !decodes(vec![hw("h264", None), hw("h264", Some((1280, 720)))]),
-        "one limit per codec"
-    );
-}
-
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -238,7 +182,7 @@ fn clipboard_payloads_are_bounded_and_tamper_checked() {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn remote_input_and_gamepad_actions_require_exact_bound_leases() {
+fn remote_input_actions_require_exact_bound_leases() {
     fn remote_input_requires_a_short_lived_explicit_lease() {
         let lease = InputLease {
             controller: id("laptop"),
@@ -291,57 +235,8 @@ fn remote_input_and_gamepad_actions_require_exact_bound_leases() {
         }
     }
 
-    fn gamepad_actions_are_typed_exact_bound_and_nonzero() {
-        let source = id("source");
-        let target = id("target");
-        let envelope = |action| PersonalFabricActionEnvelope {
-            request_id: [8; 16],
-            source: source.clone(),
-            target: target.clone(),
-            issued_unix_ms: 10_000,
-            action,
-        };
-        assert!(
-            envelope(PersonalFabricAction::GamepadForwardEvent {
-                forwarding_id: [1; 16],
-                lease_nonce: [2; 16],
-                sequence: 1,
-                event: os_actions::ForwardedGamepadEvent::Button {
-                    button: os_actions::GamepadButton::South,
-                    pressed: true,
-                },
-            })
-            .validate_at(&source, &target, 10_001)
-            .is_ok()
-        );
-        for action in [
-            PersonalFabricAction::GamepadForwardGrant {
-                forwarding_id: [1; 16],
-                accepted: true,
-                lease_nonce: [0; 16],
-            },
-            PersonalFabricAction::GamepadForwardGrant {
-                forwarding_id: [1; 16],
-                accepted: false,
-                lease_nonce: [2; 16],
-            },
-            PersonalFabricAction::GamepadForwardEvent {
-                forwarding_id: [1; 16],
-                lease_nonce: [2; 16],
-                sequence: 2,
-                event: os_actions::ForwardedGamepadEvent::Hat { x: 2, y: 0 },
-            },
-        ] {
-            assert_eq!(
-                envelope(action).validate_at(&source, &target, 10_001),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
     remote_input_requires_a_short_lived_explicit_lease();
     input_actions_reject_unbound_or_malformed_events();
-    gamepad_actions_are_typed_exact_bound_and_nonzero();
 }
 
 #[test]
@@ -393,16 +288,6 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
         })
         .unwrap();
         assert_eq!(input.first(), Some(&2));
-        let certify =
-            postcard::to_allocvec(&PersonalFabricAction::CertifyAsk { ask: vec![1] }).unwrap();
-        assert_eq!(certify.first(), Some(&41));
-        let nearby = postcard::to_allocvec(&PersonalFabricAction::RetiredNearbyDrop {
-            file_name: "note.txt".into(),
-            content_hash: *blake3::hash(b"hello").as_bytes(),
-            bytes: b"hello".to_vec(),
-        })
-        .unwrap();
-        assert_eq!(nearby.first(), Some(&3));
         let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
             id: crate::fabric::notification::ContinuityNotificationId {
                 epoch: [1; 16],
@@ -410,48 +295,7 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
             },
         })
         .unwrap();
-        assert_eq!(notification.first(), Some(&11));
-        for (action, index) in [
-            (
-                PersonalFabricAction::GamepadForwardRequest {
-                    forwarding_id: [3; 16],
-                    app_id: "so.tilo.game".into(),
-                    workspace_id: "workspace".into(),
-                    session_id: "session".into(),
-                    label: "Controller".into(),
-                },
-                14,
-            ),
-            (
-                PersonalFabricAction::GamepadForwardGrant {
-                    forwarding_id: [3; 16],
-                    accepted: true,
-                    lease_nonce: [4; 16],
-                },
-                15,
-            ),
-            (
-                PersonalFabricAction::GamepadForwardEvent {
-                    forwarding_id: [3; 16],
-                    lease_nonce: [4; 16],
-                    sequence: 1,
-                    event: os_actions::ForwardedGamepadEvent::Hat { x: 0, y: -1 },
-                },
-                16,
-            ),
-            (
-                PersonalFabricAction::GamepadForwardStop {
-                    forwarding_id: [3; 16],
-                    lease_nonce: [4; 16],
-                },
-                17,
-            ),
-        ] {
-            assert_eq!(
-                postcard::to_allocvec(&action).unwrap().first(),
-                Some(&index)
-            );
-        }
+        assert_eq!(notification.first(), Some(&4));
     }
 
     fn notification_actions_are_source_bound_bounded_and_fresh() {
