@@ -1278,13 +1278,13 @@ a regression a person sees, with the test that shows it. A fix that adds a
 shared helper deletes the copies the helper replaces in the same push. A
 session whose push comes out net positive stops and asks before pushing.
 
-Measured on main at 0503c21f750; lines are Rust left in what goes.
+Measured on main at 0503c21f750; lines are Rust left in what goes. Weather (0be38c51a1d) and Snippets (f77c57bf628) have gone since; main is at 3,944,396.
 
 | Piece | Left on main | Lines | Next push | Session |
 |---|---|---|---|---|
 | Main builds | `tilo-session`'s lib (81 errors from the desktop crate moves), `tilo-runtime`'s tests, `tilo-peer-state`'s 20 fixtures without an invoker | | every crate compiles, then the waiting tests run | Make tilo-session's lib compile |
 | Desktop session | `crates/desktop/session` (199k, tests 98k) and `session-core` (59k). The seat stays: windows, input, displays, sound, capture, served as providers on the device's dispatch (9ba6d815abb). Everything else goes: the Rust shell's drawing (`shell/`, the profile card, app tabs, the layout chrome) for `apps/tl/shell`; the session's MCP server (Actions); its own people, roster, search, notifications, workspaces and Nearby copies, onto the daemon's services and the tl shell. New shell behaviour goes into `apps/tl/shell` and the seat, never into the code that goes | ~150k of 357k, to be measured per module | main builds, then the shell's drawing goes once the tl shell gaps close | Make tilo-session's lib compile, with the two tl shell gap sessions |
-| Rust apps | Settings (105k, the active port), Terminal, Slides, Maps, OSK, Camera, Shortcuts, Remote, Weather, Typst Editor, Windows, Chip Design, Diffmerge, Messages, TOTP, Backups, Snippets, Firewall, Logs, Console, Assistant, Poker, Phone, Publisher, Discord (held until it is at parity with tl Chat's Discord), Thumbnails (becomes an engine action), and their `*-model` crates | ~420k | Settings, ported and deleted in one push | Rust apps to tilolang |
+| Rust apps | Settings (105k, the active port), Terminal, Slides, Maps, OSK, Camera, Shortcuts, Remote, Typst Editor, Windows, Chip Design, Diffmerge, Messages, TOTP, Backups, Firewall, Logs, Console, Assistant, Poker, Phone, Publisher, Discord (held until it is at parity with tl Chat's Discord), Thumbnails (becomes an engine action), and their `*-model` crates | ~420k | Settings, ported and deleted in one push | Rust apps to tilolang |
 | Imager | nothing: the installer stays a Rust program on `tilo-ui` (383f9558a7d), and its own account capture and first-boot import are gone (6a594ad2dac); accounts come over with `tilo migrate` | 0 | | Imager to tilolang (done) |
 | App framework | `tilo-app` `framework/` (62k), `tilo-view` and `view-macros` (1.6k) | 63k | goes with the last Rust app | Rust apps to tilolang |
 | One engine | `collab_app_broker` (66k), `collaboration` (52k); the join | 118k | the worker role into the dispatch and the join deleted, with the shared-checklist two-device test | One engine |
