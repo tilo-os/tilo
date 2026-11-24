@@ -89,7 +89,7 @@ mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invocations;
-pub use invocations::with_questions;
+pub use invocations::{questions_reading, with_questions};
 use tilo_actions::remote::invocation_record;
 mod invoker;
 mod item_use;

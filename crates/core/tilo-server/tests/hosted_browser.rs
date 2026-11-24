@@ -28,8 +28,8 @@ use tilo_server::hosted_browser::{
 };
 use tilo_server::{Server, WorkspaceId};
 use tilo_user_identity::{
-    AgentScope, DeviceCapabilities, DeviceCert, RevocationList,
-    prepare_stand_in_cert, sign_device_cert,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationList, prepare_stand_in_cert,
+    sign_device_cert,
 };
 
 use automerge::transaction::Transactable as _;
@@ -211,7 +211,7 @@ async fn followed(
 ) -> tilo_actions::InvocationUpdate {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        if let Some(state) = ActionProvider::observe(remote, caller, &invocation)
+        if let Some(state) = observed(remote, caller, invocation).await
             && state.update.is_terminal()
         {
             return state.update;
@@ -221,13 +221,18 @@ async fn followed(
     }
 }
 
-/// What `caller` is told of `invocation` now, when the host holds it.
-fn observed(
+/// What `caller` is told of `invocation` now, when the host holds it. The device is asked from
+/// a thread of its own: its answer waits on the request it sends, which this test's one runtime
+/// thread carries.
+async fn observed(
     remote: &RemoteDevice,
     caller: &Caller,
     invocation: InvocationId,
 ) -> Option<InvocationState> {
-    ActionProvider::observe(remote, caller, &invocation)
+    let (remote, caller) = (remote.clone(), caller.clone());
+    tokio::task::spawn_blocking(move || ActionProvider::observe(&remote, &caller, &invocation))
+        .await
+        .expect("the observe finishes")
 }
 
 /// Every question that waits for the person, as the reading of the workspace's invocations names
@@ -1383,7 +1388,9 @@ async fn a_page_action_the_person_allows_runs_once_and_the_page_answers_it() {
     assert_eq!(receipt.status, ReceiptStatus::Accepted);
     let question = asked(&approver_actions, &approver_caller).await;
     // While the person is asked, a caller following it is told so.
-    let waiting = observed(&remote, &caller, id).expect("the caller's invocation");
+    let waiting = observed(&remote, &caller, id)
+        .await
+        .expect("the caller's invocation");
     assert!(
         matches!(
             &waiting.update,
@@ -1482,7 +1489,9 @@ async fn a_question_nobody_answers_waits_in_its_record() {
         .expect("the window holds it for the person");
     assert_eq!(receipt.status, ReceiptStatus::Accepted);
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let waiting = observed(&remote, &caller, id).expect("the caller's invocation");
+    let waiting = observed(&remote, &caller, id)
+        .await
+        .expect("the caller's invocation");
     assert!(
         matches!(
             &waiting.update,
@@ -1608,7 +1617,10 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
         .ask_message(confirmed())
         .await;
     assert!(
-        matches!(receipt_of(ran.flatten()).status, ReceiptStatus::Completed { .. }),
+        matches!(
+            receipt_of(ran.flatten()).status,
+            ReceiptStatus::Completed { .. }
+        ),
         "the placing host's word runs it"
     );
     let seen = seen.lock().unwrap();

@@ -500,6 +500,35 @@ fn page(items: Vec<Invocation>, query: &InvocationsQuery) -> Listed {
     }
 }
 
+/// The workspace's invocations as a dispatch that keeps no record of its own reads them: the calls
+/// in `waiting` that wait for their person, whole or `record` alone.
+///
+/// # Errors
+/// A call that does not read as JSON.
+pub fn questions_reading(
+    waiting: Vec<tilo_actions::remote::asked::Waiting>,
+    record: &str,
+) -> Result<tilo_actions::remote::ResourceCopy, ActionCallError> {
+    let mut items = Vec::new();
+    with_questions(&mut items, waiting, (!record.is_empty()).then_some(record));
+    if record.is_empty() {
+        let waiting = items.len();
+        return Ok(tilo_actions::remote::ResourceCopy::reading(
+            serde_json::json!({ "items": items, "total": waiting, "waiting": waiting }),
+            None,
+        ));
+    }
+    Ok(match items.into_iter().next() {
+        Some(invocation) => tilo_actions::remote::ResourceCopy::reading(
+            serde_json::to_value(invocation).map_err(|error| ActionCallError::Unavailable {
+                reason: error.to_string(),
+            })?,
+            None,
+        ),
+        None => tilo_actions::remote::ResourceCopy::Absent,
+    })
+}
+
 /// `items`, a reading of a workspace's invocations, with what each call that waits in
 /// `waiting` asks its person, and each such call the device keeps no record of (it waited across
 /// a restart, or another dispatch here keeps it) listed beside them: only `only`, when the
