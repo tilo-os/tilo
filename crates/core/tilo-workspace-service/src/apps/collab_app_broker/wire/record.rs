@@ -175,20 +175,6 @@ impl AppConnection {
                     BrokerError::failed(format!("the launch's agent was not admitted: {error}"))
                 })?;
         }
-        tracing::info!(
-            target: "tilo_collab_probe",
-            channel = %channel_id,
-            peer_id,
-            role = ?verified_identity.role,
-            actor = %verified_identity.actor_key,
-            acting_as = ?verified_identity.agent_id,
-            device = ?{
-                collab_types::Ed25519PublicKey::from_bytes(
-                    verified_identity.verified.device_public_key,
-                )
-            },
-            "PROBE open_record",
-        );
         phases.mark("admit");
         let ensured = channel_id.clone();
         let retained = verified_identity.clone();
