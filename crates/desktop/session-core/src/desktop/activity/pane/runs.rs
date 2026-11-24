@@ -393,6 +393,9 @@ impl WorkspaceActivityPane {
     ) -> (Vec<wire::SessionChange>, usize) {
         let mut changes: Vec<(&Segment<'_>, &HistoryEntry)> = segments
             .iter()
+            // A change of the workspace's own layout is no record's to take back, so no
+            // document's history says whether it still stands: the feed lists it, not a session.
+            .filter(|segment| !segment.record.is_empty())
             .flat_map(|segment| {
                 segment
                     .entries
