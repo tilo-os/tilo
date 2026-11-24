@@ -660,6 +660,27 @@ mod cases {
                 Value::List(vec![Value::Int(5), Value::Int(100)]),
             ],
         );
+        // The area's row carries the control while the download runs.
+        let mut running = m
+            .rt
+            .open_view(
+                &me(),
+                &m.app.view("area_row"),
+                vec![Value::resource(&m.root), Value::resource(&m.offline()[0])],
+            )
+            .unwrap();
+        running.poll_patches().unwrap();
+        let offered: Vec<String> = of_kind(running.tree(), "ui.Button")
+            .iter()
+            .filter_map(|node| match node.props.get("label") {
+                Some(Value::Text(label)) => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            offered.iter().any(|label| label == "Stop downloading"),
+            "the area's row stops a running download: {offered:?}"
+        );
         // A download the person stops keeps what it already has and takes no more reports.
         m.call(
             "stop_offline_area",
@@ -691,6 +712,27 @@ mod cases {
             m.text(&m.root, "status").contains("stay available offline"),
             "it says what it keeps: {}",
             m.text(&m.root, "status")
+        );
+        // A stopped area's row offers the download again.
+        let mut stopped = m
+            .rt
+            .open_view(
+                &me(),
+                &m.app.view("area_row"),
+                vec![Value::resource(&m.root), Value::resource(&m.offline()[0])],
+            )
+            .unwrap();
+        stopped.poll_patches().unwrap();
+        let offered: Vec<String> = of_kind(stopped.tree(), "ui.Button")
+            .iter()
+            .filter_map(|node| match node.props.get("label") {
+                Some(Value::Text(label)) => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            offered.iter().any(|label| label == "Download it again"),
+            "a stopped area is downloaded again: {offered:?}"
         );
         // Starting it again lets its reports through.
         m.call(
