@@ -650,6 +650,12 @@ export function createVoiceCall({
       if (typeof id !== 'string' || !Number.isFinite(gain) || gain < 0 || gain > 2) return;
       if (gain === 1) volumes.delete(id); else volumes.set(id, gain);
     },
+    /** How loud this device plays each member it was set, sorted by person:
+     * `[{member, percent}]`, which the app's volume controls show. */
+    volumes() {
+      return [...volumes].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([member, gain]) => ({member, percent: Math.round(gain * 100)}));
+    },
     /** The pictures the app shows: `[{person, source, layer}]`. */
     showPictures(items) {
       const self = members().find(member => member.self);

@@ -50,6 +50,29 @@ pub const SAVE_ACTION: &str = "$save";
 /// `screen`) and whether it turns its switch on.
 pub const CALL_ACTION: &str = "$call";
 
+/// The action of `select_call_input(r, id)`: send this device's microphone in the system's call
+/// held on `r` from the input `id`. Its arguments are `r` and the input's id.
+pub const CALL_INPUT_ACTION: &str = "$call-input";
+
+/// The action of `set_call_volume(r, member, percent)`: play `member` in the system's call held
+/// on `r` at `percent` of as they arrive, on this device only. Its arguments are `r`, the person
+/// and the percent.
+pub const CALL_VOLUME_ACTION: &str = "$call-volume";
+
+/// The loudest a member is played in a call, in percent of as they arrive: the call service's
+/// own bound (`runtime_collab::native_media::MAX_VOLUME_PERCENT`), which a step beyond is
+/// refused by.
+pub const CALL_MAX_VOLUME: u16 = 200;
+
+/// A call's volume as a step names it, whole and within the call service's loudest: the percent
+/// of as a member arrives, rounded, or why it is not one.
+pub(crate) fn call_volume_percent(percent: f64) -> Result<u16, &'static str> {
+    if !percent.is_finite() || !(0.0..=f64::from(CALL_MAX_VOLUME)).contains(&percent) {
+        return Err("a call's volume is between 0 and 200 percent of as they arrive");
+    }
+    Ok(percent.round().clamp(0.0, f64::from(CALL_MAX_VOLUME)) as u16)
+}
+
 /// The action of `run_line(r, line)`: run a tilolang line as the person's own step, from the
 /// resource `r`. Its arguments are `r` and the line.
 pub const RUN_LINE_ACTION: &str = "$run-line";
@@ -470,6 +493,57 @@ impl Core {
         }))
     }
 
+    /// `select_call_input(r, id)`: send this device's microphone in the system's call held on `r`
+    /// from the input `id`, which the window's host carries out.
+    fn act_call_input(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let target = self.call_target(a.h(0)?)?;
+        let input = Value::Text(self.text(a.h(1)?)?);
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: CALL_INPUT_ACTION.to_owned(),
+            args: vec![target, input],
+            author,
+            from: None,
+        }))
+    }
+
+    /// `set_call_volume(r, member, percent)`: how loud this device plays `member` in the system's
+    /// call held on `r`, which the window's host carries out.
+    fn act_call_volume(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let target = self.call_target(a.h(0)?)?;
+        let member = self.actor_arg(a.h(1)?)?;
+        let Value::Float(percent) = self.val(a.h(2)?)? else {
+            return trap("a call's volume is a number".to_owned());
+        };
+        let Some(percent) = call_volume_percent(percent).ok() else {
+            return trap(
+                "a call's volume is between 0 and 200 percent of as they arrive".to_owned(),
+            );
+        };
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: CALL_VOLUME_ACTION.to_owned(),
+            args: vec![
+                target,
+                Value::Actor(member),
+                Value::Float(f64::from(percent)),
+            ],
+            author,
+            from: None,
+        }))
+    }
+
+    /// The resource `join_call(r)` and its kin name, as the value a call action holds.
+    fn call_target(&self, h: i32) -> HResult<Value> {
+        match self.val(h)? {
+            Value::Ref(target) => Ok(Value::Ref(target)),
+            other => trap(format!(
+                "a call is held on a resource, not {}",
+                other.kind_name()
+            )),
+        }
+    }
+
     /// `run_line(r, line)`: the person's own tilolang line, run from `r`, which the window's host
     /// carries out through the session's program host.
     fn act_run_line(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -664,6 +738,8 @@ impl Core {
             Imp::ActMany => self.act_many(a),
             Imp::ActOpen => self.act_open(a),
             Imp::ActCall => self.act_call(a),
+            Imp::ActCallInput => self.act_call_input(a),
+            Imp::ActCallVolume => self.act_call_volume(a),
             Imp::ActRunLine => self.act_run_line(a),
             Imp::ActUndo => self.act_undo(a),
             Imp::ChangeView => self.change_view(a),

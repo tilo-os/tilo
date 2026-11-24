@@ -959,13 +959,29 @@ view call<R>(of: R) {
     let people = call_members(of)
     let mine = people.filter(m -> m.mine)
     let pictured = people.filter(m -> m.camera or m.screen)
-    let others = people.filter(m -> not m.camera and not m.screen)
+    let microphones = call_inputs(of)
+    let chosen = microphones.find(i -> i.current)
+    state microphone: Text = if let c = chosen { c.label } else { "" }
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         content: {
             ui.Docked {
                 foot: {
                     row(gap: .tight, distribute: .center, wrap: true) {
                         if let me = mine.first() {
+                            if microphones.len() > 1 {
+                                ui.Dropdown(
+                                    options: microphones.map(i -> i.label),
+                                    placeholder: phrase("tilolang-call-microphone"),
+                                    icon: .mic,
+                                    size: .small,
+                                    bind: microphone,
+                                ) {
+                                    on change(label): select_call_input(
+                                        of,
+                                        microphone_id(microphones, label),
+                                    )
+                                }
+                            }
                             ui.Button(
                                 phrase(
                                     if me.muted {
@@ -1062,10 +1078,12 @@ view call<R>(of: R) {
                                         }
                                     }
                                 }
-                                if not others.is_empty() {
-                                    stack(gap: .tight) {
-                                        for m in others {
-                                            call_member(m)
+                                if not people.is_empty() {
+                                    section(phrase("tilolang-call-people")) {
+                                        stack(gap: .tight) {
+                                            for m in people {
+                                                call_member(of, m)
+                                            }
                                         }
                                     }
                                 }
@@ -1078,10 +1096,12 @@ view call<R>(of: R) {
     }
 }
 
-/// One person in a call, as [`call`] lists them: their face and name, and what they do there.
-/// Someone a bridge carries in from another service shows as that service shows them, their name
-/// and picture there, marked as from it.
-view call_member(m: host.CallMember) {
+/// One person in a call, as [`call`] lists them: their face and name, what they do there, and how
+/// loud this device plays them, which the person sets for themselves and nobody else's call
+/// hears. Someone a bridge carries in from another service shows as that service shows them,
+/// their name and picture there, marked as from it.
+view call_member<R>(of: R, m: host.CallMember) {
+    state volume: Float = m.volume.to_float()
     row(gap: .tight, align: .center) {
         if m.service != "" {
             if m.avatar != "" {
@@ -1117,7 +1137,27 @@ view call_member(m: host.CallMember) {
         } else if m.muted {
             ui.Text(phrase("tilolang-call-muted"), role: .caption, secondary: true)
         }
+        if not m.mine {
+            stack(min: 8rem, max: 14rem) {
+                ui.Slider(
+                    label: m.who.name(),
+                    min: 0.0,
+                    max: 200.0,
+                    step: 10.0,
+                    shows_value: true,
+                    bind: volume,
+                ) {
+                    on change(percent): set_call_volume(of, m.who, percent)
+                }
+            }
+        }
     }
+}
+
+/// The id of the microphone a person chose by its label, when one of the call's inputs is
+/// called that: what `select_call_input` names.
+fn microphone_id(microphones: List<host.CallInput>, label: Text) -> Text {
+    if let found = microphones.find(i -> i.label == label) { found.id } else { "" }
 }
 
 /// Under a message that started a thread: how many replies it has, opening the thread.

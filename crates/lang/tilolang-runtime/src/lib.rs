@@ -15,6 +15,7 @@ pub mod abi;
 pub mod amstore;
 pub mod authority;
 pub mod blob;
+pub mod canvas;
 pub mod catalogue;
 pub mod clipboard;
 mod colls;
@@ -52,7 +53,6 @@ mod num;
 pub mod origin;
 pub mod page;
 pub mod paging;
-pub mod canvas;
 pub mod pdf;
 pub mod place;
 pub mod platform;
@@ -91,6 +91,7 @@ mod written;
 pub use amstore::AmStore;
 pub use authority::{ActionInfo, Authority, Decision, SimpleAuthority};
 pub use blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+pub use canvas::CanvasHost;
 pub use catalogue::{Signature, SignatureKind, catalogue};
 pub use core::{Delivery, ModelHost, NameHost, OutsideSink, ShownHost};
 pub use cost::{Costs, Reads, Unit, UnitCost, UnitKind, assert_costs};
@@ -104,13 +105,13 @@ pub use ids::{Actor, ModuleHash, PackageId};
 pub use live::LiveStats;
 pub use marks::DOC_VERSIONS;
 pub use meta::Meta;
-pub use canvas::CanvasHost;
 pub use pdf::PdfHost;
 pub use project::ProjectOptions;
 pub use render::ViewTarget;
 pub use run::{Journal, JournalEntry, Pending, Resolution, RunOutcome};
 pub use runtime::{
-    BlockOutput, Bridged, CallMember, Invoked, LineRun, MemorySink, Reading, Runtime, SettleReport,
+    BlockOutput, Bridged, CallInput, CallMember, Invoked, LineRun, MemorySink, Reading, Runtime,
+    SettleReport,
 };
 pub use settle::{AgentBlock, InvocationEntry};
 pub use space::Space;

@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use runtime_collab::native_media::{
     Command, Input, Issue, Picture, PictureLayer, PictureSource, Request, Shown, Snapshot, State,
+    Volume,
 };
 
 use super::{Caller, NativeMediaService};
@@ -42,6 +43,8 @@ struct CallState {
     shown: Mutex<Vec<Shown>>,
     pictures: Mutex<Vec<Picture>>,
     arrived: Arc<tokio::sync::Notify>,
+    /// How loud the call is told to play each member.
+    volumes: Mutex<Vec<(String, u16)>>,
 }
 
 struct Call {
@@ -92,6 +95,17 @@ impl MediaSession for Call {
 
     fn pictures_changed(&self) -> Option<Arc<tokio::sync::Notify>> {
         Some(Arc::clone(&self.state.arrived))
+    }
+
+    fn set_volume(&mut self, member: &str, percent: u16) {
+        let mut volumes = self.state.volumes.lock().expect("the volumes set");
+        volumes.retain(|(known, _)| known != member);
+        volumes.push((member.to_owned(), percent));
+        volumes.sort_by(|(left, _), (right, _)| left.cmp(right));
+    }
+
+    fn volumes(&self) -> Vec<(String, u16)> {
+        self.state.volumes.lock().expect("the volumes set").clone()
     }
 }
 
@@ -498,4 +512,50 @@ async fn a_status_carries_the_rosters_its_carrier_knows() {
     let status = send(&service, &who, request(0, Command::Status)).expect("the call's status");
     assert_eq!(status.state, State::Idle);
     assert!(status.rosters.is_empty());
+}
+
+/// How loud this device plays a member is the person's own choice: it reaches the carrier as it
+/// is set, and every status after it says so, for the app's controls to show.
+#[tokio::test]
+async fn a_member_plays_at_the_volume_the_person_set_and_the_status_says_so() {
+    let (service, state) = service_with(vec![microphone()]);
+    let who = caller(Arc::new(AtomicBool::new(true)));
+    send(&service, &who, request(1, join("c_voice"))).expect("an app joins a voice channel");
+    let _ = settled(&service, &who).await;
+
+    let member = "cd".repeat(32);
+    let set = send(
+        &service,
+        &who,
+        request(
+            0,
+            Command::SetVolume {
+                member: member.clone(),
+                percent: 40,
+            },
+        ),
+    )
+    .expect("a volume is set");
+    assert_eq!(
+        set.volumes,
+        vec![Volume {
+            member: member.clone(),
+            percent: 40,
+        }]
+    );
+    assert_eq!(
+        *state.volumes.lock().expect("the volumes set"),
+        vec![(member.clone(), 40)],
+        "the carrier plays it at that volume"
+    );
+
+    let status = send(&service, &who, request(0, Command::Status)).expect("the status");
+    assert_eq!(
+        status.volumes,
+        vec![Volume {
+            member,
+            percent: 40,
+        }],
+        "what the app's controls show"
+    );
 }

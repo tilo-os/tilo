@@ -384,6 +384,7 @@ async fn a_pages_view_asks_the_browser_for_a_call_step_and_hears_its_answer() {
             revision: 4,
             pictures: Vec::new(),
             pictures_cursor: 0,
+            volumes: Vec::new(),
         };
         ask(
             &mut browser,

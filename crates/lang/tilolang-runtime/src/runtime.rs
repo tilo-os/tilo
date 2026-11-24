@@ -37,9 +37,24 @@ pub struct CallMember {
     pub deafened: bool,
     pub camera: bool,
     pub screen: bool,
+    /// How loud this device plays them, in percent of as they arrive: 100 unless the person set
+    /// them otherwise here.
+    pub volume: u16,
     /// Someone a bridge carries into the call from another service: which service, what it
     /// calls them, and their picture there. `None` for someone in the call here.
     pub bridged: Option<Bridged>,
+}
+
+/// A microphone the system's call can send from, as `call_inputs(r)` reads them
+/// (`host.CallInput`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallInput {
+    /// Its id, as `select_call_input` names it.
+    pub id: String,
+    /// What it is called where the person chooses between them.
+    pub label: String,
+    /// Whether the call sends from it now.
+    pub current: bool,
 }
 
 /// Someone in a call from another service, as the bridge that carries them in says.
@@ -1481,6 +1496,28 @@ impl Runtime {
         self.core.calls_read.get()
     }
 
+    /// The microphones the system's call held on the resource whose own id is `place` can send,
+    /// as the call service last said: what `call_inputs(r)` reads, and which one it sends from.
+    pub fn set_call_inputs(&self, place: &str, inputs: &[CallInput]) {
+        let key = crate::platform::call_inputs_key(place);
+        let value = Value::List(
+            inputs
+                .iter()
+                .map(|input| {
+                    Value::Tuple(vec![
+                        Value::Text(input.id.clone()),
+                        Value::Text(input.label.clone()),
+                        Value::Bool(input.current),
+                    ])
+                })
+                .collect(),
+        );
+        let mut states = self.core.view_states.borrow_mut();
+        if states.get(&key) != Some(&value) {
+            states.set(key, value);
+        }
+    }
+
     pub fn set_call(&self, place: &str, members: &[CallMember]) {
         let key = crate::platform::call_key(place);
         let value = Value::List(
@@ -1495,6 +1532,7 @@ impl Runtime {
                         Value::Bool(m.deafened),
                         Value::Bool(m.camera),
                         Value::Bool(m.screen),
+                        Value::Int(i64::from(m.volume)),
                         Value::Text(
                             m.bridged
                                 .as_ref()

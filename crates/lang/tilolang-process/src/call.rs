@@ -19,7 +19,7 @@ use tilo_render_protocol::patch::{CallPicture, CallPictureSource, CallShown, ToU
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::platform::call_place;
 use tilolang_tilo::runtime::value::ResourceRef;
-use tilolang_tilo::runtime::{Actor, Bridged, CallMember, CallStep};
+use tilolang_tilo::runtime::{Actor, Bridged, CallInput, CallMember, CallStep};
 use ui_core::native_media::{
     Command, Issue, PICTURES_LOST, PictureLayer, PictureSource, REPLY_LOST, Request, Shown,
     Snapshot, State, WATCH_LOST,
@@ -63,6 +63,9 @@ pub struct Calls {
     cursor: u64,
     /// What the window was last told the view shows, so it is told only when that changes.
     window_shown: Option<Vec<CallShown>>,
+    /// The microphones the call service last offered, and the one it sends from: what the view's
+    /// controls offer, told to the instance only when they change.
+    inputs: Vec<CallInput>,
 }
 
 impl Calls {
@@ -86,6 +89,7 @@ impl Calls {
             pictures: None,
             cursor: 0,
             window_shown: Some(Vec::new()),
+            inputs: Vec::new(),
         }
     }
 
@@ -110,7 +114,27 @@ impl Calls {
             CallStep::Deafen(on) if self.in_call(&place) => Command::SetDeafened { deafened: on },
             CallStep::Camera(on) if self.in_call(&place) => Command::SetCamera { on },
             CallStep::Screen(on) if self.in_call(&place) => Command::SetScreen { on },
-            CallStep::Mute(_) | CallStep::Deafen(_) | CallStep::Camera(_) | CallStep::Screen(_) => {
+            CallStep::SelectInput(input_id) if self.in_call(&place) => {
+                Command::SelectInput { input_id }
+            }
+            // How loud a member plays here changes nothing of the call, so it carries no intent:
+            // a newer one replaces the one before at the service.
+            CallStep::Volume { member, percent } if self.in_call(&place) => {
+                self.changed = true;
+                let request_id = self.request_id();
+                self.pending.insert(request_id, ui_core::time::now());
+                self.queued.push(CollabRequest::NativeMediaCommand {
+                    request_id,
+                    command: Request::new(Command::SetVolume { member, percent }),
+                });
+                return;
+            }
+            CallStep::Mute(_)
+            | CallStep::Deafen(_)
+            | CallStep::Camera(_)
+            | CallStep::Screen(_)
+            | CallStep::SelectInput(_)
+            | CallStep::Volume { .. } => {
                 return;
             }
         };
@@ -289,6 +313,39 @@ impl Calls {
             instance.say(message);
             instance.flush();
         }
+        self.show_inputs(instance);
+    }
+
+    /// Tell `instance` the microphones the call offered, and the one it sends from, when that
+    /// changed: what the view's controls offer.
+    fn show_inputs(&mut self, instance: &mut Instance) {
+        let now: Vec<CallInput> = self
+            .snapshot
+            .as_ref()
+            .filter(|_| self.joined.is_some())
+            .map(|snapshot| {
+                snapshot
+                    .inputs
+                    .iter()
+                    .map(|input| CallInput {
+                        id: input.id.clone(),
+                        label: input.label.clone(),
+                        current: snapshot.input_id.as_deref() == Some(input.id.as_str()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if now == self.inputs {
+            return;
+        }
+        self.inputs = now;
+        let place = self.joined.clone().unwrap_or_default();
+        let inputs: std::collections::HashMap<String, Vec<CallInput>> = if place.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            [(place, self.inputs.clone())].into_iter().collect()
+        };
+        instance.set_call_inputs(inputs);
     }
 
     /// What the window that draws the call's pictures is to be told, when there is anything: the
@@ -403,6 +460,13 @@ impl Calls {
             snapshot.state,
             State::Preparing | State::Joining | State::Live | State::Reconnecting
         );
+        let volumes = |person: &str| {
+            snapshot
+                .volumes
+                .iter()
+                .find(|volume| volume.member == person)
+                .map_or(100, |volume| volume.percent)
+        };
         for roster in &snapshot.rosters {
             let mine = live && self.in_call(&roster.channel_id);
             let has = |list: &[String], person: &str| list.iter().any(|p| p == person);
@@ -418,6 +482,7 @@ impl Calls {
                     deafened: has(&roster.deafened, person),
                     camera: has(&roster.cameras, person),
                     screen: has(&roster.screens, person),
+                    volume: volumes(person),
                     // Someone a bridge carries in from another service is shown by the name and
                     // picture they have there, and marked as reached through it.
                     bridged: roster
@@ -458,6 +523,15 @@ impl Calls {
             deafened: snapshot.is_some_and(|s| s.deafened),
             camera: snapshot.is_some_and(|s| s.camera),
             screen: snapshot.is_some_and(|s| s.screen),
+            volume: snapshot
+                .and_then(|snapshot| {
+                    snapshot
+                        .volumes
+                        .iter()
+                        .find(|volume| volume.member == self.me)
+                        .map(|volume| volume.percent)
+                })
+                .unwrap_or(100),
             bridged: None,
         }
     }
@@ -537,6 +611,7 @@ mod tests {
             revision: 1,
             pictures: Vec::new(),
             pictures_cursor: 0,
+            volumes: Vec::new(),
         }
     }
 
@@ -667,6 +742,61 @@ mod tests {
                     .iter()
                     .any(|request| matches!(&request.command, Command::Pictures { after: 1 })),
                 "the next collection starts where the last one ended"
+            );
+        }
+
+        phase the_microphone_and_a_member_volume_are_steps_of_their_own;
+        {
+            let mut calls = Calls::new(ME);
+            let id = joined(&mut calls);
+            let mut live = snapshot(State::Live, channel_call(false, false));
+            live.inputs = vec![
+                ui_core::native_media::Input {
+                    id: "mic-a".to_owned(),
+                    label: "Built-in".to_owned(),
+                },
+                ui_core::native_media::Input {
+                    id: "mic-b".to_owned(),
+                    label: "Headset".to_owned(),
+                },
+            ];
+            live.input_id = Some("mic-b".to_owned());
+            answer(&mut calls, id, live);
+            sent(&mut calls);
+
+            let target = ResourceRef::root("voice:standup", "call");
+            calls.step(&target, CallStep::SelectInput("mic-a".to_owned()));
+            let requests = sent(&mut calls);
+            let chosen = requests
+                .iter()
+                .find(|request| {
+                    matches!(
+                        &request.command,
+                        Command::SelectInput { input_id } if input_id == "mic-a"
+                    )
+                })
+                .expect("the call is told which microphone to send");
+            assert!(chosen.intent > 0, "choosing a microphone changes the call");
+
+            calls.step(
+                &target,
+                CallStep::Volume {
+                    member: ADA.to_owned(),
+                    percent: 40,
+                },
+            );
+            let requests = sent(&mut calls);
+            let volume = requests
+                .iter()
+                .find(|request| matches!(&request.command, Command::SetVolume { .. }))
+                .expect("the call is told how loud to play the member");
+            assert_eq!(volume.intent, 0, "how loud it plays here changes nothing of the call");
+            assert_eq!(
+                volume.command,
+                Command::SetVolume {
+                    member: ADA.to_owned(),
+                    percent: 40,
+                }
             );
         }
 

@@ -382,6 +382,9 @@ pub struct Instance {
     lenses_changed: bool,
     /// Who is in each call the call service told of, by the id it names the call's place by.
     calls: HashMap<String, Vec<crate::runtime::CallMember>>,
+    /// The microphones each call's view offers, by the place the call is held on: what
+    /// `call_inputs(r)` reads.
+    call_inputs: HashMap<String, Vec<crate::runtime::CallInput>>,
     /// The steps the person took in the system's calls, in order, not yet taken by the host.
     call_steps: Vec<(ResourceRef, crate::runtime::CallStep)>,
     /// The tilolang lines the person ran from a view, in order, not yet taken by the host.
@@ -521,6 +524,7 @@ impl Instance {
             lenses: HashMap::new(),
             lenses_changed: false,
             calls: HashMap::new(),
+            call_inputs: HashMap::new(),
             call_steps: Vec::new(),
             line_runs: Vec::new(),
             page_prompts: Vec::new(),
@@ -990,6 +994,30 @@ impl Instance {
             }
         }
         self.calls = now;
+        self.lenses_changed = true;
+    }
+
+    /// The microphones each call the call service told of can send, by the place it is held on:
+    /// what `call_inputs(r)` reads. A call not named offers none.
+    pub fn set_call_inputs(&mut self, now: HashMap<String, Vec<crate::runtime::CallInput>>) {
+        if now == self.call_inputs {
+            return;
+        }
+        if let Some(host) = self.host() {
+            for gone in self
+                .call_inputs
+                .keys()
+                .filter(|key| !now.contains_key(*key))
+            {
+                host.runtime().set_call_inputs(gone, &[]);
+            }
+            for (place, inputs) in &now {
+                if self.call_inputs.get(place) != Some(inputs) {
+                    host.runtime().set_call_inputs(place, inputs);
+                }
+            }
+        }
+        self.call_inputs = now;
         self.lenses_changed = true;
     }
 

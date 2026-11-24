@@ -600,6 +600,8 @@ async fn open(
     let current = keys.map(|keys| Current { keys, roster });
     let shared = Arc::new(Shared {
         video,
+        volumes: Mutex::new(BTreeMap::new()),
+        volumes_sent: Mutex::new(BTreeMap::new()),
         screen: Arc::clone(screen_share()),
         showing: Mutex::new(Vec::new()),
         streams: Mutex::new(BTreeMap::new()),
@@ -772,6 +774,14 @@ impl MediaSession for Call {
         Some(self.shared.video.signal())
     }
 
+    fn set_volume(&mut self, member: &str, percent: u16) {
+        self.shared.set_volume(member, percent);
+    }
+
+    fn volumes(&self) -> Vec<(String, u16)> {
+        self.shared.volumes()
+    }
+
     fn close(&mut self) {
         self.shared.close();
     }
@@ -858,6 +868,12 @@ struct Shared {
     /// When each person's voice was last heard in this call, by speaker id: who
     /// the speaking rings follow.
     speaking: Mutex<BTreeMap<[u8; 32], Instant>>,
+    /// How loud this device plays each member of the call, by person, in percent of as they
+    /// arrive: what the person set here, which nobody else's call hears.
+    volumes: Mutex<BTreeMap<String, u16>>,
+    /// The volumes the call's playout was last told, by the device each person is heard from:
+    /// sent again only when the map or the call's people move.
+    volumes_sent: Mutex<BTreeMap<String, u16>>,
     /// Where a test reads the samples the call played.
     #[cfg(test)]
     played: Option<Arc<Mutex<Vec<f32>>>>,
@@ -1125,6 +1141,57 @@ impl Shared {
         (pictures, cursor)
     }
 
+    /// Play `member` (a person of the call) at `percent` of as they arrive, on this device only:
+    /// what the person set for them here, never what anyone else's call changes.
+    pub(crate) fn set_volume(&self, member: &str, percent: u16) {
+        let mut volumes = self.volumes.lock_recover();
+        if percent == u16::from(runtime_collab::native_media::MAX_VOLUME_PERCENT) / 2 {
+            volumes.remove(member);
+        } else {
+            volumes.insert(member.to_owned(), percent);
+        }
+        drop(volumes);
+        self.apply_volumes();
+    }
+
+    /// How loud this device plays each member it was set, sorted by person: what the view's
+    /// volume controls show.
+    pub(crate) fn volumes(&self) -> Vec<(String, u16)> {
+        self.volumes
+            .lock_recover()
+            .iter()
+            .map(|(person, percent)| (person.clone(), *percent))
+            .collect()
+    }
+
+    /// Tell the call's playout how loud to play each device: each device this call's channel
+    /// says is a person's plays at that person's volume, and everyone else as they arrive.
+    fn apply_volumes(&self) {
+        let people = self
+            .presence
+            .people
+            .lock_recover()
+            .get(&self.call)
+            .map(|people| people.by_device.clone())
+            .unwrap_or_default();
+        let volumes = self.volumes.lock_recover();
+        let mut wanted = BTreeMap::new();
+        for (device, person) in people {
+            if let Some(&percent) = volumes.get(&person)
+                && percent != 100
+            {
+                wanted.insert(hex(&device), percent);
+            }
+        }
+        drop(volumes);
+        let mut sent = self.volumes_sent.lock_recover();
+        if *sent == wanted {
+            return;
+        }
+        *sent = wanted.clone();
+        self.side.lock_recover().voice.set_volumes(wanted);
+    }
+
     /// Move the pictures once: the desktop the pass just drew goes to the encoder, and a locked
     /// screen's last picture is forgotten rather than sent again.
     fn pump_video(&self) {
@@ -1170,6 +1237,9 @@ impl Shared {
     /// from the devices this call's channel says are in it. A deafened call drops the frames rather
     /// than holding them.
     fn pump(&self) {
+        // Who plays how loud may have moved: a person's volume, or the devices they are heard
+        // from joining the call.
+        self.apply_volumes();
         let now = Instant::now();
         let deafened = self.deafened.load(Ordering::Acquire);
         let heard = if deafened {

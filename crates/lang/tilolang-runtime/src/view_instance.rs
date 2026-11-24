@@ -14,9 +14,9 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    CALL_ACTION, CHOOSE_ACTION, CHOOSE_FOLDER_ACTION, KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION,
-    REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION,
-    UNDO_ACTION,
+    CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION, CHOOSE_FOLDER_ACTION,
+    KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION,
+    SET_ACTION, SHORTCUT_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -60,7 +60,7 @@ pub enum ViewEvent {
 }
 
 /// A step of the person's own in the system's call held on a resource.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallStep {
     /// Join it, leaving any other call this device is in.
     Join,
@@ -74,6 +74,10 @@ pub enum CallStep {
     Camera(bool),
     /// Share the screen in it, or stop.
     Screen(bool),
+    /// Send this device's microphone from this input.
+    SelectInput(String),
+    /// Play this member at this percent of as they arrive, on this device only.
+    Volume { member: String, percent: u16 },
 }
 
 impl CallStep {
@@ -936,6 +940,38 @@ impl ViewInstance {
             CHOOSE_ACTION => self.platform_choose(aref, false),
             CHOOSE_FOLDER_ACTION => self.platform_choose(aref, true),
             SAVE_ACTION => self.platform_save(aref),
+            CALL_INPUT_ACTION => {
+                let [Value::Ref(r), Value::Text(input)] = aref.args.as_slice() else {
+                    return Err(RuntimeError::BadArgs("a malformed call input".into()));
+                };
+                self.events.borrow_mut().push(ViewEvent::Call {
+                    target: ResourceRef::clone(&r.target),
+                    step: CallStep::SelectInput(input.clone()),
+                });
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
+            CALL_VOLUME_ACTION => {
+                let [Value::Ref(r), Value::Actor(member), Value::Float(percent)] =
+                    aref.args.as_slice()
+                else {
+                    return Err(RuntimeError::BadArgs("a malformed call volume".into()));
+                };
+                let percent = crate::host_ui::call_volume_percent(*percent)
+                    .map_err(|why| RuntimeError::BadArgs(why.into()))?;
+                let member = member
+                    .member_id()
+                    .and_then(|member| member.person_id().map(str::to_owned))
+                    .ok_or_else(|| {
+                        RuntimeError::BadArgs(
+                            "a call's volume is a member's, a person of the call".into(),
+                        )
+                    })?;
+                self.events.borrow_mut().push(ViewEvent::Call {
+                    target: ResourceRef::clone(&r.target),
+                    step: CallStep::Volume { member, percent },
+                });
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
             CALL_ACTION => {
                 let [Value::Ref(r), Value::Text(step), Value::Bool(on)] = aref.args.as_slice()
                 else {

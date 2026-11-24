@@ -174,3 +174,5 @@ tilolang-history-actions = Actions for this change
 # Taking an older change back, as a new change that reverses it.
 tilolang-history-revert = Revert this change
 
+tilolang-call-microphone = Microphone
+tilolang-call-people = In this call

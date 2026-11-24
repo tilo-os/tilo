@@ -111,8 +111,9 @@ export function createPageCalls({
       .filter(member => member.speaking)
       .map(member => member.user)));
     const issue = issueOfState(state);
+    const volumes = typeof call.volumes === 'function' ? call.volumes() : [];
     const now = JSON.stringify([stateOfPhase(state.phase), state.muted, state.camera, state.screen,
-      state.deafened, state.inputId, issue, rosters, speaking]);
+      state.deafened, state.inputId, issue, rosters, speaking, volumes]);
     if (now !== said) {
       said = now;
       revision += 1;
@@ -133,6 +134,7 @@ export function createPageCalls({
       camera: Boolean(state.camera),
       screen: Boolean(state.screen),
       deafened: Boolean(state.deafened),
+      volumes,
       revision,
     };
     return answer;

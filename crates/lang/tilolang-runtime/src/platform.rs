@@ -26,7 +26,8 @@ use tilolang::types::Ty;
 /// the host as presence moves, read by `lenses(r)`.
 pub const LENS_WINDOW: &str = "$lenses";
 /// The window who is in the system's call held on each resource is kept under, as view state of
-/// no window: set by the host as the call service tells it, read by `call_members(r)`.
+/// no window: set by the host as the call service tells it, read by `call_members(r)`, and the
+/// microphones it can send from, read by `call_inputs(r)`.
 pub const CALL_WINDOW: &str = "$calls";
 /// Where the runtime keeps how each resource's outside effects stand (`delivery(r)`).
 pub const DELIVERY_WINDOW: &str = "$delivery";
@@ -233,6 +234,13 @@ pub fn call_key(id: &str) -> StateKey {
     StateKey::runtime(CALL_WINDOW, None, id)
 }
 
+/// The key of the microphones the system's call held on `place` can send, as the host last read
+/// its call service: what `call_inputs(r)` reads.
+#[must_use]
+pub fn call_inputs_key(id: &str) -> StateKey {
+    StateKey::runtime(CALL_WINDOW, None, &format!("{id}\u{1}inputs"))
+}
+
 /// The key of how the invocation `id` stands, as the host last read its record.
 #[must_use]
 pub fn invoked_key(id: &str) -> StateKey {
@@ -426,6 +434,12 @@ impl Core {
                 self.calls_read.set(true);
                 let target = self.ref_arg(a.h(0)?)?;
                 let value = self.host_list(call_key(&call_place(&target.target)));
+                self.ret_h(value)
+            }
+            Imp::CallInputs => {
+                self.calls_read.set(true);
+                let target = self.ref_arg(a.h(0)?)?;
+                let value = self.host_list(call_inputs_key(&call_place(&target.target)));
                 self.ret_h(value)
             }
             Imp::Versions

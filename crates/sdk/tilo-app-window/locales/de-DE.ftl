@@ -150,3 +150,5 @@ tilolang-change-to = zu
 tilolang-history-actions = Aktionen für diese Änderung
 tilolang-history-revert = Diese Änderung zurücknehmen
 
+tilolang-call-microphone = Mikrofon
+tilolang-call-people = In diesem Anruf

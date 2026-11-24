@@ -305,9 +305,16 @@ imports! {
     // `call_members(r)`: who is in the system's call held on the resource `r` now, as its call
     // service hears it.
     CallMembers = "call_members" ([H] -> [H]);
+    // `call_inputs(r)`: the microphones this device's call held on `r` can send, which one it
+    // sends from now, labelled as the person chooses between them.
+    CallInputs = "call_inputs" ([H] -> [H]);
     // `join_call(r)` and its kin: the system's call held on `r` joined, left, or one of the
     // person's own switches in it (by name) turned on or off.
     ActCall = "act_call" ([H, H, I32] -> [H]);
+    // `select_call_input(r, id)` and `set_call_volume(r, member, percent)`: which microphone
+    // this device sends in the call held on `r`, and how loud it plays one of its members.
+    ActCallInput = "act_call_input" ([H, H] -> [H]);
+    ActCallVolume = "act_call_volume" ([H, H, I32] -> [H]);
     // `invoked(id)`: the invocation the dispatch knows by `id`, as its record reads now.
     Invoked = "invoked" ([H] -> [H]);
     // `lines_run(r)`: the tilolang lines the person ran from this window in the conversation `r`.

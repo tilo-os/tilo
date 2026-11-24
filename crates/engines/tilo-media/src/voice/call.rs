@@ -458,6 +458,12 @@ mod inner {
             self.0.audio().set_deafened(deafened);
         }
 
+        /// Play each publication `volumes` names at its percent of as it arrives, by the
+        /// publisher's namespace (the device it comes from), and everyone else as they arrive.
+        pub fn set_volumes(&mut self, volumes: std::collections::BTreeMap<String, u16>) {
+            self.0.audio().set_volumes(volumes);
+        }
+
         pub fn pump(&mut self, now: Instant) -> Result<Vec<Frame>, CallError> {
             let frames = self
                 .0
@@ -614,6 +620,7 @@ mod inner {
         }
         pub fn stop(&mut self) {}
         pub fn set_deafened(&mut self, _deafened: bool) {}
+        pub fn set_volumes(&mut self, _volumes: std::collections::BTreeMap<String, u16>) {}
         pub fn pump(&mut self, _now: Instant) -> Result<Vec<Frame>, CallError> {
             Ok(Vec::new())
         }

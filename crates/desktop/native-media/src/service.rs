@@ -373,14 +373,7 @@ impl NativeMediaService {
             Command::SetCamera { on } => self.set_source(&key, PictureSource::Camera, on),
             Command::SetScreen { on } => self.set_source(&key, PictureSource::Screen, on),
             Command::Show { pictures } => self.show(&key, pictures),
-            Command::SetVolume { .. } => {
-                let calls = self
-                    .0
-                    .calls
-                    .lock()
-                    .map_err(|_| "native media unavailable")?;
-                Ok(calls.entries.get(&key).map_or_else(idle, Shared::snapshot))
-            }
+            Command::SetVolume { member, percent } => self.set_volume(&key, &member, percent),
             Command::SelectInput { input_id } => {
                 let mut calls = self
                     .0
@@ -618,6 +611,27 @@ impl NativeMediaService {
         };
         if let Some(backend) = &entry.backend {
             backend.lock_recover().show(pictures);
+        }
+        Ok(Shared::snapshot(entry))
+    }
+
+    /// Play one member at `percent` of as they arrive, on this device only: what the person
+    /// hears of them here changes, never the call.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "`entry` borrows from the calls guard until the returned snapshot"
+    )]
+    fn set_volume(&self, key: &Key, member: &str, percent: u16) -> Result<Snapshot, String> {
+        let calls = self
+            .0
+            .calls
+            .lock()
+            .map_err(|_| "native media unavailable")?;
+        let Some(entry) = calls.entries.get(key) else {
+            return Ok(idle());
+        };
+        if let Some(backend) = &entry.backend {
+            backend.lock_recover().set_volume(member, percent);
         }
         Ok(Shared::snapshot(entry))
     }
@@ -881,6 +895,14 @@ impl Shared {
                 let backend = backend.lock_recover();
                 snapshot.inputs = backend.inputs();
                 snapshot.speaking = backend.speaking();
+                snapshot.volumes = backend
+                    .volumes()
+                    .into_iter()
+                    .map(|(member, percent)| runtime_collab::native_media::Volume {
+                        member,
+                        percent,
+                    })
+                    .collect();
                 backend.inventory()
             };
             if !inventory.valid() {

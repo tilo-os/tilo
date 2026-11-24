@@ -132,6 +132,15 @@ pub trait MediaSession: Send {
     fn pictures_changed(&self) -> Option<Arc<tokio::sync::Notify>> {
         None
     }
+    /// Play one member of the call at `percent` of as they arrive, on this
+    /// device only: what the person set for them here, which nobody else's
+    /// call hears. Applied to what the call plays from now on.
+    fn set_volume(&mut self, _member: &str, _percent: u16) {}
+    /// How loud this device plays each member it was set, sorted by person:
+    /// what the view's volume controls show.
+    fn volumes(&self) -> Vec<(String, u16)> {
+        Vec::new()
+    }
 }
 
 /// The desktop a call shares: the session hands it the frame its render pass

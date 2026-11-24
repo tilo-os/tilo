@@ -301,12 +301,22 @@ impl Checker<'_> {
         )
     }
 
-    /// The person's own steps in the system's call held on a resource, each an action a control
-    /// runs: `join_call(r)` joins it (leaving any other call this device is in), `leave_call(r)`
-    /// leaves it, and `mute_call(r, on)`, `deafen_call(r, on)`, `camera_call(r, on)` and
-    /// `screen_call(r, on)` turn one of their switches in it on or off. The call is the system's:
-    /// the microphone, camera and screen are asked for through its permission prompts, and who
-    /// may speak or hear in it is the workspace's to say.
+    /// `call_inputs(r)`: the microphones this device's call held on `r` can send, each with
+    /// whether it is the one the call sends from now: what the person chooses between.
+    pub(super) fn builtin_call_inputs(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("call_inputs", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(
+            Imp::CallInputs,
+            vec![r],
+            Ty::List(Box::new(host_ty("CallInput"))),
+        )
+    }
+
+    /// `select_call_input(r, id)` and `set_call_volume(r, member, percent)`: which microphone this
+    /// device sends from in the system's call held on `r`, and how loud it plays one of the
+    /// call's members (a person, 0 to 200 percent of as they arrive, on this device only).
     pub(super) fn builtin_call(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Ex {
         let switch = name.strip_suffix("_call").unwrap_or(name);
         let takes_switch = !matches!(switch, "join" | "leave");
@@ -350,13 +360,71 @@ impl Checker<'_> {
         Ex::host(Imp::ActCall, vec![r, Ex::str(switch), on], Ty::Action)
     }
 
+    pub(super) fn builtin_call_value(&mut self, name: &str, args: &[ast::Arg], span: Span) -> Ex {
+        let resource = |this: &mut Self, args: &[ast::Arg], usage: &str| {
+            let Some(first) = args.first() else {
+                this.err("E022", span, usage);
+                return None;
+            };
+            let r = this.expr(&first.value, None);
+            match &r.ty {
+                Ty::Record(_) => Some(r),
+                Ty::Error => None,
+                other => {
+                    let t = this.show(other);
+                    this.err(
+                        "E020",
+                        first.value.span,
+                        format!("`{name}` takes a resource first; this is {t}"),
+                    );
+                    None
+                }
+            }
+        };
+        if name == "select_call_input" {
+            let usage = "`select_call_input` takes the resource and the microphone's id: \
+                         `select_call_input(r, input.id)`";
+            if args.len() != 2 {
+                self.err("E022", span, usage);
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+            let Some(r) = resource(self, args, usage) else {
+                return Ex::error();
+            };
+            let id = self.expr_as(&args[1].value, &Ty::Text);
+            return Ex::host(Imp::ActCallInput, vec![r, id], Ty::Action);
+        }
+        let usage = "`set_call_volume` takes the resource, the member and a percent (0 to 200): \
+                     `set_call_volume(r, m.who, 50)`";
+        if args.len() != 3 {
+            self.err("E022", span, usage);
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let Some(r) = resource(self, args, usage) else {
+            return Ex::error();
+        };
+        let member = self.expr_as(&args[1].value, &Ty::Actor);
+        let percent = self.expr_as(&args[2].value, &Ty::Float);
+        Ex::host(Imp::ActCallVolume, vec![r, member, percent], Ty::Action)
+    }
+
     /// `invoked(id)`: the invocation the system's dispatch knows by `id` (the address a field
     /// keeps, as a reply keeps the turn that wrote it), as its record reads now: `.none` until
     /// the record is read, and for an id that names nothing. It is the dispatch's record, never
     /// stored: a view that read it runs again as the invocation moves.
     pub(super) fn builtin_invoked(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let [a] = args else {
-            self.err("E022", span, "`invoked` takes the id of one invocation: `invoked(m.turn)`");
+            self.err(
+                "E022",
+                span,
+                "`invoked` takes the id of one invocation: `invoked(m.turn)`",
+            );
             for a in args {
                 let _ = self.expr(&a.value, None);
             }

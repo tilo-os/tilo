@@ -732,6 +732,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Whether they share their screen in the call.",
             ),
             (
+                "volume",
+                "Int",
+                "How loud this device plays them, in percent of as they arrive: 100 unless the person set them otherwise here.",
+            ),
+            (
                 "service",
                 "Text",
                 "The service a bridge carries them in from (`discord`); empty for someone in the call here.",
@@ -746,6 +751,20 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Text",
                 "The address of their picture on that service; empty when it has none, or for someone in the call here.",
             ),
+        ],
+    },
+    ValueType {
+        name: "CallInput",
+        id: "host-call-input",
+        doc: "A microphone this device's call can send from, as `call_inputs(r)` answers them.",
+        fields: &[
+            ("id", "Text", "Its id, as `select_call_input` names it."),
+            (
+                "label",
+                "Text",
+                "What it is called where the person chooses between them.",
+            ),
+            ("current", "Bool", "Whether the call sends from it now."),
         ],
     },
     ValueType {

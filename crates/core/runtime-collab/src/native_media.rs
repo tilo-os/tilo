@@ -403,6 +403,22 @@ pub struct Snapshot {
     /// Where the next [`Command::Pictures`] continues.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pictures_cursor: u64,
+    /// How loud this device plays each member of the call, in percent of as they arrive
+    /// ([`Command::SetVolume`]), sorted by person: what the view's volume controls show, and
+    /// nobody else's call hears.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<Volume>,
+}
+
+/// How loud this device plays one member of a call, in percent of as they arrive
+/// ([`Command::SetVolume`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Volume {
+    /// The person, as the call names them.
+    pub member: String,
+    /// Percent of as they arrive, up to [`MAX_VOLUME_PERCENT`].
+    pub percent: u16,
 }
 
 /// The people in one voice channel's call.
@@ -630,6 +646,7 @@ impl Snapshot {
             revision: 0,
             pictures: Vec::new(),
             pictures_cursor: 0,
+            volumes: Vec::new(),
         }
     }
 
@@ -672,6 +689,13 @@ impl Snapshot {
             && self.inputs.iter().all(|input| {
                 identifier(&input.id) && identifier(&input.label) && ids.insert(&input.id)
             })
+            && self.volumes.iter().all(|volume| {
+                person_valid(&volume.member) && volume.percent <= MAX_VOLUME_PERCENT
+            })
+            && self
+                .volumes
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left.member < right.member))
     }
 
     /// Encode a valid status for the wire.
