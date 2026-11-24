@@ -2526,6 +2526,12 @@ impl RuntimeServices for Daemon {
 
     #[cfg(unix)]
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
+        // The app's connections are opened here, before it runs, and name the person's workspace:
+        // the first app launched in it founds it then, so the device is listed in it before the
+        // app signs anything. An import that came in first is theirs instead.
+        self.first
+            .found_if_theirs(&self.workspace)
+            .map_err(io::Error::other)?;
         let child = host::launch(
             command,
             app_id,
@@ -5113,10 +5119,9 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
 
     /// An app this daemon launched in the person's own workspace founds that workspace on a
     /// computer with no login when nothing came in from their desktop yet, before it signs
-    /// anything: the device is listed in it then. The app is this daemon's by its exact launch
-    /// record, or because the daemon opened the connection itself, as it does for an app it
-    /// launches before the app runs (`host::launch`). Any other process, an app launched in
-    /// another workspace, or a workspace already here, founds nothing.
+    /// anything: the device is listed in it then. The app is this daemon's only by its exact
+    /// launch record. Any other process, a connection the daemon made for no launch, an app
+    /// launched in another workspace, or a workspace already here, founds nothing.
     #[cfg(unix)]
     fn connected(
         &self,
@@ -5128,9 +5133,7 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
             return;
         };
         let workspace = workspace.to_string();
-        if pid != std::process::id()
-            && self.apps.attested(pid) != Some((app_id.to_owned(), workspace.clone()))
-        {
+        if self.apps.attested(pid) != Some((app_id.to_owned(), workspace.clone())) {
             return;
         }
         if let Err(error) = self.first.found_if_theirs(&workspace) {

@@ -1682,6 +1682,16 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
         "a process the daemon did not launch founds nothing"
     );
 
+    // A connection the daemon made itself for no launch (an agent run, an internal client) names
+    // the person's workspace: nothing is founded.
+    let (_internal, made_here) = std::os::unix::net::UnixStream::pair().unwrap();
+    surfaces.connected(APP, &own, &made_here);
+    assert_eq!(
+        first.get(),
+        None,
+        "a connection the daemon made for no launch founds nothing"
+    );
+
     // An app the daemon launched in another workspace names it: nothing is founded either.
     apps.record_started(app.id(), APP, &elsewhere.to_string());
     surfaces.connected(APP, &elsewhere, &daemon);
