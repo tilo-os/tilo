@@ -102,7 +102,7 @@ impl AppPage {
             start.me.0.into(),
             Rc::new(tilolang_tilo::names::Installed),
         ));
-        names.tell(start.me.1.to_owned(), Vec::new(), Vec::new());
+        names.tell(start.me.1.to_owned(), Vec::new(), Vec::new(), Vec::new());
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),
