@@ -387,8 +387,8 @@ fn internal(key: &str) -> bool {
 }
 
 /// The items of the collection `key` holds, when it is one: a map whose every entry is an order
-/// key and the item's fields, each by who wrote it where `writers` says. `None` for any other
-/// field.
+/// key and the item's fields, each by who wrote it where `writers` says, or a map of items kept
+/// by a key of their own, each entry the item's fields. `None` for any other field.
 fn collection(
     doc: &AutoCommit,
     key: &str,
@@ -397,27 +397,45 @@ fn collection(
     version: i64,
     writers: Option<&Writers>,
 ) -> Option<Vec<EarlierItem>> {
-    if !matches!(value, AmValue::Object(ObjType::Map)) {
+    // `tl` holds the workspace's own references to a package's resources, not a collection.
+    if key == "tl" || !matches!(value, AmValue::Object(ObjType::Map)) {
         return None;
     }
     let ids: Vec<String> = doc.keys(obj).collect();
     if ids.is_empty() {
         return None;
     }
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
+    let mut entries = Vec::with_capacity(ids.len());
+    for id in &ids {
         let (AmValue::Object(ObjType::Map), entry) = doc.get(obj, id.as_str()).ok()?? else {
             return None;
         };
-        let order = words(doc, &entry, "k")?;
-        let (AmValue::Object(ObjType::Map), fields) = doc.get(&entry, "v").ok()?? else {
-            return None;
+        entries.push((id.clone(), entry));
+    }
+    // An ordered collection keeps each item under an order key (`k`) and its fields (`v`).
+    let ordered = entries.iter().all(|(_, entry)| {
+        words(doc, entry, "k").is_some()
+            && matches!(
+                doc.get(entry, "v"),
+                Ok(Some((AmValue::Object(ObjType::Map), _)))
+            )
+    });
+    let mut out = Vec::with_capacity(entries.len());
+    for (id, entry) in entries {
+        // A keyed collection keeps the item's fields at its key, named by the item's own key
+        // when it has one and by that key otherwise.
+        let (order, fields) = if ordered {
+            let (AmValue::Object(ObjType::Map), fields) = doc.get(&entry, "v").ok()?? else {
+                return None;
+            };
+            (words(doc, &entry, "k")?, fields)
+        } else {
+            let order = words(doc, &entry, "key").unwrap_or_else(|| id.clone());
+            (order, entry.clone())
         };
-        let by = writers.and_then(|writers| {
-            let mut ops = vec![entry.clone()];
-            ops.extend(ops_of(doc, &fields));
-            writers.last_of(&ops)
-        });
+        let mut ops = vec![entry.clone()];
+        ops.extend(ops_of(doc, &fields));
+        let by = writers.and_then(|writers| writers.last_of(&ops));
         let mut item = EarlierItem {
             id,
             of: key.to_owned(),
@@ -826,5 +844,33 @@ mod tests {
             items.iter().all(|item| item.of != "examples"),
             "the records are the skill's, not items of their own"
         );
+    }
+
+    /// A collection a native model keys by an id of its own (`Keyed<T>`) keeps each item at its
+    /// key, the item's fields there, with no order key of its own.
+    #[test]
+    fn a_keyed_collection_reads_as_its_items() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "tilo:version", 4_i64).unwrap();
+        let channels = doc.put_object(ROOT, "channels", ObjType::Map).unwrap();
+        let general = doc.put_object(&channels, "456", ObjType::Map).unwrap();
+        doc.put(&general, "name", "general").unwrap();
+        let lounge = doc.put_object(&channels, "789", ObjType::Map).unwrap();
+        doc.put(&lounge, "name", "Lounge").unwrap();
+        let links = doc.put_object(ROOT, "links", ObjType::Map).unwrap();
+        let link = doc.put_object(&links, "3001", ObjType::Map).unwrap();
+        doc.put(&link, "person", "ada").unwrap();
+
+        let items = super::items("guild", &doc);
+        let of = |name: &str| items.iter().filter(|item| item.of == name).collect::<Vec<_>>();
+        let channels = of("channels");
+        assert_eq!(channels.len(), 2, "each channel is an item: {channels:?}");
+        assert_eq!(channels[0].id, "456");
+        assert_eq!(channels[0].texts["name"], "general");
+        assert_eq!(channels[1].id, "789");
+        let links = of("links");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].id, "3001");
+        assert_eq!(links[0].texts["person"], "ada");
     }
 }
