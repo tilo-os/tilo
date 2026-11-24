@@ -5901,7 +5901,7 @@ requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 git = true
 timeout_secs = 3600
-on = ["idle", "dispatch"]
+on = ["dispatch"]
 id_token = ["registry.tilo.so"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]
@@ -5917,7 +5917,7 @@ requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 git = true
 timeout_secs = 3600
-on = ["idle", "dispatch"]
+on = ["dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 id_token = ["registry.tilo.so"]
 [check.matrix]
