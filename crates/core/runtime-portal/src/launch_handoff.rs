@@ -10,7 +10,6 @@
 //! never stand for a process the session did not start.
 
 use std::io::Write;
-use std::os::unix::net::UnixStream;
 
 use wire_frame::Framing;
 
@@ -28,7 +27,7 @@ pub const MAGIC: [u8; 4] = *b"QCL1";
 /// still decides workspace membership and delegated-agent authority.
 pub const FRAMING: Framing = Framing::little_endian(1024).reject_empty();
 
-pub fn write(stream: &mut UnixStream, app_id: &str, workspace_id: &str) -> std::io::Result<()> {
+pub fn write(stream: &mut impl Write, app_id: &str, workspace_id: &str) -> std::io::Result<()> {
     write_launch(
         stream,
         &serde_json::json!({
@@ -44,7 +43,7 @@ pub fn write(stream: &mut UnixStream, app_id: &str, workspace_id: &str) -> std::
 /// against the launch record of exactly that window, so two windows of one
 /// app in one workspace never take each other's.
 pub fn write_window(
-    stream: &mut UnixStream,
+    stream: &mut impl Write,
     app_id: &str,
     workspace_id: &str,
     window_instance: u64,
@@ -61,7 +60,7 @@ pub fn write_window(
 }
 
 pub fn write_executing(
-    stream: &mut UnixStream,
+    stream: &mut impl Write,
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
@@ -82,7 +81,7 @@ pub fn write_executing(
     }
 }
 
-fn write_launch(stream: &mut UnixStream, value: &serde_json::Value) -> std::io::Result<()> {
+fn write_launch(stream: &mut impl Write, value: &serde_json::Value) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     let frame = FRAMING.encode(&bytes)?;

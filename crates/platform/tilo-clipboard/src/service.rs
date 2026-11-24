@@ -556,7 +556,7 @@ impl ClipboardSide for BackendSide {
 /// (the person's own desktop, or a dev run outside a session), this process serves the same wire
 /// from the operating system's clipboard ([`crate::os`]) on a thread that lives as long as the
 /// app. `None` when neither can be had, and the app's copies and pastes are then refused.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[must_use]
 pub fn for_app(session_socket: &std::path::Path) -> Option<Stream> {
     if session_socket.exists() {
@@ -566,7 +566,7 @@ pub fn for_app(session_socket: &std::path::Path) -> Option<Stream> {
 }
 
 /// The session's clipboard at `path`; `None` where nothing answers there.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[must_use]
 pub fn connect_session(path: &std::path::Path) -> Option<Stream> {
     if !path.exists() {
@@ -582,7 +582,7 @@ pub fn connect_session(path: &std::path::Path) -> Option<Stream> {
 }
 
 /// The app's end of a connection this process answers from the operating system's clipboard.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[must_use]
 pub fn serve_os() -> Option<Stream> {
     let (app, serving) = tilo_socket::pair().ok()?;

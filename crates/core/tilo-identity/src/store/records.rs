@@ -96,19 +96,28 @@ pub fn identity_dir_from_env() -> io::Result<PathBuf> {
 
 /// The store of the person of the account this process runs as, under `root`: each account of a
 /// computer keeps its own, and no identity is read from beside it. `root` is the identity
-/// directory, or the account's own store below it.
+/// directory, or the account's own store below it. On Unix the accounts share a directory and each
+/// keeps its store under its user id; a Windows profile is its account's alone, so the identity
+/// directory in it already is that account's store.
 #[must_use]
 pub fn account_identity_dir(root: &std::path::Path) -> PathBuf {
-    let uid = rustix::process::geteuid().as_raw().to_string();
-    if root.file_name() == Some(std::ffi::OsStr::new(&uid))
-        && root
-            .parent()
-            .and_then(std::path::Path::file_name)
-            .is_some_and(|parent| parent == "accounts")
+    #[cfg(unix)]
     {
-        return root.to_path_buf();
+        let uid = rustix::process::geteuid().as_raw().to_string();
+        if root.file_name() == Some(std::ffi::OsStr::new(&uid))
+            && root
+                .parent()
+                .and_then(std::path::Path::file_name)
+                .is_some_and(|parent| parent == "accounts")
+        {
+            return root.to_path_buf();
+        }
+        root.join("accounts").join(uid)
     }
-    root.join("accounts").join(uid)
+    #[cfg(not(unix))]
+    {
+        root.to_path_buf()
+    }
 }
 
 /// [`account_identity_dir`] for this process's Tilo profile.

@@ -67,17 +67,10 @@ pub fn pair() -> io::Result<(Descriptor, Descriptor)> {
 #[cfg(any(unix, windows))]
 pub fn connection() -> io::Result<(Descriptor, Descriptor)> {
     let (instance, connector) = tilo_socket::pair()?;
-    Ok((descriptor(instance), descriptor(connector)))
-}
-
-#[cfg(unix)]
-fn descriptor(stream: tilo_socket::Stream) -> Descriptor {
-    stream.into()
-}
-
-#[cfg(windows)]
-fn descriptor(stream: tilo_socket::Stream) -> Descriptor {
-    Descriptor::new(stream)
+    Ok((
+        crate::packet::descriptor_of(instance),
+        crate::packet::descriptor_of(connector),
+    ))
 }
 
 /// A connection the session handed, to read and write.

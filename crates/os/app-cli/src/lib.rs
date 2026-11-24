@@ -27,7 +27,7 @@ pub use tilo_app_package::version::{ReleaseChannel, compare as compare_versions}
 pub mod bots;
 pub mod client;
 pub mod config;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod device;
 pub mod install;
 pub mod model_runtime;

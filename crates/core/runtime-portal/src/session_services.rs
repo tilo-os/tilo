@@ -6,10 +6,7 @@
 //! connects it, names the app it is for, and hands the app its end as the descriptor
 //! [`fd_env`] names; [`crate::service_fd`] is the app's side of that.
 
-#[cfg(unix)]
-use std::io::Write as _;
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
+use std::io::Write;
 
 use wire_frame::Framing;
 
@@ -57,9 +54,8 @@ pub fn chooser_handshake(app_id: &str, workspace_id: &str) -> serde_json::Result
 ///
 /// # Errors
 /// The handshake could not be written.
-#[cfg(unix)]
 pub fn write_chooser_handshake(
-    stream: &mut UnixStream,
+    stream: &mut impl Write,
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
@@ -74,8 +70,7 @@ pub fn write_chooser_handshake(
 ///
 /// # Errors
 /// The app id could not be written.
-#[cfg(unix)]
-pub fn write_app_id(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
+pub fn write_app_id(stream: &mut impl Write, app_id: &str) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(&serde_json::json!({
         "protocol": 1,
         "app_id": app_id,

@@ -295,15 +295,19 @@ pub mod xdg {
 
     /// [`runtime_dir`], else where the platform keeps it without the
     /// variable: `/run/user/<euid>` as systemd-logind creates it, the per-user
-    /// `$TMPDIR` on macOS. For callers that must name a per-user socket or
-    /// file even in a session started without `$XDG_RUNTIME_DIR`.
-    #[cfg(unix)]
+    /// `$TMPDIR` on macOS, the per-user `%TEMP%` on Windows. For callers that
+    /// must name a per-user socket or file even in a session started without
+    /// `$XDG_RUNTIME_DIR`.
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub fn runtime_dir_or_default() -> PathBuf {
         runtime_dir().unwrap_or_else(|| {
-            if cfg!(target_os = "macos") {
+            #[cfg(any(target_os = "macos", windows))]
+            {
                 std::env::temp_dir()
-            } else {
+            }
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
                 PathBuf::from(format!("/run/user/{}", rustix::process::geteuid().as_raw()))
             }
         })
@@ -312,13 +316,13 @@ pub mod xdg {
     /// Where this login's Tilo services bind their sockets: one directory in
     /// the runtime directory, so a socket found here belongs to this user and
     /// is gone when their login ends.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub fn services_dir() -> PathBuf {
         runtime_dir_or_default().join("tilo/services")
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[must_use]
     pub fn service_socket(name: &str) -> PathBuf {
         services_dir().join(format!("{name}.sock"))

@@ -16,8 +16,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 pub use collab_types::caps::{EgressPolicy, NetHostPattern};
+use tilo_socket::tokio::Stream as LocalStream;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::UnixStream;
 use tokio::sync::{Semaphore, oneshot};
 
 /// How long a client gets for each read and write of the handshake, and how long the proxy waits on an
@@ -265,11 +265,10 @@ impl EgressProxy {
             source,
         };
         let listener = tilo_files::native::socket::bind(socket_path).map_err(bind_error)?;
-        listener.set_nonblocking(true).map_err(bind_error)?;
         let runtime = egress_runtime().map_err(ProxyError::Runtime)?;
         let listener = {
             let _entered = runtime.enter();
-            tokio::net::UnixListener::from_std(listener).map_err(bind_error)?
+            tilo_socket::tokio::listener(listener).map_err(bind_error)?
         };
 
         tracing::info!(
@@ -422,9 +421,9 @@ trait Acceptor: Send + 'static {
     fn accept_conn(&self) -> impl Future<Output = io::Result<Self::Conn>> + Send;
 }
 
-impl Acceptor for tokio::net::UnixListener {
-    type Conn = UnixStream;
-    async fn accept_conn(&self) -> io::Result<UnixStream> {
+impl Acceptor for tilo_socket::tokio::Listener {
+    type Conn = LocalStream;
+    async fn accept_conn(&self) -> io::Result<LocalStream> {
         self.accept().await.map(|(stream, _)| stream)
     }
 }
@@ -1054,11 +1053,8 @@ fn serve_relay_limited(
             accept_bounded(listener, max_connections, stop, move |mut tcp| {
                 let proxy = Arc::clone(&proxy);
                 async move {
-                    let Ok(mut unix) =
-                        tilo_files::native::socket::connect(&proxy).and_then(|socket| {
-                            socket.set_nonblocking(true)?;
-                            tokio::net::UnixStream::from_std(socket)
-                        })
+                    let Ok(mut unix) = tilo_files::native::socket::connect(&proxy)
+                        .and_then(tilo_socket::tokio::from_std)
                     else {
                         return;
                     };

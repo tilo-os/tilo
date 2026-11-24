@@ -356,15 +356,12 @@ fn outermost_roots(roots: &[PathBuf]) -> Vec<PrivateRoot> {
 
 /// Create `dir` and any missing parent owner-only, unless it exists.
 fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt as _;
-
     match std::fs::metadata(dir) {
         Ok(meta) if meta.is_dir() => Ok(()),
         Ok(_) => Err(std::io::Error::other("exists and is not a directory")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tilo_files::native::private::directory(dir)
+        }
         Err(error) => Err(error),
     }
 }
@@ -670,13 +667,7 @@ pub fn write_capability_file(
     if grants.is_empty() {
         return Ok(None);
     }
-    {
-        use std::os::unix::fs::DirBuilderExt as _;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(directory)?;
-    }
+    tilo_files::native::private::directory(directory)?;
     let json = serde_json::to_vec(grants).map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,

@@ -43,6 +43,21 @@ pub use windows::Descriptor;
 #[derive(Clone, Copy, Debug)]
 pub enum Descriptor {}
 
+/// The descriptor a connected local socket is, to hand on: the socket itself on Unix, the pipe on
+/// Windows.
+#[cfg(any(unix, windows))]
+#[must_use]
+pub fn descriptor_of(stream: tilo_socket::Stream) -> Descriptor {
+    #[cfg(unix)]
+    {
+        stream.into()
+    }
+    #[cfg(windows)]
+    {
+        Descriptor::new(stream)
+    }
+}
+
 /// The raw form of a descriptor a value being written names.
 #[cfg(unix)]
 type Raw = std::os::fd::RawFd;

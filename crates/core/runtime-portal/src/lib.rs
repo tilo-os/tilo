@@ -14,7 +14,6 @@ pub mod holder_proof;
 /// the launch it is, written on a Unix socket. Only a broker attests it
 /// (its own side reads `/proc`), so writing one is available wherever the
 /// connection is.
-#[cfg(unix)]
 pub mod launch_handoff;
 /// Holds a child until the host that started it has recorded
 /// its launch, so it can never reach the broker before it is attested.

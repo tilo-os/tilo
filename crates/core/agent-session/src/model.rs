@@ -3,9 +3,7 @@
 
 use std::time::Instant;
 
-use tilo_model_gateway::host_backend::protocol::{
-    ModelError, ModelRequest, ModelResponse, StreamEvent,
-};
+use agent_provider_config::protocol::{ModelError, ModelRequest, ModelResponse, StreamEvent};
 
 /// What answered a turn's calls: the provider as the person named it, and the
 /// model's id. A turn keeps it on its reply, so a conversation says which

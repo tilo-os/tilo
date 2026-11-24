@@ -10,9 +10,12 @@ pub use runtime_portal::process_binding::ExecutingPeer;
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd as _, RawFd};
+
+use runtime_portal::packet::{Descriptor, descriptor_of};
 use std::path::{Path, PathBuf};
+use tilo_socket::Stream;
 
 use wire_frame::Framing;
 
@@ -151,13 +154,14 @@ use runtime_portal::session_services::write_app_id as write_model_gateway_handof
 pub struct ResolvedService {
     pub name: String,
     /// The launcher's end, **owned**, closed when the launch is over.
-    pub host: OwnedFd,
+    pub host: Descriptor,
     /// Where the app is told to look for it.
     pub child_fd: i32,
 }
 
 impl ResolvedService {
     /// The number to `dup2` onto [`Self::child_fd`] in the child.
+    #[cfg(unix)]
     pub fn host_fd(&self) -> RawFd {
         self.host.as_raw_fd()
     }
@@ -264,7 +268,7 @@ pub fn resolve_shell_ui_bind(
         .map_err(|source| ServiceError::OpenFailed { path, source })?;
     Ok(Some(ResolvedService {
         name: SHELL_UI_SERVICE.to_string(),
-        host: OwnedFd::from(stream),
+        host: descriptor_of(stream),
         child_fd: SHELL_UI_CHILD_FD,
     }))
 }
@@ -311,7 +315,7 @@ pub fn resolve_identity_bind_for_contract(
         .map_err(|source| ServiceError::OpenFailed { path, source })?;
     Ok(Some(ResolvedService {
         name: IDENTITY_SERVICE.to_string(),
-        host: OwnedFd::from(stream),
+        host: descriptor_of(stream),
         // Normal manifest services start at 17.
         child_fd: IDENTITY_CHILD_FD,
     }))
@@ -319,7 +323,7 @@ pub fn resolve_identity_bind_for_contract(
 
 /// Name the app and workspace an identity connection signs for, as the first thing on it.
 pub fn write_identity_handshake(
-    stream: &mut UnixStream,
+    stream: &mut Stream,
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
@@ -327,7 +331,7 @@ pub fn write_identity_handshake(
 }
 
 fn write_identity_handshake_negotiated(
-    stream: &mut UnixStream,
+    stream: &mut Stream,
     app_id: &str,
     workspace_id: &str,
     presentation: bool,
@@ -393,7 +397,7 @@ fn resolve_chooser_bind_at(
         })?;
     Ok(Some(ResolvedService {
         name: CHOOSER_SERVICE.to_string(),
-        host: OwnedFd::from(stream),
+        host: descriptor_of(stream),
         child_fd: CHOOSER_CHILD_FD,
     }))
 }
@@ -422,10 +426,10 @@ fn resolve_clipboard_bind_at(path: &Path, no_services: bool) -> Option<ResolvedS
     tilo_clipboard::service::connect_session(path).map(clipboard_bind)
 }
 
-fn clipboard_bind(stream: UnixStream) -> ResolvedService {
+fn clipboard_bind(stream: Stream) -> ResolvedService {
     ResolvedService {
         name: CLIPBOARD_SERVICE.to_string(),
-        host: OwnedFd::from(stream),
+        host: descriptor_of(stream),
         child_fd: CLIPBOARD_CHILD_FD,
     }
 }
@@ -472,7 +476,7 @@ fn resolve_render_bind_at(
     )?;
     Ok(Some(ResolvedService {
         name: tilo_render_protocol::broker::SERVICE.to_string(),
-        host: OwnedFd::from(stream),
+        host: descriptor_of(stream),
         child_fd: RENDER_CHILD_FD,
     }))
 }
@@ -554,16 +558,12 @@ fn resolve_blob_bind_at(
     })?;
     Ok(Some(ResolvedService {
         name: BLOB_SERVICE.to_string(),
-        host: OwnedFd::from(stream),
+        host: descriptor_of(stream),
         child_fd: BLOB_CHILD_FD,
     }))
 }
 
-fn write_blob_handoff(
-    stream: &mut UnixStream,
-    app_id: &str,
-    workspace: &str,
-) -> std::io::Result<()> {
+fn write_blob_handoff(stream: &mut Stream, app_id: &str, workspace: &str) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(&serde_json::json!({
         "protocol": BLOB_HANDOFF_PROTOCOL,
         "actor": "app",
@@ -625,7 +625,7 @@ fn authenticate_service(
     name: &str,
     requirement: &ServiceReq,
     path: &Path,
-    stream: &mut UnixStream,
+    stream: &mut Stream,
     context: Option<ServiceLaunchContext<'_>>,
 ) -> Result<HandoffOutcome, ServiceError> {
     let required = requirement.is_required();
@@ -706,7 +706,7 @@ fn authenticate_service(
 }
 
 fn write_ush_handoff(
-    stream: &mut UnixStream,
+    stream: &mut Stream,
     app_id: &str,
     workspace_id: Option<&str>,
 ) -> std::io::Result<()> {
@@ -790,7 +790,7 @@ fn resolve_service_binds_inner(
             continue;
         }
         // Owned from here, and deliberately left `FD_CLOEXEC`.
-        let host = OwnedFd::from(stream);
+        let host = descriptor_of(stream);
 
         while child_fd_reserved(next_child_fd) {
             next_child_fd = next_child_fd.saturating_add(1);
@@ -816,7 +816,7 @@ pub use runtime_portal::launch_handoff::{
 };
 
 fn write_compat_handoff(
-    stream: &mut UnixStream,
+    stream: &mut Stream,
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
@@ -908,7 +908,6 @@ mod image_interface_tests {
             checked += in_root;
         }
         assert!(checked > 50, "only {checked} app manifests found");
-
     }
 }
 
@@ -925,7 +924,7 @@ mod tests {
         drop(std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture socket"));
         assert!(path.exists(), "a stale socket must still be on disk");
         assert!(
-            UnixStream::connect(&path).is_err(),
+            Stream::connect(&path).is_err(),
             "the fixture must actually refuse connections, or it proves nothing"
         );
         path
@@ -936,7 +935,7 @@ mod tests {
 
         phase identity_handshake_uses_only_current_canonical_bound_subjects;
         {
-            let (mut writer, mut reader) = UnixStream::pair().unwrap();
+            let (mut writer, mut reader) = Stream::pair().unwrap();
             write_identity_handshake(&mut writer, "so.tilo.notes", "workspace-7").unwrap();
             drop(writer);
             let bytes = tilo_identity_client::wire::HANDSHAKE_FRAMING
@@ -958,7 +957,7 @@ mod tests {
         phase identity_presentation_negotiation_preserves_legacy_default_bytes;
         {
             for enabled in [false, true] {
-                let (mut writer, mut reader) = UnixStream::pair().unwrap();
+                let (mut writer, mut reader) = Stream::pair().unwrap();
                 write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "workspace-7", enabled)
                     .unwrap();
                 drop(writer);
@@ -1002,9 +1001,9 @@ mod tests {
         env
     }
 
-    fn written(write: impl FnOnce(&mut UnixStream) -> std::io::Result<()>) -> Vec<u8> {
+    fn written(write: impl FnOnce(&mut Stream) -> std::io::Result<()>) -> Vec<u8> {
         use std::io::Read;
-        let (mut launcher, mut service) = UnixStream::pair().expect("pair");
+        let (mut launcher, mut service) = Stream::pair().expect("pair");
         write(&mut launcher).expect("handoff");
         drop(launcher);
         let mut bytes = Vec::new();
@@ -1543,7 +1542,7 @@ mod tests {
             }
             {
                 use std::io::Read;
-                use std::os::fd::FromRawFd;
+                use std::os::fd::{FromRawFd, OwnedFd};
 
                 let dir = tempfile::tempdir().unwrap();
                 let _env = runtime_dir_env(dir.path());

@@ -54,6 +54,8 @@ tilo-process = { path = "../../platform/tilo-process" }
 tilo-documents.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files" }
+# The egress proxy's socket on the runtime: a Unix socket, or a named pipe on Windows.
+tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
 # Where no session serves the clipboard, this process serves the same wire from
 # the OS clipboard, so an app on a person's own desktop still copies and pastes.
 tilo-clipboard = { path = "../../platform/tilo-clipboard", features = ["os"] }

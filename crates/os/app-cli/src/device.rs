@@ -5,7 +5,6 @@
 //! same action, admitted the same way, as one from an agent or another device.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use base64::Engine as _;
@@ -169,8 +168,8 @@ pub fn registries(action: &str, arguments: &Value) -> Result<Value, String> {
 
 /// One connection to the daemon's native endpoint, as MCP.
 pub struct Daemon {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
+    reader: BufReader<tilo_files::native::socket::Stream>,
+    writer: tilo_files::native::socket::Stream,
     id: u64,
 }
 
@@ -183,7 +182,7 @@ impl Daemon {
     /// No daemon answers on this computer.
     pub fn reach() -> Result<Self, String> {
         let socket = tilo_paths::machine::daemon_native()?;
-        let stream = UnixStream::connect(&socket).map_err(|error| {
+        let stream = tilo_files::native::socket::connect(&socket).map_err(|error| {
             format!(
                 "Tilo's background service isn't answering on this computer ({}: {error}): \
                  changes to what it runs go through it. Run `tilo status` to see how it \
