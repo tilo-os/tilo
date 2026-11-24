@@ -152,7 +152,7 @@ async fn write_naming(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
+#[allow(
     clippy::too_many_lines,
     reason = "one flow through the build that writes, the update, and what it lists afterwards"
 )]
