@@ -692,9 +692,10 @@ pub fn check_reassembled(op: &crate::op::SignedOp, payload: &[u8]) -> Result<(),
 
 /// The workspace decided the sealed op `op` by its claims without reading
 /// it: refuse `mutation`, what it opened to, when a change says other than
-/// its claim (another action, or another invoker), when the claims do not
-/// name exactly its changes, or when a continuation names another invoker
-/// than the entry it continues in the same op.
+/// its claim (another action, another invoker, or another caller's signed
+/// call), when the claims do not name exactly its changes, or when a
+/// continuation names another invoker than the entry it continues in the same
+/// op.
 ///
 /// # Errors
 /// [`ReceiptRefusal::Unclaimed`] for changes the claims do not name exactly,
@@ -722,6 +723,10 @@ pub fn check_opened_mutation(
         if claimed.is_none_or(|claimed| {
             !names_what_it_read(&claimed.action, &read.action, &made, store)
                 || claimed.invoker != read.invoker
+                // The call the claim carries outside the ciphertext is the one
+                // the change keeps inside it: the caller's own bytes, not
+                // another call the writer substituted for a key-less receiver.
+                || claimed.call != read.call
         }) {
             return Err(ReceiptRefusal::Misclaimed(label(&read.action)));
         }

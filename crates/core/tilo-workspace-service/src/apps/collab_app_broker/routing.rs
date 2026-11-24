@@ -108,11 +108,30 @@ pub(super) fn validate_signed_op(
     artifact: ArtifactId,
     envelope: &SignedOp,
 ) -> Option<Result<(), ValidationError>> {
+    use super::authority::{Deciding, callers_of};
     let now = policy_system_time(state)?;
     let validation = verified_identity.with_current_authority(
         state.membership.as_ref(),
         &route.cluster_id,
         |author| {
+            let record = collab_types::WrittenDocument {
+                workspace: &route.cluster_id,
+                app: &route.app_id,
+                document: &route.document_id,
+            };
+            // The callers the write was made for on another device, each
+            // carried call checked: a change naming one of them is decided
+            // within both its grants and the author's ([`Deciding`]).
+            let now_ns = state.policy_now_ns().ok()?;
+            let callers =
+                match callers_of(state.membership.as_ref(), author, &record, envelope, now_ns) {
+                    Ok(callers) => callers,
+                    Err(reason) => return Some(Err(ValidationError::NotGranted(reason))),
+                };
+            let deciding = Deciding {
+                signer: author,
+                callers: &callers,
+            };
             let Ok(mut ch) = state.broker_channels.lock() else {
                 return None;
             };
@@ -128,7 +147,7 @@ pub(super) fn validate_signed_op(
 
             Some(validate_admitted_inbound_op(
                 envelope,
-                author,
+                &deciding,
                 ch_state,
                 now,
                 Duration::from_secs(300),

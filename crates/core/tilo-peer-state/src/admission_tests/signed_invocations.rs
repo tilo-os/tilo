@@ -198,6 +198,49 @@ fn document_message(envelope: collab_types::SignedOp) -> NeighbourMsg {
     }
 }
 
+/// The write of the change `message` by `signer`'s device as a device that
+/// keeps no record keys sends it: its claims carry the call the change was
+/// made for, outside the ciphertext, and its payload is a sealed frame this
+/// receiver cannot open. The plaintext it seals is returned beside it, as a
+/// reader that does hold the keys opens it.
+fn sealed_commit(
+    copy: &StatePeer,
+    signer: &SigningKey,
+    message: &str,
+    value: &str,
+    now: SystemTime,
+) -> (collab_types::SignedOp, collab_types::DocumentMutation) {
+    let mut envelope = unsigned_commit(copy, signer, message, value, now);
+    let mutation =
+        collab_types::DocumentMutation::decode(&envelope.payload).expect("an incremental write");
+    let collab_types::DocumentMutation::Incremental(bytes) = &mutation else {
+        panic!("an incremental write");
+    };
+    let changes = collab_types::claim::parse_changes(bytes).expect("the changes parse");
+    envelope.claims =
+        collab_types::claim::claims_of(&changes, |_| Vec::new()).expect("every change is claimed");
+    envelope.encryption = Some(collab_types::EncryptionMetadata::content_key(
+        1,
+        collab_types::ContentRetention::Delta,
+    ));
+    envelope.payload = b"a sealed change this device cannot open".to_vec();
+    collab_types::sign_op(&mut envelope, signer).expect("the device signs what it sends");
+    (envelope, mutation)
+}
+
+/// The write of the change `message` by `signer`'s device, sealed, as the
+/// document frame a key-less device keeps and forwards.
+fn sealed(
+    copy: &StatePeer,
+    signer: &SigningKey,
+    message: &str,
+    value: &str,
+    now: SystemTime,
+) -> (NeighbourMsg, collab_types::DocumentMutation) {
+    let (envelope, mutation) = sealed_commit(copy, signer, message, value, now);
+    (document_message(envelope), mutation)
+}
+
 /// `receiver` takes `message` in: `Ok` admitted, `Err` refused.
 #[expect(
     clippy::result_large_err,
@@ -500,6 +543,100 @@ tilo_test_env::scenario! {
         assert!(held[0].detail.contains("invocation"));
         assert_eq!(held[0].changes, refused.changes);
     }
+
+    phase a_keyless_device_admits_a_sealed_change_made_for_a_caller;
+    {
+        // A device that keeps the sealed op without opening it cannot see the
+        // call the change keeps in its ciphertext: the claim carries it too.
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+        let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        let context = caller_context(caller_invoker(&cert), &cert, &key, now);
+        let (message, _) = sealed(
+            &receiver,
+            &b,
+            &context.change_message().unwrap(),
+            "asked for",
+            now,
+        );
+        take(&mut receiver, message, now).expect("the carried call proves who asked");
+    }
+
+    phase a_sealed_change_whose_carried_call_another_key_signed_is_refused;
+    {
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+        let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        // The change names the owner, and the call carried beside it is
+        // another member's, signed with that member's key.
+        let context = caller_context(
+            tilo_actions::ActionInvoker::person(hex::encode(receiver.owner())).from_device(Some(
+                tilo_actions::InvokerDevice::certified(cert.device_public_key, "their device"),
+            )),
+            &cert,
+            &key,
+            now,
+        );
+        let (message, _) = sealed(
+            &receiver,
+            &b,
+            &context.change_message().unwrap(),
+            "not the caller",
+            now,
+        );
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("does not check"), "{}", refused.reason);
+    }
+
+    phase a_sealed_change_naming_another_member_without_a_call_is_refused;
+    {
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+        let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        let mut context = caller_context(caller_invoker(&cert), &cert, &key, now);
+        context.signed = None;
+        let (message, _) = sealed(
+            &receiver,
+            &b,
+            &context.change_message().unwrap(),
+            "unproven",
+            now,
+        );
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(
+            refused.reason.contains("carries no invocation"),
+            "{}",
+            refused.reason
+        );
+    }
+
+    phase placed_work_syncs_through_a_device_without_the_records_keys;
+    {
+        // A host device runs a caller's action and writes the change; a server
+        // that holds none of the record's keys keeps and forwards it; a device
+        // that holds them opens it and finds the call the claim carried.
+        let (mut server, a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+        let (key, cert, _person) = add_member_with(&mut server, &a, now, 31, 32);
+        let context = caller_context(caller_invoker(&cert), &cert, &key, now);
+        let (envelope, mutation) = sealed_commit(
+            &server,
+            &b,
+            &context.change_message().unwrap(),
+            "placed",
+            now,
+        );
+        take(
+            &mut server,
+            document_message(envelope.clone()),
+            now,
+        )
+        .expect("a server without the keys keeps the sealed write");
+
+        let (mut reader, reader_authority, _reader_cert, _b, _bc, now) =
+            seeded_with(RevocationList::new());
+        add_member_with(&mut reader, &reader_authority, now, 31, 32);
+        take(&mut reader, document_message(envelope.clone()), now)
+            .expect("a reader takes the sealed write in");
+        collab_types::check_opened_mutation(&envelope, &mutation)
+            .expect("the call opened to is the one the claim carried");
+    }
 }
 
 /// A change that keeps no history entry, no stamp and no framework name says nothing of who made
@@ -510,7 +647,11 @@ fn a_change_naming_nothing_is_refused_and_a_framework_change_is_its_signers() {
     let (mut receiver, _a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
     let plain = committed_unclaimed(&receiver, &b, "an edit", "plain", now);
     let refused = take(&mut receiver, plain, now).unwrap_err();
-    assert!(refused.reason.contains("names no invoker"), "{}", refused.reason);
+    assert!(
+        refused.reason.contains("names no invoker"),
+        "{}",
+        refused.reason
+    );
     assert_eq!(value(&receiver), "\"seed\"", "never applied");
 
     let native = committed_unclaimed(

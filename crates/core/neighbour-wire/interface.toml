@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the server session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 68
+version = 69
 version_const = "crates/core/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -51,6 +51,7 @@ Uuid = "uuid::Uuid: 16 bytes"
 Acting = "tilo_action_policy::Acting: who made a change, carried as the JSON text its history entry writes (ChangeClaim.invoker)"
 Value = "serde_json::Value: any JSON value, carried as its text"
 RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-host vocabulary, carried as opaque postcard bytes and versioned by the server transport's remote-action envelope"
+SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own signed statement — the address, the hash of the arguments, the signature and the certificate — carried as its own wire form, never the arguments"
 
 [schema]
 "ActionKey" = "struct"
@@ -72,8 +73,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Answer::deny" = "#0 unit"
 "ArtifactId" = "tuple(Uuid) transparent"
 "AttestationId" = "tuple(Uuid) transparent"
-"ChangeClaim" = "struct deny_unknown_fields"
+"ChangeClaim" = "struct"
 "ChangeClaim.action" = "#1 ClaimedAction"
+"ChangeClaim.call" = "#4 Option<Box<SignedInvocation>>"
 "ChangeClaim.change" = "#0 [u8; 32]"
 "ChangeClaim.invoker" = "#3 Option<Acting> with=invoker_text"
 "ChangeClaim.units" = "#2 Vec<UnitPath>"
@@ -584,7 +586,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "SignedDeviceAction.encoded" = "#1 Vec<u8>"
 "SignedDeviceAction.issued_at_ns" = "#2 u64"
 "SignedDeviceAction.signature" = "#3 [u8; 64]"
-"SignedOp" = "struct deny_unknown_fields"
+"SignedOp" = "struct"
 "SignedOp.artifact" = "#1 ArtifactId"
 "SignedOp.attestation_id" = "#3 AttestationId"
 "SignedOp.author" = "#2 Ed25519PublicKey"

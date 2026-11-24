@@ -328,6 +328,78 @@ pub fn verify_recorded(
     Ok(Some(cert))
 }
 
+/// Check the call a sealed op's claim carries, as a receiver that keeps the
+/// op without opening it does, and return the certificate of the caller who
+/// asked. The call is the caller's own signed statement, so this reads no
+/// arguments: only their hash is in it.
+///
+/// The call must be this workspace's; it must name the record the claim is of,
+/// the app it belongs to, or the resource kind the claim names; every action
+/// the claim names must be the one the caller asked for; its certificate must
+/// verify and not be revoked; and the person who signed must be the member the
+/// claim names, under the same rules a change's kept invocation is checked by
+/// ([`verify_recorded`]). Freshness is not checked: a key-less device keeps and
+/// forwards a sealed op long after it was written.
+///
+/// # Errors
+///
+/// The first check that fails, as [`InvocationError`].
+pub fn verify_carried(
+    signed: &SignedInvocation,
+    workspace: &str,
+    record: &collab_types::receipt::WrittenDocument<'_>,
+    claim: &collab_types::claim::ChangeClaim,
+    revocations: &RevocationList,
+) -> Result<DeviceCert, InvocationError> {
+    check_signature(signed)?;
+    let statement = signed.statement();
+    if statement.workspace != workspace {
+        return Err(StatementMismatch::Workspace.into());
+    }
+    // The call names the record the change is of — or the app, or the kind of
+    // it, which a caller that knows only the app names.
+    let named = &statement.target.address.resource;
+    if named != record.document && named != record.app && !claim_names_kind(claim, named) {
+        return Err(StatementMismatch::Target.into());
+    }
+    // Every action the claim names is the one the caller asked for: a change
+    // claiming two verbs was made for one call that named neither or only one.
+    for member in claim.action.members() {
+        if let collab_types::claim::ClaimedAction::Verb { action, .. } = member
+            && action.action != statement.target.address.action
+        {
+            return Err(StatementMismatch::Target.into());
+        }
+    }
+    let cert = signer_of(
+        signed,
+        workspace,
+        revocations,
+        (statement.issued_at_ns, None),
+    )?;
+    let person = hex::encode(cert.user_public_key);
+    let invoker = claim.invoker.as_deref();
+    let names_signer = invoker.is_some_and(|acting| acting.people().contains(&person.as_str()));
+    if !names_signer {
+        return Err(InvocationError::NotInvoker);
+    }
+    agent_signed(invoker, &cert)?;
+    Ok(cert)
+}
+
+/// Whether the claim names `kind` as the resource kind of one of its actions.
+fn claim_names_kind(claim: &collab_types::claim::ChangeClaim, kind: &str) -> bool {
+    claim
+        .action
+        .members()
+        .into_iter()
+        .any(|member| match member {
+            collab_types::claim::ClaimedAction::Verb { action, .. } => action.kind == kind,
+            collab_types::claim::ClaimedAction::Edit { kind: named, .. } => named == kind,
+            _ => false,
+        })
+}
+
 /// Check the invocation a resource store's change keeps in its stamp, as a peer reading the
 /// change in `workspace` does, and return the certificate of the caller who asked. `Ok(None)` for
 /// a change that keeps none: the host made it of its own accord.

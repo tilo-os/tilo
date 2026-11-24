@@ -6,7 +6,7 @@
 # (collaboration, the filesystem and its document media, the identity
 # broker, shell-owned tools), one number for all of them.
 name = "runtime"
-version = 39
+version = 40
 version_const = "crates/core/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -77,6 +77,7 @@ Invoker = "tilo_collab_types::Invoker: an Acting as the JSON text its signer wro
 EntryName = "one native filename component, serialized as its raw bytes"
 Zeroizing = "zeroize::Zeroizing<String>: the text inside, wiped from memory once dropped"
 SHELL_SECRET_BYTES = "the length of a one-use shell or vouch secret: 32"
+SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own signed statement — the address, the hash of the arguments, the signature and the certificate — carried as its own wire form, never the arguments"
 
 [schema]
 "Ack" = "alias NativeEntryStatus"
@@ -180,8 +181,9 @@ SHELL_SECRET_BYTES = "the length of a one-use shell or vouch secret: 32"
 "Call" = "struct"
 "Call.id" = "#0 u64"
 "Call.request" = "#1 Operation"
-"ChangeClaim" = "struct deny_unknown_fields"
+"ChangeClaim" = "struct"
 "ChangeClaim.action" = "#1 ClaimedAction"
+"ChangeClaim.call" = "#4 Option<Box<SignedInvocation>>"
 "ChangeClaim.change" = "#0 [u8; 32]"
 "ChangeClaim.invoker" = "#3 Option<Invoker> with=invoker_text"
 "ChangeClaim.units" = "#2 Vec<UnitPath>"
@@ -1028,7 +1030,7 @@ SHELL_SECRET_BYTES = "the length of a one-use shell or vouch secret: 32"
 "ShownAction.resource" = "#3 String"
 "ShownAction.workspace" = "#0 Option<String>"
 "Signature" = "tuple([u8; 64]) transparent"
-"SignedOp" = "struct deny_unknown_fields"
+"SignedOp" = "struct"
 "SignedOp.artifact" = "#1 ArtifactId"
 "SignedOp.attestation_id" = "#3 AttestationId"
 "SignedOp.author" = "#2 Ed25519PublicKey"

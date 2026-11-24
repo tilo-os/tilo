@@ -585,13 +585,17 @@ mod claims_wire {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     #[derive(Serialize, Deserialize)]
-    #[serde(deny_unknown_fields)]
     struct Run {
         changes: Vec<[u8; 32]>,
         action: ClaimedAction,
         units: Vec<UnitPath>,
         #[serde(with = "crate::claim::invoker_text")]
         invoker: Option<crate::claim::Invoker>,
+        /// The call the run's changes were made for, when a host ran them for
+        /// a caller elsewhere: the caller's own signed invocation, which every
+        /// change of one invocation shares.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call: Option<Box<tilo_actions::remote::SignedInvocation>>,
     }
 
     #[derive(Serialize)]
@@ -600,6 +604,8 @@ mod claims_wire {
         action: &'a ClaimedAction,
         units: &'a [UnitPath],
         invoker: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        call: Option<&'a tilo_actions::remote::SignedInvocation>,
     }
 
     pub(super) fn serialize<S: Serializer>(
@@ -610,11 +616,13 @@ mod claims_wire {
         for claim in claims {
             let invoker = crate::claim::invoker_text::text(claim.invoker.as_ref())
                 .map_err(serde::ser::Error::custom)?;
+            let call = claim.call.as_deref();
             match grouped.last_mut() {
                 Some(last)
                     if *last.action == claim.action
                         && last.units == claim.units
-                        && last.invoker == invoker =>
+                        && last.invoker == invoker
+                        && last.call == call =>
                 {
                     last.changes.push(claim.change);
                 }
@@ -623,6 +631,7 @@ mod claims_wire {
                     action: &claim.action,
                     units: &claim.units,
                     invoker,
+                    call,
                 }),
             }
         }
@@ -639,6 +648,7 @@ mod claims_wire {
             action,
             units,
             invoker,
+            call,
         } in runs
         {
             if changes.is_empty() {
@@ -649,6 +659,7 @@ mod claims_wire {
                 action: action.clone(),
                 units: units.clone(),
                 invoker: invoker.clone(),
+                call: call.clone(),
             }));
         }
         Ok(claims)
@@ -675,7 +686,6 @@ pub const GOVERNANCE_NEVER_ARRIVED: &str = "the role change it depends on never 
 /// multiple peers; `PartialEq` for envelope-identity assertions in tests.
 /// Deliberately not `Hash` — use the signature bytes as a map key if needed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SignedOp {
     /// The opaque payload bytes — an Automerge change blob, or (once
     /// encrypted) MLS ciphertext of the same. The validator does not
@@ -911,6 +921,7 @@ mod tests {
                 action: edit(field),
                 units: vec![vec![PathStep::Field("pages".into())]],
                 invoker: None,
+                call: None,
             };
             let op = |claims: Vec<ChangeClaim>| {
                 SignedOp::new_unsigned(
@@ -980,6 +991,7 @@ mod tests {
                 ]),
                 units: vec![Vec::new()],
                 invoker: None,
+                call: None,
             }])
             .with_surface(Some([5; 32]))
             .with_governance(&[[6; 32]]);

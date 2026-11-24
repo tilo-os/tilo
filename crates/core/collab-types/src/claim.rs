@@ -23,7 +23,6 @@ pub type UnitPath = Vec<PathStep>;
 
 /// What one Automerge change of a signed op claims to be.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ChangeClaim {
     /// The change's hash.
     pub change: [u8; 32],
@@ -39,6 +38,16 @@ pub struct ChangeClaim {
     /// by this; the devices that open it check that the change names the same.
     #[serde(with = "invoker_text")]
     pub invoker: Option<Invoker>,
+    /// The invocation as its caller signed it, when the device that wrote the
+    /// change ran the action for a caller on another device: the caller's own
+    /// statement — its address, the hash of its arguments, its signature and
+    /// certificate — and never the arguments themselves. It is the caller's
+    /// bytes, kept as read and never re-signed; the op's signature covers its
+    /// presence. A receiver that keeps the op sealed checks it as the caller's
+    /// call; one that opens the change checks that the call the change keeps
+    /// is this one ([`crate::receipt::check_opened_mutation`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<Box<tilo_actions::remote::SignedInvocation>>,
 }
 
 /// Who made a change, as a claim carries them: the tree, and the text the claim's signer wrote it
@@ -344,6 +353,9 @@ impl ChangeClaim {
     ) -> Result<Self, ClaimError> {
         let message = message.ok_or(ClaimError::Unnamed)?;
         let mut stamp: Option<crate::Stamp> = None;
+        // The call the change keeps, when a host ran it for a caller elsewhere:
+        // the caller's own signed invocation, never its re-signing.
+        let mut call: Option<Box<tilo_actions::remote::SignedInvocation>> = None;
         let action = match FrameworkChange::from_change_message(message) {
             // A window's own commit names no finer action than the record whole, and no kind:
             // the record is the app's own, which only its own document says, so the claim
@@ -355,6 +367,10 @@ impl ChangeClaim {
             }
             None => {
                 if let Some(context) = ActionContext::from_change_message(message) {
+                    call = context
+                        .signed
+                        .as_deref()
+                        .map(|signed| Box::new(signed.signed.clone()));
                     ClaimedAction::of(&context)?
                 } else {
                     // A resource store's change names its verb in its stamp, and the store
@@ -363,6 +379,10 @@ impl ChangeClaim {
                     // them reads ([`name_record_kinds`]).
                     let parsed = crate::Stamp::of_message(message).ok_or(ClaimError::Unnamed)?;
                     stamp_invoker(&parsed)?;
+                    call = parsed
+                        .signed
+                        .as_deref()
+                        .map(|signed| Box::new(signed.signed.clone()));
                     stamp = Some(parsed);
                     ClaimedAction::whole_resource_edit(String::new())
                 }
@@ -377,6 +397,7 @@ impl ChangeClaim {
                 None => invoker_of_message(message),
             }
             .map(Invoker::new),
+            call,
         })
     }
 
@@ -398,6 +419,7 @@ impl ChangeClaim {
                 action: ClaimedAction::whole_resource_edit(String::new()),
                 units,
                 invoker: Some(Invoker::new(person.clone())),
+                call: None,
             }),
             (claim, _) => claim,
         }

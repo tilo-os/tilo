@@ -79,6 +79,7 @@ fn claim(byte: u8, action: ClaimedAction, units: Vec<UnitPath>) -> ChangeClaim {
         action,
         units,
         invoker: None,
+        call: None,
     }
 }
 

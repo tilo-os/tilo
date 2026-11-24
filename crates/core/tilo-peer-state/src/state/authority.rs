@@ -1367,6 +1367,9 @@ impl StatePeer {
     /// for that caller, so it must check. `Ok(None)` for a change a device
     /// made for itself, which keeps no invocation and needs none.
     ///
+    /// A sealed op reads the calls its claims carry, outside the ciphertext
+    /// ([`Self::carried_caller`]): this device keeps no keys of the record.
+    ///
     /// The caller's access is taken under the governance this copy judges the
     /// write by ([`Self::decide_written`]), never the governance it holds now
     /// when that is not the one the write names.
@@ -1384,7 +1387,14 @@ impl StatePeer {
             opened
         } else {
             let Some(changes) = cleartext_changes_of(envelope) else {
-                return Ok(None);
+                return self.carried_caller(
+                    app_id,
+                    record,
+                    source,
+                    envelope,
+                    member,
+                    authorization_time,
+                );
             };
             parsed = changes;
             parsed.as_slice()
@@ -1398,6 +1408,88 @@ impl StatePeer {
             member,
             authorization_time,
         )
+    }
+
+    /// The caller a sealed `envelope`'s claims name, each carried call checked:
+    /// the caller's signature over the call, its certificate, the member the
+    /// claim names, and the action and record the claim declares. A claim
+    /// naming a member this device may write for and carrying no call needs
+    /// none; one naming another with no call is refused, as it is by a device
+    /// that opens it.
+    fn carried_caller(
+        &self,
+        app_id: &str,
+        record: &str,
+        source: &[u8; 32],
+        envelope: &SignedOp,
+        member: &MemberAccess,
+        authorization_time: SystemTime,
+    ) -> Result<Option<CallerAccess>, AuthorizeRefusal> {
+        let route = Route {
+            app: app_id.into(),
+            record: record.into(),
+        };
+        let document = collab_types::WrittenDocument {
+            workspace: &self.core.workspace,
+            app: app_id,
+            document: record,
+        };
+        let mut caller: Option<CallerAccess> = None;
+        for claim in &envelope.claims {
+            let Some(invoker) = claim.invoker.as_deref() else {
+                continue;
+            };
+            // Every call a claim carries is checked, whether or not it names a
+            // caller elsewhere: a call beside a member this device may write
+            // for must still be that member's.
+            let Some(call) = claim.call.as_deref() else {
+                if member.may_write_for(invoker) {
+                    continue;
+                }
+                return Err(refused_invocation(
+                    &route,
+                    source,
+                    envelope,
+                    "a change made for a caller carries no invocation that caller signed",
+                ));
+            };
+            let certificate = tilo_server_protocol::invocation::verify_carried(
+                call,
+                &self.core.workspace,
+                &document,
+                claim,
+                &self.core.revocations,
+            )
+            .map_err(|error| {
+                refused_invocation(
+                    &route,
+                    source,
+                    envelope,
+                    &format!("the invocation a change made for a caller does not check: {error}"),
+                )
+            })?;
+            let person = hex::encode(certificate.user_public_key);
+            match &caller {
+                Some(held) if held.person != person => {
+                    return Err(refused_invocation(
+                        &route,
+                        source,
+                        envelope,
+                        "the changes of one action name more than one caller",
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    // The member list at the write's heads decides the caller:
+                    // the role and grants its person had then, and the keys
+                    // approved then.
+                    let access = MemberAccess::person(member.policy.clone(), person.clone())
+                        .granted(self.approved_keys(authorization_time));
+                    caller = Some(CallerAccess { person, access });
+                }
+            }
+        }
+        Ok(caller)
     }
 
     /// The caller the changes `changes` of `envelope` name, each invocation

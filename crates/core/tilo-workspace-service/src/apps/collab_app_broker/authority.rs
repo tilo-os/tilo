@@ -326,7 +326,8 @@ impl AppBrokerState {
         admitted: &AdmittedJoinIdentity,
         envelope: &SignedOp,
     ) -> Result<AuthorizedDocumentRoute, BrokerError> {
-        let now = self.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
+        let now_ns = self.policy_now_ns().map_err(BrokerError::failed)?;
+        let now = now_ns / 1_000_000_000;
         if route.app_id.is_empty() {
             return Err(BrokerError::failed(
                 "certified document operation does not match its joined route".into(),
@@ -383,10 +384,17 @@ impl AppBrokerState {
         let allowed = admitted
             .with_current_authority(self.membership.as_ref(), &route.cluster_id, |access| {
                 let cx = tilo_action_policy::Context::at_secs(now);
+                let callers =
+                    callers_of(self.membership.as_ref(), access, &record, envelope, now_ns)
+                        .map_err(BrokerError::failed)?;
+                let deciding = Deciding {
+                    signer: access,
+                    callers: &callers,
+                };
                 let allows = |invoker: Option<&tilo_action_policy::Acting>,
                               node: &tilo_action_policy::TreePath,
                               kind| {
-                    collab_types::ChangeAuthor::answer(access, invoker, node, kind, &cx)
+                    collab_types::ChangeAuthor::answer(&deciding, invoker, node, kind, &cx)
                         == Answer::Allow
                 };
                 Ok::<_, BrokerError>(
@@ -412,4 +420,179 @@ impl AppBrokerState {
             payload,
         })
     }
+}
+
+/// A received op's author as its signer and the callers whose own signed
+/// calls this host proved ([`callers_of`]): a change naming no one is its
+/// signer's; one naming a member the signer may write for is the signer's and
+/// that member's, within both grants; one naming a caller elsewhere is that
+/// caller's, within both grants too. A member neither may write for is
+/// refused.
+pub(super) struct Deciding<'a> {
+    pub(super) signer: &'a tilo_action_policy::MemberAccess,
+    pub(super) callers: &'a [tilo_action_policy::MemberAccess],
+}
+
+impl collab_types::ChangeAuthor for Deciding<'_> {
+    fn answer(
+        &self,
+        invoker: Option<&tilo_action_policy::Acting>,
+        node: &tilo_action_policy::TreePath,
+        kind: tilo_action_policy::ActionKind,
+        cx: &tilo_action_policy::Context<'_>,
+    ) -> Answer {
+        if collab_types::ChangeAuthor::answer(self.signer, None, node, kind, cx) != Answer::Allow {
+            return Answer::Deny;
+        }
+        let Some(acting) = invoker else {
+            return Answer::Allow;
+        };
+        let by_signer = self.signer.may_write_for(acting);
+        let caller = self
+            .callers
+            .iter()
+            .find(|caller| caller.may_write_for(acting));
+        if !by_signer && caller.is_none() {
+            return Answer::Deny;
+        }
+        let allowed = !by_signer
+            || collab_types::ChangeAuthor::answer(self.signer, Some(acting), node, kind, cx)
+                == Answer::Allow;
+        if let Some(caller) = caller
+            && collab_types::ChangeAuthor::answer(caller, Some(acting), node, kind, cx)
+                != Answer::Allow
+        {
+            return Answer::Deny;
+        }
+        if allowed { Answer::Allow } else { Answer::Deny }
+    }
+}
+
+/// What an invocation's error is told, as the write it was carried by is
+/// refused.
+fn call_error(error: tilo_server_protocol::invocation::InvocationError) -> String {
+    format!("the invocation a change made for a caller does not check: {error}")
+}
+
+/// The callers the write `envelope` was made for on another device, each
+/// carried call checked as a host that keeps no record keys can: the caller's
+/// own signed invocation, its certificate, the member the write names, and the
+/// action and record it declares. A sealed write carries its calls in its
+/// claims, outside the ciphertext
+/// ([`tilo_server_protocol::invocation::verify_carried`]); a clear one in its
+/// changes ([`tilo_server_protocol::invocation::verify_recorded`], and a
+/// resource store's in its stamp). A write naming no one else, or one this
+/// host may write for itself, yields none.
+///
+/// # Errors
+///
+/// A claim naming another member with no call to prove it, a call that does
+/// not check, or a call whose revocation list this host does not hold.
+pub(super) fn callers_of(
+    membership: Option<&WorkspaceTreeHandle>,
+    signer: &tilo_action_policy::MemberAccess,
+    record: &collab_types::WrittenDocument<'_>,
+    envelope: &SignedOp,
+    now_ns: u64,
+) -> Result<Vec<tilo_action_policy::MemberAccess>, String> {
+    let mut callers = Vec::new();
+    let add_caller = |person: String, callers: &mut Vec<tilo_action_policy::MemberAccess>| {
+        let access = tilo_action_policy::MemberAccess::person(signer.policy.clone(), person);
+        if !callers.iter().any(|held| held.acting == access.acting) {
+            callers.push(access);
+        }
+    };
+    let revocations = || {
+        membership
+            .and_then(|membership| membership.workspace_revocations(record.workspace))
+            .ok_or_else(|| {
+                "this host holds no revocations of the workspace, so it cannot check the call a change was made for"
+                    .to_owned()
+            })
+    };
+    if envelope.encryption.is_some() {
+        for claim in &envelope.claims {
+            let Some(invoker) = claim.invoker.as_deref() else {
+                continue;
+            };
+            let writable = signer.may_write_for(invoker);
+            let Some(call) = claim.call.as_deref() else {
+                if writable {
+                    continue;
+                }
+                return Err(
+                    "a change made for a caller carries no invocation that caller signed".into(),
+                );
+            };
+            // A call beside a member this host may write for gives it nothing
+            // it does not already have; where the host holds no revocations to
+            // check it by, that call is all it would cost.
+            if writable && membership.is_none() {
+                continue;
+            }
+            let certificate = tilo_server_protocol::invocation::verify_carried(
+                call,
+                record.workspace,
+                record,
+                claim,
+                &revocations()?,
+            )
+            .map_err(call_error)?;
+            add_caller(hex::encode(certificate.user_public_key), &mut callers);
+        }
+        return Ok(callers);
+    }
+    let Ok(collab_types::DocumentMutation::Incremental(bytes)) =
+        collab_types::DocumentMutation::decode(&envelope.payload)
+    else {
+        return Ok(callers);
+    };
+    let changes = collab_types::claim::parse_changes(&bytes)
+        .map_err(|error| format!("the changes do not parse: {error}"))?;
+    for change in &changes {
+        if let Some(context) = change
+            .message()
+            .and_then(tilo_actions::ActionContext::from_change_message)
+        {
+            if context.signed.is_none() {
+                continue;
+            }
+            // As above: a call beside a member this host may write for needs
+            // no revocations it does not hold.
+            let writable = context
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| signer.may_write_for(&invoker.acting));
+            if writable && membership.is_none() {
+                continue;
+            }
+            if let Some(certificate) = tilo_server_protocol::invocation::verify_recorded(
+                &context,
+                record.workspace,
+                &revocations()?,
+                now_ns,
+            )
+            .map_err(call_error)?
+            {
+                add_caller(hex::encode(certificate.user_public_key), &mut callers);
+            }
+        } else if let Some(stamp) = change.message().and_then(collab_types::Stamp::of_message)
+            && stamp.signed.is_some()
+        {
+            if membership.is_none() {
+                continue;
+            }
+            if let Some(certificate) = tilo_server_protocol::invocation::verify_stamp(
+                &stamp,
+                record.workspace,
+                record.app,
+                &revocations()?,
+            )
+            .map_err(call_error)?
+            {
+                add_caller(hex::encode(certificate.user_public_key), &mut callers);
+            }
+        }
+    }
+    Ok(callers)
 }
