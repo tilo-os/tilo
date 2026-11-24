@@ -212,6 +212,8 @@ launcher-windows = { path = "../launcher-windows" }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# What a radio says of waking its machine, read as the OS actions read it.
+os-actions = { path = "../../os/os-actions" }
 app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet", features = ["surfaces"] }
 fuser.workspace = true
 # The member that takes work runs its workspaces' shells: ush's own commands

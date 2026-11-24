@@ -13585,24 +13585,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "shortcuts"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "runtime-dylib",
- "serde",
- "serde_json",
- "shortcuts",
- "tilo-action-policy",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-automation",
- "tilo-history",
- "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
 name = "signal-hook"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19476,6 +19458,7 @@ dependencies = [
  "launcher-windows",
  "libc",
  "linux-vm",
+ "os-actions",
  "package-actions",
  "postcard",
  "rand 0.10.3",
@@ -21785,6 +21768,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-bluez",
  "tilo-broker-core",
  "tilo-browser-continuity-core",
  "tilo-canonical-json",
@@ -27068,7 +27052,6 @@ dependencies = [
  "sharded-slab",
  "shell-words",
  "shlex",
- "shortcuts",
  "signal-hook",
  "signal-hook-registry",
  "signature 2.2.0",

@@ -38,6 +38,8 @@ fixture-servers = ["tilo-web-search?/fixture-servers"]
 apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:tilo-canonical-json", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json", "dep:jiff"]
 
 [dependencies]
+# What a Bluetooth address is, as the radio reads it, for the record of the person's accessories.
+tilo-bluez = { path = "../../os/tilo-bluez" }
 # The device's one store, which apps write and read their resources in.
 tilo-resource-store = { version = "0.1.0", path = "../resource-store" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }

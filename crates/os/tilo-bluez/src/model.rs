@@ -272,6 +272,16 @@ pub fn address_from_path(path: &str) -> Option<String> {
     Some(parts.join(":"))
 }
 
+/// Six colon-separated hex octets.
+#[must_use]
+pub fn valid_address(address: &str) -> bool {
+    address.len() == 17
+        && address.split(':').count() == 6
+        && address
+            .split(':')
+            .all(|octet| octet.len() == 2 && octet.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
 pub fn path_for_address(adapter_path: &str, address: &str) -> String {
     format!("{adapter_path}/dev_{}", address.replace([':', '-'], "_"))
 }

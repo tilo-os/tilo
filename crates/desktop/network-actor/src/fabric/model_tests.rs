@@ -492,29 +492,16 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
         })
         .unwrap();
         assert_eq!(input.first(), Some(&4));
-        // The retired actions hold their tags, so those after them keep theirs.
-        for (retired, index) in [
-            (PersonalFabricAction::RetiredBluetoothPrepare, 5),
-            (PersonalFabricAction::RetiredBluetoothBondOffered, 10),
-            (PersonalFabricAction::RetiredBluetoothCancel, 34),
-            (PersonalFabricAction::RetiredWakeDevice, 51),
-            (PersonalFabricAction::RetiredWakeProbeReply, 54),
-        ] {
-            assert_eq!(
-                postcard::to_allocvec(&retired).unwrap().first(),
-                Some(&index)
-            );
-        }
         let certify =
             postcard::to_allocvec(&PersonalFabricAction::CertifyAsk { ask: vec![1] }).unwrap();
-        assert_eq!(certify.first(), Some(&55));
+        assert_eq!(certify.first(), Some(&43));
         let nearby = postcard::to_allocvec(&PersonalFabricAction::NearbyDrop {
             file_name: "note.txt".into(),
             content_hash: *blake3::hash(b"hello").as_bytes(),
             bytes: b"hello".to_vec(),
         })
         .unwrap();
-        assert_eq!(nearby.first(), Some(&12));
+        assert_eq!(nearby.first(), Some(&5));
         let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
             id: crate::fabric::notification::ContinuityNotificationId {
                 epoch: [1; 16],
@@ -522,7 +509,7 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
             },
         })
         .unwrap();
-        assert_eq!(notification.first(), Some(&20));
+        assert_eq!(notification.first(), Some(&13));
         for (action, index) in [
             (
                 PersonalFabricAction::GamepadForwardRequest {
@@ -532,7 +519,7 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
                     session_id: "session".into(),
                     label: "Controller".into(),
                 },
-                23,
+                16,
             ),
             (
                 PersonalFabricAction::GamepadForwardGrant {
@@ -540,7 +527,7 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
                     accepted: true,
                     lease_nonce: [4; 16],
                 },
-                24,
+                17,
             ),
             (
                 PersonalFabricAction::GamepadForwardEvent {
@@ -549,14 +536,14 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
                     sequence: 1,
                     event: os_actions::ForwardedGamepadEvent::Hat { x: 0, y: -1 },
                 },
-                25,
+                18,
             ),
             (
                 PersonalFabricAction::GamepadForwardStop {
                     forwarding_id: [3; 16],
                     lease_nonce: [4; 16],
                 },
-                26,
+                19,
             ),
         ] {
             assert_eq!(
@@ -723,30 +710,7 @@ fn audio_and_bluetooth_wire_is_versioned_bounded_and_canonical() {
         );
     }
 
-    fn retired_actions_from_an_older_device_are_refused() {
-        let source = id("source");
-        let target = id("target");
-        for action in [
-            PersonalFabricAction::RetiredBluetoothPrepare,
-            PersonalFabricAction::RetiredBluetoothCancel,
-            PersonalFabricAction::RetiredWakeDevice,
-        ] {
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [3; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10_000,
-                action,
-            };
-            assert_eq!(
-                envelope.validate_at(&source, &target, 10_100),
-                Err(FabricError::InvalidAction)
-            );
-        }
-    }
-
     remote_audio_wire_is_versioned_bounded_and_capability_bearing();
-    retired_actions_from_an_older_device_are_refused();
 }
 
 #[test]

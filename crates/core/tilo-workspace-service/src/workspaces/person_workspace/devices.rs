@@ -772,7 +772,7 @@ impl Devices {
         to: String,
         asked_ns: i64,
     ) -> Result<(), Refusal> {
-        if !super::accessory::valid_address(&address) {
+        if !tilo_bluez::valid_address(&address) {
             return Err(Refusal::new(
                 "a Bluetooth address is six hex pairs, AA:BB:CC:DD:EE:FF",
             ));

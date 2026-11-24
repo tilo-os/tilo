@@ -183,6 +183,21 @@ fn driver(interface: &str, wifi: bool, run: &Runner<'_>) -> Result<(bool, bool),
     Ok((supported, wowlan_magic_packet(&phy, run)?))
 }
 
+/// Whether the Wi-Fi radio `phy` (`phy0`) wakes its machine on a magic packet, as `iw` reports
+/// it now.
+///
+/// # Errors
+/// A radio name that is not one, or `iw` not answering.
+pub fn wifi_magic_packet(phy: &str) -> Result<bool, String> {
+    if !phy
+        .strip_prefix("phy")
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err("invalid Wi-Fi radio name".into());
+    }
+    wowlan_magic_packet(phy, &system_command)
+}
+
 fn wowlan_magic_packet(phy: &str, run: &Runner<'_>) -> Result<bool, String> {
     let state = run("iw", &["phy", phy, "wowlan", "show"])?;
     if !state.contains("WoWLAN is enabled:") && !state.contains("WoWLAN is disabled.") {

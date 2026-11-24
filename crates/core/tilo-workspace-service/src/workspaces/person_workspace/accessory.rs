@@ -26,16 +26,6 @@ pub const MOVE_WAIT_NS: i64 = 75_000_000_000;
 /// The longest name of an accessory, in bytes.
 pub const MAX_NAME: usize = 128;
 
-/// Whether `address` is a Bluetooth address: six hex pairs, colon-separated.
-#[must_use]
-pub fn valid_address(address: &str) -> bool {
-    let pairs: Vec<&str> = address.split(':').collect();
-    pairs.len() == 6
-        && pairs
-            .iter()
-            .all(|pair| pair.len() == 2 && pair.bytes().all(|byte| byte.is_ascii_hexdigit()))
-}
-
 impl MoveStage {
     /// Whether a move at this stage ended: it moved, or stayed or went back where it was.
     #[must_use]
@@ -383,20 +373,5 @@ mod tests {
             .unwrap();
         assert_eq!(kept.stage, MoveStage::GivenUp);
         assert!(!kept.ran_out());
-    }
-
-    #[test]
-    fn only_bluetooth_addresses_read_as_one() {
-        assert!(valid_address(SPEAKER));
-        assert!(valid_address("aa:bb:cc:dd:ee:0f"));
-        for wrong in [
-            "",
-            "AA:BB:CC:DD:EE",
-            "AA:BB:CC:DD:EE:0G",
-            "AABBCCDDEE01",
-            "AA:BB:CC:DD:EE:011",
-        ] {
-            assert!(!valid_address(wrong), "{wrong}");
-        }
     }
 }

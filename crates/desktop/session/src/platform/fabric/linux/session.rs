@@ -543,19 +543,6 @@ impl crate::Session {
             | PersonalFabricAction::NearbyTransferCancel { .. }
             | PersonalFabricAction::NearbyTransferRestart { .. }
             | PersonalFabricAction::NearbyTransferResult { .. }
-            // What validation refuses never reaches here.
-            | PersonalFabricAction::RetiredBluetoothPrepare
-            | PersonalFabricAction::RetiredBluetoothPrepared
-            | PersonalFabricAction::RetiredBluetoothCommit
-            | PersonalFabricAction::RetiredBluetoothFinished
-            | PersonalFabricAction::RetiredBluetoothAccepted
-            | PersonalFabricAction::RetiredBluetoothBondOffered
-            | PersonalFabricAction::RetiredBluetoothBondCommit
-            | PersonalFabricAction::RetiredBluetoothCancel
-            | PersonalFabricAction::RetiredWakeDevice
-            | PersonalFabricAction::RetiredWakeReport
-            | PersonalFabricAction::RetiredWakeProbe
-            | PersonalFabricAction::RetiredWakeProbeReply
             | PersonalFabricAction::GamepadForwardRequest { .. }
             | PersonalFabricAction::GamepadForwardGrant { .. }
             | PersonalFabricAction::GamepadForwardEvent { .. }

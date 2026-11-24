@@ -202,15 +202,7 @@ fn unique_device_by_address<'a>(
     Ok(first)
 }
 
-/// Six colon-separated hex octets.
-#[must_use]
-pub fn valid_address(address: &str) -> bool {
-    address.len() == 17
-        && address.split(':').count() == 6
-        && address
-            .split(':')
-            .all(|octet| octet.len() == 2 && octet.bytes().all(|byte| byte.is_ascii_hexdigit()))
-}
+pub use tilo_bluez::valid_address;
 
 /// Pairs, trusts and connects one local object for an approved handoff address; callers hold their own
 /// one-shot local authorization.

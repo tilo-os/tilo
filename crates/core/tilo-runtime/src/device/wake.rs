@@ -149,7 +149,7 @@ fn interfaces() -> Vec<WakeRoute> {
         };
         // Wi-Fi drivers answer the wake query through their radio, not ethtool.
         let magic_packet = match std::fs::read_link(path.join("phy80211")) {
-            Ok(radio) => wifi_magic_packet_enabled(
+            Ok(radio) => os_actions::network_wake::wifi_magic_packet(
                 &radio.file_name().unwrap_or_default().to_string_lossy(),
             )
             .inspect_err(|reason| {
@@ -187,32 +187,6 @@ fn interfaces() -> Vec<WakeRoute> {
 #[cfg(not(target_os = "linux"))]
 fn interfaces() -> Vec<WakeRoute> {
     Vec::new()
-}
-
-/// Whether the Wi-Fi radio `phy` wakes the machine on a magic packet, as `iw` reports its `WoWLAN`
-/// setting.
-#[cfg(target_os = "linux")]
-fn wifi_magic_packet_enabled(phy: &str) -> Result<bool, String> {
-    if !phy
-        .strip_prefix("phy")
-        .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
-    {
-        return Err("invalid Wi-Fi radio name".into());
-    }
-    // A daemon can keep a `PATH` without sbin, so `iw` is found at its installed path first.
-    let iw = ["/usr/sbin/iw", "/sbin/iw"]
-        .into_iter()
-        .find(|path| std::path::Path::new(path).exists())
-        .unwrap_or("iw");
-    let output = std::process::Command::new(iw)
-        .args(["phy", phy, "wowlan", "show"])
-        .output()
-        .map_err(|error| format!("iw could not run: {error}"))?;
-    let state = String::from_utf8_lossy(&output.stdout);
-    if !state.contains("WoWLAN is enabled:") && !state.contains("WoWLAN is disabled.") {
-        return Err("Wi-Fi wake configuration was not reported".into());
-    }
-    Ok(state.contains("wake up on magic packet") && state.contains("is enabled"))
 }
 
 /// Each interface's first IPv4 subnet.

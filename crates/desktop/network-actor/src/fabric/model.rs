@@ -156,17 +156,6 @@ pub enum PersonalFabricAction {
         lease_nonce: [u8; 16],
         event: FabricInputEvent,
     },
-    // The tags below, to `RetiredBluetoothBondCommit`, are a Bluetooth accessory's move between
-    // the person's devices, carried in the record of their devices now: no device sends one, and
-    // validation refuses one from an older device. Each holds its tag so the actions after it keep
-    // theirs.
-    RetiredBluetoothPrepare,
-    RetiredBluetoothPrepared,
-    RetiredBluetoothCommit,
-    RetiredBluetoothFinished,
-    RetiredBluetoothAccepted,
-    RetiredBluetoothBondOffered,
-    RetiredBluetoothBondCommit,
     /// Inline fast path of the one Nearby transfer protocol: a file up to
     /// [`MAX_NEARBY_DROP_BYTES`] rides in this action instead of an offer and
     /// a byte stream, saving a round trip. It shares the transfer's consent
@@ -310,8 +299,6 @@ pub enum PersonalFabricAction {
     FabricClockReport {
         report: crate::fabric::clock::ClockReport,
     },
-    /// A Bluetooth accessory's move given up, retired as the ones above are.
-    RetiredBluetoothCancel,
     // Keep additions at the end: postcard uses declaration-order tags, and
     // inserting media outcomes beside MediaAccepted renumbers older actions.
     /// The exact destination could not open the requested session. Reasons
@@ -427,12 +414,6 @@ pub enum PersonalFabricAction {
         views: Vec<WindowView>,
         decode: Vec<HardwareDecode>,
     },
-    // A wake of one of the person's devices, its outcome and the probes of who could send it:
-    // carried in the record of their devices now, and retired as the Bluetooth moves are.
-    RetiredWakeDevice,
-    RetiredWakeReport,
-    RetiredWakeProbe,
-    RetiredWakeProbeReply,
     /// Certify a device the sender paired: the devices that can approve it
     /// ask their person (the shell's device certification). The ask,
     /// postcard-encoded.
@@ -742,20 +723,6 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::InputLeaseAsk => {}
-            PersonalFabricAction::RetiredBluetoothPrepare
-            | PersonalFabricAction::RetiredBluetoothPrepared
-            | PersonalFabricAction::RetiredBluetoothCommit
-            | PersonalFabricAction::RetiredBluetoothFinished
-            | PersonalFabricAction::RetiredBluetoothAccepted
-            | PersonalFabricAction::RetiredBluetoothBondOffered
-            | PersonalFabricAction::RetiredBluetoothBondCommit
-            | PersonalFabricAction::RetiredBluetoothCancel
-            | PersonalFabricAction::RetiredWakeDevice
-            | PersonalFabricAction::RetiredWakeReport
-            | PersonalFabricAction::RetiredWakeProbe
-            | PersonalFabricAction::RetiredWakeProbeReply => {
-                return Err(FabricError::InvalidAction);
-            }
             PersonalFabricAction::DragCarried { lease_nonce, drag } => {
                 if lease_nonce == &[0; 16] || !drag.valid() {
                     return Err(FabricError::InvalidAction);
