@@ -31,6 +31,9 @@ pub struct AvatarProps {
     pub colour: Option<String>,
     /// How they are: `online`, `away`, `busy` or `offline`, drawn as the dot on their face.
     pub status: Option<String>,
+    /// They are in a call now: an arc sweeps round the ring their face wears, or, where motion is
+    /// reduced, the ring is lit and still.
+    pub call: bool,
 }
 
 /// The colour a `rrggbb` text names, `None` when it does not name one.
@@ -100,6 +103,7 @@ impl Described for Avatar {
         if let Some(status) = props.status.as_deref().and_then(status_of) {
             avatar = avatar.status(status);
         }
+        avatar.call = props.call;
         avatar
     }
 
@@ -135,6 +139,10 @@ impl Described for Avatar {
         }
         self.presence = props.colour.as_deref().and_then(colour_of);
         self.status = props.status.as_deref().and_then(status_of);
+        self.call = props.call;
+        if !props.call {
+            self.call_since = None;
+        }
         self.dirty = true;
         true
     }

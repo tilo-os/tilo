@@ -85,6 +85,8 @@ pub struct AvatarFace<'a> {
     agent: bool,
     presence_ring: bool,
     speaking: f32,
+    /// Active now — in a call: the arc this sweeps round the face's ring.
+    active: Option<crate::motion::Sweep>,
     idle_on: Option<Color>,
 }
 
@@ -103,6 +105,7 @@ impl<'a> AvatarFace<'a> {
             agent: false,
             presence_ring: false,
             speaking: 0.0,
+            active: None,
             idle_on: None,
         }
     }
@@ -239,6 +242,15 @@ impl<'a> AvatarFace<'a> {
         self
     }
 
+    /// The face is active now — they are in a call: a bright arc sweeps round the ring the face
+    /// wears, or, where motion is reduced, the ring is lit and still ([`crate::motion::Sweep`]),
+    /// as every face active in a call wears it.
+    #[must_use]
+    pub fn active(mut self, sweep: crate::motion::Sweep) -> Self {
+        self.active = Some(sweep);
+        self
+    }
+
     /// The width of the presence ring and of the gap beside it for a face
     /// `side` across: 2 px apart on a face of 32 px or more, finer on the
     /// small faces of rows and chips so their initials stay legible.
@@ -272,6 +284,11 @@ impl<'a> AvatarFace<'a> {
                 None,
                 &rounded(shape.rect().inflate(reach, reach), -reach),
             );
+        }
+        if let Some(sweep) = self.active {
+            let reach = gap + ring / 2.0;
+            let band = rounded(shape.rect().inflate(reach, reach), -reach);
+            crate::presence::paint_active_ring(ctx, colour, &band, ring, &band, ring, sweep);
         }
         if !self.presence_ring {
             return shape;
@@ -718,6 +735,12 @@ pub struct Avatar {
     dirty: bool,
     /// Only the place it takes, shown empty: see [`Self::placeholder`].
     placeholder: bool,
+    /// They are in a call now: an arc sweeps round their face while they are.
+    call: bool,
+    /// When the call was first drawn, so the sweep reads from where it began.
+    call_since: Option<crate::time::Instant>,
+    /// Whether this theme's motion loops at all: a face whose sweep is still asks for no frame.
+    sweeping: bool,
 }
 
 // The photo type comes from tilo-identity-client, which only `local-daemons`
@@ -752,6 +775,9 @@ impl Avatar {
             rect: Rect::ZERO,
             dirty: true,
             placeholder: false,
+            call: false,
+            call_since: None,
+            sweeping: false,
         }
     }
 
@@ -985,7 +1011,25 @@ impl Widget for Avatar {
         if self.placeholder || env.should_cull(self.rect) {
             return;
         }
-        let face = self.face();
+        // Someone in a call wears the arc sweeping round their face, from where the call began.
+        let sweeping = if self.call {
+            let now = crate::time::now();
+            let since = *self.call_since.get_or_insert(now);
+            let motion = theme.motion();
+            self.sweeping = motion.loops();
+            Some(crate::motion::Sweep::at(
+                now.saturating_duration_since(since),
+                motion,
+            ))
+        } else {
+            self.call_since = None;
+            self.sweeping = false;
+            None
+        };
+        let face = match sweeping {
+            Some(sweep) => self.face().active(sweep),
+            None => self.face(),
+        };
         face.paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
@@ -994,8 +1038,11 @@ impl Widget for Avatar {
 
     fn needs_redraw(&self) -> bool {
         // A picture whose bytes are on their way asks for the frames that read them in; a dirty
-        // avatar draws, as every widget's does.
-        self.dirty || (self.image.is_none() && matches!(self.picture, Picture::Lazy { .. }))
+        // avatar draws, as every widget's does, and a face in a call keeps drawing while its arc
+        // sweeps.
+        self.dirty
+            || (self.image.is_none() && matches!(self.picture, Picture::Lazy { .. }))
+            || (self.call && self.sweeping)
     }
 
     fn mark_drawn(&mut self) {
@@ -1061,6 +1108,33 @@ mod tests {
         let encoding = scene.encoding();
         let tags = encoding.draw_tags.iter().map(|tag| tag.0).collect();
         (tags, encoding.draw_data.clone(), encoding.path_data.clone())
+    }
+
+    /// A face in a call wears the arc sweeping round it: the ring is not the quiet face's, it
+    /// moves as the sweep turns, and where motion is reduced the whole ring is lit and still.
+    #[test]
+    fn a_face_in_a_call_wears_the_sweeping_ring() {
+        use crate::motion::Sweep;
+        let theme = Theme::dark();
+        let quiet = drawn(&paint_face(AvatarFace::new("Ada", "ada"), &theme));
+        let early = drawn(&paint_face(
+            AvatarFace::new("Ada", "ada").active(Sweep::Round(0.125)),
+            &theme,
+        ));
+        let later = drawn(&paint_face(
+            AvatarFace::new("Ada", "ada").active(Sweep::Round(0.625)),
+            &theme,
+        ));
+        let still = drawn(&paint_face(
+            AvatarFace::new("Ada", "ada").active(Sweep::Still),
+            &theme,
+        ));
+        assert_ne!(
+            quiet, early,
+            "a face in a call wears a ring the quiet face does not"
+        );
+        assert_ne!(early, later, "the arc moves as the sweep turns");
+        assert_ne!(early, still, "with motion reduced the whole ring is lit");
     }
 
     #[test]

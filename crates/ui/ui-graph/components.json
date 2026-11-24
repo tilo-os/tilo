@@ -332,6 +332,11 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "call",
+          "doc": "They are in a call now: an arc sweeps round the ring their face wears, or, where motion is reduced, the ring is lit and still.",
+          "type": "bool"
         }
       ],
       "semantics": {

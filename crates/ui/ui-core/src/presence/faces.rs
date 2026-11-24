@@ -82,6 +82,48 @@ impl<'a> Face<'a> {
     }
 }
 
+/// The ring an active face wears: the track on `track`, held at [`TRACK`], under an arc of
+/// [`ARC`] sweeping round `arc` — or, where motion is reduced, the whole of `arc` lit and still.
+/// Every face that shows someone active now (in a call, an agent at work), in a stack or alone,
+/// wears this one ring.
+pub(crate) fn paint_active_ring<S: Shape>(
+    ctx: &mut PaintCtx<'_>,
+    colour: Color,
+    track: &S,
+    track_width: f64,
+    arc: &S,
+    arc_width: f64,
+    sweep: crate::motion::Sweep,
+) {
+    let transform = ctx.transform;
+    match sweep {
+        crate::motion::Sweep::Still => {
+            ctx.scene
+                .stroke(&Stroke::new(arc_width), transform, colour, None, arc);
+        }
+        crate::motion::Sweep::Round(turn) => {
+            ctx.scene.stroke(
+                &Stroke::new(track_width),
+                transform,
+                colour.multiply_alpha(TRACK),
+                None,
+                track,
+            );
+            let length = arc.perimeter(0.1);
+            let lit = length * ARC;
+            ctx.scene.stroke(
+                &Stroke::new(arc_width)
+                    .with_caps(Cap::Round)
+                    .with_dashes(-f64::from(turn) * length, [lit, length - lit]),
+                transform,
+                colour,
+                None,
+                arc,
+            );
+        }
+    }
+}
+
 /// How a row of faces is sized: the face's side, how much each overlaps the
 /// one before, and how many faces show before the count badge.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -313,30 +355,7 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
         None => ctx
             .scene
             .stroke(&Stroke::new(RING), transform, colour, None, &ring),
-        Some(crate::motion::Sweep::Still) => {
-            ctx.scene
-                .stroke(&Stroke::new(RING + GAP), transform, colour, None, &band);
-        }
-        Some(crate::motion::Sweep::Round(turn)) => {
-            ctx.scene.stroke(
-                &Stroke::new(RING),
-                transform,
-                colour.multiply_alpha(TRACK),
-                None,
-                &ring,
-            );
-            let length = band.perimeter(0.1);
-            let arc = length * ARC;
-            ctx.scene.stroke(
-                &Stroke::new(RING + GAP)
-                    .with_caps(Cap::Round)
-                    .with_dashes(-f64::from(turn) * length, [arc, length - arc]),
-                transform,
-                colour,
-                None,
-                &band,
-            );
-        }
+        Some(sweep) => paint_active_ring(ctx, colour, &ring, RING, &band, RING + GAP, sweep),
     }
     // The same face as everywhere this member is shown, so nobody reads as "ED" to themselves
     // and "E" to everyone else, and an agent wears its mark on the bar as in chat.

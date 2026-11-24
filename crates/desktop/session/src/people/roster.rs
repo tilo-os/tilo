@@ -91,8 +91,6 @@ pub struct PeopleModel<'a> {
     /// Each person's screen, by roster id (`None`: they keep where they are to themselves), mirrored under their card.
     pub screens: &'a [(String, Option<Screen>)],
     pub followed_id: Option<&'a str>,
-    /// Ephemeral workspace-local attachments, expressed using roster ids.
-    pub following_pairs: &'a [(String, String)],
     /// The roster id whose recent changes are open. Ignored when that row has nothing recent.
     pub expanded_id: Option<&'a str>,
     /// Whom this person waved at a moment ago, by roster id: their row shows the wave sent.
@@ -151,18 +149,6 @@ impl PeopleModel<'_> {
             }
         }
         groups
-    }
-
-    #[must_use]
-    pub fn relationship_for(&self, row_id: &str) -> Option<RosterFollowRelationship> {
-        self.following_pairs.iter().find_map(|(follower, target)| {
-            (follower == row_id)
-                .then(|| RosterFollowRelationship::Follows(target.clone()))
-                .or_else(|| {
-                    (target == row_id)
-                        .then(|| RosterFollowRelationship::FollowedBy(follower.clone()))
-                })
-        })
     }
 }
 
@@ -339,11 +325,6 @@ fn screen_line(screen: Option<&Screen>) -> String {
     } else {
         "people-panel-screen-private"
     })
-}
-
-/// The panel's header line: who is here besides this person, counted as the list is (the others, never this person, who is the "you" of the words; "2 here" over one row read as someone missing).
-fn here_line(others: usize) -> String {
-    t_args("people-panel-here-count", &[("count", others.into())])
 }
 
 impl PeopleOverlay {

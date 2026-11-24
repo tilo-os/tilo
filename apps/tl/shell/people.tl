@@ -170,6 +170,7 @@ view roster(board: device.People) {
                 name: board.me.name,
                 colour: board.me.colour,
                 status: presence_status(board.me),
+                call: board.me.call != "",
             )
         }
         on activate: device.show_person(device.people, person: "self")
@@ -251,10 +252,16 @@ view person_row(p: device.Person, board: device.People) {
         } else if p.agent { .bot } else if is_follower(p) { .users } else { .user },
     ) {
         avatar: {
+            // Someone in a call wears the arc sweeping round their face, as they do on the bar.
             if p.agent {
                 ui.Avatar(name: p.name, colour: p.colour, square: true, glyph: .bot)
             } else {
-                ui.Avatar(name: p.name, colour: p.colour, status: presence_status(p))
+                ui.Avatar(
+                    name: p.name,
+                    colour: p.colour,
+                    status: presence_status(p),
+                    call: p.call != "",
+                )
             }
         }
         trailing: {

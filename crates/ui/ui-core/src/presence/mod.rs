@@ -30,6 +30,7 @@ pub use chat::{
     ReactionFloat, single_emoji,
 };
 pub use draft::DraftSaid;
+pub(crate) use faces::paint_active_ring;
 pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
