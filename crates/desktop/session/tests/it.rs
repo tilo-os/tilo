@@ -265,6 +265,8 @@ mod shell_a11y;
 mod shell_displays;
 #[path = "shell_navigation.rs"]
 mod shell_navigation;
+
+mod shell_people;
 #[path = "shell_platform.rs"]
 mod shell_platform;
 #[path = "shell_record_persists.rs"]
