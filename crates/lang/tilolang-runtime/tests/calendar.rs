@@ -18,6 +18,13 @@ mod cases {
 
     const CALENDAR: &str = include_str!("../../../../apps/tl/calendar/app.tl");
     const MAIL: &str = include_str!("../../../../apps/tl/mail/app.tl");
+    /// Contacts, the address book Mail names people from: the app and its directory panel, as the
+    /// package writes them.
+    const CONTACTS: &str = concat!(
+        include_str!("../../../../apps/tl/contacts/app.tl"),
+        "\n",
+        include_str!("../../../../apps/tl/contacts/identities.tl"),
+    );
 
     /// The moment every test reads as now: a Tuesday, late morning, in UTC.
     const NOW: &str = "2026-11-24T09:40:00Z";
@@ -95,10 +102,40 @@ mod cases {
             None,
         );
         // Mail's own package runs beside Calendar's, so the invitation it hands over has a root
-        // to reach.
-        let mail = App::compile(MAIL, &[]);
+        // to reach. Mail names people from the workspace's address book, so Contacts and its
+        // directory are compiled beside it, as a workspace has them.
+        let platform = tilolang_tilo::platform_apps::platform_packages().expect("the platform");
+        // The workspace's own package, whose members a reminder tells: its types are declared
+        // here, and the people come from the runtime's own member list.
+        for meta in &platform {
+            if meta.app == tilolang_tilo::platform_apps::WORKSPACE_APP {
+                rt.load_foreign(meta.clone())
+                    .expect("the workspace's package loads");
+            }
+        }
+        let people = ResourceRef::parse_id("workspace/members", "tilo.workspace#Members")
+            .expect("the workspace's members are its named root");
+        rt.set_reading(
+            &people,
+            r#"{"people": [{"actor": {"member": {"person": "me"}}}]}"#,
+        )
+        .expect("the workspace has the one person this device is");
+        let contacts = App::compile(CONTACTS, &platform);
+        contacts.load(&rt);
+        // Mail reads the workspace's people, which is a package of the platform's own.
+        let mail_imports: Vec<_> = platform
+            .iter()
+            .cloned()
+            .chain(std::iter::once(contacts.meta().clone()))
+            .collect();
+        let mail = App::compile(MAIL, &mail_imports);
         mail.load(&rt);
-        let app = App::compile(CALENDAR, &[mail.meta().clone()]);
+        let calendar_imports: Vec<_> = platform
+            .iter()
+            .cloned()
+            .chain([mail.meta().clone(), contacts.meta().clone()])
+            .collect();
+        let app = App::compile(CALENDAR, &calendar_imports);
         app.load(&rt);
         let root = rt.create_root("Calendars").unwrap();
         rt.create_root("Mail").unwrap();
@@ -114,6 +151,17 @@ mod cases {
     impl Sheet {
         fn call(&self, action: &str, given: &[(&str, Value)]) {
             let _ = self.invoke(action, given);
+        }
+
+        /// What `action` was refused with: the words the view shows when a press cannot go
+        /// through.
+        fn refusal(&self, action: &str, given: &[(&str, Value)]) -> String {
+            let args = self.app.args(&self.rt, action, given);
+            let id = self.app.action(action);
+            match self.rt.invoke_action(&me(), (id.as_str(), args)) {
+                Ok(outcome) => panic!("{action} was not refused: {outcome:?}"),
+                Err(why) => why.to_string(),
+            }
         }
 
         fn invoke(&self, action: &str, given: &[(&str, Value)]) -> InvokeOutcome {
@@ -501,19 +549,16 @@ mod cases {
                     ("email", Value::text("ada@example.org")),
                 ],
             );
-            // Mail holds no account here: the invitation is not prepared, and Mail says what to
-            // add. What a prepared invitation is, and the calendar part it carries, Mail's own
-            // test holds (apps/tilolang/tests/hosted/mail.rs).
-            let out = s.invoke(
+            // Mail holds no account here: the invitation is not prepared, and the person is
+            // told what to add. What a prepared invitation is, and the calendar part it
+            // carries, Mail's own test holds (apps/tl/mail's hosted test).
+            let said = s.refusal(
                 "invite_by_mail",
                 &[("e", Value::resource(&e)), ("g", Value::resource(&g))],
             );
             assert!(
-                matches!(
-                    out,
-                    InvokeOutcome::Asked(_) | InvokeOutcome::Waits { .. }
-                ),
-                "Mail says what to add: {out:?}"
+                said.contains("Add a mail account"),
+                "the person is told what to add: {said}"
             );
         }
 

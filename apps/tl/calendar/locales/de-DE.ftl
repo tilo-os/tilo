@@ -697,6 +697,7 @@ d-fesqobfx = Invite by mail
     .doc = Starts a message inviting a guest, the event's calendar invitation carried beside it: what Mail shows the person, to read and send.
     .w-invitation = Invitation: { $title }
     .w-you-are-invited-to-on-at = You are invited to { $title } on { $day } at { $start }. The attached calendar invitation holds the details.
+    .w-add-a-mail-account-in-settings = Füge zuerst ein Mailkonto in den Einstellungen hinzu
 
 d-fesqobfx-g = G
 
@@ -1087,3 +1088,5 @@ d-qy4w4m3w = Event page
     .w-remove-guest = Remove guest
 
 d-so-tilo-calendar-keywords = kalender, termine, zeitplan, woche, monat, agenda, verabredungen, besprechungen, einladungen, caldav, ics, gemeinsamer kalender
+
+d-dtektxut = Per Mail einladen~present

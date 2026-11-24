@@ -830,6 +830,9 @@ action uninvite(e: Event, g: Attendee) (icon: .x, label: "Remove guest") {
 /// Starts a message inviting a guest, the event's calendar invitation carried beside it: what Mail
 /// shows the person, to read and send. Nothing is sent by this.
 action invite_by_mail(e: Event, g: Attendee) (icon: .mail, label: "Invite by mail") {
+    // Mail prepares the invitation, and a workspace with no mailbox to send it from says so
+    // here rather than leaving the press with nothing of its own to show.
+    require not mail.mail.accounts.is_empty() "Add a mail account in Settings first"
     mail.prepare_calendar_invitation(
         mail.mail,
         g.email,

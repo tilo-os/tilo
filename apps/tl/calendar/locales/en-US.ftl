@@ -696,6 +696,7 @@ d-gtgyzaen-g = G
 
 d-fesqobfx = Invite by mail
     .doc = Starts a message inviting a guest, the event's calendar invitation carried beside it: what Mail shows the person, to read and send.
+    .w-add-a-mail-account-in-settings = Add a mail account in Settings first
     .w-invitation = Invitation: { $title }
     .w-you-are-invited-to-on-at = You are invited to { $title } on { $day } at { $start }. The attached calendar invitation holds the details.
 
@@ -833,6 +834,8 @@ d-umaixua3 = File in~present
 d-v36oxy7z = Invite~present
 
 d-3l63az42 = Answer~present
+
+d-dtektxut = Invite by mail~present
 
 d-eapd2aju = Remind now~present
 
