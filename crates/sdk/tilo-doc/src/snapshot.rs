@@ -90,7 +90,7 @@ impl DocSnapshot {
     pub fn image_content(&self) -> std::collections::BTreeSet<String> {
         fn walk(blocks: &[BlockView], out: &mut std::collections::BTreeSet<String>) {
             for b in blocks {
-                if let Some(AttrVal::Str(hash)) = b.attrs.get("blob") {
+                if let Some(AttrVal::Str(hash)) = b.attrs.get(crate::schema::ATTR_BLOB) {
                     out.insert(hash.clone());
                 }
                 walk(&b.children, out);

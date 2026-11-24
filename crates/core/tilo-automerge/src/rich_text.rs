@@ -36,6 +36,15 @@ pub const CHILDREN: &str = "children";
 pub const ORDER: &str = "order";
 /// Where a paragraph read into a list says its id: the key it is kept under.
 pub const ID: &str = "id";
+/// A paragraph's kind: a paragraph, a heading, a list item, a table, a cell, a picture.
+pub const KIND: &str = "kind";
+/// The attributes a paragraph carries: a style's id, a heading's level, and a picture's content.
+pub const ATTRS: &str = "attrs";
+/// What a picture paragraph names its content by, under [`ATTRS`]: the hash its bytes read at.
+pub const ATTR_BLOB: &str = "blob";
+/// The content a rich text references: a map by hash, each with what the content is. The bytes
+/// live in the workspace's content store, beside the record.
+pub const BLOBS: &str = "blobs";
 
 /// The digits of `key`, right-padded with the insignificant trailing zeros that
 /// a shorter fraction implies, so two keys can be compared digit for digit.

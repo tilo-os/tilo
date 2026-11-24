@@ -31,7 +31,7 @@ use crate::engine::Wasm;
 use crate::value::Value;
 
 /// The scheme of the address a file's content reads at: `tilo-blob://<hash>`.
-pub const SCHEME: &str = "tilo-blob://";
+pub const SCHEME: &str = tilo_content_types::BLOB_SCHEME;
 
 /// The most a file a person chooses may be, as the size a `File` value reads it
 /// (`tilo_content_types::MAX_FILE_BYTES`): what is larger is refused as a value, with the size

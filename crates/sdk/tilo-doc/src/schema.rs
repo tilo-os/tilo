@@ -28,7 +28,7 @@ pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
 // — the bytes are binary inputs the caller keeps in its content store ([`tilo_content`]). Inline
 // media would make every replica and host log carry the payload and put later edits behind a large
 // change; a reference is a few dozen bytes.
-pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, descriptor>
+pub const KEY_BLOBS: &str = tilo_automerge::rich_text::BLOBS; // Map<blake3_hex, descriptor>
 pub const BLOB_MIME: &str = "mime";
 pub const BLOB_LEN: &str = "len";
 pub const BLOB_W: &str = "w";
@@ -164,9 +164,11 @@ pub const MARK_ODT_XML: &str = "odt-xml"; // Str — an ODF paragraph-content el
 pub const KEPT_INLINE_MARKS: [&str; 2] = [MARK_DOCX_XML, MARK_ODT_XML];
 
 pub const BLOCK_ORDER: &str = tilo_automerge::rich_text::ORDER; // Bytes (fractional key)
-pub const BLOCK_KIND: &str = "kind"; // Str ("paragraph"|"heading"|"list_item"|"table"|"cell"|"image"|"fidelity")
+pub const BLOCK_KIND: &str = tilo_automerge::rich_text::KIND; // Str ("paragraph"|"heading"|"list_item"|"table"|"cell"|"image"|"fidelity")
 pub const BLOCK_TEXT: &str = "text"; // Text (present for text blocks)
-pub const BLOCK_ATTRS: &str = "attrs"; // Map (style_id, level, ...)
+pub const BLOCK_ATTRS: &str = tilo_automerge::rich_text::ATTRS; // Map (style_id, level, ...)
+/// What a picture paragraph names its content by, under [`BLOCK_ATTRS`].
+pub const ATTR_BLOB: &str = tilo_automerge::rich_text::ATTR_BLOB;
 pub const BLOCK_CHILDREN: &str = tilo_automerge::rich_text::CHILDREN; // Map<block_id, block> (containers)
 
 // Style fields: each style under `styles.<id>` is a sub-map of these scalar properties, field-level

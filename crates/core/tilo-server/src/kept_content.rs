@@ -47,10 +47,14 @@
 //! A record the host cannot open yet — its workspace's channels hand it the
 //! keys after it joins them — is read again in a moment, further apart each
 //! time. A person's private record is theirs: the host keeps its ciphertext and
-//! never reads it. Two records are left to the
-//! keepers that own them: the shared desktop, whose layout names no content
-//! and is written with every window moved, and Chat's, whose members' files
-//! are kept within a quota.
+//! never reads it. The shared desktop's layout is left to the keeper that owns
+//! it: it names no content and is written with every window moved.
+//!
+//! A record of any app is read alike: a file it names is kept whoever posted it.
+//! A file a member posts in Chat is named there like another record's picture,
+//! by its `tilo-blob://` address or as a picture paragraph's content, and it
+//! stays in the workspace after the member's device leaves, as a feedback
+//! report's picture does.
 //!
 //! What it keeps goes into the workspace's store ([`crate::content`]), from
 //! where the host answers members asking for content
@@ -179,9 +183,9 @@ fn now_ms() -> u64 {
 
 /// Whether the content a record of `app` names is kept by another keeper: the
 /// shared desktop's layout, which names none and is written with every window
-/// moved, and Chat's, whose members' files are kept within a quota.
+/// moved.
 fn another_keeper(app: &str) -> bool {
-    app == tilo_desktop_model::ownership::DESKTOP_APP || app == tilo_app_id::apps::CHAT
+    app == tilo_desktop_model::ownership::DESKTOP_APP
 }
 
 /// How many blobs of the content the records of `workspace` name its host
@@ -756,10 +760,12 @@ impl ContentKeeper for KeptContent {
 /// The content `document`, a saved Automerge record of `app`, names now, by
 /// the references records name content with: each value written as a kept
 /// `Bytes` value ([`tilo_resource::Bytes::stored_address`]) or as a
-/// `tilo.content:` address ([`tilo_actions::content_hash`]), and, in a record
-/// of the Files tree, the content of each file not in its trash and each
-/// version a branch kept. A value that only looks like an address (a device
-/// key, an id) names nothing: no content stands behind it to keep.
+/// `tilo.content:` address ([`tilo_actions::content_hash`]), a file's
+/// `tilo-blob://` address, a rich text's picture under its `blob` attribute,
+/// and, in a record of the Files tree, the content of each file not in its
+/// trash and each version a branch kept. A value that only looks like an
+/// address (a device key, an id) names nothing: no content stands behind it to
+/// keep.
 ///
 /// # Errors
 ///
@@ -780,16 +786,16 @@ fn references_in(doc: &AutoCommit, obj: &ObjId, named: &mut BTreeSet<String>) {
     let values: Vec<(Option<ObjId>, Option<String>)> = match doc.object_type(obj) {
         Ok(ObjType::Map | ObjType::Table) => doc
             .map_range(obj, ..)
-            .map(|item| value_of(item.id(), &item.value))
+            .map(|item| value_of(item.id(), &item.key, &item.value))
             .collect(),
         Ok(ObjType::List) => doc
             .list_range(obj, ..)
-            .map(|item| value_of(item.id(), &item.value))
+            .map(|item| value_of(item.id(), "", &item.value))
             .collect(),
         Ok(ObjType::Text) | Err(_) => return,
     };
     for (child, text) in values {
-        if let Some(address) = text.as_deref().and_then(reference_address) {
+        if let Some(address) = text {
             named.insert(address);
         }
         if let Some(child) = child {
@@ -798,20 +804,32 @@ fn references_in(doc: &AutoCommit, obj: &ObjId, named: &mut BTreeSet<String>) {
     }
 }
 
-/// An item's object, to read under it, or its text, to read as a reference.
-fn value_of(id: ObjId, value: &ValueRef<'_>) -> (Option<ObjId>, Option<String>) {
+/// An item's object, to read under it, or the content it names, kept under
+/// `key` ([`tilo_automerge::rich_text::ATTR_BLOB`] names a picture's content).
+fn value_of(id: ObjId, key: &str, value: &ValueRef<'_>) -> (Option<ObjId>, Option<String>) {
     match value {
         ValueRef::Object(_) => (Some(id), None),
-        ValueRef::Scalar(ScalarValueRef::Str(text)) => (None, Some(text.to_string())),
+        ValueRef::Scalar(ScalarValueRef::Str(text)) => (None, reference_address(key, text)),
         ValueRef::Scalar(_) => (None, None),
     }
 }
 
-/// The address the reference `text` names its content by, as the content
-/// store keeps it.
-fn reference_address(text: &str) -> Option<String> {
+/// The address the reference `text`, kept under `key`, names its content by,
+/// as the content store keeps it: a `Bytes` reference, a `tilo.content:`
+/// address, a file's `tilo-blob://` address, or, under a rich text's picture
+/// attribute, the hash alone.
+fn reference_address(key: &str, text: &str) -> Option<String> {
     tilo_resource::Bytes::stored_address(text)
         .or_else(|| tilo_actions::content_hash(text).and_then(tilo_content::content_address))
+        .or_else(|| {
+            text.strip_prefix(tilo_content::BLOB_SCHEME)
+                .and_then(tilo_content::content_address)
+        })
+        .or_else(|| {
+            (key == tilo_automerge::rich_text::ATTR_BLOB)
+                .then(|| tilo_content::content_address(text))
+                .flatten()
+        })
 }
 
 /// Add the content the Files tree `document` (its index or one of its chunks)
@@ -975,6 +993,32 @@ mod tests {
             let images = doc.put_object(ROOT, "images", ObjType::List).unwrap();
             doc.insert(&images, 0, format!("tilo.content:{hash}")).unwrap();
             assert_eq!(content_of(PHOTOS, &doc.save()).unwrap(), [hash]);
+        }
+
+        phase a_files_blob_address_and_a_pictures_content_are_named;
+        // A file a message carries is named by the `tilo-blob://` address a
+        // `File` reads at, and a picture in rich text by the hash under its
+        // paragraph's `blob` attribute: what a member posts in Chat, and what a
+        // feedback report's window picture is.
+        {
+            let sent = "6a".repeat(32);
+            let pictured = "7b".repeat(32);
+            let mut doc = AutoCommit::new();
+            let carried = doc.put_object(ROOT, "attachments", ObjType::List).unwrap();
+            let attached = doc.insert_object(&carried, 0, ObjType::Map).unwrap();
+            doc.put(&attached, "blob", format!("tilo-blob://{sent}"))
+                .unwrap();
+            let body = doc.put_object(ROOT, "body", ObjType::Map).unwrap();
+            let blocks = doc.put_object(&body, "blocks", ObjType::Map).unwrap();
+            let picture = doc.put_object(&blocks, "shot", ObjType::Map).unwrap();
+            doc.put(&picture, "kind", "image").unwrap();
+            let attrs = doc.put_object(&picture, "attrs", ObjType::Map).unwrap();
+            doc.put(&attrs, tilo_automerge::rich_text::ATTR_BLOB, pictured.as_str())
+                .unwrap();
+            assert_eq!(
+                content_of(tilo_app_id::apps::CHAT, &doc.save()).unwrap(),
+                [sent, pictured]
+            );
         }
 
         phase a_value_that_only_looks_like_an_address_names_nothing;

@@ -8,6 +8,10 @@ pub use document::{DocumentFormat, RECORDING, RECORDING_MAGIC, document_format, 
 pub use landing::{HEAD_BYTES, Landing, Takes, landing, landing_in};
 pub use sniff::{ImageFormat, image_format, image_size, sniff};
 
+/// The scheme of the address a file's content reads at, `tilo-blob://<hash>`: what a record
+/// names its files by, beside the bytes a content store keeps.
+pub const BLOB_SCHEME: &str = "tilo-blob://";
+
 /// Whether `hash` has the shape of a content address: 64 lower- or upper-case
 /// hex digits. Addresses arrive from documents and peers, so anything else is
 /// refused before it can name a path.
