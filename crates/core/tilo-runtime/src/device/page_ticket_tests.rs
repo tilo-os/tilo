@@ -120,6 +120,7 @@ async fn a_link_logs_a_tab_in_that_the_page_showing_it_approves() {
     let logging_in = tokio::spawn({
         let tab = Arc::clone(&tab);
         let phone = phone.clone();
+        let secret = ticket.secret_hex();
         async move {
             ask(
                 &tab,
@@ -127,7 +128,7 @@ async fn a_link_logs_a_tab_in_that_the_page_showing_it_approves() {
                 host,
                 CERTIFY,
                 json!({
-                    "secret": ticket.secret_hex(),
+                    "secret": secret,
                     "device_public_key": hex::encode(phone.verifying_key().to_bytes()),
                     "agent": "Safari on iPhone",
                     "label": "Safari on iPhone",

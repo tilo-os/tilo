@@ -1230,7 +1230,8 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
             "workspace",
         )
         .await
-        .expect("the action is answered");
+        .expect("the action is answered")
+        .expect("the action runs");
         let ReceiptStatus::Completed { output } = receipt.status else {
             panic!("{action} was not answered at once: {:?}", receipt.status);
         };
@@ -1360,7 +1361,8 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         &workspace.to_string(),
     )
     .await
-    .expect("the call is taken");
+    .expect("the call is taken")
+    .expect("the call is admitted");
     assert!(
         !matches!(
             receipt.status,
@@ -1455,7 +1457,8 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
         &workspace.to_string(),
     )
     .await
-    .expect("the call is followed");
+    .expect("the call is followed")
+    .expect("the call is admitted again");
     assert!(!matches!(
         again.status,
         tilo_actions::remote::ReceiptStatus::Completed { .. }
