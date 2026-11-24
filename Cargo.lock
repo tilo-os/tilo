@@ -22355,6 +22355,7 @@ dependencies = [
  "tilo-sheet",
  "tilo-spellcheck",
  "tilo-test-env",
+ "tilo-ui-graph",
  "tilo-wake",
  "tilo-wasm-host",
  "tilolang",

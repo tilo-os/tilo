@@ -5,10 +5,15 @@
 //! values it read, so a view re-runs only when one of those values changes, not on every
 //! pixel of a resize.
 
-/// Class boundaries in rem.
-const COMPACT_BELOW: f64 = 30.0;
-const MEDIUM_BELOW: f64 = 52.0;
-const EXPANDED_BELOW: f64 = 75.0;
+/// Class boundaries in rem, one token with the shell's (`tilo_ui_graph::layout`): an app and
+/// the toolkit agree on when a window is compact.
+fn class_boundaries() -> (f64, f64, f64) {
+    (
+        f64::from(tilo_ui_graph::layout::COMPACT_BELOW),
+        f64::from(tilo_ui_graph::layout::MEDIUM_BELOW),
+        f64::from(tilo_ui_graph::layout::EXPANDED_BELOW),
+    )
+}
 /// Width over height beyond which a space is ultrawide.
 const ULTRAWIDE_RATIO: f64 = 2.2;
 
@@ -18,7 +23,9 @@ pub const DEFAULT_REM: f64 = 16.0;
 
 /// How far past a class boundary a size has to go before its class changes, in rem: a window
 /// resized right at a boundary keeps one class instead of flickering between two.
-pub const HYSTERESIS_REM: f64 = 0.5;
+fn hysteresis_rem() -> f64 {
+    f64::from(tilo_ui_graph::layout::HYSTERESIS)
+}
 /// The same for the aspect ratio an ultrawide space is told by.
 const HYSTERESIS_RATIO: f64 = 0.05;
 
@@ -45,11 +52,12 @@ impl Default for Space {
 }
 
 fn width_class_of(width: f64) -> i64 {
-    if width < COMPACT_BELOW {
+    let (compact, medium, expanded) = class_boundaries();
+    if width < compact {
         0
-    } else if width < MEDIUM_BELOW {
+    } else if width < medium {
         1
-    } else if width < EXPANDED_BELOW {
+    } else if width < expanded {
         2
     } else {
         3
@@ -86,13 +94,14 @@ impl Space {
     }
 
     /// The space a container of `width` by `height` rem offers after this one: a class changes
-    /// only once the size is [`HYSTERESIS_REM`] past the boundary it crosses.
+    /// only once the size is one hysteresis band past the boundary it crosses.
     #[must_use]
     pub fn followed(&self, width: f64, height: f64) -> Self {
+        let band = hysteresis_rem();
         let plain = width_class_of(width);
         let class = match plain.cmp(&self.class) {
-            std::cmp::Ordering::Greater => self.class.max(width_class_of(width - HYSTERESIS_REM)),
-            std::cmp::Ordering::Less => self.class.min(width_class_of(width + HYSTERESIS_REM)),
+            std::cmp::Ordering::Greater => self.class.max(width_class_of(width - band)),
+            std::cmp::Ordering::Less => self.class.min(width_class_of(width + band)),
             std::cmp::Ordering::Equal => plain,
         };
         let ratio = if height > 0.0 { width / height } else { 0.0 };
@@ -161,10 +170,17 @@ mod tests {
 
         phase classes_follow_the_documented_boundaries;
         {
+            let (compact, medium, expanded) = class_boundaries();
             let class = |w| Space::from_rem(w, 20.0).width_class();
             assert_eq!(
-                [class(10.0), class(30.0), class(52.0), class(75.0)],
-                [0, 1, 2, 3]
+                [
+                    class(compact - 1.0),
+                    class(compact),
+                    class(medium),
+                    class(expanded)
+                ],
+                [0, 1, 2, 3],
+                "the boundaries are the shell's own token (tilo_ui_graph::layout)"
             );
             assert_eq!(Space::from_rem(100.0, 30.0).orientation(), 2);
             assert_eq!(Space::from_rem(20.0, 30.0).orientation(), 0);

@@ -3,6 +3,7 @@
 pub mod component;
 mod edit;
 pub mod keys;
+pub mod layout;
 pub mod rich;
 
 pub use edit::{UiGraphEdit, parse_ui_graph_edits};

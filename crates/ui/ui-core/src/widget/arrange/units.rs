@@ -303,11 +303,12 @@ pub enum WidthClass {
     Wide,
 }
 
-/// Where the class boundaries lie, in `rem`.
-pub const COMPACT_BELOW: f32 = 30.0;
-pub const MEDIUM_BELOW: f32 = 52.0;
-pub const EXPANDED_BELOW: f32 = 75.0;
-pub const HYSTERESIS: f32 = 0.5;
+/// Where the class boundaries lie, in `rem`: one token with what a tilolang app reads from
+/// `space` (`tilo_ui_graph::layout`), so the shell and an app agree on when a window is compact.
+pub const COMPACT_BELOW: f32 = tilo_ui_graph::layout::COMPACT_BELOW;
+pub const MEDIUM_BELOW: f32 = tilo_ui_graph::layout::MEDIUM_BELOW;
+pub const EXPANDED_BELOW: f32 = tilo_ui_graph::layout::EXPANDED_BELOW;
+pub const HYSTERESIS: f32 = tilo_ui_graph::layout::HYSTERESIS;
 
 impl WidthClass {
     #[must_use]
@@ -494,11 +495,13 @@ mod tests {
 
         phase classes_follow_the_rem_boundaries;
         {
-            assert_eq!(WidthClass::of(29.9), WidthClass::Compact);
-            assert_eq!(WidthClass::of(30.0), WidthClass::Medium);
-            assert_eq!(WidthClass::of(51.9), WidthClass::Medium);
-            assert_eq!(WidthClass::of(52.0), WidthClass::Expanded);
-            assert_eq!(WidthClass::of(75.0), WidthClass::Wide);
+            // The same boundaries a tilolang app reads from `space`: one token in
+            // `tilo_ui_graph::layout`.
+            assert_eq!(WidthClass::of(COMPACT_BELOW - 0.1), WidthClass::Compact);
+            assert_eq!(WidthClass::of(COMPACT_BELOW), WidthClass::Medium);
+            assert_eq!(WidthClass::of(MEDIUM_BELOW - 0.1), WidthClass::Medium);
+            assert_eq!(WidthClass::of(MEDIUM_BELOW), WidthClass::Expanded);
+            assert_eq!(WidthClass::of(EXPANDED_BELOW), WidthClass::Wide);
             // The same window at 1.5 times the text size is a narrower class.
             let window = 700.0;
             assert_eq!(WidthClass::of(window / 16.0), WidthClass::Medium);
