@@ -137,9 +137,11 @@ template view file_menu(w: Workbook, s: Sheet, settings_open: State<Bool>) {
         ui.MenuItem("Export this sheet as a table…", icon: .download) {
             on choose: file.save(export_table(w, s), name: export_name(w, "csv"))
         }
+        ui.MenuSeparator
         ui.MenuItem("Document settings…", icon: .settings_2) {
             on choose: set(settings_open, true)
         }
+        ui.MenuSeparator
         ui.MenuItem("Duplicate this sheet", icon: .copy) {
             on choose: duplicate_sheet(w, s)
         }
@@ -167,15 +169,17 @@ template view format_menu(w: Workbook, s: Sheet, area: State<Text>) {
         ui.MenuItem("Time", icon: .clock) {
             on choose: format_cells(w, s, area, format: time_format(w))
         }
-        ui.MenuItem("Text", icon: .baseline) {
+        ui.MenuItem("Text", icon: .type) {
             on choose: format_cells(w, s, area, format: "text")
         }
         ui.MenuItem("General", icon: .eraser) {
             on choose: format_cells(w, s, area, format: "general")
         }
+        ui.MenuSeparator
         ui.MenuItem("Sum this selection", icon: .plus) {
             on choose: sum_selection(w, s, area)
         }
+        ui.MenuSeparator
         ui.MenuItem("Insert rows above", icon: .list_plus) {
             on choose: insert_rows(w, s, row_of(range_start(area)))
         }
@@ -188,6 +192,7 @@ template view format_menu(w: Workbook, s: Sheet, area: State<Text>) {
         ui.MenuItem("Delete these columns", icon: .trash, destructive: true) {
             on choose: delete_columns(w, s, columns_of_range(area))
         }
+        ui.MenuSeparator
         ui.MenuItem("Sort the rows ascending", icon: .arrow_down_wide_narrow) {
             on choose: sort_rows(w, s, area, column_of(range_start(area)))
         }
@@ -271,10 +276,10 @@ fn shown_count() -> Extent {
 /// The cells a sheet's grid shows: what each holds, and how it reads.
 fn cells_of(s: Sheet, cells: List<List<Text>>, formulas: Bool) -> List<ui.SheetCell> {
     cells.map(
-        c -> ui.SheetCell.cell(
+        c -> .cell(
             cell: text_at(c, 1),
             text: if formulas { input_at(s, text_at(c, 1)) } else { text_at(c, 2) },
-            kind: if formulas { ui.SheetCellKind.text } else { kind_of(text_at(c, 3)) },
+            kind: if formulas { .text } else { kind_of(text_at(c, 3)) },
             bold: s.bold.contains(text_at(c, 1)),
         ),
     )
@@ -333,13 +338,11 @@ action resize_row(s: Sheet, pair: List<Text>) (label: "Resize the row", did: "re
 fn sizes_of(s: Sheet) -> List<ui.SheetSize> {
     let wide: List<ui.SheetSize> = s.widths
         .keys()
-        .map(
-            k -> ui.SheetSize.column(column: k, width: pixels_of(s.widths.get(k) ?? "", 112)),
-        )
+        .map(k -> .column(column: k, width: pixels_of(s.widths.get(k) ?? "", 112)))
     let tall: List<ui.SheetSize> = s.heights
         .keys()
         .map(
-            k -> ui.SheetSize.row(
+            k -> .row(
                 row: (k.to_int() ?? 1).to_float(),
                 height: pixels_of(s.heights.get(k) ?? "", 28),
             ),
@@ -394,11 +397,13 @@ template view workbook_tabs(
             ui.MenuItem(if s.hidden { "Show the tab" } else { "Hide the tab" }, icon: .eye_off) {
                 on choose: set_sheet_hidden(s, not s.hidden)
             }
+            ui.MenuSeparator
             for other in w.sheets.filter(x -> x != s) {
                 ui.MenuItem("Move before {other.name}", icon: .arrow_left) {
                     on choose: place_sheet(w, s, other)
                 }
             }
+            ui.MenuSeparator
             ui.MenuItem("Delete the sheet", icon: .trash, destructive: true) {
                 on choose: delete_sheet(w, s)
             }
@@ -641,17 +646,8 @@ template view workbook_dialogs(
 /// The currencies the workbook's bare money format may show in.
 template view money_choice(w: Workbook) {
     ui.MenuButton("Money: {currency_name(w.currency)}", icon: .wallet) {
-        for c in [
-            Currency.usd,
-            Currency.eur,
-            Currency.gbp,
-            Currency.jpy,
-            Currency.chf,
-            Currency.cad,
-            Currency.aud,
-            Currency.cny,
-            Currency.inr,
-        ] {
+        let currencies: List<Currency> = [.usd, .eur, .gbp, .jpy, .chf, .cad, .aud, .cny, .inr]
+        for c in currencies {
             ui.MenuItem(currency_name(c), checked: c == w.currency) {
                 on choose: set_settings(w, currency: .some(c))
             }
@@ -662,7 +658,8 @@ template view money_choice(w: Workbook) {
 /// The date styles the workbook reads its dates in.
 template view date_choice(w: Workbook) {
     ui.MenuButton("Dates: {date_name(w.date_style)}", icon: .calendar) {
-        for d in [DateStyle.language, DateStyle.iso, DateStyle.us, DateStyle.eu, DateStyle.long] {
+        let styles: List<DateStyle> = [.language, .iso, .us, .eu, .long]
+        for d in styles {
             ui.MenuItem(date_name(d), checked: d == w.date_style) {
                 on choose: set_settings(w, date_style: .some(d))
             }
@@ -673,7 +670,8 @@ template view date_choice(w: Workbook) {
 /// The time styles the workbook reads its times in.
 template view time_choice(w: Workbook) {
     ui.MenuButton("Times: {time_name(w.time_style)}", icon: .clock) {
-        for t in [TimeStyle.language, TimeStyle.h24, TimeStyle.h12] {
+        let styles: List<TimeStyle> = [.language, .h24, .h12]
+        for t in styles {
             ui.MenuItem(time_name(t), checked: t == w.time_style) {
                 on choose: set_settings(w, time_style: .some(t))
             }
