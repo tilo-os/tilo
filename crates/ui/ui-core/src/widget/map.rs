@@ -3356,8 +3356,10 @@ pub fn mercator_project(latitude: f64, longitude: f64) -> Point {
         .to_radians();
     let x = (longitude + 180.0) / 360.0 * MERCATOR_WORLD;
     let sine = lat.sin();
-    let y = (0.5 - (((1.0 + sine) / (1.0 - sine)).ln() / (4.0 * std::f64::consts::PI)))
-        * MERCATOR_WORLD;
+    // The furthest latitude is the world's edge: rounding never puts a place beyond it.
+    let y = ((0.5 - (((1.0 + sine) / (1.0 - sine)).ln() / (4.0 * std::f64::consts::PI)))
+        * MERCATOR_WORLD)
+        .clamp(0.0, MERCATOR_WORLD);
     Point::new(x, y)
 }
 
