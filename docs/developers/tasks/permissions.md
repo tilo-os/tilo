@@ -51,4 +51,4 @@ sign-in. Authenticated membership and device delivery need host integration
 tests.
 
 Next: `tilolang guide actions` or `guide collaborate`.
-More: [Executable live-permission tests](../../../crates/sdk/tilo-app/tests/live_permissions.rs).
+More: [Executable live-permission tests](../../../crates/sdk/tilo-app-test-host/tests/live_permissions.rs).
