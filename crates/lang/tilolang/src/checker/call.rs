@@ -325,6 +325,9 @@ impl Checker<'_> {
             }
             "preview_rows" => return self.builtin_preview_rows(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
+            // `vault_code(reference)`: the one-time code a vault item's seed makes now, read
+            // where the seed is. A view may show it; an action declares `uses secret`.
+            "vault_code" => return self.builtin_vault_code(args, span),
             "invoke" => return self.builtin_invoke(args, span),
             "stage" => return self.builtin_stage(args, span),
             "query" => return self.builtin_query(args, span),
@@ -974,6 +977,37 @@ impl Checker<'_> {
             stmts.push(Stmt::Eval(Self::push_item(Ex::local(tmp, ty.clone()), a)));
         }
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(tmp, ty.clone()))), ty)
+    }
+
+    /// `vault_code(reference)`: the code of this moment a vault item's seed makes, read where
+    /// the seed is. It returns nothing for an item the vault cannot read, so a view draws its
+    /// waiting state.
+    pub(super) fn builtin_vault_code(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        self.reads(crate::effects::Effect::Secret, span, "`vault_code`");
+        let [arg] = args else {
+            self.err(
+                "E022",
+                span,
+                "`vault_code(reference)` takes the item's reference, `vault.item:<id>`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if let Some(named) = &arg.name {
+            self.err(
+                "E022",
+                named.span,
+                "`vault_code` takes its reference by position",
+            );
+        }
+        let reference = self.expr_as(&arg.value, &Ty::Text);
+        Ex::host(
+            Imp::VaultCode,
+            vec![reference],
+            Ty::Option(Box::new(super::platform::host_ty("Code"))),
+        )
     }
 
     fn action_value(&mut self, c: &Callable, bound: Vec<Ex>) -> Ex {

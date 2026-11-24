@@ -1508,8 +1508,11 @@ inputs = [
   "apps/tl/notes/",
   "apps/tl/contacts/",
   "apps/tl/tasks/",
+  "apps/tl/vault/tilo-app.toml",
+  "apps/tl/vault/surface.toml",
 ]
 readers = [
+  "crates/core/tilo-workspace-service/src/vault_actions.rs",
   "crates/core/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
   "crates/core/tilo-workspace-service/src/apps/nearby_send/airdrop.rs",
   "crates/core/tilo-workspace-service/src/agents/task_work.rs",

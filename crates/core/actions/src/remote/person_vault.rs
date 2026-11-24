@@ -82,6 +82,27 @@ pub const ASK: &str = "ask";
 /// takes a secret by reference names as its resource kind.
 pub const ITEM_KIND: &str = "vault.item";
 
+/// The code of this moment from a code generator's seed ([`VaultItems::code_for`]). It is a
+/// read: the vault computes it where the seed is and writes nothing down, so it appears in no
+/// change, no use and no history. The person, their agents, Chat and a script ask it alike.
+pub const CODE: &str = "code";
+
+/// The resource an item's own actions are addressed at: `vault.item:<id>`.
+#[must_use]
+pub fn item_resource(item: &ItemRef) -> String {
+    format!("{ITEM_KIND}:{}", item.id())
+}
+
+/// The target of [`CODE`] on `item`: `vault.item:<id>#code`, whose resource is the item, so a
+/// grant covers that one account and no other.
+#[must_use]
+pub fn code_target(item: &ItemRef) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(item_resource(item), CODE),
+    }
+}
+
 /// Whether `text` could name where an item belongs: a web address, or a
 /// server by scheme, host and port. A first check for whoever asks for a
 /// secret, before a person is shown the question; the host that keeps the
@@ -228,6 +249,15 @@ pub struct ItemView {
     /// When it was last handed to something that signs in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<u64>,
+    /// The hash a code generator's codes are made with, for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<String>,
+    /// How many digits a code generator's codes have, for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digits: Option<u8>,
+    /// How many seconds one of a code generator's codes stands, for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<u64>,
 }
 
 /// Every item the person's vault keeps, oldest first.
@@ -254,6 +284,16 @@ pub struct AddItem {
     /// key>` or `query:<name>`. Only a key says so.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sent_in: String,
+    /// The hash a code generator's codes are made with: `SHA1`, `SHA256` or `SHA512`; `SHA1`
+    /// where it is left out. Only a code generator says so.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub algorithm: String,
+    /// How many digits a code generator's codes have; 6 where it is left out.
+    #[serde(default)]
+    pub digits: Option<u8>,
+    /// How many seconds one of a code generator's codes stands; 30 where it is left out.
+    #[serde(default)]
+    pub period: Option<u64>,
     pub secret: String,
 }
 
@@ -1359,6 +1399,9 @@ mod tests {
             title: Some("Example".into()),
             added_at: 1_800_000_000,
             last_used_at: Some(1_800_000_100),
+            algorithm: None,
+            digits: None,
+            period: None,
         };
         let json = serde_json::to_value(KeptItems { items: vec![view] }).unwrap();
         let mut fields: Vec<&str> = json["items"][0]

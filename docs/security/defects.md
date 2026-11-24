@@ -590,12 +590,11 @@ The identity defect is closed: schema-1 plaintext records migrate to public
 metadata plus Secret Service storage (or a truthful host-only 0600 fallback),
 and apps receive an app-scoped signing socket rather than a mounted key file.
 
-**Resolved by redesign.** The authenticator no longer has a vault file. Each account's seed is
-its own item in the app's secret store (`apps/totp/src/secrets.rs`, through
-`crates/platform/tilo-secrets`), and the collaborative document names accounts without holding a
-seed. The only file-backed store is the explicit `TILO_SECRETS_DIR` opt-in for headless machines.
-Held by `apps/totp/src/secrets.rs::tests` (`seeds_live_under_the_account_id_and_leave_with_the_account`,
-`a_refused_write_is_kept_for_the_session_until_a_retry_lands`).
+**Resolved by redesign.** The authenticator no longer has a vault file. Each account's seed is a
+code generator item in the workspace's vault, which makes each code where the seed is
+(`crates/integrations/accounts/src/vault_items/codes.rs`), and the app's record names accounts
+without holding a seed. The app's own secret store went with the Rust app; a seed reaches no app
+process and no record.
 
 Identity storage uses the standard libsecret `secret-tool` client when an
 unlocked freedesktop Secret Service is available.

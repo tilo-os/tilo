@@ -517,6 +517,16 @@ impl AskedTurn {
     }
 }
 
+/// The code of this moment a code generator's seed makes, read where the vault is: a use that
+/// changes nothing, so it is written down nowhere and its item's history stays as it was.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReadCode {
+    /// Why whoever asks says it needs the code.
+    #[serde(default)]
+    reason: String,
+}
+
 /// One use by reference this server carries out.
 enum Use {
     /// A mail account added with the sign-in an item keeps.
@@ -525,6 +535,8 @@ enum Use {
     Key(SetKeyFromItem),
     /// A web call made with a key.
     Call(web_call::WebCall),
+    /// The code of this moment from a code generator's seed.
+    Code(ReadCode),
 }
 
 impl Use {
@@ -556,13 +568,20 @@ impl Use {
                     invalid("a web call names its address and the vault item that is its key")
                 })
             }
+            (person_vault::PROVIDER, person_vault::CODE) => serde_json::from_value(arguments)
+                .map(Self::Code)
+                .map_err(|_| invalid("reading a code takes the reason it is needed, if any")),
             _ => Err(UnknownAction),
         }
     }
 
     /// What it wants of the vault under `root`: the item, the kind it must
     /// be, and every place its secret would be sent to.
-    fn wanted(&self, root: &Path) -> Result<(ItemId, vault_items::ItemKind, Vec<Place>), String> {
+    fn wanted(
+        &self,
+        root: &Path,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Result<(ItemId, vault_items::ItemKind, Vec<Place>), String> {
         let id = |item: &ItemRef| {
             ItemId::parse(item.id()).ok_or_else(|| vault_items::ItemError::NotFound.to_string())
         };
@@ -596,6 +615,14 @@ impl Use {
                 ))
             }
             Self::Call(call) => web_call::wanted(call),
+            // The item the address names is the code generator; it sends nothing anywhere.
+            Self::Code(_) => {
+                let item = ItemId::parse(
+                    target_resource(target, person_vault::ITEM_KIND).unwrap_or_default(),
+                )
+                .ok_or_else(|| vault_items::ItemError::NotFound.to_string())?;
+                Ok((item, vault_items::ItemKind::CodeGenerator, Vec::new()))
+            }
         }
     }
 
@@ -605,6 +632,7 @@ impl Use {
             Self::Mail(adding) => adding.reason.trim(),
             Self::Key(setting) => setting.reason.trim(),
             Self::Call(call) => call.reason.trim(),
+            Self::Code(code) => code.reason.trim(),
         }
     }
 
@@ -614,12 +642,32 @@ impl Use {
         !matches!(self, Self::Call(_))
     }
 
+    /// Whether `items` holds what it wants: for a code, a code generator, which needs no place
+    /// to make a code at; every other use is held to the places it sends its secret to.
+    fn fits(
+        &self,
+        items: &VaultItems,
+        item: &ItemId,
+        kind: vault_items::ItemKind,
+        places: &[Place],
+    ) -> Result<(), vault_items::ItemError> {
+        match self {
+            Self::Code(_) => {
+                let _ = (kind, places);
+                items.code_params(item).map(|_| ())
+            }
+            Self::Mail(_) | Self::Key(_) | Self::Call(_) => {
+                items.fits(item, kind, places).map(|_| ())
+            }
+        }
+    }
+
     /// What else it would be refused for when it is carried out, with the
     /// vault's `items`: said before anyone is asked about it.
     fn sendable(&self, workspaces: &Workspaces, items: &VaultItems) -> Result<(), String> {
         match self {
             Self::Call(call) => web_call::sendable(call, workspaces.call_reach(), items),
-            Self::Mail(_) | Self::Key(_) => Ok(()),
+            Self::Mail(_) | Self::Key(_) | Self::Code(_) => Ok(()),
         }
     }
 
@@ -631,24 +679,45 @@ impl Use {
         self,
         workspaces: &Workspaces,
         (workspace, root): (&str, &Path),
-        by: (&str, &tilo_action_policy::Acting),
+        (by, acting, item, kind, places): (
+            &str,
+            &tilo_action_policy::Acting,
+            ItemId,
+            vault_items::ItemKind,
+            Vec<Place>,
+        ),
         purpose: UsedFor<'_>,
     ) -> Result<Value, String> {
         match self {
             Self::Mail(adding) => {
                 let kept = workspaces
-                    .mail_with_item((workspace, root), adding, by, purpose)
+                    .mail_with_item((workspace, root), adding, (by, acting), purpose)
                     .await?;
                 workspaces.person_settings_changed();
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
             Self::Key(setting) => {
                 let kept = workspaces
-                    .key_from_item((workspace, root), &setting, by, purpose)
+                    .key_from_item((workspace, root), &setting, (by, acting), purpose)
                     .await?;
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
-            Self::Call(call) => web_call::send(workspaces, workspace, call, by, purpose).await,
+            Self::Call(call) => web_call::send(workspaces, workspace, call, (by, acting), purpose).await,
+            Self::Code(_) => {
+                // Read where the vault is, as the turn's person: nothing is written, so no use
+                // stands in the item's history.
+                let _ = purpose;
+                let reference = format!("{}:{}", person_vault::ITEM_KIND, item.as_str());
+                let code = workspaces.vault_code(workspace, &reference).await?;
+                let now = tilo_clock::unix_now();
+                Ok(json!({
+                    "code": code.digits(),
+                    "left": code.until_unix.saturating_sub(now),
+                    "period": code.params.period,
+                    "digits": code.params.digits,
+                    "algorithm": code.params.algorithm.word(),
+                }))
+            }
         }
     }
 }
@@ -712,6 +781,15 @@ fn shown_site(target: &RemoteActionTarget, arguments: &Map<String, Value>) -> Op
     Some(json!({"name": site_name(origin), "origin": origin}))
 }
 
+/// The id the address's resource names, after `kind`: `vault.item:<id>` names `<id>`.
+fn target_resource<'a>(target: &'a tilo_actions::remote::RemoteActionTarget, kind: &str) -> Option<&'a str> {
+    target
+        .address
+        .resource
+        .strip_prefix(kind)
+        .and_then(|rest| rest.strip_prefix(':'))
+}
+
 /// The name in the origin `origin`: without its scheme and its port.
 fn site_name(origin: &str) -> &str {
     let named = origin.split_once("://").map_or(origin, |(_, rest)| rest);
@@ -744,10 +822,15 @@ fn vault_use_node(
     let mut sorted: Vec<&str> = places.iter().map(Place::as_str).collect();
     sorted.sort_unstable();
     sorted.dedup();
+    let resource = if sorted.is_empty() {
+        item.as_str().to_owned()
+    } else {
+        format!("{}/{}", item.as_str(), json!(sorted))
+    };
     TreePath::workspace(&using.workspace)
         .app(&target.provider)
         .kind(person_vault::use_word(target))
-        .resource(format!("{}/{}", item.as_str(), json!(sorted)))
+        .resource(resource)
         .action(&target.address.action)
 }
 
@@ -1029,15 +1112,15 @@ impl Workspaces {
         let arguments = arguments_of(request);
         let wanted = Use::read(&request.target, &arguments)?;
         let root = self.workspace_root(&using.workspace);
-        let (item, kind, places) = wanted.wanted(&root).map_err(ActionCallError::refused)?;
+        let (item, kind, places) = wanted.wanted(&root, &request.target).map_err(ActionCallError::refused)?;
         let word = person_vault::use_word(&request.target);
         let items = self
             .open_vault(&using.workspace)
             .await
             .map_err(ActionCallError::refused)?
             .items();
-        items
-            .fits(&item, kind, &places)
+        wanted
+            .fits(&items, &item, kind, &places)
             .map_err(|error| ActionCallError::refused(error.to_string()))?;
         wanted
             .sendable(self, &items)
@@ -1074,7 +1157,7 @@ impl Workspaces {
             .carry_out(
                 self,
                 (&using.workspace, &root),
-                (&using.name, &using.acting()),
+                (&using.name, &using.acting(), item, kind, places),
                 purpose,
             )
             .await

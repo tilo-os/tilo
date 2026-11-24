@@ -30,7 +30,10 @@ use crate::{SecretItem, SecretItemKind};
 
 mod codes;
 
-pub use codes::{CODE_SECS, Code};
+pub use codes::{
+    Algorithm, CODE_DIGITS, CODE_SECS, Code, CodeParams, FEWEST_DIGITS, FEWEST_PERIOD, MOST_DIGITS,
+    MOST_PERIOD,
+};
 
 /// The longest secret an item keeps: an ssh key fits, a file does not.
 pub const MAX_SECRET_BYTES: usize = 16 * 1024;
@@ -279,6 +282,8 @@ pub struct ItemFacts {
     pub id: ItemId,
     pub kind: ItemKind,
     pub places: Vec<Place>,
+    /// How a code generator makes its codes, for an item that is one.
+    pub code: Option<CodeParams>,
     /// What it is called: the entry's title, as Passwords shows it.
     pub title: String,
     /// When it was added, in seconds since the Unix epoch.
@@ -293,6 +298,8 @@ pub struct NewItem {
     pub places: Vec<Place>,
     /// The name it signs in with, when it has one.
     pub username: String,
+    /// How a code generator makes its codes, where the kind is one.
+    pub code: CodeParams,
     pub secret: Zeroizing<String>,
 }
 
@@ -306,8 +313,17 @@ impl NewItem {
             kind,
             places,
             username,
+            code: CodeParams::default(),
             secret: Zeroizing::new(secret),
         }
+    }
+
+    /// `item` as a code generator makes its codes: the hash, the digits and the period its
+    /// service's setup key named.
+    #[must_use]
+    pub fn with_code(mut self, code: CodeParams) -> Self {
+        self.code = code;
+        self
     }
 }
 
@@ -419,6 +435,12 @@ pub const SENT_IN_FIELD: &str = "tilo.vault.sent-in";
 /// The field of an entry kept as one account's own sign-in, which goes when the account goes:
 /// the account it was kept for (a mail or calendar account's id, or a model provider's).
 pub const ACCOUNT_FIELD: &str = "tilo.vault.account";
+/// The field of a code generator's entry that says which hash its codes are made with.
+pub const ALGORITHM_FIELD: &str = "tilo.vault.algorithm";
+/// The field of a code generator's entry that says how many digits its codes have.
+pub const DIGITS_FIELD: &str = "tilo.vault.digits";
+/// The field of a code generator's entry that says how many seconds one code stands.
+pub const PERIOD_FIELD: &str = "tilo.vault.period";
 
 /// One entry of the vault, as an item reads it.
 struct Sealed {
@@ -431,6 +453,8 @@ struct Sealed {
     /// The account it was kept for as that account's own sign-in, or empty for an entry a
     /// member keeps ([`ACCOUNT_FIELD`]).
     account: String,
+    /// How a code generator makes its codes; the defaults for every other item.
+    code: CodeParams,
     secret: String,
     added_unix: u64,
     last_used_unix: Option<u64>,
@@ -444,10 +468,17 @@ impl Drop for Sealed {
 }
 
 impl Sealed {
+    /// How this code generator makes its codes.
+    fn code_params(&self) -> CodeParams {
+        self.code
+    }
+
     /// `item` as it is kept, or why it is not one to keep.
     fn checked(mut item: NewItem) -> Result<Self, ItemError> {
         let places: BTreeSet<Place> = std::mem::take(&mut item.places).into_iter().collect();
-        if places.is_empty() {
+        // A code generator belongs to no site: the Authenticator keeps the accounts it makes
+        // codes for itself, and the item is what holds the seed.
+        if places.is_empty() && item.kind != ItemKind::CodeGenerator {
             return Err(ItemError::Invalid("An item says where it belongs"));
         }
         if places.len() > MAX_PLACES {
@@ -503,6 +534,7 @@ impl Sealed {
             username,
             sent_in: String::new(),
             account: String::new(),
+            code: item.code,
             secret,
             added_unix: unix_now(),
             last_used_unix: None,
@@ -528,15 +560,33 @@ impl Sealed {
             .iter()
             .filter_map(|origin| Place::parse(origin).ok())
             .collect();
-        if places.is_empty() || entry.password.is_empty() {
+        if (places.is_empty() && kind != ItemKind::CodeGenerator) || entry.password.is_empty() {
             return None;
         }
+        let code = CodeParams {
+            algorithm: entry
+                .fields
+                .get(ALGORITHM_FIELD)
+                .and_then(|word| Algorithm::parse(word))
+                .unwrap_or_default(),
+            digits: entry
+                .fields
+                .get(DIGITS_FIELD)
+                .and_then(|text| text.parse().ok())
+                .unwrap_or(CODE_DIGITS),
+            period: entry
+                .fields
+                .get(PERIOD_FIELD)
+                .and_then(|text| text.parse().ok())
+                .unwrap_or(CODE_SECS),
+        };
         Some(Self {
             kind,
             places,
             username: entry.username.clone(),
             sent_in: entry.fields.get(SENT_IN_FIELD).cloned().unwrap_or_default(),
             account: entry.fields.get(ACCOUNT_FIELD).cloned().unwrap_or_default(),
+            code,
             secret: entry.password.clone(),
             added_unix: entry.created_unix,
             last_used_unix: uses.iter().map(|used| used.at_unix).max(),
@@ -566,6 +616,14 @@ impl Sealed {
         }
         if !self.account.is_empty() {
             fields.insert(ACCOUNT_FIELD.to_owned(), self.account.clone());
+        }
+        if self.kind == ItemKind::CodeGenerator {
+            fields.insert(
+                ALGORITHM_FIELD.to_owned(),
+                self.code.algorithm.word().to_owned(),
+            );
+            fields.insert(DIGITS_FIELD.to_owned(), self.code.digits.to_string());
+            fields.insert(PERIOD_FIELD.to_owned(), self.code.period.to_string());
         }
         let title = self
             .places
@@ -644,6 +702,7 @@ impl Sealed {
             id,
             kind: self.kind,
             places: self.places.iter().cloned().collect(),
+            code: (self.kind == ItemKind::CodeGenerator).then_some(self.code),
             title: String::new(),
             added_unix: self.added_unix,
             last_used_unix: self.last_used_unix,
@@ -835,6 +894,27 @@ impl VaultItems {
             }
         }
         Ok(self.written(&id, &sealed))
+    }
+
+    /// Change how the code generator `id` names makes its codes, and the name it signs in as,
+    /// keeping its seed and the uses it remembers.
+    ///
+    /// # Errors
+    /// No such item, or an item that is no code generator.
+    pub fn retune(
+        &mut self,
+        id: &ItemId,
+        username: &str,
+        code: CodeParams,
+    ) -> Result<ItemFacts, ItemError> {
+        let mut sealed = self.sealed(id)?;
+        if sealed.kind != ItemKind::CodeGenerator {
+            return Err(ItemError::WrongKind);
+        }
+        sealed.username = username.trim().to_owned();
+        sealed.code = code;
+        self.write(id, &sealed);
+        Ok(self.written(id, &sealed))
     }
 
     /// [`Self::add`] for a key that says where it rides in a request to its
@@ -1070,6 +1150,7 @@ mod tests {
             kind: ItemKind::Login,
             places: places.iter().map(|text| place(text)).collect(),
             username: "ada@example.test".into(),
+            code: CodeParams::default(),
             secret: Zeroizing::new(PASSWORD.into()),
         }
     }

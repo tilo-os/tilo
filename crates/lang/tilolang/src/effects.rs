@@ -33,6 +33,9 @@ pub enum Effect {
     /// The device's own files, read or changed through `File`'s folder calls: what a disk holds
     /// now, which no replay can compute again.
     Files,
+    /// The code of this moment from a vault item's seed (`vault.code`): a reading of the clock
+    /// taken where the seed is, which a view shows and never records.
+    Secret,
 }
 
 impl Effect {
@@ -45,6 +48,7 @@ impl Effect {
         Self::Image,
         Self::Page,
         Self::Files,
+        Self::Secret,
     ];
 
     pub const fn word(self) -> &'static str {
@@ -57,6 +61,7 @@ impl Effect {
             Self::Image => "image",
             Self::Page => "page",
             Self::Files => "files",
+            Self::Secret => "secret",
         }
     }
 
@@ -70,6 +75,7 @@ impl Effect {
             Self::Image => "the device's image decoders and its preview cache",
             Self::Page => "the page this window shows",
             Self::Files => "the files on this device",
+            Self::Secret => "the code a vault item's seed makes now",
         }
     }
 

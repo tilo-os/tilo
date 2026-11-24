@@ -134,6 +134,36 @@ fn each_provider_answers_the_resources_it_keeps() {
 }
 
 #[test]
+fn a_prefix_answers_the_resources_no_fixed_list_names() {
+    // A vault item's code is published under `vault.item:<id>`, a name no fixed list can hold:
+    // its provider answers the prefix, ahead of the one that answers every resource no other
+    // names, and a fixed list still wins for the resources it does name.
+    const ITEMS: [&str; 2] = ["vault.item:one", "vault.item:two"];
+    const LISTED: [&str; 1] = ["device:first"];
+    let listed = Keeping::holding(&LISTED);
+    let items = Keeping::holding(&ITEMS);
+    let rest = Keeping::holding(&["device:rest"]);
+    let published = Published::new()
+        .serving(&LISTED, listed)
+        .serving_prefix("vault.item:", items)
+        .serving_the_rest(rest);
+    assert_eq!(
+        reading(&published, "device:first").as_deref(),
+        Some(r#"{"name":"device:first"}"#)
+    );
+    assert_eq!(
+        reading(&published, "vault.item:two").as_deref(),
+        Some(r#"{"name":"vault.item:two"}"#)
+    );
+    assert_eq!(
+        reading(&published, "device:rest").as_deref(),
+        Some(r#"{"name":"device:rest"}"#),
+        "a resource outside the prefix reaches the provider of the rest"
+    );
+    assert_eq!(reading(&published, "vault.item:nothing"), None);
+}
+
+#[test]
 fn a_change_reaches_the_provider_that_keeps_the_resource_and_no_other() {
     let first = Keeping::holding(&FIRST);
     let second = Keeping::holding(&SECOND);

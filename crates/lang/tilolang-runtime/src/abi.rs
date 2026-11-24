@@ -449,6 +449,8 @@ imports! {
     (EnginePicture, "engine_picture", "iii", "i"),
     (EngineStatus, "engine_status", "i", "i"),
     (EngineCancel, "engine_cancel", "i", "i"),
+    // The code of this moment a vault item's seed makes, read where the seed is.
+    (VaultCode, "vault_code", "i", "i"),
 
     (Abort, "abort", "i", ""),
     (MissingV, "missing", "", "i"),

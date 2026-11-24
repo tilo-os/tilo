@@ -560,5 +560,10 @@ imports! {
     EngineStatus = "engine_status" ([H] -> [H]);
     EngineCancel = "engine_cancel" ([H] -> [I32]);
 
+    // The code of this moment from a vault item's seed, read where the seed is: the item's
+    // reference in, an `Option` of the code and its countdown out. The vault computes it and
+    // writes nothing down, so a view may show it and no record holds it.
+    VaultCode = "vault_code" ([H] -> [H]);
+
     Abort = "abort" ([H] -> []);
 }

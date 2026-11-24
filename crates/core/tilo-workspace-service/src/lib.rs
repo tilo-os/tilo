@@ -104,6 +104,9 @@ pub mod surfaces;
 pub mod timing;
 #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
 pub mod tl_records;
+
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+pub mod vault_actions;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod work;
 #[cfg(not(target_arch = "wasm32"))]

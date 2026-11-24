@@ -2360,6 +2360,15 @@ fn broker_services(
             )
             .serving(&[super::mcp_server::SERVER], mcp_server)
             .serving(&[tilo_actions::remote::model_providers::RESOURCE], models)
+            // The code of this moment a vault item's seed makes, which an app that shows
+            // one-time codes follows as the item's reading: read here, where the seed is.
+            .serving_prefix(
+                "vault.item:",
+                Arc::new(tilo_workspace_service::vault_actions::VaultPublished::new(
+                    parts.workspaces.copies().clone(),
+                    tilo_rt::app().handle().clone(),
+                )),
+            )
             .serving_the_rest(Arc::new(
                 tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
             )),

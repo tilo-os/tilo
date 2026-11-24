@@ -218,6 +218,8 @@ jiff = { workspace = true, optional = true }
 rustix = { workspace = true, features = ["process"], optional = true }
 
 [dev-dependencies]
+# The committed package a provider's actions are described by, which its test reads.
+toml.workspace = true
 # The document app whose record the broker's fixture seeds and drives.
 test-document-app = { path = "../../../tools/test-document-app" }
 # The launcher end of the handoffs the broker tests drive.

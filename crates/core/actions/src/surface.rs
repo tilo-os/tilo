@@ -253,9 +253,23 @@ pub fn verb_of(action: &crate::ActionSpec, params: Vec<ParamSurface>) -> VerbSur
         destructive: action.contract.risk == crate::RiskLevel::Destructive,
         incoming_message: false,
         params,
-        returns: None,
+        returns: result_of(&action.contract.result),
         writes: record_unit(),
         field: None,
+    }
+}
+
+/// What an action answers, as its surface says it: a call the surface declares a result for
+/// reads it back in tilolang.
+fn result_of(result: &crate::ResultSpec) -> Option<ReturnsSurface> {
+    match result {
+        crate::ResultSpec::Json { schema } => Some(ReturnsSurface {
+            schema: schema.clone(),
+            ty: crate::field_type::FieldType::from_schema(schema),
+        }),
+        crate::ResultSpec::None | crate::ResultSpec::Resource { .. } | crate::ResultSpec::Job => {
+            None
+        }
     }
 }
 

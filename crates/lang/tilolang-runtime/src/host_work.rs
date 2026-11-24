@@ -203,7 +203,51 @@ pub trait EngineHost {
     fn cancel(&self, job: &str) -> bool;
 }
 
+/// The code of this moment from a vault item's seed, as the host that holds the vault answers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VaultCode {
+    /// The digits, grouped as the app shows them being the app's own business: the vault returns
+    /// them bare.
+    pub code: String,
+    /// The instant the code stops being good, as RFC 3339 text.
+    pub until: String,
+    /// How many seconds one code stands.
+    pub period: i64,
+    /// How many digits a code has.
+    pub digits: i64,
+    /// The hash the code is made with (`SHA1`, `SHA256` or `SHA512`).
+    pub algorithm: String,
+}
+
+/// What answers `vault.code`: the vault of the workspace, where the seed is. A host that keeps no
+/// vault answers nothing, and the view shows its waiting state.
+pub trait VaultHost {
+    /// The code the item `reference` names makes now, or nothing for an item this host cannot
+    /// read.
+    fn code(&self, reference: &str) -> Option<VaultCode>;
+}
+
 impl Core {
+    /// `vault.code(reference)`: the code of this moment, as the vault answers it.
+    pub(crate) fn vault_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let reference = self.text(a.h(0)?)?;
+        let code = match self.vault.borrow().as_ref() {
+            Some(vault) => vault.code(&reference),
+            None => None,
+        };
+        let Some(code) = code else {
+            return self.ret_h(Value::none());
+        };
+        let code = Value::Tuple(vec![
+            Value::text(code.code),
+            Value::text(code.until),
+            Value::Int(code.period),
+            Value::Int(code.digits),
+            Value::text(code.algorithm),
+        ]);
+        self.ret_h(Value::some(code))
+    }
+
     /// `engine.call`, `engine.start`, `engine.status` and `engine.cancel`.
     pub(crate) fn engine_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {

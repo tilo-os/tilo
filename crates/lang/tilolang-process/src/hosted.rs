@@ -565,6 +565,16 @@ struct HostPlatform {
     platform: Rc<RefCell<Roots>>,
     /// What wakes this instance when a followed platform root publishes a reading.
     root_wake: tilo_wake::WakeHandle,
+    /// The vault items this window shows the code of, each followed from where the session
+    /// publishes it: the code reaches the view as a reading, never as a record or a change.
+    vaults: Rc<RefCell<BTreeMap<String, VaultWatch>>>,
+}
+
+/// One vault item this window follows: its reading, and the code last read from it.
+struct VaultWatch {
+    item: collaboration::SessionResource,
+    /// The code last read, kept for the frames between two readings.
+    reading: Option<tilolang_tilo::runtime::host_work::VaultCode>,
 }
 
 impl HostPlatform {
@@ -687,6 +697,39 @@ impl Platform for HostPlatform {
 
     fn builds(&self) -> Option<Arc<LaterBuilds>> {
         self.builds.borrow().clone()
+    }
+
+    /// The code of this moment from the vault item `reference` names: followed from where the
+    /// session publishes the item's reading, computed where the seed is. Nothing is written down,
+    /// and the reading wakes the window so the view draws the new code.
+    fn vault_code(&self, reference: &str) -> Option<tilolang_tilo::runtime::host_work::VaultCode> {
+        let mut vaults = self.vaults.borrow_mut();
+        if !vaults.contains_key(reference) {
+            let item = match collaboration::SessionResource::follow(
+                reference,
+                self.root_wake.clone(),
+            ) {
+                Ok(item) => item,
+                Err(error) => {
+                    tracing::debug!(%reference, %error, "the vault item is not followed");
+                    return None;
+                }
+            };
+            vaults.insert(
+                reference.to_owned(),
+                VaultWatch {
+                    item,
+                    reading: None,
+                },
+            );
+        }
+        let watch = vaults.get_mut(reference)?;
+        if let Some(Ok(text)) = watch.item.latest()
+            && let Some(code) = vault_reading(&text)
+        {
+            watch.reading = Some(code);
+        }
+        watch.reading.clone()
     }
 
     /// Receivers decide each change against the surface of the build that runs now.
@@ -1598,6 +1641,7 @@ fn open_instance(
         watches: Rc::clone(&watches),
         platform: Rc::clone(&roots),
         root_wake: scope.0.handle(),
+        vaults: Rc::default(),
     };
     let mut instance = Instance::new(
         Config {
@@ -4662,4 +4706,24 @@ mod tests {
         );
         assert_eq!(script.asked(), 3, "listed, then each read once");
     }
+}
+/// The code a vault item's reading states: the digits, how long they last, and how the service
+/// makes them.
+fn vault_reading(text: &str) -> Option<tilolang_tilo::runtime::host_work::VaultCode> {
+    #[derive(serde::Deserialize)]
+    struct Reading {
+        code: String,
+        until: String,
+        period: i64,
+        digits: i64,
+        algorithm: String,
+    }
+    let reading: Reading = serde_json::from_str(text).ok()?;
+    Some(tilolang_tilo::runtime::host_work::VaultCode {
+        code: reading.code,
+        until: reading.until,
+        period: reading.period,
+        digits: reading.digits,
+        algorithm: reading.algorithm,
+    })
 }

@@ -449,6 +449,28 @@ impl Workspaces {
             .await?;
         Ok(answer)
     }
+
+    /// The code of this moment from the code generator the item `reference` names
+    /// (`vault.item:<id>`): computed where the seed is, writing nothing down, so a view shows it
+    /// and no record holds it.
+    ///
+    /// # Errors
+    /// The vault does not open here, no such item, or it is no code generator.
+    pub async fn vault_code(
+        &self,
+        workspace: &str,
+        reference: &str,
+    ) -> Result<accounts::vault_items::Code, String> {
+        let id = reference
+            .strip_prefix("vault.item:")
+            .and_then(accounts::vault_items::ItemId::parse)
+            .ok_or_else(|| "an item is named by its reference, `vault.item:<id>`".to_owned())?;
+        let opened = self.open_vault(workspace).await?;
+        opened
+            .items()
+            .code_for(&id)
+            .map_err(|error| error.to_string())
+    }
 }
 
 /// Where code outside the workspaces' own (a connection's sign-in) reaches a workspace's vault:

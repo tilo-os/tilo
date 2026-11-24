@@ -1356,6 +1356,12 @@ impl Runtime {
         *self.core.engine_work.borrow_mut() = Some(Box::new(host));
     }
 
+    /// Where the vault answers the code of this moment ([`crate::host_work::VaultHost`]): what
+    /// `vault.code` asks. Until a host is set, a code reads as none.
+    pub fn set_vault(&self, host: impl crate::host_work::VaultHost + 'static) {
+        *self.core.vault.borrow_mut() = Some(Box::new(host));
+    }
+
     /// The newest frame of the stream `slot` a device's engine ran (`engine.stream`): what a
     /// window that shows `tilo-live://<slot>` paints.
     #[must_use]

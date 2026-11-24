@@ -1,0 +1,31 @@
+# The actions of the workspace's vault that a tilolang app calls by address,
+# read as the package `so.tilo.vault`: keeping a code generator's seed and
+# forgetting it. A code is a reading (`vault_code`), not an action here. What
+# the device's provider registers; a test holds it to this file.
+
+[[resources]]
+kind = "vault.item"
+label = ""
+version = 0
+fields = []
+
+[[resources.verbs]]
+id = "keep"
+kind = "outside"
+returns = { schema = { type = "string" }, type = "text" }
+params = [
+  { name = "item", type = "text", required = false },
+  { name = "issuer", type = "text", required = true },
+  { name = "label", type = "text", required = false },
+  { name = "secret", type = "text", required = true },
+  { name = "algorithm", type = "text", required = false },
+  { name = "digits", type = "int", required = false },
+  { name = "period", type = "int", required = false },
+]
+
+[[resources.verbs]]
+id = "forget"
+kind = "outside"
+params = [
+  { name = "item", type = "text", required = true },
+]

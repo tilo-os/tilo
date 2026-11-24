@@ -472,6 +472,9 @@ pub async fn run_on_device(
     // The records of the tilolang apps built in (tl Chat, Tasks) answer here where no window of
     // their app is open: what an agent's reply and its tools write through.
     crate::tl_records::provided::register(&workspaces);
+    // The vault's own actions (the code of the moment, keeping a seed and forgetting it) are
+    // what an app that shows one-time codes calls: served here, where the vault is.
+    crate::vault_actions::register(&workspaces);
     // Each agent signs its calls with a key of its own: made here from its person's root, or,
     // on a device without that root (a server that keeps the workspace), the key this device
     // asked to run the agent with once its person approved it.

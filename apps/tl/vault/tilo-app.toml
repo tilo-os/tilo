@@ -1,0 +1,7 @@
+# The vault's own actions, read as a package: the code of this moment a code
+# generator's seed gives, keeping an account's seed, and forgetting it. The
+# device's daemon serves them with its provider, where the vault is; a test
+# holds this description to what it registers.
+[package]
+id = "so.tilo.vault"
+name = "Vault"

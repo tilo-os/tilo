@@ -688,7 +688,12 @@ impl Checker<'_> {
     fn reads(&mut self, effect: crate::effects::Effect, span: Span, what: &str) {
         let refused = match self.st.ctx {
             Ctx::Action | Ctx::Program => !self.st.uses.contains(&effect),
-            Ctx::View => effect != crate::effects::Effect::Time,
+            // A view reads the clock it is drawn at, and the code a vault item makes now: the
+            // one secret it may show, which it keeps out of captures ([`protect capture`]).
+            Ctx::View => !matches!(
+                effect,
+                crate::effects::Effect::Time | crate::effects::Effect::Secret
+            ),
             _ => false,
         };
         if !refused {

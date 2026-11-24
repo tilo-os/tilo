@@ -97,6 +97,7 @@ impl KeptBefore {
                 username,
                 sent_in,
                 account: String::new(),
+                code: super::CodeParams::default(),
                 secret: secret.to_string(),
                 added_unix,
                 last_used_unix,

@@ -194,6 +194,7 @@ impl Workspaces {
                         kind: ItemKind::Login,
                         places,
                         username,
+                        code: accounts::vault_items::CodeParams::default(),
                         secret: password,
                     },
                     &title,

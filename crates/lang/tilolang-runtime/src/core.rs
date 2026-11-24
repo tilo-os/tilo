@@ -67,7 +67,7 @@ use Imp::{
     ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
     TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt,
     UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI,
-    ValueEq, VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk,
+    ValueEq, VaultCode, VersionEnd, Versions, WallClock, WebBody, WebDurationMs, WebGet, WebHeaders, WebOk,
     WebPost, WebPostBytes, WebStatus, WebStatusText, WebText, WindowState, Withdraw, Word, Zones,
 };
 
@@ -205,6 +205,8 @@ pub struct Core {
     /// The device's own work (`Runtime::set_engine`): what it answers an app that asks for a
     /// decode, a render or a raster it cannot do itself.
     pub engine_work: RefCell<Option<Box<dyn crate::host_work::EngineHost>>>,
+    /// Where the vault answers the code of this moment, for an item a view shows.
+    pub vault: RefCell<Option<Box<dyn crate::host_work::VaultHost>>>,
     /// The newest frame of each stream the device's engines ran (`engine.stream`): what the app's
     /// window paints by the stream's address.
     pub live_frames: std::sync::Arc<crate::host_work::LiveFrames>,
@@ -424,6 +426,7 @@ impl Core {
             notices: RefCell::new(None),
             said: RefCell::new(Vec::new()),
             engine_work: RefCell::new(None),
+            vault: RefCell::new(None),
             live_frames: std::sync::Arc::new(crate::host_work::LiveFrames::default()),
             names: RefCell::new(None),
             shown: RefCell::new(None),
@@ -697,6 +700,7 @@ impl Core {
             FontFamilies => self.font_import(imp, a),
             EngineCall | EngineStart | EngineStream | EngineState | EnginePicture
             | EngineStatus | EngineCancel => self.engine_import(imp, a),
+            VaultCode => self.vault_import(a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiBindBegin
             | UiOn | UiAnchor | SpaceI | SpaceF | RowOpen | UiBindState | UiBindStateAt
             | StateGet | StateAt | ArgAt | ActSet | ActThen | ActMadeFrom | ActMany | ActOpen

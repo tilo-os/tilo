@@ -104,6 +104,7 @@ impl VaultAt<'_> {
             kind,
             places,
             username: username.to_owned(),
+            code: accounts::vault_items::CodeParams::default(),
             secret,
         };
         let kept = self
@@ -395,6 +396,7 @@ impl HostSignIns {
                     kind: sealed.kind,
                     places: sealed.places.clone(),
                     username: sealed.username.clone(),
+                    code: accounts::vault_items::CodeParams::default(),
                     secret: sealed.secret.clone(),
                 };
                 let kept = items

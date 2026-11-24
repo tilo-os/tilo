@@ -1652,3 +1652,66 @@ async fn a_models_key_is_kept_and_cleared_as_the_reading_says() {
     );
     server.shutdown().await;
 }
+/// The seed RFC 6238 tests with, the bytes `12345678901234567890`, as a setup key would show it.
+const SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+
+/// A code generator's seed is kept in the vault, and the code of this moment is read where the
+/// seed is: the answer says the digits and how long they stand, neither the seed nor a code is
+/// written anywhere, and reading one is no use its person reads.
+#[tokio::test]
+async fn a_code_generators_code_reads_where_its_seed_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let as_ada = caller(&ada);
+    let kept = ask(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::ADD,
+        json!({
+            "kind": "code-generator",
+            "belongsTo": [],
+            "secret": SEED,
+            "algorithm": "SHA256",
+            "digits": 8,
+            "period": 60,
+        }),
+    )
+    .await
+    .expect("a seed is kept");
+    let item: person_vault::ItemRef =
+        serde_json::from_value(kept["reference"].clone()).expect("the item is named by its reference");
+
+    let said = ask_at(
+        &service,
+        workspace_id,
+        (&ada, &as_ada),
+        person_vault::code_target(&item),
+        json!({}),
+    )
+    .await
+    .expect("the code of this moment reads where the seed is");
+    let code = said["code"].as_str().expect("a code");
+    assert_eq!(code.len(), 8, "{said}");
+    assert!(code.bytes().all(|byte| byte.is_ascii_digit()), "{said}");
+    assert_eq!(said["digits"], json!(8), "{said}");
+    assert_eq!(said["period"], json!(60), "{said}");
+    assert_eq!(said["algorithm"], json!("SHA256"), "{said}");
+    assert!(
+        said["left"].as_u64().expect("how long it stands") <= 60,
+        "{said}"
+    );
+    assert!(
+        !said.to_string().contains(SEED),
+        "the seed is in no answer: {said}"
+    );
+    assert_eq!(
+        uses_of(&service, workspace_id, (&ada, &as_ada), &kept["reference"]).await,
+        json!([]),
+        "reading a code is no use"
+    );
+}

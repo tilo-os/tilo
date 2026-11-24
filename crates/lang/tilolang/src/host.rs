@@ -620,6 +620,18 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "Code",
+        id: "host-code",
+        doc: "The one-time code a vault item's seed makes now, as `vault.code` reads it: its digits, how long it lasts, and how its service makes it.",
+        fields: &[
+            ("code", "Text", "Its digits."),
+            ("until", "Time", "The instant the code stops being good."),
+            ("period", "Int", "How many seconds one code stands."),
+            ("digits", "Int", "How many digits it has."),
+            ("algorithm", "Text", "The hash it is made with: `SHA1`, `SHA256` or `SHA512`."),
+        ],
+    },
+    ValueType {
         name: "ImageInfo",
         id: "host-image-info",
         doc: "What an image's own container says, as `File.image_info()` reads it: its upright size, when it was taken, which way it is turned, and where it was taken.",

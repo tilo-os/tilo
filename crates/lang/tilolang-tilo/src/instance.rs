@@ -1187,6 +1187,10 @@ impl Instance {
             .set_engine(crate::instance::platform::PlatformEngine(Rc::clone(
                 &self.platform,
             )));
+        host.runtime()
+            .set_vault(crate::instance::platform::PlatformVault(Rc::clone(
+                &self.platform,
+            )));
         let platform = Rc::clone(&self.platform);
         host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);

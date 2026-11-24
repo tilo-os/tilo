@@ -630,6 +630,14 @@ pub trait Platform {
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
 
+    /// The code of this moment from the vault item `reference` names, where this platform holds
+    /// the workspace's vault: a reading, so a view may show it. `None` for a platform that keeps
+    /// no vault, and the view shows its waiting state.
+    fn vault_code(&self, reference: &str) -> Option<tilolang_runtime::host_work::VaultCode> {
+        let _ = reference;
+        None
+    }
+
     /// The device's own work for `app`: an op answered now. The engines this session runs for its
     /// apps answer it ([`crate::engine`]); one it does not run is refused.
     ///
@@ -744,6 +752,16 @@ impl BlobHost for PlatformBlobs {
 
     fn thumbnail(&self, file: &FileValue, size: u32) -> Result<Option<FileValue>, String> {
         self.0.thumbnail(file, size)
+    }
+}
+
+/// The vault's answers, as the platform running the instance gives them: what `vault.code`
+/// reads, from where the workspace's vault is.
+pub struct PlatformVault(pub(super) Rc<dyn Platform>);
+
+impl tilolang_runtime::host_work::VaultHost for PlatformVault {
+    fn code(&self, reference: &str) -> Option<tilolang_runtime::host_work::VaultCode> {
+        self.0.vault_code(reference)
     }
 }
 

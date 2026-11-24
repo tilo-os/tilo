@@ -20,6 +20,9 @@ pub struct Published {
         &'static [&'static str],
         std::sync::Arc<dyn PublishedResources>,
     )>,
+    /// Providers of resources named by a prefix, such as a vault item's own reading
+    /// (`vault.item:<id>`), which no fixed list can name.
+    prefixed: Vec<(&'static str, std::sync::Arc<dyn PublishedResources>)>,
     /// The provider of every resource no other names: what the desktop session signed in here
     /// publishes, which it decides as it runs.
     rest: Option<std::sync::Arc<dyn PublishedResources>>,
@@ -47,6 +50,17 @@ impl Published {
         self
     }
 
+    /// The table with `provider` serving every resource whose name starts with `prefix`.
+    #[must_use]
+    pub fn serving_prefix(
+        mut self,
+        prefix: &'static str,
+        provider: std::sync::Arc<dyn PublishedResources>,
+    ) -> Self {
+        self.prefixed.push((prefix, provider));
+        self
+    }
+
     /// The table with `provider` serving every resource no other provider names.
     #[must_use]
     pub fn serving_the_rest(mut self, provider: std::sync::Arc<dyn PublishedResources>) -> Self {
@@ -60,6 +74,12 @@ impl Published {
             .iter()
             .find(|(served, _)| served.contains(&resource))
             .map(|(_, provider)| provider)
+            .or_else(|| {
+                self.prefixed
+                    .iter()
+                    .find(|(prefix, _)| resource.starts_with(prefix))
+                    .map(|(_, provider)| provider)
+            })
             .or(self.rest.as_ref())
     }
 }

@@ -104,7 +104,10 @@ impl Workspaces {
     ) -> Result<Value, ActionCallError> {
         let action = request.target.address.action.as_str();
         let effect = match action {
-            person_vault::LIST | person_vault::ENTRIES | person_vault::USES => ActionKind::Read,
+            person_vault::LIST
+            | person_vault::ENTRIES
+            | person_vault::USES
+            | person_vault::CODE => ActionKind::Read,
             _ => ActionKind::Undoable,
         };
         // A release reaches the vault only through the process it answers
@@ -160,6 +163,34 @@ impl Workspaces {
                 )
             }
             person_vault::ENTRIES => said(self.vault_entries(&workspace).await),
+            // The code of this moment from a code generator's seed, shown where the vault is:
+            // a read, so nothing is written and no use stands in its history. The item is the
+            // action's resource, so a grant covers that one account.
+            person_vault::CODE => {
+                self.using_vault(&workspace, caller, None, true)
+                    .await
+                    .map_err(ActionCallError::refused)?;
+                let reference = request
+                    .target
+                    .address
+                    .resource
+                    .strip_prefix(&format!("{}:", person_vault::ITEM_KIND))
+                    .and_then(vault_items::ItemId::parse)
+                    .ok_or(ActionCallError::UnknownAction)?;
+                let reference = format!("{}:{}", person_vault::ITEM_KIND, reference.as_str());
+                let code = self
+                    .vault_code(&workspace, &reference)
+                    .await
+                    .map_err(ActionCallError::refused)?;
+                let now = tilo_clock::unix_now();
+                answer(Ok(serde_json::json!({
+                    "code": code.digits(),
+                    "left": code.until_unix.saturating_sub(now),
+                    "period": code.params.period,
+                    "digits": code.params.digits,
+                    "algorithm": code.params.algorithm.word(),
+                })))
+            }
             person_vault::KEEP_ENTRY => {
                 let keeping: KeepEntry =
                     argument(request, "an entry to keep is an entry of Passwords")?;
@@ -472,6 +503,7 @@ fn answer<T: serde::Serialize>(
 }
 
 fn view(facts: ItemFacts) -> Result<ItemView, vault_items::ItemError> {
+    let code = facts.code;
     Ok(ItemView {
         reference: ItemRef::from_id(facts.id.as_str()).ok_or(vault_items::ItemError::Damaged)?,
         kind: match facts.kind {
@@ -485,6 +517,9 @@ fn view(facts: ItemFacts) -> Result<ItemView, vault_items::ItemError> {
         title: Some(facts.title).filter(|title| !title.trim().is_empty()),
         added_at: facts.added_unix,
         last_used_at: facts.last_used_unix,
+        algorithm: code.map(|code| code.algorithm.word().to_owned()),
+        digits: code.map(|code| code.digits),
+        period: code.map(|code| code.period),
     })
 }
 
@@ -505,6 +540,9 @@ fn add(items: &mut VaultItems, adding: AddItem) -> Result<ItemView, vault_items:
         belongs_to,
         username,
         sent_in,
+        algorithm,
+        digits,
+        period,
         secret,
     } = adding;
     let places = belongs_to
@@ -518,7 +556,16 @@ fn add(items: &mut VaultItems, adding: AddItem) -> Result<ItemView, vault_items:
         ItemKind::SshKey => vault_items::ItemKind::SshKey,
         ItemKind::Value => vault_items::ItemKind::Value,
     };
-    let item = NewItem::new(kind, places, username, secret);
+    let code = if kind == vault_items::ItemKind::CodeGenerator {
+        vault_items::CodeParams::checked(
+            &algorithm,
+            digits.unwrap_or(vault_items::CODE_DIGITS),
+            period.unwrap_or(vault_items::CODE_SECS),
+        )?
+    } else {
+        vault_items::CodeParams::default()
+    };
+    let item = NewItem::new(kind, places, username, secret).with_code(code);
     let kept = if sent_in.trim().is_empty() {
         items.add(item)?
     } else {
