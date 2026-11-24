@@ -374,6 +374,12 @@ Every other use stays a call the vault makes itself, such as a web call with the
 secret added, a signature made with a signing key, or the current one-time code
 from a TOTP seed (`vault.item:<id>#code`), where the vault is; a grant
 to use the item lets people, agents and CI call it without ever holding it.
+Engines are device capability, so each device runs one engine host, owned by
+its daemon. It runs every app's engine jobs under each call's grants, with no
+authority of its own, and lives while a job runs. Engine work that needs a
+released secret runs in that app's own sandboxed process instead, and network
+an engine reaches for an app goes under that app's grant alone. Streams a window
+shows stay in the app's process.
 Such a use that changes nothing is a read: it records no change, and what it
 returns is shown, never stored, not even as window state.
 A view that shows a secret or a code declares `protect capture`. Wherever it is
