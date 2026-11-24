@@ -210,7 +210,7 @@ pub(crate) struct HostInner {
     /// ([`Host::carrying_out`]): what it writes stays, as the change the document commits.
     carried: Cell<bool>,
     /// The person and policy the runtime's members were last given from ([`Host::follow_members`]).
-    pub(crate) members_from: RefCell<Option<(String, tilo_action_policy::WorkspacePolicy)>>,
+    pub(crate) members_from: RefCell<Option<crate::members::MembersFrom>>,
     /// Where the workspace's content is read from, when its embedder has one
     /// ([`Host::follow_content`](crate::content::Host::follow_content)).
     pub(crate) content_source: RefCell<Option<crate::content::ContentSource>>,

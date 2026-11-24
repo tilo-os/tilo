@@ -5,7 +5,6 @@ use super::surfaces_component::{DeclaredPanel, FloatingPanelProps};
 use crate::component::{Described, Event, Intent, Value};
 use crate::headless::FrameHarness;
 use crate::synthetic_input;
-use crate::widget::Widget;
 
 fn harness(queue: &crate::Intents<crate::component::Fired>) -> FrameHarness {
     let panel = DeclaredPanel::from_props(

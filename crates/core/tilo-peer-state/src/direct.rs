@@ -876,6 +876,9 @@ struct Inner {
     admission: Option<Admission>,
     /// This device's ownership of its key, which signs what the link writes.
     signer: Arc<dyn DeviceSigner>,
+    /// The certificate this device was placed with, when the host that placed it serves it one
+    /// record and the workspace's roster lists it nowhere ([`DirectSync::placed`]).
+    placed: Option<tilo_user_identity::DeviceCert>,
     /// The sealed history this device keeps for the workspace, when it is a
     /// store device. A page keeps none: it takes the records it opens from the
     /// device it dialled ([`OtherStore::Dialled`]).
@@ -997,6 +1000,7 @@ impl DirectSync {
             replica,
             admission: None,
             signer: Arc::new(signer),
+            placed: None,
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
             outgoing: broadcast::channel(OUTGOING).0,
@@ -1028,6 +1032,7 @@ impl DirectSync {
             replica: self.0.replica.clone(),
             admission: self.0.admission.clone(),
             signer: Arc::clone(&self.0.signer),
+            placed: self.0.placed.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             store: self.0.store.clone(),
             outgoing: self.0.outgoing.clone(),
@@ -1063,6 +1068,24 @@ impl DirectSync {
             store: Some(store),
             ..self.copied()
         }))
+    }
+
+    /// Prove this device by `certificate`, the one the host that placed it issued, where the
+    /// workspace's roster does not list it: a device placed to serve one record is no member,
+    /// and the host admits its link by the certificate it placed it with, confined to that
+    /// record. Call it before cloning the link to its handlers.
+    ///
+    /// # Errors
+    ///
+    /// The certificate is for another key than the one this device signs with.
+    pub fn placed(&self, certificate: tilo_user_identity::DeviceCert) -> Result<Self, String> {
+        if certificate.device_public_key != self.device() {
+            return Err("the certificate it was placed with is another device's".into());
+        }
+        Ok(Self(Arc::new(Inner {
+            placed: Some(certificate),
+            ..self.copied()
+        })))
     }
 
     /// Take the workspace's records only as this device opens them, and say
@@ -2912,6 +2935,7 @@ impl DirectSync {
                 .certificates()
                 .into_iter()
                 .find(|certificate| certificate.device_public_key == device)
+                .or_else(|| self.0.placed.clone())
                 .ok_or("this device is not in the workspace roster")?;
             let revocations = replica
                 .revocations()
@@ -3712,8 +3736,8 @@ impl DirectSync {
         self.0.replica.id()
     }
 
-    /// This device's certificate in the replica's roster: the one its key signs
-    /// for.
+    /// This device's certificate in the replica's roster, the one its key signs for, or the
+    /// one it was placed with where the roster lists it nowhere.
     fn certificate(&self) -> Result<tilo_user_identity::DeviceCert, String> {
         let device = self.device();
         self.0
@@ -3722,6 +3746,7 @@ impl DirectSync {
             .certificates()
             .into_iter()
             .find(|certificate| certificate.device_public_key == device)
+            .or_else(|| self.0.placed.clone())
             .ok_or_else(|| "this device is not in the workspace roster".into())
     }
 }

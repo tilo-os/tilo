@@ -8,9 +8,10 @@ use tilo_system_resources::journal::JOURNAL;
 use tilo_system_resources::printers::PRINTERS;
 use tilo_system_resources::processes::PROCESSES;
 use tilo_system_resources::scanners::SCANNERS;
+use tilo_system_resources::windows_apps::{WINDOWS_APPS, WindowsApps};
 
-use crate::i18n::name;
 use crate::Readings;
+use crate::i18n::name;
 
 /// The apps that show a reading's items, opened when the reading offers no action on one.
 const LOGS_APP: &str = "so.tilo.logs";
@@ -18,6 +19,8 @@ const CONTAINERS_APP: &str = "so.tilo.containers";
 const DISKS_APP: &str = "so.tilo.disks";
 const MONITOR_APP: &str = "so.tilo.monitor";
 const PRINT_APP: &str = "so.tilo.print-centre";
+/// The Windows Apps window, which shows a program of this computer at its page.
+const WINDOWS_APP: &str = "so.tilo.windows";
 
 /// The longest a record's message reads as a row's title.
 const TITLE: usize = 96;
@@ -51,6 +54,27 @@ pub fn rows(readings: &Readings) -> Vec<(String, ReadingRow)> {
     rows.extend(process_rows(readings));
     rows.extend(print_rows(readings));
     rows
+}
+
+/// This computer's Windows programs, as its compatibility layer lists them: each a row the
+/// Windows Apps window shows, so choosing one opens that window at the program's page.
+#[must_use]
+pub fn windows_rows(programs: &WindowsApps) -> Vec<(String, ReadingRow)> {
+    let group = name("so.tilo.system.windows-apps", "Windows apps");
+    programs
+        .apps
+        .iter()
+        .map(|program| {
+            let found = row(program.id.clone(), program.name.clone())
+                .subtitled(program.publisher.clone())
+                .grouped(group.clone())
+                .icon("app-window")
+                .field(&program.runner)
+                .fact(program.runner.clone())
+                .shown_by(WINDOWS_APP);
+            (WINDOWS_APPS.to_owned(), found)
+        })
+        .collect()
 }
 
 fn journal_rows(readings: &Readings) -> Vec<(String, ReadingRow)> {
@@ -157,10 +181,7 @@ fn disk_rows(readings: &Readings) -> Vec<(String, ReadingRow)> {
         };
         rows.push((DISKS.to_owned(), opens));
         for part in &drive.partitions {
-            let title = part
-                .label
-                .clone()
-                .unwrap_or_else(|| part.name.clone());
+            let title = part.label.clone().unwrap_or_else(|| part.name.clone());
             let mut found = row(part.name.clone(), title)
                 .grouped(partitions.clone())
                 .icon("database")
@@ -252,11 +273,11 @@ mod tests {
     use tilo_system_resources::containers::{
         Container, ContainerState, ContainerStats, Containers,
     };
+    use tilo_system_resources::disks::Partition;
     use tilo_system_resources::journal::JournalEntry;
     use tilo_system_resources::printers::{JobState, PrintJob, PrinterQueue, QueueState};
     use tilo_system_resources::processes::Process;
     use tilo_system_resources::scanners::ScannerShown;
-    use tilo_system_resources::disks::{Partition};
 
     fn readings() -> Readings {
         let mut readings = Readings::default();
@@ -365,7 +386,10 @@ mod tests {
         assert_eq!(resource, CONTAINERS);
         assert_eq!(container.app.as_deref(), Some(CONTAINERS_APP));
         assert!(
-            container.fields.iter().any(|field| field.contains("port 80")),
+            container
+                .fields
+                .iter()
+                .any(|field| field.contains("port 80")),
             "a container's log text is found"
         );
 

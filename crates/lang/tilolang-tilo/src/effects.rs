@@ -128,6 +128,17 @@ pub struct OpenPlan {
     pub view: Option<String>,
 }
 
+/// The id of the record type the field type `ty` (`List<WindowsApp>`) is a list of, when the
+/// package `meta` declares it.
+fn listed_type(meta: &tilolang_runtime::meta::Meta, ty: &str) -> Option<String> {
+    let listed = ty.trim().strip_prefix("List<")?.strip_suffix('>')?;
+    let name = listed.rsplit('.').next()?;
+    meta.types
+        .iter()
+        .find(|declared| declared.name == name)
+        .map(|declared| declared.id.clone())
+}
+
 fn tree_json(node: &UiNode) -> Json {
     let props: serde_json::Map<String, Json> = node
         .props
@@ -378,22 +389,95 @@ impl Host {
     }
 
     /// How to open the resource `anchor` (an id as [`publish_tree`](crate::publish::publish_tree)
-    /// publishes it): its app, and the deepest resource on the way to it whose type has a
-    /// default view, which is the window `open(r)` shows. A hit on something with no window of its
-    /// own (a message of a conversation) opens the window of what holds it.
+    /// publishes it) in the window of `app`: its app, and the deepest resource on the way to it
+    /// whose type has a default view, which is the window `open(r)` shows. A hit on something
+    /// with no window of its own (a message of a conversation) opens the window of what holds it.
+    ///
+    /// An anchor of a record a device reading lists (`windows-apps/adobe-reader`: the reading's
+    /// resource, then the record's own id) is no resource the workspace holds: it opens `app`,
+    /// with the record the reading names selected, which its view answers for its type
+    /// ([`ViewInstance::show`](tilolang_runtime::ViewInstance::show)). No view of a reading's
+    /// record is published, so `view` opens none of them.
     ///
     /// Opened through a view (`view`, an [`OpenEffect::OpenWith`]), the target is the anchor
     /// itself, which that view shows.
     ///
     /// # Errors
-    /// The anchor names nothing in this workspace.
-    pub fn open_plan(&self, anchor: &str, view: Option<&str>) -> Result<OpenPlan, String> {
-        use tilolang_runtime::store::Store as _;
+    /// The anchor names nothing in this workspace or in a reading `app` reads.
+    pub fn open_plan(
+        &self,
+        app: &str,
+        anchor: &str,
+        view: Option<&str>,
+    ) -> Result<OpenPlan, String> {
         // The store answers by a resource's type: it is the one the store holds the anchor as.
-        let ty = self
-            .store()
-            .type_of_id(anchor)
-            .ok_or_else(|| format!("`{anchor}` is not in this workspace"))?;
+        if let Some(ty) = self.store().type_of_id(anchor) {
+            return self.held_plan(anchor, ty, view);
+        }
+        // Nothing the workspace holds is called that: a device reading's record may be, which
+        // its view shows where the reading stands.
+        if view.is_none()
+            && let Some(plan) = self.reading_plan(app, anchor)
+        {
+            return Ok(plan);
+        }
+        Err(format!("`{anchor}` is not in this workspace"))
+    }
+
+    /// How the window of `app` shows the record `anchor` names in a device reading
+    /// (`windows-apps/adobe-reader`): the record, as the reading gives it a reference (its own
+    /// id), and the type the reading's list declares for it.
+    fn reading_plan(&self, app: &str, anchor: &str) -> Option<OpenPlan> {
+        let (doc, item) = tilolang_runtime::value::split_id(anchor)?;
+        let item = item?;
+        // The package that publishes the reading `doc`, by the id it publishes it under.
+        for meta in self.runtime().metas() {
+            let meta = &meta;
+            let Some(root) = meta
+                .named_roots
+                .iter()
+                .find(|root| root.published.as_deref() == Some(doc))
+            else {
+                continue;
+            };
+            let Some(reading) = meta.types.iter().find(|declared| declared.id == root.ty) else {
+                continue;
+            };
+            let (json, _) = self
+                .runtime()
+                .reading(&ResourceRef::root(doc, root.ty.clone()))?;
+            // The field of the reading that lists the record, by the key the reading holds it
+            // under: one holding a list with the record's id in it.
+            let key = json
+                .as_object()?
+                .iter()
+                .find(|(_, list)| {
+                    list.as_array().is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|held| held.get("id").and_then(Json::as_str) == Some(item))
+                    })
+                })
+                .map(|(key, _)| key.as_str())?;
+            let field = reading
+                .fields
+                .iter()
+                .find(|field| field.id.rsplit('.').next() == Some(key))?;
+            let ty = listed_type(meta, &field.ty)?;
+            // A reading names a record it lists by its own id (`foreign::Decoder`), so the
+            // record is the resource that id names, of the type the list declares.
+            return Some(OpenPlan {
+                app: app.to_owned(),
+                target: Some(ResourceRef::root(item, ty)),
+                view: None,
+            });
+        }
+        None
+    }
+
+    /// How the window of the anchor's own app shows the resource `anchor`, held as `ty`.
+    fn held_plan(&self, anchor: &str, ty: String, view: Option<&str>) -> Result<OpenPlan, String> {
+        use tilolang_runtime::store::Store as _;
         let probe = ResourceRef::parse_id(anchor, ty)
             .ok_or_else(|| format!("`{anchor}` is not a resource id"))?;
         let (package, _, _) = self

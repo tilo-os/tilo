@@ -32,6 +32,12 @@ export interface Daemon {
     group: Group | null,
   ): Promise<CallAnswer>;
   /**
+   * Make the web call `args` names with the key of the vault item it names, in `workspace`
+   * (`null`: the one the daemon serves): `{answer}`, or the refusal. An app's held connection
+   * has the vault add the key to the request; the secret never reaches the app.
+   */
+  webCall(workspace: string | null, args: Record<string, unknown>): Promise<CallAnswer>;
+  /**
    * The secret of the vault item `item` in `workspace` (`null`: the one the daemon serves),
    * released to this app's process: `{answer: {secret}}`, or the refusal.
    */

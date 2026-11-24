@@ -36,8 +36,9 @@ pub mod carrier;
 pub mod grant;
 
 /// What capture and playout need of one workspace's live session, wherever it runs: the
-/// daemon holds it, a desktop reaches it over its link, and a test runs one locally.
-#[cfg(feature = "live_session")]
+/// daemon holds it, a desktop reaches it over its link, and a test runs one locally. A page
+/// captures in the browser and reaches its session directly, so it has none of these.
+#[cfg(all(feature = "live_session", not(target_arch = "wasm32")))]
 pub mod capture;
 
 /// The carrier over a direct iroh connection: the one every device dials,

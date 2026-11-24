@@ -59,7 +59,9 @@ use std::path::Path;
 
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, TreePath, WorkspacePolicy};
+use tilo_action_policy::{
+    ActionKind, Answer, Context, Grantee, Party, TreePath, WorkspacePolicy, decide,
+};
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, UnknownAction};
 #[cfg(feature = "agents")]
 use tilo_actions::remote::CatalogueRow;
@@ -892,27 +894,42 @@ fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
     }
 }
 
-/// Where a grant that lets `using`'s agent make the use `target` names of `item`, sending
-/// it to `places`, stands in its workspace's policy.
+/// The resource a grant on the use `target` names of `item`, sent to `places`, stands for: the
+/// item, and the places it goes to, sorted.
+fn use_resource(item: &ItemId, places: &[Place]) -> String {
+    let mut sorted: Vec<&str> = places.iter().map(Place::as_str).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    if sorted.is_empty() {
+        item.as_str().to_owned()
+    } else {
+        format!("{}/{}", item.as_str(), json!(sorted))
+    }
+}
+
+/// Where a grant that lets an app, or `using`'s agent, make the use `target` names of `item`,
+/// sending it to `places`, stands in `workspace`'s policy.
+fn use_node(
+    workspace: &str,
+    target: &RemoteActionTarget,
+    item: &ItemId,
+    places: &[Place],
+) -> TreePath {
+    TreePath::workspace(workspace)
+        .app(&target.provider)
+        .kind(person_vault::use_word(target))
+        .resource(use_resource(item, places))
+        .action(&target.address.action)
+}
+
+/// [`use_node`] in the workspace of the turn `using`.
 fn vault_use_node(
     using: &AskedTurn,
     target: &RemoteActionTarget,
     item: &ItemId,
     places: &[Place],
 ) -> TreePath {
-    let mut sorted: Vec<&str> = places.iter().map(Place::as_str).collect();
-    sorted.sort_unstable();
-    sorted.dedup();
-    let resource = if sorted.is_empty() {
-        item.as_str().to_owned()
-    } else {
-        format!("{}/{}", item.as_str(), json!(sorted))
-    };
-    TreePath::workspace(&using.workspace)
-        .app(&target.provider)
-        .kind(person_vault::use_word(target))
-        .resource(resource)
-        .action(&target.address.action)
+    use_node(&using.workspace, target, item, places)
 }
 
 /// What `using`'s person is shown of the use `target` names with `arguments`: why their
@@ -1261,6 +1278,184 @@ impl Workspaces {
             )
             .await
             .map_err(ActionCallError::refused)
+    }
+
+    /// A web call `request` asks from `app`'s held connection in `workspace`, with the key its
+    /// item keeps: the vault makes the request, so the secret never reaches the app. It is made
+    /// where a grant of the workspace's lets `app` call that service with that item; otherwise
+    /// its person is asked once, per app, item and place, and the app is refused saying so
+    /// until they allowed it.
+    ///
+    /// # Errors
+    /// Refused for a process no turn placed here or one apps share, a connection another device
+    /// holds, a device that may not read the vault for the app, a call the vault would send
+    /// nowhere, and one no grant lets the app make.
+    pub async fn web_call_to(
+        &self,
+        (app, workspace): (&str, &str),
+        process: &super::vault_release::AppProcess,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionCallError> {
+        let refused = ActionCallError::refused;
+        self.held_connection((app, workspace), process).await?;
+        let call: web_call::WebCall = super::person_vault::argument(
+            request,
+            "a web call names its address and the vault item that is its key",
+        )?;
+        let target = person_vault::call_target();
+        let items = self
+            .open_vault(workspace)
+            .await
+            .map_err(|why| refused(super::vault_release::device_may_not_read(app, &why)))?
+            .items();
+        web_call::sendable(&call, self.call_reach(), &items).map_err(refused)?;
+        web_call::sendable_content(&call, self, workspace, Some(app)).map_err(refused)?;
+        let (item, kind, places) = web_call::wanted(&call).map_err(refused)?;
+        let facts = items
+            .fits(&item, kind, &places)
+            .map_err(|error| refused(error.to_string()))?;
+        drop(items);
+        if !self
+            .app_calls(workspace, app, &target, &item, &places)
+            .await
+        {
+            self.ask_web_call(
+                workspace, app, request, &call, &target, &item, &places, &facts,
+            )
+            .map_err(refused)?;
+            return Err(refused(super::vault_release::call_asked_first(app)));
+        }
+        let caller = Caller::local_app(app)
+            .acting_for(hex::encode(self.device_cert().user_public_key))
+            .in_workspace(workspace);
+        let word = person_vault::use_word(&target);
+        let purpose = UsedFor {
+            using: &word,
+            what: "",
+            allowed: Some(Allowance::Always),
+        };
+        web_call::send(
+            self,
+            workspace,
+            call,
+            (app, caller.acting()),
+            Some(app),
+            purpose,
+        )
+        .await
+        .map_err(refused)
+    }
+
+    /// Whether a grant of `workspace`'s lets `app` make the use `target` names of `item`, sending
+    /// it to `places`.
+    async fn app_calls(
+        &self,
+        workspace: &str,
+        app: &str,
+        target: &RemoteActionTarget,
+        item: &ItemId,
+        places: &[Place],
+    ) -> bool {
+        let Some(policy) = self.policy_of(workspace).await else {
+            return false;
+        };
+        let decision = decide(
+            policy.grants.iter(),
+            &[Grantee::app(app)],
+            &use_node(workspace, target, item, places),
+            ActionKind::Outside,
+            &Context::at(tilo_clock::unix_now_ms()),
+        );
+        decision.answer == Answer::Allow && decision.grant().is_some()
+    }
+
+    /// Ask `app`'s person whether it may call the service `call` names with `item`, as an asked
+    /// record whose "Approve and grant" writes the grant on that item at those places alone:
+    /// unless one asks already.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one ask names the call, the app and what it is on"
+    )]
+    fn ask_web_call(
+        &self,
+        workspace: &str,
+        app: &str,
+        request: &InvokeRequest,
+        call: &web_call::WebCall,
+        target: &RemoteActionTarget,
+        item: &ItemId,
+        places: &[Place],
+        facts: &accounts::vault_items::ItemFacts,
+    ) -> Result<(), String> {
+        let (store, records) = self
+            .vault_asks()
+            .ok_or("This device keeps no asked records, so nobody can be asked")?;
+        let target = RemoteActionTarget {
+            provider: target.provider.clone(),
+            address: tilo_actions::ActionAddress::new(
+                use_resource(item, places),
+                target.address.action.clone(),
+            ),
+        };
+        let waits = store.waiting_in(workspace).into_iter().any(|waiting| {
+            waiting
+                .caller
+                .acting()
+                .app()
+                .map(|app| app.to_string())
+                .as_deref()
+                == Some(app)
+                && store
+                    .kept_ask(&waiting.asked.record)
+                    .is_some_and(|kept| kept.request.target == target)
+        });
+        if waits {
+            return Ok(());
+        }
+        let caller = Caller::local_app(app)
+            .acting_for(hex::encode(self.device_cert().user_public_key))
+            .in_workspace(workspace);
+        let title = if facts.title.trim().is_empty() {
+            "a vault item".to_owned()
+        } else {
+            facts.title.clone()
+        };
+        let places: Vec<&str> = places.iter().map(Place::as_str).collect();
+        let service = if places.is_empty() {
+            "a service".to_owned()
+        } else {
+            places.join(", ")
+        };
+        let method = match call.method.trim() {
+            "" => "GET".to_owned(),
+            method => method.to_ascii_uppercase(),
+        };
+        let asked = AskedFacts {
+            words: format!(
+                "{app} asks to call {service} with {title}, sending the key from its vault. The \
+                 vault adds the key to the request; {app} never sees it. Approve and grant, and \
+                 it may call this service with this one item again; another service or item asks \
+                 again."
+            ),
+            on: Some(title),
+            facts: vec![
+                Fact::new("Item", super::vault_release::kind_word(facts.kind)),
+                Fact::new("Goes to", places.join(" ")),
+                Fact::new("Calls", format!("{method} {}", call.url.trim())),
+            ],
+            verb: "call".to_owned(),
+            plural: Some("this service".to_owned()),
+            kind: person_vault::use_word(&person_vault::call_target()),
+            effect: Some(ActionKind::Outside),
+            ..AskedFacts::by(super::asking::asked_by(&caller))
+        };
+        let request = InvokeRequest {
+            target,
+            ..request.clone()
+        };
+        records
+            .write_asked(workspace, &caller, &request, &asked)
+            .map(drop)
     }
 }
 

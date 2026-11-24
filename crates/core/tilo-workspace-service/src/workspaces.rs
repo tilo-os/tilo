@@ -47,7 +47,6 @@ mod commit;
 mod content;
 /// The records of the content a host stopped keeping, which its members read.
 pub use refused::Refusal as ContentRefusalRecord;
-mod refused;
 mod creating;
 mod default_apps;
 mod delete;
@@ -56,6 +55,7 @@ pub mod fixtures;
 mod genesis;
 mod machines;
 mod mcp_server;
+mod refused;
 pub use machines::WorkspaceMachines;
 mod names;
 pub use names::PersonNames;
@@ -160,6 +160,9 @@ pub(crate) mod person_vault;
 // One vault item's secret handed to a process of an app's own that a turn placed here.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod vault_release;
+// The logins a page in a window of an app's own signs in with, kept in that same vault.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod page_logins;
 // The workspace's one vault, Passwords' document, as this device holds it.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod vault;
@@ -1152,6 +1155,17 @@ struct WorkspacesInner {
     /// calendar server of its own in ([`Workspaces::keep_icloud_calendars_at`]).
     #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
     icloud_calendars_at: std::sync::RwLock<Option<String>>,
+    /// The credential store a test signs drives in through
+    /// ([`Workspaces::cloud_sign_in_through`]); the committed registrations
+    /// otherwise.
+    #[cfg(any(test, feature = "test-support"))]
+    cloud_sign_in: std::sync::RwLock<Option<account_credentials::CredentialStore>>,
+    /// What signs an `Apple ID` in, when a test stands a provider of its own
+    /// in ([`Workspaces::icloud_sign_in_through`]); Apple's otherwise.
+    #[cfg(any(test, feature = "test-support"))]
+    icloud_sign_in: std::sync::RwLock<
+        Option<std::sync::Arc<dyn account_credentials::icloud::ICloudAuth>>,
+    >,
     /// Whether this server is about to restart and hands its work to the
     /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
     draining: std::sync::atomic::AtomicBool,
@@ -1196,10 +1210,10 @@ struct WorkspacesInner {
     asked_store: std::sync::OnceLock<Arc<tilo_actions::remote::asked::AskedStore>>,
     /// This host's dispatch, as that store hands it back the calls it keeps.
     asked_dispatch: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedDispatch>>,
-    /// The dispatch asked releases of vault items are kept under, and the records they are
+    /// The dispatch an app's asked use of a vault item is kept under, and the records they are
     /// written through ([`vault_release`]).
     #[cfg(not(target_arch = "wasm32"))]
-    release_asks: std::sync::OnceLock<(
+    vault_asks: std::sync::OnceLock<(
         Arc<dyn tilo_actions::remote::asked::AskedDispatch>,
         Arc<dyn tilo_actions::remote::asked::AskedRecords>,
     )>,
@@ -1588,6 +1602,10 @@ impl Workspaces {
                 cursors_per_answer: std::sync::atomic::AtomicUsize::new(0),
                 #[cfg(all(feature = "agents", any(test, feature = "test-support")))]
                 icloud_calendars_at: std::sync::RwLock::new(None),
+                #[cfg(any(test, feature = "test-support"))]
+                cloud_sign_in: std::sync::RwLock::new(None),
+                #[cfg(any(test, feature = "test-support"))]
+                icloud_sign_in: std::sync::RwLock::new(None),
                 draining: std::sync::atomic::AtomicBool::new(false),
                 mode: std::sync::RwLock::new(None),
                 store,
@@ -1614,7 +1632,7 @@ impl Workspaces {
                 asked_store: std::sync::OnceLock::new(),
                 asked_dispatch: std::sync::OnceLock::new(),
                 #[cfg(not(target_arch = "wasm32"))]
-                release_asks: std::sync::OnceLock::new(),
+                vault_asks: std::sync::OnceLock::new(),
                 machines: std::sync::RwLock::default(),
                 own_readings: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),
@@ -1657,6 +1675,15 @@ impl Workspaces {
         }
         let _ = admitting.set(this.downgrade());
         this.inner.jobs.claim_in(this.downgrade());
+        if let Some(sink) = this
+            .inner
+            .host
+            .channels
+            .as_ref()
+            .and_then(|channels| channels.sink.as_ref())
+        {
+            sink.attach(&this);
+        }
         let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
         let kept = this.served_kept().await;
@@ -2079,6 +2106,14 @@ impl Workspaces {
     #[must_use]
     pub fn governance_changes(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.inner.changes.subscribe()
+    }
+
+    /// What moves whenever a workspace is held here that was not before: what a follower of what
+    /// the workspaces name reads again on, a device that enters its person's workspace after it
+    /// started among them.
+    #[must_use]
+    pub fn holds_changed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.readings.holds()
     }
 
     /// Each write to a record a workspace held here took in: a member's write to

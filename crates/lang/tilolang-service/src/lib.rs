@@ -691,8 +691,8 @@ impl ResourceService {
         by: &tilolang_tilo::runtime::Actor,
     ) -> Option<Result<Started, ApiError>> {
         let value = if type_id == EDIT_TYPE {
-            serde_json::from_slice::<HistoryEdit>(payload)
-                .map_err(|error| ApiError::InvalidArguments(error.to_string()))
+            verbs::edit_from_payload(payload)
+                .map_err(ApiError::InvalidArguments)
                 .and_then(|edit| {
                     let value = self
                         .history_edit(&edit, resource, by)
@@ -702,8 +702,8 @@ impl ResourceService {
                     Ok(value)
                 })
         } else if type_id == VIEW_TYPE {
-            tilo_actions::decode_json::<HistoryView>(payload)
-                .map_err(|error| ApiError::InvalidArguments(error.to_string()))
+            verbs::view_from_payload(payload)
+                .map_err(ApiError::InvalidArguments)
                 .and_then(|view| self.history_view(&view, resource).map_err(ApiError::Failed))
         } else {
             return None;

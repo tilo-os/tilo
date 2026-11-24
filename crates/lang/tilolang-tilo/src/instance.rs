@@ -1575,7 +1575,7 @@ impl Instance {
                 .strip_prefix("tl:")
                 .and_then(|rest| rest.split_once(':'))
                 .map_or(anchor, |(_, id)| id);
-            match host.open_plan(anchor, open.view()) {
+            match host.open_plan(&self.app, anchor, open.view()) {
                 Ok(plan) => {
                     // The paragraph is shown by the editor of the text that holds it, wherever
                     // the window draws that, once the window shows the resource.
@@ -1586,9 +1586,16 @@ impl Instance {
                         ),
                         block,
                     });
-                    // The app's own root in its default view is what the window shows already.
+                    // The app's own root in its default view is what the window shows already. A
+                    // record of another app's reading (a Windows program) is no root of this app,
+                    // though the window shows it.
+                    let own_root = |target: &ResourceRef| {
+                        plan.app == self.app
+                            && target.item.is_none()
+                            && !tilolang_runtime::foreign::is_foreign(target)
+                    };
                     if let Some(target) = plan.target
-                        && (target.item.is_some() || plan.app != self.app || plan.view.is_some())
+                        && (!own_root(&target) || plan.view.is_some())
                     {
                         match plan.view.as_deref() {
                             None => self.show_in_window(&target, Some(front), press),
@@ -1610,7 +1617,7 @@ impl Instance {
                 .strip_prefix("tl:")
                 .and_then(|rest| rest.split_once(':'))
                 .map_or(anchor.as_str(), |(_, id)| id);
-            match host.open_plan(anchor, None) {
+            match host.open_plan(&self.app, anchor, None) {
                 Ok(plan) => {
                     if let Some(target) = plan.target
                         && plan.app == self.app

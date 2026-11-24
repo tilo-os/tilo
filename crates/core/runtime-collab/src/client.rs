@@ -1764,6 +1764,7 @@ impl ShellClient {
     /// The daemon refused it, or its socket does not answer.
     #[cfg(target_os = "linux")]
     pub async fn processes(&self) -> Result<std::os::fd::OwnedFd, NotAvailable> {
+        use tokio::io::AsyncWriteExt as _;
         let (socket, secret) = match self.call(crate::wire::shell::ShellCall::Processes).await? {
             crate::wire::shell::ShellReply::Processes { socket, secret } => (socket, secret),
             other => {
@@ -1776,19 +1777,15 @@ impl ShellClient {
         stream.set_nonblocking(true)?;
         let stream = tokio::net::UnixStream::from_std(stream)?;
         let (ours, theirs) = runtime_portal::packet::pair()?;
+        let sender = runtime_portal::descriptors::DescriptorSender::new();
+        let mut stream =
+            runtime_portal::descriptors::DescriptorStream::sending(stream, sender.clone());
+        let number = sender.send(theirs)?;
         let mut opening = crate::wire::shell::PROCESSES_MAGIC.to_vec();
         opening.extend_from_slice(&secret);
-        // The marker, the secret and the daemon's end in one message: the daemon reads them as
-        // one, so the descriptor arrives with the bytes it reads.
-        loop {
-            stream.writable().await?;
-            match stream.try_io(tokio::io::Interest::WRITABLE, || {
-                runtime_portal::fd_transport::send_with_fd(&stream, &opening, &theirs)
-            }) {
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                sent => break sent?,
-            }
-        }
+        opening.extend_from_slice(&number.to_le_bytes());
+        stream.write_all(&opening).await?;
+        stream.flush().await?;
         Ok(ours)
     }
 

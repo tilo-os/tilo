@@ -3,5 +3,10 @@
     "path": "crates/core/tilo-browser-runtime/web/apple-touch-icon.png",
     "oid": "b675c1a67561f81cf00e09fe0c3ab056d6dd8afb",
     "reason": "Safari takes a home-screen icon only as a PNG; rendered from the brand's app-icon.svg at 180 px. Re-pin it only when the brand icon changes."
+  },
+  {
+    "path": "apps/tl/music/media/first-light.wav",
+    "oid": "b178cee44e2c5233764b6fef18b17bab13ab0baf",
+    "reason": "The tone Music's scenario plays is a WAV, which is bytes, not text; written by apps/tl/music/make-scenario-clip.py. Re-pin it only when the tone itself changes."
   }
 ]

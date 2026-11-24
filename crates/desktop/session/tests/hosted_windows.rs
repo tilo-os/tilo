@@ -667,6 +667,36 @@ fn a_presented_picture_in_picture_stands_follows_and_returns() {
     connection.write_all(&bytes).unwrap();
     connection.flush().unwrap();
 
+    // The person dragged the picture by its body: it stands where they let it go, and the app is
+    // told the window's place there.
+    let moved = [
+        rect[0] - 40.0,
+        rect[1] - 30.0,
+        rect[2] - 40.0,
+        rect[3] - 30.0,
+    ];
+    let mut bytes = serde_json::to_vec(&FloatingSurfaceClientMessage::SurfaceGeometry {
+        id: "browser-video".into(),
+        rect: moved,
+        content_rect: moved,
+        input_rect: None,
+    })
+    .unwrap();
+    bytes.push(b'\n');
+    connection.write_all(&bytes).unwrap();
+    connection.flush().unwrap();
+    let dragged = |told: &[FloatingSurfaceHostMessage]| {
+        told.iter().any(|message| {
+            matches!(message, FloatingSurfaceHostMessage::PrepareSurface { id, rect, .. }
+                if id == "browser-video" && (rect[0] - moved[0]).abs() < 0.5)
+        })
+    };
+    let stood = host_frames(&mut session, &mut connection, dragged);
+    assert!(
+        dragged(&stood),
+        "the picture's window moves where the person dragged it: {stood:?}"
+    );
+
     // The app takes its picture back: the surface goes and the shell hears it closed.
     let mut bytes = serde_json::to_vec(&FloatingSurfaceClientMessage::Dismiss {
         id: "browser-video".into(),
@@ -686,7 +716,7 @@ fn a_presented_picture_in_picture_stands_follows_and_returns() {
         }),
         "the app's picture is returned when it asks: {frames:?}"
     );
-    for refused in ["present", "update_region"] {
+    for refused in ["present", "update_region", "surface_geometry"] {
         assert!(
             !frames.iter().any(|message| {
                 matches!(message, FloatingSurfaceHostMessage::Unanswered { message, .. }
@@ -701,6 +731,21 @@ fn a_presented_picture_in_picture_stands_follows_and_returns() {
                 if id == "browser-video")
         }),
         "the picture stands nowhere once its app takes it back: {frames:?}"
+    );
+
+    // The app floats its picture again, as a page that starts another video does: it comes back
+    // where the person left it.
+    let mut bytes = serde_json::to_vec(&FloatingSurfaceClientMessage::Present {
+        request: (&request).into(),
+    })
+    .unwrap();
+    bytes.push(b'\n');
+    connection.write_all(&bytes).unwrap();
+    connection.flush().unwrap();
+    let again = host_frames(&mut session, &mut connection, dragged);
+    assert!(
+        dragged(&again),
+        "the picture comes back where the person left it: {again:?}"
     );
 }
 

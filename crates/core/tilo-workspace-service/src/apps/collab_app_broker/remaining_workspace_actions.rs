@@ -298,7 +298,15 @@ impl AppBrokerState {
                 (workspace.clone(), actor.clone(), now)
             })
             .ok_or(ActionCallError::NotPermitted)?;
-        Ok((workspace, original.unwrap_or(actor), now))
+        // The person on their own device's daemon connection: their call is their own act, so
+        // what the workspace asks of them their call answers.
+        let policy = original.unwrap_or(actor);
+        let policy = if caller.is_own_connection() {
+            policy.on_own_connection()
+        } else {
+            policy
+        };
+        Ok((workspace, policy, now))
     }
 
     pub(super) fn framework_policy(
@@ -326,6 +334,10 @@ impl AppBrokerState {
             tilo_action_policy::Answer::Ask
                 if !(approved
                     || matches!(confirmation, Some(Confirmation::Asked(_)))
+                    // An ask is made of the person: the person's own connection to their
+                    // device's daemon is them, so their call is their answer. Anyone else
+                    // acting as them — an app, a program through a shell — keeps asking.
+                    || (actor.direct() && actor.own_connection())
                     || (actor.direct() && confirmation == Some(&Confirmation::Confirmed))) =>
             {
                 return Err(ActionCallError::confirmation_required());

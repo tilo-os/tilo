@@ -1,7 +1,8 @@
-//! [`Placed`] — a surface that appears where it stands, leaves from there, and moves when its place
-//! changes — a window, a place on a canvas, a panel over the screen. A shell draws its windows, its
-//! canvas places and its floating surfaces from a view, and a view is built again whenever the
-//! layout changes (`shell.md` §7: motion stays in the Rust components, never in the view).
+//! [`Placed`] — a surface that appears where it stands, or out of the control that asked for it, leaves
+//! from there and moves when its place changes — a window, a place on a canvas, a panel over the
+//! screen. A shell draws its windows, its canvas places and its floating surfaces from a view, and a
+//! view is built again whenever the layout changes (`shell.md` §7: motion stays in the Rust
+//! components, never in the view).
 
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -26,6 +27,13 @@ pub struct Placed {
     /// The motion it last drew with, so a departure after the theme changed keeps the person's reduced
     /// motion.
     motion: EffectiveMotion,
+    /// The control its arrival comes out of, and its departure goes back to, in its own coordinates:
+    /// the dock icon or the search row the person pressed. `None` for a surface that grows where it
+    /// stands.
+    control: Option<Point>,
+    /// It takes its control from where the pointer was at its first placement: a window the person
+    /// pressed for, which the pointer was on. Never for a surface a shortcut or an agent opened.
+    pointer_control: bool,
 }
 
 impl Default for Placed {
@@ -36,6 +44,8 @@ impl Default for Placed {
             target: Rect::ZERO,
             settled: false,
             motion: EffectiveMotion::default(),
+            control: None,
+            pointer_control: false,
         }
     }
 }
@@ -57,6 +67,15 @@ impl Placed {
             presence: Presence::closed(),
             ..Self::default()
         }
+    }
+
+    /// The surface comes out of where the pointer was at its first placement, when a pointer asked
+    /// for it: the control the person pressed. A shortcut or an agent's change is no pointer's, so
+    /// such a surface grows where it stands.
+    #[must_use]
+    pub fn arriving_out_of_pointer(mut self) -> Self {
+        self.pointer_control = true;
+        self
     }
 
     /// Where it is drawn this frame, its motion advanced to `now`: laid out at `rect`, up (`open`) or
@@ -84,6 +103,16 @@ impl Placed {
         now: Instant,
     ) {
         self.motion = motion;
+        // The control the person pressed for it, taken the frame it is first placed: the pointer is
+        // where they pressed it. Only a press within the last moment is one (a window a sync brings
+        // later grows where it stands, whatever the pointer last touched).
+        if !self.settled
+            && self.pointer_control
+            && self.control.is_none()
+            && super::source::recent_input(now).is_some_and(|source| !source.lands_at_once())
+        {
+            self.control = super::source::last_pointer();
+        }
         // The first placement rests where it stands. A surface built up shows at rest (the first
         // paint shows the resting state); one built closed and asked to be up on its first frame
         // comes in, as a window the shell just opened does.
@@ -146,10 +175,15 @@ impl Placed {
         self.presence.settles_at().max(self.rect.settles_at())
     }
 
-    /// The pose it is drawn under at `now`, in a surface laid out at `rest`: its content's arrival, and
-    /// the transform carrying it from where it stood toward where it is laid out.
+    /// The pose it is drawn under at `now`, in a surface laid out at `rest`: its content's arrival — out
+    /// of the control it was asked for from, or where it stands — and the transform carrying it from
+    /// where it stood toward where it is laid out.
     pub fn pose(&self, rest: Rect, now: Instant) -> Pose {
-        let content = WindowMotion::content_pose(self.presence.progress(now), rest, self.motion);
+        let progress = self.presence.progress(now);
+        let content = match self.control {
+            Some(control) => WindowMotion::flying_pose(progress, rest, control, self.motion),
+            None => WindowMotion::content_pose(progress, rest, self.motion),
+        };
         let drawn = self.rect.get(now);
         let offset = drawn.origin() - rest.origin();
         if offset.x.abs() < 0.05 && offset.y.abs() < 0.05 {

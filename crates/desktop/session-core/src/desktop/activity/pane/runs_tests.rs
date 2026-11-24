@@ -466,6 +466,7 @@ tilo_test_env::scenario! {
             task: None,
             app_id: action.app_id.clone(),
             id: action.record.clone(),
+            step: None,
         };
         let arguments = serde_json::to_value(&query)
             .unwrap()
@@ -575,6 +576,117 @@ tilo_test_env::scenario! {
         assert_eq!(undo.task_id, RUN);
         assert_eq!(undo.steps, vec![(NOTES.to_owned(), primary)]);
     }
+
+    phase a_sessions_changes_still_in_effect_are_listed_and_one_taken_back_leaves_the_list;
+    // A session's card lists the changes it still leaves in place, newest first, each with what
+    // it changed and where. A change its record's history has taken back is gone from that list,
+    // and one undone from the Activity leaves it as the undo lands.
+    {
+        let mut connection = Connection::new(&[]);
+        connection.writes("release.note", &["Drafted", "Released", "Shipped"]);
+        let run = connection.run();
+        assert_eq!(run.changes_total, 3, "three changes still stand: {run:#?}");
+        assert_eq!(run.in_effect.len(), 3);
+        let steps: Vec<String> = run.in_effect.iter().map(|c| c.step.clone()).collect();
+        assert_eq!(
+            run.in_effect[0].record,
+            Connection::record("release.note"),
+            "each change says where it landed"
+        );
+        assert_eq!(
+            run.in_effect[0].target.id,
+            Connection::record("release.note"),
+            "and the resource it changed, where it opens"
+        );
+
+        // A page holds the newest changes of the session, however long it ran.
+        let paged = connection
+            .pane
+            .serve_runs(
+                &wire::SessionsQuery {
+                    changes: 2,
+                    ..wire::SessionsQuery::default()
+                },
+                &connection.tree,
+            )
+            .sessions
+            .into_iter()
+            .find(|run| run.id == GROUP)
+            .expect("the session is listed");
+        assert_eq!(paged.in_effect.len(), 2, "a page, not all of them");
+        assert_eq!(paged.changes_total, 3, "and how many it holds");
+
+        // One change is taken back in the record's own history, as another device's undo would.
+        connection.undo_step_in("release.note", &steps[1]);
+        let run = connection.run();
+        assert_eq!(run.changes_total, 2);
+        assert!(
+            !run.in_effect.iter().any(|c| c.step == steps[1]),
+            "the undone change left the list: {run:#?}"
+        );
+
+        // Undoing one from the Activity names that one change, through the system's undo.
+        let change = run.in_effect[0].clone();
+        let query = serde_json::to_value(wire::ResourceQuery {
+            range: change.range.clone(),
+            task: None,
+            app_id: change.app_id.clone(),
+            id: change.record.clone(),
+            step: Some(change.step.clone()),
+        })
+        .unwrap()
+        .as_object()
+        .cloned()
+        .unwrap();
+        let outcome = connection
+            .pane
+            .serve_action(wire::UNDO_RECORD, &query, &mut connection.tree)
+            .expect("the change is in the history");
+        assert!(outcome.handled);
+        let undo = connection.undo();
+        assert_eq!(
+            undo.step.as_deref(),
+            Some(change.step.as_str()),
+            "the one change is named, not the record's whole share"
+        );
+
+        // The host takes it back in the record, and the list reads without it.
+        connection.apply_undos();
+        let run = connection.run();
+        assert_eq!(run.changes_total, 1);
+        assert!(
+            !run.in_effect.iter().any(|c| c.step == change.step),
+            "the undone change left the list: {run:#?}"
+        );
+    }
+
+    phase a_sessions_list_holds_only_the_records_this_member_may_read;
+    // A session's changes are the ones the member's device holds: a record another member was
+    // not granted carries no row, so their view lists only what they may read.
+    {
+        let mut connection = Connection::new(&["release.note", "budget.note"]);
+        connection.closed.push(Connection::record("budget.note"));
+        let run = connection.run();
+        assert_eq!(
+            run.in_effect.len(),
+            1,
+            "one record is readable, the other is not: {run:#?}"
+        );
+        assert_eq!(
+            run.in_effect[0].record,
+            Connection::record("release.note"),
+            "the change that is listed is the readable one"
+        );
+    }
+}
+
+/// None of the fixture's changes has an inverse action: the patches themselves take it back.
+#[allow(clippy::unnecessary_wraps, reason = "the shape every compensator has")]
+fn plain(
+    _: &mut AutoCommit,
+    _: &tilo_resource::history::Version,
+) -> Result<Option<ui::history_source::steps::Inverse>, String> {
+    Ok(None)
 }
 
 /// The app whose records the run changed.
@@ -605,28 +717,9 @@ impl Connection {
         pane.view = ActivityView::Explore;
         let mut open = Vec::new();
         for (index, file) in files.iter().enumerate() {
-            let record = ui::DocumentId::for_file(file);
-            let checkout = ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("note"));
-            let mut doc = AutoCommit::new();
-            ui::resource::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
-            doc.commit();
-            doc.set_actor(ActorId::from(b"claude-code-agent".as_slice()));
-            doc.put(ROOT, "title", *file).unwrap();
-            let context = tilo_actions::ActionContext::for_resource(record.as_str(), "note", *file)
-                .with_app(NOTES_APP, "Notes")
-                .with_described(crate::desktop::activity::testing::verb("Write the note"))
-                .with_group(
-                    GROUP,
-                    "Write the notes",
-                    ui::history_source::steps::AGENT_SESSION,
-                );
             let at = 10_i64.saturating_add(i64::try_from(index).unwrap_or(0));
-            doc.commit_with(
-                CommitOptions::default()
-                    .with_time(at)
-                    .with_message(context.change_message().unwrap()),
-            );
-            open.push((NOTES_APP.to_owned(), checkout, doc));
+            let (app, checkout, doc) = Connection::note(&workspace, file, &["Write the note"], at);
+            open.push((app, checkout, doc));
         }
         Self {
             tree,
@@ -634,6 +727,110 @@ impl Connection {
             host,
             open,
             closed: Vec::new(),
+        }
+    }
+
+    /// `file`'s note, the agent connection having written it `writes.len()` times, one change
+    /// each in the same session, the first at `at`.
+    fn note(
+        workspace: &tilo_desktop_model::WorkspaceId,
+        file: &str,
+        writes: &[&str],
+        at: i64,
+    ) -> (String, ui::DocumentCheckout, AutoCommit) {
+        let record = ui::DocumentId::for_file(file);
+        let checkout = ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("note"));
+        let mut doc = AutoCommit::new();
+        ui::resource::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
+        doc.commit();
+        doc.set_actor(ActorId::from(b"claude-code-agent".as_slice()));
+        for (index, wrote) in writes.iter().enumerate() {
+            doc.put(ROOT, "title", *wrote).unwrap();
+            let context = tilo_actions::ActionContext::for_resource(record.as_str(), "note", file)
+                .with_app(NOTES_APP, "Notes")
+                .with_described(crate::desktop::activity::testing::verb(wrote))
+                .with_group(
+                    GROUP,
+                    "Write the notes",
+                    ui::history_source::steps::AGENT_SESSION,
+                );
+            let at = at.saturating_add(i64::try_from(index).unwrap_or(0));
+            doc.commit_with(
+                CommitOptions::default()
+                    .with_time(at)
+                    .with_message(context.change_message().unwrap()),
+            );
+        }
+        (NOTES_APP.to_owned(), checkout, doc)
+    }
+
+    /// The agent connection writes `file`'s note `writes.len()` times: each one change of the
+    /// same session.
+    fn writes(&mut self, file: &str, writes: &[&str]) {
+        let workspace = self
+            .tree
+            .desktop
+            .active_workspace()
+            .expect("workspace")
+            .id();
+        let note = Connection::note(&workspace, file, writes, 20);
+        self.open.push(note);
+    }
+
+    /// The record's own history takes back the change `step`, as another device's undo does.
+    fn undo_step_in(&mut self, file: &str, step: &str) {
+        let record = Connection::record(file);
+        let doc = self
+            .open
+            .iter_mut()
+            .find(|(_, checkout, _)| checkout.id.as_str() == record)
+            .map(|(_, _, doc)| doc)
+            .expect("the record is open");
+        let hash = step.parse::<automerge::ChangeHash>().expect("a change id");
+        let scope = ui::history_source::steps::Scope::Session(GROUP.to_owned());
+        ui::history_source::steps::undo_step(
+            doc,
+            &scope,
+            &hash,
+            plain,
+            &ui::history_source::ThreadWords,
+        )
+        .expect("the change is taken back");
+        doc.commit();
+    }
+
+    /// The host carries out every undo it was asked for, in the records it named, as the desktop
+    /// asks each record's own history: the app's record, through the session's API.
+    fn apply_undos(&mut self) {
+        let asked = std::mem::take(&mut *self.host.undos.borrow_mut());
+        for undo in asked {
+            for (_, record) in &undo.steps {
+                let Some((_, _, doc)) = self
+                    .open
+                    .iter_mut()
+                    .find(|(_, checkout, _)| checkout.id.as_str() == record)
+                else {
+                    continue;
+                };
+                let scope = ui::history_source::steps::Scope::Session(undo.task_id.clone());
+                let words = ui::history_source::ThreadWords;
+                match undo
+                    .step
+                    .as_deref()
+                    .map(str::parse::<automerge::ChangeHash>)
+                {
+                    Some(Ok(hash)) => {
+                        ui::history_source::steps::undo_step(doc, &scope, &hash, plain, &words)
+                            .expect("the change is taken back");
+                    }
+                    Some(Err(error)) => panic!("the step is a change id: {error}"),
+                    None => {
+                        ui::history_source::steps::undo(doc, &scope, 1, plain, &words)
+                            .expect("the run is taken back");
+                    }
+                }
+                doc.commit();
+            }
         }
     }
 

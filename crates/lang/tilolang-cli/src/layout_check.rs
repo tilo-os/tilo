@@ -2682,7 +2682,8 @@ mod board_list {
     const BOARD: &str = "so.tilo.lang.layoutboard";
 
     fn packages() -> Rc<stage::Packages> {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/layout_check/board");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tools/layout-check/tests/layout_check/board");
         let search = vec![dir.parent().expect("tests/layout_check").to_path_buf()];
         let (built, platform) = super::build(&dir, &search).expect("the board fixture compiles");
         let app = built.last().expect("the fixture").compiled.meta.app.clone();

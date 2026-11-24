@@ -239,3 +239,77 @@ fn a_device_read_nothing_of_is_unknown_rather_than_unused() {
         "nothing read is not nothing used: {said}"
     );
 }
+
+/// Neither root was ever published: the pane still draws, and each half says what it cannot say
+/// rather than reading the unread resources as a device with no camera and a workspace that gave
+/// nothing. A device whose session has not published `session:privacy` (a platform without one)
+/// is the case this is: nothing of the root arrived, and none is coming.
+#[test]
+fn the_pane_draws_when_nothing_was_ever_published() {
+    let host = settings();
+    let said = line(&host).join(" | ");
+    for expected in [
+        "This device",
+        "This device's privacy can't be read here, so these are unknown rather than unused.",
+        "No application has a lasting answer on any of your devices.",
+        "Workspace access",
+        "Workspace access can't be checked",
+    ] {
+        assert!(said.contains(expected), "`{expected}` is shown: {said}");
+    }
+    assert!(
+        !said.contains("No workspace here gives anything beyond its own documents."),
+        "a workspace list nothing published is not said to have given nothing: {said}"
+    );
+}
+
+/// The window over a root nothing published draws the shared row that says so, in place of the
+/// pane's fields, and the reading that answers replaces it: the same handling the pane's own half
+/// above relies on, through the app's `read_pane`.
+#[test]
+fn the_window_says_a_root_nothing_published_could_not_be_read() {
+    let host = settings();
+    let id = host
+        .package(APP)
+        .expect("the app is loaded")
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "settings_window")
+        .expect("the window is declared")
+        .id
+        .clone();
+    let root = host.root_of(APP).expect("the app's root");
+    let mut view = host
+        .runtime()
+        .open_view(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            &id,
+            vec![tilolang_tilo::runtime::Value::resource(&root)],
+        )
+        .expect("the window opens");
+    view.poll_patches().expect("the window draws");
+    let said = texts(&view).join(" | ");
+    assert!(
+        said.contains("Appearance could not be read"),
+        "the pane's row says the appearance is unknown: {said}"
+    );
+    assert!(
+        said.contains("Nothing publishes it here"),
+        "with why nothing is known of it: {said}"
+    );
+
+    // The reading answers: the pane draws what it says.
+    serve(
+        &host,
+        "settings/appearance",
+        "so.tilo.settings.sections#Appearance",
+        r#"{"mode": "dark"}"#,
+    );
+    view.poll_patches().expect("the window draws again");
+    let said = texts(&view).join(" | ");
+    assert!(
+        !said.contains("could not be read"),
+        "the row gives way to the pane: {said}"
+    );
+}

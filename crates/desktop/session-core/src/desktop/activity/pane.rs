@@ -1013,13 +1013,19 @@ impl WorkspaceActivityPane {
     /// Ask the host to undo the agent's whole run of `task_id` , through each changed document's
     /// own history. Returns whether it was asked.
     fn undo_task_run(&mut self, task_id: &str) -> bool {
-        self.undo_task_run_of(task_id, None)
+        self.undo_task_run_of(task_id, None, None)
     }
 
     /// Ask the host to undo the agent's run of `task_id` in the one record `only` names (its app
-    /// and record), or in every record the run changed when it names none. Returns whether it was
-    /// asked.
-    fn undo_task_run_of(&mut self, task_id: &str, only: Option<&(String, String)>) -> bool {
+    /// and record), or in every record the run changed when it names none; `step` names the one
+    /// change of that record to take back, or takes back the run's whole share of it. Returns
+    /// whether it was asked.
+    fn undo_task_run_of(
+        &mut self,
+        task_id: &str,
+        only: Option<&(String, String)>,
+        step: Option<&str>,
+    ) -> bool {
         let Some(indexed) = self.task_agent_session(task_id) else {
             return false;
         };
@@ -1033,33 +1039,51 @@ impl WorkspaceActivityPane {
                 .map(|step| (step.app.clone(), step.record.clone()))
                 .collect(),
         };
-        self.undo_run_of(&run, only)
+        self.undo_run_of(&run, only, step)
     }
 
     /// Undo the agent's run of task `task_id` in one changed record, from the run's step list: the
-    /// document it name is not otherwise touched.
-    fn undo_task_record(&mut self, task_id: &str, app: &str, record: &str) -> bool {
+    /// document it name is not otherwise touched. `step` names the one change to take back there.
+    fn undo_task_record(
+        &mut self,
+        task_id: &str,
+        app: &str,
+        record: &str,
+        step: Option<&str>,
+    ) -> bool {
         let only = (app.to_owned(), record.to_owned());
-        self.undo_task_run_of(task_id, Some(&only))
+        self.undo_task_run_of(task_id, Some(&only), step)
     }
 
     /// Ask the host to undo an agent connection's whole run, through each changed document's own
     /// history. Returns whether it was asked.
     fn undo_group_run(&mut self, group: &UndoRun) -> bool {
-        self.undo_run_of(group, None)
+        self.undo_run_of(group, None, None)
     }
 
     /// Ask the host to undo one record of an agent connection's run, the record `only` names (its
-    /// app and record). Returns whether it was asked.
-    fn undo_group_record(&mut self, group: &UndoRun, app: &str, record: &str) -> bool {
+    /// app and record), or the one change `step` names there. Returns whether it was asked.
+    fn undo_group_record(
+        &mut self,
+        group: &UndoRun,
+        app: &str,
+        record: &str,
+        step: Option<&str>,
+    ) -> bool {
         let only = (app.to_owned(), record.to_owned());
-        self.undo_run_of(group, Some(&only))
+        self.undo_run_of(group, Some(&only), step)
     }
 
     /// Ask the host to undo the run in the documents `steps` name, or in the one of them `only`
     /// names: each document's own history takes back what it grouped under the run, so later edits
-    /// by others stay. Returns whether it was asked.
-    fn undo_run_of(&mut self, run: &UndoRun, only: Option<&(String, String)>) -> bool {
+    /// by others stay. `step` names the one change to take back, rather than the run's whole share
+    /// of that document. Returns whether it was asked.
+    fn undo_run_of(
+        &mut self,
+        run: &UndoRun,
+        only: Option<&(String, String)>,
+        step: Option<&str>,
+    ) -> bool {
         if self.undo_pending.is_some() {
             return true;
         }
@@ -1078,6 +1102,7 @@ impl WorkspaceActivityPane {
             invocation,
             task_id: run.named.clone(),
             steps: steps.clone(),
+            step: step.map(str::to_owned),
         };
         match self.host.undo_task_run(undo) {
             Ok(()) => {

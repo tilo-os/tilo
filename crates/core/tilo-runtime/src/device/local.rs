@@ -81,9 +81,9 @@ impl Frames {
 
     /// An app the daemon started, in `workspace`: the workspace's broker decides its calls with
     /// the app's grants, never the person's own rights ([`Daemon::app_tree`]). The app acts in
-    /// that workspace alone; a frame naming another is refused. A release of a vault item is
-    /// answered for the very process the connection is ([`super::vault_release`]), on this
-    /// connection alone.
+    /// that workspace alone; a frame naming another is refused. A release, a find or a web call
+    /// of a vault item is answered for the very process the connection is
+    /// ([`super::vault_release`]), on this connection alone.
     pub(crate) fn of_an_app(daemon: &Arc<Daemon>, at: &crate::seats::AppAt) -> Self {
         let own = super::vault_release::OwnProcess::new(daemon, at.pid, &at.app, &at.workspace);
         let caller = Caller::local_app(&at.app).in_workspace(&at.workspace);

@@ -438,20 +438,16 @@ async fn a_grant_revoked_mid_read_cuts_the_copy_under_way_and_the_reads_that_fol
         .remove_workspace_grants(&h.kitchen, &h.cert, [99; 32], vec![grant])
         .await
         .expect("the workspace takes the grant back");
-    let (reads, workspaces, caller) = (
-        h.workspaces().resource_reads(),
-        h.workspaces().clone(),
-        scribe.clone(),
-    );
     let address = ResourceAddress {
         workspace: h.kitchen.clone(),
         app: NOTES.to_owned(),
         record: String::new(),
     };
-    let handed =
-        tokio::task::spawn_blocking(move || reads.hand_out(&workspaces, &caller, &address, copy))
-            .await
-            .expect("the hand-out ran");
+    let handed = h
+        .workspaces()
+        .resource_reads()
+        .hand_out(h.workspaces(), &scribe, &address, copy)
+        .await;
     assert!(not_read(&handed), "the copy under way is cut: {handed:?}");
     let read = h.read(&scribe, &h.kitchen, "").await;
     assert!(not_read(&read), "and every read after it: {read:?}");

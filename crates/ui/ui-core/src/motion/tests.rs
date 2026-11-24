@@ -1435,3 +1435,49 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+tilo_test_env::scenario! {
+    fn a_window_comes_out_of_the_control_that_asked_for_it_and_goes_back_into_it;
+
+    phase a_window_starts_as_a_mark_at_the_control_and_grows_into_its_frame;
+    {
+        let frame = Rect::new(400.0, 100.0, 1000.0, 500.0);
+        let control = Point::new(40.0, 900.0);
+        let start = WindowMotion::flying_pose(0.0, frame, control, on());
+        let mark = start.drawn_rect(frame);
+        assert!(start.opacity < 0.05, "it starts faint: {start:?}");
+        assert!(mark.width() < frame.width() / 3.0, "as small as an icon: {mark:?}");
+        assert!(
+            (mark.center() - control).hypot() < 1.0,
+            "out of the control the person pressed: {mark:?}"
+        );
+        let half = WindowMotion::flying_pose(0.5, frame, control, on()).drawn_rect(frame);
+        assert!(half.width() > mark.width() && half.width() < frame.width(), "{half:?}");
+        assert!(
+            half.center().x > mark.center().x && half.center().y < mark.center().y,
+            "it travels from the dock to its frame: {half:?}"
+        );
+        assert!(
+            WindowMotion::flying_pose(1.0, frame, control, on()).is_rest(),
+            "and it rests exactly where it is laid out"
+        );
+    }
+
+    phase leaving_is_the_same_flight_back_into_the_control;
+    {
+        let frame = Rect::new(400.0, 100.0, 1000.0, 500.0);
+        let control = Point::new(40.0, 900.0);
+        let leaving = WindowMotion::flying_pose(0.2, frame, control, on());
+        assert!(leaving.opacity < 0.7, "it fades on the way: {leaving:?}");
+        let mark = leaving.drawn_rect(frame);
+        assert!(mark.center().x < frame.center().x && mark.center().y > frame.center().y);
+    }
+
+    phase reduced_motion_fades_it_where_it_stands;
+    {
+        let frame = Rect::new(400.0, 100.0, 1000.0, 500.0);
+        let half = WindowMotion::flying_pose(0.5, frame, Point::new(40.0, 900.0), reduced());
+        assert_eq!(half.transform, vello::kurbo::Affine::IDENTITY, "it does not travel");
+        assert!(half.opacity > 0.0 && half.opacity < 1.0, "but it fades");
+    }
+}

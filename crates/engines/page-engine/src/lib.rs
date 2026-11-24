@@ -9,14 +9,20 @@
 pub mod codec;
 
 mod asks;
+mod logins;
 pub mod omnibox;
 mod prompts;
 
 pub use asks::{Asks, Download, ExtensionButton, ExtensionNotice, Menu};
+pub use logins::{Answered, LoginAsk, LoginVault, VaultLogin};
 pub use omnibox::Addressed;
 pub use prompts::{Prompt, PromptChange, PromptKey, PromptKind, Prompts};
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::rc::Rc;
+use std::sync::mpsc;
+
+use logins::VaultAnswer;
 
 use tilo_webview::{
     CredentialAction, CredentialRequest, ExtensionSidePanelChange, FileChooser, PageActor,
@@ -81,9 +87,19 @@ pub struct PageSession {
     credential_next: u32,
     /// The engine's number for the next ask about the video the page shows.
     media_next: u64,
-    /// A credential action waiting for the page's current document: the engine's store only acts
-    /// on the document the person is looking at, so the session asks for its generation first.
-    credential_waiting: Option<CredentialRequest>,
+    /// A login action waiting for the page's current document and site: the engine acts only on
+    /// the document the person is looking at, and the vault is asked only for the site the
+    /// engine says the page is at, so the session asks for both first.
+    login_waiting: Option<LoginAsk>,
+    /// The takes the engine was asked for, by the session's number for each: what keeping the
+    /// password it hands over is for, and the login it replaces.
+    taking: HashMap<u32, (&'static str, Option<String>)>,
+    /// The workspace's vault, which keeps the page's logins: none in a private window.
+    vault: Option<Rc<dyn LoginVault>>,
+    /// What the vault answered, from whichever thread it answered on.
+    vault_answers: (mpsc::Sender<VaultAnswer>, mpsc::Receiver<VaultAnswer>),
+    /// How many vault calls have not answered yet.
+    vault_pending: usize,
     /// A private page's disposable root, which this session's engine started on and which goes
     /// when the session does: nothing a private window read or signed in to is kept.
     private_root: Option<std::path::PathBuf>,
@@ -114,7 +130,11 @@ impl PageSession {
             download_steps: HashMap::new(),
             credential_next: 0,
             media_next: 0,
-            credential_waiting: None,
+            login_waiting: None,
+            taking: HashMap::new(),
+            vault: None,
+            vault_answers: mpsc::channel(),
+            vault_pending: 0,
             private_root: None,
             panel: None,
             quiet_sign_ins: Vec::new(),
@@ -137,6 +157,13 @@ impl PageSession {
     #[must_use]
     pub fn is_private(&self) -> bool {
         self.private_root.is_some()
+    }
+
+    /// Keep this page's logins in `vault`. A private page keeps none and is offered none.
+    pub fn set_vault(&mut self, vault: Rc<dyn LoginVault>) {
+        if !self.is_private() {
+            self.vault = Some(vault);
+        }
     }
 
     /// The engine this window shows its page with.
@@ -313,42 +340,10 @@ impl PageSession {
                     self.notes.push(codec::print_note(*ok, path, name, message));
                     continue;
                 }
-                // How the engine's credential store answered: the forms and accounts it lists,
-                // the capture it took, and what the action came to. A status the session asked
-                // only to learn the page's document is not the person's to see: their own action
-                // follows with that document.
-                WebViewEvent::CredentialResult(reply) => {
-                    if reply.action == "status" && self.credential_waiting.is_some() {
-                        if let Some(mut waiting) = self.credential_waiting.take() {
-                            if reply.document.is_empty() {
-                                self.notes.push(codec::credential_note(
-                                    waiting.action.name(),
-                                    false,
-                                    &reply.message,
-                                    &[],
-                                    &[],
-                                    None,
-                                    None,
-                                    reply.late,
-                                ));
-                            } else {
-                                waiting.document.clone_from(&reply.document);
-                                self.send_credential(waiting);
-                            }
-                        }
-                    } else {
-                        self.notes.push(codec::credential_note(
-                            &reply.action,
-                            reply.success,
-                            &reply.message,
-                            &reply.forms,
-                            &reply.accounts,
-                            reply.capture.as_deref(),
-                            reply.username.as_deref(),
-                            reply.late,
-                        ));
-                    }
-                }
+                // How the engine answered a login action: the forms it found, the capture it
+                // took, a fill, or the status the session asked to learn the page's document and
+                // site, which is not the person's to see: their own action follows with them.
+                WebViewEvent::CredentialResult(reply) => self.engine_answered(reply),
                 // The page came into or out of fullscreen: its window fills the screen while it
                 // is in it and shows the way out, which the app's record keeps.
                 WebViewEvent::FullscreenChanged(on) if self.asks.fullscreen != *on => {
@@ -368,6 +363,10 @@ impl PageSession {
         }
         // Pages a script opened in a window of their own: a popup the site sized, or a plain new
         // tab. The app keeps them as pages; the window that holds one is the system's.
+        while let Ok(answer) = self.vault_answers.1.try_recv() {
+            self.vault_pending = self.vault_pending.saturating_sub(1);
+            self.vault_answered(answer);
+        }
         for (url, _foreground) in self.engine.take_new_tab_requests() {
             self.notes.push(codec::open_note(&url, false));
         }
@@ -634,37 +633,256 @@ impl PageSession {
         !self.notes.is_empty()
     }
 
-    /// Ask the engine's credential store to do `request`: the logins it keeps for the page's
-    /// site, the forms it reads them from, or the capture of one the person typed. The store acts
-    /// on the document the person is looking at and refuses one from a page they left, so the
-    /// session asks which document that is and names it on the action. A password never crosses
-    /// the action or its answer.
-    pub fn credential(&mut self, request: CredentialRequest) {
-        if matches!(
-            request.action,
-            CredentialAction::Status | CredentialAction::Cancel
-        ) {
-            if matches!(request.action, CredentialAction::Cancel) {
-                self.credential_waiting = None;
+    /// Do `ask` with the page's logins. The engine acts on the document the person is looking at
+    /// and refuses one from a page they left, and the vault is asked only for the site the engine
+    /// says the page is at, so the session asks the engine for both first (`origin` is the app's
+    /// word for the site, which only starts that question). A password never crosses the action
+    /// or its answer.
+    pub fn login(&mut self, origin: &str, ask: LoginAsk) {
+        if let LoginAsk::Engine(action @ (CredentialAction::Status | CredentialAction::Cancel)) =
+            &ask
+        {
+            if matches!(action, CredentialAction::Cancel) {
+                self.login_waiting = None;
+                self.taking.clear();
             }
-            self.send_credential(request);
+            self.send_credential(CredentialRequest {
+                request_id: 0,
+                origin: origin.to_owned(),
+                document: String::new(),
+                action: action.clone(),
+            });
             return;
         }
-        let status = CredentialRequest {
+        if !matches!(ask, LoginAsk::Engine(_)) && self.vault.is_none() {
+            let why = if self.is_private() {
+                logins::PRIVATE
+            } else {
+                logins::NO_VAULT
+            };
+            self.notes.push(codec::credential_note(
+                ask.did(),
+                false,
+                why,
+                &[],
+                &[],
+                None,
+                None,
+                false,
+            ));
+            return;
+        }
+        self.login_waiting = Some(ask);
+        self.send_credential(CredentialRequest {
             request_id: 0,
-            origin: request.origin.clone(),
+            origin: origin.to_owned(),
             document: String::new(),
             action: CredentialAction::Status,
-        };
-        self.credential_waiting = Some(request);
-        self.send_credential(status);
+        });
     }
 
-    /// Send one credential action, named by the session's own number for it.
-    fn send_credential(&mut self, mut request: CredentialRequest) {
-        self.credential_next = self.credential_next.wrapping_add(1);
+    /// The engine answered a login action.
+    fn engine_answered(&mut self, reply: &tilo_webview::CredentialReply) {
+        if reply.action == "status"
+            && let Some(ask) = self.login_waiting.take()
+        {
+            if reply.document.is_empty() || !reply.success {
+                self.notes.push(codec::credential_note(
+                    ask.did(),
+                    false,
+                    &reply.message,
+                    &[],
+                    &[],
+                    None,
+                    None,
+                    reply.late,
+                ));
+            } else {
+                self.go_on(ask, &reply.origin, &reply.document);
+            }
+            return;
+        }
+        if reply.action == "take"
+            && let Some((did, replacing)) = self.taking.remove(&reply.request_id)
+        {
+            match (&reply.password, &reply.username, &self.vault) {
+                (Some(password), Some(username), Some(vault)) if reply.success => {
+                    let site = reply.origin.clone();
+                    let sender = self.vault_answers.0.clone();
+                    self.vault_pending = self.vault_pending.saturating_add(1);
+                    vault.keep(
+                        &reply.origin,
+                        username,
+                        password.clone(),
+                        replacing.as_deref(),
+                        Box::new(move |result| {
+                            let _ = sender.send(VaultAnswer::Kept { did, site, result });
+                        }),
+                    );
+                }
+                _ => self.notes.push(codec::credential_note(
+                    did,
+                    false,
+                    &reply.message,
+                    &[],
+                    &[],
+                    None,
+                    None,
+                    reply.late,
+                )),
+            }
+            // Whatever the take handed over goes now: the vault took its own copy, or nothing did.
+            if let Some(password) = &reply.password {
+                drop(password.take());
+            }
+            return;
+        }
+        self.notes.push(codec::credential_note(
+            &reply.action,
+            reply.success,
+            &reply.message,
+            &reply.forms,
+            &[],
+            reply.capture.as_deref(),
+            reply.username.as_deref(),
+            reply.late,
+        ));
+    }
+
+    /// Do `ask` now that the engine said the page is at `site`, on its document `document`.
+    fn go_on(&mut self, ask: LoginAsk, site: &str, document: &str) {
+        let engine = |action| CredentialRequest {
+            request_id: 0,
+            origin: site.to_owned(),
+            document: document.to_owned(),
+            action,
+        };
+        let Some(vault) = self.vault.clone() else {
+            if let LoginAsk::Engine(action) = ask {
+                self.send_credential(engine(action));
+            }
+            return;
+        };
+        let sender = self.vault_answers.0.clone();
+        let listed = |did, message| -> Answered<Vec<VaultLogin>> {
+            let sender = sender.clone();
+            Box::new(move |result| {
+                let _ = sender.send(VaultAnswer::Listed {
+                    did,
+                    message,
+                    result,
+                });
+            })
+        };
+        match ask {
+            LoginAsk::Engine(action) => {
+                self.send_credential(engine(action));
+            }
+            LoginAsk::List => {
+                self.vault_pending = self.vault_pending.saturating_add(1);
+                vault.logins(site, listed("list", ""));
+            }
+            LoginAsk::Delete { item } => {
+                self.vault_pending = self.vault_pending.saturating_add(1);
+                vault.forget(site, &item, listed("delete", "Forgotten"));
+            }
+            LoginAsk::Save { capture } => {
+                let id = self.send_credential(engine(CredentialAction::Take { capture }));
+                self.taking.insert(id, ("save", None));
+            }
+            LoginAsk::Update { capture, item } => {
+                let id = self.send_credential(engine(CredentialAction::Take { capture }));
+                self.taking.insert(id, ("update", Some(item)));
+            }
+            LoginAsk::Fill { form, item } => {
+                let (site, document) = (site.to_owned(), document.to_owned());
+                self.vault_pending = self.vault_pending.saturating_add(1);
+                vault.fill(
+                    &site.clone(),
+                    &item,
+                    Box::new(move |result| {
+                        let _ = sender.send(VaultAnswer::Filled {
+                            form,
+                            site,
+                            document,
+                            result,
+                        });
+                    }),
+                );
+            }
+        }
+    }
+
+    /// The vault answered a call this session made.
+    fn vault_answered(&mut self, answer: VaultAnswer) {
+        let note = |did: &str, result: Result<&[VaultLogin], &str>, message: &str| match result {
+            Ok(logins) => {
+                codec::credential_note(did, true, message, &[], logins, None, None, false)
+            }
+            Err(why) => codec::credential_note(did, false, why, &[], &[], None, None, false),
+        };
+        match answer {
+            VaultAnswer::Listed {
+                did,
+                message,
+                result,
+            } => {
+                let note = note(did, result.as_deref().map_err(String::as_str), message);
+                self.notes.push(note);
+            }
+            VaultAnswer::Kept { did, site, result } => {
+                let kept = result.is_ok();
+                let said = note(
+                    did,
+                    result.as_ref().map(|()| &[][..]).map_err(String::as_str),
+                    "Saved in your vault",
+                );
+                self.notes.push(said);
+                // The site's logins as they are now, the one just kept among them.
+                if kept && let Some(vault) = self.vault.clone() {
+                    let sender = self.vault_answers.0.clone();
+                    self.vault_pending = self.vault_pending.saturating_add(1);
+                    vault.logins(
+                        &site,
+                        Box::new(move |result| {
+                            let _ = sender.send(VaultAnswer::Listed {
+                                did: "list",
+                                message: "",
+                                result,
+                            });
+                        }),
+                    );
+                }
+            }
+            VaultAnswer::Filled {
+                form,
+                site,
+                document,
+                result,
+            } => match result {
+                Ok((username, password)) => {
+                    self.send_credential(CredentialRequest {
+                        request_id: 0,
+                        origin: site,
+                        document,
+                        action: CredentialAction::Fill {
+                            form,
+                            username,
+                            password,
+                        },
+                    });
+                }
+                Err(why) => self.notes.push(note("fill", Err(&why), "")),
+            },
+        }
+    }
+
+    /// Send one credential action, named by the session's own number for it, which it answers.
+    fn send_credential(&mut self, mut request: CredentialRequest) -> u32 {
+        self.credential_next = self.credential_next.wrapping_add(1).max(1);
         request.request_id = self.credential_next;
         self.engine.send(WebViewCommand::Credentials(request));
+        self.credential_next
     }
 
     /// Answer the page's file chooser `id` with exactly the paths the person picked, or with
@@ -682,7 +900,9 @@ impl PageSession {
             || !self.events.is_empty()
             || self.prompts.changed()
             || !self.choosers.is_empty()
-            || self.credential_waiting.is_some()
+            || self.login_waiting.is_some()
+            || !self.taking.is_empty()
+            || self.vault_pending > 0
             || !self.notes.is_empty()
     }
 }
@@ -832,107 +1052,325 @@ mod tests {
         );
     }
 
-    /// The engine's credential store acts on the document the person is looking at: the session
-    /// asks the page which one that is and names it on the person's action, and the question it
-    /// asked is not the person's to see.
-    #[test]
-    fn a_credential_action_names_the_pages_own_document() {
-        let test = TestEngine::new();
-        let mut session = PageSession::new(test.clone());
-        session.credential(CredentialRequest {
-            request_id: 0,
-            origin: "https://example.org".to_owned(),
-            document: String::new(),
-            action: CredentialAction::Discover,
-        });
-        match test.commands().last() {
-            Some(WebViewCommand::Credentials(request)) => {
-                assert!(
-                    matches!(request.action, CredentialAction::Status),
-                    "the document is asked for first, naming no document itself: {request:?}"
-                );
-            }
-            other => panic!("a status is asked for: {other:?}"),
-        }
+    /// A vault that answers at once, keeping what it was asked: the logins it lists, and what
+    /// filling answers.
+    /// A login the fake vault was handed: its site, name, password and the login it replaces.
+    type Kept = (String, String, String, Option<String>);
 
-        test.push_event(WebViewEvent::CredentialResult(
-            tilo_webview::CredentialReply {
-                request_id: 1,
-                action: "status".to_owned(),
-                origin: "https://example.org".to_owned(),
-                document: "4".to_owned(),
-                success: true,
-                message: "Ready".to_owned(),
-                forms: Vec::new(),
-                accounts: Vec::new(),
-                capture: None,
-                username: None,
-                late: false,
-            },
-        ));
-        session.poll();
-        match test.commands().last() {
-            Some(WebViewCommand::Credentials(request)) => {
-                assert!(
-                    matches!(request.action, CredentialAction::Discover),
-                    "the person's action follows: {request:?}"
-                );
-                assert_eq!(
-                    request.document, "4",
-                    "named by the document the page is at"
-                );
-                assert_eq!(request.origin, "https://example.org");
-            }
-            other => panic!("the action follows the status: {other:?}"),
-        }
-        assert!(
-            session.notes().is_empty(),
-            "asking the page for its document is not the person's to see"
-        );
+    #[derive(Default)]
+    struct FakeVault {
+        asked: std::cell::RefCell<Vec<String>>,
+        kept: std::cell::RefCell<Vec<Kept>>,
+        refuse_fill: Option<String>,
     }
 
-    /// A page whose logins the engine will not reach (it is not secure, or it has moved on) says
-    /// so in the person's action's own answer, and no action is sent for a document unknown.
-    #[test]
-    fn a_credential_action_the_engine_refuses_is_answered_in_its_own_words() {
+    const TYPED: &str = "synthetic-typed-password";
+    const KEPT: &str = "synthetic-vault-password";
+
+    fn login(item: &str, username: &str) -> VaultLogin {
+        VaultLogin {
+            item: item.to_owned(),
+            title: "example.org".to_owned(),
+            username: username.to_owned(),
+            own: true,
+        }
+    }
+
+    impl LoginVault for FakeVault {
+        fn logins(&self, site: &str, done: Answered<Vec<VaultLogin>>) {
+            self.asked.borrow_mut().push(format!("logins {site}"));
+            done(Ok(vec![login("vault.item:1", "ada")]));
+        }
+        fn keep(
+            &self,
+            site: &str,
+            username: &str,
+            password: tilo_webview::ReleasedText,
+            replacing: Option<&str>,
+            done: Answered<()>,
+        ) {
+            let secret = password.take().map(|p| p.to_string()).unwrap_or_default();
+            self.kept.borrow_mut().push((
+                site.to_owned(),
+                username.to_owned(),
+                secret,
+                replacing.map(str::to_owned),
+            ));
+            done(Ok(()));
+        }
+        fn forget(&self, site: &str, item: &str, done: Answered<Vec<VaultLogin>>) {
+            self.asked
+                .borrow_mut()
+                .push(format!("forget {item} {site}"));
+            done(Ok(Vec::new()));
+        }
+        fn fill(
+            &self,
+            site: &str,
+            item: &str,
+            done: Answered<(String, tilo_webview::ReleasedText)>,
+        ) {
+            self.asked.borrow_mut().push(format!("fill {item} {site}"));
+            done(match &self.refuse_fill {
+                Some(why) => Err(why.clone()),
+                None => Ok((
+                    "ada".to_owned(),
+                    tilo_webview::ReleasedText::new(KEPT.to_owned()),
+                )),
+            });
+        }
+    }
+
+    /// The engine's answer to a login action.
+    fn reply(
+        action: &str,
+        success: bool,
+        origin: &str,
+        document: &str,
+    ) -> tilo_webview::CredentialReply {
+        tilo_webview::CredentialReply {
+            request_id: 1,
+            action: action.to_owned(),
+            origin: origin.to_owned(),
+            document: document.to_owned(),
+            success,
+            message: if success {
+                "Ready"
+            } else {
+                "Page changed or secure form access is unavailable"
+            }
+            .to_owned(),
+            forms: Vec::new(),
+            capture: None,
+            username: None,
+            late: false,
+            password: None,
+        }
+    }
+
+    fn last_credential(test: &std::sync::Arc<TestEngine>) -> CredentialRequest {
+        match test.commands().last() {
+            Some(WebViewCommand::Credentials(request)) => request.clone(),
+            other => panic!("a credential action was sent: {other:?}"),
+        }
+    }
+
+    fn with_vault(vault: FakeVault) -> (std::sync::Arc<TestEngine>, PageSession, Rc<FakeVault>) {
         let test = TestEngine::new();
         let mut session = PageSession::new(test.clone());
-        session.credential(CredentialRequest {
-            request_id: 0,
-            origin: "http://example.org".to_owned(),
-            document: String::new(),
-            action: CredentialAction::List,
-        });
-        let before = test.commands().len();
-        test.push_event(WebViewEvent::CredentialResult(
-            tilo_webview::CredentialReply {
-                request_id: 1,
-                action: "status".to_owned(),
-                origin: "http://example.org".to_owned(),
-                document: String::new(),
-                success: false,
-                message: "Page changed or secure form access is unavailable".to_owned(),
-                forms: Vec::new(),
-                accounts: Vec::new(),
-                capture: None,
-                username: None,
-                late: false,
-            },
+        let vault = Rc::new(vault);
+        session.set_vault(vault.clone());
+        (test, session, vault)
+    }
+
+    /// A login action asks the engine where the page is first, and acts on the document and the
+    /// site the engine names, whatever the app said: the question itself is not the person's
+    /// to see.
+    #[test]
+    fn a_login_action_names_the_pages_own_document_and_site() {
+        let (test, mut session, vault) = with_vault(FakeVault::default());
+        session.login(
+            "https://elsewhere.example",
+            LoginAsk::Engine(CredentialAction::Discover),
+        );
+        assert!(matches!(
+            last_credential(&test).action,
+            CredentialAction::Status
         ));
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        let discover = last_credential(&test);
+        assert!(matches!(discover.action, CredentialAction::Discover));
+        assert_eq!(
+            (discover.origin.as_str(), discover.document.as_str()),
+            ("https://example.org", "4")
+        );
+        assert!(
+            session.notes().is_empty(),
+            "the status is not the person's to see"
+        );
+
+        session.login("https://elsewhere.example", LoginAsk::List);
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        assert_eq!(*vault.asked.borrow(), ["logins https://example.org"]);
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
+        assert_eq!(note["did"], "list");
+        let accounts: serde_json::Value =
+            serde_json::from_str(note["accounts"].as_str().unwrap()).unwrap();
+        assert_eq!(accounts[0]["account"], "vault.item:1");
+        assert_eq!(accounts[0]["username"], "ada");
+    }
+
+    /// What a person typed goes from the engine to the vault, for the site the page is at, and
+    /// into no note: the app hears it was saved, and the site's logins as they are now.
+    #[test]
+    fn a_saved_login_goes_from_the_engine_to_the_vault_alone() {
+        let (test, mut session, vault) = with_vault(FakeVault::default());
+        session.login(
+            "https://example.org",
+            LoginAsk::Update {
+                capture: "3".to_owned(),
+                item: "vault.item:1".to_owned(),
+            },
+        );
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        let take = last_credential(&test);
+        assert!(matches!(&take.action, CredentialAction::Take { capture } if capture == "3"));
+        let mut taken = reply("take", true, "https://example.org", "4");
+        taken.request_id = take.request_id;
+        taken.username = Some("ada".to_owned());
+        taken.password = Some(tilo_webview::ReleasedText::new(TYPED.to_owned()));
+        test.push_event(WebViewEvent::CredentialResult(taken));
         session.poll();
         assert_eq!(
-            test.commands().len(),
-            before,
-            "nothing is asked of a page whose document the store will not name"
+            *vault.kept.borrow(),
+            [(
+                "https://example.org".to_owned(),
+                "ada".to_owned(),
+                TYPED.to_owned(),
+                Some("vault.item:1".to_owned())
+            )]
         );
         let notes = session.notes();
-        let note: serde_json::Value = serde_json::from_str(&notes[0]).expect("the note is JSON");
+        assert!(notes.iter().all(|note| !note.contains(TYPED)), "{notes:?}");
+        let said: Vec<serde_json::Value> = notes
+            .iter()
+            .map(|note| serde_json::from_str(note).unwrap())
+            .collect();
+        assert_eq!(said[0]["did"], "update");
+        assert_eq!(said[0]["success"], true);
+        assert_eq!(said[1]["did"], "list");
+        while session.next_event().is_some() {}
+        assert!(!session.busy(), "nothing waits on the engine or the vault");
+    }
+
+    /// Filling asks the vault for the site the engine says the page is at, and hands the engine
+    /// the login for that document; a fill the vault refuses fills nothing and says why.
+    #[test]
+    fn a_fill_hands_the_vaults_login_to_the_engine_or_says_why_not() {
+        let (test, mut session, vault) = with_vault(FakeVault::default());
+        session.login(
+            "https://elsewhere.example",
+            LoginAsk::Fill {
+                form: "2".to_owned(),
+                item: "vault.item:1".to_owned(),
+            },
+        );
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        assert_eq!(
+            *vault.asked.borrow(),
+            ["fill vault.item:1 https://example.org"]
+        );
+        let fill = last_credential(&test);
+        assert_eq!(
+            (fill.origin.as_str(), fill.document.as_str()),
+            ("https://example.org", "4")
+        );
+        match &fill.action {
+            CredentialAction::Fill {
+                form,
+                username,
+                password,
+            } => {
+                assert_eq!((form.as_str(), username.as_str()), ("2", "ada"));
+                assert_eq!(password.take().as_deref().map(String::as_str), Some(KEPT));
+            }
+            other => panic!("a fill: {other:?}"),
+        }
+        assert!(session.notes().iter().all(|note| !note.contains(KEPT)));
+
+        let (test, mut session, _) = with_vault(FakeVault {
+            refuse_fill: Some("Browser may not fill this login yet".to_owned()),
+            ..FakeVault::default()
+        });
+        session.login(
+            "https://example.org",
+            LoginAsk::Fill {
+                form: "2".to_owned(),
+                item: "vault.item:9".to_owned(),
+            },
+        );
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            true,
+            "https://example.org",
+            "4",
+        )));
+        session.poll();
+        assert!(
+            matches!(last_credential(&test).action, CredentialAction::Status),
+            "nothing filled"
+        );
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
+        assert_eq!(note["did"], "fill");
+        assert_eq!(note["success"], false);
+        assert_eq!(note["message"], "Browser may not fill this login yet");
+    }
+
+    /// A page the engine will not reach (not secure, or moved on) says so in the action's own
+    /// answer, and nothing is asked of the engine or the vault for it.
+    #[test]
+    fn a_login_action_the_engine_refuses_is_answered_in_its_own_words() {
+        let (test, mut session, vault) = with_vault(FakeVault::default());
+        session.login("http://example.org", LoginAsk::List);
+        let before = test.commands().len();
+        test.push_event(WebViewEvent::CredentialResult(reply(
+            "status",
+            false,
+            "http://example.org",
+            "",
+        )));
+        session.poll();
+        assert_eq!(test.commands().len(), before);
+        assert!(vault.asked.borrow().is_empty());
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
         assert_eq!(note["did"], "list");
         assert_eq!(note["success"], false);
         assert_eq!(
             note["message"],
             "Page changed or secure form access is unavailable"
         );
+    }
+
+    /// A page with no vault to ask (a private one) is offered no logins and keeps none.
+    #[test]
+    fn a_page_without_a_vault_offers_and_keeps_no_logins() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        session.login(
+            "https://example.org",
+            LoginAsk::Save {
+                capture: "3".to_owned(),
+            },
+        );
+        assert!(test.commands().is_empty(), "nothing is taken from the form");
+        let note: serde_json::Value = serde_json::from_str(&session.notes()[0]).unwrap();
+        assert_eq!(note["did"], "save");
+        assert_eq!(note["success"], false);
+        assert_eq!(note["message"], logins::NO_VAULT);
     }
 
     /// A private page's profile is its window's alone and goes when the page does: nothing it

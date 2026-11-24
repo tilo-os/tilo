@@ -327,6 +327,15 @@ mod cases {
             }
         }
 
+        /// The number a field holds, kept as a float: a size, which an `Int` would lose.
+        fn float(&self, r: &ResourceRef, field: &str) -> f64 {
+            match self.rt.read(r, field).unwrap() {
+                Value::Float(n) => n,
+                Value::Int(n) => n as f64,
+                other => panic!("{field} reads {other:?}"),
+            }
+        }
+
         fn flag(&self, r: &ResourceRef, field: &str) -> bool {
             match self.rt.read(r, field).unwrap() {
                 Value::Bool(b) => b,
@@ -1283,6 +1292,396 @@ mod cases {
             !editor.text(&editor.root, "trouble").is_empty()
                 || editor.records(&editor.root, "files").is_empty(),
             "a folder that does not read leaves the project as it was and says so"
+        );
+    }
+
+    /// The text of the window's node `kind` that carries `value` as its `prop`.
+    fn node_with<'a>(tree: &'a UiNode, kind: &str, prop: &str, value: &str) -> Option<&'a UiNode> {
+        of_kind(tree, kind).into_iter().find(|node| {
+            node.props
+                .get(prop)
+                .and_then(Value::as_text)
+                .is_some_and(|held| held == value)
+        })
+    }
+
+    /// The key a control of the window's tree declares, by the words it shows.
+    fn control_key(tree: &UiNode, kind: &str, label: &str) -> Option<String> {
+        node_with(tree, kind, "label", label)
+            .and_then(|node| node.props.get("key"))
+            .and_then(Value::as_text)
+            .map(str::to_owned)
+    }
+
+    /// The view state `name` of the window's `project` view, as the window keeps it for a person.
+    fn project_state(
+        editor: &Editor,
+        window: &tilolang_runtime::ViewInstance,
+        name: &str,
+    ) -> Value {
+        let state = editor
+            .app
+            .meta()
+            .views
+            .iter()
+            .find(|view| view.name == "project")
+            .and_then(|view| view.state.iter().find(|state| state.name == name))
+            .unwrap_or_else(|| panic!("the project declares `{name}`"));
+        window
+            .view_state(&state.id)
+            .unwrap_or_else(|| panic!("the window has no `{name}`"))
+    }
+
+    /// Every command the editor's own editor answers to a key: the commands a window runs are the
+    /// actions' published keys, so the palette and the window's bar answer them too; the commands
+    /// that run on the open file are the keys of the controls that run them.
+    #[test]
+    fn every_command_of_the_editor_answers_to_a_key() {
+        let editor = Editor::new();
+        // Actions of the project, whose parameters the window supplies: their keys are published
+        // with them.
+        for (action, key) in [
+            ("new_file", "Ctrl+n"),
+            ("save_all", "Ctrl+Alt+s"),
+            ("show_problems", "Ctrl+Shift+m"),
+            ("show_terminal", "Ctrl+j"),
+            ("show_search_results", "Ctrl+Shift+f"),
+        ] {
+            let meta = editor
+                .app
+                .meta()
+                .action_named(action)
+                .unwrap_or_else(|| panic!("no action {action}"));
+            assert_eq!(
+                meta.key.as_deref(),
+                Some(key),
+                "{action} answers to its key"
+            );
+        }
+
+        let main = editor.file("main.rs", None);
+        editor.call(
+            "replace_text",
+            vec![
+                Value::resource(&main),
+                Value::text("fn main() {}\nlet x = 1;\n"),
+            ],
+        );
+        let mut window = editor.window();
+        // The commands on the open file are the file menu's: each answers to its key while the
+        // window has the keyboard.
+        for (label, key) in [
+            ("Save", "Ctrl+S"),
+            ("Save as…", "Ctrl+Shift+S"),
+            ("Reload from disk", "Ctrl+Shift+R"),
+            ("Format", "Ctrl+Shift+I"),
+            ("Duplicate line", "Shift+Alt+Down"),
+            ("Move line up", "Alt+Up"),
+            ("Move line down", "Alt+Down"),
+            ("Delete line", "Ctrl+Shift+K"),
+            ("Toggle comment", "Ctrl+/"),
+            ("Suggest", "Ctrl+Space"),
+            ("Go to definition", "F12"),
+            ("Open a folder…", "Ctrl+Shift+O"),
+            ("Open a file…", "Ctrl+O"),
+        ] {
+            assert_eq!(
+                control_key(window.tree(), "ui.MenuItem", label).as_deref(),
+                Some(key),
+                "`{label}` answers to its key: {}",
+                crate::common::dump(window.tree())
+            );
+        }
+        // Go to line puts the keyboard in the line field.
+        assert_eq!(
+            node_with(window.tree(), "ui.TextInput", "placeholder", "Line")
+                .and_then(|node| node.props.get("key"))
+                .and_then(Value::as_text)
+                .as_deref(),
+            Some("Ctrl+G"),
+            "the line field answers to Ctrl+G"
+        );
+
+        // The comment toggle the key runs comments the line the caret is on.
+        let toggle = node_with(window.tree(), "ui.MenuItem", "label", "Toggle comment")
+            .expect("the file menu offers the comment toggle")
+            .key
+            .clone();
+        window.fire(&toggle, "choose").expect("the comment toggles");
+        window.poll_patches().expect("the window draws the comment");
+        assert_eq!(editor.text(&main, "text"), "// fn main() {}\nlet x = 1;\n");
+
+        // The line commands the keys run work on the line the caret is on.
+        editor.call(
+            "replace_text",
+            vec![Value::resource(&main), Value::text("one\ntwo\nthree\n")],
+        );
+        let fire = |window: &tilolang_runtime::ViewInstance, label: &str| {
+            let key = node_with(window.tree(), "ui.MenuItem", "label", label)
+                .unwrap_or_else(|| panic!("the file menu offers `{label}`"))
+                .key
+                .clone();
+            window.fire(&key, "choose").expect(label);
+        };
+        fire(&window, "Move line down");
+        window.poll_patches().expect("the window draws the move");
+        assert_eq!(editor.text(&main, "text"), "two\none\nthree\n");
+        // The caret is on the first line, so the other direction moves the second one up.
+        editor.call(
+            "move_line",
+            vec![Value::resource(&main), Value::Int(1), Value::Bool(true)],
+        );
+        assert_eq!(editor.text(&main, "text"), "one\ntwo\nthree\n");
+        fire(&window, "Duplicate line");
+        window.poll_patches().expect("the window draws the copy");
+        assert_eq!(editor.text(&main, "text"), "one\none\ntwo\nthree\n");
+        fire(&window, "Delete line");
+        window.poll_patches().expect("the window draws the delete");
+        assert_eq!(editor.text(&main, "text"), "one\ntwo\nthree\n");
+
+        // Go to line shows the line the field holds.
+        let goto = editor
+            .app
+            .meta()
+            .views
+            .iter()
+            .find(|view| view.name == "project")
+            .and_then(|view| view.state.iter().find(|state| state.name == "goto"))
+            .expect("the project declares `goto`")
+            .id
+            .clone();
+        window.set_view_state(&goto, Value::text("3"));
+        let go = node_with(window.tree(), "ui.Button", "label", "Go to line")
+            .expect("the page offers the go-to button")
+            .key
+            .clone();
+        window.fire(&go, "press").expect("the line is shown");
+        window.poll_patches().expect("the window draws the line");
+        assert_eq!(editor.number(&main, "reveal_line"), 2);
+
+        // The window's keys switch the panel under the code, through the buttons its actions
+        // stand on.
+        for (label, panel) in [
+            ("Show the terminal", "terminal"),
+            ("Show the search results", "search"),
+            ("Show the problems", "problems"),
+        ] {
+            let button = node_with(window.tree(), "ui.Button", "label", label)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the window offers `{label}`: {}",
+                        crate::common::dump(window.tree())
+                    )
+                })
+                .key
+                .clone();
+            window.fire(&button, "press").expect("the panel switches");
+            window.poll_patches().expect("the window draws the panel");
+            match project_state(&editor, &window, "panel") {
+                Value::Opt(Some(held)) => assert_eq!(*held, Value::text(panel)),
+                Value::Text(shown) => assert_eq!(shown, panel),
+                other => panic!("the panel reads {other:?}"),
+            }
+        }
+
+        // Escape in the terminal's command line leaves it and returns to the code.
+        let terminal = node_with(window.tree(), "ui.Button", "label", "Show the terminal")
+            .expect("the window offers the terminal")
+            .key
+            .clone();
+        window.fire(&terminal, "press").expect("the terminal shows");
+        window
+            .poll_patches()
+            .expect("the window draws the terminal");
+        let field = node_with(
+            window.tree(),
+            "ui.TextInput",
+            "placeholder",
+            "Run a command in the project",
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "the terminal has a command line: {}",
+                crate::common::dump(window.tree())
+            )
+        })
+        .key
+        .clone();
+        window
+            .fire(&field, "cancel")
+            .expect("Escape leaves the field");
+        window.poll_patches().expect("the window draws the code");
+        match project_state(&editor, &window, "panel") {
+            Value::Opt(Some(held)) => assert_eq!(*held, Value::text("")),
+            Value::Text(shown) => assert_eq!(shown, ""),
+            other => panic!("the panel reads {other:?}"),
+        }
+    }
+
+    /// The number a node's property holds, which must be a float.
+    fn float_prop(node: &UiNode, name: &str) -> f64 {
+        match node.props.get(name) {
+            Some(Value::Float(n)) => *n,
+            Some(Value::Int(n)) => *n as f64,
+            other => panic!("{name} reads {other:?}"),
+        }
+    }
+
+    /// The editor's own text size, as the code beside the tree draws it.
+    fn code_zoom(window: &tilolang_runtime::ViewInstance) -> f64 {
+        let code = of_kind(window.tree(), "ui.CodeEditor")
+            .into_iter()
+            .next()
+            .expect("the open file is drawn as code");
+        float_prop(code, "zoom")
+    }
+
+    /// The code reads larger in steps the person chooses, and the size they chose is their own:
+    /// kept in a record only they read, so it follows them to their other devices and changes
+    /// nobody else's.
+    #[test]
+    fn the_editors_text_zooms_and_remembers_its_size() {
+        let editor = Editor::new();
+        for (action, key) in [
+            ("zoom_in", "Ctrl+="),
+            ("zoom_out", "Ctrl+-"),
+            ("zoom_reset", "Ctrl+0"),
+        ] {
+            let meta = editor
+                .app
+                .meta()
+                .action_named(action)
+                .unwrap_or_else(|| panic!("no action {action}"));
+            assert_eq!(
+                meta.key.as_deref(),
+                Some(key),
+                "{action} answers to its key"
+            );
+        }
+
+        let _main = editor.file("main.rs", None);
+        let mut window = editor.window();
+        // A person who has not chosen a size reads the code at its own size, and the header says
+        // which size that is.
+        assert!(
+            (code_zoom(&window) - 1.0).abs() < 1e-6,
+            "the code starts at its own size: {}",
+            code_zoom(&window)
+        );
+        assert!(
+            of_kind(window.tree(), "ui.MenuButton")
+                .into_iter()
+                .any(|node| node.props.get("label").and_then(Value::as_text) == Some("100%")),
+            "the header shows the size a person chose: {}",
+            crate::common::dump(window.tree())
+        );
+        for (label, key) in [
+            ("Zoom in", "Ctrl+="),
+            ("Zoom out", "Ctrl+-"),
+            ("Actual size", "Ctrl+0"),
+        ] {
+            assert_eq!(
+                control_key(window.tree(), "ui.MenuItem", label).as_deref(),
+                Some(key),
+                "`{label}` answers to its key"
+            );
+        }
+
+        // One step larger is the next level, on the code and in the person's own setting.
+        editor.call("zoom_in", vec![Value::resource(&editor.root)]);
+        window
+            .poll_patches()
+            .expect("the window draws the larger code");
+        assert!(
+            (code_zoom(&window) - 1.1).abs() < 1e-6,
+            "one step larger: {}",
+            code_zoom(&window)
+        );
+        let settings = editor.records(&editor.root, "settings");
+        assert_eq!(settings.len(), 1, "the person has one settings record");
+        assert!(
+            (editor.float(&settings[0], "editor_zoom") - 1.1).abs() < 1e-6,
+            "the setting moved one step: {}",
+            editor.float(&settings[0], "editor_zoom")
+        );
+
+        // The steps stop at the toolkit's ends, in both directions.
+        for _ in 0..10 {
+            editor.call("zoom_in", vec![Value::resource(&editor.root)]);
+        }
+        window
+            .poll_patches()
+            .expect("the window draws the largest code");
+        assert!(
+            (code_zoom(&window) - 3.0).abs() < 1e-6,
+            "the largest size: {}",
+            code_zoom(&window)
+        );
+        editor.call("zoom_reset", vec![Value::resource(&editor.root)]);
+        window
+            .poll_patches()
+            .expect("the window draws its own size again");
+        assert!(
+            (code_zoom(&window) - 1.0).abs() < 1e-6,
+            "reset is the code's own size: {}",
+            code_zoom(&window)
+        );
+        for _ in 0..10 {
+            editor.call("zoom_out", vec![Value::resource(&editor.root)]);
+        }
+        window
+            .poll_patches()
+            .expect("the window draws the smallest code");
+        assert!(
+            (code_zoom(&window) - 0.5).abs() < 1e-6,
+            "the smallest size: {}",
+            code_zoom(&window)
+        );
+
+        // The size is the person's: their settings record is the one they read, and no other
+        // member is admitted to it.
+        let settings = editor.records(&editor.root, "settings");
+        assert_eq!(settings.len(), 1, "one person chose a size");
+        assert!(
+            editor.rt.readers_admit(&me(), &settings[0]),
+            "the person reads their own editor size"
+        );
+        assert!(
+            !editor.rt.readers_admit(&person("bo"), &settings[0]),
+            "another member does not read this person's editor size"
+        );
+    }
+
+    /// Quick open is the system's search, and it reaches this app's: what the window's search
+    /// holds finds the places in the open file and searches the project's files, so the app
+    /// answers the platform's search rather than keeping one of its own.
+    #[test]
+    fn quick_open_reaches_the_editors_search() {
+        let editor = Editor::new();
+        let main = editor.file("main.rs", None);
+        editor.call(
+            "replace_text",
+            vec![
+                Value::resource(&main),
+                Value::text("fn other() {}\nlet held = main();\n"),
+            ],
+        );
+        let mut window = editor.window();
+        let shell = of_kind(window.tree(), "ui.NavShell")[0].key.clone();
+        window
+            .fire_with(&shell, "search", Some(&Value::text("main")))
+            .expect("the window's search reaches the app");
+        window.poll_patches().expect("the window draws the places");
+        let found = editor.list(&editor.root, "found");
+        assert_eq!(found.len(), 1, "the open file's place is found: {found:?}");
+        assert!(
+            editor
+                .engine
+                .asks("search")
+                .iter()
+                .any(|ask| ask.contains("\"needle\":\"main\"")),
+            "the project is searched for the same words: {:?}",
+            editor.engine.asks("search")
         );
     }
 }

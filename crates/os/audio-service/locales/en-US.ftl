@@ -24,6 +24,7 @@ so-tilo-audio-sound-set-profile = Audio device profile
 so-tilo-audio-sound-set-stream-muted = Mute an application
 so-tilo-audio-sound-set-stream-volume = Application volume
 so-tilo-audio-sound-set-volume = Volume
+so-tilo-audio-sound-test-output = Play a test tone
 so-tilo-audio-sound-toggle-input-muted = Mute or unmute the microphone
 so-tilo-audio-sound-toggle-muted = Mute or unmute
 so-tilo-audio-sound-volume-down = Quieter

@@ -1,7 +1,14 @@
-//! `tilo-layout-check` through its library: a fixture app whose views are each laid out
-//! wrong in one way is caught for every kind of problem, at the view that is wrong. The shipped
-//! apps are laid out by the `layout-check` t checks, which read the allow-list
+//! `tilo-layout-check` through its library and its command: a fixture app whose views are each
+//! laid out wrong in one way is caught for every kind of problem, at the view that is wrong. The
+//! shipped apps are laid out by the `layout-check` t checks, which read the allow-list
 //! (`tests/layout_check/allowed`) and keep every size's dump and shots.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "a failed unwrap or index in a test is its assertion"
+)]
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -9,7 +16,10 @@ use std::process::Command;
 
 use tilolang_cli::layout_check::{self, Kind, Options};
 
-use crate::manifest;
+/// This package's directory.
+fn manifest() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
 
 #[test]
 fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
@@ -478,9 +488,8 @@ fn a_strict_run_fails_on_an_allow_list_line_that_no_longer_shows() {
     let allow = scratch.path().join("allowed");
     std::fs::write(&allow, "overlap nowhere › view [Row]\n").expect("the allow-list writes");
     let run = |strict: bool| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_tilolang"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-layout-check"));
         command
-            .arg("layout-check")
             .arg(manifest().join("tests/layout_check/branches"))
             .arg("--allow")
             .arg(&allow);
@@ -562,8 +571,7 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
 fn a_phone_layout_shows_what_a_tapped_row_opens() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
-        .arg("layout-check")
+    let output = Command::new(env!("CARGO_BIN_EXE_tilo-layout-check"))
         .arg(manifest().join("tests/layout_check/detail"))
         .args(["--dump", "390x844"])
         .output_locked()
@@ -597,11 +605,10 @@ fn a_phone_layout_shows_what_a_tapped_row_opens() {
 fn a_run_presses_a_rows_box_by_its_own_words() {
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    let shots = manifest().join("../../../target/layout-press-shots");
+    let shots = manifest().join("../../target/layout-press-shots");
     let _ = std::fs::remove_dir_all(&shots);
     std::fs::create_dir_all(&shots).expect("the shots' directory");
-    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
-        .arg("layout-check")
+    let output = Command::new(env!("CARGO_BIN_EXE_tilo-layout-check"))
         .arg(manifest().join("tests/layout_check/detail"))
         .args(["--dump", "390x844"])
         .arg("--shots")
@@ -652,8 +659,7 @@ fn a_dump_of_findings_holds_the_frames_a_finding_came_from() {
     assert!(!Dump::Every((390, 844)).prints((320, 568), true));
 
     let frames = |scope: &str| {
-        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
-            .arg("layout-check")
+        let output = Command::new(env!("CARGO_BIN_EXE_tilo-layout-check"))
             .arg(manifest().join("tests/layout_check/broken"))
             .arg(manifest().join("tests/layout_check/layered"))
             .args([scope, "390x844"])
@@ -766,8 +772,7 @@ fn a_run_the_command_cannot_read_is_refused_with_what_is_wrong_with_it() {
         (&["--no-such-flag"], "unknown option --no-such-flag"),
     ];
     for (args, said) in rows {
-        let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
-            .arg("layout-check")
+        let output = Command::new(env!("CARGO_BIN_EXE_tilo-layout-check"))
             .args(args)
             .output_locked()
             .expect("the command runs");

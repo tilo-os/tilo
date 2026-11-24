@@ -79,12 +79,16 @@
 //! label.
 //!
 //! Variant options: `label = "key"`, `view` (changes
-//! only what is shown; answers at once), `row` (offered only bound to the
-//! items it acts on), `job` (runs in the background and reports progress,
-//! then its result), `cancellable` (a job the caller may cancel), `returns`
-//! (answers with a JSON value), `content` (answers with content another
-//! app's operation takes: bytes in this device's content store, named by
-//! their hash as a `tilo.content` resource; an operation that takes content
+//! only what is shown; answers at once), `document` (a document operation the
+//! app's own registry applies, as the history verbs are: its operation type is
+//! the action's, never an operation the surface answers), `prompted` (asks its
+//! first parameter in the palette even where every parameter may be left out:
+//! a named verb whose optional argument a person still says), `row` (offered
+//! only bound to the items it acts on), `job` (runs in the background and reports
+//! progress, then its result), `cancellable` (a job the caller may cancel),
+//! `returns` (answers with a JSON value), `content` (answers with content
+//! another app's operation takes: bytes in this device's content store, named
+//! by their hash as a `tilo.content` resource; an operation that takes content
 //! collects it with `ActionSpec::prompted_content`, so a caller chains the
 //! two by type), `destructive` (asks for confirmation),
 //! `risk = "path"` (a `fn(&Self) -> RiskLevel` classifying one invocation:
@@ -940,6 +944,10 @@ pub struct EffectRow {
     /// (`returns = Type`): its JSON Schema and its type.
     pub result: Option<EffectResult>,
     pub kind: OperationKind,
+    /// Offered with its first parameter's prompt even where every parameter
+    /// may be left out: a named verb whose optional argument a person still
+    /// says (how many steps to undo).
+    pub prompted: bool,
     pub row: bool,
     pub answers: Answers,
     pub risk: RiskLevel,
@@ -1060,9 +1068,13 @@ pub struct EffectDecl {
     /// The value it answers with, when the code declares one
     /// (`returns = Type`); see [`EffectResult`].
     pub result: Option<EffectResult>,
-    /// `View` for an effect that only changes what its caller sees, else
-    /// `Effect`.
+    /// `View` for an effect that only changes what its caller sees, `Document`
+    /// for one published as a document operation the app's own registry
+    /// applies, else `Effect`.
     pub kind: OperationKind,
+    /// Offered with its first parameter's prompt even where every parameter
+    /// may be left out (`prompted`).
+    pub prompted: bool,
     /// Offered only bound to the items it acts on, not on the resource.
     pub row: bool,
     pub answers: Answers,
@@ -1186,7 +1198,7 @@ impl EffectDecl {
                 ..
             }
         );
-        if asks_words && !self.params.iter().any(|param| param.entry) {
+        if asks_words && !self.prompted && !self.params.iter().any(|param| param.entry) {
             spec.with_immediate_per_target()
         } else {
             spec
@@ -1224,6 +1236,7 @@ impl EffectDecl {
             param_types: (row.param_types)(),
             result: row.result,
             kind: row.kind,
+            prompted: row.prompted,
             row: row.row,
             answers: row.answers,
             risk: row.risk,
@@ -1291,19 +1304,33 @@ impl EffectDecl {
         let view = self.kind == OperationKind::View;
         let label = self.label.read();
         let params = crate::label::titled(&self.label, operation, params);
-        let mut spec = ActionSpec::typed_operation_on(
-            self.id,
-            label.clone(),
-            label,
-            if view {
-                OperationKind::View
-            } else {
-                OperationKind::Effect
-            },
-            operation,
-            params,
-            build,
-        );
+        let mut spec = if self.kind == OperationKind::Document {
+            // A document operation belongs to the app's own registry, which
+            // decodes the action and applies it as the record's change: its
+            // type is the action's, not an operation the surface answers.
+            ActionSpec::typed_on(
+                self.id,
+                label.clone(),
+                label,
+                tilo_actions::ExecutionLocus::ClientLocal,
+                params,
+                move |target: &Target, args: &tilo_actions::ActionArgs| build(target, args),
+            )
+        } else {
+            ActionSpec::typed_operation_on(
+                self.id,
+                label.clone(),
+                label,
+                if view {
+                    OperationKind::View
+                } else {
+                    OperationKind::Effect
+                },
+                operation,
+                params,
+                build,
+            )
+        };
         if !self.description.is_empty() {
             spec = spec.with_description(self.description);
         }
@@ -1311,10 +1338,10 @@ impl EffectDecl {
             spec = spec.with_keywords(self.keywords.iter().copied());
         }
         spec.type_mut().icon = self.icon.map(str::to_owned);
-        let base = if view {
-            ActionContract::view()
-        } else {
-            ActionContract::default()
+        let base = match self.kind {
+            OperationKind::View => ActionContract::view(),
+            OperationKind::Document => ActionContract::for_operation(OperationKind::Document),
+            OperationKind::Effect => ActionContract::default(),
         };
         spec.type_mut().contract = ActionContract {
             kind: self.action_kind,

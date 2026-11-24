@@ -191,6 +191,7 @@ session-displays = Displays
 session-input-devices = Input devices
 session-privacy = Privacy
 session-workspace-access = Workspace access
+session-keyboard = Keyboard
 wireless-unavailable = Wireless displays aren't available right now
 wireless-unavailable-detail = Try again in a moment.
 wireless-search-failed = Couldn't look for wireless displays

@@ -51,7 +51,8 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             .await;
             let (person, evidence) = local_host_evidence(&env);
             let facade = crate::apps::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
-            let host = facade.certified_local_action_provider(&person, &evidence).unwrap();
+            let host = facade.certified_local_action_provider(&person, &evidence, false)
+                .unwrap();
             let original = id(0xc529);
             let mut request = local_host_request(true);
             request.invocation = original;

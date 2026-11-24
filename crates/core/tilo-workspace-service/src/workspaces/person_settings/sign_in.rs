@@ -1,26 +1,39 @@
-//! Signing in on a provider's own page: a Nextcloud server's login flow.
+//! Signing in on a provider's own page: a Nextcloud server's login flow, a
+//! drive's `OAuth` page, and an `Apple ID` with the verification code Apple
+//! sends.
 //!
-//! The server starts the flow ([`BEGIN_SIGN_IN`]), shows its page, and polls
-//! in the background until the person approved access there or the flow ran
-//! out. The app password it mints is kept in the workspace's vault as the
-//! account's own entry ([`super::kept_sign_ins`]).
+//! A Nextcloud flow is started ([`BEGIN_SIGN_IN`]), the person's browser shows
+//! its page, and it is polled in the background until the person approved
+//! access there or the flow ran out. A drive's page is opened from a loopback
+//! this host waits on, or the code the provider shows is pasted back
+//! ([`SUBMIT_SIGN_IN_CODE`]); `iCloud` asks for the code Apple sent. What the
+//! sign-in leaves — an app password, a grant, an `iCloud` session — is kept
+//! in the workspace's vault as the account's own entry
+//! ([`super::kept_sign_ins`]).
 //!
 //! What is begun is kept in memory alone, one entry per sign-in, expiring;
-//! no app password is ever answered to a caller.
+//! no secret is ever answered to a caller.
 //!
 //! [`BEGIN_SIGN_IN`]: tilo_actions::remote::person_accounts::BEGIN_SIGN_IN
+//! [`SUBMIT_SIGN_IN_CODE`]: tilo_actions::remote::person_accounts::SUBMIT_SIGN_IN_CODE
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
+use account_credentials::icloud::{ICloudAuth, ICloudChallenge, ICloudSignIn, WebICloud};
 use account_credentials::nextcloud;
+use account_credentials::{
+    Authorization, CredentialStore, OAuthCloud, icloud_secret, oauth_secret,
+};
 use serde_json::{Value, json};
 use tilo_actions::remote::person_accounts::{
-    BeginSignIn, CancelSignIn, Provider, Services, SignInStep, SigningIn,
+    BeginCloudSignIn, BeginSignIn, CancelSignIn, CloudKind, Provider, Services, SignInStep,
+    SigningIn, SubmitSignInCode,
 };
 use tilo_net::Url;
+use zeroize::Zeroizing;
 
 use super::super::vault::VaultAt;
 use super::kept_sign_ins::{SIGN_IN, places_of, sign_in_of};
@@ -28,6 +41,10 @@ use crate::workspaces::Workspaces;
 
 /// How long a Nextcloud login flow may stay open.
 const NEXTCLOUD_MINUTES: u64 = 20;
+/// How long any other sign-in may stay open.
+const SIGN_IN_MINUTES: u64 = 20;
+/// The page an `Apple ID`'s sign-in is begun from.
+const APPLE_SIGN_IN: &str = "https://www.icloud.com";
 /// How often a Nextcloud server is asked whether the person approved.
 const POLL_EVERY: Duration = Duration::from_secs(2);
 /// The most sign-ins begun and not forgotten at once.
@@ -35,7 +52,7 @@ const MAX_BEGUN: usize = 64;
 /// The account type a calendar server is kept as, in the workspace's accounts.
 const CALDAV_TYPE: &str = "caldav";
 
-/// A Nextcloud login flow begun and not finished, polled in the background.
+/// A sign-in begun and not finished.
 struct Begun {
     id: String,
     person: [u8; 32],
@@ -43,10 +60,36 @@ struct Begun {
     root: PathBuf,
     until_ms: u64,
     failed: Option<String>,
-    /// The Nextcloud server it signs in to.
-    server: String,
-    /// Held by the poll; dropping it stops it.
-    stop: Option<mpsc::Sender<()>>,
+    flow: Flow,
+}
+
+/// What a begun sign-in follows.
+enum Flow {
+    /// A Nextcloud login flow, polled in the background.
+    Nextcloud {
+        /// The Nextcloud server it signs in to.
+        server: String,
+        /// Held by the poll; dropping it stops it.
+        stop: Option<mpsc::Sender<()>>,
+    },
+    /// A cloud provider's own page: either the loopback waits for the
+    /// browser, or the code it shows is pasted.
+    Oauth {
+        cloud: OAuthCloud,
+        name: String,
+        /// The sign-in awaiting the code the provider showed; `None` while
+        /// the loopback waits for the browser instead.
+        pasted: Option<Authorization>,
+        /// Stops the loopback wait.
+        stop: Option<account_credentials::LoopbackCancel>,
+    },
+    /// An `Apple ID` signed in to, waiting for the verification code Apple
+    /// sent to the person's devices.
+    Icloud {
+        challenge: ICloudChallenge,
+        name: String,
+        apple_id: String,
+    },
 }
 
 /// Every sign-in begun and not yet forgotten, by its id.
@@ -113,11 +156,16 @@ pub(super) fn signing_in(root: &Path) -> Vec<SigningIn> {
     begun()
         .values()
         .filter(|entry| entry.root == root)
-        .map(|entry| SigningIn {
-            id: entry.id.clone(),
-            provider: Provider::Nextcloud,
-            server: entry.server.clone(),
-            failed: entry.failed.clone(),
+        .filter_map(|entry| {
+            let Flow::Nextcloud { server, .. } = &entry.flow else {
+                return None;
+            };
+            Some(SigningIn {
+                id: entry.id.clone(),
+                provider: Provider::Nextcloud,
+                server: server.clone(),
+                failed: entry.failed.clone(),
+            })
         })
         .collect()
 }
@@ -147,7 +195,7 @@ impl Workspaces {
         reach: &tilo_account_probe::imap::Reach,
     ) -> Result<SignInStep, String> {
         let provider = asking.provider;
-        let services = chosen(provider, asking.services);
+        let services = chosen(provider, asking.services());
         prune();
         if begun().len() >= MAX_BEGUN {
             return Err("Too many sign-ins are open here. Finish or cancel one first".into());
@@ -207,8 +255,10 @@ impl Workspaces {
                 root: self.workspace_root(workspace),
                 until_ms: now_ms().saturating_add(minutes_ms(NEXTCLOUD_MINUTES)),
                 failed: None,
-                server,
-                stop: Some(stop),
+                flow: Flow::Nextcloud {
+                    server,
+                    stop: Some(stop),
+                },
             },
         );
         let workspaces = self.clone();
@@ -246,7 +296,11 @@ impl Workspaces {
                 Err(_) => keep_failed(&kept_id, "the Nextcloud answer was not read", cancelled_at),
             }
         });
-        Ok(SignInStep { id, open })
+        Ok(SignInStep {
+            id,
+            open,
+            code: String::new(),
+        })
     }
 
     /// Begin the sign-in a request asks for, and wake the windows following
@@ -279,6 +333,437 @@ impl Workspaces {
         self.person_settings_changed();
         Ok(listed)
     }
+
+    /// Begin connecting a cloud-storage account for `person` in `workspace`
+    /// ([`BEGIN_CLOUD_SIGN_IN`]), answering where their browser goes and what
+    /// the sign-in still waits for.
+    ///
+    /// # Errors
+    /// The provider is not configured in this build, its server is one this
+    /// host may not call, the person typed nothing, or too many sign-ins are
+    /// already begun.
+    pub(super) async fn begin_cloud_sign_in(
+        &self,
+        (person, workspace): ([u8; 32], &str),
+        asking: &BeginCloudSignIn,
+    ) -> Result<SignInStep, String> {
+        prune();
+        if begun().len() >= MAX_BEGUN {
+            return Err("Too many sign-ins are open here. Finish or cancel one first".into());
+        }
+        let step = match asking.kind {
+            CloudKind::GoogleDrive | CloudKind::OneDrive | CloudKind::Dropbox => {
+                self.begin_oauth_cloud((person, workspace), asking)
+            }
+            CloudKind::IcloudDrive => {
+                Box::pin(self.begin_icloud_cloud((person, workspace), asking)).await
+            }
+            CloudKind::Webdav => {
+                Box::pin(self.begin_webdav_cloud((person, workspace), asking)).await
+            }
+        }?;
+        self.person_settings_changed();
+        Ok(step)
+    }
+
+    /// Begin a drive's sign-in on its provider's page: the loopback waits for
+    /// the browser, or, where no port is free, the person pastes the code the
+    /// provider shows ([`SubmitSignInCode`]).
+    fn begin_oauth_cloud(
+        &self,
+        (person, workspace): ([u8; 32], &str),
+        asking: &BeginCloudSignIn,
+    ) -> Result<SignInStep, String> {
+        let cloud = match asking.kind {
+            CloudKind::GoogleDrive => OAuthCloud::GoogleDrive,
+            CloudKind::OneDrive => OAuthCloud::OneDrive,
+            CloudKind::Dropbox => OAuthCloud::Dropbox,
+            CloudKind::IcloudDrive | CloudKind::Webdav => {
+                return Err("That storage does not sign in on its provider's page".into());
+            }
+        };
+        let root = self.workspace_root(workspace);
+        let store = self.cloud_credentials(&root);
+        let authorization = store.begin_sign_in(cloud, None).map_err(|error| match error {
+            account_credentials::CredentialError::NotConfigured { provider, .. } => {
+                format!("Signing in with {provider} is not set up in this build")
+            }
+            error => error.to_string(),
+        })?;
+        let open = authorization.url().to_owned();
+        let name = cloud_name(asking, cloud.label());
+        let id = tilo_oauth::random_token().map_err(|error| error.to_string())?;
+        let until_ms = now_ms().saturating_add(minutes_ms(SIGN_IN_MINUTES));
+        let code = if authorization.needs_pasted_code() {
+            let prompt = format!(
+                "Copy the code {} shows and paste it here.",
+                cloud.sign_in_with()
+            );
+            begun().insert(
+                id.clone(),
+                Begun {
+                    id: id.clone(),
+                    person,
+                    root,
+                    until_ms,
+                    failed: None,
+                    flow: Flow::Oauth {
+                        cloud,
+                        name,
+                        pasted: Some(authorization),
+                        stop: None,
+                    },
+                },
+            );
+            prompt
+        } else {
+            let stop = authorization.canceller();
+            begun().insert(
+                id.clone(),
+                Begun {
+                    id: id.clone(),
+                    person,
+                    root: root.clone(),
+                    until_ms,
+                    failed: None,
+                    flow: Flow::Oauth {
+                        cloud,
+                        name: name.clone(),
+                        pasted: None,
+                        stop,
+                    },
+                },
+            );
+            let workspaces = self.clone();
+            let workspace = workspace.to_owned();
+            let kept_id = id.clone();
+            let cancelled_at = until_ms;
+            tokio::spawn(async move {
+                let finished = tokio::task::spawn_blocking(move || {
+                    CredentialStore::finish_sign_in(authorization)
+                })
+                .await;
+                let kept = match finished {
+                    Ok(Ok(tokens)) => {
+                        Box::pin(keep_oauth_account(
+                            workspaces.vault_for(
+                                &workspace,
+                                &tilo_action_policy::Acting::person(hex::encode(person)),
+                            ),
+                            cloud,
+                            &name,
+                            &tokens,
+                            &root,
+                        ))
+                        .await
+                    }
+                    Ok(Err(error)) => Err(error.to_string()),
+                    Err(_) => Err("the sign-in was not read to the end".to_owned()),
+                };
+                match kept {
+                    Ok(()) => {
+                        begun().remove(&kept_id);
+                        workspaces.person_settings_changed();
+                    }
+                    Err(reason) => keep_failed(&kept_id, &reason, cancelled_at),
+                }
+            });
+            String::new()
+        };
+        Ok(SignInStep { id, open, code })
+    }
+
+    /// Begin an `Apple ID`'s sign-in: Apple sends a verification code to the
+    /// person's devices, which [`SubmitSignInCode`] finishes the sign-in with.
+    async fn begin_icloud_cloud(
+        &self,
+        (person, workspace): ([u8; 32], &str),
+        asking: &BeginCloudSignIn,
+    ) -> Result<SignInStep, String> {
+        let apple_id = asking.username.trim().to_owned();
+        let password = Zeroizing::new(asking.password.clone());
+        if apple_id.is_empty() || password.is_empty() {
+            return Err("Enter your Apple ID and its password".into());
+        }
+        let name = cloud_name(asking, CloudKind::IcloudDrive.label());
+        let auth = tokio::task::spawn_blocking({
+            let workspaces = self.clone();
+            move || workspaces.icloud_auth()
+        })
+        .await
+        .map_err(|_| "the Apple ID sign-in did not start".to_owned())??;
+        let root = self.workspace_root(workspace);
+        let signing_in = apple_id.clone();
+        let outcome =
+            tokio::task::spawn_blocking(move || auth.sign_in(&signing_in, password.as_str()))
+            .await
+            .map_err(|_| "the Apple ID sign-in did not finish".to_owned())?
+            .map_err(|error| error.to_string())?;
+        match outcome {
+            ICloudSignIn::NeedsCode(challenge) => {
+                let id = tilo_oauth::random_token().map_err(|error| error.to_string())?;
+                begun().insert(
+                    id.clone(),
+                    Begun {
+                        id: id.clone(),
+                        person,
+                        root,
+                        until_ms: now_ms().saturating_add(minutes_ms(SIGN_IN_MINUTES)),
+                        failed: None,
+                        flow: Flow::Icloud {
+                            challenge,
+                            name: name.clone(),
+                            apple_id: apple_id.clone(),
+                        },
+                    },
+                );
+                Ok(SignInStep {
+                    id,
+                    open: APPLE_SIGN_IN.to_owned(),
+                    code: "Enter the verification code Apple sent to your devices.".to_owned(),
+                })
+            }
+            ICloudSignIn::Complete(session) => {
+                keep_icloud_account(
+                    self.vault_for(
+                        workspace,
+                        &tilo_action_policy::Acting::person(hex::encode(person)),
+                    ),
+                    &name,
+                    &apple_id,
+                    &session,
+                )
+                .await?;
+                Ok(SignInStep {
+                    id: String::new(),
+                    open: APPLE_SIGN_IN.to_owned(),
+                    code: String::new(),
+                })
+            }
+        }
+    }
+
+    /// Connect a `WebDAV` server from the address and sign-in the person
+    /// typed: nothing opens in a browser.
+    async fn begin_webdav_cloud(
+        &self,
+        (person, workspace): ([u8; 32], &str),
+        asking: &BeginCloudSignIn,
+    ) -> Result<SignInStep, String> {
+        let server = asking.server.trim().to_owned();
+        let username = asking.username.trim().to_owned();
+        let password = Zeroizing::new(asking.password.clone());
+        if server.is_empty() || username.is_empty() || password.is_empty() {
+            return Err("Enter the WebDAV server, its user name and its password".into());
+        }
+        let parsed = Url::parse(&server).map_err(|_| "That is no server address".to_owned())?;
+        if parsed.scheme() != "https" && parsed.scheme() != "http" {
+            return Err("A WebDAV server's address begins with https://".into());
+        }
+        let name = cloud_name(asking, CloudKind::Webdav.label());
+        keep_webdav_account(
+            self.vault_for(
+                workspace,
+                &tilo_action_policy::Acting::person(hex::encode(person)),
+            ),
+            &name,
+            &server,
+            &username,
+            &password,
+        )
+        .await?;
+        Ok(SignInStep {
+            id: String::new(),
+            open: String::new(),
+            code: String::new(),
+        })
+    }
+
+    /// Finish the sign-in `submitting` names with the code it carries
+    /// ([`SUBMIT_SIGN_IN_CODE`]), keeping the account it signs in to.
+    ///
+    /// # Errors
+    /// No such sign-in was begun here, it waits for no code, or the code the
+    /// provider was given was refused.
+    pub(super) async fn submit_sign_in_code(
+        &self,
+        person: [u8; 32],
+        (workspace, root): (&str, &Path),
+        submitting: &SubmitSignInCode,
+    ) -> Result<super::MailAccounts, String> {
+        let theirs = begun()
+            .get(&submitting.sign_in)
+            .is_some_and(|entry| entry.person == person);
+        if !theirs {
+            return Err("That sign-in was not begun here".into());
+        }
+        let code = submitting.code.trim().to_owned();
+        if code.is_empty() {
+            return Err("Enter the code the provider sent or showed".into());
+        }
+        let acting = tilo_action_policy::Acting::person(hex::encode(person));
+        let vault = self.vault_for(workspace, &acting);
+        enum Finish {
+            Icloud(ICloudChallenge, String, String),
+            Pasted(Authorization, OAuthCloud, String),
+            None,
+        }
+        let finish = {
+            let mut entries = begun();
+            let Some(entry) = entries.get_mut(&submitting.sign_in) else {
+                return Err("That sign-in was not begun here".into());
+            };
+            match &mut entry.flow {
+                Flow::Icloud {
+                    challenge,
+                    name,
+                    apple_id,
+                } => Finish::Icloud(
+                    ICloudChallenge(Zeroizing::new(challenge.0.to_string())),
+                    name.clone(),
+                    apple_id.clone(),
+                ),
+                Flow::Oauth {
+                    cloud,
+                    name,
+                    pasted,
+                    ..
+                } => match pasted.take() {
+                    Some(authorization) => Finish::Pasted(authorization, *cloud, name.clone()),
+                    None => Finish::None,
+                },
+                Flow::Nextcloud { .. } => Finish::None,
+            }
+        };
+        match finish {
+            Finish::Icloud(challenge, name, apple_id) => {
+                let auth = tokio::task::spawn_blocking({
+                    let workspaces = self.clone();
+                    move || workspaces.icloud_auth()
+                })
+                .await
+                .map_err(|_| "the verification code was not read to the end".to_owned())??;
+                let outcome = tokio::task::spawn_blocking({
+                    let code = code.clone();
+                    move || auth.verify_code(&challenge, &code)
+                })
+                .await
+                .map_err(|_| "the verification code was not read to the end".to_owned())?;
+                let session = match outcome {
+                    Ok(session) => session,
+                    Err(error) => {
+                        let refused = error.to_string();
+                        if matches!(error, account_credentials::icloud::ICloudAuthError::InvalidCode)
+                        {
+                            return Err(format!("{refused}. Enter the newest code"));
+                        }
+                        begun().remove(&submitting.sign_in);
+                        return Err(refused);
+                    }
+                };
+                keep_icloud_account(vault, &name, &apple_id, &session).await?;
+                begun().remove(&submitting.sign_in);
+            }
+            Finish::Pasted(authorization, cloud, name) => {
+                let finished = tokio::task::spawn_blocking(move || {
+                    CredentialStore::finish_sign_in_with_code(authorization, &code)
+                })
+                .await
+                .map_err(|_| "the code was not read to the end".to_owned())?;
+                let tokens = match finished {
+                    Ok(tokens) => tokens,
+                    Err(error) => {
+                        begun().remove(&submitting.sign_in);
+                        return Err(format!("{error}. Begin the sign-in again"));
+                    }
+                };
+                keep_oauth_account(vault, cloud, &name, &tokens, root).await?;
+                begun().remove(&submitting.sign_in);
+            }
+            Finish::None => {
+                return Err("That sign-in does not wait for a code".to_owned());
+            }
+        }
+        self.person_settings_changed();
+        Ok(super::mail_accounts(
+            &self.workspace_accounts(workspace).await?,
+            root,
+        ))
+    }
+
+    /// What a sign-in with a provider's own page is begun with.
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        allow(
+            clippy::unused_self,
+            reason = "a test signs in through a stand-in provider; a real build uses the committed registrations"
+        )
+    )]
+    fn cloud_credentials(&self, root: &Path) -> CredentialStore {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(store) = self
+            .inner
+            .cloud_sign_in
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return store;
+        }
+        CredentialStore::for_root(Some(root.to_path_buf()))
+    }
+
+    /// What an `Apple ID` signs in with: Apple's own, or a test's stand-in.
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        allow(
+            clippy::unused_self,
+            reason = "a test signs in through a stand-in provider; a real build uses Apple's"
+        )
+    )]
+    fn icloud_auth(&self) -> Result<std::sync::Arc<dyn ICloudAuth>, String> {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(auth) = self
+            .inner
+            .icloud_sign_in
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return Ok(auth);
+        }
+        WebICloud::apple()
+            .map(|auth| std::sync::Arc::new(auth) as std::sync::Arc<dyn ICloudAuth>)
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// The name a cloud account is shown under: what the person typed, else its
+/// provider's.
+fn cloud_name(asking: &BeginCloudSignIn, provider: &str) -> String {
+    let name = asking.name.trim();
+    if name.is_empty() {
+        provider.to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+/// The id a cloud account is kept under: its type and a slug of its name, so
+/// signing the same storage in again replaces its account rather than adding
+/// one beside it.
+fn cloud_id(type_id: &str, name: &str) -> String {
+    let mut slug = String::new();
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() { "account" } else { slug };
+    format!("{type_id}:{slug}")
 }
 
 /// Keep a sign-in's failure with it, so the person reads why and can cancel
@@ -288,7 +773,11 @@ fn keep_failed(id: &str, reason: &str, until_ms: u64) {
     if let Some(entry) = entries.get_mut(id) {
         entry.failed = Some(reason.to_owned());
         entry.until_ms = until_ms;
-        entry.stop = None;
+        match &mut entry.flow {
+            Flow::Nextcloud { stop, .. } => *stop = None,
+            Flow::Oauth { stop, .. } => *stop = None,
+            Flow::Icloud { .. } => {}
+        }
     }
 }
 
@@ -304,7 +793,9 @@ pub(super) async fn accounts_sign_in(
     workspace: &str,
     request: &tilo_actions::remote::InvokeRequest,
 ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
-    use tilo_actions::remote::person_accounts::{BEGIN_SIGN_IN, CANCEL_SIGN_IN};
+    use tilo_actions::remote::person_accounts::{
+        BEGIN_CLOUD_SIGN_IN, BEGIN_SIGN_IN, CANCEL_SIGN_IN, SUBMIT_SIGN_IN_CODE,
+    };
 
     match request.target.address.action.as_str() {
         BEGIN_SIGN_IN => {
@@ -312,6 +803,22 @@ pub(super) async fn accounts_sign_in(
             super::answer(
                 &workspaces
                     .begin_account_sign_in((person, workspace), &asking)
+                    .await,
+            )
+        }
+        BEGIN_CLOUD_SIGN_IN => {
+            let asking: BeginCloudSignIn = super::argument(request, "storage to connect")?;
+            super::answer(&workspaces.begin_cloud_sign_in((person, workspace), &asking).await)
+        }
+        SUBMIT_SIGN_IN_CODE => {
+            let submitting: SubmitSignInCode = super::argument(request, "a sign-in's code")?;
+            super::answer(
+                &workspaces
+                    .submit_sign_in_code(
+                        person,
+                        (workspace, &workspaces.workspace_root(workspace)),
+                        &submitting,
+                    )
                     .await,
             )
         }
@@ -336,14 +843,201 @@ pub(super) async fn accounts_sign_in(
 /// # Errors
 /// No such sign-in was begun by this person.
 pub(super) fn cancel(person: &[u8; 32], cancel: &CancelSignIn) -> Result<(), String> {
-    let theirs = begun()
+    let mut entries = begun();
+    let theirs = entries
         .get(&cancel.sign_in)
         .is_some_and(|entry| &entry.person == person);
     if !theirs {
         return Err("That sign-in was not begun here".into());
     }
-    begun().remove(&cancel.sign_in);
+    if let Some(entry) = entries.remove(&cancel.sign_in)
+        && let Flow::Oauth {
+            stop: Some(stop), ..
+        } = entry.flow
+    {
+        stop.cancel();
+    }
     Ok(())
+}
+
+/// The site a drive's sign-in belongs to: where its files are read, and the
+/// only place its grant may be sent.
+const fn origin_of(cloud: OAuthCloud) -> &'static str {
+    match cloud {
+        OAuthCloud::GoogleDrive => "https://www.googleapis.com",
+        OAuthCloud::OneDrive => "https://graph.microsoft.com",
+        OAuthCloud::Dropbox => "https://api.dropboxapi.com",
+    }
+}
+
+/// Where an `iCloud` account's session may be sent.
+const ICLOUD_ORIGIN: &str = "https://www.icloud.com";
+
+/// Keep a drive the provider's page signed in: its grant in the workspace's
+/// vault, its resolved mount in its settings, and the account itself.
+async fn keep_oauth_account(
+    vault: VaultAt<'_>,
+    cloud: OAuthCloud,
+    name: &str,
+    tokens: &account_credentials::TokenSet,
+    root: &Path,
+) -> Result<(), String> {
+    let mount = CredentialStore::for_root(Some(root.to_path_buf()))
+        .resolve_storage(cloud, tokens)
+        .map_err(|error| format!("{}'s files were not found: {error}", cloud.label()))?;
+    let id = cloud_id(cloud.type_id(), name);
+    let mut config = json!({
+        "id": id,
+        "provider": cloud.type_id(),
+        "mount": mount,
+        "server_url": origin_of(cloud),
+        "use_files": true,
+        "use_calendar": false,
+        "use_mail": false,
+    });
+    accounts::cloud_types::set_files_mode(
+        &mut config,
+        accounts::cloud_types::FilesMode::Sync,
+    );
+    let secret = oauth_secret(tokens).token.unwrap_or_default();
+    keep_cloud_sign_in(
+        vault,
+        &id,
+        cloud.sign_in_with(),
+        &mut config,
+        Zeroizing::new(secret),
+    )
+    .await?;
+    let mut account = accounts::Account::new(
+        accounts::AccountId::from(id),
+        cloud.type_id(),
+    );
+    name.clone_into(&mut account.display_name);
+    account.config = config;
+    vault.keep_account(&account).await
+}
+
+/// Keep an `Apple ID`'s session: its grant in the workspace's vault, the
+/// mount Apple's own endpoints make, and the account itself.
+async fn keep_icloud_account(
+    vault: VaultAt<'_>,
+    name: &str,
+    apple_id: &str,
+    session: &account_credentials::icloud::ICloudSessionState,
+) -> Result<(), String> {
+    let mount = tokio::task::spawn_blocking(|| {
+        WebICloud::apple().map(|auth| auth.storage_config())
+    })
+    .await
+    .map_err(|_| "iCloud's settings were not read".to_owned())?
+    .map_err(|error| error.to_string())?;
+    let id = cloud_id(accounts::cloud_types::ICLOUD_DRIVE, name);
+    let mut account = accounts::Account::new(
+        accounts::AccountId::from(id.clone()),
+        accounts::cloud_types::ICLOUD_DRIVE,
+    );
+    name.clone_into(&mut account.display_name);
+    let mut config = json!({
+        "id": id,
+        "identity": apple_id,
+        "provider": accounts::cloud_types::ICLOUD_DRIVE,
+        "server_url": ICLOUD_ORIGIN,
+        "use_files": true,
+        "use_calendar": false,
+        "use_mail": false,
+    });
+    if !mount.is_null()
+        && let Some(config) = config.as_object_mut()
+    {
+        config.insert("mount".into(), mount);
+    }
+    accounts::cloud_types::set_files_mode(
+        &mut config,
+        accounts::cloud_types::FilesMode::Sync,
+    );
+    let secret = icloud_secret(apple_id, session).token.unwrap_or_default();
+    keep_cloud_sign_in(
+        vault,
+        &id,
+        if apple_id.is_empty() { "iCloud" } else { apple_id },
+        &mut config,
+        Zeroizing::new(secret),
+    )
+    .await?;
+    account.config = config;
+    vault.keep_account(&account).await
+}
+
+/// Keep a `WebDAV` server's account, signed in with the password the person
+/// typed, in the workspace's vault.
+async fn keep_webdav_account(
+    vault: VaultAt<'_>,
+    name: &str,
+    server: &str,
+    username: &str,
+    password: &Zeroizing<String>,
+) -> Result<(), String> {
+    let id = cloud_id(accounts::cloud_types::WEBDAV, name);
+    let mut account = accounts::Account::new(
+        accounts::AccountId::from(id.clone()),
+        accounts::cloud_types::WEBDAV,
+    );
+    name.clone_into(&mut account.display_name);
+    let mut config = json!({
+        "id": id,
+        "display_name": name,
+        "server_url": server,
+        "username": username,
+        "provider": accounts::cloud_types::WEBDAV,
+        "use_files": true,
+        "use_calendar": false,
+        "use_mail": false,
+    });
+    accounts::cloud_types::set_files_mode(
+        &mut config,
+        accounts::cloud_types::FilesMode::Sync,
+    );
+    keep_cloud_sign_in(
+        vault,
+        &id,
+        username,
+        &mut config,
+        Zeroizing::new(password.to_string()),
+    )
+    .await?;
+    account.config = config;
+    vault.keep_account(&account).await
+}
+
+/// Keep `secret` as the own sign-in of the account `id` names, at the
+/// servers `config` names, and name it in `config`.
+async fn keep_cloud_sign_in(
+    vault: VaultAt<'_>,
+    id: &str,
+    username: &str,
+    config: &mut Value,
+    secret: Zeroizing<String>,
+) -> Result<String, String> {
+    let places = {
+        let mut account = accounts::Account::new(
+            accounts::AccountId::from(id.to_owned()),
+            accounts::cloud_types::WEBDAV,
+        );
+        account.config = config.clone();
+        places_of(&account)?
+    };
+    let reference = vault
+        .keep_sign_in(
+            id,
+            (accounts::vault_items::ItemKind::Login, places),
+            username,
+            secret,
+            None,
+        )
+        .await?;
+    let reference = reference.to_string();
+    accounts::email::set_password_item(config, Some(&reference));
+    Ok(reference)
 }
 
 /// The sign-in a mail account reads and sends with, for `by`: its password, read from the
@@ -411,9 +1105,10 @@ async fn keep_nextcloud(
         "server_url": server,
         "username": login.login_name.clone(),
         "provider": "nextcloud",
-        "use_files": false,
+        "use_files": services.files,
         "use_calendar": services.calendar,
         "use_mail": false,
+        "services": services,
     });
     keep_app_password(vault, &mut kept, login).await?;
     if services.calendar {
@@ -511,7 +1206,10 @@ mod tests {
         BeginSignIn {
             provider: Provider::Nextcloud,
             server,
-            services: Services::default(),
+            mail: true,
+            calendar: false,
+            files: false,
+            name: String::new(),
             account: String::new(),
         }
     }

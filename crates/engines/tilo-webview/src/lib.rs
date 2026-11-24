@@ -81,8 +81,7 @@ pub mod extensions;
 pub mod key_code;
 mod service_sessions;
 pub use credentials::{
-    AddressFields, CredentialAccount, CredentialAction, CredentialForm, CredentialReply,
-    CredentialRequest,
+    AddressFields, CredentialAction, CredentialForm, CredentialReply, CredentialRequest,
 };
 pub use service_sessions::{ServiceSessionReply, ServiceSessionRequest};
 pub mod file_chooser;

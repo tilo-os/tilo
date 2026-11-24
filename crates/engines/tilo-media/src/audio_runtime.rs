@@ -428,46 +428,10 @@ impl AudioRuntimeControl for RealAudioRuntime {
         sink_name: &str,
         left: bool,
     ) -> Result<Box<dyn BoundedSession>, String> {
-        let mut child = Command::new("pw-play")
-            .args([
-                "--target",
-                sink_name,
-                "--rate",
-                "48000",
-                "--channels",
-                "2",
-                "--channel-map",
-                "stereo",
-                "--format",
-                "s16",
-                "-",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(|e| format!("pw-play is unavailable: {e}"))?;
         // Keep the payload below a typical 64 KiB pipe buffer so starting a
         // test never waits for real-time playback on the UI thread.
         let pcm = channel_test_pcm(left, 48_000, Duration::from_millis(280));
-        let Some(mut input) = child.stdin.take() else {
-            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
-            return Err("pw-play did not open its audio input".into());
-        };
-        if let Err(e) = input.write_all(&pcm) {
-            bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
-            return Err(format!("could not send the channel test: {e}"));
-        }
-        drop(input);
-        Ok(Box::new(ChildSession {
-            child: Some(child),
-            deadline: Some(
-                Instant::now()
-                    .checked_add(Duration::from_secs(2))
-                    .unwrap_or_else(Instant::now),
-            ),
-        }))
+        play_pcm(sink_name, &pcm)
     }
 
     fn start_microphone_meter(
@@ -665,6 +629,107 @@ fn channel_test_pcm(left: bool, rate: u32, duration: Duration) -> Vec<u8> {
             * fade
             * f32::from(i16::MAX)) as i16;
         let (l, r) = if left { (sample, 0) } else { (0, sample) };
+        out.extend_from_slice(&l.to_le_bytes());
+        out.extend_from_slice(&r.to_le_bytes());
+    }
+    out
+}
+
+/// A test tone played through `sink_name` and nowhere else, so a person can
+/// tell which device it comes from: `left` plays it in the left ear, `false`
+/// the right, `None` both. It stops by itself.
+///
+/// # Errors
+/// `pw-play` could not be started, or its input did not open.
+#[cfg(unix)]
+pub fn play_test_tone(
+    sink_name: &str,
+    left: Option<bool>,
+) -> Result<Box<dyn BoundedSession>, String> {
+    play_pcm(
+        sink_name,
+        &identification_tone_pcm(left, 48_000, Duration::from_millis(280)),
+    )
+}
+
+/// [`play_test_tone`] where there is no `PipeWire` to play through.
+///
+/// # Errors
+/// Always: this platform has no `PipeWire` audio runtime.
+#[cfg(not(unix))]
+pub fn play_test_tone(_: &str, _: Option<bool>) -> Result<Box<dyn BoundedSession>, String> {
+    Err("PipeWire audio runtime is unsupported on this platform".into())
+}
+
+/// Write `pcm` to a `pw-play` playing through `sink_name` alone.
+#[cfg(unix)]
+fn play_pcm(sink_name: &str, pcm: &[u8]) -> Result<Box<dyn BoundedSession>, String> {
+    let mut child = Command::new("pw-play")
+        .args([
+            "--target",
+            sink_name,
+            "--rate",
+            "48000",
+            "--channels",
+            "2",
+            "--channel-map",
+            "stereo",
+            "--format",
+            "s16",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("pw-play is unavailable: {e}"))?;
+    let Some(mut input) = child.stdin.take() else {
+        bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
+        return Err("pw-play did not open its audio input".into());
+    };
+    if let Err(e) = input.write_all(pcm) {
+        bounded_command::terminate_tree(&mut child, std::time::Duration::ZERO);
+        return Err(format!("could not send the test tone: {e}"));
+    }
+    drop(input);
+    Ok(Box::new(ChildSession {
+        child: Some(child),
+        deadline: Some(
+            Instant::now()
+                .checked_add(Duration::from_secs(2))
+                .unwrap_or_else(Instant::now),
+        ),
+    }))
+}
+
+/// [`channel_test_pcm`] for both ears at once (`None`) or one of them.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::arithmetic_side_effects,
+    reason = "synthesizes a short identification tone from code-controlled \
+              rate/duration (never from untrusted media); frame counts and \
+              sample amplitudes stay well within usize/i16 range for any \
+              realistic call"
+)]
+#[cfg(any(unix, test))]
+fn identification_tone_pcm(side: Option<bool>, rate: u32, duration: Duration) -> Vec<u8> {
+    let frames = (duration.as_secs_f32() * rate as f32) as usize;
+    let mut out = Vec::with_capacity(frames * 4);
+    for i in 0..frames {
+        let fade = ((frames - i).min(i).min((rate / 100) as usize) as f32 / (rate / 100) as f32)
+            .clamp(0.0, 1.0);
+        let sample = ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin()
+            * 0.18
+            * fade
+            * f32::from(i16::MAX)) as i16;
+        let (l, r) = match side {
+            Some(true) => (sample, 0),
+            Some(false) => (0, sample),
+            None => (sample, sample),
+        };
         out.extend_from_slice(&l.to_le_bytes());
         out.extend_from_slice(&r.to_le_bytes());
     }
@@ -1030,6 +1095,30 @@ mod tests {
             let p = channel_test_pcm(true, 1000, Duration::from_millis(100));
             assert_eq!(p.len(), 400);
             assert!(p.chunks_exact(4).all(|f| f[2] == 0 && f[3] == 0));
+        }
+
+        phase the_identification_tone_plays_on_the_side_asked_for;
+        {
+            let zero = [0, 0];
+            let sounds = |pcm: &[u8]| pcm.chunks_exact(4).any(|f| f[0..2] != zero || f[2..4] != zero);
+            let both = identification_tone_pcm(None, 1000, Duration::from_millis(100));
+            assert!(
+                both.chunks_exact(4).all(|f| f[0..2] == f[2..4]),
+                "both ears hear the same tone"
+            );
+            assert!(sounds(&both));
+            let left = identification_tone_pcm(Some(true), 1000, Duration::from_millis(100));
+            assert!(
+                left.chunks_exact(4).all(|f| f[2..4] == zero),
+                "the right ear is silent"
+            );
+            assert!(sounds(&left));
+            let right = identification_tone_pcm(Some(false), 1000, Duration::from_millis(100));
+            assert!(
+                right.chunks_exact(4).all(|f| f[0..2] == zero),
+                "the left ear is silent"
+            );
+            assert!(sounds(&right));
         }
 
         phase peak_reads_signed_pcm_without_storing_audio;

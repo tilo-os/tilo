@@ -144,7 +144,6 @@ pub async fn open_in(
         configure,
     )
     .await?;
-    keys.attach(service.workspaces());
     Ok(Opened { service, keys })
 }
 

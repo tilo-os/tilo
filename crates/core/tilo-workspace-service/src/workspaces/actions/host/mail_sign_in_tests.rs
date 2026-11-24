@@ -212,7 +212,7 @@ async fn an_account_is_added_from_its_address_and_password_alone() {
             .ask(
                 person_accounts::RESOURCE,
                 person_accounts::SET_SERVICES,
-                json!({"account": EXAMPLE, "services": {"mail": false}}),
+                json!({"account": EXAMPLE, "mail": false, "calendar": false, "files": false}),
             )
             .await
             .expect("its member says what it feeds"),
@@ -384,7 +384,7 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
         .ask(
             person_accounts::RESOURCE,
             person_accounts::SET_SERVICES,
-            json!({"account": address, "services": {"mail": true, "calendar": false}}),
+            json!({"account": address, "mail": true, "calendar": false, "files": false}),
         )
         .await
         .expect("its member says what it feeds");
@@ -402,6 +402,14 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
                 .any(|account| account["id"] == json!(linked))),
         "the calendar account went with its service: {kept_calendars}"
     );
+    assert_eq!(
+        reading(&setup).await["accounts"]
+            .as_array()
+            .and_then(|accounts| accounts.iter().find(|account| account["id"] == json!(address)))
+            .map(|account| account["services"].clone()),
+        Some(json!({"mail": true, "calendar": false, "files": false})),
+        "the row says its calendars are off"
+    );
 
     // Turning them on again keeps them with the sign-in the vault holds, and
     // removing the account takes them with it.
@@ -409,7 +417,7 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
         .ask(
             person_accounts::RESOURCE,
             person_accounts::SET_SERVICES,
-            json!({"account": address, "services": {"mail": true, "calendar": true}}),
+            json!({"account": address, "mail": true, "calendar": true, "files": false}),
         )
         .await
         .expect("its member says what it feeds");
@@ -424,6 +432,14 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
                 .iter()
                 .any(|account| account["id"] == json!(linked))),
         "Calendar lists the calendar account again: {kept_calendars}"
+    );
+    assert_eq!(
+        reading(&setup).await["accounts"]
+            .as_array()
+            .and_then(|accounts| accounts.iter().find(|account| account["id"] == json!(address)))
+            .map(|account| account["services"].clone()),
+        Some(json!({"mail": true, "calendar": true, "files": false})),
+        "the row says its calendars are on again"
     );
     setup
         .ask(
@@ -507,6 +523,11 @@ async fn the_accounts_reading_lists_an_account_connected_signed_in_again_and_rem
     assert_eq!(accounts[0]["status"], json!("never"));
     assert_eq!(accounts[0]["provider"], json!("other"));
     assert_eq!(accounts[0]["enabled"], json!(true));
+    assert_eq!(
+        accounts[0]["services"],
+        json!({"mail": true, "calendar": false, "files": false}),
+        "its row says which of its services it feeds"
+    );
 
     // The server stops taking the stored sign-in: signing in again reports
     // that, with the probe's own words, and the reading says so.
@@ -567,6 +588,82 @@ async fn the_accounts_reading_lists_an_account_connected_signed_in_again_and_rem
         .await
         .expect("the account goes");
     assert_eq!(reading(&setup).await["accounts"], json!([]));
+}
+
+/// An account added in Settings is one Mail reads: its row lists it, and its
+/// inbox is what the server holds, read through the same provider. The
+/// stand-in server takes one made-up login and speaks IMAP and SMTP over real
+/// loopback sockets.
+#[tokio::test]
+async fn an_account_added_in_settings_is_read_in_mail() {
+    use tilo_actions::remote::person_accounts::FetchedMail;
+    use tilo_account_probe::stand_in;
+
+    const ADDRESS: &str = "team@example.test";
+    const PASSWORD: &str = "made-up team password";
+
+    let started = Arc::new(
+        tokio::task::spawn_blocking(|| {
+            stand_in::started(stand_in::Serving {
+                names: vec!["localhost".into()],
+                login: ADDRESS.into(),
+                password: PASSWORD.into(),
+                oauth_token: None,
+                imap: "127.0.0.1:0".into(),
+                smtp: "127.0.0.1:0".into(),
+                imap_wrapped: true,
+                smtp_wrapped: false,
+                layout: stand_in::Layout::Plain,
+                seeded: true,
+            })
+            .expect("the stand-in mail server listens")
+        })
+        .await
+        .unwrap(),
+    );
+    let setup = Setup::new().await;
+    setup
+        .workspaces
+        .trust_mail_servers(vec![started.certificate.clone()]);
+
+    // Settings adds the account with the servers its person wrote, and the
+    // server takes the sign-in.
+    setup
+        .add_mail(json!({
+            "address": ADDRESS,
+            "password": PASSWORD,
+            "incomingHost": format!("localhost:{}", started.imap.port()),
+            "outgoingHost": format!("localhost:{}", started.smtp.port()),
+        }))
+        .await
+        .expect("its server took the sign-in");
+
+    // Mail reads the account from the same provider, and its inbox from the
+    // server.
+    let listed = setup.listed().await;
+    assert_eq!(listed.accounts.len(), 1, "{listed:?}");
+    assert_eq!(listed.accounts[0].id, ADDRESS);
+    let fetched: FetchedMail = setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::FETCH,
+            json!({"account": ADDRESS, "folder": "inbox"}),
+        )
+        .await
+        .map(|answer| serde_json::from_value(answer).expect("a folder reads"))
+        .expect("Mail reads the account's inbox");
+    let mut subjects: Vec<&str> = fetched
+        .messages
+        .iter()
+        .map(|message| message.subject.as_str())
+        .collect();
+    subjects.sort_unstable();
+    assert_eq!(
+        subjects,
+        ["Lunch on Friday?", "Quarterly plan", "Welcome to the lab"],
+        "the inbox holds what its server does"
+    );
 }
 
 /// The reading a workspace's apps follow, as this host keeps it.

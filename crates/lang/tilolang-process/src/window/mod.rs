@@ -64,6 +64,14 @@ pub enum InstallError {
 /// # Errors
 /// A package is already installed.
 pub fn install(bundle: Bundle) -> Result<(), InstallError> {
+    // The files the package ships beside its sources (`pkg:media/…`): what a view or a scenario
+    // names is staged from them, so nothing is fetched.
+    tilo_app_window::media_source::install_package_assets(
+        bundle
+            .assets
+            .iter()
+            .map(|asset| (asset.name.clone(), asset.bytes.clone())),
+    );
     INSTALLED
         .set(Arc::new(bundle))
         .map_err(|_| InstallError::AlreadyInstalled)

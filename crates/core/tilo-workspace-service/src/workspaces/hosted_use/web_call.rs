@@ -24,8 +24,9 @@
 //! What a call sends is the agent's too: text, the parts of a multipart body
 //! (text or JSON inline, or content the workspace keeps by its BLAKE3
 //! address with its filename and type), or one content as the whole body.
-//! Referenced bytes are read from the workspace's store into the request, so
-//! they never pass through the app's frames, and only content this workspace
+//! The text and JSON are bounded; content is not, beyond what the workspace's
+//! store holds: it is read from that store into the request by the vault, so
+//! it never passes through the app's frames, and only content this workspace
 //! keeps for the app that asks is sent: anything else is refused with one
 //! reason, before the person is asked. How many bytes were sent is written
 //! down with the use, never what they were.
@@ -64,7 +65,7 @@ use crate::connections::wire::{
 const DEADLINE: Duration = Duration::from_secs(30);
 /// The longest address called.
 const MAX_ADDRESS_BYTES: usize = 2_048;
-/// The most one call sends.
+/// The most text and JSON one call sends.
 const MAX_SENT_BYTES: usize = 256 * 1024;
 /// The most of an answer handed back.
 const MAX_ANSWER_BYTES: usize = 256 * 1024;
@@ -89,7 +90,7 @@ const MANY_BODIES: &str =
     "A web call sends its body as text, as parts, or as workspace content, not more than one";
 const NOT_A_PART: &str = "A web call's body is parts, each a field name and its text, its JSON, \
      or the content it carries";
-const TOO_MUCH: &str = "That is more than one web call sends";
+const TOO_MUCH: &str = "That is more text or JSON than one web call sends";
 const NOT_KEPT: &str = "A web call sends only content its workspace keeps for the app that asks";
 const NOT_AN_ADDRESS_OF_CONTENT: &str =
     "Content is named by the 64 lowercase hex characters of its BLAKE3 address";
@@ -266,9 +267,10 @@ pub(super) fn sendable_content(
 }
 
 /// Whether `call`'s body reads: one of text, parts or content, each part one
-/// of text, JSON or content, its field named, and none of it more than a call
-/// sends. What content a part names is read from the store separately
-/// ([`body_of`]): nothing here opens it.
+/// of text, JSON or content, its field named, and no more text or JSON than a
+/// call sends. Content is not counted here: it is bounded only by what the
+/// workspace's store keeps, and what a part names is read from that store
+/// separately ([`body_of`]): nothing here opens it.
 fn check_body(call: &WebCall) -> Result<(), String> {
     let named = usize::from(!call.body.is_empty())
         .saturating_add(usize::from(!call.body_parts.is_empty()))
@@ -300,6 +302,13 @@ fn check_body(call: &WebCall) -> Result<(), String> {
         }
         if let Some(text) = &part.text {
             inline = inline.saturating_add(text.len());
+        }
+        if let Some(json) = &part.json {
+            inline = inline.saturating_add(
+                serde_json::to_vec(json)
+                    .map_err(|error| error.to_string())?
+                    .len(),
+            );
         }
         if let Some(content) = &part.content {
             check_content(content)?;
@@ -389,9 +398,6 @@ fn body_of(
     }
     if let Some(reference) = &call.body_content {
         let bytes = content_bytes(reference, caller, content)?;
-        if bytes.len() > MAX_SENT_BYTES {
-            return Err(TOO_MUCH.to_owned());
-        }
         return Ok(Some(Sending {
             content_type: Some(media_type(reference, "application/octet-stream")),
             bytes,
@@ -423,9 +429,6 @@ fn body_of(
             .map(|content| content.filename.trim())
             .filter(|filename| !filename.is_empty())
             .map(str::to_owned);
-        if bytes.len() > MAX_SENT_BYTES {
-            return Err(TOO_MUCH.to_owned());
-        }
         parts.push(SentPart {
             name: part.name.trim().to_owned(),
             filename,
@@ -499,9 +502,6 @@ fn multipart(parts: Vec<SentPart>) -> Result<Option<Sending>, String> {
         bytes.extend_from_slice(b"\r\n");
     }
     bytes.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-    if bytes.len() > MAX_SENT_BYTES {
-        return Err(TOO_MUCH.to_owned());
-    }
     Ok(Some(Sending {
         content_type: Some(format!("multipart/form-data; boundary={boundary}")),
         bytes,
@@ -1070,6 +1070,75 @@ mod tests {
         )
         .await;
         assert_eq!(refused, Err(NOT_KEPT.to_owned()));
+        assert!(service.drain_requests().is_empty(), "nothing was sent");
+    }
+
+    /// What a call sends is bounded by what the workspace's store keeps, not by what one inline
+    /// request holds: twelve megabytes of content ride one request whole, while text stays
+    /// bounded to what a call sends.
+    #[tokio::test]
+    async fn a_call_sends_twelve_megabytes_of_content_whole() {
+        use test_http::{Reply, Responder};
+
+        let service = Responder::handle(|request| {
+            Some(Reply::status(200).body(request.body.len().to_string()))
+        });
+        let bytes = vec![0x5a_u8; 12 * 1024 * 1024];
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        let (mut items, mut call) = kept_for(&service.url());
+        call.url = format!("{}/v1/upload", service.url());
+        call.method = "POST".to_owned();
+        call.body_content = Some(ContentRef {
+            app: "so.tilo.chat".into(),
+            hash: hash.clone(),
+            filename: "discord.zip".into(),
+            content_type: "application/zip".into(),
+        });
+        let keeps = |app: &str, asked: &str| {
+            (app == "so.tilo.chat" && asked == hash).then(|| bytes.clone())
+        };
+        let (lookup, _) = answering(&["127.0.0.1"]);
+        let answer = send_through(
+            Destinations::Any,
+            lookup,
+            &mut items,
+            call,
+            "Scout",
+            None,
+            UsedFor::default(),
+            &keeps,
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer["status"], 200);
+        assert_eq!(
+            answer["body"],
+            Value::String(bytes.len().to_string()),
+            "the service saw every byte"
+        );
+        let sent = service.drain_requests();
+        assert_eq!(sent.len(), 1, "one request");
+        assert_eq!(sent[0].header("content-type"), Some("application/zip"));
+        assert_eq!(sent[0].body, bytes, "the content's bytes are there whole");
+
+        // Text is still bounded to what one call sends.
+        let (mut items, mut call) = kept_for(&service.url());
+        call.url = format!("{}/v1/upload", service.url());
+        call.method = "POST".to_owned();
+        call.body = "a".repeat(MAX_SENT_BYTES.saturating_add(1));
+        let (lookup, _) = answering(&["127.0.0.1"]);
+        let refused = send_through(
+            Destinations::Any,
+            lookup,
+            &mut items,
+            call,
+            "Scout",
+            None,
+            UsedFor::default(),
+            &|_, _| None,
+        )
+        .await;
+        assert_eq!(refused, Err(TOO_MUCH.to_owned()));
         assert!(service.drain_requests().is_empty(), "nothing was sent");
     }
 

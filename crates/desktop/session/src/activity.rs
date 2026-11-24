@@ -586,10 +586,13 @@ impl Activity {
         self.0.undos.start(
             api,
             self.0.person.clone(),
-            workspace.to_owned(),
-            uuid::Uuid::new_v4(),
-            run.to_owned(),
-            steps,
+            TaskRunUndo {
+                workspace: workspace.to_owned(),
+                invocation: uuid::Uuid::new_v4(),
+                task_id: run.to_owned(),
+                steps,
+                step: None,
+            },
             move || ask_for_frame(&woken, wake.as_ref()),
         )
     }
@@ -1135,15 +1138,11 @@ impl ActivityHost for Host {
             };
             let woken = Arc::clone(&self.0.woken);
             let wake = self.0.wake.clone();
-            self.0.undos.start(
-                api,
-                self.0.person.clone(),
-                undo.workspace,
-                undo.invocation,
-                undo.task_id,
-                undo.steps,
-                move || ask_for_frame(&woken, wake.as_ref()),
-            )
+            self.0
+                .undos
+                .start(api, self.0.person.clone(), undo, move || {
+                    ask_for_frame(&woken, wake.as_ref())
+                })
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -1975,7 +1974,7 @@ mod run_undo {
         InvocationState, InvokeRequest, Pending, invocation_record::NO_HISTORY, session_actions,
     };
     use tilo_lock::MutexRecover as _;
-    use tilo_session_core::desktop::activity::TaskRunDocument;
+    use tilo_session_core::desktop::activity::{TaskRunDocument, TaskRunUndo};
 
     /// How long one run's undo may take altogether.
     const UNDO_TIMEOUT: Duration = Duration::from_secs(30);
@@ -2005,6 +2004,7 @@ mod run_undo {
         caller: Caller,
         run: &str,
         steps: &[(String, String)],
+        step: Option<&str>,
         timeout: Duration,
     ) -> Result<Vec<TaskRunDocument>, String> {
         let now = Instant::now();
@@ -2023,6 +2023,7 @@ mod run_undo {
                     &at,
                     root.as_deref(),
                     run,
+                    step,
                 );
                 match pending.wait_timeout(left.max(ANSWER)) {
                     Ok(Some(Ok(()))) => {
@@ -2077,18 +2078,22 @@ mod run_undo {
     }
 
     impl Undos {
-        /// Start undoing the run `run` in `workspace` as `person`, through `api`; `done` is
-        /// told once it ended, on its thread.
+        /// Start undoing `undo` as `person`, through `api`; `done` is told once it ended, on its
+        /// thread.
         pub(crate) fn start(
             &self,
             api: Arc<crate::mcp_server::Host>,
             person: String,
-            workspace: String,
-            invocation: uuid::Uuid,
-            run: String,
-            steps: Vec<(String, String)>,
+            undo: TaskRunUndo,
             done: impl FnOnce() + Send + 'static,
         ) -> Result<(), String> {
+            let TaskRunUndo {
+                workspace,
+                invocation,
+                task_id,
+                steps,
+                step,
+            } = undo;
             self.running.lock_recover().insert(invocation, None);
             let running = Arc::clone(&self.running);
             std::thread::Builder::new()
@@ -2099,7 +2104,8 @@ mod run_undo {
                     let caller = Caller::local_person(person)
                         .in_workspace(workspace)
                         .in_new_execution();
-                    let outcome = undo_run(api, caller, &run, &steps, UNDO_TIMEOUT);
+                    let outcome =
+                        undo_run(api, caller, &task_id, &steps, step.as_deref(), UNDO_TIMEOUT);
                     running.lock_recover().insert(invocation, Some(outcome));
                     done();
                 })

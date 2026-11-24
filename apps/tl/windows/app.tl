@@ -329,6 +329,9 @@ view window(w: Windows) {
     state chosen: Text = ""
     state confirm_kind: Text = ""
     state confirm_target: Text = ""
+    // Search finds every program this computer has and opens the window on one: it shows the
+    // program, as choosing its row does.
+    on show(program: device.WindowsApp): set(chosen, program.id)
     let ws = device.windows_apps
     let program = ws.apps.find(item -> item.id == chosen)
     ui.NavShell(content_kind: .page, title: "Windows Apps", sidebar_title: "Windows Apps") {

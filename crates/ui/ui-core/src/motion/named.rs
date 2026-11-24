@@ -7,7 +7,7 @@ use super::spring::SpringSpec;
 use super::value::{MotionValue, Timing};
 use crate::time::Instant;
 use crate::tokens::{EffectiveMotion, MotionSource};
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Point, Rect, Size, Vec2};
 
 /// `x` clamped to `0..=1` as an opacity.
 #[allow(
@@ -776,6 +776,14 @@ impl WindowMotion {
     /// How large content that grows out of where it was asked starts: half its size, so the
     /// eye reads it coming out of the caret rather than fading in beside it.
     const GROWN_START_SCALE: f64 = 0.5;
+    /// How large a window is as it leaves the control that opened it: a share of its own size, so a
+    /// window flies out of an icon-sized mark, and the least it is drawn at, so a small window still
+    /// reads as coming out of the control rather than out of itself.
+    const FLY_START_SHARE: f64 = 0.22;
+    const FLY_START_MIN: f64 = 32.0;
+    /// The share of its opening by which a window on its way out of a control is whole: it is
+    /// readable well before it lands.
+    const FLY_OPAQUE_AT: f64 = 0.55;
 
     /// The pose of a window's content at `progress` of its opening, in a frame `rect`.
     #[must_use]
@@ -793,6 +801,35 @@ impl WindowMotion {
                 rect.center(),
                 Self::START_SCALE + (1.0 - Self::START_SCALE) * p,
             ),
+        }
+    }
+
+    /// The pose of a window at `progress` of opening out of the control that opened it, laid out at
+    /// `rect` with the control's centre at `control` (the dock icon or the search row the person
+    /// pressed): it comes out of a mark there, whole by [`Self::FLY_OPAQUE_AT`] of the way, and
+    /// grows into its frame as it travels; leaving is the same flight back, so a window that closes
+    /// returns to where it was asked for. Reduced motion fades it in where it stands.
+    #[must_use]
+    pub fn flying_pose(progress: f64, rect: Rect, control: Point, motion: EffectiveMotion) -> Pose {
+        let p = progress.clamp(0.0, 1.0);
+        if motion.reduced() || p >= 1.0 || rect.area() <= 1.0 {
+            return Self::content_pose(p, rect, motion);
+        }
+        let start = Rect::from_center_size(
+            control,
+            Size::new(
+                (rect.width() * Self::FLY_START_SHARE).max(Self::FLY_START_MIN),
+                (rect.height() * Self::FLY_START_SHARE).max(Self::FLY_START_MIN),
+            ),
+        );
+        let drawn = Zoom::rect_at(start, rect, p);
+        let sx = drawn.width() / rect.width().max(1.0);
+        let sy = drawn.height() / rect.height().max(1.0);
+        Pose {
+            opacity: unit_opacity(stage(p, 0.0, Self::FLY_OPAQUE_AT)),
+            transform: Affine::translate(drawn.center().to_vec2())
+                * Affine::scale_non_uniform(sx, sy)
+                * Affine::translate(-rect.center().to_vec2()),
         }
     }
 

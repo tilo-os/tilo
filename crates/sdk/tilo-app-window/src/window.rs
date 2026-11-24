@@ -358,7 +358,8 @@ pub struct AppWindow {
     detail_space: HashMap<String, (f32, f32, f32)>,
     /// The view calls of each level that read the space layout gives them, by key in that level's
     /// tree, as the app declared them: what the window measures after every layout.
-    space_readers: [Vec<String>; 2],
+    root_readers: Vec<String>,
+    detail_readers: Vec<String>,
     /// The column a narrow window keeps in front: what a person's tap or the app's open brought
     /// forward, held while the shell is built anew. A shell built from the views starts on the
     /// screen a new window opens on; the window remembers where the person is, so a patch that
@@ -528,7 +529,8 @@ impl AppWindow {
             rem: 16.0,
             root_space: HashMap::new(),
             detail_space: HashMap::new(),
-            space_readers: [Vec::new(), Vec::new()],
+            root_readers: Vec::new(),
+            detail_readers: Vec::new(),
             front: None,
             front_chooser: None,
             standing: SidebarPlacement::None,
@@ -3048,7 +3050,11 @@ impl AppWindow {
             return;
         }
         let mut wanted: [Vec<(String, String)>; 2] = [Vec::new(), Vec::new()];
-        for (at, level) in [Level::Root, Level::Detail].into_iter().enumerate() {
+        for ((level, slots), readers) in [Level::Root, Level::Detail]
+            .into_iter()
+            .zip(&mut wanted)
+            .zip([&self.root_readers, &self.detail_readers])
+        {
             let root = match level {
                 Level::Root => self.root.as_ref().map(|view| view.tree.key.clone()),
                 Level::Detail => self
@@ -3057,10 +3063,10 @@ impl AppWindow {
                     .map(|view| composed_key(Level::Detail, &view.tree.key)),
             };
             if let Some(key) = root {
-                wanted[at].push((String::new(), key));
+                slots.push((String::new(), key));
             }
-            for key in &self.space_readers[at] {
-                wanted[at].push((key.clone(), composed_key(level, key)));
+            for key in readers {
+                slots.push((key.clone(), composed_key(level, key)));
             }
         }
         if wanted.iter().all(Vec::is_empty) {
@@ -3069,12 +3075,12 @@ impl AppWindow {
         let rects = widget_rects(self.body.as_ref());
         let covered = self.call_nodes(&wanted);
         let mut told: Vec<(Level, String, (f32, f32, f32))> = Vec::new();
-        for (at, level) in [Level::Root, Level::Detail].into_iter().enumerate() {
+        for (level, slots) in [Level::Root, Level::Detail].into_iter().zip(&wanted) {
             let spaces = match level {
                 Level::Root => &mut self.root_space,
                 Level::Detail => &mut self.detail_space,
             };
-            for (key, in_tree) in &wanted[at] {
+            for (key, in_tree) in slots {
                 // The box layout gave the call, or, where a row or a part takes the call's
                 // nodes for its own, the room they take together.
                 let placed =
@@ -3099,14 +3105,16 @@ impl AppWindow {
                 let moved = spaces.get(key).is_none_or(|before| {
                     (before.0 - space.0).abs() >= SPACE_STEP_REM
                         || (before.1 - space.1).abs() >= SPACE_STEP_REM
-                        || before.2 != space.2
+                        // The rem is the step a view's size is told in: a root font size that
+                        // moved re-measures every view, whatever its own space became.
+                        || before.2.to_bits() != space.2.to_bits()
                 });
                 if moved {
                     spaces.insert(key.clone(), space);
                     told.push((level, key.clone(), space));
                 }
             }
-            spaces.retain(|key, _| wanted[at].iter().any(|(wanted, _)| wanted == key));
+            spaces.retain(|key, _| slots.iter().any(|(wanted, _)| wanted == key));
         }
         self.out.extend(
             told.into_iter()
@@ -3125,11 +3133,6 @@ impl AppWindow {
     /// as its items, and a component takes them as a part of its own, so the call's room there is
     /// the room of what it drew.
     fn call_nodes(&self, wanted: &[Vec<(String, String)>; 2]) -> HashMap<String, Vec<String>> {
-        let calls: HashSet<String> = wanted
-            .iter()
-            .flatten()
-            .map(|(_, in_tree)| in_tree.clone())
-            .collect();
         fn walk(
             node: &UiNode,
             current: Option<&str>,
@@ -3150,6 +3153,11 @@ impl AppWindow {
                 walk(child, current, calls, out);
             }
         }
+        let calls: HashSet<String> = wanted
+            .iter()
+            .flatten()
+            .map(|(_, in_tree)| in_tree.clone())
+            .collect();
         let mut out = HashMap::new();
         for tree in self.built.as_slice() {
             walk(tree, None, &calls, &mut out);
@@ -3168,14 +3176,14 @@ impl AppWindow {
     /// The app says which view calls of `level` read the space layout gives them: what the window
     /// measures after every layout, and no others.
     fn take_spaces(&mut self, level: Level, keys: Vec<String>) {
-        let at = match level {
-            Level::Root => 0,
-            Level::Detail => 1,
+        let readers = match level {
+            Level::Root => &mut self.root_readers,
+            Level::Detail => &mut self.detail_readers,
         };
-        if self.space_readers[at] == keys {
+        if *readers == keys {
             return;
         }
-        self.space_readers[at] = keys;
+        *readers = keys;
         self.structure_dirty = true;
     }
 }
@@ -3463,6 +3471,12 @@ impl ui::widget::FloatingSurfaceProvider for AppWindow {
         region
             .map(|region| vec![(self.pip_surface_id(), region)])
             .unwrap_or_default()
+    }
+
+    /// The picture is dragged where the person wants it, and the card the shell's own keeps its
+    /// buttons to itself.
+    fn floating_surface_moves_on_drag(&self, id: &str) -> bool {
+        id == self.pip_surface_id()
     }
 }
 

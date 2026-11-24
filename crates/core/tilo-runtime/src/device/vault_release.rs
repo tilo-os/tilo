@@ -1,5 +1,6 @@
 //! The vault's release on an app process's own connection
-//! ([`tilo_workspace_service::workspaces::vault_release`]).
+//! ([`tilo_workspace_service::workspaces::vault_release`]), and the logins a window of the
+//! app's own asks for its page ([`tilo_workspace_service::workspaces::page_logins`]).
 //!
 //! The daemon started the process and knows it by its pid ([`crate::apps::ProcessOf`]): whether
 //! it is a sandboxed launch of the app's own package, and whether that launch is the app's held
@@ -96,10 +97,15 @@ impl ActionProvider for OwnProcess {
         let workspaces = daemon.workspaces().clone();
         let (app, workspace) = (self.app.clone(), self.workspace.clone());
         let find = tilo_actions::remote::person_vault::is_find(&request.target);
+        let call = tilo_actions::remote::person_vault::is_web_call(&request.target);
         let (completer, answer) = pending();
         tilo_rt::app().spawn(async move {
             let invocation = request.invocation;
-            let released = if find {
+            let answered = if tilo_actions::remote::person_vault::is_page_login(&request.target) {
+                workspaces
+                    .page_login((&app, &workspace), &process, &request)
+                    .await
+            } else if find {
                 workspaces
                     .find_tagged((&app, &workspace), &process, &request)
                     .await
@@ -108,6 +114,10 @@ impl ActionProvider for OwnProcess {
                             reason: "the found item could not be answered".into(),
                         })
                     })
+            } else if call {
+                workspaces
+                    .web_call_to((&app, &workspace), &process, &request)
+                    .await
             } else {
                 workspaces
                     .release_to((&app, &workspace), &process, &request)
@@ -118,7 +128,7 @@ impl ActionProvider for OwnProcess {
                         })
                     })
             };
-            completer.complete(released.map(|value| InvocationReceipt {
+            completer.complete(answered.map(|value| InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Completed {
                     output: ActionOutput {
@@ -140,8 +150,9 @@ impl ActionProvider for OwnProcess {
     }
 }
 
-/// Whether `frame` is a release or a find this connection's own process asks for: the two ways
-/// an app's held connection reaches its vault item.
+/// Whether `frame` is a release, a find or a web call this connection's own process asks for,
+/// the ways an app's held connection reaches its vault item, or one of the page login actions a
+/// window of the app's own asks for its page ([`tilo_actions::remote::person_vault::is_page_login`]).
 pub(crate) fn is_answered_for_this_process(
     frame: &tilo_actions::remote::RemoteActionFrame,
 ) -> bool {
@@ -150,5 +161,7 @@ pub(crate) fn is_answered_for_this_process(
         tilo_actions::remote::RemoteActionMessage::Invoke(request)
             if tilo_actions::remote::person_vault::is_release(&request.target)
                 || tilo_actions::remote::person_vault::is_find(&request.target)
+                || tilo_actions::remote::person_vault::is_web_call(&request.target)
+                || tilo_actions::remote::person_vault::is_page_login(&request.target)
     )
 }

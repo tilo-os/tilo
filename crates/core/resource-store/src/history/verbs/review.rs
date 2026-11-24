@@ -3,12 +3,12 @@
 //! resolved once, never again when the caller restores. This is a write
 //! precondition, not a grant or a substitute for action-API admission.
 
-use super::{HistoryEdit, HistoryView, VIEW_TYPE, edit, invalid};
+use super::HistoryEdit;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tilo_actions::{ActionKind, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
+use tilo_actions::ActionSpec;
 
 use crate::history::steps;
 
@@ -71,79 +71,54 @@ impl RestoreReview {
     }
 }
 
+/// The review a restoration is taken from, and its restore: both declared with the other history
+/// verbs ([`HistoryViewAction::ReviewRestore`](super::HistoryViewAction) and
+/// [`HistoryEdit::RestoreReviewed`]), answered here.
 pub fn specs() -> Vec<ActionSpec> {
-    let paths_schema = json!({
+    ["review-restore"]
+        .iter()
+        .filter_map(|id| <super::HistoryViewAction as tilo_resource::Effect>::spec(id))
+        .map(super::published)
+        .map(|mut spec| {
+            // The declaration types the paths as a list; a review says how many, and of what.
+            let schema = paths_schema();
+            spec.narrow_param("paths", |param| {
+                *param = param.clone().with_schema(schema);
+            });
+            spec
+        })
+        .chain(
+            ["restore-reviewed"]
+                .iter()
+                .filter_map(|id| <HistoryEdit as tilo_resource::Effect>::spec(id))
+                .map(super::published),
+        )
+        .collect()
+}
+
+/// The schema of the paths a review selects.
+fn paths_schema() -> Value {
+    json!({
         "type": "array", "minItems": 1, "maxItems": steps::MAX_RESTORE_PATHS,
         "items": {"type": "string", "maxLength": steps::MAX_RESTORE_PATH_BYTES},
-    });
-    let mut review = ActionSpec::typed_operation(
-        "review-restore",
-        "Review restoration",
-        "Review restoration",
-        OperationKind::View,
-        VIEW_TYPE,
-        vec![
-            ActionParam::required("version", ParamType::Text, "A change id, causal frontier, or checkpoint"),
-            ActionParam::required("paths", ParamType::Array, "Exact differing paths from diff; a root selects its entire value")
-                .with_schema(paths_schema.clone()),
-        ],
-        |args| {
-            let built = (|| {
-                let version = super::text_arg(args, "version")?;
-                let paths = args.array("paths").ok_or("paths are required")?
-                    .iter().map(|value| value.as_str().map(str::to_owned))
-                    .collect::<Option<Vec<_>>>().ok_or("paths must be strings")?;
-                EncodedAction::encode_operation(VIEW_TYPE, &HistoryView::ReviewRestore { version, paths })
-                    .map_err(|error| error.to_string())
-            })();
-            built.unwrap_or_else(|reason: String| invalid(&reason))
-        },
-    )
-    .of_kind(ActionKind::Read)
-    .with_description("Review exact-item restoration without writing. Returns pinned target and live heads; copy review into restore-reviewed. Any later edit requires a new review.")
-    // A read of the record's own versions, which moves nothing: anyone who may
-    // read the record may run it, and it shows them the record. It takes a
-    // version and paths, so it is no document read a caller reads a file's
-    // first page through.
-    .reads_resource()
-    // It answers a review object for `restore-reviewed` to take back: a
-    // step an agent or script takes. A person restores in the app itself.
-    .for_audience(tilo_actions::Audience::Agents);
-    review.type_mut().contract.result = tilo_actions::ResultSpec::Json {
-        schema: json!({"type": "object"}),
-    };
-    let restore = edit(
-        "restore-reviewed",
-        "Restore reviewed items",
-        "Restore precisely the reviewed paths as a new undoable change, only if the live causal frontier still matches. Empty selection never restores everything.",
-        vec![
-            ActionParam::required(
-                "review",
-                ParamType::Object,
-                "The review object from review-restore",
-            )
-            .with_schema(json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["schema", "target_heads", "live_heads", "paths"],
-                "properties": {
-                    "schema": {"type": "integer", "const": 1},
-                    "target_heads": {"type": "array", "minItems": 1, "maxItems": MAX_HEADS,
-                        "items": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}},
-                    "live_heads": {"type": "array", "minItems": 1, "maxItems": MAX_HEADS,
-                        "items": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}},
-                    "paths": paths_schema,
-                },
-            })),
-        ],
-        |args| {
-            let review = args.get("review").ok_or("review is required")?;
-            let review =
-                serde_json::from_value(review.to_json()).map_err(|error| error.to_string())?;
-            Ok(HistoryEdit::RestoreReviewed { review })
-        },
-    );
-    let restore = restore.for_audience(tilo_actions::Audience::Agents);
-    vec![review, restore]
+    })
+}
+
+impl tilo_resource::JsonSchema for RestoreReview {
+    fn json_schema() -> Value {
+        json!({
+            "type": "object", "additionalProperties": false,
+            "required": ["schema", "target_heads", "live_heads", "paths"],
+            "properties": {
+                "schema": {"type": "integer", "const": 1},
+                "target_heads": {"type": "array", "minItems": 1, "maxItems": MAX_HEADS,
+                    "items": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}},
+                "live_heads": {"type": "array", "minItems": 1, "maxItems": MAX_HEADS,
+                    "items": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}},
+                "paths": paths_schema(),
+            },
+        })
+    }
 }
 
 /// Bound historical reads rather than returning an incomplete document as if

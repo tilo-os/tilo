@@ -105,7 +105,7 @@ fn labelled(tree: &UiNode, kind: &str, label: &str) -> String {
 }
 
 /// One invocation as it was sent, with its arguments by name.
-
+#[derive(Clone)]
 struct Sent(Rc<RefCell<Vec<Invocation>>>);
 
 impl Sent {
@@ -226,7 +226,7 @@ fn the_widgets_section_keeps_and_shapes_the_shell_widgets() {
     assert_eq!(people_toggle.props.get("shown"), Some(&Value::Bool(false)));
     let keep_music = music_toggle.key.clone();
 
-    let sent = Rc::new(Sent::new());
+    let sent = Sent::new();
     host.runtime().set_invoker(sent.clone());
     view.fire_with(&keep_music, "check", Some(&Value::Bool(false)))
         .expect("the person takes Music off the shell");
@@ -307,7 +307,7 @@ fn the_shell_pane_binds_and_resets_the_view_of_a_part() {
         .expect("the view is typed");
     view.poll_patches().expect("the fields draw");
 
-    let sent = Rc::new(Sent::new());
+    let sent = Sent::new();
     host.runtime().set_invoker(sent.clone());
     let bind = labelled(view.tree(), "ui.Button", "Bind");
     view.press(&bind).expect("the person binds the part");

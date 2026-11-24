@@ -51,7 +51,6 @@ async fn own_service(
     )
     .await
     .expect("the laptop's own service opens");
-    keys.attach(service.workspaces());
     (service, keys)
 }
 

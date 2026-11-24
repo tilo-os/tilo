@@ -318,9 +318,10 @@ pub struct InputDevicePrefs {
     /// Ordered native level inspected without changing the live seat.
     #[model(readonly)]
     pub keyboard_preview_level: usize,
-    /// Explicit physical position inspected; never follows or records key presses.
+    /// The shape of the drawing most recently pressed; each key is its body and its legend, in
+    /// that pair, so a key's place in the drawing is its shape halved.
     #[model(readonly)]
-    pub keyboard_inspected_key: String,
+    pub keyboard_inspected_shape: usize,
     /// Per-tablet mapping, pressure and buttons, keyed by device identity.
     #[model(readonly)]
     pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
@@ -336,7 +337,7 @@ impl Default for InputDevicePrefs {
             keyboard_preview: None,
             keyboard_preview_extra_levels: false,
             keyboard_preview_level: 0,
-            keyboard_inspected_key: "AD01".into(),
+            keyboard_inspected_shape: 0,
             tablets: std::collections::BTreeMap::new(),
         }
     }
@@ -392,6 +393,50 @@ impl InputDevicePrefs {
         Ok(())
     }
 
+    /// Give one of this device's keyboards these layouts, in switching order, typing
+    /// with `active`. The options it holds for a layout it keeps stay as they were,
+    /// so moving or adding a layout never changes what its Caps Lock or compose key
+    /// does; a keyboard that had none of its own starts from the shared layouts'
+    /// options.
+    #[action(id = "set-keyboard-sources")]
+    pub fn set_keyboard_sources(
+        &mut self,
+        #[param("The keyboard's device key")] keyboard: String,
+        #[param("Its layouts in switching order")] sources: Vec<String>,
+        #[param("The layout it types with")] active: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        use settings_store::keyboard_sources::{ALL, KeyboardProfile, OSK};
+
+        device_key(&keyboard)?;
+        if matches!(keyboard.as_str(), ALL | OSK) {
+            return Err(ui::tilo_resource::Refusal::new(
+                "the shared layouts and the on-screen keyboard's are not a keyboard's own",
+            ));
+        }
+        valid_layouts(&sources, &active)?;
+        let inherited = self
+            .keyboard_assignments
+            .get(ALL)
+            .map_or_else(std::collections::BTreeMap::new, |shared| {
+                shared.options.clone()
+            });
+        let mut profile =
+            self.keyboard_assignments
+                .get(&keyboard)
+                .cloned()
+                .unwrap_or(KeyboardProfile {
+                    sources: sources.clone(),
+                    active: active.clone(),
+                    options: inherited,
+                });
+        profile.sources.clone_from(&sources);
+        profile.active = active;
+        let kept = sources.clone();
+        profile.options.retain(|layout, _| kept.contains(layout));
+        self.keyboard_assignments.insert(keyboard, profile);
+        Ok(())
+    }
+
     /// Make a keyboard that types its own layouts type the shared ones
     /// again, forgetting its own list.
     #[action(id = "use-shared-layouts")]
@@ -424,7 +469,7 @@ impl InputDevicePrefs {
             )));
         }
         self.keyboard_model = model;
-        self.keyboard_inspected_key = "AD01".into();
+        self.keyboard_inspected_shape = 0;
         self.keyboard_preview_level = 0;
         self.keyboard_preview_extra_levels = false;
         Ok(())
@@ -451,27 +496,24 @@ impl InputDevicePrefs {
         Ok(())
     }
 
-    /// Choose the modifier level and the physical key the keyboard drawing
-    /// inspects, without typing anything.
+    /// Choose the modifier level and the shape of the keyboard drawing the
+    /// person pressed, without typing anything.
     #[action(id = "inspect-keyboard", housekeeping)]
     pub fn inspect_keyboard(
         &mut self,
+        #[param("The pressed shape of the drawing: a key's body or its legend")] shape: u32,
         #[param("The modifier level, counting from 0")] level: u32,
         #[param("Whether the levels past the fourth are offered")] extra_levels: bool,
-        #[param("The physical key's XKB name, such as `AD01`")] key: String,
     ) -> Result<(), ui::tilo_resource::Refusal> {
         let level = usize::try_from(level)
             .ok()
             .filter(|level| *level < MAX_KEYBOARD_LEVELS)
             .ok_or_else(|| ui::tilo_resource::Refusal::new("no keyboard has this level"))?;
-        if key.is_empty() || key.len() > 8 || !key.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err(ui::tilo_resource::Refusal::new(format!(
-                "`{key}` is not a physical key"
-            )));
-        }
+        let shape = usize::try_from(shape)
+            .map_err(|_| ui::tilo_resource::Refusal::new("the drawing has no such shape"))?;
         self.keyboard_preview_level = level;
         self.keyboard_preview_extra_levels = extra_levels;
-        self.keyboard_inspected_key = key;
+        self.keyboard_inspected_shape = shape;
         Ok(())
     }
 
@@ -905,6 +947,50 @@ impl InputPrefs {
         Ok(())
     }
 
+    /// What the Caps Lock key does: `caps` for Caps Lock itself, or the key it stands in for,
+    /// `ctrl`, `escape` or `backspace`.
+    #[action(id = "set-caps-lock")]
+    pub fn set_caps_lock(
+        &mut self,
+        #[param("`caps`, `ctrl`, `escape` or `backspace`")] behaviour: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.caps_lock = match behaviour.as_str() {
+            "caps" | "caps_lock" | "none" | "disabled" | "" => None,
+            "ctrl" => Some("ctrl".into()),
+            "escape" => Some("escape".into()),
+            "backspace" => Some("backspace".into()),
+            other => {
+                return Err(ui::tilo_resource::Refusal::new(format!(
+                    "`{other}` is not what Caps Lock can do"
+                )));
+            }
+        };
+        Ok(())
+    }
+
+    /// The key that begins a compose sequence: `disabled`, `ralt`, `menu`, `caps`, `rwin` or
+    /// `lwin`. On Caps Lock it is the more specific choice, and Caps Lock then does that.
+    #[action(id = "set-compose-key")]
+    pub fn set_compose_key(
+        &mut self,
+        #[param("`disabled`, `ralt`, `menu`, `caps`, `rwin` or `lwin`")] key: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.compose_key = match key.as_str() {
+            "disabled" | "none" | "" => None,
+            "ralt" => Some("ralt".into()),
+            "menu" => Some("menu".into()),
+            "caps" => Some("caps".into()),
+            "rwin" => Some("rwin".into()),
+            "lwin" => Some("lwin".into()),
+            other => {
+                return Err(ui::tilo_resource::Refusal::new(format!(
+                    "`{other}` is not a compose key"
+                )));
+            }
+        };
+        Ok(())
+    }
+
     /// Set which shortcut pastes in one app when the shell pastes for the
     /// person (Super+V with an image or files), or `default` to go back to
     /// what its app id suggests (Ctrl+Shift+V for terminals, else Ctrl+V).
@@ -1255,14 +1341,9 @@ impl WidgetsPrefs {
         }
         let named = self.named(&widget)?;
         named.places.retain(|place| place.display != display);
-        named.places.insert(
-            0,
-            settings_store::widgets::Place {
-                display,
-                x,
-                y,
-            },
-        );
+        named
+            .places
+            .insert(0, settings_store::widgets::Place { display, x, y });
         Ok(())
     }
 
@@ -2295,6 +2376,38 @@ impl AudioPrefs {
         self.echo_cancellation = on;
         Ok(())
     }
+
+    /// Choose the sound theme system sounds come from, by the name a person
+    /// reads for it: the name a theme installed on this device gives itself,
+    /// or its directory. Nothing follows the freedesktop.org theme, which
+    /// every other theme inherits from.
+    #[action(id = "set-system-sound-theme")]
+    pub fn set_system_sound_theme(
+        &mut self,
+        #[param("The theme's name, or none for the freedesktop one")] theme: Option<String>,
+    ) -> Result<(), tilo_resource::Refusal> {
+        self.choose_sound_theme(theme)
+    }
+}
+
+impl AudioPrefs {
+    /// [`Self::set_system_sound_theme`], as the section keeps the choice: a
+    /// theme is one name in the sound directories, never a path.
+    fn choose_sound_theme(&mut self, theme: Option<String>) -> Result<(), tilo_resource::Refusal> {
+        self.system_sounds.theme = match theme.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(theme) if theme == settings_store::system_sounds::DEFAULT_THEME => None,
+            Some(theme) => {
+                if !settings_store::system_sounds::is_valid_theme_name(theme) {
+                    return Err(tilo_resource::Refusal::new(
+                        "a sound theme is named by one path component",
+                    ));
+                }
+                Some(theme.to_owned())
+            }
+        };
+        Ok(())
+    }
 }
 
 impl settings_model::SettingsSchema for AudioDevicePrefs {
@@ -2673,5 +2786,34 @@ mod notification_app_id_tests {
             .apply(Invoke::edit(&NotificationPrefs::paths().per_app.remove("foo.")).unwrap())
             .unwrap();
         assert!(!replica.state().unwrap().per_app.contains_key("foo."));
+    }
+}
+
+#[cfg(test)]
+mod audio_theme_tests {
+    use super::AudioPrefs;
+    use settings_store::system_sounds::DEFAULT_THEME;
+
+    #[test]
+    fn a_sound_theme_is_chosen_by_one_name_or_left_to_the_system() {
+        let mut audio = AudioPrefs::default();
+        assert!(audio.system_sounds.theme.is_none());
+
+        audio.choose_sound_theme(Some("ocean".into())).unwrap();
+        assert_eq!(audio.system_sounds.theme.as_deref(), Some("ocean"));
+        // Following the freedesktop theme is no choice of its own, and an
+        // empty one is no name at all.
+        audio
+            .choose_sound_theme(Some(DEFAULT_THEME.into()))
+            .unwrap();
+        assert!(audio.system_sounds.theme.is_none());
+        audio.choose_sound_theme(Some(" ".into())).unwrap();
+        assert!(audio.system_sounds.theme.is_none());
+        audio.choose_sound_theme(None).unwrap();
+        assert!(audio.system_sounds.theme.is_none());
+
+        // A theme is one name in the sound directories, never a path.
+        assert!(audio.choose_sound_theme(Some("../../etc".into())).is_err());
+        assert!(audio.system_sounds.theme.is_none());
     }
 }

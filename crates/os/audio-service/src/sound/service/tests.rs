@@ -1,11 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use media::audio::{AudioDevice, AudioGraph, AudioStream, GraphControl};
+use media::audio_runtime::BoundedSession;
 use serde_json::{Map, Value, json};
 use tilo_actions::ApiError;
 use tilo_service::{Service, Started};
 
-use super::super::SOUND;
+use super::super::{SOUND, TestSide};
 use super::{Graph, Read, SoundService};
 
 fn device(id: u32, label: &str, default: bool) -> AudioDevice {
@@ -115,6 +116,27 @@ impl Graph for Fake {
     fn control(&self) -> &dyn GraphControl {
         self
     }
+
+    /// A test tone plays from the node and neither changes nor is remembered
+    /// by the graph; the tone runs until the service stops it.
+    fn test_tone(&self, node: u32, side: TestSide) -> Result<Box<dyn BoundedSession>, String> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .push(format!("tone {node} {side:?}"));
+        Ok(Box::new(TestTone))
+    }
+}
+
+/// A test tone the graph made: it plays until it is stopped.
+struct TestTone;
+
+impl BoundedSession for TestTone {
+    fn running(&mut self) -> bool {
+        true
+    }
+
+    fn stop(&mut self) {}
 }
 
 impl GraphControl for Fake {
@@ -346,6 +368,48 @@ tilo_test_env::scenario! {
             matches!(out_of_range, Err(ApiError::InvalidArguments(_))),
             "{out_of_range:?}"
         );
+    }
+
+    phase a_test_tone_plays_from_the_output_asked_for_and_changes_nothing;
+    {
+        let fake = Fake::laptop();
+        let mut service = service(&fake);
+        let before = read(&service);
+
+        // The row of an output plays through exactly that one.
+        let taken = service.invoke("sound-output:41", "test-output", &Map::new());
+        assert_eq!(taken, Ok(Started::Accepted));
+        service.settle();
+        // The pane's speaker test names the output and one ear.
+        for channel in ["left", "right"] {
+            let taken = service.invoke(
+                SOUND,
+                "test-output",
+                &arguments(json!({"node": 40, "channel": channel})),
+            );
+            assert_eq!(taken, Ok(Started::Accepted), "{channel}");
+            service.settle();
+        }
+        assert_eq!(
+            fake.calls(),
+            ["tone 41 Both", "tone 40 Left", "tone 40 Right"]
+        );
+        assert_eq!(
+            read(&service),
+            before,
+            "a test tone leaves the sound as it was"
+        );
+
+        let refused = service.invoke(
+            SOUND,
+            "test-output",
+            &arguments(json!({"node": 40, "channel": "up"})),
+        );
+        assert!(
+            matches!(refused, Err(ApiError::InvalidArguments(_))),
+            "{refused:?}"
+        );
+        assert_eq!(fake.calls().len(), 3, "nothing played for a bad side");
     }
 
     phase without_an_output_the_volume_is_unavailable;

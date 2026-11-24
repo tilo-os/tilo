@@ -38,11 +38,8 @@ use crate::workspaces::{DeviceKeyGroups, Held, KeySink, WeakWorkspaces, Workspac
 /// own service holds. Stops when dropped.
 pub struct KeyService {
     keys: KeyProvider,
-    /// The service itself, to forget the workspaces deleted here.
-    access: SharedKeys,
     link: Arc<Link>,
     _pump: GovernancePump,
-    following: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl KeyService {
@@ -74,15 +71,17 @@ impl KeyService {
             Box::new(directory.clone()),
             seal_checks,
         )?;
-        let link = Arc::new(Link {
-            directory,
-            inbound: Mutex::default(),
-            publish: Mutex::default(),
-            park: GovernancePark::new(),
-        });
-        let park = Arc::clone(&link.park);
+        let park = GovernancePark::new();
         let poke = Arc::clone(&park);
         let access = SharedKeys::with_wake(service, Arc::new(move || poke.poke()));
+        let link = Arc::new(Link {
+            directory,
+            access: access.clone(),
+            inbound: Mutex::default(),
+            publish: Mutex::default(),
+            park: Arc::clone(&park),
+            following: Mutex::default(),
+        });
         let keys = KeyProvider::default();
         keys.set(Some(access.clone()));
         let pump = GovernancePump::spawn(
@@ -94,10 +93,8 @@ impl KeyService {
         )?;
         Ok(Self {
             keys,
-            access,
             link,
             _pump: pump,
-            following: Mutex::new(Vec::new()),
         })
     }
 
@@ -118,25 +115,71 @@ impl KeyService {
             None,
         )
     }
+}
 
-    /// Send what this service settles for `workspaces`, the service it was handed to, and forget
-    /// the groups of the workspaces deleted there. Run on the runtime the service is served on.
-    pub fn attach(&self, workspaces: &Workspaces) {
-        self.link
-            .directory
+impl Drop for KeyService {
+    fn drop(&mut self) {
+        let following = std::mem::take(&mut *self.link.following.lock_recover());
+        for task in following {
+            task.abort();
+        }
+    }
+}
+
+/// The transport the device's group governance travels on: what the service's links carried
+/// here, waiting for the next pass, and what the pass settles, on its way to the workspace.
+struct Link {
+    /// Who may read the groups of the workspaces the service holds.
+    directory: Directory,
+    /// Governance the service's links carried here, waiting for the next pass.
+    inbound: Mutex<Vec<InboundGovernance>>,
+    /// The service itself, to forget the workspaces deleted here.
+    access: SharedKeys,
+    /// What the service settles for a workspace it governs, once the service is built.
+    publish: Mutex<Option<tokio::sync::mpsc::UnboundedSender<NeighbourMsg>>>,
+    park: Arc<GovernancePark>,
+    /// The tasks sending what the service settles and forgetting deleted workspaces' groups,
+    /// stopped with the key service.
+    following: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl KeySink for Link {
+    fn take(&self, messages: Vec<NeighbourMsg>) {
+        let mut inbound = self.inbound.lock_recover();
+        inbound.extend(
+            messages
+                .into_iter()
+                .filter_map(InboundGovernance::from_message),
+        );
+        drop(inbound);
+        self.park.poke();
+    }
+
+    /// The pass after a workspace settles reads its replica as it now stands.
+    fn settled(&self, _workspace: &str, _state: StatePeer) {
+        self.park.poke();
+    }
+
+    /// Send what this service settles for `workspaces`, and forget the groups of the workspaces
+    /// deleted there. Called on the runtime the service is served on.
+    fn attach(&self, workspaces: &Workspaces) {
+        self.directory
             .founders
             .lock_recover()
             .insert(workspaces.host_device());
-        *self.link.directory.workspaces.lock_recover() = Some(workspaces.downgrade());
+        *self.directory.workspaces.lock_recover() = Some(workspaces.downgrade());
         let (publish, mut outgoing) = tokio::sync::mpsc::unbounded_channel();
-        *self.link.publish.lock_recover() = Some(publish);
-        let writing = workspaces.clone();
+        *self.publish.lock_recover() = Some(publish);
+        let writing = workspaces.downgrade();
         let publisher = tokio::spawn(async move {
             while let Some(message) = outgoing.recv().await {
                 let Some(workspace) = message.governance_workspace() else {
                     continue;
                 };
                 let workspace = workspace.to_owned();
+                let Some(writing) = writing.upgrade() else {
+                    return;
+                };
                 if let Err(error) = writing.publish_governance(&workspace, vec![message]).await {
                     tracing::warn!(%workspace, %error, "the device's group governance was not retained");
                 }
@@ -165,45 +208,6 @@ impl KeyService {
             }
         });
         self.following.lock_recover().push(forgetting);
-        self.link.park.poke();
-    }
-}
-
-impl Drop for KeyService {
-    fn drop(&mut self) {
-        let following = std::mem::take(&mut *self.following.lock_recover());
-        for task in following {
-            task.abort();
-        }
-    }
-}
-
-/// The transport the device's group governance travels on: what the service's links carried
-/// here, waiting for the next pass, and what the pass settles, on its way to the workspace.
-struct Link {
-    /// Who may read the groups of the workspaces the service holds.
-    directory: Directory,
-    /// Governance the service's links carried here, waiting for the next pass.
-    inbound: Mutex<Vec<InboundGovernance>>,
-    /// What the service settles for a workspace it governs, once the service is open.
-    publish: Mutex<Option<tokio::sync::mpsc::UnboundedSender<NeighbourMsg>>>,
-    park: Arc<GovernancePark>,
-}
-
-impl KeySink for Link {
-    fn take(&self, messages: Vec<NeighbourMsg>) {
-        let mut inbound = self.inbound.lock_recover();
-        inbound.extend(
-            messages
-                .into_iter()
-                .filter_map(InboundGovernance::from_message),
-        );
-        drop(inbound);
-        self.park.poke();
-    }
-
-    /// The pass after a workspace settles reads its replica as it now stands.
-    fn settled(&self, _workspace: &str, _state: StatePeer) {
         self.park.poke();
     }
 }

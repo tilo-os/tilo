@@ -50,6 +50,9 @@ pub struct BrokerActor {
     /// to reach: what goes further asks first
     /// ([`tilo_action_policy::Reach`]).
     pub ceiling: Option<tilo_action_policy::Reach>,
+    /// The person on a plain connection to their own device's daemon: an ask the workspace
+    /// makes of them is their own call's to answer, and their call is the answer.
+    own_connection: bool,
 }
 
 impl BrokerActor {
@@ -76,6 +79,7 @@ impl BrokerActor {
             app_kinds: None,
             session: None,
             ceiling: None,
+            own_connection: false,
         }
     }
 
@@ -94,6 +98,7 @@ impl BrokerActor {
             .on_turn(caller.turn().cloned())
             .within(caller.ceiling());
         actor.bound = caller.granted();
+        actor.own_connection = caller.is_own_connection();
         actor
     }
 
@@ -341,6 +346,22 @@ impl BrokerActor {
     /// for while it continues their invocation is not their gesture.
     pub fn direct(&self) -> bool {
         self.delegate().is_none() && !self.capped && self.ceiling.is_none()
+    }
+
+    /// Whether this is the person on their own device's daemon connection
+    /// ([`Caller::own_person`]): their call is their own answer to what the workspace asks of
+    /// them.
+    #[must_use]
+    pub const fn own_connection(&self) -> bool {
+        self.own_connection
+    }
+
+    /// The same actor, as the person on their own device's daemon connection
+    /// ([`Caller::own_person`]).
+    #[must_use]
+    pub const fn on_own_connection(mut self) -> Self {
+        self.own_connection = true;
+        self
     }
 
     /// The person this actor is, when a person acts from their own device:

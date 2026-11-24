@@ -16,6 +16,10 @@ use tilolang_tilo::runtime::ids::MemberId;
 use tilolang_tilo::runtime::{Actor, InvokeOutcome, Value};
 use ui::headless::FrameHarness;
 
+/// Where the files a package ships (`pkg:media/…`) are installed, and how a window plays one: a
+/// host of these windows calls it when it loads a package, as [`Packages::new`]'s hosts do.
+pub use tilo_app_window::media_source;
+
 mod platform;
 
 pub use platform::Packages;

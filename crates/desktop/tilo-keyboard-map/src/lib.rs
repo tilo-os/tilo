@@ -1,7 +1,17 @@
 //! Read-only native keyboard metadata: it neither captures input nor changes the
 //! active layout, and never accepts an include path or environment.
 
+mod catalog;
 pub mod touch;
+
+pub use catalog::Layout;
+
+/// The keyboard layouts this device installs and, when its list cannot be read, why: the layouts
+/// are then a short built-in list. Each is named by the id it is typed by (`de`, `us:intl`).
+#[must_use]
+pub fn installed_layouts() -> (Vec<Layout>, Option<String>) {
+    catalog::installed()
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Symbol {

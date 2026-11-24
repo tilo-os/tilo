@@ -526,7 +526,7 @@ pub fn state(reply: &Value) -> &'static str {
 /// could not — and each reply comes back whole, on a line of its own, as
 /// soon as it is ready rather than in the order asked. Closing the client's
 /// side ends the connection.
-pub fn overlapping_lines(host: &HeldHost, client: &std::os::unix::net::UnixStream) {
+pub fn overlapping_lines(host: &HeldHost, client: &tilo_socket::Stream) {
     client
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();

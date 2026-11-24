@@ -6,10 +6,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::daemon::Running;
-use anyhow::{Context as _, Result, anyhow};
-use serde_json::{Value, json};
+use anyhow::{Context as _, Result};
+use serde_json::Value;
 use tilo_api::calls::{Calls, Reach};
-use tilo_device_identity::login::{LOG_IN, Place, RESOURCE};
+use tilo_device_identity::login::Place;
 
 /// What an app's view reads of the device: whether a person's identity has it, and their
 /// workspaces, by id and name.
@@ -136,52 +136,18 @@ impl Device {
             .collect())
     }
 
-    /// Sign this device in with `ticket`, as `tilo login` does: a device a person's identity
-    /// already has asks its daemon (`devices#logIn`), a new one logs in itself; then its daemon
-    /// starts again to take the person's workspaces up.
+    /// Sign this device in with `ticket`, as `tilo login` does: its daemon logs in
+    /// (`devices#logIn`), whether or not a person's identity has the device yet, and its person's
+    /// part starts again as the device the login made, entering where the ticket says. The daemon
+    /// keeps on running: starting it again would lose where it enters until its copy of the
+    /// person's own workspace arrives.
     ///
     /// # Errors
     /// The text is no ticket, the issuing device is not reached, or the ticket is spent or
     /// wrong: what the person is told.
     pub fn log_in(&mut self, ticket: &str, label: &str) -> Result<()> {
-        let ticket = ticket.trim();
-        let key = Self::device_key()?;
-        let place = Self::login_place()?;
-        if tilo_device_identity::login::claimed(&place, &key) {
-            self.runtime.block_on(async {
-                let client = Self::calls().await?;
-                let workspace = client
-                    .workspaces()
-                    .await?
-                    .pointer("/workspaces/0/id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .ok_or_else(|| anyhow!("this device is in no workspace to log in from"))?;
-                client
-                    .act(
-                        Some(&workspace),
-                        RESOURCE,
-                        LOG_IN,
-                        &json!({"ticket": ticket, "agent": AGENT, "label": label}),
-                        "Log in",
-                    )
-                    .await
-            })?;
-        } else {
-            let (signing, _) = tilo_device_identity::persist::load_or_create_device_key(
-                &tilo_api::calls::device_keys(),
-            )
-            .context("reading this device's key")?;
-            self.runtime.block_on(tilo_api::daemon::enter::log_in_here(
-                &signing,
-                &place,
-                ticket,
-                AGENT,
-                Some(label),
-            ))?;
-        }
-        // The one started now serves the new login and takes its workspaces up.
-        self.restart()
+        tilo_api::daemon::who::log_in(ticket.trim(), AGENT, label).map_err(anyhow::Error::msg)?;
+        Ok(())
     }
 
     /// Start a new person on this device, as a person's own computer's first command does

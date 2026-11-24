@@ -716,6 +716,13 @@ pub const LINKS: &str = "$links";
 /// that app runs, so they come in the reading, as [`LINKS`] do.
 pub const UNSEEN: &str = "$unseen";
 
+/// The pseudo-field of a reading that says the resource could not be read: why, in words. A
+/// resource whose device or service did not answer the last time it was asked reads this way,
+/// with none of its fields, so a view shows that it could not be read rather than reading every
+/// field as the empty value the type starts with (a battery at no per cent, a network that is
+/// off). A reading that answers replaces it, and the fields read as the app writes them again.
+pub const UNREADABLE: &str = "$unreadable";
+
 /// What the pseudo-field holding when a field of a resource last changed begins with; the
 /// field's id follows, so `$changed.done` holds the version that last changed `done`
 /// ([`Store::field_changed`]).

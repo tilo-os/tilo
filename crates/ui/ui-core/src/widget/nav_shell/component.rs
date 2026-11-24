@@ -14,6 +14,10 @@ pub struct NavShellProps {
     pub content_kind: ContentKind,
     /// The content's title, in its header.
     pub title: Option<String>,
+    /// What the content shows, as the app names it (the pane in front, the place opened): when
+    /// it changes, what the content shows fades in where the one before it stood, on the theme's
+    /// cross-fade. Nothing when the content is not a thing that changes.
+    pub content_key: Option<String>,
     /// How many things the content lists, beside its title.
     pub count: Option<i64>,
     /// The overview column's title.
@@ -130,6 +134,7 @@ impl Described for NavShell {
         let NavShellProps {
             content_kind,
             title,
+            content_key,
             count,
             overview_title,
             overview_count,
@@ -150,6 +155,8 @@ impl Described for NavShell {
             drop: _,
         } = props;
         let mut shell = Self::new().with_id(key).content_kind(content_kind);
+        // The first frame shows the content it has at rest: motion explains changes.
+        shell.content_key = content_key;
         if let Some(sidebar) = sidebar {
             shell = shell.sidebar(sidebar);
         }
@@ -218,6 +225,7 @@ impl Described for NavShell {
         self.set_overview_count(count_of(props.overview_count));
         self.set_content_title(props.title.unwrap_or_default());
         self.set_content_count(count_of(props.count));
+        self.content_replaced(props.content_key);
         if let Some(can) = &self.can_back {
             can.set(props.can_go_back);
         }

@@ -888,8 +888,7 @@ impl<P: Resource> WorkspaceResource<P> {
         edit: super::history::HistoryEdit,
         item: Option<&str>,
     ) -> Result<(), ActionError> {
-        let payload =
-            serde_json::to_vec(&edit).map_err(|error| ActionError::Refused(error.to_string()))?;
+        let payload = super::history::edit_payload(&edit).map_err(ActionError::Refused)?;
         let action = super::history::ResourceHistoryEdit::<P>::new(edit);
         let result = self.shared.core.apply_history(payload, &action, item);
         self.shared.refresh();

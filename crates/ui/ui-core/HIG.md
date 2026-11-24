@@ -581,7 +581,7 @@ same geometry:
 | Settings rows | `FormSection::grouped()` |
 | An object (app, document, comment, connection) | `Card` / `CardFace` in a `CardGrid` |
 | A number and what it measures | `StatTile` / `StatTileFace` in a `StatGroup` |
-| Covers, thumbnails, album art, photos | `MediaCard` / `MediaCardFace` in a `MediaGrid` (`justified_rows` for photos) |
+| Covers, thumbnails, album art, photos | `MediaCard` / `MediaCardFace` in a `MediaGrid` (`justified_rows` for photos), or alone where a view shows one thing: a grid column wide |
 | A file drop target | `DropZone` / `DropZoneFace` |
 | An app that opens a file: its empty state and a drop anywhere on the window | `FileOpenSurface` |
 | Content still loading | `Skeleton` / `SkeletonFace` |

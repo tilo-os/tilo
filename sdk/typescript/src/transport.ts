@@ -52,6 +52,12 @@ export interface Transport {
     group: Group | null,
   ): Promise<Record<string, unknown>>;
   /**
+   * Make the web call `args` names with the key of the vault item it names, in `workspace`. An
+   * app's held connection has the vault add the key to the request; without the daemon's
+   * transport, a call is refused.
+   */
+  webCall?(workspace: string | null, args: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /**
    * The secret of the vault item `item` in `workspace`, released to this
    * app's process. Only the daemon's transport carries one; without it a
    * release is refused.
@@ -78,6 +84,7 @@ interface NativeDaemon {
     group: Group | null,
   ): Promise<unknown>;
   release(workspace: string | null, item: string): Promise<unknown>;
+  webCall(workspace: string | null, args: Record<string, unknown>): Promise<unknown>;
   find(workspace: string | null, app: string, purpose: string): Promise<unknown>;
 }
 
@@ -155,6 +162,33 @@ export class DaemonTransport implements Transport {
       throw refusalOf(fields.refused);
     }
     throw new ProtocolError(`the daemon answered ${tool} in a shape the SDK does not know`);
+  }
+
+  /**
+   * Make the web call `args` names with the key of the vault item it names: one action frame to
+   * the vault, answered for the process this connection is. An app's held connection is asked
+   * for its person's grant once per service and item; a plain program's call goes through
+   * `tilo_do`, as every program's does.
+   */
+  async webCall(
+    workspace: string | null,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const daemon = await this.#opened();
+    let answer: unknown;
+    try {
+      answer = await daemon.webCall(workspace, args);
+    } catch (error) {
+      throw new Unreachable(error instanceof Error ? error.message : String(error));
+    }
+    const fields = recordOf(answer);
+    if ("answer" in fields) {
+      return recordOf(fields.answer);
+    }
+    if ("refused" in fields) {
+      throw refusalOf(fields.refused);
+    }
+    throw new ProtocolError("the daemon answered a web call in a shape the SDK does not know");
   }
 
   /**

@@ -176,6 +176,68 @@ fn a_computer_with_no_identity_at_all_stays_up_and_founds_its_person() {
     drop(environment);
 }
 
+const PLAIN_CONNECTION_TEST: &str =
+    "device::founding_tests::a_plain_connection_to_a_founding_daemon_prints_a_device_ticket";
+
+/// The same computer, founded while its daemon serves, reached the way `tilo` and the SDKs reach
+/// it: a plain connection rather than the tools above. It is the person the daemon serves, so
+/// `tilo device add` has its ticket printed for it rather than refused for an agent the
+/// workspace keeps none of.
+#[test]
+fn a_plain_connection_to_a_founding_daemon_prints_a_device_ticket() {
+    let Some(profile) = isolated_root(PLAIN_CONNECTION_TEST) else {
+        return;
+    };
+    let environment = isolated_environment();
+    let keys = tilo_api::calls::device_keys();
+    reset_identity(&keys);
+    let _ = std::fs::remove_file(&keys.device_privkey);
+    let running = crate::daemon::Running::start(&profile).unwrap();
+    let socket = running.native_socket().to_owned();
+    let made = ask(
+        &socket,
+        &do_request("devices#found", json!({"name": "Ada"})),
+    );
+    assert_ne!(
+        made["result"]["isError"], true,
+        "no person was made: {made}"
+    );
+    running
+        .wait_for_person(Duration::from_secs(120))
+        .expect("the person's services run");
+
+    let began = std::time::Instant::now();
+    let printed = tilo_rt::app().handle().block_on(async {
+        let calls = tilo_api::calls::Calls::connect(Some(socket.as_path()), None).await?;
+        // The list first, on the same connection: a plain connection acts where the account
+        // enters, named by no workspace.
+        calls.founded_workspace().await?;
+        calls
+            .start(
+                None,
+                tilo_device_identity::login::RESOURCE,
+                tilo_device_identity::login::ISSUE,
+                &json!({"wait": false}),
+                "Add a device",
+            )
+            .await
+    });
+    let printed = printed.unwrap_or_else(|error| {
+        panic!(
+            "the person's own connection printed no ticket after {:?}: {error:#}",
+            began.elapsed()
+        )
+    });
+    assert!(
+        printed["result"]["ticket"]
+            .as_str()
+            .is_some_and(|ticket| !ticket.is_empty()),
+        "the daemon answered with no ticket: {printed}"
+    );
+    running.stop().unwrap();
+    drop(environment);
+}
+
 const TWO_STORES_TEST: &str =
     "device::founding_tests::a_second_accounts_store_naming_the_same_person_is_never_picked";
 

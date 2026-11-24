@@ -387,6 +387,20 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-caps-lock"
+kind = "undoable"
+params = [
+  { name = "behaviour", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-compose-key"
+kind = "undoable"
+params = [
+  { name = "key", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "set-paste-shortcut"
 kind = "undoable"
 params = [
@@ -422,7 +436,7 @@ fields = [
   { path = "keyboard_preview", type = { option = "text" }, readonly = true },
   { path = "keyboard_preview_extra_levels", type = "bool", readonly = true },
   { path = "keyboard_preview_level", type = "int", readonly = true },
-  { path = "keyboard_inspected_key", type = "text", readonly = true },
+  { path = "keyboard_inspected_shape", type = "int", readonly = true },
   { path = "tablets", type = { map = { named = "TabletConfig" } }, readonly = true },
 ]
 
@@ -432,6 +446,15 @@ kind = "undoable"
 params = [
   { name = "keyboard", type = "text", required = true, schema = { type = "string" } },
   { name = "profile", type = { named = "KeyboardProfile" }, required = true, schema = { type = "object", additionalProperties = false, properties = { active = { type = "string" }, options = { type = "object" }, sources = { type = "array", items = { type = "string" } } }, required = ["sources", "active"] } },
+]
+
+[[resources.verbs]]
+id = "set-keyboard-sources"
+kind = "undoable"
+params = [
+  { name = "keyboard", type = "text", required = true, schema = { type = "string" } },
+  { name = "sources", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "active", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -459,9 +482,9 @@ params = [
 id = "inspect-keyboard"
 kind = "undoable"
 params = [
+  { name = "shape", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
   { name = "level", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
   { name = "extra_levels", type = "bool", required = true, schema = { type = "boolean" } },
-  { name = "key", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -998,6 +1021,13 @@ id = "set-echo-cancellation"
 kind = "undoable"
 params = [
   { name = "on", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-system-sound-theme"
+kind = "undoable"
+params = [
+  { name = "theme", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.types]]

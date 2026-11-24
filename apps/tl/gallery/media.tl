@@ -119,6 +119,14 @@ view media(g: Gallery) {
             }
         }
         part(
+            "A card on its own",
+            "A card the view gives outside a grid: one thing, a grid column wide, where the view puts it.",
+        ) {
+            ui.MediaCard(g, title: "Imports", icon: .folder, meta: ["Today", "3 files"]) {
+                on activate: set(last, "Opened Imports")
+            }
+        }
+        part(
             "Media transport and video",
             "What plays, where it is, and the controls a person reaches for.",
         ) {

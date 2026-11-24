@@ -3,13 +3,15 @@
 use std::sync::Arc;
 
 use media::audio::{AudioDevice, AudioGraph, GraphControl};
+use media::audio_runtime::BoundedSession;
 use serde_json::{Map, Value};
 use tilo_actions::{ApiError, ResourceSpec};
 use tilo_resource::Effect as _;
 use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, reading};
 
 use super::{
-    Card, Device, Profile, SOUND, Sound, SoundAction, Stream, Use, UseKind, VOLUME_STEP, resource,
+    Card, Device, Profile, SOUND, Sound, SoundAction, SoundTheme, Stream, TestSide, Use, UseKind,
+    VOLUME_STEP, resource,
 };
 
 impl From<&AudioDevice> for Device {
@@ -106,6 +108,9 @@ impl Sound {
                 .map(Stream::from)
                 .collect(),
             uses: uses.iter().map(Use::from).collect(),
+            // The themes installed are not part of the graph: the service
+            // reads them once and puts them in every reading it lands.
+            themes: Vec::new(),
             hardware: graph.hardware.iter().map(Card::from).collect(),
             // What this device's sound makes possible, read from the graph
             // the service already keeps: a stereo output to mix down, and a
@@ -145,6 +150,15 @@ pub trait Graph: Send + Sync {
     fn read(&self) -> Read;
     /// What changes it.
     fn control(&self) -> &dyn GraphControl;
+    /// Play a short test tone through output `node` on `side` and nowhere
+    /// else; it stops by itself. A graph that plays none says so, so a test
+    /// graph needs no tone of its own.
+    ///
+    /// # Errors
+    /// This graph plays no test tone.
+    fn test_tone(&self, _node: u32, _side: TestSide) -> Result<Box<dyn BoundedSession>, String> {
+        Err("this sound graph plays no test tone".into())
+    }
 }
 
 /// The graph `PipeWire` runs.
@@ -165,6 +179,15 @@ impl Graph for SystemGraph {
 
     fn control(&self) -> &dyn GraphControl {
         self.0.as_ref()
+    }
+
+    fn test_tone(&self, node: u32, side: TestSide) -> Result<Box<dyn BoundedSession>, String> {
+        let read = self.read();
+        let output = read
+            .graph
+            .sink_by_id(node)
+            .ok_or_else(|| "that output is gone".to_string())?;
+        media::audio_runtime::play_test_tone(&output.name, side.left())
     }
 }
 
@@ -275,12 +298,19 @@ enum Landed {
         action: String,
         result: Result<(), String>,
         sound: Sound,
+        /// The test tone now playing, when the action started one.
+        tone: Option<Box<dyn BoundedSession>>,
     },
 }
 
 /// The sound service.
 pub struct SoundService {
     sound: Sound,
+    /// The sound themes installed here, which do not change while the
+    /// service runs and are published with every reading.
+    themes: Vec<SoundTheme>,
+    /// The test tones still playing, each stopped by itself.
+    tones: Vec<Box<dyn BoundedSession>>,
     worker: Worker<dyn Graph, Landed>,
 }
 
@@ -292,6 +322,8 @@ impl SoundService {
     pub fn new(graph: Arc<dyn Graph>, wake: Option<Wake>) -> std::io::Result<Self> {
         let service = Self {
             sound: Sound::default(),
+            themes: installed_themes(),
+            tones: Vec::new(),
             worker: Worker::spawn("tilo-audio-sound", graph, wake)?,
         };
         service.refresh();
@@ -323,10 +355,17 @@ impl SoundService {
                 action,
                 result,
                 sound,
-            } => (sound, Some((action, result))),
+                tone,
+            } => {
+                if let Some(tone) = tone {
+                    self.tones.push(tone);
+                }
+                (sound, Some((action, result)))
+            }
         };
         sound.pending = std::mem::take(&mut self.sound.pending);
         sound.problem = self.sound.problem.take();
+        sound.themes = self.themes.clone();
         if let Some((action, result)) = done {
             if let Some(at) = sound.pending.iter().position(|id| *id == action) {
                 sound.pending.remove(at);
@@ -347,9 +386,38 @@ impl SoundService {
                 action,
                 result,
                 sound: Sound::of(&after.graph, &after.uses),
+                tone: None,
             }
         });
         Started::Accepted
+    }
+
+    /// Play a test tone through output `node`, off the service's own thread
+    /// like every other change, and keep it until it stops by itself.
+    fn start_tone(&mut self, action: &str, node: u32, side: TestSide) -> Started {
+        self.sound.pending.push(action.to_owned());
+        let action = action.to_owned();
+        self.worker.run(move |graph| {
+            let result = graph.test_tone(node, side);
+            let (result, tone) = match result {
+                Ok(tone) => (Ok(()), Some(tone)),
+                Err(error) => (Err(error), None),
+            };
+            let after = graph.read();
+            Landed::Changed {
+                action,
+                result,
+                sound: Sound::of(&after.graph, &after.uses),
+                tone,
+            }
+        });
+        Started::Accepted
+    }
+
+    /// Forget the test tones that have stopped, stopping the ones that ran
+    /// past their time.
+    fn reap_tones(&mut self) {
+        self.tones.retain_mut(|tone| tone.running());
     }
 
     /// The level a step from the reading lands on.
@@ -363,6 +431,17 @@ fn refresh(jobs: &Jobs<dyn Graph, Landed>) {
         let read = graph.read();
         Landed::Read(Sound::of(&read.graph, &read.uses))
     });
+}
+
+/// The sound themes installed here, as the reading names them.
+fn installed_themes() -> Vec<SoundTheme> {
+    media::event_sound::installed_themes()
+        .into_iter()
+        .map(|theme| SoundTheme {
+            id: theme.id,
+            name: theme.name,
+        })
+        .collect()
 }
 
 /// The level a `f64` argument names, from 0 to 1.
@@ -397,6 +476,10 @@ impl Service for SoundService {
         let action = decode::<SoundAction>(&self.resources(), resource, action, arguments)?;
         let id = action.id();
         let change = match action {
+            SoundAction::TestOutput { node, channel } => {
+                let side = TestSide::of(channel.as_deref()).map_err(ApiError::InvalidArguments)?;
+                return Ok(self.start_tone(id, node, side));
+            }
             SoundAction::SetVolume { level } => {
                 let level = level_of(level)?;
                 // A slider still at or above the level it reads, moved up,
@@ -438,6 +521,7 @@ impl Service for SoundService {
         for landed in landed {
             self.land(landed);
         }
+        self.reap_tones();
         changed
     }
 
@@ -445,6 +529,7 @@ impl Service for SoundService {
         for landed in self.worker.settle() {
             self.land(landed);
         }
+        self.reap_tones();
     }
 }
 

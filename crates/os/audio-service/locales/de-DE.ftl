@@ -24,6 +24,7 @@ so-tilo-audio-sound-set-profile = Audiogeräteprofil
 so-tilo-audio-sound-set-stream-muted = App stummschalten
 so-tilo-audio-sound-set-stream-volume = App-Lautstärke
 so-tilo-audio-sound-set-volume = Lautstärke
+so-tilo-audio-sound-test-output = Einen Testton abspielen
 so-tilo-audio-sound-toggle-input-muted = Mikrofon stumm- oder einschalten
 so-tilo-audio-sound-toggle-muted = Stumm oder laut schalten
 so-tilo-audio-sound-volume-down = Leiser

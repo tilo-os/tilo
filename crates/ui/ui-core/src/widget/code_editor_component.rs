@@ -26,6 +26,9 @@ pub struct CodeEditorProps {
     /// The place to show, written `line` or `line:column` counted from 1; the same place asked for
     /// again needs a count after it (`3:1:2`), so a person's own scrolling is left alone.
     pub reveal: Option<String>,
+    /// How large the code reads, as a factor of its size (`1.25`): the editor's own text zoom,
+    /// kept by whoever shows it, beside the window's scale rather than instead of it.
+    pub zoom: Option<f64>,
 }
 
 impl Default for CodeEditorProps {
@@ -39,6 +42,7 @@ impl Default for CodeEditorProps {
             gutter: true,
             read_only: false,
             reveal: None,
+            zoom: None,
         }
     }
 }
@@ -56,6 +60,7 @@ impl Described for CodeEditor {
             gutter,
             read_only,
             reveal,
+            zoom,
         } = props;
         let mut editor = Self::from_state(&value.state)
             .with_gutter(gutter)
@@ -75,6 +80,9 @@ impl Described for CodeEditor {
         if let Some(place) = reveal {
             editor.goto_place(&place);
         }
+        if let Some(zoom) = zoom {
+            editor.set_zoom(zoom_factor(zoom));
+        }
         editor
     }
 
@@ -88,6 +96,7 @@ impl Described for CodeEditor {
             gutter,
             read_only,
             reveal,
+            zoom,
         } = props;
         if !self.inner.follows(&value.state) {
             self.inner.follow(&value.state);
@@ -99,6 +108,9 @@ impl Described for CodeEditor {
             self.inner.set_highlighter(language.highlighter());
         }
         self.set_read_only(read_only);
+        if let Some(zoom) = zoom {
+            self.set_zoom(zoom_factor(zoom));
+        }
         if let Some(place) = reveal
             && self.revealed.as_deref() != Some(place.as_str())
         {
@@ -107,5 +119,19 @@ impl Described for CodeEditor {
         self.min_lines = min_lines.map(|lines| usize::try_from(lines.max(1)).unwrap_or(1));
         self.max_lines = max_lines.map(|lines| usize::try_from(lines.max(1)).unwrap_or(1));
         true
+    }
+}
+
+/// The zoom factor `zoom` names, as the editor reads at: the value itself, kept to the float the
+/// editor measures with. A factor that is no size to read at leaves the code as it was.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a zoom factor is a small number a person reads at"
+)]
+fn zoom_factor(zoom: f64) -> f32 {
+    if zoom.is_finite() && zoom > 0.0 {
+        zoom as f32
+    } else {
+        1.0
     }
 }

@@ -215,6 +215,7 @@ pub fn unreachable_server(path: &Path, error: &io::Error) -> io::Error {
 
 /// The most the server reads from a client before it is admitted: its
 /// `initialize` and any discovery probe before it.
+#[cfg(unix)]
 const MAX_HELLO: usize = 64 * 1024;
 /// What a client that gave no name of its own is called: what the person who decides who it is
 /// reads, and what the workspace calls it until it says otherwise.
@@ -366,6 +367,7 @@ pub fn parse_hello(line: &[u8]) -> Result<Hello, HelloError> {
 /// `budget` is what is left of [`MAX_HELLO`] for everything the client sends
 /// before its `initialize`, so probes cannot keep an unadmitted connection
 /// reading without end.
+#[cfg(unix)]
 fn read_hello_line(reader: &mut impl io::Read, budget: &mut usize) -> io::Result<Vec<u8>> {
     let mut line = Vec::new();
     let mut byte = [0_u8; 1];
@@ -398,6 +400,7 @@ fn read_hello_line(reader: &mut impl io::Read, budget: &mut usize) -> io::Result
 }
 
 /// The JSON-RPC "method not found" answer to a `server/discover` probe.
+#[cfg(unix)]
 fn not_found_reply(id: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -774,6 +777,7 @@ pub struct Asking {
 }
 
 impl Asking {
+    #[cfg(unix)]
     fn is_empty(&self) -> bool {
         self.workspace.is_none() && self.key.is_none() && self.session_name.is_none()
     }
@@ -892,7 +896,9 @@ pub fn relay(from: &mut impl io::Read, to: &mut impl io::Write) -> io::Result<u6
     }
 }
 
+// What they prove is the Unix server's: it serves on Unix sockets alone.
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

@@ -78,6 +78,10 @@ pub struct Caller {
     pub(super) asked: Option<String>,
     // The device's operating system (`Self::local_system`), which acts for nobody.
     system: bool,
+    // The person on a plain connection to their own device's daemon, which the kernel says is
+    // their own account (`Self::own_person`): such a call is the person's own act, and an ask
+    // the workspace makes of them is answered by their being there.
+    own_connection: bool,
     // The invitation a visitor redeems (`Self::invited`): it acts by its issuer's authority,
     // which the action checks against the issuer's grant when it runs.
     invited: Option<Invited>,
@@ -116,6 +120,7 @@ impl Caller {
             agent_name: None,
             asked: None,
             system: false,
+            own_connection: false,
             invited: None,
             forwarded_by: None,
         }
@@ -164,6 +169,32 @@ impl Caller {
     #[must_use]
     pub fn local_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
         Self::admitted(Acting::person(person.into()), None)
+    }
+
+    /// The person on a plain connection to their own device's daemon, which the kernel says is
+    /// their own account ([`crate::remote::Caller`]): their calls are their own act, so an ask
+    /// the workspace makes of them is their call's, not a question nobody can answer.
+    #[must_use]
+    pub fn own_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
+        Self {
+            own_connection: true,
+            ..Self::admitted(Acting::person(person.into()), None)
+        }
+    }
+
+    /// Whether this is the person on their own device's daemon connection
+    /// ([`Self::own_person`]).
+    #[must_use]
+    pub const fn is_own_connection(&self) -> bool {
+        self.own_connection
+    }
+
+    /// The same caller, as the person on their own device's daemon connection: what a
+    /// provider marked so hands the workspace's asks to.
+    #[must_use]
+    pub const fn on_own_connection(mut self) -> Self {
+        self.own_connection = true;
+        self
     }
 
     /// The device's operating system on a local connection the provider admitted as its
@@ -819,6 +850,9 @@ impl KeptCaller {
             agent_name: self.agent_name,
             asked: self.asked,
             system: self.system,
+            // A kept call is admitted again for what it was made for, never as a live
+            // connection's own act.
+            own_connection: false,
             // A redemption never waits for a person's yes, so no kept call carries one.
             invited: None,
             forwarded_by: None,

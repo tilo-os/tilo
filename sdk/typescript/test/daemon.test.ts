@@ -204,6 +204,8 @@ suite("a daemon", () => {
 const KIT = process.env.TILO_SDK_APP_KIT;
 /** The suite's app. */
 const APP = "so.tilo.sdk-release-probe";
+/** The app that calls a service with a vault item's key. */
+const WEBCALL_APP = "so.tilo.sdk-webcall-probe";
 const APP_VERSION = "0.1.0";
 /** Where each item's secret belongs: what tells their asks apart. */
 const FIRST_PLACE = "https://first.example.test";
@@ -224,15 +226,20 @@ function run(program: string, args: string[]): string {
 }
 
 /**
- * The app's package, signed by the kit's publisher: `test/app/main.ts` bundled with the SDK, the
+ * The app's package, signed by the kit's publisher: its entrypoint bundled with the SDK, the
  * addon and its worker where the SDK loads them, and the items it asks for. Its path, its
  * package root and its publisher, as an install names them.
  */
-async function packApp(kit: string, items: { first: string; second: string }) {
+async function packApp(
+  kit: string,
+  id: string,
+  entry: string,
+  items: Record<string, unknown>,
+) {
   const dir = mkdtempSync(join(tmpdir(), "sdk-app-"));
   const payload = join(dir, "payload");
   const built = await Bun.build({
-    entrypoints: [join(import.meta.dir, "app", "main.ts")],
+    entrypoints: [entry],
     outdir: payload,
     naming: "main.js",
     target: "bun",
@@ -249,7 +256,7 @@ async function packApp(kit: string, items: { first: string; second: string }) {
   writeFileSync(
     manifest,
     `[package]
-id = "${APP}"
+id = "${id}"
 version = "${APP_VERSION}"
 kind = "app"
 runtime = "${runtime}"
@@ -304,6 +311,7 @@ connection = true
   rmSync(dir, { recursive: true, force: true });
   return {
     bytes,
+    id,
     package: field("package-id", "tapp:"),
     publisher: field("publisher-identity", "ed25519:"),
   };
@@ -312,7 +320,7 @@ connection = true
 /** Hand the workspace the package in pieces, and install it as a developer's own build. */
 async function install(
   workspace: Workspace,
-  app: { bytes: Uint8Array; package: string; publisher: string },
+  app: { bytes: Uint8Array; id: string; package: string; publisher: string },
 ): Promise<void> {
   // The workspace keeps it under its BLAKE3 hash.
   const hash = bytesToHex(blake3(app.bytes));
@@ -326,7 +334,7 @@ async function install(
     });
   }
   await workspace.do("workspace/apps#install", {
-    app: APP,
+    app: app.id,
     version: APP_VERSION,
     package: app.package,
     publisher: app.publisher,
@@ -404,6 +412,9 @@ async function kept(workspace: Workspace, place: string, secret: string): Promis
 
 /** How the vault refuses a release its person has not allowed yet. */
 const ASKED_FIRST = "may not read this vault item yet: your person is asked whether it may, once";
+/** How the vault refuses a web call its person has not allowed yet. */
+const CALL_ASKED_FIRST =
+  "may not call this service with this vault item yet: your person is asked whether it may, once";
 
 function sha256(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
@@ -423,7 +434,13 @@ suite("an app the daemon launches", () => {
       const first = await kept(workspace, FIRST_PLACE, firstSecret);
       const second = await kept(workspace, SECOND_PLACE, secondSecret);
 
-      await install(workspace, await packApp(kit, { first, second }));
+      await install(
+        workspace,
+        await packApp(kit, APP, join(import.meta.dir, "app", "main.ts"), {
+          first,
+          second,
+        }),
+      );
 
       // Its first release is refused while its person is asked, once.
       const refused = await said("first ");
@@ -457,6 +474,74 @@ suite("an app the daemon launches", () => {
       expect(log.includes(firstSecret)).toBe(false);
       expect(log.includes(secondSecret)).toBe(false);
       expect(String(plain).includes(firstSecret)).toBe(false);
+    },
+    SAID_WAIT_MS * 3,
+  );
+
+  test(
+    "calls a service with a vault item's key once its person allows it, and asks once",
+    async () => {
+      if (KIT === undefined || KIT === "") {
+        throw new Error("TILO_SDK_APP_KIT names no app kit (tools/ci/sdk-native.sh names one)");
+      }
+      const kit = KIT;
+      const said_by_the_service: (string | null)[] = [];
+      const service = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        async fetch(request) {
+          said_by_the_service.push(request.headers.get("authorization"));
+          return new Response(await request.text());
+        },
+      });
+      const url = `http://127.0.0.1:${service.port}`;
+      try {
+        const workspace = tilo.workspace();
+        const firstSecret = `first-${crypto.randomUUID()}`;
+        const secondSecret = `second-${crypto.randomUUID()}`;
+        const first = await kept(workspace, url, firstSecret);
+        const second = await kept(workspace, url, secondSecret);
+        await install(
+          workspace,
+          await packApp(kit, WEBCALL_APP, join(import.meta.dir, "app", "webcall.ts"), {
+            first,
+            second,
+            url,
+          }),
+        );
+
+        // The app's first call is refused while its person is asked, once; nothing is sent.
+        const refused = await said("webcall first refused ");
+        expect(refused).toContain(CALL_ASKED_FIRST);
+        const record = await askedAbout(workspace, url);
+        expect(said_by_the_service).toHaveLength(0);
+
+        // Their approve and grant lets the app call that service with that item: the request
+        // reaches the service with the key, and the app is answered what the service said.
+        await workspace.do(`invocations/workspace/${record}#resolve`, {
+          resolution: "approve_and_grant",
+        });
+        expect(await said("webcall first answered ")).toBe("200 hello from the app");
+        expect(said_by_the_service).toStrictEqual([`Bearer ${firstSecret}`]);
+
+        // The grant covers that item: the next call is not asked again.
+        expect(await said("webcall again answered ")).toBe("200 hello from the app");
+        expect(said_by_the_service).toStrictEqual([
+          `Bearer ${firstSecret}`,
+          `Bearer ${firstSecret}`,
+        ]);
+
+        // Another item asks on its own, and nothing of it is sent.
+        expect(await said("webcall second refused ")).toContain(CALL_ASKED_FIRST);
+        expect(said_by_the_service).toHaveLength(2);
+
+        // The app never saw the secret, and neither does the daemon's log.
+        const log = readFileSync(join(PROFILE ?? "", "daemon.log"), "utf8");
+        expect(log.includes(firstSecret)).toBe(false);
+        expect(log.includes(secondSecret)).toBe(false);
+      } finally {
+        service.stop(true);
+      }
     },
     SAID_WAIT_MS * 3,
   );

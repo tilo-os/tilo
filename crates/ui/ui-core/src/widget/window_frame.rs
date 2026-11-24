@@ -169,10 +169,10 @@ pub struct WindowFrame {
     bar: Rect,
     /// The pill around the controls, over the bar's ground or over the app's header row.
     pill: Rect,
-    /// The window arriving where it stands and gliding when its place changes
-    /// (`motion::Placed`: `WindowMotion::OPEN` and `MOVE`, landing at once for a still theme and
-    /// reduced motion). Drawn as a component of the shell's do: a window a view builds again
-    /// each time the layout changes still moves rather than jumping.
+    /// The window arriving where it stands, or out of the control the person pressed for it, and
+    /// gliding when its place changes (`motion::Placed`: `WindowMotion::OPEN` and `MOVE`, landing at
+    /// once for a still theme and reduced motion). Drawn as a component of the shell's do: a window a
+    /// view builds again each time the layout changes still moves rather than jumping.
     placed: crate::motion::Placed,
     /// The resource the bar carries when it is picked up, by its published address: what a
     /// press on the bar's empty area publishes on the drag bus once it travels past the
@@ -334,7 +334,11 @@ impl Described for WindowFrame {
                 crate::motion::Placed::closed()
             } else {
                 crate::motion::Placed::opened()
-            },
+            }
+            // A window the person pressed for comes out of the control they pressed — the dock icon
+            // or the search row — and goes back into it when it leaves. A window a shortcut or an
+            // agent asked for lands where it stands, and one in the session's first frame rests.
+            .arriving_out_of_pointer(),
             carries,
             lift: None,
             keep,
@@ -1362,6 +1366,73 @@ mod tests {
                 .placed
                 .is_moving(now + crate::time::Duration::from_secs(3))
         );
+    }
+
+    /// A window the person pressed for comes out of the control they pressed — the dock icon or the
+    /// search row — on its way to where it is laid out, and one a shortcut asked for lands where it
+    /// stands.
+    #[test]
+    fn a_window_the_person_pressed_for_flies_out_of_the_control_they_pressed() {
+        let _frame = crate::motion::pin_frame();
+        // A window opening in a running session: the shell has drawn a frame before.
+        let _shown = crate::motion::laying_out_window(true);
+        let control = Point::new(30.0, 700.0);
+        crate::motion::note_pointer(control);
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        let mut frame = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                name: Some("A note".to_owned()),
+                focused: true,
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        );
+        let rect = Rect::new(400.0, 40.0, 880.0, 480.0);
+        laid_out(&mut frame, rect);
+        let now = crate::motion::frame_now();
+        frame.placed.follow(
+            rect,
+            true,
+            Theme::dark().motion(),
+            crate::motion::input_source(),
+            now,
+        );
+        let mark = frame.placed.pose(rect, now).drawn_rect(rect);
+        assert!(
+            (mark.center() - control).hypot() < 1.0,
+            "the first frame is a mark at the control: {mark:?}"
+        );
+        assert!(
+            mark.width() < rect.width() / 2.0,
+            "and much smaller than its frame: {mark:?}"
+        );
+
+        // A window a shortcut asked for lands where it stands.
+        crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+        let mut shortcut = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                name: Some("A note".to_owned()),
+                focused: true,
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        );
+        laid_out(&mut shortcut, rect);
+        shortcut.placed.follow(
+            rect,
+            true,
+            Theme::dark().motion(),
+            crate::motion::input_source(),
+            now,
+        );
+        assert_eq!(
+            shortcut.placed.pose(rect, now).drawn_rect(rect),
+            rect,
+            "a shortcut's window shows in its frame at once"
+        );
+        crate::motion::note_source(crate::tokens::MotionSource::Action);
     }
 
     /// A still theme, and reduced motion, land the window where it is laid out on the frame it

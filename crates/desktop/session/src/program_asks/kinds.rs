@@ -1229,6 +1229,7 @@ mod tests {
         assert_eq!(
             facts.facts,
             vec![
+                line(word("portal-network-hosts")),
                 fact(
                     word("portal-network-site"),
                     words("portal-network-site-domain", &[("domain", "discord.media")]),
@@ -1241,7 +1242,7 @@ mod tests {
         // `*` is said as any site and lists none.
         let (any, _) =
             reach("Mail", serde_json::json!({"hosts": ["*"]})).expect("the question is shown");
-        assert!(any.facts.is_empty());
+        assert_eq!(any.facts, vec![line(word("portal-network-any"))]);
         assert_eq!(
             any.words,
             words(

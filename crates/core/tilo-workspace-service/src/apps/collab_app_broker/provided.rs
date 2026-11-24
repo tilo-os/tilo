@@ -825,7 +825,7 @@ pub(crate) mod signed_test_support {
             fixture.certified_host = Some(
                 fixture
                     .state
-                    .certified_local_action_provider(&fixture.caller, &presentation)
+                    .certified_local_action_provider(&fixture.caller, &presentation, false)
                     .unwrap(),
             );
             fixture.origin = InvocationCaller::Certified {

@@ -27,6 +27,16 @@ class Daemon:
         ``{"refused": {"error": {...}}}`` for one that was refused.
         """
 
+    async def web_call(self, workspace: str | None, args: str) -> str:
+        """Make the web call ``args`` (JSON text) names with the key of the vault
+        item it names, in ``workspace`` (``None``: the one this connection acts
+        in).
+
+        Answers JSON text: ``{"answer": ...}``, or
+        ``{"refused": {"error": {...}}}``. An app's held connection has the
+        vault add the key to the request; the secret never reaches the app.
+        """
+
     async def release(self, workspace: str | None, item: str) -> str:
         """Release the secret of the vault item ``item`` in ``workspace``
         (``None``: the one this connection acts in) to this process.

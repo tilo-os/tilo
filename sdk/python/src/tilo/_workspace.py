@@ -633,7 +633,7 @@ class Workspace:
         if reason is not None:
             args["reason"] = reason
         try:
-            answer = await (await self._endpoint()).act("vault/vault#web-call", args)
+            answer = await (await self._endpoint()).web_call(args)
         except AskPending as ask:
             raise ask._then(result_of) from None
         return await _settled(answer)

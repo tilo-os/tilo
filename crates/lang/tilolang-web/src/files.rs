@@ -2,28 +2,54 @@
 //! of package directories ([`tilolang::source`]), and compiled through the same ordered build.
 //!
 //! A directory with `.tl` files directly in it is a package: those files are its module, its
-//! `locales/*.ftl` its catalogues and its `app.ids` its ids lock. A directory with a
-//! `tilo-app.toml` and a `surface.toml` is a native app, which a package imports as the
-//! metadata its surface publishes.
+//! `locales/*.ftl` its catalogues, its `media/**` the files its views and scenarios name as
+//! `pkg:media/…`, and its `app.ids` its ids lock. A file under `media` travels base64, since a
+//! page's answer is JSON text. A directory with a `tilo-app.toml` and a `surface.toml` is a native
+//! app, which a package imports as the metadata its surface publishes.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use tilolang::source::{BuildError, BuiltPackage, IDS_FILE};
+use base64::Engine as _;
+use tilolang::source::{ASSETS_DIR, BuildError, BuiltPackage, IDS_FILE, PackageAsset};
 use tilolang::{IdsLock, PackageMeta, PackageSource, SeededEntropy};
 use tilolang_tilo::catalogue::{MANIFEST_FILE, NativeSurface, SURFACE_FILE};
 
-/// The files of one directory: its own files by name, and its catalogues by locale.
+/// The files of one directory: its own files by name, its catalogues by locale, and the files it
+/// ships under `media/`.
 #[derive(Default)]
 struct Dir {
     files: BTreeMap<String, String>,
     locales: Vec<(String, String)>,
+    assets: Vec<PackageAsset>,
 }
 
 /// Every package and native app a tree of files holds, by the directory each stands in.
 pub struct Tree {
     packages: Vec<(PathBuf, PackageSource, IdsLock)>,
     natives: Vec<PackageMeta>,
+}
+
+/// The directory a package stands in, and the name its `pkg:` address gives the file, for a file
+/// the package ships under `media/`: `apps/tl/music/media/first-light.wav` is
+/// `apps/tl/music` and `media/first-light.wav`.
+fn asset_path(path: &Path) -> Option<(PathBuf, String)> {
+    let parts: Vec<&std::ffi::OsStr> = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect();
+    let at = parts.iter().position(|part| *part == ASSETS_DIR)?;
+    let (before, shipped) = parts.split_at_checked(at)?;
+    let package = before.iter().collect();
+    let asset = shipped
+        .iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
+    Some((package, asset))
 }
 
 /// A failure to read or build what a tree holds, as a page shows it: the file and the place in it
@@ -56,6 +82,20 @@ impl Tree {
                 continue;
             };
             let name = name.to_string_lossy().into_owned();
+            // A package's own file under `media/`: the page's map carries it base64, since its
+            // answer is JSON text.
+            if let Some((package, asset)) = asset_path(path) {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(text.trim())
+                    .map_err(|error| {
+                        Failure::read(format!("{}: not base64: {error}", path.display()))
+                    })?;
+                dirs.entry(package)
+                    .or_default()
+                    .assets
+                    .push(PackageAsset { name: asset, bytes });
+                continue;
+            }
             let in_locales = parent.file_name().and_then(|n| n.to_str())
                 == Some(tilolang::messages::LOCALES_DIR);
             if in_locales && let Some(locale) = name.strip_suffix(".ftl") {
@@ -101,7 +141,10 @@ impl Tree {
                 None => IdsLock::new(),
             };
             held.locales.sort();
-            let source = PackageSource::new(sources).with_locales(held.locales);
+            held.assets.sort_by(|a, b| a.name.cmp(&b.name));
+            let source = PackageSource::new(sources)
+                .with_locales(held.locales)
+                .with_assets(held.assets);
             packages.push((dir, source, ids));
         }
         Ok(Self { packages, natives })

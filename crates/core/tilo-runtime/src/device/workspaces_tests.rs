@@ -692,10 +692,7 @@ async fn a_workspace_the_desktop_founded_moves_here_and_is_the_persons_own() {
         .iter()
         .map(|hint| hint.host.device_public_key)
         .collect();
-    assert_eq!(
-        keeping,
-        [own.copies().device_cert().device_public_key]
-    );
+    assert_eq!(keeping, [own.copies().device_cert().device_public_key]);
 
     let (again, _) = own
         .import(serde_json::from_value(handed).unwrap())
@@ -818,7 +815,6 @@ async fn desktop_founds_its_persons_workspace(
     )
     .await
     .unwrap();
-    desktop_keys.attach(desktop.workspaces());
     let person = tilo_server_protocol::WorkspaceId::parse(
         &tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key),
     )

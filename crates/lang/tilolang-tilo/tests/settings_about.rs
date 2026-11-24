@@ -105,7 +105,7 @@ fn labelled(tree: &UiNode, kind: &str, label: &str) -> String {
 }
 
 /// One invocation as it was sent, with its arguments by name.
-
+#[derive(Clone)]
 struct Sent(Rc<RefCell<Vec<Invocation>>>);
 
 impl Sent {
@@ -254,7 +254,7 @@ fn the_about_pane_lists_problems_and_opens_one_to_its_record() {
     // report, carrying what happened, when, and the record itself with its stacks.
     // The page's own action runs here; what it and the removal ask of other packages is what is
     // recorded, so the report is the one the app really files.
-    let sent = Rc::new(Sent::new());
+    let sent = Sent::new();
     host.runtime().set_foreign_invoker(sent.clone());
     let send = labelled(view.tree(), "ui.Button", "Send a report");
     view.press(&send).expect("the person sends the report");

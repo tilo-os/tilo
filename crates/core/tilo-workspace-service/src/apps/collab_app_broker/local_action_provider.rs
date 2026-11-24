@@ -208,8 +208,9 @@ impl AppBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         presentation: &[u8],
+        own_connection: bool,
     ) -> Result<Arc<dyn ActionProvider + Send + Sync>, String> {
-        Ok(self.checked_local_host(caller, presentation)?)
+        Ok(self.checked_local_host(caller, presentation, own_connection)?)
     }
 
     /// The calls of `agent`, which the workspace's record lists, acting for the person
@@ -229,7 +230,7 @@ impl AppBrokerState {
         presentation: &[u8],
         agent: &str,
     ) -> Result<Arc<dyn ActionProvider + Send + Sync>, String> {
-        let checked = self.checked_local_host(caller, presentation)?;
+        let checked = self.checked_local_host(caller, presentation, false)?;
         let workspace = checked.admission.workspace.clone();
         let mut admitted = checked.admission.admitted.clone();
         let roster = self
@@ -261,7 +262,7 @@ impl AppBrokerState {
         caller: &Caller,
         presentation: &[u8],
     ) -> Result<Arc<dyn ActionProvider + Send + Sync>, String> {
-        let mut checked = (*self.checked_local_host(caller, presentation)?).clone();
+        let mut checked = (*self.checked_local_host(caller, presentation, false)?).clone();
         if checked.effective.is_foreign_device() {
             return Err("native action requires this device's person".into());
         }
@@ -308,15 +309,18 @@ impl AppBrokerState {
         caller: &Caller,
         presentation: &[u8],
     ) -> Result<CertifiedActionLifecycle, String> {
-        Ok(CertifiedActionLifecycle(
-            self.checked_local_host(caller, presentation)?,
-        ))
+        Ok(CertifiedActionLifecycle(self.checked_local_host(
+            caller,
+            presentation,
+            false,
+        )?))
     }
 
     fn checked_local_host(
         self: &Arc<Self>,
         caller: &Caller,
         presentation: &[u8],
+        own_connection: bool,
     ) -> Result<Arc<CertifiedLocalActionProvider>, String> {
         // This api never falls back to the legacy wall clock during verification.
         self.registered_policy_time()?
@@ -344,6 +348,13 @@ impl AppBrokerState {
         let effective = caller
             .clone()
             .from_foreign_device(caller.is_foreign_device() || certificate.capabilities.foreign);
+        // The person on their own device's daemon connection: what the broker decides their
+        // calls with is the person's own act.
+        let effective = if own_connection {
+            effective.on_own_connection()
+        } else {
+            effective
+        };
         let provider = Arc::new(CertifiedLocalActionProvider {
             state: self.clone(),
             caller: caller.clone(),
@@ -466,7 +477,7 @@ impl AppBrokerState {
         caller: &Caller,
         presentation: &[u8],
     ) -> Result<CertifiedPersonContext, String> {
-        let checked = self.checked_local_host(caller, presentation)?;
+        let checked = self.checked_local_host(caller, presentation, false)?;
         let certificate = checked
             .admission
             .admitted

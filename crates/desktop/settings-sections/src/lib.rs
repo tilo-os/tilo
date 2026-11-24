@@ -238,4 +238,6 @@ sections!(
 #[cfg(test)]
 mod declared_tests;
 #[cfg(test)]
+mod input_tests;
+#[cfg(test)]
 mod surface_tests;

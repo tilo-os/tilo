@@ -13,21 +13,35 @@ view network_pane() {
     } else if page == "wired" {
         wired_page(page)
     } else if page == "hotspot" {
-        hotspot_page()
+        read_pane(of: device.tethering, what: "Hotspot") {
+            hotspot_page()
+        }
     } else if page == "advanced" {
         advanced_page()
     } else if page == "mobile" {
-        mobile_page()
+        read_pane(of: device.modem, what: "Mobile data") {
+            mobile_page()
+        }
     } else if page == "vpn" {
-        vpn_pane(page, chosen)
+        read_pane(of: device.vpn, what: "VPN") {
+            vpn_pane(page, chosen)
+        }
     } else if page == "vpn-add" {
-        vpn_add_page(page, chosen)
+        read_pane(of: device.vpn, what: "VPN") {
+            vpn_add_page(page, chosen)
+        }
     } else if page == "vpn-devices" {
-        vpn_devices_page(page)
+        read_pane(of: device.vpn, what: "VPN") {
+            vpn_devices_page(page)
+        }
     } else if page == "vpn-paste" {
-        vpn_paste_page(chosen, page)
+        read_pane(of: device.vpn, what: "VPN") {
+            vpn_paste_page(chosen, page)
+        }
     } else if page == "vpn-profile" {
-        vpn_profile_page(chosen, page)
+        read_pane(of: device.vpn, what: "VPN") {
+            vpn_profile_page(chosen, page)
+        }
     } else if page == "net" {
         network_page(chosen, page)
     } else {

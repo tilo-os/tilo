@@ -307,6 +307,16 @@ impl Checker<'_> {
         Ex::host(Imp::Unseen, vec![r], Ty::List(Box::new(host_ty("Version"))))
     }
 
+    /// `unreadable(r)`: why the reading of `r` says it could not be read, in words, or nothing
+    /// when it answers: what a pane shows in place of values a failed read would leave as the
+    /// empty ones their type starts with.
+    pub(super) fn builtin_unreadable(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("unreadable", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::Unreadable, vec![r], Ty::Option(Box::new(Ty::Text)))
+    }
+
     pub(super) fn builtin_changes(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let [a] = args else {
             self.err("E022", span, "`changes` takes one run: `changes(of: run)`");

@@ -210,7 +210,6 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::io::BufReader;
-    use std::os::unix::net::UnixListener;
     use std::sync::Mutex;
     use tilo_actions::ActionOutput;
     use tilo_actions::remote::{
@@ -407,7 +406,7 @@ mod tests {
             .set("XDG_STATE_HOME", home.path().join("state"))
             .set("TILO_IDENTITY_ROOT", home.path().join("identity"));
         let socket = super::super::daemon_socket().unwrap();
-        let listener = UnixListener::bind(&socket).unwrap();
+        let listener = tilo_files::native::socket::bind(&socket).unwrap();
         let (left, gone) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for stream in listener.incoming() {

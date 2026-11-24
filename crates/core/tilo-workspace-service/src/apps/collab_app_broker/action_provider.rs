@@ -2936,6 +2936,10 @@ impl AppBrokerState {
                 // it again with it.
                 Some(Confirmation::Asked(_)) => true,
                 Some(Confirmation::Confirmed) => policy.direct(),
+                // An ask is made of the person: the person's own connection to their device's
+                // daemon is them, so their call is their answer. Anyone else acting as them —
+                // an app, a program through a shell — keeps asking, as its press does.
+                None => policy.direct() && policy.own_connection(),
                 _ => false,
             },
         };

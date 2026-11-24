@@ -4,7 +4,7 @@
 //! painted, and painted nothing while the view is not presented.
 
 use tilo_ui::State;
-use tilo_ui::component::{Described, Event};
+use tilo_ui::component::Described;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Fullscreen, FullscreenProps, Spacer, Widget};
@@ -22,23 +22,30 @@ fn presented(showing: bool) -> Box<dyn Widget> {
     ))
 }
 
+/// Where the four channels of the pixel at `x`, `y` start in a frame `width` across.
+fn pixel_at(width: u32, x: u32, y: u32) -> usize {
+    let coordinate = |value: u32| usize::try_from(value).expect("a coordinate fits a usize");
+    coordinate(y)
+        .checked_mul(coordinate(width))
+        .and_then(|row| row.checked_add(coordinate(x)))
+        .and_then(|pixel| pixel.checked_mul(4))
+        .expect("a pixel inside the window's frame")
+}
+
 /// The colour `pixel` of a frame.
 fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
-    let at = usize::try_from((y * width + x) * 4).unwrap();
-    [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
+    rgba.get(pixel_at(width, x, y)..)
+        .and_then(|rest| rest.get(..4))
+        .and_then(|channels| <[u8; 4]>::try_from(channels).ok())
+        .expect("four channels a pixel")
 }
 
 /// How many pixels of the top-leading corner differ from what the frame paints at rest.
 fn changed_in_the_corner(rgba: &[u8], width: u32, ground: [u8; 4]) -> usize {
-    let mut changed = 0;
-    for y in 0..96 {
-        for x in 0..320 {
-            if pixel(rgba, width, x, y) != ground {
-                changed += 1;
-            }
-        }
-    }
-    changed
+    (0..96)
+        .flat_map(|y| (0..320).map(move |x| (x, y)))
+        .filter(|&(x, y)| pixel(rgba, width, x, y) != ground)
+        .count()
 }
 
 /// The way out is painted over the presented view, not elsewhere, and a view at rest paints
@@ -61,11 +68,12 @@ fn the_way_out_is_painted_over_the_presented_view() {
             theme.clone(),
         )
         .render_rgba();
-        assert_eq!(
-            at_rest.len(),
-            usize::try_from(width * height * 4).unwrap(),
-            "the frame is the window's"
-        );
+        let frame_bytes = usize::try_from(width)
+            .unwrap()
+            .checked_mul(usize::try_from(height).unwrap())
+            .and_then(|pixels| pixels.checked_mul(4))
+            .expect("the frame's bytes");
+        assert_eq!(at_rest.len(), frame_bytes, "the frame is the window's");
         let ground = pixel(&at_rest, width, 0, 0);
         assert_eq!(
             changed_in_the_corner(&at_rest, width, ground),
@@ -78,7 +86,12 @@ fn the_way_out_is_painted_over_the_presented_view() {
             "{name}: the way out is painted over the view's leading top corner, {painted} px"
         );
         assert_eq!(
-            pixel(&presented_frame, width, width - 1, height - 1),
+            pixel(
+                &presented_frame,
+                width,
+                width.saturating_sub(1),
+                height.saturating_sub(1)
+            ),
             ground,
             "{name}: nothing is painted away from it"
         );

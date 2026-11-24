@@ -296,3 +296,78 @@ fn a_payload_without_a_module_is_no_tilolang_package() {
         Err(tilolang_tilo::bundle::BundleError::NotAModule(_))
     ));
 }
+
+const SOUND_APP: &str = r#"app so.tilo.test.sound "Sound" (icon: .music, category: .utility)
+
+/// What the demo plays.
+type Player {
+    name: Text = ""
+}
+
+root Player
+
+default view player for Player
+
+/// The player's window: it names the file a view shows beside the one only a demo does.
+view player(p: Player) {
+    ui.Text("pkg:media/shown.txt")
+}
+
+/// A demo that names a sound of its own.
+scenario "one" {
+    let p = root Player
+    p.name = "pkg:media/only-scenario.txt"
+}
+"#;
+
+/// A package's files under `media/` travel with it; the ones only a scenario names are left out of
+/// the payload a person installs, since an install starts empty and shows no demo. A development
+/// run carries them all, because the window it opens stages the demos.
+#[test]
+fn an_install_leaves_out_the_files_only_a_scenario_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let package = dir.path().join("sound");
+    std::fs::create_dir_all(package.join("media")).unwrap();
+    std::fs::write(package.join("app.tl"), SOUND_APP).unwrap();
+    std::fs::write(package.join("media/shown.txt"), b"shown").unwrap();
+    std::fs::write(package.join("media/only-scenario.txt"), b"demo").unwrap();
+    let published = tilolang_tilo::catalogue::published_packages(&[]).unwrap();
+    let built = tilolang::source::compile_package(
+        &package,
+        &[],
+        &published,
+        &mut tilolang::OsEntropy::default(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let bundle = tilolang_tilo::bundle::of_build(&built).pop().unwrap();
+    let flags: Vec<(String, bool)> = bundle
+        .assets
+        .iter()
+        .map(|asset| (asset.name.clone(), asset.scenario_only))
+        .collect();
+    assert_eq!(
+        flags,
+        [
+            ("media/only-scenario.txt".to_owned(), true),
+            ("media/shown.txt".to_owned(), false),
+        ]
+    );
+
+    let installed = dir.path().join("installed");
+    bundle.write_installed(&installed).unwrap();
+    assert!(
+        installed.join("media/shown.txt").is_file(),
+        "a view shows it"
+    );
+    assert!(
+        !installed.join("media/only-scenario.txt").exists(),
+        "an install carries nothing only a demo names"
+    );
+
+    let developed = dir.path().join("developed");
+    bundle.write(&developed).unwrap();
+    assert!(
+        developed.join("media/only-scenario.txt").is_file(),
+        "a development run stages the demo that names it"
+    );
+}

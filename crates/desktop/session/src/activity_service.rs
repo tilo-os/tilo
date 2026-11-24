@@ -47,8 +47,9 @@ pub(crate) const COMPARE_PREFIX: &str = "workspace.activity/compare~";
 pub(crate) const FEED_PREFIX: &str = "workspace.activity/feed~";
 
 /// What every agent session across the person's workspaces is published under, after this:
-/// `workspace.activity/sessions~all`. A window that lists them all reads its own page, while
-/// the activity's own reading holds this workspace's.
+/// `workspace.activity/sessions~<scope>~<changes>`: this workspace's sessions or every
+/// workspace's, and how many of each session's changes still in effect the page holds. A window
+/// that lists a session's changes reads the page it shows, so two windows each read their own.
 pub(crate) const SESSIONS_PREFIX: &str = "workspace.activity/sessions~";
 
 /// What a command's whole output is published under, after this: the workspace its shell's
@@ -434,6 +435,31 @@ pub(crate) struct SessionAction {
     pub undo_verb: Option<String>,
 }
 
+/// One of a session's changes still in effect: what it changed, where, and how to open it and
+/// take it back on its own.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub(crate) struct SessionChange {
+    /// The change, as a range of one in the history.
+    pub range: Span,
+    /// The change in its record's own history, which its undo names as the step.
+    pub step: String,
+    pub at_ms: i64,
+    /// What it changed, as a sentence.
+    pub summary: String,
+    /// The app and record it changed.
+    pub app_id: String,
+    pub record: String,
+    /// The resource it touched, where it opens.
+    pub target: Target,
+    /// What the press to undo it says, when it can be undone on its own here.
+    pub undo_label: Option<String>,
+    /// What that press is, as the model names it: `undo-entry` for the record's share.
+    pub undo_verb: Option<String>,
+}
+
 /// One agent session: an instruction it worked, and the actions it took for it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
 #[serde(default)]
@@ -452,6 +478,11 @@ pub(crate) struct AgentSession {
     pub range: Span,
     /// Oldest first.
     pub actions: Vec<SessionAction>,
+    /// Its changes still in effect, newest first: what the session still leaves in place, each
+    /// undone on its own. A page of `changes_total`.
+    pub in_effect: Vec<SessionChange>,
+    /// How many of its changes are still in effect.
+    pub changes_total: i64,
     /// Why it cannot be undone from here.
     pub undo_blocked: Option<String>,
     /// What it is doing now, as a sentence; empty when it is not working.
@@ -577,6 +608,7 @@ impl Read {
                 return read_arguments(&wire::SessionsQuery {
                     scope: wire::Scope::ThisWorkspace,
                     limit: 0,
+                    changes: 0,
                 });
             }
             _ => return Map::new(),
@@ -683,14 +715,22 @@ impl Key {
             }
             Self::Sessions => {
                 let rest = resource.strip_prefix(SESSIONS_PREFIX)?;
-                if rest != "all" {
+                let mut parts = rest.split('~');
+                let scope = match parts.next()? {
+                    "all" => wire::Scope::AllWorkspaces,
+                    "this" => wire::Scope::ThisWorkspace,
+                    _ => return None,
+                };
+                let changes = parts.next().and_then(|page| page.parse().ok()).unwrap_or(0);
+                if parts.next().is_some() {
                     return None;
                 }
                 Some((
                     wire::SESSIONS,
                     read_arguments(&wire::SessionsQuery {
-                        scope: wire::Scope::AllWorkspaces,
+                        scope,
                         limit: 0,
+                        changes,
                     }),
                 ))
             }
@@ -1246,9 +1286,46 @@ fn session(session: &wire::AgentSession) -> AgentSession {
         last_ms: session.last_ms,
         range: span(&session.range),
         actions: session.actions.iter().map(action).collect(),
+        in_effect: session.in_effect.iter().map(change).collect(),
+        changes_total: i64::try_from(session.changes_total).unwrap_or(i64::MAX),
         undo_blocked: session.undo_blocked.clone(),
         now,
         now_kind,
+    }
+}
+
+/// What an undo a session's change offers is, as an app names the press: `undo-entry` takes back
+/// the record's share of it, `undo-change` the range, and the rest are the history's own verbs.
+fn action_verb(action: wire::DetailAction) -> String {
+    match action {
+        wire::DetailAction::UndoEntry => "undo-entry",
+        wire::DetailAction::Undo => "undo-change",
+        other => other.action(),
+    }
+    .to_owned()
+}
+
+/// One of an agent session's changes still in effect, as an app reads it.
+fn change(change: &wire::SessionChange) -> SessionChange {
+    let (undo_label, undo_verb) = change.undo.as_ref().map_or((None, None), |offer| {
+        (Some(offer.label.clone()), Some(action_verb(offer.action)))
+    });
+    SessionChange {
+        range: span(&change.range),
+        step: change.step.clone(),
+        at_ms: change.at_ms,
+        summary: change.summary.clone(),
+        app_id: change.app_id.clone(),
+        record: change.record.clone(),
+        target: Target {
+            app_id: change.target.app_id.clone(),
+            app_label: change.target.app_label.clone(),
+            id: change.target.id.clone(),
+            kind: change.target.kind.clone(),
+            label: change.target.label.clone(),
+        },
+        undo_label,
+        undo_verb,
     }
 }
 
@@ -1332,10 +1409,7 @@ fn action(action: &wire::SessionAction) -> SessionAction {
         _ => None,
     };
     let (undo_label, undo_verb) = action.undo.as_ref().map_or((None, None), |offer| {
-        (
-            Some(offer.label.clone()),
-            Some(offer.action.action().to_owned()),
-        )
+        (Some(offer.label.clone()), Some(action_verb(offer.action)))
     });
     SessionAction {
         range: span(&action.range),
@@ -1633,6 +1707,8 @@ mod tests {
         summary: String,
         /// How many changes the last feed read asked for.
         limit: usize,
+        /// How many of each session's changes still in effect the last sessions read asked for.
+        changes: usize,
     }
 
     impl Model {
@@ -1641,6 +1717,7 @@ mod tests {
                 revision: 1,
                 summary: "Renamed a note".to_owned(),
                 limit: 0,
+                changes: 0,
             }
         }
     }
@@ -1713,31 +1790,49 @@ mod tests {
                     "unavailable": 0,
                     "pending": false,
                 })),
-                wire::SESSIONS => Ok(serde_json::json!({
-                    "sessions": [{
-                        "id": "run-1",
-                        "agent": {"name": "Ada's agent", "rgb": [90, 120, 200], "identity": "agent",
-                                  "relation": "software", "for_reader": true},
-                        "instruction": "Tidy the notes",
-                        "started_ms": 1_700_000_000_000_i64,
-                        "last_ms": 1_700_000_030_000_i64,
-                        "range": {"from": "00112233445566778899aabbccddeeff",
-                                  "to": "00112233445566778899aabbccddeeff"},
-                        "actions": [{
+                wire::SESSIONS => {
+                    let query: wire::SessionsQuery =
+                        serde_json::from_value(Value::Object(arguments.clone()))
+                            .map_err(|error| error.to_string())?;
+                    self.changes = query.changes_page();
+                    Ok(serde_json::json!({
+                        "sessions": [{
+                            "id": "run-1",
+                            "agent": {"name": "Ada's agent", "rgb": [90, 120, 200], "identity": "agent",
+                                      "relation": "software", "for_reader": true},
+                            "instruction": "Tidy the notes",
+                            "started_ms": 1_700_000_000_000_i64,
+                            "last_ms": 1_700_000_030_000_i64,
                             "range": {"from": "00112233445566778899aabbccddeeff",
                                       "to": "00112233445566778899aabbccddeeff"},
-                            "changes": 1,
-                            "at_ms": 1_700_000_030_000_i64,
-                            "summary": "Renamed a note",
-                            "view": {"kind": "record", "target": {"id": "note-1", "kind": "note", "label": "Plan"}},
-                            "app_id": "so.tilo.lang.notes",
-                            "record": "note-1",
+                            "actions": [{
+                                "range": {"from": "00112233445566778899aabbccddeeff",
+                                          "to": "00112233445566778899aabbccddeeff"},
+                                "changes": 1,
+                                "at_ms": 1_700_000_030_000_i64,
+                                "summary": "Renamed a note",
+                                "view": {"kind": "record", "target": {"id": "note-1", "kind": "note", "label": "Plan"}},
+                                "app_id": "so.tilo.lang.notes",
+                                "record": "note-1",
+                            }],
+                            "in_effect": [{
+                                "range": {"from": "00112233445566778899aabbccddeeff",
+                                          "to": "00112233445566778899aabbccddeeff"},
+                                "step": "aa11bb22cc33dd44ee55ff660011223344556677",
+                                "at_ms": 1_700_000_030_000_i64,
+                                "summary": "Renamed a note",
+                                "app_id": "so.tilo.lang.notes",
+                                "record": "note-1",
+                                "target": {"id": "note-1", "kind": "note", "label": "Plan"},
+                                "undo": {"action": "undo-entry", "label": "Undo this step"},
+                            }],
+                            "changes_total": 1,
                         }],
-                    }],
-                    "total": 1,
-                    "pending": false,
-                    "mutations": true,
-                })),
+                        "total": 1,
+                        "pending": false,
+                        "mutations": true,
+                    }))
+                }
                 wire::DETAIL => Ok(serde_json::json!({
                     "title": "Renamed a note",
                     "provenance": "Ada renamed it",
@@ -1926,9 +2021,9 @@ mod tests {
         );
 
         // Every agent session across the person's workspaces is one more reading, keyed
-        // `sessions/all`: what a window listing them all shows, while the activity's own
-        // reading keeps this workspace's.
-        let all = "workspace.activity/sessions~all";
+        // `sessions/<scope>/<changes>`: what a window listing them all shows, and how many of
+        // each session's changes still in effect its page holds.
+        let all = "workspace.activity/sessions~all~40";
         let (action, arguments) = Key::Sessions
             .read(all)
             .expect("the keyed sessions read is asked");
@@ -1937,6 +2032,19 @@ mod tests {
             arguments.get("scope").and_then(Value::as_str),
             Some("all-workspaces"),
             "every workspace of the person is read, not this one's"
+        );
+        assert_eq!(
+            arguments.get("changes").and_then(Value::as_u64),
+            Some(40),
+            "the page of changes a window shows is the one asked for"
+        );
+        let this = "workspace.activity/sessions~this~0";
+        let (_, arguments) = Key::Sessions
+            .read(this)
+            .expect("a window's own workspace sessions read");
+        assert_eq!(
+            arguments.get("scope").and_then(Value::as_str),
+            Some("this-workspace")
         );
         let first = served.read(all).expect("the sessions read");
         assert!(
@@ -1949,6 +2057,20 @@ mod tests {
         let sessions = served.read(all).expect("the sessions read");
         assert_eq!(sessions["sessions"][0]["instruction"], "Tidy the notes");
         assert_eq!(sessions["mutations"], true);
+        assert_eq!(
+            model.changes, 40,
+            "a window asks the model for exactly the page of a session's changes it shows"
+        );
+        let changes = &sessions["sessions"][0]["in_effect"];
+        assert_eq!(changes[0]["summary"], "Renamed a note");
+        assert_eq!(
+            changes[0]["step"], "aa11bb22cc33dd44ee55ff660011223344556677",
+            "the change is named as its record's own history names it, for its undo"
+        );
+        assert_eq!(changes[0]["target"]["label"], "Plan");
+        assert_eq!(changes[0]["undo_label"], "Undo this step");
+        assert_eq!(changes[0]["undo_verb"], "undo-entry");
+        assert_eq!(sessions["sessions"][0]["changes_total"], 1);
         assert!(
             served
                 .moved()
@@ -1991,7 +2113,8 @@ mod tests {
     fn the_activity_surface_file_is_what_the_session_publishes() {
         let published = vec![surface(), range_surface(), feed_surface(), output_surface()];
         let text = serde_json::to_string_pretty(&serde_json::json!({ "resources": published }))
-            .expect("a surface writes as JSON");
+            .expect("a surface writes as JSON")
+            + "\n";
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("activity-surface.json");
         let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
         if on_disk == text {

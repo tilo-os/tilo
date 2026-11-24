@@ -427,7 +427,8 @@ d-vsaswu4a = Seitenansicht
     .w-logins-on-this-page = Anmeldungen auf dieser Seite
     .w-save-this-login = Diese Anmeldung speichern
     .w-update-the-saved-login = Gespeicherte Anmeldung aktualisieren
-    .w-saved-for-this-site = Für diese Website gespeichert
+    .w-saved-by-browser-in-your-vault = Von Browser in deinem Tresor gespeichert
+    .w-in-your-vault-fills-once-you = In deinem Tresor: wird eingesetzt, sobald du es erlaubst
     .w-fill = Einsetzen
     .w-delete = Löschen
     .w-new-page = Neue Seite
@@ -1403,7 +1404,7 @@ d-enz3azev = Benutzername
 d-kqqay3gr = Art
 
 d-q3arly5t = Anmeldekonto
-    .doc = Eine Anmeldung, die der Motor für diese Website aufbewahrt: seine Nummer für das Konto und der Name, mit dem sie sich anmeldet.
+    .doc = Eine Anmeldung, die der Tresor des Arbeitsbereichs für diese Website aufbewahrt: das Tresorelement, das sie ist (`vault.item:<id>`), wie sie heißt und der Name, mit dem sie sich anmeldet. Ihr Passwort bleibt im Tresor, geht nur an den Motor der Seite, wenn er ein Formular ausfüllt, und erreicht die App nie.
     .noun = { $count ->
         [one] Anmeldekonto
        *[other] Anmeldekonten
@@ -1412,6 +1413,11 @@ d-q3arly5t = Anmeldekonto
 d-53raewop = Konto
 
 d-5oqresy2 = Benutzername
+
+d-qpgkf2v5 = Titel
+
+d-ultqehya = Eigene
+    .doc = Ob der Browser sie selbst gespeichert hat: Sie auszufüllen fragt niemanden. Jede andere Anmeldung der Website wird ausgefüllt, sobald ihre Person dem Browser genau diese eine Anmeldung erlaubt hat.
 
 d-wdlbrp6r = Anmeldedaten
     .doc = Die Aktion des Anmeldespeichers im Motor: `status`, `cancel`, `discover`, `addresses`, `list`, `capture`, `save`, `update`, `fill`, `delete` oder `fill_address`.

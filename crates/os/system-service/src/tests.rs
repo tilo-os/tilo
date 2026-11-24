@@ -2354,6 +2354,18 @@ fn the_windows_programs_are_the_device_s_resource_and_their_actions_act_in_a_wor
     service.settle();
     assert_eq!(windows.changes(), [("w1".to_owned(), "launch".to_owned())]);
 
+    // Search finds the program by its name and opens the Windows Apps window at its page:
+    // the row is the reading's, shown by the app that draws it.
+    let (resource, found) = service
+        .search_rows()
+        .into_iter()
+        .find(|(_, row)| row.title == "Adobe Acrobat Reader")
+        .expect("the program is a row of search");
+    assert_eq!(resource, WINDOWS_APPS);
+    assert_eq!(found.id, "adobe-reader", "the program its anchor names");
+    assert_eq!(found.subtitle.as_deref(), Some("Adobe"), "who publishes it");
+    assert_eq!(found.app.as_deref(), Some("so.tilo.windows"));
+
     // Each program is a row of the reading and a resource of its own: search lists it by the
     // program's name, and a press on the row opens that program.
     let program = published

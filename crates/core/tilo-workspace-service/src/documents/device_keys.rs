@@ -96,6 +96,11 @@ pub trait KeySink: collab_types::signer::MaybeSendSync + 'static {
     /// what it reads here, so a workspace that settled must be readable there
     /// at once, not on a later pass.
     fn settled(&self, workspace: &str, state: tilo_peer_state::StatePeer);
+
+    /// Read the governance of `workspaces`, the service the sink was handed to, from the
+    /// moment it is built: before it opens a workspace, so the first record it seals there,
+    /// while it starts, finds who reads it.
+    fn attach(&self, _workspaces: &crate::workspaces::Workspaces) {}
 }
 
 /// The key service of the device a host runs on.

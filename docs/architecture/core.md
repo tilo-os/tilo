@@ -198,6 +198,10 @@ Underneath, both are actors acting for a person, like a person acting for
 themselves, and one call can run through several of them: an automation a
 person set up, run by an agent. Every actor in that chain must allow the
 call (`tilo_action_policy::Acting`, `admit_invocation`).
+The person an agent acts for is in its key's certificate, signed by that person
+when the agent is created and revoked when it is removed. Every replica reads it
+from the write's signature chain, so it decides the same way without opening the
+agent's record, which holds everything else about the agent.
 
 An agent or an automation acts with a subset of its person's permissions,
 by default the largest one. Granting it less works the
@@ -1205,6 +1209,17 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   replica admits its writes to that record and nothing else, with no member row
   and no keys, and history names the person. It never enters a workspace or
   redeems an invitation.
+  Inside such a VM the daemon's socket opens only for the tenant's account: the
+  daemon checks each connection's peer credentials and refuses any other account,
+  the Browser's included. A tenant connection acts as the person's unnamed agent,
+  so asked actions still ask.
+  On a person's own device, a connection the daemon verifies by peer credentials as
+  that person's account is the person: a workspace's ask before outside actions
+  doesn't apply to it, since nothing stands between them and the action. Apps,
+  agents, shell programs and forwarded links still ask, whatever identity they
+  carry.
+  A confined device never treats a connection as the person, and refuses to
+  issue device tickets.
   Reads work the same way: a record, page, search or view opened for a person
   reads with that person's grants, never with those of the person whose
   device serves it.

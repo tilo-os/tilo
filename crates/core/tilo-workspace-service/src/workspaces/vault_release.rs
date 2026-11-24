@@ -18,6 +18,10 @@
 //! - this device may read the workspace's vault for the app;
 //! - the vault keeps the item, and a grant of the workspace's lets the app read it.
 //!
+//! An app's held connection reaches the vault's web call the same way
+//! ([`Workspaces::web_call_to`]): the vault makes the request, so the key never reaches the app,
+//! and the grant "Approve and grant" writes covers that item at that place alone.
+//!
 //! The process's network is its package's grant, as for every launch: the item's places say only
 //! where a secret the vault sends itself may go ([`person_vault::WEB_CALL`]).
 //!
@@ -40,8 +44,9 @@ use zeroize::Zeroizing;
 use super::{WeakWorkspaces, Workspaces};
 use crate::work::Turn;
 
-/// The name the asks of a release are kept under in the store of asked records.
-const RELEASE_DISPATCH: &str = "vault-release";
+/// The name the asks of an app's use of a vault item are kept under in the store of asked
+/// records: a release of the item, and a web call that carries its key.
+const VAULT_ASKS: &str = "vault-asks";
 
 /// What a release is written down as among the item's uses.
 const RELEASE_USE: &str = "tilo.vault/release";
@@ -119,6 +124,16 @@ pub fn asked_first(app: &str) -> String {
     )
 }
 
+/// What a web call waits on while its person is asked whether the app may call that service with
+/// that item: once per app, item and place.
+#[must_use]
+pub fn call_asked_first(app: &str) -> String {
+    format!(
+        "{app} may not call this service with this vault item yet: your person is asked whether \
+         it may, once. Call again once they allowed it."
+    )
+}
+
 /// Why `caller`'s release, which reached the vault's provider rather than the process it would
 /// be answered to, is refused: every such caller is.
 #[must_use]
@@ -168,7 +183,7 @@ fn read_node(workspace: &str, item: &ItemRef) -> TreePath {
 }
 
 /// What kind of item a person reads it as.
-const fn kind_word(kind: accounts::vault_items::ItemKind) -> &'static str {
+pub(super) const fn kind_word(kind: accounts::vault_items::ItemKind) -> &'static str {
     use accounts::vault_items::ItemKind;
     match kind {
         ItemKind::Login => "Login",
@@ -181,7 +196,7 @@ const fn kind_word(kind: accounts::vault_items::ItemKind) -> &'static str {
 
 impl Workspaces {
     /// Whether a grant of `workspace`'s lets `app` read `item`.
-    async fn app_reads(&self, workspace: &str, app: &str, item: &ItemRef) -> bool {
+    pub(super) async fn app_reads(&self, workspace: &str, app: &str, item: &ItemRef) -> bool {
         let Some(policy) = self.policy_of(workspace).await else {
             return false;
         };
@@ -196,9 +211,9 @@ impl Workspaces {
     }
 
     /// Vouch that `process` is `app`'s held connection in `workspace`, on this device, and that
-    /// this device may read the workspace's vault for it: what a release or a find is answered
-    /// to, and nothing else.
-    async fn held_connection(
+    /// this device may read the workspace's vault for it: what a release, a find and a web call
+    /// are answered to, and nothing else.
+    pub(super) async fn held_connection(
         &self,
         (app, workspace): (&str, &str),
         process: &AppProcess,
@@ -404,7 +419,7 @@ impl Workspaces {
         facts: &accounts::vault_items::ItemFacts,
     ) -> Result<(), String> {
         let (store, records) = self
-            .release_asks()
+            .vault_asks()
             .ok_or("This device keeps no asked records, so nobody can be asked")?;
         let app = caller.acting().app().map(|app| app.to_string());
         let target = person_vault::release_target(item);
@@ -450,36 +465,33 @@ impl Workspaces {
             .map(drop)
     }
 
-    /// The store asked releases are kept in, and the records they are written through: once the
+    /// The store an app's asks are kept in, and the records they are written through: once the
     /// host named its store.
-    fn release_asks(
+    pub(super) fn vault_asks(
         &self,
     ) -> Option<(
         Arc<tilo_actions::remote::asked::AskedStore>,
         Arc<dyn AskedRecords>,
     )> {
         let store = self.asked_store()?;
-        let records = self.inner.release_asks.get()?.1.clone();
+        let records = self.inner.vault_asks.get()?.1.clone();
         Some((store, records))
     }
 
-    /// Write the asks of releases into `store`, answered through [`ReleaseAsks`].
-    pub(super) fn keep_release_asks_in(
-        &self,
-        store: &Arc<tilo_actions::remote::asked::AskedStore>,
-    ) {
-        let dispatch: Arc<dyn AskedDispatch> = Arc::new(ReleaseAsks(self.downgrade()));
-        let records = self.told(store.for_dispatch(RELEASE_DISPATCH, Arc::downgrade(&dispatch)));
-        let _ = self.inner.release_asks.set((dispatch, records));
+    /// Write an app's asks into `store`, answered through [`VaultAsks`].
+    pub(super) fn keep_vault_asks_in(&self, store: &Arc<tilo_actions::remote::asked::AskedStore>) {
+        let dispatch: Arc<dyn AskedDispatch> = Arc::new(VaultAsks(self.downgrade()));
+        let records = self.told(store.for_dispatch(VAULT_ASKS, Arc::downgrade(&dispatch)));
+        let _ = self.inner.vault_asks.set((dispatch, records));
     }
 }
 
-/// The dispatch an asked release is kept under. Its person's answer runs nothing: the secret
-/// never goes to a record, so their "Approve and grant" is the whole of it, written before this
-/// hears of it, and the app calls again on its own connection.
-struct ReleaseAsks(WeakWorkspaces);
+/// The dispatch an app's asked use of a vault item is kept under. Its person's answer runs
+/// nothing: the secret never goes to a record, so their "Approve and grant" is the whole of it,
+/// written before this hears of it, and the app calls again on its own connection.
+struct VaultAsks(WeakWorkspaces);
 
-impl ReleaseAsks {
+impl VaultAsks {
     /// Forget the record `request`'s approve names: its answer is in.
     fn settle(&self, request: &InvokeRequest) {
         if let (Some(workspaces), Some(approval)) = (self.0.upgrade(), request.approval())
@@ -490,7 +502,7 @@ impl ReleaseAsks {
     }
 }
 
-impl AskedDispatch for ReleaseAsks {
+impl AskedDispatch for VaultAsks {
     fn context(&self, _: InvocationId) -> Value {
         Value::Null
     }

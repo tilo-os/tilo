@@ -158,8 +158,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                 &env.route.app_id,
                 &env.route.cluster_id,
             );
-            let own = opened(&app, &env.route.channel_key()).await
-                .unwrap();
+            let own = opened(&app, &env.route.channel_key()).await.unwrap();
             let worker = rig
                 .state
                 .host_workers
@@ -229,7 +228,8 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             // no read of: the connection may not join it, and no worker
             // speaks for it.
             let other = CrdtRoute::record("so.tilo.notes", env.route.cluster_id.clone(), "notes-1");
-            let refused = opened(&app, &other.channel_key()).await
+            let refused = opened(&app, &other.channel_key())
+                .await
                 .err()
                 .expect("another app's route is not this app's to join");
             assert!(
@@ -309,7 +309,8 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                 let mut channels = Vec::new();
                 for record in 0..RECORDS {
                     channels.push(
-                        opened(&app, &route(window, record).channel_key()).await
+                        opened(&app, &route(window, record).channel_key())
+                            .await
                             .expect("a window joins every record it opens"),
                     );
                 }
@@ -407,8 +408,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
                 |id: &str| CrdtRoute::record(&env.route.app_id, env.route.cluster_id.clone(), id);
             let mut pages = Vec::new();
             for id in ["page-a", "page-b", "page-c"] {
-                let channel = opened(&window, &record(id).channel_key()).await
-                    .unwrap();
+                let channel = opened(&window, &record(id).channel_key()).await.unwrap();
                 channel
                     .publish_action_directory(super::signed_worker::directory_server(
                         &directory_state(&format!("{id}-r1")),
@@ -435,7 +435,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
             let (caller, evidence) = member_device_evidence(&env, 97, false);
             let host = rig
                 .state
-                .certified_local_action_provider(&caller, &evidence)
+                .certified_local_action_provider(&caller, &evidence, false)
                 .unwrap();
             let canonical = |id: &str| CatalogueQuery {
                 canonical_route: Some(CanonicalActionRoute {
@@ -551,7 +551,8 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
                 &env.route.app_id,
                 &env.route.cluster_id,
             );
-            let own = opened(&app, &env.route.channel_key()).await
+            let own = opened(&app, &env.route.channel_key())
+                .await
                 .expect("the launched app joins its own route in a journaled session");
             assert!(
                 rig.state
@@ -575,13 +576,15 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
                 env.route.cluster_id.clone(),
                 collab_types::workspace_document_id(shared.kind),
             );
-            let kept = opened(&app, &workspace_resource.channel_key()).await
+            let kept = opened(&app, &workspace_resource.channel_key())
+                .await
                 .expect("an app of the workspace joins its workspace's record");
 
             // Another app's route in the same workspace, which this app
             // declares no read of: the launch vouches for nothing there.
             let other = CrdtRoute::record("so.tilo.notes", env.route.cluster_id.clone(), "notes-1");
-            let refused = opened(&app, &other.channel_key()).await
+            let refused = opened(&app, &other.channel_key())
+                .await
                 .err()
                 .expect("another app's route is not this app's to join");
             assert!(refused.to_string().contains("so.tilo.notes"), "{refused:?}");
@@ -720,7 +723,8 @@ async fn a_press_in_a_view_opened_for_a_caller_acts_as_that_caller() {
             // refused as the workspace refuses them anything, without saying the action exists,
             // and nothing reaches the app.
             let (stranger_view, _server, _client) = view_for(906, &stranger);
-            let stranger_view = opened(&stranger_view, &env.route.channel_key()).await
+            let stranger_view = opened(&stranger_view, &env.route.channel_key())
+                .await
                 .unwrap();
             let refused = invoke(&stranger_view, id(0xd001)).await.unwrap_err();
             assert!(refused.contains("UnknownAction"), "{refused}");
@@ -728,7 +732,8 @@ async fn a_press_in_a_view_opened_for_a_caller_acts_as_that_caller() {
 
             // A view opened for the editor: the press is admitted, as the editor.
             let (editor_view, _server, _client) = view_for(907, &editor);
-            let editor_view = opened(&editor_view, &env.route.channel_key()).await
+            let editor_view = opened(&editor_view, &env.route.channel_key())
+                .await
                 .unwrap();
             invoke(&editor_view, id(0xd002)).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();

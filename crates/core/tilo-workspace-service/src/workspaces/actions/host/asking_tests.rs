@@ -408,9 +408,18 @@ async fn an_answer_that_meets_the_record_is_carried_out() {
                 settled(tilo_actions::remote::settle_with(&here, &agent, invocation, None, until))
                     .await
                     .expect("an admitted call is followed from the moment of the approve");
+            // Under way or ended, whichever this host is at: never nothing to follow.
             assert!(
-                matches!(followed.update, InvocationUpdate::Succeeded { .. }),
+                matches!(
+                    followed.update,
+                    InvocationUpdate::Accepted { .. } | InvocationUpdate::Succeeded { .. }
+                ),
                 "{followed:?}"
+            );
+            let ended = ended(&service, workspace_id, (&ada, &agent), invocation).await;
+            assert!(
+                matches!(ended, InvocationUpdate::Succeeded { .. }),
+                "{ended:?}"
             );
         }
         match ended(&service, workspace_id, (&ada, &agent), invocation).await {

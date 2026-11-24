@@ -29,9 +29,9 @@
 
 use base64::Engine as _;
 use tilo_webview::{
-    AddressFields, CredentialAction, CredentialForm, CredentialRequest, FrameId, KeyModifiers,
-    NavigationDirection, NavigationEntry, PageFailure, PageReply, PageRequest, PageResourceNote,
-    PointerButton, PointerPoint, PointerStep, PointerStepKind, ScrollTarget, WebViewCommand,
+    AddressFields, CredentialAction, CredentialForm, FrameId, KeyModifiers, NavigationDirection,
+    NavigationEntry, PageFailure, PageReply, PageRequest, PageResourceNote, PointerButton,
+    PointerPoint, PointerStep, PointerStepKind, ScrollTarget, WebViewCommand,
 };
 
 use crate::Asks;
@@ -59,6 +59,13 @@ pub enum Ask {
     Command(WebViewCommand),
     /// What the page waits on and last reported: its own state, which asks the page nothing.
     Asks,
+    /// Something about the page's logins: the engine's forms, or the vault's logins for the
+    /// page's site ([`crate::PageSession::login`]). `origin` is the app's word for the site,
+    /// which only starts the question of where the page is.
+    Login {
+        origin: String,
+        ask: crate::LoginAsk,
+    },
     /// The page is private: its window's engine is started on a fresh, disposable profile,
     /// which holds nothing the person signed in to and goes when the window does. Asked before
     /// the page says anything else, since it settles which engine the page has.
@@ -425,10 +432,13 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         // The window's second page goes: the extension's side panel, or the page it asked the
         // person to sign in on.
         "panel_close" => Ask::PanelClose,
-        // The engine's own credential store: the logins it keeps for this site, the forms it
-        // reads them from, and the capture it takes of one the person typed. The password never
-        // crosses this vocabulary.
-        "credential" => Ask::Command(WebViewCommand::Credentials(credential(&value)?)),
+        // The page's logins: the forms the engine finds and the capture it takes of one the
+        // person typed, and the logins the workspace's vault keeps for the page's site. The
+        // password never crosses this vocabulary.
+        "credential" => Ask::Login {
+            origin: text(&value, "origin").unwrap_or_default(),
+            ask: credential(&value)?,
+        },
         // What the page downloads: the engine's own transfers, which the app starts, answers,
         // stops and resumes by the id the engine gave them.
         "start_download" => Ask::Command(WebViewCommand::StartDownload {
@@ -654,44 +664,39 @@ fn extension_id(value: &serde_json::Value) -> Result<String, String> {
     Ok(id)
 }
 
-/// The credential action a request names, with the fields it takes. A password is never part of
-/// one: the engine captures and fills it.
-fn credential(value: &serde_json::Value) -> Result<CredentialRequest, String> {
+/// The login action a request names, with the fields it takes. A password is never part of one:
+/// the engine captures and fills it, and the vault keeps it.
+fn credential(value: &serde_json::Value) -> Result<crate::LoginAsk, String> {
+    use crate::LoginAsk;
     let field = |name: &str| text(value, name).unwrap_or_default();
-    let action = match field("credential").as_str() {
-        "status" => CredentialAction::Status,
-        "cancel" => CredentialAction::Cancel,
-        "discover" => CredentialAction::Discover,
-        "addresses" => CredentialAction::DiscoverAddresses,
-        "list" => CredentialAction::List,
-        "capture" => CredentialAction::Capture {
+    Ok(match field("credential").as_str() {
+        "status" => LoginAsk::Engine(CredentialAction::Status),
+        "cancel" => LoginAsk::Engine(CredentialAction::Cancel),
+        "discover" => LoginAsk::Engine(CredentialAction::Discover),
+        "addresses" => LoginAsk::Engine(CredentialAction::DiscoverAddresses),
+        "capture" => LoginAsk::Engine(CredentialAction::Capture {
             form: field("form"),
-        },
-        "save" => CredentialAction::Save {
-            capture: field("capture"),
-        },
-        "update" => CredentialAction::Update {
-            capture: field("capture"),
-            account: field("account"),
-        },
-        "fill" => CredentialAction::Fill {
-            form: field("form"),
-            account: field("account"),
-        },
-        "delete" => CredentialAction::Delete {
-            account: field("account"),
-        },
-        "fill_address" => CredentialAction::FillAddress {
+        }),
+        "fill_address" => LoginAsk::Engine(CredentialAction::FillAddress {
             form: field("form"),
             profile: address_fields(value)?,
+        }),
+        "list" => LoginAsk::List,
+        "save" => LoginAsk::Save {
+            capture: field("capture"),
+        },
+        "update" => LoginAsk::Update {
+            capture: field("capture"),
+            item: field("account"),
+        },
+        "fill" => LoginAsk::Fill {
+            form: field("form"),
+            item: field("account"),
+        },
+        "delete" => LoginAsk::Delete {
+            item: field("account"),
         },
         other => return Err(format!("a credential request names no action {other:?}")),
-    };
-    Ok(CredentialRequest {
-        request_id: 1,
-        origin: field("origin"),
-        document: field("document"),
-        action,
     })
 }
 
@@ -719,16 +724,16 @@ fn address_fields(value: &serde_json::Value) -> Result<AddressFields, String> {
     })
 }
 
-/// What the engine's credential store answered, for the window to hand the app as its call: how
-/// the action ended, the forms and accounts it listed, the capture it took, and the account it
-/// named.
+/// What a login action came to, for the window to hand the app as its call: how it ended, the
+/// forms the engine found, the vault's logins for the site, the capture the engine took, and the
+/// name it read.
 #[must_use]
 pub fn credential_note(
     action: &str,
     success: bool,
     message: &str,
     forms: &[CredentialForm],
-    accounts: &[tilo_webview::CredentialAccount],
+    accounts: &[crate::VaultLogin],
     capture: Option<&str>,
     username: Option<&str>,
     late: bool,
@@ -747,8 +752,10 @@ pub fn credential_note(
         .iter()
         .map(|account| {
             serde_json::json!({
-                "account": account.id,
+                "account": account.item,
                 "username": account.username,
+                "title": account.title,
+                "own": account.own,
             })
         })
         .collect();

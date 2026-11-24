@@ -11,13 +11,41 @@ use super::Verb;
 use super::mail;
 
 /// The `tilo.accounts` actions a person asks of the workspace's accounts, in catalogue order.
-const VERBS: [Verb; 7] = [
+const VERBS: [Verb; 12] = [
     Verb {
         id: person_accounts::ADD_MAIL,
         label: "Add a mail account",
         check: "",
         kind: ActionKind::Undoable,
         params: mail::add_account_params,
+    },
+    Verb {
+        id: person_accounts::BEGIN_SIGN_IN,
+        label: "Sign in to an account on its provider's page",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: begin_sign_in_params,
+    },
+    Verb {
+        id: person_accounts::BEGIN_CLOUD_SIGN_IN,
+        label: "Connect cloud storage",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: begin_cloud_sign_in_params,
+    },
+    Verb {
+        id: person_accounts::SUBMIT_SIGN_IN_CODE,
+        label: "Finish signing in with a code",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: code_params,
+    },
+    Verb {
+        id: person_accounts::CANCEL_SIGN_IN,
+        label: "Stop waiting for a sign-in",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: sign_in_params,
     },
     Verb {
         id: person_accounts::RECONNECT,
@@ -55,6 +83,13 @@ const VERBS: [Verb; 7] = [
         params: calendar_params,
     },
     Verb {
+        id: person_accounts::SET_SERVICES,
+        label: "Choose an account's services",
+        check: "",
+        kind: ActionKind::Undoable,
+        params: services_params,
+    },
+    Verb {
         id: person_accounts::REMOVE,
         label: "Remove an account",
         check: "",
@@ -62,6 +97,114 @@ const VERBS: [Verb; 7] = [
         params: account_params,
     },
 ];
+
+fn begin_sign_in_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "provider",
+            ParamType::Text,
+            "The provider: `nextcloud`, `google`, `microsoft`, `icloud` or `other`.",
+        ),
+        ActionParam::optional(
+            "server",
+            ParamType::Text,
+            "The Nextcloud server's address; left out for the others.",
+        ),
+        ActionParam::optional(
+            "name",
+            ParamType::Text,
+            "The name the account is shown under.",
+        ),
+        ActionParam::optional(
+            "mail",
+            ParamType::Boolean,
+            "Whether its mail shows in Mail.",
+        ),
+        ActionParam::optional(
+            "calendar",
+            ParamType::Boolean,
+            "Whether its calendars show in Calendar.",
+        ),
+        ActionParam::optional(
+            "files",
+            ParamType::Boolean,
+            "Whether its files mount in Files.",
+        ),
+        ActionParam::optional(
+            "account",
+            ParamType::Text,
+            "The account this signs in again, when its sign-in stopped working.",
+        ),
+    ]
+}
+
+fn begin_cloud_sign_in_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "kind",
+            ParamType::Text,
+            "The storage: `google-drive`, `onedrive`, `dropbox`, `icloud-drive` or `webdav`.",
+        ),
+        ActionParam::optional(
+            "name",
+            ParamType::Text,
+            "The name the account is shown under.",
+        ),
+        ActionParam::optional(
+            "server",
+            ParamType::Text,
+            "A `WebDAV` server's address.",
+        ),
+        ActionParam::optional(
+            "username",
+            ParamType::Text,
+            "The sign-in name: a `WebDAV` server's, or the Apple ID.",
+        ),
+        ActionParam::optional(
+            "password",
+            ParamType::Secret,
+            "Its password or app password, used once and never answered back.",
+        ),
+    ]
+}
+
+fn sign_in_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "signIn",
+        ParamType::Text,
+        "The sign-in's id, as beginning it answered.",
+    )]
+}
+
+fn code_params() -> Vec<ActionParam> {
+    let mut params = sign_in_params();
+    params.push(ActionParam::required(
+        "code",
+        ParamType::Text,
+        "The code the provider sent or showed.",
+    ));
+    params
+}
+
+fn services_params() -> Vec<ActionParam> {
+    let mut params = account_params();
+    params.push(ActionParam::optional(
+        "mail",
+        ParamType::Boolean,
+        "Whether its mail shows, where it is a mail account.",
+    ));
+    params.push(ActionParam::optional(
+        "calendar",
+        ParamType::Boolean,
+        "Whether its calendars show in Calendar.",
+    ));
+    params.push(ActionParam::optional(
+        "files",
+        ParamType::Boolean,
+        "Whether its files mount in Files.",
+    ));
+    params
+}
 
 fn calendar_params() -> Vec<ActionParam> {
     let mut params = account_params();
@@ -242,6 +385,11 @@ mod surface_tests {
                             list(named("CalendarView".to_owned())),
                             "A calendar account's calendars and which of them show.",
                         ),
+                        (
+                            "services",
+                            named("AccountServices".to_owned()),
+                            "Which of its services the account feeds.",
+                        ),
                     ],
                 ),
                 record(
@@ -263,6 +411,49 @@ mod surface_tests {
                             "read_only",
                             FieldType::Bool,
                             "Whether its server lets this workspace change it.",
+                        ),
+                    ],
+                ),
+                record(
+                    "AccountServices",
+                    "Which of one account's services its person uses.",
+                    &[
+                        (
+                            "mail",
+                            FieldType::Bool,
+                            "Whether its mail shows in Mail.",
+                        ),
+                        (
+                            "calendar",
+                            FieldType::Bool,
+                            "Whether its calendars show in Calendar.",
+                        ),
+                        (
+                            "files",
+                            FieldType::Bool,
+                            "Whether its files mount in Files.",
+                        ),
+                    ],
+                ),
+                record(
+                    "SignInStep",
+                    "Where a sign-in goes, and what it waits for.",
+                    &[
+                        (
+                            "id",
+                            FieldType::Text,
+                            "The sign-in's id, as finishing or stopping it names it.",
+                        ),
+                        (
+                            "open",
+                            FieldType::Text,
+                            "The provider's page to open in the browser.",
+                        ),
+                        (
+                            "code",
+                            FieldType::Text,
+                            "What it waits for beyond the browser: a verification code, or the \
+                             code a provider showed. Empty when it needs none.",
                         ),
                     ],
                 ),
@@ -303,6 +494,14 @@ mod surface_tests {
                 }
             })
             .collect();
+        let returns = matches!(
+            verb.id,
+            person_accounts::BEGIN_SIGN_IN | person_accounts::BEGIN_CLOUD_SIGN_IN
+        )
+        .then(|| tilo_actions::surface::ReturnsSurface {
+            schema: serde_json::Value::Null,
+            ty: FieldType::Named("SignInStep".to_owned()),
+        });
         VerbSurface {
             id: verb.id.to_owned(),
             name: String::new(),
@@ -312,7 +511,7 @@ mod surface_tests {
             destructive: false,
             incoming_message: false,
             params,
-            returns: None,
+            returns,
             writes: vec!["record".to_owned()],
             field: None,
         }

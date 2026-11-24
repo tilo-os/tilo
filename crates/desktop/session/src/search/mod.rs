@@ -2555,7 +2555,10 @@ mod tests {
         assert_eq!(found.len(), 1, "a container is found by its image");
         assert_eq!(found[0].title, "build-cache");
         let Target::Invoke(target) = &found[0].target else {
-            panic!("a container opens the app showing it: {:?}", found[0].target);
+            panic!(
+                "a container opens the app showing it: {:?}",
+                found[0].target
+            );
         };
         assert_eq!(target.app, "so.tilo.containers");
         assert_eq!(
@@ -2564,13 +2567,65 @@ mod tests {
             "the window opens at the container's page"
         );
 
-        let window = source(&Scope::InApp(ui::search::AppScope::of("so.tilo.containers")))
-            .expect("the window of the app showing it finds it");
+        let window = source(&Scope::InApp(ui::search::AppScope::of(
+            "so.tilo.containers",
+        )))
+        .expect("the window of the app showing it finds it");
         assert_eq!(window.query("postgres").len(), 1);
         assert!(
-            source(&Scope::InApp(ui::search::AppScope::of("so.tilo.logs")))
-                .is_none(),
+            source(&Scope::InApp(ui::search::AppScope::of("so.tilo.logs"))).is_none(),
             "another app's window finds nothing of this reading"
+        );
+    }
+
+    /// A program this computer runs is found by its name and opens the Windows Apps window at
+    /// its page, whether or not that window is open: the row the system service publishes for
+    /// the reading's item.
+    #[test]
+    fn a_windows_program_is_found_by_its_name_and_opens_the_app_at_it() {
+        let search = SessionSearch::new(SearchOptions::default(), None, "ada", None, None, None);
+        search.set_device_rows(vec![(
+            "windows-apps".to_owned(),
+            tilo_actions::ReadingRow::new("adobe-reader", "Adobe Acrobat Reader")
+                .subtitled("Adobe")
+                .grouped("Windows apps")
+                .field("Wine 11.0")
+                .fact("Wine 11.0")
+                .shown_by("so.tilo.windows"),
+        )]);
+        let found = |scope: &Scope| -> Vec<tilo_desktop_search::Hit> {
+            let (sources, _) = search.sources("garden", scope);
+            sources
+                .iter()
+                .flat_map(|source| source.query("acrobat"))
+                .collect()
+        };
+        let hits = found(&Scope::Workspace);
+        let hit = hits
+            .iter()
+            .find(|hit| hit.title == "Adobe Acrobat Reader")
+            .unwrap_or_else(|| panic!("the program is found: {hits:?}"));
+        assert_eq!(hit.subtitle.as_deref(), Some("Adobe"));
+        let Target::Invoke(invoke) = &hit.target else {
+            panic!("a program opens the app that shows it: {:?}", hit.target);
+        };
+        assert_eq!(invoke.app, "so.tilo.windows");
+        assert_eq!(invoke.workspace, "garden");
+        assert_eq!(
+            invoke.arguments[tilo_desktop_search::OPEN_ANCHOR],
+            "windows-apps/adobe-reader",
+            "the window opens at the program's page"
+        );
+        let in_windows = Scope::InApp(ui::search::AppScope::of("so.tilo.windows"));
+        assert_eq!(
+            found(&in_windows).len(),
+            1,
+            "the window's own search finds it"
+        );
+        let in_notes = Scope::InApp(ui::search::AppScope::of("so.tilo.notes"));
+        assert!(
+            found(&in_notes).is_empty(),
+            "another window's search is that window's alone"
         );
     }
 

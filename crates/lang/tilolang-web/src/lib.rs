@@ -117,6 +117,44 @@ fn refused(message: impl Into<String>) -> String {
     json!({ "ok": false, "message": message.into(), "diagnostics": [] }).to_string()
 }
 
+/// The file a page opens an app with, as `(name, media type, bytes)`: `None` when it opens none.
+/// The name is the person's, so it stays a name and never a path.
+fn opened_file(request: Option<OpenRequest>) -> Result<Option<(String, String, Vec<u8>)>, String> {
+    let Some(request) = request else {
+        return Ok(None);
+    };
+    let refused_name = request.name.is_empty()
+        || request.name.len() > 255
+        || request.name.chars().any(|c| matches!(c, '/' | '\\' | '\0'));
+    if refused_name {
+        return Err(format!("`{}` is no file name", request.name));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(request.bytes)
+        .map_err(|error| format!("`{}`: {error}", request.name))?;
+    if bytes.len() > MAX_OPENED_BYTES {
+        return Err(format!("`{}` is too large to open here", request.name));
+    }
+    let media = request
+        .media
+        .unwrap_or_else(|| tilolang_tilo::runtime::blob::media_of(&request.name));
+    Ok(Some((request.name, media, bytes)))
+}
+
+/// Install the files each package ships under `media/`, by the name an address (`pkg:<name>`)
+/// gives it: a view or a scenario plays one from these bytes.
+fn install_assets(built: &[tilolang::source::BuiltPackage]) {
+    for package in built {
+        tilolang_window::media_source::install_package_assets(
+            package
+                .source
+                .assets
+                .iter()
+                .map(|asset| (asset.name.clone(), asset.bytes.clone())),
+        );
+    }
+}
+
 /// What a compile of `root` built: each package in dependency order, the app (`root`'s) last.
 fn built_json(built: &[tilolang::source::BuiltPackage]) -> Json {
     let packages: Vec<Json> = built
@@ -238,30 +276,9 @@ pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
     if options.open.is_some() && options.link.is_some() {
         return refused("an app opens a file or a link, never both");
     }
-    let opened = match options.open {
-        None => None,
-        Some(request) => {
-            let refused_name = request.name.is_empty()
-                || request.name.len() > 255
-                || request
-                    .name
-                    .chars()
-                    .any(|c| matches!(c, '/' | '\\' | '\0'));
-            if refused_name {
-                return refused(format!("`{}` is no file name", request.name));
-            }
-            let bytes = match base64::engine::general_purpose::STANDARD.decode(request.bytes) {
-                Ok(bytes) => bytes,
-                Err(error) => return refused(format!("`{}`: {error}", request.name)),
-            };
-            if bytes.len() > MAX_OPENED_BYTES {
-                return refused(format!("`{}` is too large to open here", request.name));
-            }
-            let media = request.media.unwrap_or_else(|| {
-                tilolang_tilo::runtime::blob::media_of(&request.name).to_owned()
-            });
-            Some((request.name, media, bytes))
-        }
+    let opened = match opened_file(options.open) {
+        Ok(opened) => opened,
+        Err(message) => return refused(message),
     };
     // An app opened with a file or a link starts empty, as a first launch does: the scenario is
     // there for a page that shows what the app holds.
@@ -273,6 +290,9 @@ pub fn open_app(files_json: &str, root: &str, options_json: &str) -> String {
             Some(named) => Some(named).filter(|name| !name.is_empty()),
         }
     };
+    // The files the packages ship under `media/`, which a view or a scenario names as `pkg:…`:
+    // installed before the window is laid out, so their addresses play from their bytes.
+    install_assets(&built);
     let compiled = Rc::new(built.iter().map(|b| b.compiled.clone()).collect::<Vec<_>>());
     let packages = Rc::new(Packages::new(compiled, published));
     let staging = Staging {

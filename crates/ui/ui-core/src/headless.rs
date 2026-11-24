@@ -6104,6 +6104,7 @@ impl FrameHarness {
     pub fn send_host_event(&mut self, event: &WindowEvent) {
         let _wake = self.enter_wake();
         crate::motion::note_input(event);
+        self.note_pointer(event);
         // A widget can replace children after the last frame admitted the
         // layout maps (while it drew, or answering the host between frames):
         // admit the composition it left before tooltips, dispatch or the
@@ -6222,11 +6223,22 @@ impl FrameHarness {
         self.send_with_host_navigation(event, host_navigation_allowed);
     }
 
+    /// Note where a pointer event puts the pointer, in the toolkit's own logical pixels: what a
+    /// surface opening now comes out of (the control the person pressed).
+    fn note_pointer(&self, event: &WindowEvent) {
+        let Some(at) = crate::motion::pointer_of(event) else {
+            return;
+        };
+        let scale = self.input_scale.max(f64::EPSILON);
+        crate::motion::note_pointer(Point::new(at.x / scale, at.y / scale));
+    }
+
     /// Deliver one event through the production dispatch path.
     /// panned and inert input that moved nothing.
     pub fn send(&mut self, event: &WindowEvent) {
         let _motions = crate::motion::owning(self.motions.0);
         crate::motion::note_input(event);
+        self.note_pointer(event);
         self.track_tooltip(event);
         crate::focus_visible::note(event);
         if self.pump_component_wakes_checked().is_err() {

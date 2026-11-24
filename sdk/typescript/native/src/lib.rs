@@ -71,6 +71,30 @@ impl Daemon {
         }
     }
 
+    /// Make the web call `args` names with the key of the vault item it names, in `workspace`
+    /// (`null`: the one this connection acts in): `{answer}` or `{refused}`. An app's held
+    /// connection has the vault add the key to the request; the secret never reaches the app.
+    #[napi]
+    pub async fn web_call(
+        &self,
+        workspace: Option<String>,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        let serde_json::Value::Object(arguments) = args else {
+            return serde_json::json!({
+                "refused": {"error": {
+                    "code": "invalid_request",
+                    "message": "a web call names its arguments as an object",
+                }},
+            });
+        };
+        let calls = Arc::clone(&self.calls);
+        match calls.web_call(workspace.as_deref(), arguments).await {
+            Ok(answer) => serde_json::json!({ "answer": answer }),
+            Err(refused) => serde_json::json!({ "refused": refused }),
+        }
+    }
+
     /// The secret of the vault item `item` in `workspace` (`null`: the one this connection acts
     /// in), released to this process ([`Calls::release`]): `{answer: {secret}}`, or `{refused}`.
     /// The secret goes to the caller alone.

@@ -986,12 +986,14 @@ fn a_control_declares_keys_that_all_press_it() {
 
 /// The keys the window's published surface names for its action `action`, as the palette lists it.
 fn palette_keys(window: &AppWindow, action: &str) -> Option<String> {
-    fn find(specs: &[tilo_actions::ResourceSpec], action: &str) -> Option<Option<String>> {
+    fn find<'a>(
+        specs: &'a [tilo_actions::ResourceSpec],
+        action: &str,
+    ) -> Option<&'a tilo_actions::ActionSpec> {
         specs.iter().find_map(|spec| {
             spec.actions
                 .iter()
                 .find(|offered| offered.id == action)
-                .map(|offered| offered.state.shortcut.clone())
                 .or_else(|| find(&spec.children, action))
         })
     }
@@ -999,7 +1001,11 @@ fn palette_keys(window: &AppWindow, action: &str) -> Option<String> {
         window,
         &ui::automerge::AutoCommit::new(),
     );
-    find(&shown, action).expect("the window publishes the action")
+    find(&shown, action)
+        .expect("the window publishes the action")
+        .state
+        .shortcut
+        .clone()
 }
 
 /// A command the person moved to other keys runs on those, through the control the app declared
@@ -3717,6 +3723,14 @@ fn a_floating_picture_is_drawn_where_the_shell_stands_it_and_follows_its_source(
         page.take_floating_surface_source_updates().is_empty(),
         "a picture that stands where it did is not told again"
     );
+    assert!(
+        page.floating_surface_moves_on_drag(id),
+        "the person drags the picture where they want it"
+    );
+    assert!(
+        !page.floating_surface_moves_on_drag("so.tilo.browser:call"),
+        "a card with controls of its own is not dragged by its body"
+    );
 
     // The shell returns the picture: nothing of it is left to draw or to move.
     page.on_floating_surface_host_message(&FloatingSurfaceHostMessage::Closed {
@@ -3724,4 +3738,82 @@ fn a_floating_picture_is_drawn_where_the_shell_stands_it_and_follows_its_source(
     });
     assert!(page.floating_surface_presentations().is_empty());
     assert!(page.take_floating_surface_source_updates().is_empty());
+}
+
+/// A card given on its own, as playback's live view gives one, over the window: its title, its
+/// cover carried in its address, and its meta lines.
+fn now_playing_card() -> UiNode {
+    // A 1×1 PNG, carried in its address: the cover is here on the card's first frame.
+    const COVER: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let mut card = UiNode::empty(&kind("MediaCard"), "now-playing");
+    card.props.insert(
+        "item".to_owned(),
+        Value::Ref(ResourceRef {
+            id: "playback".to_owned(),
+            ty: "playback.Playback".to_owned(),
+        }),
+    );
+    card.props
+        .insert("title".to_owned(), Value::text("Low Light"));
+    card.props.insert(
+        "picture".to_owned(),
+        Value::Picture(wire::Picture {
+            src: COVER.to_owned(),
+        }),
+    );
+    card.props.insert(
+        "meta".to_owned(),
+        Value::List(vec![Value::text("Hanna Berg"), Value::text("This device")]),
+    );
+    card
+}
+
+/// The page the card is drawn on, as its view's root: a stack that holds it.
+fn page_of(children: Vec<UiNode>) -> Vec<ToUi> {
+    let mut page = UiNode::empty("stack", "page");
+    page.children = children;
+    vec![ToUi::Open {
+        level: Level::Root,
+        target: doc(),
+        tree: page,
+        front: None,
+
+        capture_protected: false,
+    }]
+}
+
+/// The card's accessibility node, with the bounds it is drawn at.
+fn card_bounds(harness: &ui::headless::FrameHarness) -> (Option<String>, ui::kurbo::Rect) {
+    let named = node_named(harness, "Low Light");
+    let node = harness.a11y_node(named).expect("the card's node");
+    let bounds = node.bounds().expect("the card is drawn");
+    (
+        node.value().map(str::to_owned),
+        ui::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+    )
+}
+
+/// A card a view gives on its own, not as a grid's item, is a card all the same: its title names
+/// it, its meta lines are what it says, and its cover stands a grid column's width with the text
+/// under it. (A lone card used to build nothing at all.)
+#[test]
+fn a_media_card_given_on_its_own_is_drawn_as_a_card() {
+    let (_app, mut harness) = drawn(&page_of(vec![now_playing_card()]));
+    let broken = drawn_window(&mut harness).broken_components();
+    assert!(broken.is_empty(), "the card builds: {broken:?}");
+    let (value, bounds) = card_bounds(&harness);
+    assert_eq!(
+        value.as_deref(),
+        Some("Hanna Berg, This device"),
+        "the card says its meta lines"
+    );
+    let column = ui::widget::MediaSize::Regular.extent(&ui::Theme::dark());
+    assert!(
+        (bounds.width() - column).abs() < 1.0,
+        "a card on its own is a grid column wide, not the page's: {bounds:?}"
+    );
+    assert!(
+        bounds.height() > bounds.width(),
+        "its cover stands square with its title and meta under it: {bounds:?}"
+    );
 }

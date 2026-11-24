@@ -8,7 +8,6 @@
 )]
 
 #[cfg(target_os = "linux")]
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -911,7 +910,7 @@ impl Linked {
     ) -> Result<Self, Refusal> {
         let host = workspaces.host_device();
         let host_cert = workspaces.device_cert().clone();
-        let mut state = match seed {
+        let state = match seed {
             Some(seed) => seed,
             None => match Box::pin(workspaces.state(&workspace.to_string())).await {
                 Some(state) => state,
@@ -922,27 +921,20 @@ impl Linked {
                 }
             },
         };
-        // A device holds its own certificate, whether or not the workspace's roster names it
-        // yet: a link dialled from that copy proves the device by it, and the host decides its
+        // A device holds its own certificate, whether or not the workspace's roster names it: a
+        // link dialled from that copy proves the device by it, and the host decides its
         // admission.
-        if !state
+        let listed = state
             .certificates()
             .iter()
-            .any(|certificate| certificate.device_public_key == device.cert.device_public_key)
-        {
-            // A copy that will not take it decides nothing here: the dial below is refused by
-            // the host all the same.
-            let _ = state.receive_from(
-                tilo_peer_state::TransportOrigin::ServerDelta(host),
-                neighbour_wire::NeighbourMsg::IdentityHello {
-                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                    cert: Box::new(device.cert.clone()),
-                    revocations: Vec::new(),
-                },
-                std::time::SystemTime::now(),
-            );
-        }
+            .any(|certificate| certificate.device_public_key == device.cert.device_public_key);
         let sync = DirectSync::new(state, device.sk.clone());
+        let sync = if listed {
+            sync
+        } else {
+            sync.placed(device.cert.clone())
+                .map_err(Refusal::Other)?
+        };
         let link = dialer.link(Purpose::Records).await.map_err(refused)?;
         link.prove_member(&device.cert, &device.sk, &host_cert)
             .await
@@ -1206,7 +1198,8 @@ pub async fn own_service(
     tilo_server::service::WorkspaceService,
     tilo_workspace_service::own_device::KeyService,
 ) {
-    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> = std::sync::Arc::new(laptop.sk.clone());
+    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> =
+        std::sync::Arc::new(laptop.sk.clone());
     let keys = tilo_workspace_service::own_device::KeyService::open(
         "laptop-groups",
         &state.join("groups"),
@@ -1228,6 +1221,5 @@ pub async fn own_service(
     )
     .await
     .expect("the laptop's own service opens");
-    keys.attach(service.workspaces());
     (service, keys)
 }

@@ -348,13 +348,19 @@ impl NavRow {
         };
         let label = if self.renaming(paint) { "" } else { label };
         let pointer = paint.pointer_on(&self.row.key);
+        // The pointer's tint comes in and goes out over the theme's control motion, not in one
+        // frame: the row's own share of it is drawn beside its selection.
+        let hover = paint
+            .faces
+            .hover(&self.row.key, pointer.is_some(), theme.motion());
         let mut face = paint
             .item_face(spec, self.rect, label)
             .state(SelectionState::new(
                 self.selection.selected,
                 pointer.is_some(),
                 false,
-            ));
+            ))
+            .hover_amount(hover);
         face.check_pose = spec.checked.map(|checked| {
             paint.faces.check(
                 &self.row.key,

@@ -15,6 +15,15 @@ view accounts_pane() {
     state outgoing: Text = ""
     state password: Text = ""
     state identities: Text = ""
+    state cloud_kind: Text = ""
+    state cloud_name: Text = ""
+    state cloud_server: Text = ""
+    state cloud_username: Text = ""
+    state cloud_password: Text = ""
+    state sign_in: Text = ""
+    state sign_in_open: Text = ""
+    state sign_in_prompt: Text = ""
+    state sign_in_code: Text = ""
     let a = accounts.accounts
     ui.Section("Connected accounts") {
         if a.accounts.is_empty() {
@@ -29,12 +38,14 @@ view accounts_pane() {
                 account.name,
                 secondary: if account.address == account.name or account.address == "" {
                     if account.kind == .mail {
-                        "Mail"
+                        if account.services.calendar { "Mail and Calendar" } else { "Mail" }
                     } else if account.kind == .calendar {
                         "Calendar"
                     } else if account.kind == .cloud { "Cloud storage" } else { "Account" }
                 } else if account.kind == .mail {
-                    "{account.address} · Mail"
+                    if account.services.calendar {
+                        "{account.address} · Mail and Calendar"
+                    } else { "{account.address} · Mail" }
                 } else if account.kind == .calendar {
                     "{account.address} · Calendar"
                 } else if account.kind == .cloud {
@@ -111,6 +122,34 @@ view accounts_pane() {
                                     on choose: accounts.check(
                                         accounts.accounts,
                                         account: account.id,
+                                    )
+                                }
+                                if account.provider == "google" or account.provider == "icloud" {
+                                    ui.MenuItem(
+                                        "Use it for Calendar",
+                                        checked: account.services.calendar,
+                                    ) {
+                                        on choose: accounts.set_services(
+                                            accounts.accounts,
+                                            account: account.id,
+                                            mail: account.services.mail,
+                                            calendar: not account.services.calendar,
+                                            files: account.services.files,
+                                        )
+                                    }
+                                }
+                            }
+                            if account.kind == .cloud {
+                                ui.MenuItem(
+                                    "Mount its files in Files",
+                                    checked: account.services.files,
+                                ) {
+                                    on choose: accounts.set_services(
+                                        accounts.accounts,
+                                        account: account.id,
+                                        mail: account.services.mail,
+                                        calendar: account.services.calendar,
+                                        files: not account.services.files,
                                     )
                                 }
                             }
@@ -284,6 +323,193 @@ view accounts_pane() {
                         .then(set(password, ""))
                         .then(set(identities, ""))
                         .then(set(form, true))
+                }
+                for storage in [
+                    "nextcloud",
+                    "google-drive",
+                    "onedrive",
+                    "dropbox",
+                    "icloud-drive",
+                    "webdav",
+                ] {
+                    ui.MenuItem(
+                        if storage == "nextcloud" {
+                            "Nextcloud"
+                        } else if storage == "google-drive" {
+                            "Google Drive"
+                        } else if storage == "onedrive" {
+                            "OneDrive"
+                        } else if storage == "dropbox" {
+                            "Dropbox"
+                        } else if storage == "icloud-drive" { "iCloud Drive" } else { "WebDAV" },
+                    ) {
+                        on choose: set(cloud_kind, storage)
+                            .then(set(cloud_name, ""))
+                            .then(set(cloud_server, ""))
+                            .then(set(cloud_username, ""))
+                            .then(set(cloud_password, ""))
+                            .then(set(sign_in, ""))
+                            .then(set(sign_in_open, ""))
+                            .then(set(sign_in_prompt, ""))
+                            .then(set(sign_in_code, ""))
+                    }
+                }
+            }
+        }
+    }
+    if cloud_kind != "" {
+        ui.Section(
+            if cloud_kind == "nextcloud" {
+                "Connect a Nextcloud server"
+            } else if cloud_kind == "google-drive" {
+                "Connect Google Drive"
+            } else if cloud_kind == "onedrive" {
+                "Connect OneDrive"
+            } else if cloud_kind == "dropbox" {
+                "Connect Dropbox"
+            } else if cloud_kind == "icloud-drive" {
+                "Connect iCloud Drive"
+            } else { "Connect a WebDAV server" },
+        ) {
+            ui.Text(
+                if cloud_kind == "webdav" {
+                    "The server's address, its user name and its password. Its files mount in Files."
+                } else if cloud_kind == "icloud-drive" {
+                    "Your Apple ID and its password. Apple sends a verification code to your devices; iCloud Drive's files mount in Files."
+                } else if cloud_kind == "nextcloud" {
+                    "The server's address. Approve this workspace in the page Nextcloud opens; its files and calendars are kept."
+                } else {
+                    "Approve this workspace in the page the provider opens. Its files mount in Files."
+                },
+                role: .caption,
+                secondary: true,
+            )
+            row(gap: .related, align: .center, wrap: true) {
+                if cloud_kind == "nextcloud" or cloud_kind == "webdav" {
+                    ui.TextInput(
+                        bind: cloud_server,
+                        placeholder: "The server's address, such as https://cloud.example.org",
+                        fill,
+                    )
+                }
+                if cloud_kind == "icloud-drive" or cloud_kind == "webdav" {
+                    ui.TextInput(
+                        bind: cloud_username,
+                        placeholder: if cloud_kind == "icloud-drive" {
+                            "Your Apple ID"
+                        } else { "The server's user name" },
+                        fill,
+                    )
+                    ui.TextInput(
+                        bind: cloud_password,
+                        placeholder: "Its password or app password",
+                        secret: true,
+                        fill,
+                    )
+                }
+                ui.TextInput(bind: cloud_name, placeholder: "The name shown for it", fill)
+            }
+            if sign_in_open == "" and sign_in_prompt == "" {
+                row(gap: .related, align: .center, wrap: true) {
+                    if cloud_kind == "nextcloud" {
+                        ui.Button("Continue", role: .primary) {
+                            on press: {
+                                let step = accounts.begin_sign_in(
+                                    accounts.accounts,
+                                    provider: "nextcloud",
+                                    server: cloud_server,
+                                    name: cloud_name,
+                                    mail: false,
+                                    calendar: true,
+                                    files: true,
+                                )
+                                set(sign_in, step.id)
+                                    .then(
+                                        set(sign_in_open, step.open),
+                                    )
+                                    .then(
+                                        set(sign_in_prompt, step.code),
+                                    )
+                            }
+                        }
+                    } else {
+                        ui.Button("Continue", role: .primary) {
+                            on press: {
+                                let step = accounts.begin_cloud_sign_in(
+                                    accounts.accounts,
+                                    kind: cloud_kind,
+                                    name: cloud_name,
+                                    server: cloud_server,
+                                    username: cloud_username,
+                                    password: cloud_password,
+                                )
+                                set(sign_in, step.id)
+                                    .then(
+                                        set(sign_in_open, step.open),
+                                    )
+                                    .then(
+                                        set(sign_in_prompt, step.code),
+                                    )
+                                    .then(
+                                        set(cloud_password, ""),
+                                    )
+                                    .then(
+                                        set(
+                                            cloud_kind,
+                                            if step.id == "" { "" } else { cloud_kind },
+                                        ),
+                                    )
+                            }
+                        }
+                    }
+                    ui.Button("Cancel") {
+                        on press: set(cloud_kind, "")
+                            .then(set(sign_in, ""))
+                            .then(set(sign_in_open, ""))
+                            .then(set(sign_in_prompt, ""))
+                            .then(set(sign_in_code, ""))
+                    }
+                }
+            }
+            if sign_in_open != "" {
+                ui.Link(sign_in_open, label: "Open the sign-in page")
+            }
+            if sign_in != "" {
+                ui.Text(
+                    if sign_in_prompt == "" {
+                        "Waiting for you to approve it in your browser. Nothing more is kept until you do."
+                    } else { sign_in_prompt },
+                    role: .caption,
+                    secondary: true,
+                )
+            }
+            if sign_in_prompt != "" {
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.TextInput(bind: sign_in_code, placeholder: "The code you were sent", fill)
+                    ui.Button("Finish signing in", role: .primary) {
+                        on press: accounts
+                            .submit_sign_in_code(
+                                accounts.accounts,
+                                signIn: sign_in,
+                                code: sign_in_code,
+                            )
+                            .then(set(cloud_kind, ""))
+                            .then(set(sign_in, ""))
+                            .then(set(sign_in_open, ""))
+                            .then(set(sign_in_prompt, ""))
+                            .then(set(sign_in_code, ""))
+                            .then(set(cloud_password, ""))
+                    }
+                }
+            }
+            if sign_in != "" {
+                ui.Button("Cancel the sign-in") {
+                    on press: accounts
+                        .cancel_sign_in(accounts.accounts, signIn: sign_in)
+                        .then(set(sign_in, ""))
+                        .then(set(sign_in_open, ""))
+                        .then(set(sign_in_prompt, ""))
+                        .then(set(sign_in_code, ""))
                 }
             }
         }

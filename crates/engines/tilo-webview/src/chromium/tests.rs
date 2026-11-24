@@ -593,14 +593,14 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase credential_protocol_encodes_actions_without_secret_fields;
+    phase credential_protocol_carries_a_password_only_to_fill_and_from_a_take;
     {
-        use crate::{CredentialAction, CredentialRequest};
+        use crate::{CredentialAction, CredentialRequest, ReleasedText};
         let request = CredentialRequest {
             request_id: 7,
             origin: "https://example.test".into(),
             document: "2".into(),
-            action: CredentialAction::Save {
+            action: CredentialAction::Take {
                 capture: "3".into(),
             },
         };
@@ -609,17 +609,39 @@ tilo_test_env::scenario! {
         assert_eq!(
             encode_command(command).unwrap(),
             json!({"op":"credential_action","request_id":7,
-        "origin":"https://example.test","document":"2","action":"save","capture":"3"})
+        "origin":"https://example.test","document":"2","action":"take","capture":"3"})
         );
         let mut stale = request.clone();
         stale.document = "0".into();
         assert!(!command_within_limits(&WebViewCommand::Credentials(stale)));
-        let mut bad = request;
-        bad.action = CredentialAction::Fill {
-            form: "01".into(),
-            account: "account".into(),
-        };
-        assert!(!command_within_limits(&WebViewCommand::Credentials(bad)));
+        // A fill's password is written once, printed by nothing, and wiped once written.
+        let password = ReleasedText::new("synthetic-vault-password".into());
+        let fill = WebViewCommand::Credentials(CredentialRequest {
+            action: CredentialAction::Fill {
+                form: "4".into(),
+                username: "synthetic-user".into(),
+                password: password.clone(),
+            },
+            ..request.clone()
+        });
+        assert!(command_within_limits(&fill));
+        assert!(!format!("{fill:?}").contains("synthetic-vault-password"));
+        let mut written = encode_command(fill.clone()).unwrap();
+        assert_eq!(written["password"], "synthetic-vault-password");
+        assert_eq!(written["username"], "synthetic-user");
+        assert!(password.take().is_none(), "the write took it");
+        assert!(!command_within_limits(&fill), "and it is written no second time");
+        wipe_released(&mut written);
+        assert_eq!(written["password"], "");
+        let empty = WebViewCommand::Credentials(CredentialRequest {
+            action: CredentialAction::Fill {
+                form: "01".into(),
+                username: "synthetic-user".into(),
+                password: ReleasedText::new("p".into()),
+            },
+            ..request
+        });
+        assert!(!command_within_limits(&empty));
     }
 
     phase credential_protocol_rejects_secret_or_unbounded_reply_fields;
@@ -629,25 +651,37 @@ tilo_test_env::scenario! {
         "capture":"3","username":"synthetic-user"});
         assert!(validate_event(&base).is_ok());
         assert!(
-            matches!(decode_event(&base),Some(WebViewEvent::CredentialResult(reply)) if reply.capture.as_deref()==Some("3"))
+            matches!(decode_event(&base),Some(WebViewEvent::CredentialResult(reply)) if reply.capture.as_deref()==Some("3") && reply.password.is_none())
         );
         for (key, value) in [
             ("password", json!("must-not-cross")),
             ("document", json!("9007199254740992")),
             ("username", json!("x".repeat(1025))),
             ("success", json!("yes")),
+            ("accounts", json!([{"id":"one","username":"user"}])),
         ] {
             let mut bad = base.clone();
             bad[key] = value;
             assert!(validate_event(&bad).is_err(), "{key}");
         }
-        let mut list = json!({"event":"credential_result","request_id":1,"action":"list","origin":"https://example.test",
-        "document":"2","success":true,"message":"Done","accounts":[{"id":"one","username":"user"}]});
-        assert!(validate_event(&list).is_ok());
-        list["accounts"][0]["password"] = json!("must-not-cross");
-        assert!(validate_event(&list).is_err());
-        list["accounts"] = json!(vec![json!({"id":"one","username":"user"}); 65]);
-        assert!(validate_event(&list).is_err());
+        // A take hands over the password it read, held once and printed by nothing.
+        let take = json!({"event":"credential_result","request_id":1,"action":"take","origin":"https://example.test",
+        "document":"2","success":true,"message":"Ready","username":"synthetic-user","password":"synthetic-typed"});
+        assert!(validate_event(&take).is_ok());
+        let Some(WebViewEvent::CredentialResult(reply)) = decode_event(&take) else {
+            panic!("a take decodes");
+        };
+        assert!(!format!("{reply:?}").contains("synthetic-typed"));
+        assert_eq!(
+            reply.password.as_ref().and_then(|p| p.take()).as_deref().map(String::as_str),
+            Some("synthetic-typed")
+        );
+        let mut failed = take.clone();
+        failed["success"] = json!(false);
+        assert!(validate_event(&failed).is_err(), "a failed take carries no password");
+        let mut long = take;
+        long["password"] = json!("x".repeat(4097));
+        assert!(validate_event(&long).is_err());
     }
 
     phase page_requests_are_encoded_bounded_and_always_answered;

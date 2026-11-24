@@ -245,6 +245,37 @@
               "type": "int"
             }
           ]
+        },
+        {
+          "id": "test-output",
+          "label": "Play a test tone",
+          "description": "Play a short, quiet tone through an output and nowhere else, so a person can tell which device it is: both ears, or one of them. It stops by itself and changes nothing else about the sound.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "node",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              },
+              "type": "int"
+            },
+            {
+              "name": "channel",
+              "required": false,
+              "schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
         }
       ],
       "fields": [
@@ -338,6 +369,16 @@
           "type": {
             "list": {
               "named": "Card"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "themes",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "SoundTheme"
             }
           },
           "readonly": true
@@ -457,6 +498,20 @@
             {
               "name": "available",
               "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "SoundTheme",
+          "doc": "One sound theme installed here: what system sounds are looked up in.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "name",
+              "type": "text"
             }
           ]
         },
@@ -5915,8 +5970,22 @@
           ]
         },
         {
+          "name": "WindowsOffer",
+          "doc": "An action the reading offers now: installing the layer, or removing it.",
+          "cases": [
+            {
+              "name": "install",
+              "label": "Install"
+            },
+            {
+              "name": "remove",
+              "label": "Remove"
+            }
+          ]
+        },
+        {
           "name": "WindowsPrograms",
-          "doc": "What this computer's Windows compatibility reads as now.",
+          "doc": "What this computer's Windows layer reads as now.",
           "fields": [
             {
               "name": "available",
@@ -5971,20 +6040,6 @@
                   "named": "WindowsOffer"
                 }
               }
-            }
-          ]
-        },
-        {
-          "name": "WindowsOffer",
-          "doc": "An action the reading offers now: installing the layer, or removing it.",
-          "cases": [
-            {
-              "name": "install",
-              "label": "Install"
-            },
-            {
-              "name": "remove",
-              "label": "Remove"
             }
           ]
         },
@@ -9517,6 +9572,138 @@
             {
               "name": "tablet_pad",
               "label": "Tablet pad"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "keyboard",
+      "label": "Keyboard",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "layouts",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "KeyboardLayout"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "layouts_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        },
+        {
+          "path": "drawing",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "KeyboardDrawing"
+            }
+          },
+          "readonly": true
+        },
+        {
+          "path": "drawing_error",
+          "stored": "value",
+          "type": {
+            "option": "text"
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "KeyboardDrawing",
+          "doc": "A keyboard's keys, drawn for one layout and physical model.",
+          "fields": [
+            {
+              "name": "layout",
+              "type": "text"
+            },
+            {
+              "name": "model",
+              "type": "text"
+            },
+            {
+              "name": "width",
+              "type": "float"
+            },
+            {
+              "name": "height",
+              "type": "float"
+            },
+            {
+              "name": "level_count",
+              "type": "int"
+            },
+            {
+              "name": "keys",
+              "type": {
+                "list": {
+                  "named": "KeyboardKey"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "KeyboardKey",
+          "doc": "One key of the drawing: where its body is and what it types.",
+          "fields": [
+            {
+              "name": "name",
+              "type": "text"
+            },
+            {
+              "name": "outline",
+              "type": {
+                "list": {
+                  "named": "KeyboardPoint"
+                }
+              }
+            },
+            {
+              "name": "levels",
+              "type": {
+                "list": "text"
+              }
+            }
+          ]
+        },
+        {
+          "name": "KeyboardLayout",
+          "doc": "One keyboard layout this device installs, by the id it is typed by.",
+          "fields": [
+            {
+              "name": "id",
+              "type": "text"
+            },
+            {
+              "name": "label",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "KeyboardPoint",
+          "doc": "One corner of a key's physical outline.",
+          "fields": [
+            {
+              "name": "x",
+              "type": "float"
+            },
+            {
+              "name": "y",
+              "type": "float"
             }
           ]
         }
@@ -14754,6 +14941,12 @@
           "readonly": true
         },
         {
+          "path": "waved_to",
+          "stored": "value",
+          "type": "text",
+          "readonly": true
+        },
+        {
           "path": "arrived",
           "stored": "value",
           "type": {
@@ -14765,6 +14958,12 @@
           "path": "arrived_seen",
           "stored": "value",
           "type": "text",
+          "readonly": true
+        },
+        {
+          "path": "may_invite",
+          "stored": "value",
+          "type": "bool",
           "readonly": true
         }
       ],
@@ -14790,6 +14989,10 @@
               "type": "bool"
             },
             {
+              "name": "bot",
+              "type": "bool"
+            },
+            {
               "name": "me",
               "type": "bool"
             },
@@ -14811,6 +15014,14 @@
             },
             {
               "name": "call",
+              "type": "text"
+            },
+            {
+              "name": "follows",
+              "type": "text"
+            },
+            {
+              "name": "joined",
               "type": "text"
             },
             {

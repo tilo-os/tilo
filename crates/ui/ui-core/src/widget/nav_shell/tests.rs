@@ -9,6 +9,7 @@ mod adaptive;
 mod band;
 mod capabilities;
 mod chosen;
+mod content_swap;
 mod counts;
 mod hosted;
 mod inspector_sheet;

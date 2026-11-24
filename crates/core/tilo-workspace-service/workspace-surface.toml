@@ -44,6 +44,24 @@ params = [
   { name = "person", type = "actor", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "grant-read"
+kind = "outside"
+params = [
+  { name = "resource", type = { resource = "" }, required = true, schema = { type = "string" } },
+  { name = "member", type = "actor", required = false, schema = { type = "object" } },
+  { name = "role", required = false, schema = { type = "string", enum = ["viewer", "commenter", "editor", "moderator", "owner"] } },
+]
+
+[[resources.verbs]]
+id = "revoke-read"
+kind = "outside"
+params = [
+  { name = "resource", type = { resource = "" }, required = true, schema = { type = "string" } },
+  { name = "member", type = "actor", required = false, schema = { type = "object" } },
+  { name = "role", required = false, schema = { type = "string", enum = ["viewer", "commenter", "editor", "moderator", "owner"] } },
+]
+
 [[resources]]
 kind = "workspace.member"
 label = "Member"

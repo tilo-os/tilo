@@ -391,7 +391,7 @@ impl Invocations {
         let run = id.0.to_string();
         let (complete, answer) = pending();
         let records = Arc::clone(records);
-        take_back_run(&recorded.route, &at, None, &run).then(move |done| {
+        take_back_run(&recorded.route, &at, None, &run, None).then(move |done| {
             let result = match done {
                 None => Err(ActionCallError::Unavailable {
                     reason: "the record did not answer".into(),
@@ -545,6 +545,8 @@ impl Invocations {
 /// Take back what the run `run` changed, through the record's own history: `at` is the provider
 /// whose record holds the changes, and `root` the address prefix of the history action there
 /// when the provider keeps many records (a session's own services), `None` when it keeps one.
+/// `step` names the one change of that record to take back, as the record's own history names
+/// it; absent to take back the run's whole share of the record.
 ///
 /// The store's change history knows which changes a run made, so nothing is rebuilt here: the
 /// record publishes the history verb `undo` with an `invocation` argument, and this runs it as
@@ -554,6 +556,7 @@ pub fn take_back_run(
     at: &str,
     root: Option<&str>,
     run: &str,
+    step: Option<&str>,
 ) -> Pending<Result<(), ActionCallError>> {
     let (provider, runs_as) = route.clone();
     let query = CatalogueQuery {
@@ -563,6 +566,7 @@ pub fn take_back_run(
         ..CatalogueQuery::default()
     };
     let run = run.to_owned();
+    let step = step.map(str::to_owned);
     let root = root.map(str::to_owned);
     let (complete, answer) = pending();
     provider.query(&runs_as, query).then(move |page| {
@@ -586,6 +590,9 @@ pub fn take_back_run(
         };
         let mut arguments = serde_json::Map::new();
         arguments.insert("invocation".to_owned(), serde_json::Value::String(run));
+        if let Some(step) = step {
+            arguments.insert("step".to_owned(), serde_json::Value::String(step));
+        }
         let request = InvokeRequest {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {

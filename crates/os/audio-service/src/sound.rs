@@ -83,6 +83,10 @@ pub struct Sound {
     pub uses: Vec<Use>,
     /// The sound cards, and the profiles each offers.
     pub hardware: Vec<Card>,
+    /// The sound themes installed here, which system sounds are looked up
+    /// in. The person chooses one in Settings by the name it is shown by; a
+    /// theme a machine does not have is not offered.
+    pub themes: Vec<SoundTheme>,
     /// A stereo output here can play as one mix: the sound service mixes it
     /// down. Settings shows its mono control where this is true.
     pub mono_output: bool,
@@ -202,6 +206,18 @@ pub struct Profile {
     pub available: bool,
 }
 
+/// One sound theme installed here: what system sounds are looked up in.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct SoundTheme {
+    /// The theme's directory name, which a preference names it by.
+    pub id: String,
+    /// Its name as its own index gives it, for a person to read.
+    pub name: String,
+}
+
 /// The `sound` resource, as a declared type: the outputs, the inputs and the
 /// card's controls.
 #[derive(tilo_resource::Row)]
@@ -227,6 +243,42 @@ pub struct OutputRow;
     effects = SoundAction
 )]
 pub struct InputRow;
+
+/// Which ear a test tone plays in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestSide {
+    Both,
+    Left,
+    Right,
+}
+
+impl TestSide {
+    /// The side the action's `channel` argument names: nothing (or `both`)
+    /// plays both, `left` and `right` one of them.
+    ///
+    /// # Errors
+    /// The argument names no side.
+    pub fn of(channel: Option<&str>) -> Result<Self, String> {
+        match channel.map(str::trim) {
+            None | Some("" | "both") => Ok(Self::Both),
+            Some("left") => Ok(Self::Left),
+            Some("right") => Ok(Self::Right),
+            Some(other) => Err(format!(
+                "a test tone plays left, right or both, not {other}"
+            )),
+        }
+    }
+
+    /// The ear as the audio runtime names it: `None` both.
+    #[must_use]
+    pub const fn left(self) -> Option<bool> {
+        match self {
+            Self::Both => None,
+            Self::Left => Some(true),
+            Self::Right => Some(false),
+        }
+    }
+}
 
 /// The `sound` resource's actions; each changes this device only.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -385,6 +437,22 @@ pub enum SoundAction {
         #[param("The profile's index")]
         profile: u32,
     },
+    /// Play a short, quiet tone through an output and nowhere else, so a
+    /// person can tell which device it is: both ears, or one of them. It
+    /// stops by itself and changes nothing else about the sound.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        icon = "volume-2",
+        on = OutputRow,
+        keywords = "test sound, identify, which speaker, left, right"
+    )]
+    TestOutput {
+        #[param("The output's audio node")]
+        node: u32,
+        #[param("The ear it plays in: left or right; none plays both")]
+        channel: Option<String>,
+    },
 }
 
 /// The sound resource as a view of another language reads and changes it: its reading
@@ -445,10 +513,15 @@ pub fn resource(sound: &Sound) -> ResourceSpec {
         );
     }
     let outputs = sound.outputs.iter().map(|device| {
-        let bindings = tilo_resource::RowBindings::new().bind(
-            SoundAction::ROUTE_OUTPUT,
-            [("node", u64::from(device.node).into())],
-        );
+        let bindings = tilo_resource::RowBindings::new()
+            .bind(
+                SoundAction::ROUTE_OUTPUT,
+                [("node", u64::from(device.node).into())],
+            )
+            .bind(
+                SoundAction::TEST_OUTPUT,
+                [("node", u64::from(device.node).into())],
+            );
         tilo_resource::LiveRow::typed_with::<OutputRow>(
             output_id(device.node),
             device.label.clone(),

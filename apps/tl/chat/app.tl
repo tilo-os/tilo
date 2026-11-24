@@ -2322,6 +2322,9 @@ view channel(c: TextChannel) {
                             on choose: open(c, view: pins)
                         }
                     }
+                    ui.MenuItem("Members", icon: .users) {
+                        on choose: open(c, view: channel_members)
+                    }
                     if moderates(invoker) {
                         ui.MenuSeparator
                         ui.MenuItem("Move up", icon: .arrow_up) {
@@ -2405,6 +2408,58 @@ view pins(c: TextChannel) {
                             said(m)
                         }
                         on activate: open(c)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Who is in a channel: whoever the workspace lets read it, never a list Chat keeps. A moderator
+/// lets someone in or keeps them out here, and that is the workspace's own grant on the channel,
+/// admitted by its grants on granting and revoking: the same change whatever app makes it, and
+/// every device decides who reads the channel by it.
+view channel_members(c: TextChannel) {
+    let readers = members(c)
+    let others = workspace.members.people.filter(p -> not readers.contains(p))
+    std.page(c) {
+        content: {
+            ui.Section("Members") {
+                for p in readers {
+                    row(gap: .related, align: .center) {
+                        avatar(p)
+                        stack(fill: 1.0, gap: .none) {
+                            text(p.name(), role: .label)
+                            if p.kind() == .agent {
+                                text("Agent", role: .caption, secondary: true)
+                            }
+                        }
+                        if moderates(invoker) and p != invoker and p.kind() == .person {
+                            ui.Button("Remove", icon: .user_minus, size: .small) {
+                                on press: workspace.revoke_read(
+                                    workspace.members,
+                                    resource: c,
+                                    member: p,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if moderates(invoker) and not others.is_empty() {
+                ui.Section("Not in the channel") {
+                    for p in others.filter(p -> p.kind() == .person) {
+                        row(gap: .related, align: .center) {
+                            avatar(p)
+                            text(p.name(), role: .label, fill: 1.0)
+                            ui.Button("Add", icon: .user_plus, size: .small) {
+                                on press: workspace.grant_read(
+                                    workspace.members,
+                                    resource: c,
+                                    member: p,
+                                )
+                            }
+                        }
                     }
                 }
             }

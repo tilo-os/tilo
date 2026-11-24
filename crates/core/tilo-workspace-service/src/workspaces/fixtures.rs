@@ -513,7 +513,6 @@ pub fn declare_built_in_app(host: &TestHost, app: &str) {
     declare_app(host, app, &surface);
 }
 
-
 /// The same host, keeping `grants` pre-admissions per workspace
 /// ([`crate::service::ServiceConfig::max_workspace_grants`]).
 ///
@@ -629,7 +628,6 @@ pub async fn test_host_keyed(
     )
     .expect("the device's key service opens");
     let host = host_on(state_root, key, cert, keys.groups(), None, Vec::new()).await;
-    keys.attach(host.workspaces());
     (host, keys)
 }
 

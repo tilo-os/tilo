@@ -1013,6 +1013,13 @@ pub fn call_target() -> RemoteActionTarget {
     target(WEB_CALL)
 }
 
+/// Whether `target` is a [`WEB_CALL`] at the vault's own resource: the call an app's held
+/// connection makes, never an asked record kept about one.
+#[must_use]
+pub fn is_web_call(target: &RemoteActionTarget) -> bool {
+    *target == call_target()
+}
+
 /// The actions that send what an item keeps out with a request of the
 /// agent's own making, as a catalogue offers them to an agent acting for
 /// the person: a web call with a key. They stand apart from [`use_rows`]
@@ -1170,6 +1177,144 @@ pub struct Found {
 #[must_use]
 pub fn is_find(target: &RemoteActionTarget) -> bool {
     target.provider == PROVIDER && target.address.action == FIND
+}
+
+/// The logins the vault keeps for one site ([`PageLoginsAt`]), as [`PageLogins`]: what is safe to
+/// say of each, the name it signs in with included, never its secret.
+///
+/// This and the other page login actions ([`KEEP_PAGE_LOGIN`], [`FORGET_PAGE_LOGIN`] and
+/// [`PAGE_FILL`]) are answered only to a window of an app's own that shows a page, on that
+/// window's own connection, which the device's daemon knows by the process it started: the site
+/// is the one the window's engine says its page is at, and a secret travels between that window
+/// and the vault alone. Every other caller is refused.
+pub const PAGE_LOGINS: &str = "page-logins";
+/// Keep the login a page sent ([`KeepPageLogin`]) as the app's own, for signing in at that site,
+/// answering what is safe to say of it as a [`PageLogin`].
+pub const KEEP_PAGE_LOGIN: &str = "keep-page-login";
+/// Forget a login ([`ForgetPageLogin`]) the app kept, or one it may fill, answering the
+/// [`PageLogins`] that remain for the site.
+pub const FORGET_PAGE_LOGIN: &str = "forget-page-login";
+/// Hand one login's name and secret to the window whose page is at a site the login belongs to,
+/// for its engine to fill the page's form ([`PageFillAt`], answered [`PageFilled`]). Addressed at
+/// the item (`vault.item:<id>#page-fill`, [`page_fill_target`]), so the grant its person gives on
+/// it is a grant on that item alone. A login the app kept itself needs no grant; any other is
+/// asked of its person once, and the window asks again once they allowed it.
+pub const PAGE_FILL: &str = "page-fill";
+
+/// What the app kept a page's login for, as the item names it ([`KEEP_PAGE_LOGIN`]).
+pub const SIGN_IN: &str = "sign-in";
+
+/// Where [`PAGE_FILL`] of `item` is addressed: the item itself.
+#[must_use]
+pub fn page_fill_target(item: &ItemRef) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(item.to_string(), PAGE_FILL),
+    }
+}
+
+/// Whether `target` is one of the page login actions, which only a window of an app's own is
+/// answered.
+#[must_use]
+pub fn is_page_login(target: &RemoteActionTarget) -> bool {
+    target.provider == PROVIDER
+        && match target.address.action.as_str() {
+            PAGE_LOGINS | KEEP_PAGE_LOGIN | FORGET_PAGE_LOGIN => {
+                target.address.resource == RESOURCE
+            }
+            PAGE_FILL => true,
+            _ => false,
+        }
+}
+
+/// The item a [`PAGE_FILL`] at `target` is addressed at; `None` for any other call, or one
+/// addressed at something that is no item.
+#[must_use]
+pub fn page_filled_item(target: &RemoteActionTarget) -> Option<ItemRef> {
+    (target.provider == PROVIDER && target.address.action == PAGE_FILL)
+        .then(|| ItemRef::parse(&target.address.resource))
+        .flatten()
+}
+
+/// What [`PAGE_LOGINS`] names: the site the page is at, as its window's engine says it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PageLoginsAt {
+    pub site: String,
+}
+
+/// What is safe to say of one login a page is offered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PageLogin {
+    /// The item's reference, which filling, replacing or forgetting it names.
+    pub reference: ItemRef,
+    /// What it is called.
+    pub title: String,
+    /// The name it signs in with.
+    pub username: String,
+    /// The sites it belongs to.
+    pub belongs_to: Vec<String>,
+    /// Whether the asking app kept it itself, so filling it asks nobody.
+    pub own: bool,
+}
+
+/// The logins the vault keeps for one site, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PageLogins {
+    pub logins: Vec<PageLogin>,
+}
+
+/// What [`KEEP_PAGE_LOGIN`] names: the site the page is at, the name and secret its form sent,
+/// and the login it replaces, if the person chose one. The secret travels here and nowhere back.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeepPageLogin {
+    pub site: String,
+    pub username: String,
+    pub secret: String,
+    pub replacing: Option<ItemRef>,
+}
+
+impl std::fmt::Debug for KeepPageLogin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KeepPageLogin")
+            .field("site", &self.site)
+            .field("replacing", &self.replacing)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What [`FORGET_PAGE_LOGIN`] names: the site the page is at and the login to forget.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForgetPageLogin {
+    pub site: String,
+    pub item: ItemRef,
+}
+
+/// What [`PAGE_FILL`] names: the site the page is at, as its window's engine says it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PageFillAt {
+    pub site: String,
+}
+
+/// What [`PAGE_FILL`] answers: the login's name and secret, for the window that asked alone. It
+/// prints nothing of the secret.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PageFilled {
+    pub username: String,
+    pub secret: String,
+}
+
+impl std::fmt::Debug for PageFilled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("PageFilled").finish_non_exhaustive()
+    }
 }
 
 /// The most places one asked-for secret belongs to.

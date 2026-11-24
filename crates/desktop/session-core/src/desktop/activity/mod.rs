@@ -406,6 +406,9 @@ pub struct TaskRunUndo {
     pub task_id: String,
     /// The documents the run changed: each step's app and record.
     pub steps: Vec<(String, String)>,
+    /// The one change of those documents to take back, as each record's own history names it;
+    /// absent to take back the run's whole share of them.
+    pub step: Option<String>,
 }
 pub struct UnavailableActivityHost;
 impl ActivityHost for UnavailableActivityHost {}

@@ -433,8 +433,8 @@ pub const SETTINGS: &[Setting] = &[
     )
     .verb("input", "choose-layout"),
     s("keyboard.key_repeat", "keyboard", "input.key_repeat"),
-    s("keyboard.compose", "keyboard", "input.compose_key"),
-    s("keyboard.caps_lock", "keyboard", "input.caps_lock"),
+    s("keyboard.compose", "keyboard", "input.compose_key").verb("input", "set-compose-key"),
+    s("keyboard.caps_lock", "keyboard", "input.caps_lock").verb("input", "set-caps-lock"),
     s("pointing.touchpad", "pointing", "input.touchpad_enabled"),
     s(
         "pointing.touchpad_speed",

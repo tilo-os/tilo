@@ -5,12 +5,13 @@
 //! exactly one of them starts with the `app` header. The ids lock is one `app.ids` per package, next to
 //! the sources.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::ast::Item;
 use crate::diag::Diagnostic;
+use crate::diag::Span;
 use crate::ids::{Entropy, IdsLock};
 use crate::meta::PackageMeta;
 use crate::package::{Compiled, compile_package_source_with};
@@ -18,11 +19,23 @@ use crate::parser::parse_file_at;
 
 pub const IDS_FILE: &str = "app.ids";
 pub const EXTENSION: &str = "tl";
+/// The directory beside a package's sources that holds the files its views and its scenarios name
+/// (`pkg:media/<name>`), such as a picture or a short sound.
+pub const ASSETS_DIR: &str = "media";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceFile {
     pub path: String,
     pub text: String,
+}
+
+/// A file a package ships beside its sources, under [`ASSETS_DIR`]: a picture, a sound or another
+/// piece of data a view or a scenario names as `pkg:<name>`. `name` is its path from the package's
+/// directory (`media/first-light.wav`), which is what the address names.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackageAsset {
+    pub name: String,
+    pub bytes: Vec<u8>,
 }
 
 /// The source files of one package. Their order does not matter: the compiler reads them in path order.
@@ -32,6 +45,8 @@ pub struct PackageSource {
     /// The package's catalogues, `(locale, Fluent text)`: every `locales/<locale>.ftl` beside its sources
     /// (i18n.md). They travel in the compiled module.
     pub locales: Vec<(String, String)>,
+    /// The package's own files under [`ASSETS_DIR`], by the path an address names them by.
+    pub assets: Vec<PackageAsset>,
 }
 
 impl PackageSource {
@@ -43,12 +58,20 @@ impl PackageSource {
                 .map(|(path, text)| SourceFile { path, text })
                 .collect(),
             locales: Vec::new(),
+            assets: Vec::new(),
         }
     }
 
     #[must_use]
     pub fn with_locales(mut self, locales: impl IntoIterator<Item = (String, String)>) -> Self {
         self.locales = locales.into_iter().collect();
+        self
+    }
+
+    /// The source with the files under [`ASSETS_DIR`] a package ships beside it.
+    #[must_use]
+    pub fn with_assets(mut self, assets: impl IntoIterator<Item = PackageAsset>) -> Self {
+        self.assets = assets.into_iter().collect();
         self
     }
 
@@ -71,7 +94,9 @@ impl PackageSource {
                 std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             out.push((path.display().to_string(), text));
         }
-        Ok(Self::new(out).with_locales(read_locales(dir)?))
+        Ok(Self::new(out)
+            .with_locales(read_locales(dir)?)
+            .with_assets(read_assets(dir)?))
     }
 
     /// The app id the package declares and the app ids it imports with `use`, read leniently: files that
@@ -131,6 +156,91 @@ pub fn read_locales(dir: &Path) -> Result<Vec<(String, String)>, String> {
         out.push((locale.to_owned(), text));
     }
     Ok(out)
+}
+
+/// The package's own files under `dir`'s [`ASSETS_DIR`], by the path an address names them by
+/// (`media/<name>`), sorted; none when it has no such directory.
+pub fn read_assets(dir: &Path) -> Result<Vec<PackageAsset>, String> {
+    let root = dir.join(ASSETS_DIR);
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    let mut pending: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
+    pending.sort();
+    while let Some(path) = pending.pop() {
+        let meta =
+            std::fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "{}: a package ships the file itself, not a link to it",
+                path.display()
+            ));
+        }
+        if meta.is_dir() {
+            let mut below: Vec<PathBuf> = std::fs::read_dir(&path)
+                .map_err(|e| format!("{}: {e}", path.display()))?
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .collect();
+            below.sort();
+            // Depth first, in name order: the stack pops the last, so the reverse goes on it.
+            pending.extend(below.into_iter().rev());
+            continue;
+        }
+        let name = path
+            .strip_prefix(dir)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        out.push(PackageAsset { name, bytes });
+    }
+    // The stack walked the tree depth first; the package reads its files by name.
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// The names of `source`'s assets that only its scenarios name: what a person's install never
+/// needs, since an install starts empty and no scenario stages it.
+///
+/// An asset no file names at all is left out too: nothing shows it.
+#[must_use]
+pub fn scenario_only_assets(source: &PackageSource) -> BTreeSet<String> {
+    let mut named_outside: BTreeSet<String> = BTreeSet::new();
+    for file in &source.files {
+        let (parsed, _) = parse_file_at(&file.text, 0, 0);
+        let scenarios: Vec<Span> = parsed
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Scenario(scenario) => Some(scenario.span),
+                _ => None,
+            })
+            .collect();
+        for asset in &source.assets {
+            let needle = format!("pkg:{}", asset.name);
+            let mut from = 0;
+            while let Some(at) = file.text.get(from..).and_then(|rest| rest.find(&needle)) {
+                let start = from + at;
+                let end = start + needle.len();
+                from = end;
+                if !scenarios
+                    .iter()
+                    .any(|span| span.start <= start && end <= span.end)
+                {
+                    named_outside.insert(asset.name.clone());
+                    break;
+                }
+            }
+        }
+    }
+    source
+        .assets
+        .iter()
+        .map(|asset| asset.name.clone())
+        .filter(|name| !named_outside.contains(name))
+        .collect()
 }
 
 pub fn source_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {

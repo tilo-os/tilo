@@ -34,9 +34,10 @@ on the head it broke.
 Where t is installed, the lint is t's own per-package checks of the families
 that build with those unified features (`clippy/<package>`, `clippy-idle/...`,
 `clippy-<arch>/...`: the ones whose `unify` names workspace-unify in t.toml), and
-`clippy-page/<package>` for a changed package the page family names, and a dependant
-is the `check` families' compile of it (`check/<package>`, `check-<arch>/...`). t
-keys each by what that package's build reads, its dependencies included, and
+`clippy-page/<package>` for a changed package the page family names, and the
+dependants are compiled together in one `t cargo check`: one build of them all
+shares the crates they build on, where a check of each rebuilt them in a job of its
+own. t keys each check by what that package's build reads, its dependencies included, and
 answers a key it has seen from its result cache, whoever ran it: after a rebase
 onto commits that reach none of what a package reads, the push is answered in
 seconds, and a package main's new commits did reach, through a dependency too,
@@ -155,8 +156,6 @@ UNIFY = "workspace-unify"
 # The family that lints the page's wasm32 build. It declares no `unify` - workspace-unify is a
 # host crate that builds nothing for wasm32 - so it stands apart from the unified families.
 PAGE_FAMILY = "clippy-page"
-# The tool of the families that compile a package without linting it: what a dependant gets.
-COMPILE_TOOL = "check"
 # The packages that only unify features, generated from the workspace's manifests. Their
 # dependency lists name members they never use, so a change to one reaches no code and names no
 # set of dependants, and their own lint says nothing about a member that changed.
@@ -641,14 +640,10 @@ def host_architecture() -> str:
     return ARCHITECTURES.get(machine, machine)
 
 
-def t_checks(root: Path, selected: Iterable[str], members: set[str],
-             tool: str = "clippy") -> tuple[list[str], list[str]]:
+def t_checks(root: Path, selected: Iterable[str], members: set[str]) -> tuple[list[str], list[str]]:
     """t's checks that lint the selected packages as the push lint does, and the packages none does.
 
-    With `tool` `check`, the checks that compile them without a lint: what a dependant gets. The
-    page family is a clippy family, so a dependant gets no page check.
-
-    Those are the per-package checks (`<family>/<package>`) of t.toml's `tool` families that name
+    Those are the per-package checks (`<family>/<package>`) of t.toml's clippy families that name
     workspace-unify in `unify`, on this machine's architecture: a family's members are its
     `packages`, or every member its `exclude` leaves. A package the page family names is asked for
     there as well: its wasm32 build is one the host lint cannot see, and the family declares no
@@ -659,7 +654,7 @@ def t_checks(root: Path, selected: Iterable[str], members: set[str],
     owners: dict[str, str] = {}
     page: set[str] = set()
     for family in families:
-        if family.get("tool") != tool:
+        if family.get("tool") != "clippy":
             continue
         if family.get("name") == PAGE_FAMILY:
             page |= set(family.get("packages", ()))
@@ -691,23 +686,29 @@ def lint_runs(root: Path, selection: Selection, formatting: list[str],
     """The runs the check makes: the pinned rustfmt, formatting, the host lint of the changed
     packages and the compile of their dependants.
 
-    With `checks`, those are t's checks of those names; without, the cargo lints the changed
-    packages and checks the dependants, without `-D warnings`: a dependant's warnings are not the
-    push's. Each command is also the line a failure prints to rerun it.
+    With `checks`, the changed packages' lint is t's checks of those names; without, the cargo
+    lints them. The dependants are compiled in one cargo check either way, through t's cargo with
+    `checks`, without `-D warnings`: a dependant's warnings are not the push's, and one build of
+    them all shares the crates they build on. Asked as t's per-package checks, each dependant was a
+    job of its own building those crates again: a push changing a shared crate queued about 100
+    (`check/*`, 106 for one push on t.tilo.so, 2026-11-24). Each command is also the line a failure
+    prints to rerun it.
     """
     runs = [Lint("rustfmt pinned", ["bash", str(TOOLS / "ci/check-rustfmt-pin.sh")])]
     if formatting:
         runs.append(Lint("rustfmt" if formatting[0] != "t" else "fmt (t)", formatting))
     if checks is not None:
         if checks:
-            label = "clippy and dependants' compile (t)" if selection.dependants else "clippy (t)"
-            runs.append(Lint(label, [T_CARGO[0], "test", *checks, "--json"], True))
-        return runs
+            runs.append(Lint("clippy (t)", [T_CARGO[0], "test", *checks, "--json"], True))
+        cargo, where = T_CARGO, "t"
+    else:
+        cargo, where = cargo_command(), "native"
     for label, tool, names, trailing in (
-            ("clippy (native)", "clippy", selection.linted, ["--", "-D", "warnings"]),
-            ("dependants' compile (native)", "check", selection.dependants, [])):
+            (f"clippy ({where})", "clippy", [] if checks is not None else selection.linted,
+             ["--", "-D", "warnings"]),
+            (f"dependants' compile ({where})", "check", selection.dependants, [])):
         if names:
-            runs.append(Lint(label, [*cargo_command(), tool, "--locked",
+            runs.append(Lint(label, [*cargo, tool, "--locked",
                                      *(item for name in names for item in ("-p", name)),
                                      *unified_features(root, names),
                                      "--all-targets", "--keep-going", *trailing]))
@@ -1096,8 +1097,7 @@ def main(argv: list[str]) -> int:
             print(f"dependants: {' '.join(selection.dependants)}")
         if lints_through_t():
             members = set(package_maps(selection.metadata, root)[0])
-            named = (t_checks(root, selection.linted, members)[0]
-                     + t_checks(root, selection.dependants, members, COMPILE_TOOL)[0])
+            named = t_checks(root, selection.linted, members)[0]
             named += [name for name in catalogue_checks(push) if name not in named]
             print(f"t: {' '.join(named)}")
         catalogue_plan(push)
@@ -1107,8 +1107,6 @@ def main(argv: list[str]) -> int:
         try:
             members = set(package_maps(selection.metadata, root)[0])
             checks, uncovered = t_checks(root, selection.linted, members)
-            compiles, uncompiled = t_checks(root, selection.dependants, members, COMPILE_TOOL)
-            checks += compiles
             extra = [*surface_checks(root, push), *catalogue_checks(push)]
             checks += [name for name in extra if name not in checks]
         except (OSError, ValueError, KeyError) as error:
@@ -1117,9 +1115,6 @@ def main(argv: list[str]) -> int:
         if uncovered:
             say(f"pre-push: no clippy family of t's lints {', '.join(uncovered)}, so neither does "
                 "this check")
-        if uncompiled:
-            say(f"pre-push: no check family of t's compiles {', '.join(uncompiled)}, which build "
-                "on what changed, so neither does this check")
     elif shutil.which(cargo_command()[0]) is None:
         say(f"pre-push: there is no cargo to lint with ({cargo_command()[0]}); the lint cannot run")
         return 1
