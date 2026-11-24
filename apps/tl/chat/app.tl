@@ -14,6 +14,9 @@ app so.tilo.chat "Chat" (
 type Conversations {
     channels: Collection<Category | TextChannel | VoiceChannel | Direct>
     skills: Collection<Skill>
+    /// The Discord accounts the workspace connected: their servers' channels and their direct
+    /// messages are conversations here too.
+    discord: Collection<Discord>
 }
 
 root conversations: Conversations
@@ -1336,6 +1339,11 @@ view sidebar(all: Conversations) {
                     ui.NavSection("Workspace") {
                         ui.NavItem("/skills", "Workspace skills", icon: .sparkles) {
                             on select: set(shown, "/skills").then(open(all, view: skills))
+                        }
+                        // The Discord accounts the workspace connected: their server's
+                        // channels and their direct messages are conversations here too.
+                        ui.NavItem("/discord", "Discord", icon: .message_circle) {
+                            on select: set(shown, "/discord").then(open(all, view: discord))
                         }
                     }
                 }
