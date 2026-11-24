@@ -110,6 +110,27 @@ mod cases {
             self.call("like", vec![Value::resource(t), Value::Bool(true)]);
         }
 
+        /// Sets a field of a song, as the catalogue's answer would have.
+        fn write_field(&self, at: &ResourceRef, ty: &str, field: &str, value: Value) {
+            let write = tilolang_runtime::origin::OriginWrite::Set {
+                target: at.clone(),
+                fields: vec![(field_id(&self.app, ty, field), value)],
+            };
+            self.rt
+                .write_origin("music.track", None, |change| change.write(vec![write]))
+                .unwrap_or_else(|why| panic!("writing {ty}.{field}: {why}"));
+        }
+
+        /// The payloads the app asked the catalogue for through `capability`, in order.
+        fn asked_for(&self, capability: &str) -> Vec<serde_json::Value> {
+            self.rt
+                .pending_outbox()
+                .into_iter()
+                .filter(|entry| entry.capability == capability)
+                .map(|entry| entry.payload)
+                .collect()
+        }
+
         fn window(&self) -> ViewInstance {
             let mut window = self
                 .rt
