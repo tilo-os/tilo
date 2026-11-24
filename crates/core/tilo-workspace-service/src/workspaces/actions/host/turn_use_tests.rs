@@ -206,21 +206,14 @@ pub(super) async fn listed(
 }
 
 /// The refusal the device's dispatch answers `who`, one of [`not_hosted_turns`], with: none
-/// knows the call. An agent another of the person's devices hands its session to is answered as
-/// any caller is: as unknown where this device offers no such action, and as refused where it
-/// offers it and the agent's grants do not reach.
+/// knows the call. What a workspace keeps for a person (their vault's uses by reference, mail,
+/// calendars, connections) is offered here only to a turn this device carries out, so an agent
+/// another of the person's devices hands its session to is answered as the person themselves are.
 pub(super) fn not_a_turn<T: std::fmt::Debug + PartialEq>(
     who: &str,
     refused: Result<T, ActionCallError>,
 ) {
-    if who == HANDED {
-        assert!(
-            matches!(refused, Err(UnknownAction | Refused { .. })),
-            "{who}: {refused:?}"
-        );
-    } else {
-        assert_eq!(refused, Err(UnknownAction), "{who}");
-    }
+    assert_eq!(refused, Err(UnknownAction), "{who}");
 }
 
 fn request(target: RemoteActionTarget, argument: Value) -> InvokeRequest {
