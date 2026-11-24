@@ -150,6 +150,11 @@ d-pnt3r5fh = Selected
 d-ni4lcmis = Templates
     .doc = The templates the person keeps in `~/Templates`, offered when a new file is named.
 
+d-sdo2uhip = Opening
+    .doc = The path of the entry the person asked to open with, and the apps that open it.
+
+d-pkrgpzz5 = Openers
+
 d-fpb2xkum = Notice
     .doc = The last thing that went wrong, for the window to say; empty while nothing did.
 
@@ -275,6 +280,24 @@ d-7di40kuf = Open entry
     .doc = Opens the entry `e`: a folder in this window, a file in the app that opens its kind.
 
 d-7di40kuf-e = E
+
+d-fraiou23 = Find openers
+    .doc = Finds the apps that open the entry at `path`, for the person to choose one.
+
+d-fraiou23-path = Path
+
+d-qvohweza = Open with
+    .doc = Opens the entry the person asked to open with in `chosen`, one of the apps offered.
+
+d-qvohweza-chosen = Chosen
+
+d-jjrvri4g = Close openers
+    .doc = Puts away the apps offered for the entry the person asked to open with.
+
+d-xxr3zm5d = Open terminal
+    .doc = Opens a terminal in the folder at `folder`.
+
+d-xxr3zm5d-folder = Folder
 
 d-jt4au2t2 = Compress entry
     .doc = Packs the entry at `path` into a new archive beside it, named after it: `zip` picks a ZIP, and TAR.ZST otherwise.
@@ -458,7 +481,9 @@ d-n9jkqy4o = Files
     .w-get-info = Get info
     .w-restore = Restore
     .w-delete-permanently = Delete permanently
+    .w-open-in-terminal = Open in Terminal
     .w-extract = Extract
+    .w-open-with = Open with…
     .w-compress-to-zip = Compress to ZIP
     .w-compress-to-tar-zst = Compress to TAR.ZST
     .w-rename = Rename
@@ -470,6 +495,10 @@ d-z6cheebf = Places
     .w-folders = Folders
     .w-this-computer = This computer
     .w-nearby = Nearby
+
+d-dgcc5jwo = Openers row
+    .w-open-with = Open “{ $name_of }” with
+    .w-cancel = Cancel
 
 d-jwdlcu14 = Entry grid
     .w-files = Files

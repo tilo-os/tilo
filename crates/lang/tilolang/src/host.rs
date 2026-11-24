@@ -645,6 +645,29 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "DocumentApp",
+        id: "host-document-app",
+        doc: "An app that opens a file on this device, as `tool.document_apps` answers the list: the one it opens with today first.",
+        fields: &[
+            ("id", "Text", "The app's id, which `tool.open_with` names."),
+            (
+                "name",
+                "Text",
+                "What the app is called, in the person's language.",
+            ),
+            (
+                "is_default",
+                "Bool",
+                "Whether this is the app the file opens with today.",
+            ),
+            (
+                "icon",
+                "Text",
+                "The app's glyph, as its rows wear it; empty when it has none.",
+            ),
+        ],
+    },
+    ValueType {
         name: "TrashEntry",
         id: "host-trash-entry",
         doc: "One entry of this device's trash, as `File.trash_entries` answers it.",

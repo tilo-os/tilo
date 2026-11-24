@@ -784,6 +784,44 @@ impl Platform for HostPlatform {
         crate::files::compress(paths, to)
     }
 
+    /// `tool.document_apps`: the shell's own decision, by the file's first bytes and its name.
+    fn document_apps(
+        &self,
+        path: &str,
+    ) -> Result<Vec<tilolang_tilo::runtime::files::DocumentApp>, String> {
+        let Some(tools) = self.tools.as_deref() else {
+            return Err("the shell is not answering which app opens a file".to_owned());
+        };
+        tools.list_document_apps(path).map(|apps| {
+            apps.into_iter()
+                .map(|app| tilolang_tilo::runtime::files::DocumentApp {
+                    id: app.id,
+                    name: app.name,
+                    is_default: app.is_default,
+                    icon: app.icon.unwrap_or_default(),
+                })
+                .collect()
+        })
+    }
+
+    fn open_with_app(&self, path: &str, app: &str) -> Result<(), String> {
+        let Some(tools) = self.tools.as_deref() else {
+            return Err("the shell is not answering which app opens a file".to_owned());
+        };
+        tools.open_document(path, Some(app))
+    }
+
+    fn open_terminal_at(&self, folder: &str) -> Result<(), String> {
+        let Some(tools) = self.tools.as_deref() else {
+            return Err("the shell is not answering which app opens a file".to_owned());
+        };
+        tools
+            .ask(runtime_portal::tools::ToolIntent::Terminal {
+                directory: Some(folder.to_owned()),
+            })
+            .map(drop)
+    }
+
     fn extract_file(&self, from: &str, to: &str) -> Result<i64, String> {
         crate::files::extract(from, to)
     }

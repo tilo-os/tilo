@@ -460,6 +460,11 @@ imports! {
     // Disk entries packed into an archive, and an archive extracted into a new folder.
     FileCompress = "file_compress" ([H, H] -> [H]);
     FileExtract = "file_extract" ([H, H] -> [H]);
+    // The shell's tools an action asks of the device: the apps that open a file, opening it in
+    // one of them, and a terminal at a folder.
+    ToolDocumentApps = "tool_document_apps" ([H] -> [H]);
+    ToolOpenWith = "tool_open_with" ([H, H] -> [H]);
+    ToolTerminal = "tool_terminal" ([H] -> [H]);
     // Opening a file in the app that opens its kind: the path the app was granted, or the file an
     // action holds, by its name and the address of its bytes.
     FileOpenPath = "file_open_path" ([H] -> [H]);

@@ -61,11 +61,12 @@ use Imp::{
     StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper,
     StrWords, Suggest, Take, TimeClock,
     TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today,
-    TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-    UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState, UiBindStateAt, UiChild,
-    UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
-    VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
-    WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+    ToolDocumentApps, ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+    TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
+    UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
+    Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody,
+    WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
+    WorkspaceMembers,
 };
 
 pub type HResult<T> = Result<T, HostFail>;
@@ -628,9 +629,8 @@ impl Core {
             SheetEntry => self.sheet_entry(a),
             FileList | FileStat | FileReadPath | FileWatch | FileOpenPath | FileOpen
             | FileMkdir | FileWrite | FileRename | FileMove | FileCopy | FileRemove | FileTrash
-            | FileTrashEntries | FileRestore | FileCompress | FileExtract => {
-                self.file_device_import(imp, a)
-            }
+            | FileTrashEntries | FileRestore | FileCompress | FileExtract | ToolDocumentApps
+            | ToolOpenWith | ToolTerminal => self.file_device_import(imp, a),
             ClipboardCopyText | ClipboardCopyImage | ClipboardPasteText | ClipboardPasteImage => {
                 self.clipboard_import(imp, a)
             }

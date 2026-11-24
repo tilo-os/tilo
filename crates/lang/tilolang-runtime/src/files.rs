@@ -73,6 +73,32 @@ impl TrashEntry {
     }
 }
 
+/// An app that opens a file, as `tool.document_apps` lists it: the one it opens with today first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DocumentApp {
+    /// The app's id, which `tool.open_with` names.
+    pub id: String,
+    /// What the app is called, in the person's language.
+    pub name: String,
+    /// Whether this is the app the file opens with today.
+    pub is_default: bool,
+    /// The app's glyph, as its rows wear it; empty when it has none.
+    pub icon: String,
+}
+
+impl DocumentApp {
+    /// The app as `host.DocumentApp` holds it: its fields, in the order the type declares them.
+    #[must_use]
+    pub fn value(&self) -> Value {
+        Value::Tuple(vec![
+            Value::Text(self.id.clone()),
+            Value::Text(self.name.clone()),
+            Value::Bool(self.is_default),
+            Value::Text(self.icon.clone()),
+        ])
+    }
+}
+
 /// The file `File.open` names: a path the app was granted, or a file an action holds, whose bytes
 /// the workspace's content store keeps under its address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,6 +261,38 @@ pub trait FilesHost {
         Err(NO_FILES.to_owned())
     }
 
+    /// The apps that open the file at `path`, the one it opens with today first: what
+    /// `tool.document_apps` answers. The shell decides, by the file's first bytes and its name.
+    ///
+    /// # Errors
+    ///
+    /// Why the shell could not answer.
+    fn document_apps(&self, path: &str) -> Result<Vec<DocumentApp>, String> {
+        let _ = path;
+        Err(NO_FILES.to_owned())
+    }
+
+    /// Open the file at `path` in `app`, an id [`Self::document_apps`] answered, or the app the
+    /// workspace opens its kind with today: what `tool.open_with` does.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing opened it.
+    fn open_with(&self, path: &str, app: &str) -> Result<(), String> {
+        let _ = (path, app);
+        Err(NO_FILES.to_owned())
+    }
+
+    /// Open a terminal in the folder `folder`: what `tool.terminal` does.
+    ///
+    /// # Errors
+    ///
+    /// Why no terminal opened.
+    fn terminal_at(&self, folder: &str) -> Result<(), String> {
+        let _ = folder;
+        Err(NO_FILES.to_owned())
+    }
+
     /// Open `file` in the app that opens its kind: the person's own view of a file, or an app
     /// whose own action takes that kind. The shell picks the app by the file's first bytes and its
     /// name and starts it, under the app's grants; the file `file` names is not read here.
@@ -321,6 +379,21 @@ impl Core {
             Imp::FileTrash => {
                 let path = self.text(a.h(0)?)?;
                 self.result(host.trash(&path).map(|entry| entry.value()))
+            }
+            Imp::ToolDocumentApps => {
+                let path = self.text(a.h(0)?)?;
+                self.result(
+                    host.document_apps(&path)
+                        .map(|apps| Value::List(apps.iter().map(DocumentApp::value).collect())),
+                )
+            }
+            Imp::ToolOpenWith => {
+                let (path, app) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
+                self.result(host.open_with(&path, &app).map(|()| Value::Unit))
+            }
+            Imp::ToolTerminal => {
+                let folder = self.text(a.h(0)?)?;
+                self.result(host.terminal_at(&folder).map(|()| Value::Unit))
             }
             Imp::FileCompress => {
                 let paths = self.with_val(a.h(0)?, |value| match value {

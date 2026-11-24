@@ -561,6 +561,40 @@ pub trait Platform {
         Err(tilolang_runtime::files::NO_FILES.to_owned())
     }
 
+    /// The apps that open the file at `path`, the one it opens with today first: what
+    /// `tool.document_apps` lists.
+    ///
+    /// # Errors
+    ///
+    /// Why the shell could not answer.
+    fn document_apps(
+        &self,
+        path: &str,
+    ) -> Result<Vec<tilolang_runtime::files::DocumentApp>, String> {
+        let _ = path;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Open the file at `path` in `app`: what `tool.open_with` asks.
+    ///
+    /// # Errors
+    ///
+    /// Why nothing opened it.
+    fn open_with_app(&self, path: &str, app: &str) -> Result<(), String> {
+        let _ = (path, app);
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
+    /// Open a terminal in the folder `folder`: what `tool.terminal` asks.
+    ///
+    /// # Errors
+    ///
+    /// Why no terminal opened.
+    fn open_terminal_at(&self, folder: &str) -> Result<(), String> {
+        let _ = folder;
+        Err(tilolang_runtime::files::NO_FILES.to_owned())
+    }
+
     /// Open `file` in the app that opens its kind: what `File.open` asks. The shell picks the app
     /// by the file's first bytes and its name and starts it, or says nothing here opens it or
     /// that this app may not open files.
@@ -779,6 +813,21 @@ impl tilolang_runtime::files::FilesHost for PlatformFiles {
 
     fn compress(&self, paths: &[String], to: &str) -> Result<i64, String> {
         self.0.compress_files(paths, to)
+    }
+
+    fn document_apps(
+        &self,
+        path: &str,
+    ) -> Result<Vec<tilolang_runtime::files::DocumentApp>, String> {
+        self.0.document_apps(path)
+    }
+
+    fn open_with(&self, path: &str, app: &str) -> Result<(), String> {
+        self.0.open_with_app(path, app)
+    }
+
+    fn terminal_at(&self, folder: &str) -> Result<(), String> {
+        self.0.open_terminal_at(folder)
     }
 
     fn extract(&self, from: &str, to: &str) -> Result<i64, String> {

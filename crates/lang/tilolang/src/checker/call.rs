@@ -28,6 +28,7 @@ const CANVAS: &str = "canvas";
 /// The device's own work, asked by name (`engine.call`, `engine.start`, `engine.status`,
 /// `engine.cancel`).
 const ENGINE: &str = "engine";
+const TOOL: &str = "tool";
 
 impl Checker<'_> {
     pub(super) fn call(
@@ -137,6 +138,14 @@ impl Checker<'_> {
                 // `engine.call`, `engine.start`, `engine.status`, `engine.cancel`: the device's
                 // own work, asked by name. A view never asks: it is drawn again from what it is
                 // shown, and the device's work is not what it was shown.
+                // `tool.document_apps`, `tool.open_with` and `tool.terminal`: the shell's own
+                // tools, which an action asks and a view never does.
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == TOOL)
+                    && self.lookup(TOOL).is_none()
+                    && self.env.find_import(TOOL).is_none()
+                {
+                    return self.builtin_tool(name, args, span);
+                }
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == ENGINE)
                     && self.lookup(ENGINE).is_none()
                     && self.env.find_import(ENGINE).is_none()
@@ -2481,6 +2490,87 @@ impl Checker<'_> {
             Ty::RichText,
         )
     }
+    /// `tool.document_apps(path)`, `tool.open_with(path, app)` and `tool.terminal(folder)`: what
+    /// the shell answers of its own tools. An app asks from an action; starting an app or reading
+    /// which apps open a file is nothing a view was shown, so a view asks none.
+    fn builtin_tool(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx == Ctx::View {
+            self.err(
+                "E067",
+                span,
+                format!(
+                    "`tool.{}` is the shell's work, which a view never asks: ask it from an action",
+                    name.name
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let result = |held: Ty| Ty::Result(Box::new(held), Box::new(Ty::Text));
+        let document_app = || super::platform::host_ty("DocumentApp");
+        let (imp, wanted, held, said) = match name.name.as_str() {
+            "document_apps" => (
+                Imp::ToolDocumentApps,
+                1,
+                result(Ty::List(Box::new(document_app()))),
+                "`tool.document_apps(path)`: the apps that open the file at `path`, the one it opens with today first",
+            ),
+            "open_with" => (
+                Imp::ToolOpenWith,
+                2,
+                result(Ty::Unit),
+                "`tool.open_with(path, app)`: the file at `path` opened in `app`, an id `tool.document_apps` answers",
+            ),
+            "terminal" => (
+                Imp::ToolTerminal,
+                1,
+                result(Ty::Unit),
+                "`tool.terminal(folder)`: a terminal opened in the folder `folder`",
+            ),
+            other => {
+                self.err(
+                    "E026",
+                    name.span,
+                    format!(
+                        "`tool` has `document_apps`, `open_with` and `terminal`, not `{other}`"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        if args.len() != wanted {
+            self.err("E022", span, said.to_owned());
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        for arg in args {
+            if let Some(named) = &arg.name {
+                self.err(
+                    "E022",
+                    named.span,
+                    format!("{said}; its arguments stand by position"),
+                );
+            }
+        }
+        self.reads(
+            crate::effects::Effect::Files,
+            span,
+            &format!("`tool.{}`", name.name),
+        );
+        let arguments: Vec<Ex> = args
+            .iter()
+            .map(|arg| self.expr_as(&arg.value, &Ty::Text))
+            .collect();
+        Ex::host(imp, arguments, held)
+    }
+
     /// `engine.call(op, input)`, `engine.start(op, input)`, `engine.status(job)` and
     /// `engine.cancel(job)`: the device's own work — a decode, a render, a raster — asked by a
     /// name the host answers for this app. A call answers now; a start answers a job id, and the

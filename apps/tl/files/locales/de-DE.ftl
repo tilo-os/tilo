@@ -369,6 +369,33 @@ d-0nodt7ql = Prüfen
 
 d-0nodt7ql-e = E
 
+d-sdo2uhip = Wird geöffnet
+    .doc = Der Pfad des Eintrags, den die Person mit einer App öffnen will, und die Apps, die ihn öffnen.
+
+d-pkrgpzz5 = Öffnende Apps
+
+d-fraiou23 = Öffnende Apps finden
+    .doc = Findet die Apps, die den Eintrag unter `path` öffnen, damit die Person eine wählt.
+
+d-fraiou23-path = Pfad
+
+d-qvohweza = Öffnen mit
+    .doc = Öffnet den Eintrag, den die Person öffnen will, in `chosen`, einer der angebotenen Apps.
+
+d-qvohweza-chosen = Gewählt
+
+d-jjrvri4g = Öffnende Apps schließen
+    .doc = Nimmt die angebotenen Apps für den Eintrag wieder weg.
+
+d-xxr3zm5d = Terminal öffnen
+    .doc = Öffnet ein Terminal im Ordner unter `folder`.
+
+d-xxr3zm5d-folder = Ordner
+
+d-dgcc5jwo = Zeile der öffnenden Apps
+    .w-open-with = „{ $name_of }“ öffnen mit
+    .w-cancel = Abbrechen
+
 d-jt4au2t2 = Eintrag komprimieren
     .doc = Packt den Eintrag unter `path` in ein neues Archiv daneben, nach ihm benannt: `zip` wählt ein ZIP, sonst TAR.ZST.
 
@@ -432,6 +459,8 @@ d-n9jkqy4o = Dateien
     .w-cut = Ausschneiden
     .w-paste = Einfügen
     .w-extract = Entpacken
+    .w-open-in-terminal = Im Terminal öffnen
+    .w-open-with = Öffnen mit…
     .w-compress-to-zip = Zu ZIP komprimieren
     .w-compress-to-tar-zst = Zu TAR.ZST komprimieren
     .w-move-to-trash = In den Papierkorb

@@ -102,6 +102,9 @@ type Session (readers: author) {
     selected: Text = ""
     /// The templates the person keeps in `~/Templates`, offered when a new file is named.
     templates: List<Text>
+    /// The path of the entry the person asked to open with, and the apps that open it.
+    opening: Text = ""
+    openers: List<host.DocumentApp>
     /// The last thing that went wrong, for the window to say; empty while nothing did.
     notice: Text = ""
 }
@@ -216,6 +219,8 @@ action go(f: Files, place: Text) uses files, time {
     }
     s.here = place
     s.selected = ""
+    s.opening = ""
+    s.openers = []
     s.preview = .none
     s.previewed = ""
     s.words = ""
@@ -314,6 +319,55 @@ action open_entry(f: Files, e: Entry) uses files, time {
             .err(why) => {
                 s.notice = "Nothing here opens “{e.name}”: {why}"
             }
+        }
+    }
+}
+
+/// Finds the apps that open the entry at `path`, for the person to choose one.
+action find_openers(f: Files, path: Text) uses files {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    match tool.document_apps(path) {
+        .ok(apps) => {
+            s.openers = apps
+            s.opening = path
+        }
+        .err(why) => {
+            s.notice = "Couldn’t see which apps open “{name_of(path)}”: {why}"
+        }
+    }
+}
+
+/// Opens the entry the person asked to open with in `chosen`, one of the apps offered.
+action open_with(f: Files, chosen: Text) uses files {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    if s.opening == "" {
+        return
+    }
+    match tool.open_with(s.opening, chosen) {
+        .ok => {
+            s.opening = ""
+            s.openers = []
+        }
+        .err(why) => {
+            s.notice = "Couldn’t open it: {why}"
+        }
+    }
+}
+
+/// Puts away the apps offered for the entry the person asked to open with.
+action close_openers(f: Files) {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    s.opening = ""
+    s.openers = []
+}
+
+/// Opens a terminal in the folder at `folder`.
+action open_terminal(f: Files, folder: Text) uses files {
+    let s = f.sessions.first() ?? f.sessions.insert(Session())
+    match tool.terminal(folder) {
+        .ok => {}
+        .err(why) => {
+            s.notice = "Couldn’t open a terminal here: {why}"
         }
     }
 }
@@ -903,6 +957,9 @@ view files(f: Files) {
                     if naming != "" {
                         naming_row(f, s, naming, name)
                     }
+                    if s.opening != "" {
+                        openers_row(f, s)
+                    }
                     if s.here == "recent" {
                         recent_files(f, s)
                     } else if s.here == "applications" {
@@ -1180,6 +1237,21 @@ view view_options(f: Files, s: Session, naming: State<Text>, name: State<Text>) 
     }
 }
 
+/// The apps that open the entry the person asked to open with, one press away each.
+view openers_row(f: Files, s: Session) {
+    row(gap: .tight, align: .center) {
+        text("Open “{name_of(s.opening)}” with", role: .caption, secondary: true)
+        for opener in s.openers {
+            ui.Button(opener.name, role: .plain) {
+                on press: open_with(f, opener.id)
+            }
+        }
+        ui.Button("Cancel", role: .plain) {
+            on press: close_openers(f)
+        }
+    }
+}
+
 /// The field asking for a name: a folder being made, a file, or an entry renamed.
 view naming_row(f: Files, s: Session, naming: State<Text>, name: State<Text>) {
     row(gap: .related, align: .center) {
@@ -1251,17 +1323,24 @@ view entry_list(
                             on choose: delete_permanently(f, e.path)
                         }
                     } else {
-                        if is_archive(e.name) {
+                        if e.folder {
+                            ui.MenuItem("Open in Terminal", icon: .terminal) {
+                                on choose: open_terminal(f, e.path)
+                            }
+                        } else if is_archive(e.name) {
                             ui.MenuItem("Extract", icon: .archive) {
                                 on choose: extract_entry(f, e.path)
                             }
                         } else {
-                            ui.MenuItem("Compress to ZIP", icon: .file_archive) {
-                                on choose: compress_entry(f, e.path, true)
+                            ui.MenuItem("Open with…", icon: .external_link) {
+                                on choose: find_openers(f, e.path)
                             }
-                            ui.MenuItem("Compress to TAR.ZST", icon: .file_archive) {
-                                on choose: compress_entry(f, e.path, false)
-                            }
+                        }
+                        ui.MenuItem("Compress to ZIP", icon: .file_archive) {
+                            on choose: compress_entry(f, e.path, true)
+                        }
+                        ui.MenuItem("Compress to TAR.ZST", icon: .file_archive) {
+                            on choose: compress_entry(f, e.path, false)
                         }
                         ui.MenuItem("Rename", icon: .pencil) {
                             on choose: set(naming, e.path).then(set(name, e.name))
