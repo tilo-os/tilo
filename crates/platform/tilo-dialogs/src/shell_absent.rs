@@ -1,5 +1,5 @@
 //! The session shell's choosers where no Tilo session launches apps
-//! (Windows, a browser page): no process is ever handed a connection, so
+//! (a browser page): no process is ever handed a connection, so
 //! [`ShellLink::inherited`] is always `None` and portable callers take their
 //! fallback without selecting a target themselves.
 

@@ -11,7 +11,9 @@
 
 use std::fmt;
 use std::io::{self, Read as _, Write as _};
-use std::os::windows::io::{AsRawHandle, FromRawHandle as _, OwnedHandle, RawHandle};
+use std::os::windows::io::{
+    AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle as _, OwnedHandle, RawHandle,
+};
 use std::sync::Arc;
 
 use tilo_socket::Stream;
@@ -27,10 +29,36 @@ const COUNT: usize = size_of::<u32>();
 /// The bytes of each handle's value.
 const VALUE: usize = size_of::<u64>();
 
-/// A connection a packet carries, or a link packets go on.
+/// A connection a packet carries, or a link packets go on, or a buffer a packet hands down (a
+/// section, `tilo_shm`'s shared memory here).
 pub struct Descriptor {
-    stream: Stream,
+    held: Held,
     peer: Peer,
+}
+
+/// What a descriptor's handle is.
+enum Held {
+    /// A pipe: a connection or a link.
+    Pipe(Stream),
+    /// Any other handle: a section.
+    Other(OwnedHandle),
+}
+
+impl Held {
+    fn handle(&self) -> RawHandle {
+        match self {
+            Self::Pipe(stream) => stream.as_raw_handle(),
+            Self::Other(handle) => handle.as_raw_handle(),
+        }
+    }
+}
+
+/// What a caller that wanted a connection was handed instead.
+fn no_pipe() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "a handle handed on as a connection is no pipe",
+    )
 }
 
 /// Which way handles go on a link.
@@ -49,15 +77,27 @@ impl Descriptor {
     #[must_use]
     pub fn new(stream: Stream) -> Self {
         Self {
-            stream,
+            held: Held::Pipe(stream),
             peer: Peer::Neither,
         }
+    }
+
+    /// `handle`, to hand down in a packet: a pipe is a connection, anything else (a section) is
+    /// handed as it is.
+    ///
+    /// # Errors
+    /// The system's error asking which end of a pipe it is.
+    pub fn from_handle(handle: OwnedHandle) -> io::Result<Self> {
+        Ok(Self {
+            held: held(handle)?,
+            peer: Peer::Neither,
+        })
     }
 
     /// This process's end of the link to the process `started`, which it started.
     pub(crate) fn to_started(stream: Stream, started: Arc<OwnedHandle>) -> Self {
         Self {
-            stream,
+            held: Held::Pipe(stream),
             peer: Peer::Started(started),
         }
     }
@@ -65,21 +105,40 @@ impl Descriptor {
     /// The link the process that started this one handed it.
     pub(crate) fn from_starter(stream: Stream) -> Self {
         Self {
-            stream,
+            held: Held::Pipe(stream),
             peer: Peer::Starter,
         }
     }
 
     /// The connection, to read and write as a stream.
-    #[must_use]
-    pub const fn stream(&self) -> &Stream {
-        &self.stream
+    ///
+    /// # Errors
+    /// `InvalidInput` for a handle that is no pipe (a section).
+    pub fn stream(&self) -> io::Result<&Stream> {
+        match &self.held {
+            Held::Pipe(stream) => Ok(stream),
+            Held::Other(_) => Err(no_pipe()),
+        }
     }
 
     /// The connection, owned.
+    ///
+    /// # Errors
+    /// `InvalidInput` for a handle that is no pipe (a section).
+    pub fn into_stream(self) -> io::Result<Stream> {
+        match self.held {
+            Held::Pipe(stream) => Ok(stream),
+            Held::Other(_) => Err(no_pipe()),
+        }
+    }
+
+    /// The handle, owned: a section to map, or a pipe to hand on.
     #[must_use]
-    pub fn into_stream(self) -> Stream {
-        self.stream
+    pub fn into_handle(self) -> OwnedHandle {
+        match self.held {
+            Held::Pipe(stream) => stream.into_handle(),
+            Held::Other(handle) => handle,
+        }
     }
 
     /// A second handle on the same connection, carrying handles as this one does.
@@ -88,15 +147,37 @@ impl Descriptor {
     /// The handle could not be duplicated.
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
-            stream: self.stream.try_clone()?,
+            held: match &self.held {
+                Held::Pipe(stream) => Held::Pipe(stream.try_clone()?),
+                Held::Other(handle) => Held::Other(handle.try_clone()?),
+            },
             peer: self.peer.clone(),
         })
     }
 }
 
+/// `handle` as what it is: a pipe, or any other handle.
+fn held(handle: OwnedHandle) -> io::Result<Held> {
+    // SAFETY: a live handle, only asked its type.
+    let kind =
+        unsafe { windows_sys::Win32::Storage::FileSystem::GetFileType(handle.as_raw_handle()) };
+    if kind == windows_sys::Win32::Storage::FileSystem::FILE_TYPE_PIPE {
+        Stream::from_handle(handle).map(Held::Pipe)
+    } else {
+        Ok(Held::Other(handle))
+    }
+}
+
 impl AsRawHandle for Descriptor {
     fn as_raw_handle(&self) -> RawHandle {
-        self.stream.as_raw_handle()
+        self.held.handle()
+    }
+}
+
+impl AsHandle for Descriptor {
+    fn as_handle(&self) -> BorrowedHandle<'_> {
+        // SAFETY: the handle this descriptor owns, borrowed for as long as it lives.
+        unsafe { BorrowedHandle::borrow_raw(self.held.handle()) }
     }
 }
 
@@ -109,7 +190,7 @@ impl fmt::Debug for Descriptor {
         };
         formatter
             .debug_struct("Descriptor")
-            .field("handle", &self.stream.as_raw_handle())
+            .field("handle", &self.held.handle())
             .field("peer", &peer)
             .finish()
     }
@@ -187,7 +268,7 @@ pub(super) fn send(socket: &Descriptor, encoded: &[u8], raw: &[RawHandle]) -> io
         frame.extend_from_slice(&value.to_le_bytes());
     }
     frame.extend_from_slice(encoded);
-    let written = (&socket.stream).write(&frame);
+    let written = (socket.stream()?).write(&frame);
     if !matches!(written, Ok(length) if length == frame.len()) {
         if let Some(process) = started {
             close_in(process, &values);
@@ -205,11 +286,12 @@ pub(super) fn receive(
     socket: &Descriptor,
     wait: bool,
 ) -> io::Result<Option<(Vec<u8>, Vec<Descriptor>)>> {
-    if !wait && !socket.stream.ready()? {
+    let stream = socket.stream()?;
+    if !wait && !stream.ready()? {
         return Err(io::ErrorKind::WouldBlock.into());
     }
     let mut buffer = vec![0_u8; COUNT + VALUE * MAX_FDS + MAX_PACKET];
-    let length = (&socket.stream).read(&mut buffer)?;
+    let length = (&*stream).read(&mut buffer)?;
     if length == 0 {
         return Ok(None);
     }
@@ -239,7 +321,7 @@ pub(super) fn receive(
         .collect();
     let handles = owned
         .into_iter()
-        .map(|handle| Stream::from_handle(handle).map(Descriptor::new))
+        .map(Descriptor::from_handle)
         .collect::<io::Result<Vec<_>>>()
         .map_err(invalid)?;
     Ok(Some((bytes.to_vec(), handles)))

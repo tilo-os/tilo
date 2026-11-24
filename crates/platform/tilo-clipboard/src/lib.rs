@@ -32,7 +32,7 @@ pub mod conformance;
 pub mod events;
 /// The clipboard over a connection an app's session or launcher opened for it: `serve` answers on
 /// the serving end, [`service::Connected`] and [`service::ServiceClipboard`] are the app's.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod service;
 
 #[cfg(any(unix, windows))]

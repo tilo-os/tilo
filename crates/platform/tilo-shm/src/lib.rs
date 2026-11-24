@@ -7,22 +7,37 @@
 //! the page size, so a file's length is only an upper bound. Every reader here takes the meaningful
 //! length from its caller.
 //!
+//! Windows has no memory files: a buffer there is a pagefile-backed section ([`windows`]). Its
+//! writer fills it and hands on only a handle that maps it read-only, after closing every handle
+//! and view that could write it, so no process can change it again. A section cannot be resized,
+//! so a view of it never faults under its reader either.
+//!
 //! A buffer that stays writable — the ring an app writes its frames into, a render target — is only
 //! sealed against resizing: a mapping the reader holds can never turn into `SIGBUS` under it.
 
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 
+#[cfg(unix)]
 use std::fs::File;
 use std::io;
 use std::ops::Deref;
+#[cfg(unix)]
 use std::os::fd::{AsFd, OwnedFd};
 
-use memmap2::{Mmap, MmapMut, MmapOptions};
+use memmap2::Mmap;
+#[cfg(unix)]
+use memmap2::{MmapMut, MmapOptions};
+
+#[cfg(windows)]
+pub mod windows;
+#[cfg(windows)]
+pub use windows::from_bytes;
 
 /// The largest page size of a supported system: Apple silicon's 16 KiB.
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 const MAX_PAGE: usize = 16 * 1024;
 
+#[cfg(unix)]
 /// Create an empty anonymous memory file of at least `len` bytes. `name` is a diagnostic label. A
 /// file can be sized only once on macOS: create it at its final size.
 pub fn create(name: &str, len: u64) -> io::Result<File> {
@@ -30,6 +45,7 @@ pub fn create(name: &str, len: u64) -> io::Result<File> {
 }
 
 /// A read-only memory file holding a copy of `bytes`, sealed where the platform can seal.
+#[cfg(unix)]
 pub fn from_bytes(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
     let len = bytes.len() as u64;
     let file = create(name, len)?;
@@ -46,6 +62,7 @@ pub fn from_bytes(name: &str, bytes: &[u8]) -> io::Result<OwnedFd> {
 
 /// Seal `file` against shrinking, growing and further sealing, keeping it writable: a reader maps it
 /// read-only, and its size can no longer change under that mapping.
+#[cfg(unix)]
 pub fn seal_sizes(file: &File) -> io::Result<()> {
     sys::seal_sizes(file)
 }
@@ -57,6 +74,7 @@ pub struct Mapping {
 }
 
 enum Backing {
+    #[cfg_attr(windows, allow(dead_code, reason = "Windows copies what it reads"))]
     Mapped(Mmap),
     /// A copy, where this system cannot seal memory.
     #[cfg_attr(
@@ -67,6 +85,7 @@ enum Backing {
 }
 
 impl Mapping {
+    #[cfg(unix)]
     fn view(map: Mmap, len: usize) -> Self {
         Self {
             backing: Backing::Mapped(map),
@@ -77,6 +96,7 @@ impl Mapping {
     /// Map a whole regular file read-only, limited to `max_len` bytes: a font from the shared
     /// read-only view, which lives on the image's read-only `/usr` and so cannot shrink under the
     /// mapping.
+    #[cfg(unix)]
     pub fn map_file(fd: &OwnedFd, max_len: usize) -> io::Result<Self> {
         let file = File::from(fd.as_fd().try_clone_to_owned()?);
         let metadata = file.metadata()?;
@@ -102,6 +122,7 @@ impl Mapping {
     /// Map a file or memory file read-only, limited to `len` bytes when given (a memory file's size
     /// can exceed its content). A concurrent truncation by the sender can only fault this process,
     /// so use it where this process is the confined one.
+    #[cfg(unix)]
     pub fn map_document(file: &File, len: Option<u64>) -> io::Result<Self> {
         let actual = file.metadata()?.len();
         let len = len.unwrap_or(actual);
@@ -171,7 +192,7 @@ impl Mapping {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 impl Mapping {
     /// The bytes of `fd`, at least `min_len` and at most `max_len` of them, copied once into this
     /// process's own read-only memory: nothing seals memory here, so a sender that kept it could
@@ -229,12 +250,14 @@ impl AsRef<[u8]> for Mapping {
 
 /// Map a memory file this process shares with another read-only, for memory the other side writes
 /// on request (a render target).
+#[cfg(unix)]
 pub fn map_shared(file: &File) -> io::Result<Mmap> {
     // SAFETY: the peer writes this memory only while serving a request the caller made and waits
     // for; callers treat the bytes as plain data.
     unsafe { Mmap::map(file) }
 }
 
+#[cfg(unix)]
 pub fn map_writable(file: &File) -> io::Result<MmapMut> {
     // SAFETY: the file is a memory file shared only with a peer that reads it after this side
     // reports the write complete. Pages fault in as they are written, so a buffer only as large as
@@ -245,6 +268,7 @@ pub fn map_writable(file: &File) -> io::Result<MmapMut> {
 /// Reopen a regular file read-only, so a descriptor that also allows writing is not handed to a
 /// less trusted process. `None` when the platform cannot name the file (it was deleted, or is not a
 /// regular file); callers then copy the bytes into a memory file.
+#[cfg(unix)]
 #[must_use]
 pub fn reopen_read_only(file: &File) -> Option<File> {
     sys::reopen_read_only(file)
@@ -467,7 +491,7 @@ mod sys {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

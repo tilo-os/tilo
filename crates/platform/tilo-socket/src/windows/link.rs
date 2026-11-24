@@ -9,26 +9,28 @@
 //! reaches the pipe through that handle alone, which no DACL check stands between.
 
 use super::{
-    BUFFER, ERROR_BROKEN_PIPE, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, PIPE_SDDL, Stream,
-    open, overlapped, wide,
+    BUFFER, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
+    PIPE_SDDL, Stream, event, open, overlapped, wide,
 };
 use crate::account::{Account, attributes};
 use std::io;
-use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use std::os::windows::io::{AsRawHandle as _, BorrowedHandle, FromRawHandle as _, OwnedHandle};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use windows_sys::Win32::{
-    Foundation::{GetLastError, INVALID_HANDLE_VALUE},
+    Foundation::{GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED},
     Storage::FileSystem::{
         FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_TYPE_PIPE, GetFileType,
         PIPE_ACCESS_DUPLEX,
     },
     System::{
+        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
         Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeInfo,
             PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_SERVER_END, PIPE_TYPE_MESSAGE,
             PIPE_WAIT, PeekNamedPipe, SetNamedPipeHandleState,
         },
-        Threading::{GetCurrentProcessId, INFINITE},
+        Threading::{GetCurrentProcessId, INFINITE, WaitForMultipleObjects},
     },
 };
 
@@ -181,6 +183,105 @@ impl Stream {
     }
 }
 
+/// The most handles one wait watches: the system's bound on `WaitForMultipleObjects`.
+const MOST_WATCHED: usize = 64;
+
+/// A zero-byte read pending on one stream: it ends once a message waits on the pipe or its other
+/// end goes, and reads nothing either way.
+struct Pending<'a> {
+    stream: &'a Stream,
+    event: OwnedHandle,
+    call: Box<OVERLAPPED>,
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        let pipe = self.stream.pipe.as_raw_handle();
+        let mut moved = 0;
+        // SAFETY: the call this owns on the stream's own pipe; GetOverlappedResult waits for a
+        // cancelled call to end, so the OVERLAPPED outlives it.
+        unsafe {
+            CancelIoEx(pipe, &raw const *self.call);
+            GetOverlappedResult(pipe, &raw const *self.call, &raw mut moved, 1);
+        }
+    }
+}
+
+/// Wait until one of `streams` has something to read (a message, or the end of the stream), one
+/// of `signals` is signalled, or `timeout` passes (`None` waits without end): what `poll` is on a
+/// socket. It reads nothing: ask each stream [`Stream::ready`] after.
+///
+/// # Errors
+/// More than one wait watches (64 handles: two for each stream, one for each signal), or the system's error starting a read
+/// or waiting.
+pub fn wait(
+    streams: &[&Stream],
+    signals: &[BorrowedHandle<'_>],
+    timeout: Option<Duration>,
+) -> io::Result<()> {
+    // Each stream is watched for a message and for its own shutdown.
+    if streams.len() * 2 + signals.len() > MOST_WATCHED {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a wait watches at most 64 handles: two for each stream, one for each signal",
+        ));
+    }
+    let mut pending = Vec::with_capacity(streams.len());
+    for stream in streams {
+        if stream.ready()? {
+            return Ok(());
+        }
+        let event = event()?;
+        // SAFETY: OVERLAPPED is plain data, valid zeroed.
+        let mut call: Box<OVERLAPPED> = Box::new(unsafe { std::mem::zeroed() });
+        call.hEvent = event.as_raw_handle();
+        // SAFETY: a live pipe handle, an empty buffer, and an OVERLAPPED that stays where it is
+        // until `Pending` has waited for the call to end.
+        let started = unsafe {
+            windows_sys::Win32::Storage::FileSystem::ReadFile(
+                stream.pipe.as_raw_handle(),
+                std::ptr::NonNull::<u8>::dangling().as_ptr(),
+                0,
+                std::ptr::null_mut(),
+                &raw mut *call,
+            )
+        };
+        // SAFETY: reads this thread's last error, right after the call.
+        let ended_at_once = started != 0 || unsafe { GetLastError() } != ERROR_IO_PENDING;
+        pending.push(Pending {
+            stream,
+            event,
+            call,
+        });
+        // A message waits (a read of none answers that more data does), or the pipe ended.
+        if ended_at_once {
+            return Ok(());
+        }
+    }
+    let handles: Vec<HANDLE> = pending
+        .iter()
+        .map(|pending| pending.event.as_raw_handle())
+        .chain(signals.iter().map(|signal| signal.as_raw_handle()))
+        .chain(
+            streams
+                .iter()
+                .map(|stream| stream.connection.shut.as_raw_handle()),
+        )
+        .collect();
+    let wait_ms = timeout.map_or(INFINITE, |timeout| {
+        u32::try_from(timeout.as_millis())
+            .unwrap_or(INFINITE - 1)
+            .min(INFINITE - 1)
+    });
+    let count = u32::try_from(handles.len()).unwrap_or(u32::MAX);
+    // SAFETY: live event and signal handles, as many as `count` says.
+    let waited = unsafe { WaitForMultipleObjects(count, handles.as_ptr(), 0, wait_ms) };
+    if waited == WAIT_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test fixtures")]
 mod tests {
@@ -228,5 +329,47 @@ mod tests {
             Stream::from_handle(file.into()).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn a_wait_ends_on_a_message_a_signal_a_hang_up_or_its_timeout() {
+        let (mut server, client) = pair().unwrap();
+        let other = pair().unwrap();
+        let started = std::time::Instant::now();
+        wait(
+            &[&client, &other.1],
+            &[],
+            Some(std::time::Duration::from_millis(50)),
+        )
+        .unwrap();
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(40),
+            "nothing woke it"
+        );
+        assert!(!client.ready().unwrap());
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            server.write_all(b"wake").unwrap();
+            server
+        });
+        wait(&[&other.1, &client], &[], None).unwrap();
+        assert!(client.ready().unwrap(), "a message ends the wait");
+        assert!(!other.1.ready().unwrap());
+        let mut buffer = [0_u8; 8];
+        let read = (&client).read(&mut buffer).unwrap();
+        assert_eq!(&buffer[..read], b"wake", "the wait read nothing of it");
+        let server = writer.join().unwrap();
+        let signal = super::super::event().unwrap();
+        // SAFETY: the event just made.
+        unsafe { windows_sys::Win32::System::Threading::SetEvent(signal.as_raw_handle()) };
+        use std::os::windows::io::AsHandle as _;
+        wait(&[&client], &[signal.as_handle()], None).unwrap();
+        assert!(
+            !client.ready().unwrap(),
+            "a signal ends it with nothing to read"
+        );
+        drop(server);
+        wait(&[&client], &[], None).unwrap();
+        assert!(client.hung_up(), "the other end going ends it");
     }
 }

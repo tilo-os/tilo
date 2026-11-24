@@ -9,7 +9,6 @@
 //! accessibility and automation take. Nothing here holds the app's data: what the person changes
 //! is the app's own action, run by its instance under the identity its connection was opened as.
 
-use tilo_render_protocol::channel::Channel;
 use tilo_server_protocol::page::window::{self, WindowAnswer, WindowAsk};
 use tilo_server_protocol::page::{PageAction, PagePatch};
 use ui::a11y::Action;
@@ -49,7 +48,7 @@ pub fn frame_of(window: HostedWindow) -> FrameHarness {
 /// The frame a page lays out the window over the patch connection `channel` in, whose other end
 /// its instance's host holds.
 #[must_use]
-pub fn frame_over(channel: Channel) -> FrameHarness {
+pub fn frame_over(channel: super::hosted::PatchConnection) -> FrameHarness {
     frame_of(HostedWindow::over(channel))
 }
 
@@ -291,6 +290,7 @@ fn patches(patches: Vec<Patch>) -> Vec<PagePatch> {
 ///
 /// # Errors
 /// The variable names no two descriptors, or the window's connections are unusable.
+#[cfg(unix)]
 pub fn serve_from_env(named: &str) -> std::io::Result<()> {
     use std::os::fd::{FromRawFd as _, OwnedFd, RawFd};
     let unusable =
@@ -302,7 +302,7 @@ pub fn serve_from_env(named: &str) -> std::io::Result<()> {
     // SAFETY: the device that started this process handed it these two descriptors, open and
     // its own, for this process alone, and names them in the variable it reads them from.
     let (patch, link) = unsafe { (OwnedFd::from_raw_fd(patch), OwnedFd::from_raw_fd(link)) };
-    let channel = Channel::from_socket(patch)?;
+    let channel = tilo_render_protocol::channel::Channel::from_socket(patch)?;
     let mut link = std::os::unix::net::UnixStream::from(link);
     let mut frame = frame_over(channel);
     serve(&mut frame, &mut link)

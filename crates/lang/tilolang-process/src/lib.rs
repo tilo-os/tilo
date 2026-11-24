@@ -25,14 +25,17 @@
 //! **Storage.** One directory per workspace and author, granted to the process at its start: it
 //! keeps the modules the process compiled, so a later start does not compile them again. The
 //! apps' resources are the store's, never the process's.
-#![cfg(unix)]
+#![cfg(any(unix, windows))]
 
 pub mod call;
 pub mod canvas;
 pub mod connection;
 #[cfg(feature = "app-launch")]
 pub mod containers_engine;
-#[cfg(feature = "app-launch")]
+#[cfg(all(
+    feature = "app-launch",
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
 pub mod feed_engine;
 pub mod files;
 pub mod hosted;
@@ -47,7 +50,10 @@ pub mod stop;
 pub mod task;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-#[cfg(feature = "app-launch")]
+#[cfg(all(
+    feature = "app-launch",
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
 pub mod video_engine;
 pub mod wait;
 pub mod web;
@@ -111,19 +117,17 @@ mod reload_in_place {
     }
 }
 
-use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 
+use runtime_portal::packet::Descriptor;
 /// The person's formats and language, as the session says them on the API
 /// ([`TilolangProcess::set_locale`]).
 pub use runtime_portal::process_link::Locale;
 use runtime_portal::process_link::{AppBuild, InstanceFds, InstanceRequest, Module, Shows};
-use tilo_render_protocol::channel::Channel;
-use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::meta::MetaExt as _;
@@ -203,20 +207,101 @@ pub enum AdmitError {
     Window(std::io::Error),
 }
 
+/// A connection the session handed, to read and write: a Unix socket, or a pipe on Windows.
+///
+/// # Errors
+/// On Windows, a handle that is no pipe.
+pub(crate) fn stream_of(handed: Descriptor) -> std::io::Result<tilo_socket::Stream> {
+    #[cfg(unix)]
+    {
+        Ok(handed.into())
+    }
+    #[cfg(windows)]
+    {
+        handed.into_stream()
+    }
+}
+
+/// [`stream_of`] for a connection an instance runs without when it is unusable: said, and none.
+fn usable(handed: Option<Descriptor>, what: &str) -> Option<tilo_socket::Stream> {
+    stream_of(handed?)
+        .inspect_err(|error| tracing::warn!(%error, "the instance's {what} connection is unusable"))
+        .ok()
+}
+
+/// A window's end of its instance's patch connection, or the instance's: a packet socket on Unix,
+/// a pipe on Windows.
+#[cfg(unix)]
+pub type PatchConnection = tilo_render_protocol::channel::Channel;
+/// A window's end of its instance's patch connection, or the instance's: a packet socket on Unix,
+/// a pipe on Windows.
+#[cfg(windows)]
+pub type PatchConnection = tilo_socket::Stream;
+
+/// The patch connection `handed` names, as the session handed it.
+///
+/// # Errors
+/// It is no packet socket (on Windows, no pipe).
+pub fn patch_connection(handed: Descriptor) -> std::io::Result<PatchConnection> {
+    #[cfg(unix)]
+    {
+        tilo_render_protocol::channel::Channel::from_socket(handed)
+    }
+    #[cfg(windows)]
+    {
+        handed.into_stream()
+    }
+}
+
+/// The transport over `connection`, and a second handle on it to watch for what arrives and for
+/// its other end going.
+///
+/// # Errors
+/// The connection could not be duplicated or set up.
+pub(crate) fn patch_transport(
+    connection: PatchConnection,
+) -> std::io::Result<(Box<dyn tilo_render_protocol::patch::Transport>, Descriptor)> {
+    #[cfg(unix)]
+    {
+        let watched = std::os::fd::AsFd::as_fd(&connection).try_clone_to_owned()?;
+        let transport = tilo_render_protocol::patch::unix::ChannelTransport::new(connection)?;
+        Ok((Box::new(transport), watched))
+    }
+    #[cfg(windows)]
+    {
+        let watched = Descriptor::new(connection.try_clone()?);
+        Ok((
+            Box::new(tilo_render_protocol::patch::pipe::PipeTransport::new(
+                connection,
+            )),
+            watched,
+        ))
+    }
+}
+
 /// The device content store over the connection the session opened for this instance: the app's
 /// in its workspace, which the launcher never started the process with. A connection that does
-/// not hold leaves the instance running without one, as a launched app runs without media.
-fn store_of(fd: Option<OwnedFd>) -> Option<tilo_content::ContentStore> {
-    let stream = std::os::unix::net::UnixStream::from(fd?);
-    tilo_content_device::for_connection(stream)
-        .inspect_err(|error| tracing::warn!(%error, "the instance's content store is unusable"))
-        .ok()
+/// not hold leaves the instance running without one, as a launched app runs without media. The
+/// device content store has no Windows client yet: an instance there keeps its files in the
+/// store of its own machine.
+fn store_of(fd: Option<Descriptor>) -> Option<tilo_content::ContentStore> {
+    #[cfg(unix)]
+    {
+        tilo_content_device::for_connection(fd?)
+            .inspect_err(|error| tracing::warn!(%error, "the instance's content store is unusable"))
+            .ok()
+    }
+    #[cfg(windows)]
+    {
+        let _ = fd;
+        None
+    }
 }
 
 /// The person's chooser over the connection the session opened for this instance, over the
 /// chooser the launch brought for what nobody is at the computer to answer.
-fn chooser_of(fd: Option<OwnedFd>) -> Option<Arc<dyn tilo_dialogs::FilePicker>> {
-    let stream = std::os::unix::net::UnixStream::from(fd?);
+fn chooser_of(fd: Option<Descriptor>) -> Option<Arc<dyn tilo_dialogs::FilePicker>> {
+    let stream = usable(fd, "chooser")?;
     let elsewhere = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())
         .and_then(|directory| {
@@ -231,8 +316,8 @@ fn chooser_of(fd: Option<OwnedFd>) -> Option<Arc<dyn tilo_dialogs::FilePicker>> 
 /// The person's clipboard over the connection the session opened for this instance: what
 /// `clipboard.copy` and `clipboard.paste` reach, since an instance's process holds no display to
 /// offer or read a selection on.
-fn clipboard_of(fd: Option<OwnedFd>) -> Option<Arc<tilo_clipboard::service::Connected>> {
-    let stream = std::os::unix::net::UnixStream::from(fd?);
+fn clipboard_of(fd: Option<Descriptor>) -> Option<Arc<tilo_clipboard::service::Connected>> {
+    let stream = usable(fd, "clipboard")?;
     let Some(connected) = tilo_clipboard::service::Connected::connect(stream) else {
         tracing::warn!("the person's clipboard is unusable");
         return None;
@@ -243,8 +328,11 @@ fn clipboard_of(fd: Option<OwnedFd>) -> Option<Arc<tilo_clipboard::service::Conn
 /// The session's tools service over the connection it made for this instance, for the app's
 /// workspace: what `File.open` asks which app opens a file and starts it. The session fixed who
 /// asks when it made the connection, so the requests on it name no app.
-fn tools_of(fd: Option<OwnedFd>, workspace: &str) -> Option<Arc<runtime_portal::tools::Service>> {
-    let stream = std::os::unix::net::UnixStream::from(fd?);
+fn tools_of(
+    fd: Option<Descriptor>,
+    workspace: &str,
+) -> Option<Arc<runtime_portal::tools::Service>> {
+    let stream = usable(fd, "tools")?;
     Some(Arc::new(runtime_portal::tools::Service::connect(
         stream, workspace,
     )))
@@ -253,7 +341,7 @@ fn tools_of(fd: Option<OwnedFd>, workspace: &str) -> Option<Arc<runtime_portal::
 /// One running instance and its window's connection, watched for the window closing.
 struct Running {
     hosted: Hosted,
-    window: Option<OwnedFd>,
+    window: Option<Descriptor>,
 }
 
 /// An instance being opened: its module read and its connection joining its workspace's route,
@@ -265,11 +353,11 @@ struct Opening {
     stage: Stage,
     /// The window's connection, until the instance runs: `None` for an instance that shows
     /// nothing ([`Shows::Nothing`]).
-    window: Option<Channel>,
-    identity: Option<OwnedFd>,
+    window: Option<PatchConnection>,
+    identity: Option<Descriptor>,
     /// The connection to the app's origin connector, for an app whose types hold an outside
     /// service's resources.
-    origin: Option<OwnedFd>,
+    origin: Option<Descriptor>,
     /// The device content store of the app in its workspace, over the connection the session
     /// opened for this instance.
     content: Option<tilo_content::ContentStore>,
@@ -311,7 +399,7 @@ enum Stage {
     /// The module, decoded on a thread of its own.
     Module {
         request: InstanceRequest,
-        broker: OwnedFd,
+        broker: Descriptor,
         decoded: Receiver<Result<Bundle, AdmitError>>,
     },
     /// The connection joining the route, in the background of its manager.
@@ -329,7 +417,7 @@ enum Step {
     Waiting,
     /// It runs, its window's connection watched by the second (none for an instance that shows
     /// nothing).
-    Open(Box<Hosted>, Option<OwnedFd>),
+    Open(Box<Hosted>, Option<Descriptor>),
 }
 
 /// The host: what wakes it, and its instances.
@@ -467,16 +555,16 @@ impl TilolangProcess {
     }
 
     /// The task's program connection, to wait on.
-    pub fn task_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
-        self.task.as_ref().map(task::Task::fd)
+    pub fn task_link(&self) -> Option<&tilo_socket::Stream> {
+        self.task.as_ref().map(task::Task::link)
     }
 
     /// The task's further connections, to wait on: the person's lines in its run's
     /// conversation, each a connection of its own into the same session.
-    pub fn task_guest_fds(&self) -> Vec<std::os::fd::OwnedFd> {
+    pub fn task_guests(&self) -> Vec<tilo_socket::Stream> {
         self.task
             .as_ref()
-            .map(task::Task::guest_fds)
+            .map(task::Task::guests)
             .unwrap_or_default()
     }
 
@@ -611,7 +699,7 @@ impl TilolangProcess {
 
     /// Run `hosted`, until its window closes (`window` hangs up) or the host ends. It takes over
     /// each later build of its app as it arrives ([`Self::take_build`]).
-    pub fn add(&mut self, hosted: Hosted, window: Option<OwnedFd>) {
+    pub fn add(&mut self, hosted: Hosted, window: Option<Descriptor>) {
         let builds = self.builds.entry(hosted.spec().app.clone()).or_default();
         hosted.follow_builds(Arc::clone(builds));
         tracing::info!(
@@ -635,7 +723,7 @@ impl TilolangProcess {
     ///
     /// # Errors
     /// The module does not read, or it is another app's.
-    pub fn take_build(&mut self, build: &AppBuild, module: &OwnedFd) -> Result<(), AdmitError> {
+    pub fn take_build(&mut self, build: &AppBuild, module: &Descriptor) -> Result<(), AdmitError> {
         let bundle = module_bundle(module, build.module_len)?;
         if bundle.meta.app != build.app {
             return Err(AdmitError::IdMismatch {
@@ -656,7 +744,7 @@ impl TilolangProcess {
     pub fn admit(&mut self, request: InstanceRequest, fds: InstanceFds) -> Result<(), AdmitError> {
         let window = match (request.shows, fds.window) {
             (Shows::View, Some(window)) => {
-                Some(Channel::from_socket(window).map_err(AdmitError::Window)?)
+                Some(patch_connection(window).map_err(AdmitError::Window)?)
             }
             // The session draws nothing for it: it has no window to hand, and none to expect.
             (Shows::Nothing, _) => None,
@@ -719,7 +807,7 @@ impl TilolangProcess {
         spec: Spec,
         bundle: Arc<Bundle>,
         manager: collaboration::CollaborationManager,
-        window: Channel,
+        window: PatchConnection,
     ) {
         self.opening.push(Opening {
             app: spec.app.clone(),
@@ -809,8 +897,8 @@ impl TilolangProcess {
     fn join(
         &self,
         request: InstanceRequest,
-        broker: OwnedFd,
-        identity: Option<&OwnedFd>,
+        broker: Descriptor,
+        identity: Option<&Descriptor>,
         bundle: Bundle,
     ) -> Result<Stage, AdmitError> {
         if bundle.meta.app != request.app {
@@ -845,7 +933,7 @@ impl TilolangProcess {
         let manager = collaboration::CollaborationManager::join_instance(
             &collab_types::document::ResourceType::new(bundle.meta.resource_type()),
             broker,
-            identity.as_fd(),
+            identity,
             route,
         )
         .map_err(|error| AdmitError::Join(format!("{error:?}")))?;
@@ -934,22 +1022,19 @@ impl TilolangProcess {
         ));
         // A window's instance draws and hears its window; one that shows nothing sends its
         // patches nowhere and hears nothing.
-        let (transport, watched): (Box<dyn tilo_render_protocol::patch::Transport>, _) =
-            match spec.shows {
-                Shows::View => {
-                    let window = opening
-                        .window
-                        .take()
-                        .ok_or_else(|| AdmitError::Join("its window is gone".to_owned()))?;
-                    let watched = window
-                        .as_fd()
-                        .try_clone_to_owned()
-                        .map_err(AdmitError::Window)?;
-                    let transport = ChannelTransport::new(window).map_err(AdmitError::Window)?;
-                    (Box::new(transport), Some(watched))
-                }
-                Shows::Nothing => (Box::new(hosted::NoView), None),
-            };
+        let (transport, watched): (Box<dyn tilo_render_protocol::patch::Transport>, _) = match spec
+            .shows
+        {
+            Shows::View => {
+                let window = opening
+                    .window
+                    .take()
+                    .ok_or_else(|| AdmitError::Join("its window is gone".to_owned()))?;
+                let (transport, watched) = patch_transport(window).map_err(AdmitError::Window)?;
+                (transport, Some(watched))
+            }
+            Shows::Nothing => (Box::new(hosted::NoView), None),
+        };
         let shows = spec.shows;
         // What the instance's actions keep as content lives in the device's content store, as a
         // native window's does: it outlives the instance.
@@ -1023,12 +1108,11 @@ impl TilolangProcess {
                 .into_iter()
                 .find(|name| tilolang_tilo::origin::uses_origin(&hosted.bundle().meta, name));
             if let Some(name) = served {
-                let origin = tilolang_tilo::origin::remote(
-                    name,
-                    std::os::unix::net::UnixStream::from(origin),
-                    Arc::clone(&self.wake),
-                )
-                .map_err(|error| AdmitError::Join(format!("its {name} connector: {error}")))?;
+                let origin = stream_of(origin)
+                    .and_then(|origin| {
+                        tilolang_tilo::origin::remote(name, origin, Arc::clone(&self.wake))
+                    })
+                    .map_err(|error| AdmitError::Join(format!("its {name} connector: {error}")))?;
                 hosted.add_origin(origin);
             } else {
                 tracing::warn!(
@@ -1051,11 +1135,7 @@ impl TilolangProcess {
         let mut started = Vec::new();
         let mut ended = Vec::new();
         opening.retain_mut(|open| {
-            if open
-                .window
-                .as_ref()
-                .is_some_and(|window| hung_up(window.as_fd()))
-            {
+            if open.window.as_ref().is_some_and(opening_closed) {
                 tracing::info!(
                     app = open.app,
                     "an instance's window closed before it opened"
@@ -1089,18 +1169,16 @@ impl TilolangProcess {
 
     /// The running instances' window connections, to wait on: what one sends is its instance's
     /// next frame's, and one closing ends its instance. An instance that shows nothing has none.
-    pub fn windows(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
+    pub fn windows(&self) -> impl Iterator<Item = &Descriptor> {
         self.running
             .iter()
-            .filter_map(|running| running.window.as_ref().map(OwnedFd::as_fd))
+            .filter_map(|running| running.window.as_ref())
     }
 
     /// The window connections of the instances being opened, to wait on for closing only: what
     /// one sends stays in it until its instance runs, and one closing ends its opening.
-    pub fn opening_windows(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
-        self.opening
-            .iter()
-            .filter_map(|open| open.window.as_ref().map(AsFd::as_fd))
+    pub fn opening_windows(&self) -> impl Iterator<Item = &PatchConnection> {
+        self.opening.iter().filter_map(|open| open.window.as_ref())
     }
 
     /// One frame of every instance; an instance whose window closed ends, its document written
@@ -1118,7 +1196,7 @@ impl TilolangProcess {
             let open = running
                 .window
                 .as_ref()
-                .is_none_or(|fd| !hung_up(fd.as_fd()));
+                .is_none_or(|window| !window_closed(window));
             if !open {
                 running.hosted.page_closed();
                 running.hosted.flush();
@@ -1246,11 +1324,11 @@ fn arrived_early(
 }
 
 /// The bundle the immutable shared buffer `fd` holds, `len` bytes of it.
-fn module_bundle(fd: &OwnedFd, len: u64) -> Result<Bundle, AdmitError> {
+fn module_bundle(fd: &Descriptor, len: u64) -> Result<Bundle, AdmitError> {
     let module_error = |error: &dyn std::fmt::Display| AdmitError::Module(error.to_string());
     let len = usize::try_from(len).map_err(|error| module_error(&error))?;
-    let mapping = tilo_render_protocol::shm::Mapping::map_sealed(fd, true, len, len)
-        .map_err(|error| module_error(&error))?;
+    let mapping =
+        tilo_shm::Mapping::map_sealed(fd, true, len, len).map_err(|error| module_error(&error))?;
     let bytes = mapping
         .get(0, len)
         .ok_or_else(|| AdmitError::Module("the module is shorter than it says".to_owned()))?;
@@ -1259,7 +1337,33 @@ fn module_bundle(fd: &OwnedFd, len: u64) -> Result<Bundle, AdmitError> {
         .map_err(|error| module_error(&error))
 }
 
+/// Whether a running instance's window let go of its patch connection.
+fn window_closed(window: &Descriptor) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsFd as _;
+        hung_up(window.as_fd())
+    }
+    #[cfg(windows)]
+    {
+        window.stream().is_ok_and(tilo_socket::Stream::hung_up)
+    }
+}
+
+/// Whether the window of an instance being opened let go of its patch connection.
+fn opening_closed(window: &PatchConnection) -> bool {
+    #[cfg(unix)]
+    {
+        hung_up(std::os::fd::AsFd::as_fd(window))
+    }
+    #[cfg(windows)]
+    {
+        window.hung_up()
+    }
+}
+
 /// Whether the peer of the socket `fd` hung up.
+#[cfg(unix)]
 fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
     use std::os::fd::AsRawFd as _;
     let mut poll = libc::pollfd {

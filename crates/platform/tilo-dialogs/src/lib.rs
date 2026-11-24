@@ -23,9 +23,9 @@ mod caps;
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 pub mod portal;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod shell;
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 #[path = "shell_absent.rs"]
 pub mod shell;
 #[cfg(not(target_arch = "wasm32"))]

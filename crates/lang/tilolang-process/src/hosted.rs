@@ -590,10 +590,16 @@ impl Locale for HostPlatform {
 
 /// This device's content store, as the Passwords engine asks for a file's bytes and keeps what it
 /// makes: the file address an app holds names the content, never a path.
-#[cfg(feature = "app-launch")]
+#[cfg(all(
+    feature = "app-launch",
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
 struct EngineContent<'a>(&'a HostPlatform);
 
-#[cfg(feature = "app-launch")]
+#[cfg(all(
+    feature = "app-launch",
+    any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64"))
+))]
 impl passwords_engine::Device for EngineContent<'_> {
     fn read(&self, hash: &str) -> Option<Vec<u8>> {
         self.0.read_content(hash)
@@ -676,16 +682,21 @@ impl Platform for HostPlatform {
         Some(crate::canvas::Engine::host())
     }
 
-    /// The Passwords and Video Editor engines this device links; every other app's asks go to the
-    /// session's own registry.
+    /// The Passwords, Video Editor and containers engines this device links; every other app's
+    /// asks go to the session's own registry. The Passwords, Video Editor and Feeds engines build
+    /// for Linux and Apple silicon alone.
     #[cfg(feature = "app-launch")]
     fn engine_call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        if app == passwords_engine::APP {
-            let device = EngineContent(self);
-            return passwords_engine::call(&device, app, op, input);
-        }
-        if app == crate::video_engine::APP {
-            return crate::video_engine::call(self, app, op, input);
+        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            if app == passwords_engine::APP {
+                let device = EngineContent(self);
+                return passwords_engine::call(&device, app, op, input);
+            }
+            if app == crate::video_engine::APP {
+                return crate::video_engine::call(self, app, op, input);
+            }
+            crate::feed_engine::register();
         }
         if app == crate::containers_engine::APP {
             return crate::containers_engine::call(self, app, op, input);
@@ -693,7 +704,6 @@ impl Platform for HostPlatform {
         if app == crate::print_centre_engine::APP {
             return crate::print_centre_engine::call(self, app, op, input);
         }
-        crate::feed_engine::register();
         if app == crate::git_engine::APP {
             return crate::git_engine::call(app, op, input);
         }
@@ -705,8 +715,12 @@ impl Platform for HostPlatform {
         if app == tilo_api_client::APP {
             return tilo_api_client::start(op, input);
         }
-        if app == crate::video_engine::APP {
-            return crate::video_engine::start(self, app, op, input);
+        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            if app == crate::video_engine::APP {
+                return crate::video_engine::start(self, app, op, input);
+            }
+            crate::feed_engine::register();
         }
         if app == crate::containers_engine::APP {
             return crate::containers_engine::start(self, app, op, input);
@@ -714,7 +728,6 @@ impl Platform for HostPlatform {
         if app == crate::print_centre_engine::APP {
             return crate::print_centre_engine::start(self, app, op, input);
         }
-        crate::feed_engine::register();
         if app == crate::git_engine::APP {
             return crate::git_engine::start(app, op, input);
         }
@@ -726,24 +739,32 @@ impl Platform for HostPlatform {
         if let Ok(state) = tilo_api_client::status(job) {
             return Ok(state);
         }
+        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            crate::feed_engine::register();
+            if let Ok(status) = crate::video_engine::status(self, job) {
+                return Ok(status);
+            }
+        }
         crate::git_engine::status(job).or_else(|unknown| {
-            crate::video_engine::status(self, job).or_else(|_| {
-                crate::containers_engine::status(job).or_else(|_| {
-                    crate::print_centre_engine::status(self, job).or_else(|_| {
-                        crate::feed_engine::register();
-                        tilolang_tilo::engine::progress(job).map_err(|_| unknown)
-                    })
-                })
+            crate::containers_engine::status(job).or_else(|_| {
+                crate::print_centre_engine::status(self, job)
+                    .or_else(|_| tilolang_tilo::engine::progress(job).map_err(|_| unknown))
             })
         })
     }
 
     #[cfg(feature = "app-launch")]
     fn engine_cancel(&self, job: &str) -> bool {
-        crate::feed_engine::register();
+        #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            crate::feed_engine::register();
+            if crate::video_engine::cancel(job) {
+                return true;
+            }
+        }
         crate::git_engine::cancel(job)
             || tilo_api_client::cancel(job)
-            || crate::video_engine::cancel(job)
             || crate::containers_engine::cancel(job)
             || crate::print_centre_engine::cancel(job)
             || tilolang_tilo::engine::stop(job)

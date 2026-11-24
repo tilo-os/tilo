@@ -3,12 +3,10 @@
 //! chooses an intent, and the shell maps it to an installed package and builds
 //! any command itself.
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(unix)]
 use std::os::fd::BorrowedFd;
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 
 use serde::{Deserialize, Serialize};
 
@@ -552,19 +550,19 @@ pub fn open_document(path: &str, app: Option<&str>) -> Result<(), String> {
 /// who asks when it does, so the requests on it name the app they are made for without saying so.
 ///
 /// Topics are asked one at a time on one connection: a reply carries no request id.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug)]
 pub struct Service {
-    stream: UnixStream,
+    stream: tilo_socket::Stream,
     workspace: String,
     turn: std::sync::Mutex<()>,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 impl Service {
     /// The service over `stream`, the connection the shell made for an app in `workspace`.
     #[must_use]
-    pub fn connect(stream: UnixStream, workspace: impl Into<String>) -> Self {
+    pub fn connect(stream: tilo_socket::Stream, workspace: impl Into<String>) -> Self {
         Self {
             stream,
             workspace: workspace.into(),
@@ -585,7 +583,7 @@ impl Service {
             intent,
             on_behalf_of: None,
         };
-        let reply = exchange(std::os::fd::AsFd::as_fd(&self.stream), &request, &self.turn)?;
+        let reply = exchange(&self.stream, &request, &self.turn)?;
         if reply.accepted {
             Ok(reply)
         } else {
@@ -669,11 +667,10 @@ fn send_tool_request(
     };
     // SAFETY: the launcher keeps the service descriptor open for the
     // process's lifetime; it is only borrowed for this exchange.
-    let reply = exchange(
-        unsafe { BorrowedFd::borrow_raw(raw_fd) },
-        &request,
-        &EXCHANGE,
-    )?;
+    let service = unsafe { BorrowedFd::borrow_raw(raw_fd) }
+        .try_clone_to_owned()
+        .map_err(|e| format!("opening the shell tool service: {e}"))?;
+    let reply = exchange(&tilo_socket::Stream::from(service), &request, &EXCHANGE)?;
     if reply.accepted {
         Ok(reply)
     } else {
@@ -683,11 +680,11 @@ fn send_tool_request(
 
 /// One request and its reply over `service`, one at a time under `turn`.
 ///
-/// The descriptor is duplicated: dropping the per-request stream must not close the connection
-/// the caller holds.
-#[cfg(unix)]
+/// The connection is cloned: dropping the per-request stream must not close the connection the
+/// caller holds.
+#[cfg(any(unix, windows))]
 fn exchange(
-    service: BorrowedFd<'_>,
+    service: &tilo_socket::Stream,
     request: &ToolRequest,
     turn: &std::sync::Mutex<()>,
 ) -> Result<ToolReply, String> {
@@ -700,10 +697,9 @@ fn exchange(
     }
     encoded.push(b'\n');
     let _turn = turn.lock_recover();
-    let owned = service
-        .try_clone_to_owned()
+    let mut stream = service
+        .try_clone()
         .map_err(|e| format!("opening the shell tool service: {e}"))?;
-    let mut stream = UnixStream::from(owned);
     stream
         .write_all(&encoded)
         .map_err(|e| format!("sending tool request: {e}"))?;
@@ -748,11 +744,10 @@ pub fn tool_intent_from_env() -> Option<ToolIntent> {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn concurrent_callers_each_get_their_own_reply() {
-        use std::os::fd::AsFd as _;
-        let (client, server) = UnixStream::pair().unwrap();
+        let (client, server) = tilo_socket::pair().unwrap();
         let shell = std::thread::spawn(move || {
             let mut answer = server.try_clone().unwrap();
             for line in BufReader::new(server).lines() {
@@ -782,7 +777,7 @@ mod tests {
                             intent: ToolIntent::Drives,
                             on_behalf_of: None,
                         };
-                        let reply = exchange(client.as_fd(), &request, exchange_lock).unwrap();
+                        let reply = exchange(client, &request, exchange_lock).unwrap();
                         assert_eq!(reply.message, request.workspace_id);
                     }
                 });

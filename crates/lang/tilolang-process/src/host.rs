@@ -188,13 +188,7 @@ fn run(api: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
         let timeout_ms = host.wakes_in().map_or(-1, |wait| {
             i32::try_from(wait.as_millis()).unwrap_or(i32::MAX)
         });
-        let ready = match wait(
-            api.as_ref().map(|api| api.as_fd()),
-            wake.fd(),
-            stop.as_ref().map(Stop::fd),
-            &host,
-            timeout_ms,
-        ) {
+        let ready = match wait(api.as_ref(), &wake, stop.as_ref(), &host, timeout_ms) {
             Ok(ready) => ready,
             Err(error) => return (Exit::failed(format!("its wait failed: {error}")), api),
         };

@@ -31,9 +31,10 @@
 
 use std::cell::RefCell;
 use std::io::{BufRead as _, BufReader, Write as _};
-use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
-use std::os::unix::net::UnixStream;
+
+use runtime_portal::packet::Descriptor;
 use std::rc::Rc;
+use tilo_socket::Stream;
 
 use runtime_portal::process_link::{App, TaskFds, TaskRequest, decode_apps};
 use serde_json::{Value as Json, json};
@@ -77,8 +78,8 @@ fn sentence_for_a_person(kind: &str, value: &str) -> String {
 
 /// The program connection, one line at a time.
 struct Line {
-    reader: RefCell<BufReader<UnixStream>>,
-    writer: RefCell<UnixStream>,
+    reader: RefCell<BufReader<Stream>>,
+    writer: RefCell<Stream>,
 }
 
 impl Line {
@@ -323,14 +324,14 @@ struct Guest {
     line: Rc<Line>,
     api: Rc<Api>,
     /// Its connection, watched by the host's wait: a line arriving wakes the host.
-    watched: OwnedFd,
+    watched: Stream,
 }
 
 /// A task this host runs the programs of.
 pub struct Task {
     line: Rc<Line>,
     /// The program connection, watched for what the API sends.
-    watched: OwnedFd,
+    watched: Stream,
     /// Further connections into the same session, each given when the host opened: the
     /// person's lines in the run's conversation run here, beside the agent's own calls, so the
     /// two share the session's `let`s. Every program still runs one at a time.
@@ -352,12 +353,12 @@ impl Task {
     pub fn open_with(
         request: &TaskRequest,
         fds: TaskFds,
-        person: Option<UnixStream>,
+        person: Option<Stream>,
     ) -> Result<Self, String> {
         let apps = apps(&fds.apps, request.apps_len)?;
-        let stream = UnixStream::from(fds.program);
+        let stream = crate::stream_of(fds.program).map_err(|error| error.to_string())?;
         let writer = stream.try_clone().map_err(|error| error.to_string())?;
-        let watched = OwnedFd::from(stream.try_clone().map_err(|error| error.to_string())?);
+        let watched = stream.try_clone().map_err(|error| error.to_string())?;
         let line = Rc::new(Line {
             reader: RefCell::new(BufReader::new(stream)),
             writer: RefCell::new(writer),
@@ -414,12 +415,14 @@ impl Task {
 
     /// Let `stream` join this session as a guest: what it sends runs in the same session, one
     /// program at a time, and what the program reads or changes goes back on it.
-    pub fn join(&self, stream: UnixStream) -> Result<(), String> {
+    pub fn join(&self, stream: Stream) -> Result<(), String> {
+        // A pipe always waits; a socket may have been handed over not waiting.
+        #[cfg(unix)]
         stream
             .set_nonblocking(false)
             .map_err(|error| error.to_string())?;
         let writer = stream.try_clone().map_err(|error| error.to_string())?;
-        let watched = OwnedFd::from(stream.try_clone().map_err(|error| error.to_string())?);
+        let watched = stream.try_clone().map_err(|error| error.to_string())?;
         let line = Rc::new(Line {
             reader: RefCell::new(BufReader::new(stream)),
             writer: RefCell::new(writer),
@@ -441,13 +444,13 @@ impl Task {
     }
 
     /// The program connection, to wait on.
-    pub fn fd(&self) -> BorrowedFd<'_> {
-        self.watched.as_fd()
+    pub fn link(&self) -> &Stream {
+        &self.watched
     }
 
-    /// Copies of the guest connections' descriptors, to wait on: a line arriving on one wakes
-    /// the host as the API's own connection would.
-    pub fn guest_fds(&self) -> Vec<OwnedFd> {
+    /// Copies of the guest connections, to wait on: a line arriving on one wakes the host as the
+    /// API's own connection would.
+    pub fn guests(&self) -> Vec<Stream> {
         self.guests
             .borrow()
             .iter()
@@ -519,10 +522,11 @@ impl Task {
     /// Block until the API's connection or a guest's has something to read, saying which: `0`
     /// for the API's own, `at + 1` for the guest at `at`. `None` once the API's connection
     /// closed.
+    #[cfg(unix)]
     fn wait_ready(&self) -> Option<Vec<usize>> {
         use std::os::fd::AsRawFd as _;
         let api = self.watched.as_raw_fd();
-        let guests = self.guest_fds();
+        let guests = self.guests();
         let mut fds = Vec::with_capacity(guests.len().saturating_add(1));
         fds.push(libc::pollfd {
             fd: api,
@@ -562,6 +566,30 @@ impl Task {
                     .collect(),
             );
         }
+    }
+
+    /// Block until the API's connection or a guest's has something to read, saying which: `0`
+    /// for the API's own, `at + 1` for the guest at `at`. `None` once the API's connection
+    /// closed.
+    #[cfg(windows)]
+    fn wait_ready(&self) -> Option<Vec<usize>> {
+        let guests = self.guests();
+        let mut streams = vec![&self.watched];
+        streams.extend(guests.iter());
+        tilo_socket::link::wait(&streams, &[], None).ok()?;
+        // The API's own connection closing ends the task; a guest's closing is served as a line
+        // that ends, which drops it.
+        if self.watched.hung_up() {
+            return None;
+        }
+        Some(
+            streams
+                .iter()
+                .enumerate()
+                .filter(|(_, stream)| stream.ready().unwrap_or(true))
+                .map(|(at, _)| at)
+                .collect(),
+        )
     }
 
     /// Serve one line of the guest at `at`: `false` once its connection closed. The guest's own
@@ -704,10 +732,10 @@ struct Apps {
 }
 
 /// The apps the immutable shared buffer `fd` holds, `len` bytes of them.
-fn apps(fd: &OwnedFd, len: u64) -> Result<Apps, String> {
+fn apps(fd: &Descriptor, len: u64) -> Result<Apps, String> {
     let len = usize::try_from(len).map_err(|error| error.to_string())?;
-    let mapping = tilo_render_protocol::shm::Mapping::map_sealed(fd, true, len, len)
-        .map_err(|error| error.to_string())?;
+    let mapping =
+        tilo_shm::Mapping::map_sealed(fd, true, len, len).map_err(|error| error.to_string())?;
     let bytes = mapping
         .get(0, len)
         .ok_or("the apps are shorter than they say")?;
@@ -762,23 +790,20 @@ mod tests {
     use super::*;
 
     /// A task over no packages, its program connection's far end returned as the API's.
-    fn task() -> (Task, BufReader<UnixStream>, UnixStream) {
+    fn task() -> (Task, BufReader<Stream>, Stream) {
         task_with(&[])
     }
 
     /// A task over the apps `native`, read as packages from their surfaces, its program
     /// connection's far end returned as the API's.
-    fn task_with(native: &[PackageMeta]) -> (Task, BufReader<UnixStream>, UnixStream) {
+    fn task_with(native: &[PackageMeta]) -> (Task, BufReader<Stream>, Stream) {
         task_over(&[], native)
     }
 
     /// A task over the packages `bundles` and the apps `native`, its program connection's far
     /// end returned as the API's.
-    fn task_over(
-        bundles: &[Bundle],
-        native: &[PackageMeta],
-    ) -> (Task, BufReader<UnixStream>, UnixStream) {
-        let (ours, api) = UnixStream::pair().expect("a socket pair");
+    fn task_over(bundles: &[Bundle], native: &[PackageMeta]) -> (Task, BufReader<Stream>, Stream) {
+        let (ours, api) = tilo_socket::pair().expect("a socket pair");
         let line = Rc::new(Line {
             reader: RefCell::new(BufReader::new(ours.try_clone().expect("a clone"))),
             writer: RefCell::new(ours.try_clone().expect("a clone")),
@@ -805,7 +830,7 @@ mod tests {
         .expect("a session");
         let task = Task {
             line,
-            watched: OwnedFd::from(ours),
+            watched: ours,
             guests: RefCell::new(Vec::new()),
             session,
             api: reached,
@@ -813,7 +838,7 @@ mod tests {
         (task, BufReader::new(api.try_clone().expect("a clone")), api)
     }
 
-    fn answer(reader: &mut BufReader<UnixStream>) -> Json {
+    fn answer(reader: &mut BufReader<Stream>) -> Json {
         let mut line = String::new();
         reader.read_line(&mut line).expect("an answer");
         serde_json::from_str(&line).expect("a JSON answer")
@@ -906,7 +931,7 @@ mod tests {
     /// Answer the `count` invocations the API is sent with `answer` (one JSON line), and hand
     /// back the invocations it was sent.
     fn answering(
-        api: UnixStream,
+        api: Stream,
         count: usize,
         answer: &'static str,
     ) -> std::thread::JoinHandle<Vec<Json>> {
@@ -1029,7 +1054,7 @@ mod tests {
     }
 
     /// Close the test's end of the API once the program ran: the task sends nothing more.
-    fn closed(api: &UnixStream) {
+    fn closed(api: &Stream) {
         api.shutdown(std::net::Shutdown::Both)
             .expect("the API closed");
     }
@@ -1037,7 +1062,7 @@ mod tests {
     /// An API that answers every message with `answer` until its far end closes (the test shuts
     /// the returned stream down once the program ran), handing back what the task sent it.
     fn scripted(
-        api: &UnixStream,
+        api: &Stream,
         mut answer: impl FnMut(&Json) -> Json + Send + 'static,
     ) -> std::thread::JoinHandle<Vec<Json>> {
         let mut api = api.try_clone().expect("a clone");

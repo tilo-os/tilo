@@ -66,6 +66,7 @@ fn launched() -> std::process::ExitCode {
     }
     // A window a device shows on a web page draws nothing: it answers the device on its page
     // link, and needs no package of its own, since its instance runs in the app's process.
+    #[cfg(unix)]
     if let Ok(named) = std::env::var(runtime_portal::process_link::PAGE_ENV) {
         return match tilolang_process::window::shown_on_page::serve_from_env(&named) {
             Ok(()) => std::process::ExitCode::SUCCESS,

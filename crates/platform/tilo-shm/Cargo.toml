@@ -8,15 +8,20 @@ license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "Anonymous shared memory between processes: a sealed memfd on Linux, unlinked POSIX shared memory on macOS, and the read-only view of either."
+description = "Anonymous shared memory between processes: a sealed memfd on Linux, unlinked POSIX shared memory on macOS, a read-only pagefile section on Windows, and the read-only view of each."
 
 [lib]
 name = "tilo_shm"
 path = "src/lib.rs"
 
+[dependencies]
+memmap2 = "0.9.10"
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-memmap2 = "0.9.10"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../../tools/test-env" }

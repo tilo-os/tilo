@@ -760,7 +760,7 @@ pub fn close(link: &Descriptor) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        link.stream().shutdown(std::net::Shutdown::Both)
+        link.stream()?.shutdown(std::net::Shutdown::Both)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -796,7 +796,7 @@ pub fn hung_up(link: &Descriptor) -> bool {
     }
     #[cfg(windows)]
     {
-        link.stream().hung_up()
+        link.stream().is_ok_and(tilo_socket::Stream::hung_up)
     }
     #[cfg(not(any(unix, windows)))]
     {

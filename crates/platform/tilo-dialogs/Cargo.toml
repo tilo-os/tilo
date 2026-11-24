@@ -35,10 +35,14 @@ tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env", optional 
 [target.'cfg(unix)'.dependencies]
 # `O_NOFOLLOW`/`O_DIRECTORY` when opening a chosen file or folder.
 libc.workspace = true
-# The session shell's chooser service speaks newline-delimited JSON.
+
+[target.'cfg(any(unix, windows))'.dependencies]
+# The session shell's chooser service speaks newline-delimited JSON, over a Unix socket or, on
+# Windows, a pipe.
 serde.workspace = true
 serde_json.workspace = true
 wire-frame = { version = "0.1.0", path = "../wire-frame" }
+tilo-socket = { version = "0.1.0", path = "../tilo-socket" }
 
 # The XDG Desktop Portal. Selected by target, not by a feature: every Linux
 # app chooses files through the portal, which is where the sandbox's

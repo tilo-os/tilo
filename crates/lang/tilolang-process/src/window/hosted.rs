@@ -10,9 +10,12 @@
 //!
 //! Without a session (`tilolang dev`, a capture), there is no host to run the instance: the
 //! window runs one in its own process ([`start`]), over the app's document on this device alone,
-//! and turns it on its own frames. The instance runs the same either way.
+//! and turns it on its own frames. The instance runs the same either way. On Windows a window
+//! shows only an instance a host runs: its patch connection is a pipe, carried down to it by the
+//! daemon that started it.
 
 use std::cell::RefCell;
+#[cfg(unix)]
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,7 +29,9 @@ use media::playback_bridge::{CollectionOutput, PlaybackBridge};
 use media::playback_cast::transport::ProjectorTransport;
 use media::playback_sink::SystemSinkFactory;
 use tilo_app_window::AppWindow;
+#[cfg(unix)]
 use tilo_render_protocol::channel::Channel;
+#[cfg(unix)]
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_tilo::bundle::Bundle;
 use ui::widget::DrawChild;
@@ -41,6 +46,8 @@ pub fn is_hosted() -> bool {
     static HOSTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *HOSTED.get_or_init(|| std::env::var(HOSTED_ENV).is_ok_and(|value| value == "1"))
 }
+
+pub use crate::{PatchConnection, patch_connection};
 
 /// The instance of the window being built: the one the shell asked the running process for, or
 /// the process's first window's.
@@ -80,13 +87,19 @@ struct Watch {
     wake: Arc<Mutex<ui::wake::WakeHandle>>,
     /// Closed when the window goes: the thread stops waiting on the connection, and lets go of
     /// the descriptor it holds, so the instance sees its window close and ends.
+    #[cfg(unix)]
     stop: Option<std::io::PipeWriter>,
+    /// Set when the window goes: the thread stops waiting on the connection, and lets go of the
+    /// pipe it holds, so the instance sees its window close and ends.
+    #[cfg(windows)]
+    stop: std::sync::Arc<std::os::windows::io::OwnedHandle>,
     /// The thread, joined as the window goes: once it is, the window holds nothing of the
     /// connection, and the instance's next turn finds it closed.
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Watch {
+    #[cfg(unix)]
     fn start(fd: OwnedFd, wake: Arc<Mutex<ui::wake::WakeHandle>>) -> Option<Self> {
         let signalled = Arc::new(AtomicBool::new(false));
         let (resume, resumed) = std::sync::mpsc::channel::<()>();
@@ -153,6 +166,74 @@ impl Watch {
         })
     }
 
+    #[cfg(windows)]
+    fn start(pipe: tilo_socket::Stream, wake: Arc<Mutex<ui::wake::WakeHandle>>) -> Option<Self> {
+        use std::os::windows::io::{AsHandle as _, FromRawHandle as _};
+        let signalled = Arc::new(AtomicBool::new(false));
+        let (resume, resumed) = std::sync::mpsc::channel::<()>();
+        let flag = Arc::clone(&signalled);
+        let waking = Arc::clone(&wake);
+        // SAFETY: no attributes and no name; manual reset, unset.
+        let event = unsafe {
+            windows_sys::Win32::System::Threading::CreateEventW(
+                std::ptr::null(),
+                1,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if event.is_null() {
+            tracing::error!(
+                error = %std::io::Error::last_os_error(),
+                "no event stops the watch of the window's patch connection"
+            );
+            return None;
+        }
+        // SAFETY: an event CreateEventW just returned, owned from here.
+        let stop = Arc::new(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(event) });
+        let stopped = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("tilolang-patches".into())
+            .spawn(move || {
+                loop {
+                    if tilo_socket::link::wait(&[&pipe], &[stopped.as_handle()], None).is_err() {
+                        return;
+                    }
+                    // The window went: what the thread holds of the connection goes with it.
+                    if crate::wait::signalled(stopped.as_handle()) {
+                        return;
+                    }
+                    flag.store(true, Ordering::Release);
+                    waking
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .wake();
+                    // The host hung up: the window keeps its last frame.
+                    if pipe.hung_up() {
+                        return;
+                    }
+                    if resumed.recv().is_err() {
+                        return;
+                    }
+                }
+            })
+            .inspect_err(|error| {
+                tracing::error!(
+                    %error,
+                    "no thread watches the window's patch connection: it shows what arrives \
+                     only when something else wakes it"
+                );
+            })
+            .ok()?;
+        Some(Self {
+            woke: signalled,
+            resume,
+            wake,
+            stop,
+            thread: Some(thread),
+        })
+    }
+
     /// Wake the component running the window from now on: the one whose pass this is, when it
     /// is another than the one the watch wakes.
     fn follow(&self) {
@@ -180,7 +261,14 @@ impl Watch {
 
 impl Drop for Watch {
     fn drop(&mut self) {
+        #[cfg(unix)]
         drop(self.stop.take());
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            // SAFETY: the event this watch owns.
+            unsafe { windows_sys::Win32::System::Threading::SetEvent(self.stop.as_raw_handle()) };
+        }
         // A thread waiting for the window to take what arrived waits no more.
         let _ = self.resume.send(());
         if let Some(thread) = self.thread.take() {
@@ -254,6 +342,7 @@ impl Woken {
 ///
 /// # Errors
 /// The app's data cannot be kept, or the patch connection cannot be made.
+#[cfg(unix)]
 pub fn start(
     spec: Spec,
     route: crate::connection::Route,
@@ -301,7 +390,12 @@ pub enum StartError {
 /// The longest a capture waits for the instance it runs to show what it stages.
 const STAGE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// The host a window runs in its own process ([`start`]), and what wakes it.
+/// The host a window runs in its own process ([`start`]), and what wakes it. Unix's alone: a
+/// window on Windows shows only an instance a host runs.
+#[cfg_attr(
+    windows,
+    allow(dead_code, reason = "a window on Windows runs no instance of its own")
+)]
 struct InProcess {
     host: TilolangProcess,
     /// The app the instance runs.
@@ -318,6 +412,10 @@ struct InProcess {
 /// Where a window running its instance in this process reads the person's access from.
 type AccessSource = Box<dyn Fn() -> Option<ui::permissions::MemberAccess>>;
 
+#[cfg_attr(
+    windows,
+    allow(dead_code, reason = "a window on Windows runs no instance of its own")
+)]
 impl InProcess {
     /// The host's turns until it has nothing more to take in now. Whether anything changed.
     fn turn(&mut self) -> bool {
@@ -434,7 +532,7 @@ impl HostedWindow {
         let Some(patch) = ui::window_link::take_patch(instance, ui::wake::WakeHandle::new()) else {
             return false;
         };
-        match Channel::from_socket(patch) {
+        match patch_connection(patch) {
             Ok(channel) => {
                 tilo_startup_metrics::mark("tilolang-patch-connected");
                 self.take_channel(channel, Arc::new(Mutex::new(ui::wake::WakeHandle::new())))
@@ -449,7 +547,7 @@ impl HostedWindow {
     /// The window over the patch connection `channel`, whose other end its instance's host
     /// holds: what the session hands it over the window link.
     #[must_use]
-    pub fn over(channel: Channel) -> Self {
+    pub fn over(channel: PatchConnection) -> Self {
         let mut window = Self::unconnected();
         window.take_channel(channel, Arc::new(Mutex::new(ui::wake::WakeHandle::new())));
         window
@@ -473,6 +571,7 @@ impl HostedWindow {
     ///
     /// # Errors
     /// As [`start`].
+    #[cfg(unix)]
     pub fn in_process(
         spec: Spec,
         route: crate::connection::Route,
@@ -556,15 +655,23 @@ impl HostedWindow {
         }
     }
 
-    fn take_channel(&mut self, channel: Channel, wake: Arc<Mutex<ui::wake::WakeHandle>>) -> bool {
-        let connected = channel
-            .as_fd()
-            .try_clone_to_owned()
-            .and_then(|watched| Ok((ChannelTransport::new(channel)?, watched)));
-        match connected {
+    fn take_channel(
+        &mut self,
+        channel: PatchConnection,
+        wake: Arc<Mutex<ui::wake::WakeHandle>>,
+    ) -> bool {
+        match crate::patch_transport(channel) {
             Ok((transport, watched)) => {
+                #[cfg(windows)]
+                let watched = match watched.into_stream() {
+                    Ok(pipe) => pipe,
+                    Err(error) => {
+                        tracing::error!(%error, "a hosted tilolang window's patch connection is unusable");
+                        return false;
+                    }
+                };
                 let watch = Watch::start(watched, wake);
-                let mut view = AppWindow::new(Box::new(transport), Vec::new());
+                let mut view = AppWindow::new(transport, Vec::new());
                 // A floating surface the view asks for mirrors its app's own player.
                 if let Some(bundle) = crate::window::installed_bundle() {
                     view.set_app_id(bundle.meta.app.as_str());

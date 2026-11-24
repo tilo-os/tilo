@@ -19,11 +19,13 @@
 
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
+#[cfg(unix)]
 use std::os::fd::{FromRawFd as _, RawFd};
-use std::os::unix::net::UnixStream;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use tilo_socket::Stream;
 
 use serde::{Deserialize, Serialize};
 
@@ -235,7 +237,7 @@ impl Filter {
 type Answer = Box<dyn FnOnce(Reply) + Send>;
 
 struct Connection {
-    writer: Mutex<UnixStream>,
+    writer: Mutex<Stream>,
     pending: Mutex<Option<HashMap<u64, Answer>>>,
     next_id: AtomicU64,
 }
@@ -308,7 +310,7 @@ impl Connection {
     }
 }
 
-fn read_replies(connection: &Connection, stream: UnixStream) {
+fn read_replies(connection: &Connection, stream: Stream) {
     let mut reader = BufReader::new(stream);
     while let Ok(Some(frame)) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
         let Ok(reply) = serde_json::from_slice::<Reply>(frame.trim_ascii_end()) else {
@@ -339,7 +341,7 @@ impl Drop for LinkInner {
 }
 
 impl ShellLink {
-    pub fn connect(stream: UnixStream) -> std::io::Result<Self> {
+    pub fn connect(stream: Stream) -> std::io::Result<Self> {
         let reader = stream.try_clone()?;
         let connection = Arc::new(Connection {
             writer: Mutex::new(stream),
@@ -393,6 +395,16 @@ impl ShellLink {
         &self.0.connection
     }
 
+    /// The chooser the launcher handed this process, when it handed one. On Windows a process is
+    /// handed its connections over its process link instead, and an instance takes its chooser
+    /// with them ([`picker`]): no process inherits one.
+    #[cfg(windows)]
+    pub fn inherited() -> Option<Self> {
+        None
+    }
+
+    /// The chooser the launcher handed this process (`TILO_SVC_SHELL_FD`), when it handed one.
+    #[cfg(unix)]
     pub fn inherited() -> Option<Self> {
         static INHERITED: OnceLock<Option<ShellLink>> = OnceLock::new();
         INHERITED
@@ -413,7 +425,7 @@ impl ShellLink {
 /// a session with no portal behind it has nobody to choose a path for an app, and the save
 /// directory or the desktop's own chooser still answers a Save.
 pub fn picker(
-    stream: UnixStream,
+    stream: Stream,
     elsewhere: Arc<dyn FilePicker>,
 ) -> std::io::Result<Arc<dyn FilePicker>> {
     Ok(ShellLink::connect(stream)?.picker(elsewhere))
@@ -427,7 +439,8 @@ pub fn inherited_opener(elsewhere: Arc<dyn crate::UriOpener>) -> Option<Arc<dyn 
     ShellLink::inherited().map(|link| link.opener(elsewhere))
 }
 
-fn adopt_socket(fd: RawFd) -> Option<UnixStream> {
+#[cfg(unix)]
+fn adopt_socket(fd: RawFd) -> Option<Stream> {
     if fd <= 2 {
         return None;
     }
@@ -447,7 +460,7 @@ fn adopt_socket(fd: RawFd) -> Option<UnixStream> {
     unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
     // SAFETY: the descriptor is an open socket nothing else in this process
     // owns: the launcher placed it for this adoption, which runs once.
-    Some(unsafe { UnixStream::from_raw_fd(fd) })
+    Some(unsafe { Stream::from_raw_fd(fd) })
 }
 
 struct ShellChooser {
@@ -828,8 +841,8 @@ mod tests {
         tilo_test_env::hang_bound()
     }
 
-    fn shell(respond: impl Fn(Request) -> Reply + Send + 'static) -> UnixStream {
-        let (app, shell) = UnixStream::pair().unwrap();
+    fn shell(respond: impl Fn(Request) -> Reply + Send + 'static) -> Stream {
+        let (app, shell) = tilo_socket::pair().unwrap();
         std::thread::spawn(move || {
             let mut writer = shell.try_clone().unwrap();
             for line in BufReader::new(shell).lines() {
@@ -859,6 +872,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_an_inherited_socket_is_adopted() {
         use std::os::fd::IntoRawFd as _;
@@ -869,7 +883,7 @@ mod tests {
         drop(unsafe { std::fs::File::from_raw_fd(file) });
         assert!(adopt_socket(2).is_none());
 
-        let (app, mut shell) = UnixStream::pair().unwrap();
+        let (app, mut shell) = tilo_socket::pair().unwrap();
         let adopted = adopt_socket(app.into_raw_fd()).expect("a socket is adopted");
         // SAFETY: reading the flags of a descriptor the test owns.
         let flags =
@@ -1072,7 +1086,7 @@ mod tests {
                 "a refusal is reported, not rerouted"
             );
 
-            let (app, gone) = UnixStream::pair().unwrap();
+            let (app, gone) = tilo_socket::pair().unwrap();
             drop(gone);
             let alone = ShellLink::connect(app)
                 .unwrap()
@@ -1102,7 +1116,7 @@ mod tests {
                 PortalOutcome::Cancelled
             );
 
-            let (app, shell) = UnixStream::pair().unwrap();
+            let (app, shell) = tilo_socket::pair().unwrap();
             let chooser = picker(app, crate::unavailable_picker()).unwrap();
             let waiting = chooser.pick(PickRequest::open("Open", "Open"));
             drop(shell);

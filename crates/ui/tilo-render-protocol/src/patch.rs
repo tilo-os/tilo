@@ -40,6 +40,8 @@ use crate::WireError;
 
 pub mod diff;
 pub mod local;
+#[cfg(windows)]
+pub mod pipe;
 #[cfg(unix)]
 pub mod unix;
 pub mod validate;

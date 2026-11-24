@@ -9,7 +9,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::os::fd::AsRawFd as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -126,15 +125,7 @@ impl CallPort {
             std::thread::park_timeout(Duration::from_millis(1));
             return;
         };
-        let left = until.saturating_duration_since(Instant::now());
-        let millis = i32::try_from(left.as_millis()).unwrap_or(i32::MAX).max(1);
-        let mut fds = [libc::pollfd {
-            fd: arrived.fd().as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        }];
-        // SAFETY: `fds` is one valid pollfd for the duration of the call.
-        let _ = unsafe { libc::poll(fds.as_mut_ptr(), 1, millis) };
+        arrived.wait_for(until.saturating_duration_since(Instant::now()));
         let _ = arrived.consume();
     }
 }

@@ -118,7 +118,7 @@ pub fn run_connector(origin: &str) -> Result<(), String> {
         .ok_or_else(|| "the launcher handed the connector no socket".to_owned())?;
     // The session hands its account sign-ins before any reader.
     let sign_ins = match origin_connector::receive(&socket) {
-        Ok(Some(Handed::SignIns(sign_ins))) => origin_connector::stream(sign_ins),
+        Ok(Some(Handed::SignIns(sign_ins))) => sign_ins,
         Ok(Some(Handed::Reader(_))) => {
             return Err("the session handed the mail connector no account sign-ins".to_owned());
         }

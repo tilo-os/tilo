@@ -6,21 +6,31 @@
 //! The handler only stores a flag and writes a byte to a pipe, both async-signal-safe, and the
 //! loop waits on the pipe beside its api and its wake ([`crate::wait`]). A second SIGINT while
 //! the host is ending ends the process at once, as that signal does.
+//!
+//! On Windows the console's control events stand for the signals: Ctrl+C, Ctrl+Break, the console
+//! closing, the person logging off and the system shutting down. The handler, which runs on a
+//! thread of its own, stores the flag and sets an event the loop's wait watches.
 
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+#[cfg(unix)]
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The signals that stop the host.
+#[cfg(unix)]
 const STOPPING: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
 
-/// Whether one of [`STOPPING`] arrived.
+/// Whether a stop arrived.
 static ASKED: AtomicBool = AtomicBool::new(false);
 /// The pipe's write end the handler rings the loop through; `-1` until installed.
+#[cfg(unix)]
 static RING_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// Write the byte the loop's wait ends on, if the pipe is installed: async-signal-safe, which is
 /// all a handler may do.
+#[cfg(unix)]
 extern "C" fn on_signal(signal: libc::c_int) {
     if ASKED.swap(true, Ordering::SeqCst) && signal == libc::SIGINT {
         // A second SIGINT: the person means it. The default action ends the process.
@@ -43,6 +53,7 @@ extern "C" fn on_signal(signal: libc::c_int) {
 }
 
 /// The stop the host's loop waits on, and the pipe its handler rings it through.
+#[cfg(unix)]
 pub struct Stop {
     read: OwnedFd,
     /// Held open for the process's life: the handler writes it, and a stop after it closed would
@@ -51,6 +62,7 @@ pub struct Stop {
     write: OwnedFd,
 }
 
+#[cfg(unix)]
 impl Stop {
     /// Take SIGTERM, SIGINT and SIGHUP as the end of the host from now on.
     ///
@@ -99,7 +111,81 @@ impl Stop {
     }
 }
 
-#[cfg(test)]
+/// The event the console's handler sets; null until installed.
+#[cfg(windows)]
+static RING: std::sync::atomic::AtomicPtr<std::ffi::c_void> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// Take a control event as the end of the host: set the flag and the event the loop's wait
+/// watches. A second Ctrl+C while the host is ending is left to the default handler, which ends
+/// the process, as a second SIGINT does.
+#[cfg(windows)]
+unsafe extern "system" fn on_control(event: u32) -> windows_sys::core::BOOL {
+    use windows_sys::Win32::System::Console::CTRL_C_EVENT;
+    if ASKED.swap(true, Ordering::SeqCst) && event == CTRL_C_EVENT {
+        return 0;
+    }
+    let ring = RING.load(Ordering::SeqCst);
+    if !ring.is_null() {
+        // SAFETY: the event `Stop::install` made, held open for the process's life.
+        unsafe { windows_sys::Win32::System::Threading::SetEvent(ring) };
+    }
+    1
+}
+
+/// The stop the host's loop waits on: an event the console's handler sets.
+#[cfg(windows)]
+pub struct Stop {
+    event: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl Stop {
+    /// Take the console's control events as the end of the host from now on.
+    ///
+    /// # Errors
+    /// The event could not be made, or the handler could not be set.
+    pub fn install() -> io::Result<Self> {
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+        // SAFETY: no attributes and no name; manual reset, unset.
+        let event = unsafe {
+            windows_sys::Win32::System::Threading::CreateEventW(
+                std::ptr::null(),
+                1,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: an event CreateEventW just returned, owned from here and never closed while
+        // the handler may set it: a stop lives for the process's life.
+        let event = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(event) };
+        RING.store(event.as_raw_handle(), Ordering::SeqCst);
+        // SAFETY: a handler that only stores a flag and sets an event.
+        if unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(on_control), 1)
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { event })
+    }
+
+    /// The event to wait on: set once a stop arrived.
+    pub fn handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        use std::os::windows::io::AsHandle as _;
+        self.event.as_handle()
+    }
+
+    /// Whether the host was asked to stop.
+    pub fn asked(&self) -> bool {
+        ASKED.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

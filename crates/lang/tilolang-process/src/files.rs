@@ -481,7 +481,16 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> Result<(), String>
     } else if meta.file_type().is_symlink() {
         let target =
             std::fs::read_link(from).map_err(|error| format!("{}: {error}", from.display()))?;
-        std::os::unix::fs::symlink(target, to).map_err(|error| format!("{}: {error}", to.display()))
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(target, to);
+        // Windows links a folder and a file each its own way: the link points as the original did.
+        #[cfg(windows)]
+        let linked = if std::fs::metadata(from).is_ok_and(|meta| meta.is_dir()) {
+            std::os::windows::fs::symlink_dir(target, to)
+        } else {
+            std::os::windows::fs::symlink_file(target, to)
+        };
+        linked.map_err(|error| format!("{}: {error}", to.display()))
     } else {
         std::fs::copy(from, to)
             .map(|_| ())

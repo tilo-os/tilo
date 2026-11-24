@@ -33,6 +33,10 @@ rustix = { workspace = true, features = ["fs", "net", "std"] }
 memmap2 = "0.9.10"
 tilo-shm = { version = "0.1.0", path = "../../platform/tilo-shm" }
 
+[target.'cfg(windows)'.dependencies]
+# The pipe a window's patches cross between processes on Windows.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = "0.1"
 

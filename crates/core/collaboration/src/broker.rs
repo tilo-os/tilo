@@ -2516,7 +2516,7 @@ impl CollaborationManager {
             }
             #[cfg(windows)]
             crate::NativeConnection::Window(Some(connection)) => {
-                SdkConnectSource::Pipe(connection.into_stream().into_handle())
+                SdkConnectSource::Pipe(connection.into_handle())
             }
             crate::NativeConnection::Launch => {
                 if runtime_portal::service_fd("collab").is_none() {
@@ -2564,19 +2564,34 @@ impl CollaborationManager {
     /// against what the host says, and refuses a hello for another app or
     /// workspace. Nothing is read from the process's environment, which is the
     /// host's, not the app's. `identity` must outlive the manager.
-    #[cfg(all(feature = "native", unix))]
+    #[cfg(all(feature = "native", any(unix, windows)))]
     pub fn join_instance(
         kind: &collab_types::document::ResourceType,
         connection: runtime_portal::process_link::Descriptor,
-        identity: std::os::fd::BorrowedFd<'_>,
+        identity: &runtime_portal::process_link::Descriptor,
         route: RouteSpec,
     ) -> Result<Self, crate::NativeLaunchError> {
-        let signing = tilo_identity_client::inherited::connect_service(identity)
-            .map_err(|error| native_launch_refusal(&error))?;
+        #[cfg(unix)]
+        let signing =
+            tilo_identity_client::inherited::connect_service(std::os::fd::AsFd::as_fd(identity));
+        // Each instance has an identity connection of its own, which nothing else in the
+        // process speaks on.
+        #[cfg(windows)]
+        let signing = identity
+            .stream()
+            .and_then(|stream| stream.try_clone())
+            .map_err(runtime_portal::NotAvailable::ConnectionFailed)
+            .and_then(tilo_identity_client::BrokerSigningIdentity::from_connected_io)
+            .map(Arc::new);
+        let signing = signing.map_err(|error| native_launch_refusal(&error))?;
         let identity = sdk_join_identity_from(signing, route.cluster_id)
             .map_err(|error| native_launch_refusal(&error))?;
+        #[cfg(unix)]
+        let connection = SdkConnectSource::Fd(runtime_portal::process_link::into_raw(connection));
+        #[cfg(windows)]
+        let connection = SdkConnectSource::Pipe(connection.into_handle());
         Ok(Self::connect_in_background(
-            SdkConnectSource::Fd(runtime_portal::process_link::into_raw(connection)),
+            connection,
             SdkIdentitySource::Ready(Some(identity)),
             route,
             Some(kind.as_str().to_owned()),

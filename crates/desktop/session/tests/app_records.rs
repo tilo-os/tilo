@@ -186,7 +186,7 @@ fn join(
     collaboration::CollaborationManager::join_instance(
         &collab_types::document::ResourceType::new(kind.to_owned()),
         std::os::fd::OwnedFd::from(app_wire),
-        std::os::fd::AsFd::as_fd(&identity),
+        &std::os::fd::OwnedFd::from(identity),
         collaboration::RouteSpec::app(TASKS.to_owned(), workspace_id),
     )
     .map_err(|error| format!("the window joins: {error:?}"))?

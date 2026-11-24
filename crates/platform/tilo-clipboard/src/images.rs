@@ -28,8 +28,8 @@ pub(crate) fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec
 }
 
 /// An encoded image as RGBA8 and its size, for an OS clipboard that takes pixels. Only the
-/// service's serving side carries encoded images; Windows has no service.
-#[cfg(unix)]
+/// service's serving side carries encoded images.
+#[cfg(any(unix, windows))]
 pub(crate) fn decode_image(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     let image = image::load_from_memory(bytes).ok()?.to_rgba8();
     let (width, height) = image.dimensions();

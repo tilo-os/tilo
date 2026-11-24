@@ -56,6 +56,11 @@ tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
 runtime-portal = { version = "0.1.0", path = "../../core/runtime-portal" }
 # The patch connection to each instance's window, and the sealed memfd its module comes in.
 tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protocol" }
+# The immutable buffers a module and a task's apps arrive in: a sealed memfd, or a section on
+# Windows.
+tilo-shm = { version = "0.1.0", path = "../../platform/tilo-shm" }
+# The host's connections: Unix sockets, and pipes on Windows.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 # The page a shown view is written to, and the desktop page's address.
 tilo-server-protocol = { path = "../../core/tilo-server-protocol" }
@@ -185,6 +190,10 @@ path = "tests/window/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The host's wake and stop, events its wait watches beside its pipes.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Threading"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The window plays a playback's outputs through the one host, so the cast stacks link here.

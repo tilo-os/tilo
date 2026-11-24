@@ -772,7 +772,9 @@ impl<'a> Validator<'a> {
             }
             ToApp::PagePrompt { prompt } => {
                 if prompt.len() > self.limits.string_bytes as usize {
-                    return Err(Refused::invalid("over the limit of bytes in a page's prompt"));
+                    return Err(Refused::invalid(
+                        "over the limit of bytes in a page's prompt",
+                    ));
                 }
                 Ok(())
             }

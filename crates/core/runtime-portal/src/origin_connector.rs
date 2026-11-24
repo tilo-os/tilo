@@ -40,12 +40,13 @@ struct Attach {
 }
 
 /// What the session handed the connector.
+#[cfg(any(unix, windows))]
 #[derive(Debug)]
 pub enum Handed {
     /// A reader's connection.
-    Reader(Descriptor),
+    Reader(tilo_socket::Stream),
     /// The connector's account sign-ins.
-    SignIns(Descriptor),
+    SignIns(tilo_socket::Stream),
 }
 
 impl crate::packet::Packet for Attach {}
@@ -81,15 +82,17 @@ fn descriptor(stream: tilo_socket::Stream) -> Descriptor {
 
 /// A connection the session handed, to read and write.
 #[cfg(unix)]
-#[must_use]
-pub fn stream(connection: Descriptor) -> tilo_socket::Stream {
-    connection.into()
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a handle handed on Windows may be no pipe"
+)]
+fn stream(connection: Descriptor) -> io::Result<tilo_socket::Stream> {
+    Ok(connection.into())
 }
 
-/// A connection the session handed, to read and write.
+/// A connection the session handed, to read and write: refused when it is no pipe.
 #[cfg(windows)]
-#[must_use]
-pub fn stream(connection: Descriptor) -> tilo_socket::Stream {
+fn stream(connection: Descriptor) -> io::Result<tilo_socket::Stream> {
     connection.into_stream()
 }
 
@@ -146,13 +149,16 @@ pub fn send_sign_ins(socket: &Descriptor, connection: Descriptor) -> io::Result<
 /// # Errors
 /// The socket's error; a message that is no attachment with its one descriptor;
 /// [`io::ErrorKind::Unsupported`] off Linux and Windows.
+#[cfg(any(unix, windows))]
 pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
-    Ok(Attach::receive(socket)?.map(|attach| {
-        if attach.sign_ins {
-            Handed::SignIns(attach.connection)
-        } else {
-            Handed::Reader(attach.connection)
-        }
+    let Some(attach) = Attach::receive(socket)? else {
+        return Ok(None);
+    };
+    let connection = stream(attach.connection)?;
+    Ok(Some(if attach.sign_ins {
+        Handed::SignIns(connection)
+    } else {
+        Handed::Reader(connection)
     }))
 }
 
@@ -162,7 +168,8 @@ pub fn receive(socket: &Descriptor) -> io::Result<Option<Handed>> {
 /// # Errors
 /// The socket's error; a message that is no reader's attachment with its one descriptor, such as
 /// account sign-ins the app is not granted; [`io::ErrorKind::Unsupported`] off Linux and Windows.
-pub fn receive_attachment(socket: &Descriptor) -> io::Result<Option<Descriptor>> {
+#[cfg(any(unix, windows))]
+pub fn receive_attachment(socket: &Descriptor) -> io::Result<Option<tilo_socket::Stream>> {
     match receive(socket)? {
         Some(Handed::Reader(connection)) => Ok(Some(connection)),
         Some(Handed::SignIns(_)) => Err(io::Error::new(
@@ -181,7 +188,7 @@ pub fn attachments(
     mut ended: impl FnMut(Option<io::Error>) + Send + 'static,
 ) -> impl Iterator<Item = tilo_socket::Stream> + Send + 'static {
     std::iter::from_fn(move || match receive_attachment(&socket) {
-        Ok(Some(connection)) => Some(stream(connection)),
+        Ok(Some(connection)) => Some(connection),
         next => {
             ended(next.err());
             None

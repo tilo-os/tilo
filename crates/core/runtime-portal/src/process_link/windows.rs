@@ -390,7 +390,7 @@ mod tests {
             else {
                 panic!("the patch the starter sent");
             };
-            (&patch.into_stream())
+            (&patch.into_stream().unwrap())
                 .write_all(b"through the handle")
                 .unwrap();
             let (_ours, theirs) = crate::packet::pair().unwrap();
@@ -431,7 +431,9 @@ mod tests {
             Some(FromProcess::Ended(7))
         );
         let mut through = [0_u8; 18];
-        (&ours.into_stream()).read_exact(&mut through).unwrap();
+        (&ours.into_stream().unwrap())
+            .read_exact(&mut through)
+            .unwrap();
         assert_eq!(
             &through, b"through the handle",
             "the handle reached the started process"

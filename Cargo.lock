@@ -17119,6 +17119,7 @@ dependencies = [
  "js-sys",
  "tilo-platform-caps",
  "tilo-rt",
+ "tilo-socket",
  "tilo-test-env",
  "tracing",
  "wasm-bindgen",
@@ -17702,6 +17703,7 @@ dependencies = [
  "tempfile",
  "tilo-platform-caps",
  "tilo-rt",
+ "tilo-socket",
  "tilo-test-env",
  "tracing",
  "url",
@@ -19899,6 +19901,7 @@ dependencies = [
  "tilo-actions",
  "tilo-font-catalog",
  "tilo-shm",
+ "tilo-socket",
  "tilo-ui-graph",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -21031,6 +21034,7 @@ dependencies = [
  "libc",
  "memmap2",
  "tilo-test-env",
+ "windows-sys 0.61.2",
  "workspace-hack",
 ]
 
@@ -22545,6 +22549,8 @@ dependencies = [
  "tilo-resource",
  "tilo-resource-store",
  "tilo-server-protocol",
+ "tilo-shm",
+ "tilo-socket",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-thumbnail",
@@ -22564,6 +22570,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
  "workspace-hack",
 ]
 

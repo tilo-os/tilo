@@ -14,10 +14,9 @@
 //! app's clipboard) and what it pastes is what they copied anywhere.
 
 use std::io::Write as _;
-use std::os::fd::OwnedFd;
-use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+use tilo_socket::Stream;
 
 use wire_frame::Framing;
 
@@ -83,7 +82,7 @@ pub trait ClipboardSide: Send + Sync {
 }
 
 /// Serve an app's clipboard requests on `stream` until it closes the connection.
-pub fn serve(stream: UnixStream, side: &dyn ClipboardSide) {
+pub fn serve(stream: Stream, side: &dyn ClipboardSide) {
     let Ok(mut writer) = stream.try_clone() else {
         return;
     };
@@ -143,7 +142,7 @@ const MAX_FORMATS: usize = 8;
 /// The target, secrecy and formats of a copy request, its bodies read from `reader`.
 fn copy_request(
     words: &mut std::str::SplitWhitespace<'_>,
-    reader: &mut UnixStream,
+    reader: &mut Stream,
 ) -> Option<(Target, bool, Formats)> {
     let target = Target::parse(words.next()?)?;
     let secret = match words.next()? {
@@ -199,8 +198,8 @@ const WAIT: Duration = Duration::from_secs(30);
 
 /// An app's end of the clipboard connection: what its runtime copies and pastes through.
 pub struct Connected {
-    writer: Mutex<UnixStream>,
-    reader: Mutex<UnixStream>,
+    writer: Mutex<Stream>,
+    reader: Mutex<Stream>,
 }
 
 fn held<T>(lock: Result<T, std::sync::PoisonError<T>>) -> T {
@@ -211,7 +210,7 @@ impl Connected {
     /// The clipboard over `stream`, the connection the session opened for the app; none when the
     /// connection cannot be read or written.
     #[must_use]
-    pub fn connect(stream: UnixStream) -> Option<Self> {
+    pub fn connect(stream: Stream) -> Option<Self> {
         let reader = stream.try_clone().ok()?;
         let _ = reader.set_read_timeout(Some(WAIT));
         let _ = reader.set_write_timeout(Some(WAIT));
@@ -246,7 +245,7 @@ impl Connected {
             formats.len(),
             mimes.join(" ")
         );
-        let mut writer: MutexGuard<'_, UnixStream> = held(self.writer.lock());
+        let mut writer: MutexGuard<'_, Stream> = held(self.writer.lock());
         let sent = HEADER
             .write(&mut *writer, header.as_bytes())
             .and_then(|()| {
@@ -330,6 +329,7 @@ pub struct ServiceClipboard(Connected);
 impl ServiceClipboard {
     /// The clipboard over the connection the session opened for this app, named by [`FD_ENV`];
     /// none when this process was handed none.
+    #[cfg(unix)]
     #[must_use]
     pub fn from_env() -> Option<Self> {
         let fd = std::env::var(FD_ENV).ok()?.parse::<i32>().ok()?;
@@ -338,8 +338,9 @@ impl ServiceClipboard {
         }
         // SAFETY: the launcher passes this descriptor to this process, and it is this process's
         // from here: nothing else in the app holds the number.
-        let stream =
-            UnixStream::from(unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+        let stream = Stream::from(unsafe {
+            <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd)
+        });
         Some(Self(Connected::connect(stream)?))
     }
 }
@@ -596,8 +597,8 @@ mod tests {
     /// ([`ServiceClipboard`]) and a tilolang instance's ([`Connected`]).
     fn served() -> (Arc<Selection>, ServiceClipboard, Connected) {
         let selection = Arc::new(Selection::default());
-        let (rust_app, rust_session) = UnixStream::pair().expect("a socket pair");
-        let (lang_app, lang_session) = UnixStream::pair().expect("a socket pair");
+        let (rust_app, rust_session) = tilo_socket::pair().expect("a socket pair");
+        let (lang_app, lang_session) = tilo_socket::pair().expect("a socket pair");
         for session in [rust_session, lang_session] {
             let side = Arc::clone(&selection);
             std::thread::spawn(move || serve(session, &*side));
@@ -685,7 +686,7 @@ mod tests {
                 Vec::new()
             }
         }
-        let (app, session) = UnixStream::pair().expect("a socket pair");
+        let (app, session) = tilo_socket::pair().expect("a socket pair");
         let refusing: Arc<dyn ClipboardSide> = Arc::new(Refusing);
         std::thread::spawn(move || serve(session, &*refusing));
         let app = ServiceClipboard(Connected::connect(app).expect("the connection is usable"));
@@ -701,7 +702,7 @@ mod tests {
             "no connection is handed to this process"
         );
         // A connection whose session went away refuses what it tries to copy and reads nothing.
-        let (app, session) = UnixStream::pair().expect("a socket pair");
+        let (app, session) = tilo_socket::pair().expect("a socket pair");
         drop(session);
         let app = ServiceClipboard(Connected::connect(app).expect("the connection is usable"));
         assert!(!app.set_text(ClipboardTarget::Clipboard, "gone"));
@@ -711,7 +712,7 @@ mod tests {
 
     #[test]
     fn a_copy_larger_than_the_clipboard_holds_is_refused_before_it_is_sent() {
-        let (app, session) = UnixStream::pair().expect("a socket pair");
+        let (app, session) = tilo_socket::pair().expect("a socket pair");
         // Nothing answers on the other end: the bound is the client's, checked before anything is
         // written, and nothing here waits for a reply.
         drop(session);
@@ -810,8 +811,8 @@ mod tests {
     /// have no Tilo session: each gets its own connection to the same served clipboard.
     fn served_by_os() -> (Arc<TestOs>, ServiceClipboard, Connected) {
         let os = Arc::new(TestOs::default());
-        let (rust_app, rust_session) = UnixStream::pair().expect("a socket pair");
-        let (lang_app, lang_session) = UnixStream::pair().expect("a socket pair");
+        let (rust_app, rust_session) = tilo_socket::pair().expect("a socket pair");
+        let (lang_app, lang_session) = tilo_socket::pair().expect("a socket pair");
         for session in [rust_session, lang_session] {
             let backend = os.clone() as Arc<dyn ClipboardBackend>;
             std::thread::spawn(move || serve(session, &BackendSide::new(backend)));
