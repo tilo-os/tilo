@@ -775,9 +775,9 @@ view thread(c: Conversation) {{
         ));
         assert!(!got.is_empty(), "a series is given no colour: {got:#?}");
         let got = errors(&with_note(
-            r#"view stats(n: Note) {
+            r"view stats(n: Note) {
     ui.Histogram([1.0], bins: .some(4), height: .some(900.0))
-}"#,
+}",
         ));
         assert!(!got.is_empty(), "a histogram is given no size: {got:#?}");
     }
