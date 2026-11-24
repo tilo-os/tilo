@@ -406,18 +406,32 @@ impl Foreign {
             .and_then(|(json, _)| json.get(crate::store::UNSEEN).cloned()))
     }
 
+    /// The words [`Self::unreadable`] answers for a root nothing published: what a view's row
+    /// says under the pane's own words for what could not be read.
+    pub const NOTHING_PUBLISHED: &'static str = "Nothing publishes it here";
+
     /// Why the reading of `target` says it could not be read, in words
     /// ([`crate::store::UNREADABLE`]); `None` for a reading that answers, and for one that
-    /// arrived as the type starts before its app published anything.
+    /// arrived as the type starts before its app published anything. A resource nothing of
+    /// which ever arrived is unknown too: its app is not on this device, or the workspace's
+    /// service is not connected, and a view says that rather than reading every field as the
+    /// empty value its type starts with.
     ///
     /// # Errors
     ///
-    /// A message when no reading of it arrived yet, kept as a read waiting on one.
+    /// A message when the host was asked and could not answer.
     pub(crate) fn unreadable(&mut self, target: &ResourceRef) -> Result<Option<String>, String> {
         let at = Self::key(target);
         if !self.arrive(target)? {
-            self.want(at.clone(), target);
-            return Err(self.not_arrived(target));
+            // A resource no host here publishes has no value to be unknown: a view over it
+            // reads as its type starts, as its fields do, and draws its empty state.
+            if self.publishes_nothing(target) {
+                return Ok(None);
+            }
+            // Nothing of it came: the host is asked for it once, and the view told it is
+            // unknown until a reading answers.
+            self.want(at, target);
+            return Ok(Some(Self::NOTHING_PUBLISHED.to_owned()));
         }
         Ok(self
             .source(&at)
@@ -464,7 +478,10 @@ impl Foreign {
         if self.publishes_nothing(target) && self.source(&key).is_none() {
             // Nothing of it is published: a Rust view over it is handed no fields, as one over a
             // device without the resource reads, and no reading is asked for.
-            return Some((Json::Object(serde_json::Map::new()), self.generation(target)));
+            return Some((
+                Json::Object(serde_json::Map::new()),
+                self.generation(target),
+            ));
         }
         if !self.arrive(target).unwrap_or(false) {
             // The host is asked for the resource's reading, as a field read of one yet to arrive
@@ -593,9 +610,7 @@ impl Foreign {
         // The reading a record stands in, and where it stands: a field of it stands one step
         // further down.
         let (parent, base, left_out) = match self.readings.get(&at) {
-            Some(Reading::Inside(inside)) => {
-                (inside.parent.clone(), inside.steps.clone(), true)
-            }
+            Some(Reading::Inside(inside)) => (inside.parent.clone(), inside.steps.clone(), true),
             _ => (at.clone(), Vec::new(), false),
         };
         let found = match self.source(&at) {
@@ -605,15 +620,16 @@ impl Foreign {
             // with none): its fields read as their types start, and the view goes on to the
             // empty state it draws for a device without the resource.
             None if self.publishes_nothing(target) || left_out => None,
-            // A record of an app whose code runs here is a resource of its own, published by
-            // its id (an item of a collection the reading lists): the host is asked for its
-            // reading, and until it comes the record reads as it would start. The view that
-            // read it runs again when it does.
-            None if runs_here(target, registry) => {
+            // Nothing of it arrived: its app is not here, this device has no such reading, or it
+            // has yet to come. It reads as it would start, and the view that read it shows it is
+            // unknown where it asks [`Self::unreadable`]; the reading that answers replaces it.
+            // A record of an app whose code runs here reads the same way: it is published by its
+            // own id (an item of a collection the reading lists), and the host is asked for it.
+            None => {
                 self.want(at, target);
-                // The record reads as it would start, and the read is one waiting on its
-                // reading where that has no start to give (`Step`'s `task`, a required
-                // record): the turn's caller shows the place its waiting state, not a fault.
+                // The read is one waiting on its reading where that has no start to give
+                // (`Step`'s `task`, a required record): the turn's caller shows the place its
+                // waiting state, not a fault.
                 let value = pending(&field.ty, field.default.as_ref()).map_err(|why| {
                     format!(
                         "`{}` of `{}` before its reading came in: {why}",
@@ -629,7 +645,6 @@ impl Foreign {
                     }
                 }
             }
-            None => return Err(self.not_arrived(target)),
         };
         let Some((step, json)) = found else {
             // A record the reading leaves out (a device without Wi-Fi publishes its network
@@ -772,16 +787,6 @@ fn as_a_field(ty: &Ty, value: Value) -> Value {
 #[must_use]
 pub fn is_foreign(target: &ResourceRef) -> bool {
     target.ty.contains('#')
-}
-
-/// Whether `target`'s app is one whose code runs here (`Runtime::load_foreign_package`): a
-/// tilolang app, each of whose records the session publishes as a resource of its own. A
-/// description's records (a menu's rows) stand only inside the readings that hold them.
-fn runs_here(target: &ResourceRef, registry: &Registry) -> bool {
-    foreign_type(&target.ty)
-        .and_then(|key| registry.type_for(&key))
-        .and_then(|ty| registry.type_info(&ty))
-        .is_some_and(|(package, _)| package.code)
 }
 
 /// What a field of a record whose reading has not come in reads as: its declared value, or
@@ -1506,6 +1511,33 @@ mod tests {
             foreign.type_of("chat.workspace/channels/none"),
             None,
             "a resource with no reading finds none"
+        );
+    }
+
+    /// A root nothing published is unknown, in words, rather than a read that fails: a device
+    /// without the service, or a platform that has no such reading, draws the row that says so.
+    /// A resource of an app no host here publishes at all reads as its type starts and is not
+    /// unknown — there is nothing there to be unknown about.
+    #[test]
+    fn a_root_nothing_published_is_unknown_rather_than_absent() {
+        let mut foreign = Foreign::default();
+        let privacy = ResourceRef::parse_id("session:privacy", "so.tilo.device#Privacy".to_owned())
+            .expect("a resource id");
+        assert_eq!(
+            foreign
+                .unreadable(&privacy)
+                .expect("nothing published is answered"),
+            Some("Nothing publishes it here".to_owned()),
+            "a root nothing published says so"
+        );
+
+        let printers = ResourceRef::parse_id("printers", "so.tilo.device#Printers".to_owned())
+            .expect("a resource id");
+        foreign.absent(&printers);
+        assert_eq!(
+            foreign.unreadable(&printers).expect("answered"),
+            None,
+            "a host that publishes nothing of it reads as its type starts"
         );
     }
 }
