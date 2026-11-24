@@ -268,6 +268,11 @@ type Download (title: name) {
     name: Text
     /// The job fetching it: a retry starts another, which the download keeps instead.
     job: Text = ""
+    /// Where a download an extension started stands, as the page's engine, which saves it,
+    /// tells: none for one the Browser fetches itself.
+    seen: Option<DownloadJob> = .none
+    /// The page engine's number for a download an extension started.
+    engine: Int = 0
 
     search {
         sort name a_z
@@ -280,11 +285,11 @@ type Download (title: name) {
 /// as what, and why it failed.
 type DownloadJob {
     state: Text
-    done: Int
-    total: Int
-    path: Text
-    name: Text
-    error: Text
+    done: Int = 0
+    total: Int = 0
+    path: Text = ""
+    name: Text = ""
+    error: Text = ""
 }
 
 /// What the Browser asks its engine to download: the address, the name the page suggested, and
@@ -483,6 +488,8 @@ type Ask {
     nth: Option<Int> = .none
     key: Option<Text> = .none
     url: Option<Text> = .none
+    /// The job a retried download ended as, which the page's answer names again.
+    job: Option<Text> = .none
     /// The address of an extension package the person chose, in this device's content store.
     file: Option<Text> = .none
     /// The Chrome Web Store item an install names: its page's address, or the extension's id.
@@ -1233,25 +1240,86 @@ action discard_download(p: Page, id: Int, name: Text = "") -> Answer uses page (
 
 /// Downloads what an address serves into the person's Downloads, as a job of the Browser's own
 /// that goes on when the window closes. A page's window raises it for a download the person
-/// saved there, naming the handle its request waits under; a person or agent names an address.
-action download(p: Page, url: Text, name: Text = "", request: Text = "") -> Answer (
-    icon: .download,
-    label: "Download an address",
-) {
+/// saved there, naming the handle its request waits under, and again for one the person
+/// retried, naming the job it ended as (`again`); a person or agent names an address.
+action download(
+    p: Page,
+    url: Text,
+    name: Text = "",
+    request: Text = "",
+    again: Text = "",
+) -> Answer (icon: .download, label: "Download an address") {
     require url.trim() != "" "Type the address to download"
     let address = url.trim()
-    let called = if name == "" { address.split("/").last() ?? address } else { name }
+    let b = root Browser
+    let retried = b.downloads.find(d -> again != "" and retry_key(d) == again)
+    if again != "" and retried == .none {
+        return Answer(message: std.say("The download was retried already"))
+    }
+    let called = if let d = retried {
+        d.name
+    } else if name == "" { address.split("/").last() ?? address } else { name }
     match engine.start(
         "download",
         json.encode(DownloadAsk(url: address, name: name, request: request)),
     ) {
-        .ok(job) => {
-            let b = root Browser
-            b.downloads.insert(Download(url: address, name: called, job: job))
+        .ok(said) => {
+            let job = started_job(said)
+            if let d = retried {
+                d.job = job
+                d.seen = .none
+                d.engine = 0
+            } else {
+                b.downloads.insert(Download(url: address, name: called, job: job))
+            }
             Answer(ok: true, message: std.say("Downloading {called}"))
         }
         .err(why) => Answer(message: why),
     }
+}
+
+/// The id of the job the engine answered starting with (`{"job": …}`), which its state is read
+/// and it is stopped by.
+fn started_job(said: Text) -> Text {
+    match json.parse(said) {
+        .ok(value) => json_text(value, "job"),
+        .err(_) => said,
+    }
+}
+
+/// Keeps where a download an extension started stands, as the page's engine, which saves it,
+/// tells: the Browser's one list shows it with the rest. The window raises it as the download
+/// moves; a person, agent or script never does.
+action note_extension_download(
+    p: Page,
+    id: Int,
+    state: Text,
+    name: Text,
+    url: Text,
+    path: Text,
+    received: Int,
+    total: Int,
+    error: Text,
+) {
+    let b = root Browser
+    let now = DownloadJob(
+        state: extension_download_state(state),
+        done: received,
+        total: total,
+        path: path,
+        name: name,
+        error: error,
+    )
+    if let d = b.downloads.find(d -> d.engine == id and d.url == url and d.seen != .none) {
+        d.seen = .some(now)
+    } else {
+        b.downloads.insert(Download(url: url, name: name, seen: .some(now), engine: id))
+    }
+}
+
+/// The engine's word for where a download stands, as a job says it.
+fn extension_download_state(state: Text) -> Text {
+    if state == "progress" { "running" } else if state == "complete" { "done" } else { state }
 }
 
 /// Stops a download that is still going: what it saved so far is removed.
@@ -1264,15 +1332,24 @@ action cancel_download(d: Download) -> Answer (icon: .x, label: "Cancel the down
     }
 }
 
-/// Starts a download that failed or was cancelled again, from the beginning.
-action retry_download(d: Download) -> Answer (icon: .refresh, label: "Retry the download") {
-    match engine.start("download", json.encode(DownloadAsk(url: d.url, name: d.name, request: ""))) {
-        .ok(job) => {
-            d.job = job
-            Answer(ok: true, message: std.say("Downloading {d.name}"))
-        }
-        .err(why) => Answer(message: why),
-    }
+/// Starts a download that failed or was cancelled again, from the beginning, as signed in as the
+/// page was: the page's window hands over what a request for the address carries from it now,
+/// and the download keeps the new job.
+action retry_download(p: Page, d: Download) -> Answer uses page (
+    icon: .refresh,
+    label: "Retry the download",
+) {
+    page_answered(
+        page.call(
+            json.encode(Ask(op: "download_again", url: .some(d.url), job: .some(retry_key(d)))),
+        ),
+    )
+}
+
+/// What names a download while its retry waits on the page: the job it ended as, or the page
+/// engine's number for one an extension started, which has no job of the Browser's.
+fn retry_key(d: Download) -> Text {
+    if d.job != "" { d.job } else { "extension-{d.engine}" }
 }
 
 /// Stops every download still going, from every window.
@@ -3600,7 +3677,7 @@ view page_view(p: Page) {
                         stack(padding: .group) {
                             ui.Section("Downloads") {
                                 for d in b.downloads {
-                                    download_row(d)
+                                    download_row(p, d)
                                 }
                                 ui.Button("Cancel every download", icon: .x, role: .plain) {
                                     on press: cancel_all_downloads()
@@ -4028,50 +4105,62 @@ view history_list(b: Browser, query: Text) {
 }
 
 /// One file the Browser downloads: what it is called, how far its job has come, and what the
-/// person may do with it now.
-view download_row(d: Download) {
-    let job = json.decode<DownloadJob>(if d.job == "" { "" } else { engine.state(d.job) })
-    match job {
-        .ok(now) => {
-            stack(padding: .related) {
-                ui.ListRow(
-                    title: if now.name == "" { d.name } else { now.name },
-                    secondary: download_secondary(now),
-                    mark: if now.state == "failed" { .triangle_alert } else { .download },
-                )
-                if now.state == "running" and now.total > 0 {
-                    ui.ProgressBar(
-                        value: now.done.to_float() / now.total.to_float(),
-                        label: "Downloading",
-                    )
-                }
-                if now.state == "running" {
-                    ui.Button("Cancel", icon: .x, role: .plain) {
-                        on press: cancel_download(d)
-                    }
-                }
-                if now.state == "failed" or now.state == "cancelled" {
-                    ui.Button("Retry", icon: .refresh, role: .plain) {
-                        on press: retry_download(d)
-                    }
-                }
-                if now.state == "done" and now.path != "" {
-                    ui.Button("Open", icon: .external_link, role: .plain) {
-                        on press: open_download(now.name, now.path)
-                    }
-                    ui.Button("Show in Files", icon: .folder, role: .plain) {
-                        on press: reveal_download(now.path)
-                    }
-                }
+/// person may do with it now. One an extension started is the page engine's to save, as it
+/// tells; the rest are the Browser's own jobs, as each tells the window.
+view download_row(p: Page, d: Download) {
+    if let seen = d.seen {
+        download_standing(p, d, seen)
+    } else if d.job == "" {
+        download_gone(p, d)
+    } else {
+        let said = engine.state(d.job)
+        match json.decode<DownloadJob>(said) {
+            .ok(now) => download_standing(p, d, now),
+            // A job this device's engine does not know: it ran on another device, or before
+            // the Browser last started.
+            .err => download_gone(p, d),
+        }
+    }
+}
+
+/// A download as it stands now: how far it came or how it ended, and what the person may do.
+view download_standing(p: Page, d: Download, now: DownloadJob) {
+    stack(padding: .related) {
+        ui.ListRow(
+            title: if now.name == "" { d.name } else { now.name },
+            secondary: download_secondary(now),
+            mark: if now.state == "failed" { .triangle_alert } else { .download },
+        )
+        if now.state == "running" and now.total > 0 {
+            ui.ProgressBar(value: now.done.to_float() / now.total.to_float(), label: "Downloading")
+        }
+        if now.state == "running" and d.seen == .none {
+            ui.Button("Cancel", icon: .x, role: .plain) {
+                on press: cancel_download(d)
             }
         }
-        .err => {
-            stack(padding: .related) {
-                ui.ListRow(title: d.name, secondary: std.say("Not on this device"), mark: .download)
-                ui.Button("Retry", icon: .refresh, role: .plain) {
-                    on press: retry_download(d)
-                }
+        if now.state == "failed" or now.state == "cancelled" {
+            ui.Button("Retry", icon: .refresh, role: .plain) {
+                on press: retry_download(p, d)
             }
+        }
+        if now.state == "done" and now.path != "" {
+            ui.Button("Open", icon: .external_link, role: .plain) {
+                on press: open_download(now.name, now.path)
+            }
+            ui.Button("Show in Files", icon: .folder, role: .plain) {
+                on press: reveal_download(now.path)
+            }
+        }
+    }
+}
+
+/// A download whose job this device does not know, which the person can start again here.
+view download_gone(p: Page, d: Download) {
+    stack(padding: .related) {
+        ui.ListRow(title: d.name, secondary: std.say("Not on this device"), mark: .download)
+        ui.Button("Retry", icon: .refresh, role: .plain) {
+            on press: retry_download(p, d)
         }
     }
 }

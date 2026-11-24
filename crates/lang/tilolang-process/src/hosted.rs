@@ -884,7 +884,7 @@ impl Platform for HostPlatform {
     #[cfg(feature = "app-launch")]
     fn engine_start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
         if crate::loaded_engines::answers(app) {
-            return crate::loaded_engines::start(self, app, op, input);
+            return crate::loaded_engines::start(self, app, op, input, None);
         }
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
@@ -923,7 +923,8 @@ impl Platform for HostPlatform {
             wake: self.waker(),
         });
         if crate::loaded_engines::answers(app) {
-            return crate::loaded_engines::start(self, app, op, input);
+            let record: Arc<dyn tilolang_tilo::runtime::host_work::Push> = record;
+            return crate::loaded_engines::start(self, app, op, input, Some(record));
         }
         if app == crate::photos_engine::APP {
             return crate::photos_engine::start(

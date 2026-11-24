@@ -2705,7 +2705,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         | WebViewCommand::AnswerDeparture { id, .. }
         | WebViewCommand::AnswerDownload { id, .. } => *id > 0 && i32::try_from(*id).is_ok(),
         WebViewCommand::Navigate(url) => url.len() <= 65536,
-        WebViewCommand::StartDownload { uri } => {
+        WebViewCommand::StartDownload { uri } | WebViewCommand::RequestDownload { uri, .. } => {
             uri.len() <= 8192
                 && url::Url::parse(uri).ok().is_some_and(|url| {
                     matches!(url.scheme(), "http" | "https") && url.host().is_some()
@@ -2966,6 +2966,7 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             referrer: value["referrer"].as_str()?.into(),
             cookies: value["cookies"].as_str()?.into(),
             user_agent: value["user_agent"].as_str()?.into(),
+            again: value["again"].as_bool()?,
         },
         "download_prompt" => WebViewEvent::NativeDownloadRequested {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
@@ -2989,6 +2990,7 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             received: wire_u64(&value["received"])?,
             total: wire_u64(&value["total"])?,
             error: value["error"].as_str()?.into(),
+            extension: value["extension"].as_bool()?,
         },
         "download_runtime" => WebViewEvent::DownloadRuntime {
             admitted: u32::try_from(value["admitted"].as_u64()?).ok()?,
@@ -3378,6 +3380,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             "faces": families,
         }),
         WebViewCommand::StartDownload { uri } => json!({"op":"download_start","url":uri}),
+        WebViewCommand::RequestDownload { id, uri } => {
+            json!({"op":"download_request","id":id,"url":uri})
+        }
         WebViewCommand::PrintToPdf { request_id } => {
             json!({"op":"print_pdf","request_id":request_id})
         }

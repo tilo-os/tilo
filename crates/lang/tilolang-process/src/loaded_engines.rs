@@ -17,10 +17,11 @@
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tilo_engine_loader::{Device, EngineApi, File};
 use tilolang_tilo::instance::Platform;
+use tilolang_tilo::runtime::host_work::Push;
 
 /// The app whose typesetting `libtilo_typst_engine.so` answers.
 pub const TYPST_APP: &str = "so.tilo.typst-editor";
@@ -111,18 +112,44 @@ pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result
 }
 
 /// One `engine.start` for `app`: the job `op` started, answered with the job's id, or the
-/// engine's refusal.
+/// engine's refusal. With `record`, each move the engine tells of the job is pushed there as the
+/// job's state (`engine.state(job)`), so a view follows it without asking the engine.
 ///
 /// # Errors
 ///
 /// The engine's refusal, or that this device loads none for `app`.
-pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result<String, String> {
+pub fn start(
+    platform: &dyn Platform,
+    app: &str,
+    op: &str,
+    input: &str,
+    record: Option<Arc<dyn Push>>,
+) -> Result<String, String> {
     let engine = engine_of(app)?;
     let job = next_job(app);
     let context = Context(platform);
     let device = device(&context);
-    let sink = tilo_engine_loader::JobSink::new(std::ptr::null_mut(), nowhere);
-    (engine.start)(&device, &job, op, input, &sink)?;
+    // The job stands queued from the start, so a window reads it before the engine moves it.
+    if let Some(push) = &record {
+        push.state(&job, r#"{"state":"queued"}"#);
+    }
+    let told = record.map(|push| {
+        Box::into_raw(Box::new(Told {
+            job: job.clone(),
+            push,
+        }))
+    });
+    let sink = match told {
+        Some(told) => tilo_engine_loader::JobSink::new(told.cast::<c_void>(), pushed),
+        None => tilo_engine_loader::JobSink::new(std::ptr::null_mut(), nowhere),
+    };
+    if let Err(refused) = (engine.start)(&device, &job, op, input, &sink) {
+        if let Some(told) = told {
+            // SAFETY: a job that did not start tells nothing, so the sink is no longer read.
+            drop(unsafe { Box::from_raw(told) });
+        }
+        return Err(refused);
+    }
     jobs()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -184,6 +211,34 @@ fn jobs() -> &'static Mutex<BTreeMap<String, String>> {
 
 /// A job sink that tells nothing: this process starts a job of a loaded engine and answers its
 /// id, and the engine's own moves are the engine's to keep until the device records jobs here.
+/// Where a job's moves are pushed: the job, and the record its window reads it from.
+struct Told {
+    job: String,
+    push: Arc<dyn Push>,
+}
+
+/// One move of a job, pushed as its state: the engine's fields with the state they stand at.
+/// An ending move is the last the engine tells, so what it was told through goes with it.
+fn pushed(context: *mut c_void, state: &str, detail: &str) {
+    let ending = matches!(state, "done" | "failed" | "cancelled");
+    let mut fields = match serde_json::from_str::<serde_json::Value>(detail) {
+        Ok(serde_json::Value::Object(fields)) => fields,
+        _ => serde_json::Map::new(),
+    };
+    fields.insert("state".to_owned(), state.into());
+    let text = serde_json::Value::Object(fields).to_string();
+    if ending {
+        // SAFETY: the context is the `Told` `start` leaked for this job, and the ending move is
+        // the engine's last: nothing reads it after this.
+        let told = unsafe { Box::from_raw(context.cast::<Told>()) };
+        told.push.ended(&told.job, &text);
+    } else {
+        // SAFETY: as above, while the job has not ended.
+        let told = unsafe { &*context.cast::<Told>() };
+        told.push.state(&told.job, &text);
+    }
+}
+
 fn nowhere(_context: *mut c_void, _state: &str, _detail: &str) {}
 
 /// How far a job a loaded engine runs has got, as JSON: `None` when no loaded engine started it.

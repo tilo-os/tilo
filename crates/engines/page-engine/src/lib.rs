@@ -80,9 +80,17 @@ pub struct PageSession {
     /// pages it can go to), for the window to hand the app as its calls: the record moves while
     /// the person looks.
     notes: Vec<String>,
-    /// The number this window keeps a download's request under ([`tilo_engine_loader::request`]),
+    /// The number this window keeps a download's request under ([`tilo_engine_loader::kept`]),
     /// so what it never handed over goes when it closes.
     keeper: u64,
+    /// The downloads the person retries, waiting on what a request for their address carries
+    /// from this page now: the job each ended as, by the number the engine was asked under.
+    again: HashMap<u32, String>,
+    /// The engine's number for the next download asked again.
+    again_next: u32,
+    /// What the window last told the app of each download an extension started, which the
+    /// engine saves: its state, and how far it came in tenths.
+    extension_downloads: HashMap<u32, (String, u64)>,
     /// The engine's number for the next credential action.
     credential_next: u32,
     /// The engine's number for the next ask about the video the page shows.
@@ -128,6 +136,9 @@ impl PageSession {
             choosers: Vec::new(),
             notes: Vec::new(),
             keeper: tilo_engine_loader::kept::owner(),
+            again: HashMap::new(),
+            again_next: 0,
+            extension_downloads: HashMap::new(),
             credential_next: 0,
             media_next: 0,
             login_waiting: None,
@@ -227,21 +238,68 @@ impl PageSession {
                 // its request carried in this process, and the app's call names only the handle
                 // the download redeems once as it starts. Cookies never enter a record.
                 WebViewEvent::DownloadRequest {
+                    id,
                     url,
                     name,
                     referrer,
                     cookies,
                     user_agent,
-                    ..
+                    again,
                 } => {
+                    // One asked again names the job of the download the person retries; one
+                    // nobody here asked for is dropped with its cookies.
+                    let retried = if *again {
+                        match self.again.remove(id) {
+                            Some(job) => Some(job),
+                            None => continue,
+                        }
+                    } else {
+                        None
+                    };
                     let context = serde_json::json!({
                         "referrer": referrer,
                         "cookies": cookies,
                         "user_agent": user_agent,
                     });
                     let request = tilo_engine_loader::kept::keep(self.keeper, context.to_string());
-                    self.notes.push(codec::download_note(url, name, &request));
+                    self.notes.push(codec::download_note(
+                        url,
+                        name,
+                        &request,
+                        retried.as_deref(),
+                    ));
                     continue;
+                }
+                // A download an extension started is the engine's to save and the extension's to
+                // follow, and the Browser's list shows it too: the window tells the app as its
+                // state changes and each tenth of the way.
+                WebViewEvent::DownloadUpdated {
+                    id,
+                    state,
+                    name,
+                    url,
+                    path,
+                    received,
+                    total,
+                    error,
+                    extension: true,
+                    ..
+                } => {
+                    let step = received.saturating_mul(10).checked_div(*total).unwrap_or(0);
+                    let said = (state.clone(), step);
+                    if self.extension_downloads.insert(*id, said.clone()) != Some(said) {
+                        self.notes
+                            .push(codec::extension_download_note(&codec::SeenDownload {
+                                id: *id,
+                                state,
+                                name,
+                                url,
+                                path,
+                                received: *received,
+                                total: *total,
+                                error,
+                            }));
+                    }
                 }
                 // The video the page shows appeared or went with its page: the app's record
                 // carries what it offers to float, and it moves while the person looks.
@@ -547,6 +605,18 @@ impl PageSession {
         }
         self.omnibox.entered(text);
         self.note_omnibox();
+    }
+
+    /// Ask the page what a request for `url` carries from it now, for the download the person
+    /// retries, whose job ended as `job`: the app's call that follows names that job and the
+    /// handle the context is kept under, as a saved download's does.
+    pub fn download_again(&mut self, url: &str, job: &str) {
+        self.again_next = self.again_next.wrapping_add(1).max(1);
+        self.again.insert(self.again_next, job.to_owned());
+        self.engine.send(WebViewCommand::RequestDownload {
+            id: self.again_next,
+            uri: url.to_owned(),
+        });
     }
 
     /// Close the page the extension showed beside this one: its side panel, or the sign-in page
@@ -1780,5 +1850,103 @@ mod tests {
             "the extension hears of the person leaving: {:?}",
             test.commands()
         );
+    }
+
+    /// A retried download is fetched signed in, as the one the page offered was: the page is
+    /// asked again what a request for the address carries, and the app's call names the job it
+    /// takes the place of and a fresh handle, never the cookies.
+    #[test]
+    fn a_retried_download_carries_the_pages_cookies_again_under_a_new_handle() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        session.download_again("https://example.org/report.pdf", "browser-1");
+        session.poll();
+        let notes = session.notes();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let note: serde_json::Value = serde_json::from_str(&notes[0]).unwrap();
+        assert_eq!(note["note"], "download");
+        assert_eq!(note["url"], "https://example.org/report.pdf");
+        assert_eq!(note["again"], "browser-1");
+        assert!(
+            !notes[0].contains("session=test"),
+            "the cookies stay in the window"
+        );
+        let context = tilo_engine_loader::kept::redeem(note["request"].as_str().unwrap())
+            .expect("the handle redeems the request's context");
+        assert!(context.contains("session=test"), "{context}");
+
+        // An answer nobody here asked for, as from a stale ask, starts nothing.
+        test.push_event(WebViewEvent::DownloadRequest {
+            id: 99,
+            url: "https://example.org/other".to_owned(),
+            name: String::new(),
+            referrer: String::new(),
+            cookies: "session=test".to_owned(),
+            user_agent: String::new(),
+            again: true,
+        });
+        session.poll();
+        assert!(session.notes().is_empty());
+    }
+
+    /// A download an extension started is told to the app as it moves, a tenth of the way at a
+    /// time, while one the page offered is not: the Browser's own job reports that one.
+    #[test]
+    fn an_extensions_download_is_told_to_the_app_as_it_moves() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        let update = |received, state: &str, extension| WebViewEvent::DownloadUpdated {
+            id: 4,
+            state: state.to_owned(),
+            path: if state == "complete" {
+                "/home/ada/Downloads/kept.bin"
+            } else {
+                ""
+            }
+            .to_owned(),
+            name: "kept.bin".to_owned(),
+            url: "https://example.org/kept.bin".to_owned(),
+            retryable: true,
+            received,
+            total: 1000,
+            error: String::new(),
+            extension,
+        };
+        for received in [0, 50, 99, 100, 500, 1000] {
+            test.push_event(update(received, "progress", true));
+        }
+        test.push_event(update(1000, "complete", true));
+        test.push_event(update(10, "cancelled", false));
+        session.poll();
+        let notes: Vec<serde_json::Value> = session
+            .notes()
+            .iter()
+            .map(|note| serde_json::from_str(note).unwrap())
+            .collect();
+        let steps: Vec<(&str, u64)> = notes
+            .iter()
+            .map(|note| {
+                (
+                    note["state"].as_str().unwrap(),
+                    note["received"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                ("progress", 0),
+                ("progress", 100),
+                ("progress", 500),
+                ("progress", 1000),
+                ("complete", 1000)
+            ]
+        );
+        assert!(
+            notes
+                .iter()
+                .all(|note| note["note"] == "extension_download")
+        );
+        assert_eq!(notes[4]["path"], "/home/ada/Downloads/kept.bin");
     }
 }

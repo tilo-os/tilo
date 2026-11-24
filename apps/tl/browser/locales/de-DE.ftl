@@ -1160,9 +1160,11 @@ d-6a4m4f4s = Adresse herunterladen
     .doc = Lädt herunter, was eine Adresse liefert, in die Downloads der Person, als eigenen Auftrag des Browsers, der weiterläuft, wenn das Fenster schließt.
     .w-type-the-address-to-download = Gib die Adresse zum Herunterladen ein
     .w-downloading = { $called } wird heruntergeladen
+    .w-the-download-was-retried-already = Der Download wurde bereits wiederholt
 d-6a4m4f4s-url = URL
 d-6a4m4f4s-name = Name
 d-6a4m4f4s-request = Anfrage
+d-6a4m4f4s-again = Erneut
 
 
 
@@ -1224,12 +1226,17 @@ d-fxq6nhpy = Adressseite
     .w-delete-address = Adresse löschen
 
 d-6w4zu5de = Downloadzeile
+
+d-ekr42gd3 = Downloadstand
     .w-downloading = Wird heruntergeladen
     .w-cancel = Abbrechen
     .w-retry = Wiederholen
     .w-open = Öffnen
     .w-show-in-files = In Dateien anzeigen
+
+d-uddrkufq = Verschwundener Download
     .w-not-on-this-device = Nicht auf diesem Gerät
+    .w-retry = Wiederholen
 
 d-eg4w4fow = Stumm
     .doc = Ob der Ton der Seite stummgeschaltet ist.
@@ -2005,12 +2012,41 @@ d-vgktij3z = Download abbrechen
     .w-cancelled = { $name } abgebrochen
     .w-is-no-longer-downloading = { $name } wird nicht mehr heruntergeladen
 
-d-7jfn5jgm = Download wiederholen
-    .doc = Startet einen fehlgeschlagenen oder abgebrochenen Download erneut von vorn.
-    .w-downloading = { $name } wird heruntergeladen
+d-ag2v6c5c = Download wiederholen
+    .doc = Startet einen fehlgeschlagenen oder abgebrochenen Download erneut von vorn, so angemeldet wie die Seite: das Fenster der Seite übergibt, was eine Anfrage an die Adresse jetzt von ihr mitbringt, und der Download behält den neuen Auftrag.
+
+d-ag2v6c5c-d = D
 
 d-ntj7w6gz = Alle Downloads abbrechen
     .doc = Stoppt jeden laufenden Download, aus jedem Fenster.
     .w-every-download-was-stopped = Alle Downloads wurden gestoppt
 
 d-zhto4tgr = Download abbrechen~present
+
+d-5jny2jyp = Gesehen
+    .doc = Wo ein Download steht, den eine Erweiterung gestartet hat, wie die Engine der Seite, die ihn speichert, es sagt: keiner für einen, den der Browser selbst holt.
+
+d-inchqje5 = Engine
+    .doc = Die Nummer der Seiten-Engine für einen Download, den eine Erweiterung gestartet hat.
+
+d-i75qjot6 = Auftrag
+    .doc = Der Auftrag, mit dem ein wiederholter Download endete, den die Antwort der Seite wieder nennt.
+
+d-vdj3mt7p = Download einer Erweiterung vermerken
+    .doc = Behält, wo ein Download steht, den eine Erweiterung gestartet hat, wie die Engine der Seite, die ihn speichert, es sagt: die eine Liste des Browsers zeigt ihn mit den übrigen.
+
+d-vdj3mt7p-id = Id
+
+d-vdj3mt7p-state = Zustand
+
+d-vdj3mt7p-name = Name
+
+d-vdj3mt7p-url = URL
+
+d-vdj3mt7p-path = Pfad
+
+d-vdj3mt7p-received = Empfangen
+
+d-vdj3mt7p-total = Gesamt
+
+d-vdj3mt7p-error = Fehler

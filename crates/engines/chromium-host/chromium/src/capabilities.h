@@ -279,7 +279,7 @@ class Downloads final : public CefDownloadHandler {
     if(item->GetReceivedBytes()>0 || !transfer.received)transfer.received=item->GetReceivedBytes();if(item->GetTotalBytes()>0 || !transfer.total)transfer.total=item->GetTotalBytes();
   }
   void EmitState(int id,const Transfer& transfer,const std::string& state,const std::string& error) {
-    auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("state",state);d->SetString("path",transfer.path);d->SetString("name",transfer.name);d->SetString("url",transfer.url);d->SetBool("retryable",transfer.retryable);d->SetDouble("received",transfer.received);d->SetDouble("total",transfer.total);d->SetString("error",error);emit_("download",d);
+    auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("state",state);d->SetString("path",transfer.path);d->SetString("name",transfer.name);d->SetString("url",transfer.url);d->SetBool("retryable",transfer.retryable);d->SetDouble("received",transfer.received);d->SetDouble("total",transfer.total);d->SetString("error",error);d->SetBool("extension",transfer.extension);emit_("download",d);
   }
   void Remember(int id,const Transfer& transfer) {
     history_[id]={transfer.url,transfer.retryable};terminal_.insert(id);terminal_order_.push_back(id);

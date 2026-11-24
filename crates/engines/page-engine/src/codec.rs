@@ -92,6 +92,9 @@ pub enum Ask {
     AddressLeft,
     /// Close the page the extension showed beside this one.
     PanelClose,
+    /// Ask the page again what a request for `url` carries, for the download the person
+    /// retries, whose job ended as `job`.
+    DownloadAgain { url: String, job: String },
 }
 
 /// Read a request an app's action wrote.
@@ -435,6 +438,13 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         // The window's second page goes: the extension's side panel, or the page it asked the
         // person to sign in on.
         "panel_close" => Ask::PanelClose,
+        // A download the person retries: what a request for its address carries from this page
+        // now, kept for the new job the app's call starts.
+        "download_again" => Ask::DownloadAgain {
+            url: text(&value, "url")
+                .ok_or_else(|| "a retried download names its address".to_owned())?,
+            job: text(&value, "job").unwrap_or_default(),
+        },
         // The page's logins: the forms the engine finds and the capture it takes of one the
         // person typed, and the logins the workspace's vault keeps for the page's site. The
         // password never crosses this vocabulary.
@@ -895,9 +905,46 @@ pub fn omnibox_note(state: Option<&crate::omnibox::State>) -> String {
 /// from, the name the page suggested, and the handle the window keeps its request's context
 /// under, which the app's download redeems once.
 #[must_use]
-pub fn download_note(url: &str, name: &str, request: &str) -> String {
-    serde_json::json!({"note": "download", "url": url, "name": name, "request": request})
-        .to_string()
+pub fn download_note(url: &str, name: &str, request: &str, again: Option<&str>) -> String {
+    let mut note = serde_json::Map::new();
+    note.insert("note".to_owned(), "download".into());
+    note.insert("url".to_owned(), url.into());
+    note.insert("name".to_owned(), name.into());
+    note.insert("request".to_owned(), request.into());
+    // A retried download names the job it ended as, which the new one takes the place of.
+    if let Some(job) = again {
+        note.insert("again".to_owned(), job.into());
+    }
+    serde_json::Value::Object(note).to_string()
+}
+
+/// Where a download an extension started stands, as the engine that saves it tells.
+pub struct SeenDownload<'a> {
+    pub id: u32,
+    pub state: &'a str,
+    pub name: &'a str,
+    pub url: &'a str,
+    pub path: &'a str,
+    pub received: u64,
+    pub total: u64,
+    pub error: &'a str,
+}
+
+/// The note a download an extension started becomes, for the Browser's one list of downloads.
+#[must_use]
+pub fn extension_download_note(seen: &SeenDownload<'_>) -> String {
+    serde_json::json!({
+        "note": "extension_download",
+        "id": seen.id,
+        "state": seen.state,
+        "name": seen.name,
+        "url": seen.url,
+        "path": seen.path,
+        "received": seen.received,
+        "total": seen.total,
+        "error": seen.error,
+    })
+    .to_string()
 }
 
 /// A page the page opened in a window of its own (`window.open`, a link that names a new tab),
