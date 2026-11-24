@@ -200,6 +200,16 @@ pub struct FloatingPanel {
     width: Option<f32>,
     fill_width: bool,
     fill_height: bool,
+    /// What assistive technology calls it, when it names itself (a modal panel: `window
+    /// switcher`), and the one line said after that name.
+    label: Option<String>,
+    description: Option<String>,
+    /// It holds the screen while it shows: what it covers is dimmed, and it reads as a modal
+    /// dialog rather than a group.
+    modal: bool,
+    /// It comes in from its trailing edge on the panel slide, as a banner rises in the corner,
+    /// rather than growing from its own centre.
+    slide: bool,
     /// The height the panel's window should be, when it is the whole of a surface that fits its
     /// content ([`Self::fit_height`]): what its parts need, followed on the expand/collapse motion.
     fit: Option<Fit>,
@@ -243,6 +253,10 @@ impl FloatingPanel {
             width: None,
             fill_width: false,
             fill_height: false,
+            label: None,
+            description: None,
+            modal: false,
+            slide: false,
             fit: None,
             rect: Rect::ZERO,
             header_rect: Rect::ZERO,
@@ -275,6 +289,49 @@ impl FloatingPanel {
     /// [`Self::width`] after construction; `None` takes its content's width.
     pub fn set_width(&mut self, px: Option<f32>) {
         self.width = px;
+    }
+
+    /// What assistive technology calls it, and the one line said after that name.
+    #[must_use]
+    pub fn named(mut self, label: Option<String>, description: Option<String>) -> Self {
+        self.set_named(label, description);
+        self
+    }
+
+    /// [`Self::named`] after construction.
+    pub fn set_named(&mut self, label: Option<String>, description: Option<String>) {
+        self.label = label.filter(|label| !label.trim().is_empty());
+        self.description = description.filter(|description| !description.trim().is_empty());
+    }
+
+    /// It holds the screen while it shows: the window behind it is dimmed on the theme's scrim,
+    /// fading with the panel, and assistive technology reads it as a modal dialog.
+    #[must_use]
+    pub fn modal(mut self, modal: bool) -> Self {
+        self.modal = modal;
+        self
+    }
+
+    /// [`Self::modal`] after construction.
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
+    }
+
+    /// It arrives from its trailing edge on the panel slide, as a banner rises in the corner.
+    #[must_use]
+    pub fn slide(mut self, slide: bool) -> Self {
+        self.slide = slide;
+        self
+    }
+
+    /// [`Self::slide`] after construction.
+    pub fn set_slide(&mut self, slide: bool) {
+        self.slide = slide;
+    }
+
+    /// [`Self::fill_width`] after construction.
+    pub fn set_fill_width(&mut self, fill: bool) {
+        self.fill_width = fill;
     }
 
     /// Take the width it is offered rather than the width of
@@ -563,15 +620,40 @@ impl Widget for FloatingPanel {
         if self.fit.is_some() {
             self.placed.carry(self.rect);
         }
-        self.placed.follow(
+        // A banner's card rises from the edge it stands by, on the panel slide; a panel a view
+        // places elsewhere arrives from its own centre.
+        let spec = if self.slide {
+            crate::motion::PanelSlide::SPEC
+        } else {
+            crate::motion::WindowMotion::OPEN
+        };
+        self.placed.follow_with(
             self.rect,
             true,
+            spec,
             theme.motion(),
             crate::motion::input_source(),
             now,
         );
         let card = self.card(now);
-        let pose = self.placed.pose(card, now);
+        // A card arriving rises from the edge it stands by; one that only moved (a newer banner
+        // above it) glides to its new place, and the rest stand still.
+        let pose = if self.slide && !self.placed.is_gliding(now) {
+            crate::motion::PanelSlide::sheet_pose(
+                self.placed.progress(now),
+                card.width(),
+                true,
+                theme.motion(),
+            )
+        } else {
+            self.placed.pose(card, now)
+        };
+        // A panel that holds the screen dims what it covers, and the dim fades with the panel.
+        if self.modal
+            && let Some(ground) = env.viewport
+        {
+            crate::overlay::scrim::modal(scene, transform, ground, pose.opacity, theme);
+        }
         let bounds = card.union(pose.drawn_rect(card));
         pose.paint(scene, transform, bounds, |scene, transform| {
             self.paint_panel(
@@ -687,6 +769,29 @@ impl Widget for FloatingPanel {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// A panel that names itself reads as the thing it is: a modal panel is a dialog, holding the
+    /// screen, and either is named with the line said after its name.
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        if self.label.is_none() && self.description.is_none() && !self.modal {
+            return None;
+        }
+        let mut node = AccessNode::new(if self.modal {
+            Role::Dialog
+        } else {
+            Role::Group
+        })
+        .with_optional_name(self.label.clone());
+        node.description.clone_from(&self.description);
+        if self.modal {
+            node = node.with_state(AccessState {
+                modal: true,
+                ..Default::default()
+            });
+        }
+        Some(node)
     }
 
     fn name(&self) -> &'static str {

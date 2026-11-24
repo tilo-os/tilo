@@ -36,6 +36,9 @@ pub struct BannerProps {
     pub action: Option<String>,
     /// The label of a second action, before the main one: "Details".
     pub secondary_action: Option<String>,
+    /// It draws no card of its own: the panel it stands on draws the card, and the banner's words
+    /// and controls go on that panel's ground (a notification banner in the shell's corner).
+    pub bare: bool,
     /// Its main action was pressed.
     #[component(event(press))]
     pub act: Event,
@@ -81,9 +84,13 @@ impl Described for Banner {
             act,
             secondary_act,
             dismiss,
+            bare,
             ..
         } = props;
         let mut banner = Self::from_notice(Some(notice)).with_id(key);
+        if bare {
+            banner = banner.bare();
+        }
         if let Some(label) = main {
             banner = banner.with_action(action(&format!("{key}.action"), label, act));
         }
@@ -108,7 +115,10 @@ impl Described for Banner {
             || props.secondary_action.is_some()
             || self.action.is_some()
             || self.secondary.is_some();
-        if actions || props.dismiss.is_none() != self.dismiss.is_none() {
+        if actions
+            || props.dismiss.is_none() != self.dismiss.is_none()
+            || props.bare != self.body.bare
+        {
             return false;
         }
         self.set_notice(Some(props.notice()));

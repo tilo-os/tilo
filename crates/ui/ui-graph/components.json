@@ -327,6 +327,11 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "bare",
+          "doc": "It draws no card of its own: the panel it stands on draws the card, and the banner's words and controls go on that panel's ground (a notification banner in the shell's corner).",
+          "type": "bool"
         }
       ],
       "events": [
@@ -5179,6 +5184,35 @@
         {
           "name": "fill_height",
           "doc": "Take the height it is offered rather than the height of its content: a panel a surface measured a room for, whose body scrolls inside it when it holds more.",
+          "type": "bool"
+        },
+        {
+          "name": "fill",
+          "doc": "Take the width it is offered rather than the width of its content: a card that spans a narrow display.",
+          "type": "bool"
+        },
+        {
+          "name": "label",
+          "doc": "What assistive technology calls it; a panel that names none adds no node of its own.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "description",
+          "doc": "What assistive technology says after its name.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "modal",
+          "doc": "It holds the screen while it shows: what it covers is dimmed, fading with the panel, and it reads as a modal dialog.",
+          "type": "bool"
+        },
+        {
+          "name": "slide",
+          "doc": "It arrives from its trailing edge on the panel slide, as a banner rises in the corner.",
           "type": "bool"
         }
       ],

@@ -290,6 +290,18 @@ pub struct FloatingPanelProps {
     /// Take the height it is offered rather than the height of its content: a panel a surface
     /// measured a room for, whose body scrolls inside it when it holds more.
     pub fill_height: bool,
+    /// Take the width it is offered rather than the width of its content: a card that spans a
+    /// narrow display.
+    pub fill: bool,
+    /// What assistive technology calls it; a panel that names none adds no node of its own.
+    pub label: Option<String>,
+    /// What assistive technology says after its name.
+    pub description: Option<String>,
+    /// It holds the screen while it shows: what it covers is dimmed, fading with the panel, and
+    /// it reads as a modal dialog.
+    pub modal: bool,
+    /// It arrives from its trailing edge on the panel slide, as a banner rises in the corner.
+    pub slide: bool,
 }
 
 pub struct DeclaredPanel {
@@ -320,6 +332,13 @@ impl DeclaredPanel {
         }
         if props.fill_height {
             panel = panel.fill_height();
+        }
+        panel = panel
+            .named(props.label, props.description)
+            .modal(props.modal)
+            .slide(props.slide);
+        if props.fill {
+            panel = panel.fill_width();
         }
         Self {
             panel,
@@ -432,8 +451,24 @@ impl Described for DeclaredPanel {
     /// The panel's width changes where it stands; its body, header and footer change by key
     /// through [`Self::part_views`], so a field in the header keeps what was typed in it.
     fn set_props(&mut self, props: FloatingPanelProps) -> bool {
-        self.panel
-            .set_width(props.width.map(crate::num::f32_of_f64));
+        let FloatingPanelProps {
+            width,
+            fill,
+            fill_height: _,
+            label,
+            description,
+            modal,
+            slide,
+            body: _,
+            header: _,
+            footer: _,
+        } = props;
+        let panel = &mut self.panel;
+        panel.set_width(width.map(crate::num::f32_of_f64));
+        panel.set_fill_width(fill);
+        panel.set_named(label, description);
+        panel.set_modal(modal);
+        panel.set_slide(slide);
         true
     }
 

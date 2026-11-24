@@ -402,7 +402,7 @@ struct BodyPlace {
     title_h: f64,
 }
 
-fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPlace) {
+fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPlace, bare: bool) {
     let BodyPlace {
         icon: icon_rect,
         text,
@@ -413,7 +413,12 @@ fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPl
     let (kind, icon, title) = (content.kind, content.icon, content.title);
     let message = content.message.as_deref();
     let theme = ctx.theme;
-    let on_well = theme.on_ground(well(theme, kind));
+    // A bare banner stands on the ground it was given (the panel's), not on a well of its own.
+    let on_well = if bare {
+        theme.clone()
+    } else {
+        theme.on_ground(well(theme, kind))
+    };
     icon.draw(ctx.scene, ctx.transform, icon_rect, kind.icon_ink(&on_well));
     if let Some(source) = content.source_line() {
         ctx.text(
@@ -472,6 +477,7 @@ fn paint_banner(
             source_h: g.source_h,
             title_h: g.title_h,
         },
+        false,
     );
     let on_well = theme.on_ground(well(&theme, content.kind));
     let mut hit = BannerHit {
@@ -623,6 +629,9 @@ struct BannerBody {
     /// The height the banner's buttons measure themselves at: a finger's target on touch.
     control_h: Option<f64>,
     dismissible: bool,
+    /// It draws no card of its own: the panel it stands on draws the card (a notification banner
+    /// in the shell's corner), so its text and controls go on that panel's ground.
+    bare: bool,
     rect: Rect,
     theme: Theme,
     dirty: bool,
@@ -709,7 +718,9 @@ impl Widget for BannerBody {
             return;
         }
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
-        paint_well(&mut ctx, self.rect, self.notice.kind);
+        if !self.bare {
+            paint_well(&mut ctx, self.rect, self.notice.kind);
+        }
         let g = self.geometry(ctx.text, theme, self.rect.width());
         let dy = ((self.rect.height() - g.height) / 2.0).max(0.0);
         let origin = self.rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
@@ -724,6 +735,7 @@ impl Widget for BannerBody {
                 source_h: g.source_h,
                 title_h: g.title_h,
             },
+            self.bare,
         );
     }
 
@@ -815,6 +827,7 @@ impl Banner {
                 actions: [None, None],
                 control_h: None,
                 dismissible: false,
+                bare: false,
                 rect: Rect::ZERO,
                 theme: Theme::dark(),
                 dirty: true,
@@ -920,6 +933,16 @@ impl Banner {
     /// window's arrival cross-fades it), so it does not open on its own.
     #[must_use]
     pub fn arrives_in_place(mut self) -> Self {
+        self.arrives_in_place = true;
+        self
+    }
+
+    /// Draw no card of its own: the panel it stands on draws the card, and the banner's words and
+    /// controls go on that panel's ground. The panel brings it in, so it stands at rest from its
+    /// first frame.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.body.bare = true;
         self.arrives_in_place = true;
         self
     }
@@ -1155,7 +1178,11 @@ impl Banner {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.body.draw_child(scene, transform, text, theme, &env);
-        let on_well = theme.on_ground(well(theme, self.body.notice.kind));
+        let on_well = if self.body.bare {
+            theme.clone()
+        } else {
+            theme.on_ground(well(theme, self.body.notice.kind))
+        };
         for button in self.buttons_mut() {
             button.draw_child(scene, transform, text, &on_well, &env);
         }

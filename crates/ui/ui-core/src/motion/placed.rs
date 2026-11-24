@@ -69,6 +69,20 @@ impl Placed {
         source: MotionSource,
         now: Instant,
     ) {
+        self.follow_with(rect, open, WindowMotion::OPEN, motion, source, now);
+    }
+
+    /// [`Self::follow`] on the motion `spec` names, for a surface that arrives on a pace of its
+    /// own (a banner rising from its edge on the panel slide).
+    pub fn follow_with(
+        &mut self,
+        rect: Rect,
+        open: bool,
+        spec: super::MotionSpec,
+        motion: EffectiveMotion,
+        source: MotionSource,
+        now: Instant,
+    ) {
         self.motion = motion;
         // The first placement rests where it stands. A surface built up shows at rest (the first
         // paint shows the resting state); one built closed and asked to be up on its first frame
@@ -79,15 +93,13 @@ impl Placed {
             self.target = rect;
             if open && !self.presence.is_open() {
                 self.presence.snap(false);
-                self.presence
-                    .show(true, WindowMotion::OPEN, motion, source, now);
+                self.presence.show(true, spec, motion, source, now);
             } else {
                 self.presence.snap(open);
             }
             return;
         }
-        self.presence
-            .show(open, WindowMotion::OPEN, motion, source, now);
+        self.presence.show(open, spec, motion, source, now);
         if (rect.x0 - self.target.x0).abs() > 0.5
             || (rect.y0 - self.target.y0).abs() > 0.5
             || (rect.x1 - self.target.x1).abs() > 0.5
