@@ -33,6 +33,20 @@ fn remove_any(name: &str) -> tilo_resource::Invoke<WorkspaceEmoji> {
     WorkspaceEmoji::REMOVE_ANY_EMOJI.with(workspace_emoji::RemoveAnyEmoji { name: name.into() })
 }
 
+fn rename(name: &str, to: &str) -> tilo_resource::Invoke<WorkspaceEmoji> {
+    WorkspaceEmoji::RENAME_EMOJI.with(workspace_emoji::RenameEmoji {
+        name: name.into(),
+        to: to.into(),
+    })
+}
+
+fn rename_any(name: &str, to: &str) -> tilo_resource::Invoke<WorkspaceEmoji> {
+    WorkspaceEmoji::RENAME_ANY_EMOJI.with(workspace_emoji::RenameAnyEmoji {
+        name: name.into(),
+        to: to.into(),
+    })
+}
+
 fn as_person(person: &str) -> Replica<WorkspaceEmoji> {
     Replica::<WorkspaceEmoji>::new().as_author(person)
 }
@@ -132,6 +146,40 @@ fn people_remove_their_own_and_moderators_anyones() {
 }
 
 #[test]
+fn people_rename_their_own_and_moderators_anyones() {
+    let mut alice = as_person(ALICE);
+    alice.set_now_ms(5);
+    alice.apply(add("parrot", &png(1, 64))).unwrap();
+    alice.apply(add("cat", &png(2, 64))).unwrap();
+    alice.apply(rename("parrot", "party_parrot")).unwrap();
+    let state = alice.state().unwrap();
+    assert_eq!(state.names(), ["cat", "party_parrot"]);
+    let moved = state.get("party_parrot").unwrap();
+    assert_eq!(moved.image.bytes(), png(1, 64), "the picture moves with it");
+    assert_eq!(moved.added_by, tilo_actions::MemberId::person(ALICE));
+    assert_eq!(moved.added_at, 5);
+    for (to, why) in [
+        ("cat", "a name taken stays its emoji's"),
+        ("x", "a name too short"),
+        ("has space", "a name with a space"),
+    ] {
+        assert!(alice.apply(rename("party_parrot", to)).is_err(), "{why}");
+    }
+    assert!(
+        alice.apply(rename("gone", "here")).is_err(),
+        "no such emoji"
+    );
+
+    let mut bob = alice.fork().as_author(BOB);
+    assert!(
+        bob.apply(rename("cat", "bobs_cat")).is_err(),
+        "nobody renames another's emoji as their own"
+    );
+    bob.apply(rename_any("cat", "kitty")).unwrap();
+    assert_eq!(bob.state().unwrap().names(), ["kitty", "party_parrot"]);
+}
+
+#[test]
 fn removing_anyones_emoji_sits_under_the_moderation_node() {
     let field = |id: &str| {
         WorkspaceEmoji::declarations()
@@ -143,8 +191,13 @@ fn removing_anyones_emoji_sits_under_the_moderation_node() {
         field("remove-any-emoji"),
         Some((Some(tilo_actions::MODERATION_FIELD), ActionKind::Undoable))
     );
+    assert_eq!(
+        field("rename-any-emoji"),
+        Some((Some(tilo_actions::MODERATION_FIELD), ActionKind::Undoable))
+    );
     assert_eq!(field("add-emoji"), Some((None, ActionKind::Undoable)));
     assert_eq!(field("remove-emoji"), Some((None, ActionKind::Undoable)));
+    assert_eq!(field("rename-emoji"), Some((None, ActionKind::Undoable)));
 }
 
 #[test]
@@ -180,6 +233,7 @@ fn a_workspaces_roles_decide_who_adds_and_who_moderates() {
     for person in [ALICE, BOB, CAROL] {
         assert_eq!(answer(person, "add-emoji"), Answer::Allow, "{person}");
         assert_eq!(answer(person, "remove-emoji"), Answer::Allow, "{person}");
+        assert_eq!(answer(person, "rename-emoji"), Answer::Allow, "{person}");
     }
     for person in ["v", "c"] {
         assert_eq!(answer(person, "add-emoji"), Answer::Deny, "{person}");
@@ -187,6 +241,8 @@ fn a_workspaces_roles_decide_who_adds_and_who_moderates() {
     assert_eq!(answer(ALICE, "remove-any-emoji"), Answer::Allow);
     assert_eq!(answer(CAROL, "remove-any-emoji"), Answer::Allow);
     assert_eq!(answer(BOB, "remove-any-emoji"), Answer::Deny);
+    assert_eq!(answer(CAROL, "rename-any-emoji"), Answer::Allow);
+    assert_eq!(answer(BOB, "rename-any-emoji"), Answer::Deny);
     let _ = roles::MODERATION_FIELD;
 }
 
