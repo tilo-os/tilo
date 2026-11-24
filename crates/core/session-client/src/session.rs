@@ -374,6 +374,7 @@ fn session_task(
         emptied: false,
         live_sessions_due: BTreeSet::new(),
         kept: BTreeMap::new(),
+        wants_held: BTreeMap::new(),
         live_sessions: live_session::LiveSessions::default(),
         record,
         workspace_keys,
@@ -547,6 +548,9 @@ struct Task {
     live_sessions_due: BTreeSet<WorkspaceId>,
     /// What this device keeps of each workspace's content ([`Cmd::KeepContent`]).
     kept: BTreeMap<WorkspaceId, Arc<dyn crate::content::Kept>>,
+    /// The asks for content a workspace's link was not up to carry yet
+    /// ([`Cmd::WantContent`]): sent when it opens.
+    wants_held: BTreeMap<WorkspaceId, Vec<Vec<u8>>>,
     /// This page's own live session per joined workspace
     /// ([`crate::session::live_session`]).
     live_sessions: live_session::LiveSessions,
@@ -1248,6 +1252,17 @@ impl Task {
     /// `workspace_id`'s link listens: whatever this device writes reaches it from now on.
     fn link_up(&mut self, workspace_id: WorkspaceId) {
         self.emptied = false;
+        // An ask for content the workspace's link was not yet up to carry goes on it now: a
+        // page that asks as it joins loses nothing to the order its link opens in.
+        if let Some(held) = self.wants_held.remove(&workspace_id)
+            && let Some(link) = self.links.get(&workspace_id)
+        {
+            for request in held {
+                if let Ok(message) = neighbour_wire::NeighbourMsg::decode(&request) {
+                    let _ = link.sync.send(message);
+                }
+            }
+        }
         if self.joined(workspace_id) {
             self.reports.change(|status| {
                 status.workspaces.insert(workspace_id, true);
@@ -1814,6 +1829,7 @@ impl Task {
             transport.close(0, message.as_bytes());
         }
         self.workspaces.remove(&workspace_id);
+        self.wants_held.remove(&workspace_id);
         self.live_sessions_due.remove(&workspace_id);
         self.opened_records
             .retain(|(workspace, _), _| *workspace != workspace_id);
@@ -4121,8 +4137,14 @@ impl Task {
     }
 
     /// Ask the workspace on `workspace_id` for content its records reference.
-    fn want_content(&self, workspace_id: WorkspaceId, request: &[u8]) {
+    fn want_content(&mut self, workspace_id: WorkspaceId, request: &[u8]) {
+        // A workspace whose link is not up yet has its ask held for the link's opening: a
+        // page asks as it joins, and the link dials behind the join.
         let Some(link) = self.links.get(&workspace_id) else {
+            let held = self.wants_held.entry(workspace_id).or_default();
+            if !held.iter().any(|waiting| waiting == request) {
+                held.push(request.to_vec());
+            }
             return;
         };
         if let Ok(message) = neighbour_wire::NeighbourMsg::decode(request) {
