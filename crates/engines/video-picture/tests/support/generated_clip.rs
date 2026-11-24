@@ -17,12 +17,11 @@ const FRAMES: u32 = FPS.saturating_mul(4);
 /// sound the generator produces change, so no build reuses a stale clip.
 const GENERATION: u32 = 2;
 
-// The media stack check is the footage tests' own, shared with the editing
-// engine's tests: whether this machine has the elements they encode, mux and
-// parse with.
+// The media stack check is the footage tests' own: whether this machine has
+// the elements they encode, mux and parse with.
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../video-edit/tests/support/media_stack.rs"
+    "/tests/support/media_stack.rs"
 ));
 
 /// Return a real H.264/AAC MP4 source with deterministic moving imagery and
