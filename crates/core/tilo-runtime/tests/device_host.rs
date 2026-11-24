@@ -958,10 +958,8 @@ impl Forwarded {
             devices: vec![host_cert.clone(), laptop_cert.clone()],
         });
         let other = tilo_runtime::other_devices::OtherDevices::new(
-            laptop_endpoint.clone(),
             tokio::runtime::Handle::current(),
             (person, laptop_cert.device_public_key),
-            (laptop_cert.clone(), Arc::new(laptop_key.clone())),
             tilo_user_identity::RevocationList::new(),
             keys,
             places,
