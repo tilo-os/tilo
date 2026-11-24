@@ -145,6 +145,54 @@ impl Workspaces {
         kept
     }
 
+    /// Sign `account` in again with the entry `workspace`'s vault keeps for it
+    /// (`RECONNECT`): the same sign-in adding it made, and what the account's
+    /// row then reads is how it went. A sign-in the servers no longer take is
+    /// reported as needing one, and any other failure as it was.
+    async fn reconnect(
+        &self,
+        signing: Signing<'_>,
+        workspace: &str,
+        acting: &tilo_action_policy::Acting,
+        account: &str,
+    ) -> Result<(), String> {
+        let (kept, secret) = super::account_with_secret(signing, account).await?;
+        let tester = self.account_tester();
+        let checking = kept.clone();
+        let tested = tokio::task::spawn_blocking(move || tester.test(&checking, &secret))
+            .await
+            .map_err(|_| "the account's sign-in did not finish".to_owned())?;
+        let (health, signed_in, words) = match &tested {
+            Ok(_) => (accounts::SyncHealth::Healthy, true, String::new()),
+            Err(reason) if reason.to_ascii_lowercase().contains("rejected") => (
+                accounts::SyncHealth::NeedsSignIn,
+                false,
+                reason
+                    .chars()
+                    .take(accounts::person::SYNC_MESSAGE_LIMIT)
+                    .collect(),
+            ),
+            Err(reason) => (
+                accounts::SyncHealth::Error,
+                false,
+                reason
+                    .chars()
+                    .take(accounts::person::SYNC_MESSAGE_LIMIT)
+                    .collect(),
+            ),
+        };
+        self.report_account_sync((workspace, acting), account, health, signed_in, &words)
+            .await?;
+        tested.map(|_| ()).map_err(|reason| {
+            let name = kept.display_name.trim();
+            if name.is_empty() {
+                format!("The account could not be signed in again: {reason}")
+            } else {
+                format!("{name} could not be signed in again: {reason}")
+            }
+        })
+    }
+
     /// Say which of an account's services its person uses (`SET_SERVICES`).
     /// Its mail account stays whatever is said, and Mail hides it where its
     /// mail is off.
@@ -286,12 +334,14 @@ impl Workspaces {
         ICLOUD_CALENDARS.to_owned()
     }
 
-    /// Answer a request that finds an address's servers, adds an account or
-    /// says what it feeds, or none when `request` asks anything else: what a
-    /// person does with the accounts their vault keeps.
+    /// Answer a request that finds an address's servers, adds an account,
+    /// signs one in again or says what it feeds, or none when `request` asks
+    /// anything else: what a person does with the accounts their vault keeps.
     pub(super) async fn person_mail_action(
         &self,
         signing: Signing<'_>,
+        workspace: &str,
+        acting: &tilo_action_policy::Acting,
         request: &InvokeRequest,
     ) -> Result<Option<Value>, ActionCallError> {
         let answered = match request.target.address.action.as_str() {
@@ -302,6 +352,14 @@ impl Workspaces {
             person_accounts::ADD_MAIL => {
                 let adding: AddMailAccount = argument(request, "an account to add")?;
                 let kept = self.add_mail(signing, adding).await;
+                if kept.is_ok() {
+                    self.person_settings_changed();
+                }
+                answer(&kept)
+            }
+            person_accounts::RECONNECT => {
+                let account = one_account(request)?;
+                let kept = Box::pin(self.reconnect(signing, workspace, acting, &account)).await;
                 if kept.is_ok() {
                     self.person_settings_changed();
                 }
@@ -405,7 +463,7 @@ pub(super) fn mail_accounts(held: &accounts::person::AccountList, root: &Path) -
 
 /// The provider of `account`: the one its settings name, else the one its
 /// servers are known by.
-fn provider_of_account(account: &accounts::Account) -> Provider {
+pub(super) fn provider_of_account(account: &accounts::Account) -> Provider {
     account
         .config
         .get("provider")

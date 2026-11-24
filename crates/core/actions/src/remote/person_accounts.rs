@@ -47,6 +47,10 @@ pub const ADD_MAIL: &str = "add-mail";
 /// item belongs to. It carries no secret, so unlike [`ADD_MAIL`] an agent
 /// acting for the person may ask it.
 pub const ADD_MAIL_WITH_ITEM: &str = "add-mail-with-item";
+/// Sign an account in again (`account`) with the entry the workspace's vault
+/// keeps for it, through the same sign-in the account was added with: the
+/// accounts reading then says how it went.
+pub const RECONNECT: &str = "reconnect";
 /// Remove a mail account and its secret (`account`), answering the accounts
 /// that remain as a [`MailAccounts`].
 pub const REMOVE: &str = "remove";

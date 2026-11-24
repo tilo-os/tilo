@@ -385,7 +385,7 @@ const ACCOUNT_VERBS: [(&Verb, &str); 11] = [
     ),
 ];
 
-fn add_account_params() -> Vec<ActionParam> {
+pub(super) fn add_account_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required("address", ParamType::Text, "The account's address."),
         ActionParam::optional(

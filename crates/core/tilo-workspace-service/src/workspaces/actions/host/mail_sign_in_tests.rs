@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use tilo_account_probe::mail_servers::{Found, MailServers, Server};
 use tilo_actions::remote::person_accounts::{self, MailAccount, MailAccounts, Provider};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+    ActionCallError, ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId};
@@ -39,6 +39,9 @@ struct Setup {
     workspaces: Workspaces,
     holder: super::super::ServiceWorkspaceActions,
     device: DeviceCert,
+    /// The workspace's owner: the person whose role reaches its vault, which signing an
+    /// account in again reads.
+    owner: DeviceCert,
     workspace: WorkspaceId,
     _holder: TestHolder,
     _dir: tempfile::TempDir,
@@ -60,18 +63,11 @@ impl Setup {
             workspaces,
             holder,
             device,
+            owner,
             workspace: workspace_id,
             _holder: server,
             _dir: dir,
         }
-    }
-
-    fn page(&self) -> impl tilo_actions::remote::ActionProvider + Clone + Send + 'static {
-        self.holder.in_workspace_as(self.workspace, &self.device)
-    }
-
-    fn herself(&self) -> Caller {
-        caller(&self.device)
     }
 
     /// Find `address`'s servers in a stand-in network, answering what the
@@ -106,6 +102,17 @@ impl Setup {
         action: &str,
         argument: Value,
     ) -> Result<Value, ActionCallError> {
+        self.ask_as(&self.device, resource, action, argument).await
+    }
+
+    /// What `action` of `resource` answers, as the page of `device` asks it.
+    async fn ask_as(
+        &self,
+        device: &DeviceCert,
+        resource: &str,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value, ActionCallError> {
         let target = RemoteActionTarget {
             provider: person_accounts::PROVIDER.to_owned(),
             address: ActionAddress::new(resource, action),
@@ -126,7 +133,8 @@ impl Setup {
             appearance: None,
             signed: None,
         };
-        let receipt = settled(self.page().invoke(&self.herself(), request)).await?;
+        let page = self.holder.in_workspace_as(self.workspace, device);
+        let receipt = settled(page.invoke(&caller(device), request)).await?;
         match receipt.status {
             ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
             other => panic!("the holder answers at once, not {other:?}"),
@@ -448,4 +456,123 @@ async fn an_icloud_account_asked_for_calendars_keeps_them_beside_its_mail() {
             .is_ok(),
         "Mail lists its accounts after the removal"
     );
+}
+
+/// The accounts reading a workspace's apps follow: it lists an account the
+/// member connects through the actions, says how its last sync went, follows
+/// the account being signed in again and lists nothing once it is removed.
+#[tokio::test]
+async fn the_accounts_reading_lists_an_account_connected_signed_in_again_and_removed() {
+    let setup = Setup::new().await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    setup.discover(seen);
+
+    // The reading is what this device publishes, and it starts empty.
+    let record = crate::workspaces::account_logins::accounts_document();
+    let mut writes = setup.workspaces.document_writes();
+    assert_eq!(reading(&setup).await["accounts"], json!([]));
+
+    setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::ADD_MAIL,
+            json!({"address": EXAMPLE, "password": "typed-password"}),
+        )
+        .await
+        .expect("its servers took the sign-in");
+
+    // The accounts record was written, which is what the reading's followers
+    // are told about.
+    let wrote = loop {
+        let write = tokio::time::timeout(std::time::Duration::from_secs(5), writes.recv())
+            .await
+            .expect("a write reached the followers")
+            .expect("the followers are still listening");
+        if write.record == record {
+            break write;
+        }
+    };
+    assert_eq!(wrote.workspace, setup.workspace.to_string());
+
+    let listed = reading(&setup).await;
+    let accounts = listed["accounts"]
+        .as_array()
+        .expect("the reading is a list");
+    assert_eq!(accounts.len(), 1, "{listed}");
+    assert_eq!(accounts[0]["id"], json!(EXAMPLE));
+    assert_eq!(accounts[0]["kind"], json!("mail"));
+    assert_eq!(accounts[0]["name"], json!(EXAMPLE));
+    assert_eq!(accounts[0]["address"], json!(EXAMPLE));
+    assert_eq!(accounts[0]["status"], json!("never"));
+    assert_eq!(accounts[0]["provider"], json!("other"));
+    assert_eq!(accounts[0]["enabled"], json!(true));
+
+    // The server stops taking the stored sign-in: signing in again reports
+    // that, with the probe's own words, and the reading says so.
+    let rejects = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    setup.workspaces.sign_in_accounts_through({
+        let rejects = Arc::clone(&rejects);
+        move |_address, _password| {
+            if rejects.load(std::sync::atomic::Ordering::Relaxed) {
+                Err("IMAP server rejected the saved credential".into())
+            } else {
+                Ok("signed in".into())
+            }
+        }
+    });
+    let refused = setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::RECONNECT,
+            json!({"account": EXAMPLE}),
+        )
+        .await
+        .expect_err("the server no longer takes the sign-in");
+    assert!(
+        matches!(&refused, ActionCallError::Refused { reason } if reason.contains("rejected")),
+        "{refused:?}"
+    );
+    let listed = reading(&setup).await;
+    assert_eq!(listed["accounts"][0]["status"], json!("needs-reconnect"));
+    assert_eq!(
+        listed["accounts"][0]["words"],
+        json!("IMAP server rejected the saved credential")
+    );
+
+    // The server takes it again: signing in again proves it, and the reading
+    // follows.
+    rejects.store(false, std::sync::atomic::Ordering::Relaxed);
+    setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::RECONNECT,
+            json!({"account": EXAMPLE}),
+        )
+        .await
+        .expect("the vault's sign-in works again");
+    let listed = reading(&setup).await;
+    assert_eq!(listed["accounts"][0]["status"], json!("connected"));
+
+    // Removing it lists nothing.
+    setup
+        .ask_as(
+            &setup.owner,
+            person_accounts::RESOURCE,
+            person_accounts::REMOVE,
+            json!({"account": EXAMPLE}),
+        )
+        .await
+        .expect("the account goes");
+    assert_eq!(reading(&setup).await["accounts"], json!([]));
+}
+
+/// The reading a workspace's apps follow, as this host keeps it.
+async fn reading(setup: &Setup) -> Value {
+    setup
+        .workspaces
+        .accounts_reading(&setup.workspace.to_string())
+        .await
 }

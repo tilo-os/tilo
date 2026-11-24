@@ -217,6 +217,46 @@ fn the_workspaces_model_providers_are_a_platform_package_an_app_reads() {
     }
 }
 
+/// A workspace's connected accounts are one of the platform's packages: a window reads them as
+/// `accounts.accounts`, and connects, signs in again and removes them through the resource's own
+/// verbs.
+#[test]
+fn the_workspaces_accounts_are_a_platform_package_an_app_reads() {
+    let platform =
+        tilolang_tilo::platform_apps::platform_packages().expect("the platform's packages read");
+    let accounts = platform
+        .into_iter()
+        .find(|meta| meta.app == tilolang_tilo::platform_apps::ACCOUNTS_APP)
+        .expect("a workspace's accounts are one of the platform's packages");
+    let root = accounts
+        .named_roots
+        .iter()
+        .find(|root| root.published.as_deref() == Some("accounts"))
+        .expect("they read under `accounts`");
+    assert!(
+        accounts
+            .types
+            .iter()
+            .any(|ty| ty.id == root.ty && ty.name == "Accounts"),
+        "the root is the accounts' own type"
+    );
+    for verb in ["add-mail", "reconnect", "remove"] {
+        let id = tilolang_tilo::catalogue::action_id(
+            &accounts.app,
+            &tilolang_tilo::catalogue::verb_id("Accounts", verb),
+        );
+        assert!(
+            accounts.actions.iter().any(|action| action.id == id),
+            "the accounts publish `{verb}` among {:?}",
+            accounts
+                .actions
+                .iter()
+                .map(|action| &action.id)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 #[test]
 fn a_type_the_platform_cannot_read_is_named_with_where_it_is() {
     let bundle = today();

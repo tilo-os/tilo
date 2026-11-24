@@ -227,6 +227,26 @@
         }
       ],
       "budget_ms": 20000
+    },
+    {
+      "id": "accounts",
+      "said": "Open Accounts and see the workspace's connected accounts, and how to connect one",
+      "ops": [
+        {
+          "press": "Accounts"
+        },
+        {
+          "wait_for": "Connected accounts"
+        },
+        {
+          "must": [
+            "Connected accounts",
+            "Connect an account",
+            "Connect"
+          ]
+        }
+      ],
+      "budget_ms": 20000
     }
   ]
 }

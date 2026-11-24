@@ -161,8 +161,11 @@ mod vault_entries;
 // The accounts of the workspace, signed in with entries of that vault.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod account_logins;
+// The workspace's accounts as the apps this host serves read them.
 #[cfg(all(test, any(feature = "agents", feature = "apps")))]
 mod account_logins_tests;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod accounts;
 // The website sessions a person selected, each an entry of that vault.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod website_sessions;

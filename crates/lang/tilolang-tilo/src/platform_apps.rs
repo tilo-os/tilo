@@ -2,8 +2,9 @@
 //! sound, network, Bluetooth, modem, VPN, tethering, battery, power and displays), Settings
 //! (every section of the person's settings and the device's, each set field by field through
 //! its setters), Contacts (the workspace's contact directory), the image model
-//! (the device's vision actions and the library analysis run), Files, and a workspace's own
-//! actions (its members, roles, invitations and permissions).
+//! (the device's vision actions and the library analysis run), Files, a workspace's connected
+//! accounts, its model providers, and its own actions (its members, roles, invitations and
+//! permissions).
 //!
 //! Each is a package read from the surface it publishes ([`crate::catalogue::package_of`]):
 //! its types are what its resources read as and its actions are their published verbs. Its
@@ -37,6 +38,12 @@ pub const MCP_SERVER_APP: &str = "tilo.mcp-server";
 /// runs the workspace keeps the providers, their keys in its vault, and the model each kind of
 /// work runs on; a window reads them as `models.models` and changes them through its verbs.
 pub const MODELS_APP: &str = "tilo.models";
+
+/// The app a workspace's connected accounts are published as: `use tilo.accounts`. The host that
+/// runs the workspace keeps the accounts record and the secrets in its vault; a window reads
+/// them as `accounts.accounts`, each with the address it signs in at and how its last sync went,
+/// and connects, signs in again and removes them through the resource's verbs.
+pub const ACCOUNTS_APP: &str = "tilo.accounts";
 
 /// The app the workspace's activity is published as: `use so.tilo.history`. The app whose window
 /// shows it is `so.tilo.activity`, and it reads this package (`history.history`, and the range a
@@ -201,6 +208,8 @@ const MCP_SERVER_ROOTS: &[(&str, &str, &str)] = &[("server", "Server", "mcp.serv
 
 /// The model providers' root, the one resource every provider and every verb of them is on.
 const MODELS_ROOTS: &[(&str, &str, &str)] = &[("models", "Models", "models")];
+/// The accounts' root, the one resource every account and every verb of them is on.
+const ACCOUNTS_ROOTS: &[(&str, &str, &str)] = &[("accounts", "Accounts", "accounts")];
 const VISION_ROOTS: &[(&str, &str, &str)] = &[
     ("image_model", "ImageModel", "vision:vision.image-model"),
     ("analysis", "Analysis", "vision:vision.analysis"),
@@ -361,6 +370,18 @@ const PUBLISHED: &[Published] = &[
         // What a workspace's providers read as, written beside the service that keeps them.
         files: &[include_str!(
             "../../../core/tilo-workspace-service/models-surface.json"
+        )],
+        described: false,
+        listed: &[],
+    },
+    Published {
+        app: ACCOUNTS_APP,
+        title: "Connected accounts",
+        kinds: &[],
+        roots: ACCOUNTS_ROOTS,
+        // What a workspace's accounts read as, written beside the service that keeps them.
+        files: &[include_str!(
+            "../../../core/tilo-workspace-service/accounts-surface.json"
         )],
         described: false,
         listed: &[],
@@ -917,10 +938,9 @@ impl Roots {
     /// serves it.
     fn seed(host: &crate::host::Host, target: &crate::runtime::ResourceRef) {
         if !host.runtime().serves(target) {
-            let _ = host.runtime().set_reading(
-                target,
-                platform_root_defaults(&target.id_string()),
-            );
+            let _ = host
+                .runtime()
+                .set_reading(target, platform_root_defaults(&target.id_string()));
         }
     }
 

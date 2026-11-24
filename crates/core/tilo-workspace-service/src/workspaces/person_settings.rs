@@ -360,9 +360,11 @@ impl Workspaces {
             return sign_in::accounts_sign_in(self, reach.person, &here, request).await;
         }
         // What changes the accounts the workspace keeps is answered before
-        // the rest: finding servers, adding an account, saying what it feeds
-        // and removing it.
-        if let Some(answered) = Box::pin(self.person_mail_action(signing, request)).await? {
+        // the rest: finding servers, adding an account, signing one in again,
+        // saying what it feeds and removing it.
+        if let Some(answered) =
+            Box::pin(self.person_mail_action(signing, &here, &reach.acting, request)).await?
+        {
             return Ok(answered);
         }
         match action {
@@ -588,6 +590,14 @@ pub(crate) async fn account_secret_for_test(
     account_with_secret(signing, id)
         .await
         .map(|(_, secret)| secret)
+}
+
+/// The provider `account` belongs to, as a workspace's accounts reading names it.
+pub(crate) fn provider_key(account: &accounts::Account) -> String {
+    serde_json::to_value(person_mail::provider_of_account(account))
+        .ok()
+        .and_then(|provider| provider.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 /// The `provider` a removing action names.

@@ -2342,6 +2342,11 @@ fn broker_services(
     // where, read where this device's workspace service keeps them. A key never reads back,
     // and its verbs stay the action API's.
     let models: Arc<dyn PublishedResources> = Arc::new(super::models::published(parts.workspaces));
+    // The workspace's connected accounts: each mail, calendar and cloud-storage account, read
+    // where this device's workspace service keeps the accounts record. No secret reads back,
+    // and connecting, signing in again and removing stay the action API's.
+    let accounts: Arc<dyn PublishedResources> =
+        Arc::new(super::accounts::published(parts.workspaces));
     let published: Arc<dyn PublishedResources> = Arc::new(
         super::published::Published::new()
             .serving(
@@ -2369,6 +2374,7 @@ fn broker_services(
                     tilo_rt::app().handle().clone(),
                 )),
             )
+            .serving(&[tilo_actions::remote::person_accounts::RESOURCE], accounts)
             .serving_the_rest(Arc::new(
                 tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
             )),

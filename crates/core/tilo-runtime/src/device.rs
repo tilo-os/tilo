@@ -20,6 +20,8 @@
 //! History groups its actions under.
 
 pub(crate) mod account;
+/// The workspace's connected accounts, read by the apps attached here as `accounts`.
+mod accounts;
 #[cfg(target_os = "linux")]
 mod agent_tools;
 mod asked;

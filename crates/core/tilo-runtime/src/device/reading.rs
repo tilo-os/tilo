@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use futures_util::future::BoxFuture;
 use serde_json::Value;
 use tilo_lock::MutexRecover as _;
 use tilo_workspace_service::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
@@ -21,13 +22,22 @@ use tokio::sync::{mpsc, oneshot, watch};
 /// How a published reading is made: the value now, for the caller that reads it, and the
 /// revision it moves with.
 pub type Read = dyn Fn(&Caller) -> Value + Send + Sync;
+/// How a published reading is made where its value is read from something that answers
+/// asynchronously, such as a workspace's records: the value, for the caller that reads it.
+pub type ReadLater = dyn Fn(Caller) -> BoxFuture<'static, Value> + Send + Sync;
 /// Where a published reading says it changed.
 pub type Changes = dyn Fn() -> watch::Receiver<u64> + Send + Sync;
+
+/// How a [`Served`] makes its reading: now, or by asking something that answers asynchronously.
+enum Source {
+    Now(Arc<Read>),
+    Later(Arc<ReadLater>),
+}
 
 /// One resource the daemon publishes itself, read now and watched for changes.
 pub struct Served {
     resource: &'static str,
-    read: Arc<Read>,
+    source: Source,
     changes: Arc<Changes>,
     /// The watches this provider minted, by id, each with the task that ends when it does.
     watches: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
@@ -40,19 +50,24 @@ impl Served {
     pub fn new(resource: &'static str, read: Arc<Read>, changes: Arc<Changes>) -> Self {
         Self {
             resource,
-            read,
+            source: Source::Now(read),
             changes,
             watches: Mutex::default(),
             next_watch: AtomicU64::new(0),
         }
     }
 
-    /// The reading now, with the revision it reads at.
-    fn encoded(&self, caller: &Caller) -> Reading {
-        let reading = encoded(&(self.read)(caller));
-        let changes = (self.changes)();
-        let revision = *changes.borrow();
-        (revision, reading)
+    /// `resource`, read by `read` at the revision `changes` names, where reading it waits on
+    /// something that answers asynchronously.
+    #[must_use]
+    pub fn later(resource: &'static str, read: Arc<ReadLater>, changes: Arc<Changes>) -> Self {
+        Self {
+            resource,
+            source: Source::Later(read),
+            changes,
+            watches: Mutex::default(),
+            next_watch: AtomicU64::new(0),
+        }
     }
 }
 
@@ -74,12 +89,27 @@ impl PublishedResources for Served {
         resource: &str,
     ) -> oneshot::Receiver<Result<Reading, String>> {
         let (answer, answered) = oneshot::channel();
-        let sent = if resource == self.resource {
-            Ok(self.encoded(caller))
-        } else {
-            Ok((0, None))
-        };
-        let _ = answer.send(sent);
+        if resource != self.resource {
+            let _ = answer.send(Ok((0, None)));
+            return answered;
+        }
+        match &self.source {
+            Source::Now(read) => {
+                let reading = encoded(&read(caller));
+                let revision = *((self.changes)()).borrow();
+                let _ = answer.send(Ok((revision, reading)));
+            }
+            Source::Later(read) => {
+                let read = Arc::clone(read);
+                let reader = caller.clone();
+                let changes = (self.changes)();
+                tokio::spawn(async move {
+                    let revision = *changes.borrow();
+                    let reading = encoded(&read(reader).await);
+                    let _ = answer.send(Ok((revision, reading)));
+                });
+            }
+        }
         answered
     }
 
@@ -92,38 +122,77 @@ impl PublishedResources for Served {
         if resource != self.resource {
             return Err(format!("this device publishes no `{resource}` resource"));
         }
-        let (revision, reading) = self.encoded(caller);
-        if sink
-            .send(runtime_collab::wire::Event::Reading {
-                resource: self.resource.to_owned(),
-                revision,
-                reading,
-            })
-            .is_err()
-        {
-            return Err("the reader of the resource went away".to_owned());
-        }
-        let mut changes = (self.changes)();
-        let read = Arc::clone(&self.read);
-        let named = self.resource;
-        let reader = caller.clone();
-        let task = tokio::spawn(async move {
-            while changes.changed().await.is_ok() {
-                let revision = *changes.borrow_and_update();
-                let reading = encoded(&read(&reader));
+        let id = self.next_watch.fetch_add(1, Ordering::Relaxed);
+        let task = match &self.source {
+            Source::Now(read) => {
+                let reading = encoded(&read(caller));
+                let revision = *((self.changes)()).borrow();
                 if sink
                     .send(runtime_collab::wire::Event::Reading {
-                        resource: named.to_owned(),
+                        resource: self.resource.to_owned(),
                         revision,
                         reading,
                     })
                     .is_err()
                 {
-                    return;
+                    return Err("the reader of the resource went away".to_owned());
                 }
+                let mut changes = (self.changes)();
+                let read = Arc::clone(read);
+                let named = self.resource;
+                let reader = caller.clone();
+                tokio::spawn(async move {
+                    while changes.changed().await.is_ok() {
+                        let revision = *changes.borrow_and_update();
+                        let reading = encoded(&read(&reader));
+                        if sink
+                            .send(runtime_collab::wire::Event::Reading {
+                                resource: named.to_owned(),
+                                revision,
+                                reading,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                })
             }
-        });
-        let id = self.next_watch.fetch_add(1, Ordering::Relaxed);
+            Source::Later(read) => {
+                let mut changes = (self.changes)();
+                let read = Arc::clone(read);
+                let named = self.resource;
+                let reader = caller.clone();
+                tokio::spawn(async move {
+                    let revision = *changes.borrow();
+                    let reading = encoded(&read(reader.clone()).await);
+                    if sink
+                        .send(runtime_collab::wire::Event::Reading {
+                            resource: named.to_owned(),
+                            revision,
+                            reading,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    while changes.changed().await.is_ok() {
+                        let revision = *changes.borrow_and_update();
+                        let reading = encoded(&read(reader.clone()).await);
+                        if sink
+                            .send(runtime_collab::wire::Event::Reading {
+                                resource: named.to_owned(),
+                                revision,
+                                reading,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                })
+            }
+        };
         self.watches.lock_recover().insert(id, task.abort_handle());
         Ok(ResourceWatch::new(id))
     }
@@ -149,5 +218,69 @@ impl PublishedResources for Served {
             message: format!("`{action}` is a typed action, not a change of the reading"),
         });
         answered
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex as StdMutex;
+
+    use super::*;
+
+    fn caller() -> Caller {
+        Caller {
+            app_id: "so.tilo.console".to_owned(),
+            workspace: "home".to_owned(),
+        }
+    }
+
+    /// A reading its daemon can only make by asking something that answers asynchronously: read
+    /// now, and sent again each time the revision its changes name moves.
+    #[tokio::test]
+    async fn a_deferred_reading_reads_now_and_follows_its_changes() {
+        let value = Arc::new(StdMutex::new("first".to_owned()));
+        let (changed, source) = watch::channel(1_u64);
+        let read = {
+            let value = Arc::clone(&value);
+            Arc::new(move |_caller: Caller| {
+                let value = Arc::clone(&value);
+                Box::pin(async move {
+                    serde_json::json!({"agents": [*value
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)]})
+                }) as BoxFuture<'static, Value>
+            })
+        };
+        let changes: Arc<Changes> = Arc::new(move || source.clone());
+        let served = Served::later("server", read, changes);
+
+        let (revision, reading) = served.snapshot(&caller(), "server").await.unwrap().unwrap();
+        assert_eq!(revision, 1);
+        let value_read: Value = serde_json::from_slice(&reading.unwrap()).unwrap();
+        assert_eq!(value_read["agents"][0], "first");
+
+        let (sink, mut events) = mpsc::unbounded_channel();
+        let watch = served.watch(&caller(), "server", sink).unwrap();
+        let first = events.recv().await.expect("the reading now");
+        assert!(matches!(
+            first,
+            runtime_collab::wire::Event::Reading { revision: 1, .. }
+        ));
+
+        *value
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = "second".to_owned();
+        changed.send_replace(2);
+        let sent = events.recv().await.expect("a changed reading");
+        let runtime_collab::wire::Event::Reading {
+            revision, reading, ..
+        } = sent
+        else {
+            panic!("a watch takes readings");
+        };
+        assert_eq!(revision, 2);
+        let value_read: Value = serde_json::from_slice(&reading.unwrap()).unwrap();
+        assert_eq!(value_read["agents"][0], "second");
+        served.unwatch(watch);
     }
 }
