@@ -280,11 +280,10 @@ impl Workspaces {
         let mut governed = governed.lock().await;
         // The refusals the entry would answer: a person banned or removed here
         // does not come back in by the admission it gave them before.
-        let policy = governed
-            .peer()
-            .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
-            .ok()?
-            .policy;
+        // Read from the workspace's governance, not through this host's own
+        // permissions: a server that keeps another person's workspace is no
+        // member of it, and lets its members in all the same.
+        let policy = governed.peer().governance().governed_policy().ok()?;
         if policy.is_blocked(&hex::encode(cert.user_public_key))
             || governed.removals.refuses(cert.user_public_key, now)
         {
@@ -385,11 +384,7 @@ impl Workspaces {
         let governed = self.workspace(workspace).await.ok()?;
         let reply = {
             let mut governed = governed.lock().await;
-            let policy = governed
-                .peer()
-                .permissions(self.inner.host.cert.device_public_key, tilo_clock::wall())
-                .ok()?
-                .policy;
+            let policy = governed.peer().governance().governed_policy().ok()?;
             let person = hex::encode(cert.user_public_key);
             // A workspace of the person's own names them its owner from the
             // moment it is made, so a device of theirs comes in before any
