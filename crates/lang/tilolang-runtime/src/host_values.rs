@@ -34,18 +34,7 @@ fn float_of(v: &Value) -> HResult<f64> {
 impl Core {
     pub(crate) fn text_import(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
-            Imp::StrLit => {
-                let ptr = a.h(0)?.cast_unsigned() as usize;
-                let len = a.h(1)?.cast_unsigned() as usize;
-                let bytes = ptr
-                    .checked_add(len)
-                    .and_then(|end| mem.get(ptr..end))
-                    .map_or_else(|| trap("string literal is outside guest memory"), Ok)?;
-                match std::str::from_utf8(bytes) {
-                    Ok(s) => self.ret_h(Value::text(s)),
-                    Err(e) => trap(format!("string literal is not utf-8: {e}")),
-                }
-            }
+            Imp::StrLit => self.str_lit(mem, a),
             Imp::StrConcat => {
                 let mut s = self.text(a.h(0)?)?;
                 s.push_str(&self.text(a.h(1)?)?);
@@ -112,28 +101,7 @@ impl Core {
                 };
                 ret_i32(i32::from(yes))
             }
-            // The words no dictionary of the device's language knows, each as it stands in the
-            // text: what an editor draws a squiggle under and a panel lists.
-            Imp::StrMisspelled => {
-                let text = self.text(a.h(0)?)?;
-                let language = spellcheck::default_language();
-                let words = spellcheck::spans_for_language(&language, &text)
-                    .into_iter()
-                    .filter_map(|(start, end)| text.get(start..end).map(Value::text))
-                    .collect();
-                self.ret_h(Value::List(words))
-            }
-            // What `word` is most likely meant to be, best first: the same dictionaries a text
-            // field's suggestions come from, so a view and a field never disagree.
-            Imp::StrSuggestions => {
-                let word = self.text(a.h(1)?)?;
-                let language = spellcheck::default_language();
-                let suggestions = spellcheck::suggestions_for_language(&language, &word, 3)
-                    .into_iter()
-                    .map(Value::Text)
-                    .collect();
-                self.ret_h(Value::List(suggestions))
-            }
+            Imp::StrMisspelled | Imp::StrSuggestions => self.spelling_import(imp, a),
             Imp::StrSplit => {
                 let text = self.text(a.h(0)?)?;
                 let sep = self.text(a.h(1)?)?;
@@ -161,6 +129,50 @@ impl Core {
                 self.ret_h(Value::Text(replaced))
             }
             _ => trap("not a text import"),
+        }
+    }
+
+    /// A string literal of the module, read from guest memory.
+    fn str_lit(&self, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let ptr = a.h(0)?.cast_unsigned() as usize;
+        let len = a.h(1)?.cast_unsigned() as usize;
+        let bytes = ptr
+            .checked_add(len)
+            .and_then(|end| mem.get(ptr..end))
+            .map_or_else(|| trap("string literal is outside guest memory"), Ok)?;
+        match std::str::from_utf8(bytes) {
+            Ok(s) => self.ret_h(Value::text(s)),
+            Err(e) => trap(format!("string literal is not utf-8: {e}")),
+        }
+    }
+
+    /// What the device's dictionaries say of a text: the words none knows, or what a word is
+    /// most likely meant to be.
+    fn spelling_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
+            // The words no dictionary of the device's language knows, each as it stands in the
+            // text: what an editor draws a squiggle under and a panel lists.
+            Imp::StrMisspelled => {
+                let text = self.text(a.h(0)?)?;
+                let language = spellcheck::default_language();
+                let words = spellcheck::spans_for_language(&language, &text)
+                    .into_iter()
+                    .filter_map(|(start, end)| text.get(start..end).map(Value::text))
+                    .collect();
+                self.ret_h(Value::List(words))
+            }
+            // What `word` is most likely meant to be, best first: the same dictionaries a text
+            // field's suggestions come from, so a view and a field never disagree.
+            Imp::StrSuggestions => {
+                let word = self.text(a.h(1)?)?;
+                let language = spellcheck::default_language();
+                let suggestions = spellcheck::suggestions_for_language(&language, &word, 3)
+                    .into_iter()
+                    .map(Value::Text)
+                    .collect();
+                self.ret_h(Value::List(suggestions))
+            }
+            _ => trap("not a spelling import"),
         }
     }
 
@@ -364,25 +376,7 @@ impl Core {
     pub(crate) fn aggregate_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ListNew => self.ret_h(Value::List(Vec::new())),
-            // `xs + ys`: one list of both, the first list's items in front.
-            Imp::ListConcat => {
-                let right = self.val_whole(a.h(1)?)?;
-                let right = match right {
-                    Value::List(items) => items,
-                    other => {
-                        return trap(format!("expected a list, got {}", other.kind_name()));
-                    }
-                };
-                let joined = self.val_whole(a.h(0)?)?;
-                let mut joined = match joined {
-                    Value::List(items) => items,
-                    other => {
-                        return trap(format!("expected a list, got {}", other.kind_name()));
-                    }
-                };
-                joined.extend(right);
-                self.ret_h(Value::List(joined))
-            }
+            Imp::ListConcat => self.list_concat(a),
             Imp::ListPushI => self.list_push(a.h(0)?, Value::Int(a.long(1)?)),
             Imp::ListPushF => self.list_push(a.h(0)?, Value::Float(a.float(1)?)),
             Imp::ListPushH => {
@@ -410,27 +404,7 @@ impl Core {
                 ListOrColl::Len(len) => self.ret_h(option_int(self.settled().then_some(len))),
                 ListOrColl::Coll(coll) => self.ret_h(option_int(self.coll_counted(&coll)?)),
             },
-            Imp::ListGetI | Imp::ListGetF | Imp::ListGetH => {
-                let at = index(a.long(1)?, "list")?;
-                let item = self.with_val(a.h(0)?, |v| match v {
-                    Value::List(items) => items.get(at).cloned().map_or_else(
-                        || {
-                            trap(format!(
-                                "list index {at} out of range for length {}",
-                                items.len()
-                            ))
-                        },
-                        Ok,
-                    ),
-                    Value::Coll(coll) => Ok(Value::Coll(std::rc::Rc::clone(coll))),
-                    other => trap(format!("expected a list, got {}", other.kind_name())),
-                })?;
-                let item = match item {
-                    Value::Coll(coll) => self.coll_get(&coll, at)?,
-                    item => item,
-                };
-                self.element(imp, item)
-            }
+            Imp::ListGetI | Imp::ListGetF | Imp::ListGetH => self.list_get(imp, a),
             Imp::ListEnd => {
                 let last = a.h(1)? != 0;
                 let end = self.with_val(a.h(0)?, |v| match v {
@@ -485,6 +459,49 @@ impl Core {
             | Imp::UnwrapH => self.option_import(imp, a),
             _ => trap("not an aggregate import"),
         }
+    }
+
+    /// `xs + ys`: one list of both, the first list's items in front.
+    fn list_concat(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let right = self.val_whole(a.h(1)?)?;
+        let right = match right {
+            Value::List(items) => items,
+            other => {
+                return trap(format!("expected a list, got {}", other.kind_name()));
+            }
+        };
+        let joined = self.val_whole(a.h(0)?)?;
+        let mut joined = match joined {
+            Value::List(items) => items,
+            other => {
+                return trap(format!("expected a list, got {}", other.kind_name()));
+            }
+        };
+        joined.extend(right);
+        self.ret_h(Value::List(joined))
+    }
+
+    /// The item at a place in a list, or in the collection a list is built from.
+    fn list_get(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let at = index(a.long(1)?, "list")?;
+        let item = self.with_val(a.h(0)?, |v| match v {
+            Value::List(items) => items.get(at).cloned().map_or_else(
+                || {
+                    trap(format!(
+                        "list index {at} out of range for length {}",
+                        items.len()
+                    ))
+                },
+                Ok,
+            ),
+            Value::Coll(coll) => Ok(Value::Coll(std::rc::Rc::clone(coll))),
+            other => trap(format!("expected a list, got {}", other.kind_name())),
+        })?;
+        let item = match item {
+            Value::Coll(coll) => self.coll_get(&coll, at)?,
+            item => item,
+        };
+        self.element(imp, item)
     }
 
     /// The imports over options: `some`, `none`, `is_some` and `unwrap`.

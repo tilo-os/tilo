@@ -413,26 +413,7 @@ impl Core {
                 let value = self.host_list(lens_key(&target.target.id_string()));
                 self.ret_h(value)
             }
-            Imp::Invoked => {
-                let id = self.text(a.h(0)?)?;
-                let id = id.trim().to_owned();
-                if id.is_empty() {
-                    return self.ret_h(Value::none());
-                }
-                // The host reads the record of every invocation a view asked for, and keeps
-                // reading it while it moves.
-                self.invoked_read.borrow_mut().insert(id.clone());
-                let key = invoked_key(&id);
-                let (value, generation) = {
-                    let states = self.view_states.borrow();
-                    (
-                        states.get(&key).cloned().unwrap_or_else(Value::none),
-                        states.generation(&key),
-                    )
-                };
-                self.note_state_read(key, generation, &value);
-                self.ret_h(value)
-            }
+            Imp::Invoked => self.invoked_import(a),
             Imp::LinesRun => {
                 let target = self.ref_arg(a.h(0)?)?;
                 let value = self.host_list(lines_key(&call_place(&target.target)));
@@ -460,20 +441,7 @@ impl Core {
             Imp::Mentions => self.mentions_import(a),
             Imp::FirstUnseen => self.first_unseen_import(a),
             Imp::SeenBy => self.seen_by_import(a),
-            Imp::MetaOf => {
-                let target = self.val(a.h(0)?)?;
-                let meta = match target {
-                    Value::Text(ty) => self.type_meta(&ty, None)?,
-                    Value::Ref(r) => self.type_meta(&r.target.ty, Some(&r))?,
-                    other => {
-                        return trap(format!(
-                            "meta: expected a resource or a type, got {}",
-                            other.kind_name()
-                        ));
-                    }
-                };
-                self.ret_h(meta)
-            }
+            Imp::MetaOf => self.meta_of_import(a),
             Imp::EntryParts => self.entry_import(imp, a),
             Imp::Phrase | Imp::Word => {
                 let id = self.text(a.h(0)?)?;
@@ -504,6 +472,45 @@ impl Core {
             }
             _ => trap("not a platform import"),
         }
+    }
+
+    /// The record of an invocation a view asked for, by its id: the host reads it, and keeps
+    /// reading it while it moves.
+    fn invoked_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let id = self.text(a.h(0)?)?;
+        let id = id.trim().to_owned();
+        if id.is_empty() {
+            return self.ret_h(Value::none());
+        }
+        // The host reads the record of every invocation a view asked for, and keeps
+        // reading it while it moves.
+        self.invoked_read.borrow_mut().insert(id.clone());
+        let key = invoked_key(&id);
+        let (value, generation) = {
+            let states = self.view_states.borrow();
+            (
+                states.get(&key).cloned().unwrap_or_else(Value::none),
+                states.generation(&key),
+            )
+        };
+        self.note_state_read(key, generation, &value);
+        self.ret_h(value)
+    }
+
+    /// What a type is, named or as a resource of it is.
+    fn meta_of_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let target = self.val(a.h(0)?)?;
+        let meta = match target {
+            Value::Text(ty) => self.type_meta(&ty, None)?,
+            Value::Ref(r) => self.type_meta(&r.target.ty, Some(&r))?,
+            other => {
+                return trap(format!(
+                    "meta: expected a resource or a type, got {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        self.ret_h(meta)
     }
 
     /// `mentions(c, field, Message)`: how many of `c`'s items name the person looking,

@@ -1217,10 +1217,12 @@ impl ViewInstance {
             Some(Value::List(items)) => items,
             _ => Vec::new(),
         };
-        if items.len() <= at {
-            items.resize(at + 1, Value::text(""));
+        while items.len() <= at {
+            items.push(Value::text(""));
         }
-        items[at] = Value::Text(text.clone());
+        if let Some(slot) = items.get_mut(at) {
+            *slot = Value::Text(text.clone());
+        }
         self.core
             .view_states
             .borrow_mut()
@@ -1284,6 +1286,40 @@ impl ViewInstance {
         self.edit_in(key, value, None)
     }
 
+    /// What a control handed over, as a field of type `ty` holds it.
+    fn as_field_holds(&self, ty: &Ty, value: &Value) -> Result<Value, RuntimeError> {
+        // A control hands over what it shows, and the field takes it as its type holds it: a case
+        // comes by its name, a whole number stays whole, and a value given for an optional field
+        // becomes its value, where an empty text is none.
+        let case_of = |key: &crate::meta::TypeKey, case: &str| -> Result<Value, RuntimeError> {
+            Ok(Value::Enum(
+                self.core
+                    .registry
+                    .borrow()
+                    .enum_value(key, case)
+                    .map_err(RuntimeError::BadArgs)?,
+            ))
+        };
+        Ok(match (ty, value) {
+            (Ty::Enum(key), Value::Text(case)) => case_of(key, case)?,
+            (Ty::Int, Value::Float(number)) => Value::Int(whole(*number)),
+            (Ty::Float, Value::Int(number)) => Value::Float(integer(*number)),
+            (Ty::Option(_), Value::Opt(_)) => value.clone(),
+            (Ty::Option(inner), given) => match (&**inner, given) {
+                (Ty::Text, Value::Text(text)) if text.is_empty() => Value::none(),
+                (Ty::Enum(key), Value::Text(case)) => Value::some(case_of(key, case)?),
+                (Ty::Int | Ty::Float, Value::Int(_) | Value::Float(_)) => {
+                    Value::some(hold(inner, given))
+                }
+                (Ty::Text, Value::Text(_)) | (Ty::Bool, Value::Bool(_) | Value::Int(_)) => {
+                    Value::some(given.clone())
+                }
+                _ => value.clone(),
+            },
+            (ty, given) => hold(ty, given),
+        })
+    }
+
     /// [`ViewInstance::edit`] as one part of the person's act `gesture`: the change it makes
     /// names it, as the event that came with it does, so one undo takes both back.
     ///
@@ -1316,36 +1352,7 @@ impl ViewInstance {
             } => return self.edit_state_at(&key, at, value),
         };
         let (pkg, field) = self.bound_field(&target, &field_id)?;
-        // A control hands over what it shows, and the field takes it as its type holds it: a case
-        // comes by its name, a whole number stays whole, and a value given for an optional field
-        // becomes its value, where an empty text is none.
-        let case_of = |key: &crate::meta::TypeKey, case: &str| -> Result<Value, RuntimeError> {
-            Ok(Value::Enum(
-                self.core
-                    .registry
-                    .borrow()
-                    .enum_value(key, case)
-                    .map_err(RuntimeError::BadArgs)?,
-            ))
-        };
-        let value = match (&field.ty, value) {
-            (Ty::Enum(key), Value::Text(case)) => case_of(key, case)?,
-            (Ty::Int, Value::Float(number)) => Value::Int(whole(*number)),
-            (Ty::Float, Value::Int(number)) => Value::Float(integer(*number)),
-            (Ty::Option(_), Value::Opt(_)) => value.clone(),
-            (Ty::Option(inner), given) => match (&**inner, given) {
-                (Ty::Text, Value::Text(text)) if text.is_empty() => Value::none(),
-                (Ty::Enum(key), Value::Text(case)) => Value::some(case_of(key, case)?),
-                (Ty::Int | Ty::Float, Value::Int(_) | Value::Float(_)) => {
-                    Value::some(hold(inner, given))
-                }
-                (Ty::Text, Value::Text(_)) | (Ty::Bool, Value::Bool(_) | Value::Int(_)) => {
-                    Value::some(given.clone())
-                }
-                _ => value.clone(),
-            },
-            (ty, given) => hold(ty, given),
-        };
+        let value = self.as_field_holds(&field.ty, value)?;
         let value = &value;
         let ctx = ExecCtx {
             invoker: self.live.viewer.clone(),
@@ -1388,18 +1395,7 @@ impl ViewInstance {
             kind: field.kind,
         };
         let held = self.core.store.borrow().read(&target, &spec);
-        let unchanged = match (&mutation, held) {
-            // A rich text that says nothing is the same rich text however many empty
-            // paragraphs hold the nothing: a control that has never been typed into hands
-            // back no paragraph at all, where the field holds the one it started with.
-            (Mutation::SetRich { value, .. }, Ok(crate::store::FieldValue::Rich(now))) => {
-                now == *value || (now.is_empty() && value.is_empty())
-            }
-            (Mutation::SetText { text, .. }, Ok(crate::store::FieldValue::Text(now))) => {
-                now == *text
-            }
-            _ => false,
-        };
+        let unchanged = already_holds(&mutation, held);
         if unchanged {
             return Ok(EditOutcome::Applied);
         }
@@ -1518,6 +1514,24 @@ fn hold(ty: &Ty, given: &Value) -> Value {
         (Ty::Int, Value::Float(number)) => Value::Int(whole(*number)),
         (Ty::Float, Value::Int(number)) => Value::Float(integer(*number)),
         _ => given.clone(),
+    }
+}
+
+/// Whether the field already holds what `mutation` would write: a control hands over the whole of
+/// what it holds, so a field given back exactly what it says is no edit.
+fn already_holds(
+    mutation: &Mutation,
+    held: Result<crate::store::FieldValue, crate::store::StoreError>,
+) -> bool {
+    match (mutation, held) {
+        // A rich text that says nothing is the same rich text however many empty
+        // paragraphs hold the nothing: a control that has never been typed into hands
+        // back no paragraph at all, where the field holds the one it started with.
+        (Mutation::SetRich { value, .. }, Ok(crate::store::FieldValue::Rich(now))) => {
+            now == *value || (now.is_empty() && value.is_empty())
+        }
+        (Mutation::SetText { text, .. }, Ok(crate::store::FieldValue::Text(now))) => now == *text,
+        _ => false,
     }
 }
 

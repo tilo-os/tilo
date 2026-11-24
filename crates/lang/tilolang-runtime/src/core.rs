@@ -59,14 +59,13 @@ use Imp::{
     Speakers, StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith,
     StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace,
     StrSlice, StrSplit, StrStartsWith, StrSuggestions, StrToFloat, StrToInt, StrTrim, StrUpper,
-    StrWords, Suggest, Take, TimeClock,
-    TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse, TimeShift, TimeSpan, TimeWall, Today,
-    ToolContainerShell, ToolContext, ToolDocumentApps, ToolOpenWith, ToolTerminal, TryInvoke,
-    TupleGetF, TupleGetH, TupleGetI,
-    TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin,
-    UiBindState, UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
-    Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody,
-    WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
+    StrWords, Suggest, Take, TimeClock, TimeDay, TimeDayIn, TimeFromWall, TimeOfDay, TimeParse,
+    TimeShift, TimeSpan, TimeWall, Today, ToolContainerShell, ToolContext, ToolDocumentApps,
+    ToolOpenWith, ToolTerminal, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
+    TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindBegin, UiBindState,
+    UiBindStateAt, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF,
+    UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet,
+    WebHeaders, WebOk, WebPost, WebStatus, WebStatusText, WebText, Withdraw, Word,
     WorkspaceMembers,
 };
 
@@ -603,11 +602,24 @@ impl Core {
             Query => self.ret_h(self.query_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?)?),
             Filters | FilterLit | SortLit => self.catalogue_import(imp, a),
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
-            Today | TimeDay | TimeDayIn | TimeFromWall | TimeWall | TimeOfDay | TimeClock
-            | TimeSpan | DayShift | DayPart | DayWeekday | DayStartOfWeek | DayParse
-            | TimeParse | WallClock | DateShow | Occurrences | crate::abi::Imp::Zones => {
-                self.time_import(imp, a)
-            }
+            Today
+            | TimeDay
+            | TimeDayIn
+            | TimeFromWall
+            | TimeWall
+            | TimeOfDay
+            | TimeClock
+            | TimeSpan
+            | DayShift
+            | DayPart
+            | DayWeekday
+            | DayStartOfWeek
+            | DayParse
+            | TimeParse
+            | WallClock
+            | DateShow
+            | Occurrences
+            | crate::abi::Imp::Zones => self.time_import(imp, a),
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }
@@ -641,12 +653,9 @@ impl Core {
             | PdfPicture | PdfSave => self.pdf_import(imp, a),
             CanvasLook | CanvasExport | CanvasGrade | CanvasWand | CanvasSvg | CanvasSvgImport
             | CanvasSave | CanvasOpen => self.canvas_import(imp, a),
-            SheetValues => self.sheet_values(a),
-            SheetEdit => self.sheet_edit(a),
-            SheetRanges => self.sheet_ranges(a),
-            SheetNumbers => self.sheet_numbers(a),
-            SheetRecords => self.sheet_records(a),
-            SheetEntry => self.sheet_entry(a),
+            SheetValues | SheetEdit | SheetRanges | SheetNumbers | SheetRecords | SheetEntry => {
+                self.sheet_call(imp, a)
+            }
             FileList | FileStat | FileReadPath | FileWatch | FileOpenPath | FileOpen
             | FileMkdir | FileWrite | FileRename | FileMove | FileCopy | FileRemove | FileTrash
             | FileTrashEntries | FileRestore | FileCompress | FileExtract | ToolDocumentApps
@@ -675,6 +684,19 @@ impl Core {
             Print | Find | ReadText | OfType | Keep | Grep | Describe | DescribeRef | ReadWith
             | PrintRows | CountBy | GroupBy | Take | Single | Me | ForeignRef | MatchGroup
             | Abort => self.program_import(imp, a),
+        }
+    }
+
+    /// A sheet's values, edits, ranges, numbers, records or one entry.
+    fn sheet_call(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
+            Imp::SheetValues => self.sheet_values(a),
+            Imp::SheetEdit => self.sheet_edit(a),
+            Imp::SheetRanges => self.sheet_ranges(a),
+            Imp::SheetNumbers => self.sheet_numbers(a),
+            Imp::SheetRecords => self.sheet_records(a),
+            Imp::SheetEntry => self.sheet_entry(a),
+            _ => trap("not a sheet import"),
         }
     }
 }

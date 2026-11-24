@@ -363,60 +363,62 @@ impl Core {
                 };
                 self.result(answer.map(Value::List))
             }
-            // The book a file is: its chapters as rich text, each beginning with its title as a
-            // heading, and what its package says about it. Reading a book is a read of the
-            // content's bytes, like `.text()`: the same bytes always read the same book.
-            Imp::FileBook | Imp::FileBookInfo | Imp::FileBookCover => {
-                let file = self.file_arg(a.h(0)?)?;
-                let bytes = self
-                    .blobs
-                    .borrow()
-                    .as_ref()
-                    .and_then(|blobs| blobs.read(&file.hash));
-                let Some(bytes) = bytes else {
-                    return trap(format!(
-                        "the content of `{}` is not on this device",
-                        file.name
-                    ));
-                };
-                let book = match tilo_doc_codecs::book::read(&bytes) {
-                    Ok(book) => book,
-                    Err(why) => return trap(format!("`{}` is not a book: {why}", file.name)),
-                };
-                if matches!(imp, Imp::FileBookCover) {
-                    let Some((media, cover)) = book.cover else {
-                        return self.ret_h(Value::Opt(None));
-                    };
-                    let name = format!("cover.{}", media.rsplit('/').next().unwrap_or("bin"));
-                    let made = self
-                        .blobs
-                        .borrow()
-                        .as_ref()
-                        .and_then(|blobs| made(blobs.as_ref(), &name, Held::Bytes(cover)).ok());
-                    return self.ret_h(Value::Opt(made.map(|file| Box::new(Value::file(file)))));
-                }
-                if matches!(imp, Imp::FileBookInfo) {
-                    let facts = [
-                        ("title", book.title),
-                        ("author", book.author),
-                        ("language", book.language),
-                        ("subject", book.subject),
-                    ];
-                    return self.ret_h(Value::Map(
-                        facts
-                            .into_iter()
-                            .map(|(key, value)| (Value::text(key), Value::text(value)))
-                            .collect(),
-                    ));
-                }
-                let mut chapters = Vec::with_capacity(book.chapters.len());
-                for chapter in &book.chapters {
-                    chapters.push(Value::Rich(chapter_rich(chapter)));
-                }
-                self.ret_h(Value::List(chapters))
-            }
+            Imp::FileBook | Imp::FileBookInfo | Imp::FileBookCover => self.file_book(imp, a),
             _ => trap("not a file import"),
         }
+    }
+
+    /// The book a file is: its chapters as rich text, each beginning with its title as a heading,
+    /// what its package says about it, or its cover. Reading a book is a read of the content's
+    /// bytes, like `.text()`: the same bytes always read the same book.
+    fn file_book(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let file = self.file_arg(a.h(0)?)?;
+        let bytes = self
+            .blobs
+            .borrow()
+            .as_ref()
+            .and_then(|blobs| blobs.read(&file.hash));
+        let Some(bytes) = bytes else {
+            return trap(format!(
+                "the content of `{}` is not on this device",
+                file.name
+            ));
+        };
+        let book = match tilo_doc_codecs::book::read(&bytes) {
+            Ok(book) => book,
+            Err(why) => return trap(format!("`{}` is not a book: {why}", file.name)),
+        };
+        if matches!(imp, Imp::FileBookCover) {
+            let Some((media, cover)) = book.cover else {
+                return self.ret_h(Value::Opt(None));
+            };
+            let name = format!("cover.{}", media.rsplit('/').next().unwrap_or("bin"));
+            let made = self
+                .blobs
+                .borrow()
+                .as_ref()
+                .and_then(|blobs| made(blobs.as_ref(), &name, Held::Bytes(cover)).ok());
+            return self.ret_h(Value::Opt(made.map(|file| Box::new(Value::file(file)))));
+        }
+        if matches!(imp, Imp::FileBookInfo) {
+            let facts = [
+                ("title", book.title),
+                ("author", book.author),
+                ("language", book.language),
+                ("subject", book.subject),
+            ];
+            return self.ret_h(Value::Map(
+                facts
+                    .into_iter()
+                    .map(|(key, value)| (Value::text(key), Value::text(value)))
+                    .collect(),
+            ));
+        }
+        let mut chapters = Vec::with_capacity(book.chapters.len());
+        for chapter in &book.chapters {
+            chapters.push(Value::Rich(chapter_rich(chapter)));
+        }
+        self.ret_h(Value::List(chapters))
     }
 
     /// The `File` value behind the handle `h`.

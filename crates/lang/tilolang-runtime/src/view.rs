@@ -156,7 +156,7 @@ impl UiNode {
     /// The subtree as JSON, for a host that draws it itself or shows it as text: each node's
     /// `kind`, `key`, `props` (as plain JSON values), whether a control is `bound` to a field or
     /// state, the `events` it answers, its `anchor` and its `children`. Keys are in alphabetical
-    /// order whether or not serde_json keeps insertion order, so the text is the same in every
+    /// order whether or not `serde_json` keeps insertion order, so the text is the same in every
     /// build.
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {

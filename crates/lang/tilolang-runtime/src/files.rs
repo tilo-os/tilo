@@ -398,6 +398,36 @@ impl Core {
                 let path = self.text(a.h(0)?)?;
                 self.result(host.trash(&path).map(|entry| entry.value()))
             }
+            Imp::ToolDocumentApps
+            | Imp::ToolOpenWith
+            | Imp::ToolTerminal
+            | Imp::ToolContext
+            | Imp::ToolContainerShell => self.tool_import(host.as_ref(), imp, a),
+            Imp::FileCompress | Imp::FileExtract => self.archive_import(host.as_ref(), imp, a),
+            Imp::FileRestore => {
+                let path = self.text(a.h(0)?)?;
+                self.result(host.restore(&path).map(|entry| entry.value()))
+            }
+            Imp::FileOpenPath => {
+                let path = self.text(a.h(0)?)?;
+                self.result(host.open(FileTarget::Path(&path)).map(|()| Value::Unit))
+            }
+            Imp::FileOpen => {
+                let file = self.file_arg(a.h(0)?)?;
+                let target = FileTarget::Content {
+                    name: &file.name,
+                    hash: &file.hash,
+                };
+                self.result(host.open(target).map(|()| Value::Unit))
+            }
+            _ => trap("not a file import"),
+        }
+    }
+
+    /// What the tools a person reaches from a file ask: the apps that open it, opening it with
+    /// one, a terminal at a folder, what the app was opened with, and a container's shell.
+    fn tool_import(&self, host: &dyn FilesHost, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             Imp::ToolDocumentApps => {
                 let path = self.text(a.h(0)?)?;
                 self.result(
@@ -416,8 +446,23 @@ impl Core {
             Imp::ToolContext => self.ret_h(Value::Text(host.launch_context())),
             Imp::ToolContainerShell => {
                 let (container, engine) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
-                self.result(host.container_shell(&container, &engine).map(|()| Value::Unit))
+                self.result(
+                    host.container_shell(&container, &engine)
+                        .map(|()| Value::Unit),
+                )
             }
+            _ => trap("not a tool import"),
+        }
+    }
+
+    /// Entries compressed into an archive, or an archive extracted into a folder.
+    fn archive_import(
+        &self,
+        host: &dyn FilesHost,
+        imp: Imp,
+        a: &Args<'_>,
+    ) -> HResult<Option<Wasm>> {
+        match imp {
             Imp::FileCompress => {
                 let paths = self.with_val(a.h(0)?, |value| match value {
                     Value::List(items) => items
@@ -442,23 +487,7 @@ impl Core {
                 let (from, to) = (self.text(a.h(0)?)?, self.text(a.h(1)?)?);
                 self.result(host.extract(&from, &to).map(Value::Int))
             }
-            Imp::FileRestore => {
-                let path = self.text(a.h(0)?)?;
-                self.result(host.restore(&path).map(|entry| entry.value()))
-            }
-            Imp::FileOpenPath => {
-                let path = self.text(a.h(0)?)?;
-                self.result(host.open(FileTarget::Path(&path)).map(|()| Value::Unit))
-            }
-            Imp::FileOpen => {
-                let file = self.file_arg(a.h(0)?)?;
-                let target = FileTarget::Content {
-                    name: &file.name,
-                    hash: &file.hash,
-                };
-                self.result(host.open(target).map(|()| Value::Unit))
-            }
-            _ => trap("not a file import"),
+            _ => trap("not an archive import"),
         }
     }
 }

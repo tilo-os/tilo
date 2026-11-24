@@ -630,37 +630,8 @@ impl Core {
                 })?;
                 ret_void()
             }
-            Imp::UiBind => {
-                let node = self.node_index(a.h(0)?)?;
-                let r = self.ref_arg(a.h(1)?)?;
-                let field = self.text(a.h(2)?)?;
-                let (_, f) = self.lookup_field(&r.target, &field)?;
-                let binding = Binding {
-                    target: BindTarget::Field {
-                        target: Rc::unwrap_or_clone(r.target),
-                        field: f.id,
-                    },
-                    author: self.module_of_frame()?,
-                };
-                self.with_view(|vs| {
-                    vs.nodes.get_mut(node).ok_or("unknown ui node")?.binding = Some(binding);
-                    Ok(())
-                })?;
-                ret_void()
-            }
-            Imp::UiBindBegin => {
-                let node = self.node_index(a.h(0)?)?;
-                let field = self.text(a.h(1)?)?;
-                self.with_view(|vs| {
-                    vs.nodes
-                        .get_mut(node)
-                        .ok_or("unknown ui node")?
-                        .props
-                        .insert(crate::view::BEGIN_BIND.to_owned(), Value::Text(field));
-                    Ok(())
-                })?;
-                ret_void()
-            }
+            Imp::UiBind => self.ui_bind(a),
+            Imp::UiBindBegin => self.ui_bind_begin(a),
             Imp::UiOn => self.ui_on(a),
             Imp::UiActions => self.offer_actions(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::UiAction => self.offer_action(a.h(0)?, a.h(1)?, a.h(2)?),
@@ -698,6 +669,42 @@ impl Core {
             Imp::ChangeView => self.change_view(a),
             _ => trap("not a ui import"),
         }
+    }
+
+    /// A node bound to a field of a record: what it shows is the field, and what the person
+    /// types into it writes the field.
+    fn ui_bind(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let node = self.node_index(a.h(0)?)?;
+        let r = self.ref_arg(a.h(1)?)?;
+        let field = self.text(a.h(2)?)?;
+        let (_, f) = self.lookup_field(&r.target, &field)?;
+        let binding = Binding {
+            target: BindTarget::Field {
+                target: Rc::unwrap_or_clone(r.target),
+                field: f.id,
+            },
+            author: self.module_of_frame()?,
+        };
+        self.with_view(|vs| {
+            vs.nodes.get_mut(node).ok_or("unknown ui node")?.binding = Some(binding);
+            Ok(())
+        })?;
+        ret_void()
+    }
+
+    /// A node that begins binding `field`, which the next node it holds takes.
+    fn ui_bind_begin(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let node = self.node_index(a.h(0)?)?;
+        let field = self.text(a.h(1)?)?;
+        self.with_view(|vs| {
+            vs.nodes
+                .get_mut(node)
+                .ok_or("unknown ui node")?
+                .props
+                .insert(crate::view::BEGIN_BIND.to_owned(), Value::Text(field));
+            Ok(())
+        })?;
+        ret_void()
     }
 
     /// `on event: action` on a node: the action runs when the node's component fires `event`.

@@ -1900,7 +1900,7 @@ impl Core {
     /// wrote before the call (the draft an answer made) is what the person reads. A secret's
     /// value never leaves the run: the person reads that there is one, not what it is.
     fn asked_shows(&self, aref: &ActionRef) -> Result<Vec<crate::delegate::Shown>, RuntimeError> {
-        let Some((params, shows)) = self
+        let Some((params, listed)) = self
             .registry
             .borrow()
             .action_package(&aref.action)
@@ -1911,15 +1911,15 @@ impl Core {
         else {
             return Ok(Vec::new());
         };
-        let mut shown = Vec::with_capacity(shows.len());
-        for entry in shows {
-            let arg = params
+        let mut shown = Vec::with_capacity(listed.len());
+        for entry in listed {
+            let given = params
                 .iter()
                 .position(|p| p.name == entry.param)
                 .and_then(|at| aref.args.get(at));
             let (label, value) = match &entry.field {
-                None => (tilolang::messages::label(&entry.param), arg.cloned()),
-                Some(name) => self.asked_field(arg, name)?,
+                None => (tilolang::messages::label(&entry.param), given.cloned()),
+                Some(name) => self.asked_field(given, name)?,
             };
             let secret = entry.render.as_deref() == Some("secret");
             let value = match value.map(crate::host_res::unboxed) {
@@ -2934,7 +2934,7 @@ impl Core {
                 let mut names = Vec::with_capacity(items.len());
                 for item in &items {
                     match item {
-                        Value::Text(name) => names.push(name.to_string()),
+                        Value::Text(name) => names.push(name.clone()),
                         other => {
                             return trap(format!(
                                 "notify: `on:` names actions, and this is a {}",

@@ -75,29 +75,7 @@ impl Core {
             // The time of day a moment falls at, as the person reads a clock: `10:41` or
             // `10:41 AM`, in the style they chose in Settings.
             Imp::TimeClock => self.time_clock_import(a),
-            Imp::DayShift => {
-                let day = self.day(a.h(0)?)?;
-                let secs = a.long(1)?;
-                if secs % DAY != 0 {
-                    return trap(format!(
-                        "a day moves by whole days, and {} is no whole day",
-                        tilolang::duration::text(secs)
-                    ));
-                }
-                let days = secs.checked_div(DAY);
-                let days = if a.h(2)? != 0 {
-                    days.and_then(i64::checked_neg)
-                } else {
-                    days
-                };
-                let Some(days) = days else {
-                    return trap("the day is out of range");
-                };
-                let Some(moved) = day.checked_add(jiff::Span::new().days(days)).ok() else {
-                    return trap("the day is out of range");
-                };
-                self.ret_h(Value::Text(day_text(moved)))
-            }
+            Imp::DayShift => self.day_shift_import(a),
             Imp::TimeSpan => {
                 let from = self.text(a.h(0)?)?;
                 let to = self.text(a.h(1)?)?;
@@ -151,6 +129,31 @@ impl Core {
             Imp::Occurrences => self.occurrences_import(a),
             _ => trap("not a day or moment import"),
         }
+    }
+
+    /// A day moved by whole days, forward or back.
+    fn day_shift_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let day = self.day(a.h(0)?)?;
+        let secs = a.long(1)?;
+        if secs % DAY != 0 {
+            return trap(format!(
+                "a day moves by whole days, and {} is no whole day",
+                tilolang::duration::text(secs)
+            ));
+        }
+        let days = secs.checked_div(DAY);
+        let days = if a.h(2)? != 0 {
+            days.and_then(i64::checked_neg)
+        } else {
+            days
+        };
+        let Some(days) = days else {
+            return trap("the day is out of range");
+        };
+        let Some(moved) = day.checked_add(jiff::Span::new().days(days)).ok() else {
+            return trap("the day is out of range");
+        };
+        self.ret_h(Value::Text(day_text(moved)))
     }
 
     /// The time of day a moment falls at, as the person reads a clock (`Imp::TimeClock`).

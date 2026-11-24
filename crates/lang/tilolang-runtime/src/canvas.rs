@@ -84,8 +84,11 @@ pub trait CanvasHost {
     /// # Errors
     ///
     /// Why the file is no artwork.
-    fn open(&self, archive: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String>;
+    fn open(&self, archive: &[u8]) -> Result<OpenedArtwork, String>;
 }
+
+/// An opened `.artwork` package: the artwork's JSON, and each picture it carried by its name.
+pub type OpenedArtwork = (String, Vec<(String, Vec<u8>)>);
 
 /// A host that draws nothing: every call says so, in words a person reads.
 pub struct NoCanvas;
@@ -129,7 +132,7 @@ impl CanvasHost for NoCanvas {
         Err(unavailable())
     }
 
-    fn open(&self, _archive: &[u8]) -> Result<(String, Vec<(String, Vec<u8>)>), String> {
+    fn open(&self, _archive: &[u8]) -> Result<OpenedArtwork, String> {
         Err(unavailable())
     }
 }

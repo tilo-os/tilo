@@ -1,4 +1,4 @@
-//! Document files: a Word, OpenDocument, RTF, EPUB, HTML or Markdown file read as the Markdown
+//! Document files: a Word, `OpenDocument`, RTF, EPUB, HTML or Markdown file read as the Markdown
 //! an editor shows, and Markdown written as a file of one of those formats or as a PDF.
 //!
 //! The work is the engine's ([`tilo_doc_codecs::convert`], and `tilo-doc-pdf` for a PDF), not
