@@ -504,17 +504,6 @@ d-zr7zqp4s-filter-kind = Art
 
 d-zr7zqp4s-filter-position = Position
 
-d-pivxxzdz = Kanal-löschen-Op
-    .doc = Ein dort gelöschter Kanal.
-    .noun = { $count ->
-        [one] Kanal-löschen-Op
-       *[other] Kanal-löschen-Ops
-    }
-
-d-rxgm3chv = Op
-
-d-cvq5uc5z = Kanal
-
 d-j2bgcnxl = Kategorie-Platz
     .doc = Wohin eine Kategorie gehört.
     .noun = { $count ->
@@ -1010,7 +999,6 @@ d-evtumcea-avatar = Avatar
 
 d-k27e5op2 = Verknüpfungsfoto setzen
     .doc = Behält den Avatar eines verknüpften Kontos als Bild der Person, bis sie ein eigenes hochlädt.
-    .w-only-the-bridge-keeps-a-link = Nur die Bridge behält das Bild einer Verknüpfung
     .w-a-picture-is-a-base64-data = Ein Bild ist eine base64-data:-URL eines PNG, JPEG oder WebP
     .w-only-the-bridge-or-the-person = Nur die Bridge oder die Person, mit der das Konto verknüpft ist, behält das Bild einer Verknüpfung
 
@@ -1148,8 +1136,6 @@ d-eginj4va = Kanal dort löschen
     .w-the-server-is-adopted-first = Der Server wird zuerst übernommen
     .w-the-bridge-changes-only-channels-it = Die Bridge ändert nur Kanäle, die sie erstellt hat, nie die des Servers selbst
     .w-a-bridge-of-one-channel-changes = Eine Bridge eines Kanals ändert nichts anderes im Server
-
-d-eginj4va-op = Op
 
 d-2xvzq6ke = Kanäle anordnen
     .doc = Bringt Kanäle und Kategorien dort an ihre Plätze, sodass der Server sie in dieser Reihenfolge listet.
