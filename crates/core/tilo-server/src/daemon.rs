@@ -1095,20 +1095,22 @@ async fn install_and_follow(
             return;
         }
     }
+    // What the document asks of the machine is written in the server's own state, where the
+    // image's root-run units read it (its state root is /var/lib/tilo-server there): a server that
+    // is not the image's, one a stack or a container runs, can write nowhere else.
+    let requests = crate::servers::applied::Requests::at(
+        state_root.join(crate::servers::policy::POLICY_REQUEST_FILE),
+    );
     // The document is applied while the installation waits on the person's
     // answers.
-    let following = crate::servers::applied::follow(
-        &workspaces,
-        crate::servers::applied::Requests::default(),
-        Some(endpoint),
-        state_root,
-    );
+    let following =
+        crate::servers::applied::follow(&workspaces, requests.clone(), Some(endpoint), state_root);
     if joined {
         match crate::servers::first_install::install(
             &workspaces,
             &cert,
             &crate::servers::first_install::real_drives(),
-            &crate::servers::applied::Requests::default(),
+            &requests,
         )
         .await
         {

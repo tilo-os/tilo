@@ -3,7 +3,7 @@
 //! The updates a server follows and its daily maintenance window are settings of
 //! the image's update policy, which only root writes
 //! (`os/usr/libexec/tilo-update-policy-set`). The server runs unprivileged, so
-//! it writes what it wants at one fixed path, in the fixed lines below, and a
+//! it writes what it wants in its own state root, in the fixed lines below, and a
 //! root-run unit reads it and applies it through that helper
 //! (`os/usr/libexec/tilo-server-update-policy`). Only values the document's own
 //! actions accept are written, and the helper checks them again: nothing it
@@ -17,7 +17,12 @@ use std::path::Path;
 use super::{MINUTES_PER_DAY, Server, UPDATES};
 
 /// The file a server writes what its update policy should be, for the
-/// root-run helper to apply.
+/// root-run helper to apply: in the server's state root, which is
+/// `/var/lib/tilo-server` on the image ([`POLICY_REQUEST`]).
+pub const POLICY_REQUEST_FILE: &str = "update-policy.request";
+
+/// Where the image's server writes [`POLICY_REQUEST_FILE`], and the root-run
+/// helper reads it.
 pub const POLICY_REQUEST: &str = "/var/lib/tilo-server/update-policy.request";
 
 /// What a server's entry says its update policy is.
