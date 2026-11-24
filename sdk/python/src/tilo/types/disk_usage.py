@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Measure` is the app's `tl.so.tilo.disk-usage.Measure` at `disk-usage/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `disk-usage/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,6 +20,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "Notice",
     "Measure",
     "Recent",
     "Analyzer",
@@ -90,9 +91,70 @@ PollArgs = TypedDict("PollArgs", {
 })
 """The arguments of `poll`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Measure(Resource):
     """Measure — `tl.so.tilo.disk-usage.Measure`."""
-    __surface__ = "so.tilo.disk-usage@ecf7b71b43af6fda"
+    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
     dgpcdvfo: str  # name
     hr7pdtyh: str  # path
     @property
@@ -108,7 +170,7 @@ class Measure(Resource):
 
 class Recent(Resource):
     """Recent — `tl.so.tilo.disk-usage.Recent`."""
-    __surface__ = "so.tilo.disk-usage@ecf7b71b43af6fda"
+    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
     mks7bf3q: str  # path
     w6urofdz: str  # label
     rrwtdebb: str  # seen
@@ -116,7 +178,7 @@ class Recent(Resource):
 
 class Analyzer(Resource):
     """Analyzer — `tl.so.tilo.disk-usage.Analyzer`."""
-    __surface__ = "so.tilo.disk-usage@ecf7b71b43af6fda"
+    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
     myw6qh3s: str  # folder
     thlese6a: str  # label
     w37l5txv: list[Entry[Measure]]  # entries
@@ -237,13 +299,13 @@ class Analyzer(Resource):
 
 class ScanAsk(Resource):
     """ScanAsk — `tl.so.tilo.disk-usage.ScanAsk`."""
-    __surface__ = "so.tilo.disk-usage@ecf7b71b43af6fda"
+    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
     fzzlfxy7: str  # path
 
 
 class JobAnswer(Resource):
     """JobAnswer — `tl.so.tilo.disk-usage.JobAnswer`."""
-    __surface__ = "so.tilo.disk-usage@ecf7b71b43af6fda"
+    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
     @property
     def _42vybryr(self) -> str:
         """job (`42vybryr` on the wire)."""
@@ -256,7 +318,7 @@ class JobAnswer(Resource):
 
 class Scanned(Resource):
     """Scanned — `tl.so.tilo.disk-usage.Scanned`."""
-    __surface__ = "so.tilo.disk-usage@ecf7b71b43af6fda"
+    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
     @property
     def _5asfkn6k(self) -> str:
         """name (`5asfkn6k` on the wire)."""
@@ -279,7 +341,7 @@ class Scanned(Resource):
 
 class ScanState(Resource):
     """ScanState — `tl.so.tilo.disk-usage.ScanState`."""
-    __surface__ = "so.tilo.disk-usage@ecf7b71b43af6fda"
+    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
     qaev2xl3: str  # state
     dmlnkvla: str  # path
     k2iebb3k: int  # bytes
@@ -298,7 +360,7 @@ class ScanState(Resource):
 
 class DiskUsage(Resource):
     """Disk Usage Analyzer — `tl.so.tilo.disk-usage`."""
-    __surface__ = "so.tilo.disk-usage@ecf7b71b43af6fda"
+    __surface__ = "so.tilo.disk-usage@8d7a57b84ae32aae"
     def open_disks(self) -> None:
         """Opens the Disks app, where the device's drives and their use are."""
         return self.action("open_disks")

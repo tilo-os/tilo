@@ -8,6 +8,7 @@ mod cases {
     use serde_json::{Value as Json, json};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::files::{Entry, FileTarget, FilesHost};
     use tilolang_runtime::page::PageHost;
     use tilolang_runtime::{
@@ -38,6 +39,10 @@ mod cases {
 
         fn last(&self) -> Json {
             self.asked.borrow().last().cloned().expect("an ask")
+        }
+
+        fn asked_ops(&self) -> Vec<Json> {
+            self.asked.borrow().clone()
         }
 
         fn answer_asks(&self, asks: Json) {
@@ -99,12 +104,33 @@ mod cases {
         }
     }
 
+    /// What the person picks when a control asks them for a file: the package an install takes.
+    #[derive(Clone, Default)]
+    struct Chosen {
+        file: Rc<RefCell<Option<FileValue>>>,
+    }
+
+    impl BlobHost for Chosen {
+        fn read(&self, _hash: &str) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
+            Ok(self.file.borrow().clone().into_iter().collect())
+        }
+
+        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
+            Err("the test saves nothing".to_owned())
+        }
+    }
+
     struct Browser {
         rt: Runtime,
         app: App,
         root: ResourceRef,
         page: Page,
         files: Files,
+        chosen: Chosen,
         opened: ResourceRef,
     }
 
@@ -116,6 +142,8 @@ mod cases {
             rt.set_page(page.clone());
             let files = Files::default();
             rt.set_device_files(files.clone());
+            let chosen = Chosen::default();
+            rt.set_blobs(chosen.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             // The Browser shows where a download stands by asking Files, whose own action knows
             // the device's files.
@@ -133,8 +161,16 @@ mod cases {
                 root,
                 page,
                 files,
+                chosen,
                 opened,
             }
+        }
+
+        /// The file the person picks when a control asks: `name`'s bytes, in this device's
+        /// content store under `hash`.
+        fn chooses(&self, name: &str, hash: &str) {
+            *self.chosen.file.borrow_mut() =
+                Some(FileValue::new(name, "application/octet-stream", 2048, hash));
         }
 
         fn call(
@@ -912,41 +948,58 @@ mod cases {
 
         b.page(
             "install_extension",
-            &[("path", Value::text("/home/ada/Downloads/reader.crx"))],
+            &[(
+                "file",
+                Value::file(FileValue::new(
+                    "reader.crx",
+                    "application/octet-stream",
+                    2048,
+                    "d".repeat(64),
+                )),
+            )],
         );
         assert_eq!(
             b.page.last()["op"].as_str(),
             Some("extension_install"),
-            "the engine is asked to install the package the person named"
+            "the engine is asked to install the package the person chose"
         );
         assert_eq!(
-            b.page.last()["path"].as_str(),
-            Some("/home/ada/Downloads/reader.crx")
+            b.page.last()["file"].as_str(),
+            Some(format!("tilo-blob://{}", "d".repeat(64)).as_str()),
+            "the package is named by the address of its bytes, never a host path"
         );
-        let refused = Browser::call(
-            &b.app,
-            &b.rt,
-            "install_extension",
-            &[("p", Value::resource(&b.opened)), ("path", Value::text(""))],
-        );
-        assert!(refused.is_err(), "no package named, nothing installed");
 
-        // Turning it off names the extension and says which way.
+        // Turning it off names the extension and says which way, and the record shows it off
+        // without waiting for the engine to answer.
         let view = b.page_view();
         view.fire(&button_key(&view, "Turn the extension off"), "press")
             .unwrap();
-        assert_eq!(b.page.last()["op"].as_str(), Some("extension_enable"));
         assert_eq!(
-            b.page.last()["extension"].as_str(),
+            b.page.ops(),
+            [
+                "extension_list",
+                "extension_install",
+                "extension_enable",
+                "extension_list"
+            ],
+            "turning it off reaches the engine and the record is read again"
+        );
+        let turn_off = &b.page.asked_ops()[2];
+        assert_eq!(
+            turn_off["extension"].as_str(),
             Some("abcdefghijklmnopabcdefghijklmnop")
         );
-        assert_eq!(b.page.last()["enabled"].as_bool(), Some(false));
+        assert_eq!(turn_off["enabled"].as_bool(), Some(false));
+        assert_eq!(row_secondary(&b.page_view(), "Reader"), "Off (1.2.3)");
 
         let view = b.page_view();
         view.fire(&button_key(&view, "Remove"), "press").unwrap();
-        assert_eq!(b.page.last()["op"].as_str(), Some("extension_remove"));
         assert_eq!(
-            b.page.last()["extension"].as_str(),
+            b.page.ops().into_iter().skip(4).collect::<Vec<_>>(),
+            ["extension_remove", "extension_list"]
+        );
+        assert_eq!(
+            b.page.asked_ops()[4]["extension"].as_str(),
             Some("abcdefghijklmnopabcdefghijklmnop")
         );
 
@@ -974,6 +1027,214 @@ mod cases {
             ],
         );
         assert_eq!(b.text(&b.root, "extension_notice"), "");
+    }
+
+    /// The system's own chooser is how a package arrives: the person presses Install from a
+    /// file, picks one, and the engine is handed the address of its bytes and asked again what
+    /// is installed.
+    #[test]
+    fn an_extension_installs_from_the_package_the_person_picks() {
+        let b = Browser::new();
+        b.chooses("reader.crx", &"e".repeat(64));
+        let view = b.page_view();
+        view.fire(&button_key(&view, "Install from a file"), "press")
+            .unwrap();
+        assert_eq!(
+            b.page.ops(),
+            ["extension_install", "extension_list"],
+            "the picked package reaches the engine and the record is read again"
+        );
+        assert_eq!(
+            b.page.asked_ops()[0]["file"].as_str(),
+            Some(format!("tilo-blob://{}", "e".repeat(64)).as_str()),
+            "the engine is handed the address of the package's bytes"
+        );
+
+        // A chooser the person dismisses installs nothing.
+        let empty = Browser::new();
+        let view = empty.page_view();
+        view.fire(&button_key(&view, "Install from a file"), "press")
+            .unwrap();
+        assert_eq!(
+            empty.page.ops(),
+            ["extension_list"],
+            "nothing was picked, so nothing is installed"
+        );
+    }
+
+    /// A Chrome Web Store item installs from its page's address, from a link pasted into the
+    /// settings, or from its id; a page that is no store item offers no install.
+    #[test]
+    fn a_store_extension_installs_from_its_page_or_its_id() {
+        const ITEM: &str = "abcdefghijklmnopabcdefghijklmnop";
+        let address = format!("https://chromewebstore.google.com/detail/reader/{ITEM}");
+        let b = Browser::new();
+        b.page("went_to", &[("url", Value::text(address.as_str()))]);
+        let view = b.page_view();
+        view.fire(&button_key(&view, "Add to Browser"), "press")
+            .unwrap();
+        assert_eq!(
+            b.page.ops(),
+            ["extension_install_store", "extension_list"],
+            "the store item reaches the engine, which fetches its package"
+        );
+        assert_eq!(
+            b.page.asked_ops()[0]["item"].as_str(),
+            Some(address.as_str())
+        );
+
+        // The id alone names the same item.
+        b.page("install_store_extension", &[("said", Value::text(ITEM))]);
+        assert_eq!(
+            b.page.last()["op"].as_str(),
+            Some("extension_install_store")
+        );
+        assert_eq!(b.page.last()["item"].as_str(), Some(ITEM));
+        let refused = Browser::call(
+            &b.app,
+            &b.rt,
+            "install_store_extension",
+            &[
+                ("p", Value::resource(&b.opened)),
+                ("said", Value::text("  ")),
+            ],
+        );
+        assert!(refused.is_err(), "no item named, nothing installed");
+
+        // A look-alike host, and a page that is no store item, offer no install.
+        for other in [
+            "https://example.org/",
+            format!("https://chromewebstore.google.com.evil.example/detail/reader/{ITEM}").as_str(),
+        ] {
+            b.page("went_to", &[("url", Value::text(other))]);
+            let view = b.page_view();
+            assert!(
+                of_kind(view.tree(), "ui.Button")
+                    .iter()
+                    .all(|b| b.props.get("label") != Some(&Value::text("Add to Browser"))),
+                "{other} offers no install"
+            );
+        }
+    }
+
+    /// Checking for updates asks the store and says what came of it: what was updated, that all
+    /// is current, and which extension could not be checked.
+    #[test]
+    fn an_update_check_reports_what_it_installed() {
+        const ITEM: &str = "abcdefghijklmnopabcdefghijklmnop";
+        let installed = |version: &str| {
+            Value::text(format!(
+                r#"[{{"id":"{ITEM}","name":"Reader","version":"{version}","manifest_version":3,"description":"Reads pages","permissions":["storage"],"enabled":true}}]"#
+            ))
+        };
+        let b = Browser::new();
+        b.page(
+            "remember_extensions",
+            &[
+                ("installed", installed("1.2.3")),
+                ("message", Value::text("")),
+            ],
+        );
+        b.page("update_extensions", &[]);
+        assert_eq!(
+            b.page.ops().last().map(String::as_str),
+            Some("extension_update_check"),
+            "the store is asked for newer versions"
+        );
+
+        // What the engine found: one extension updated, and the inventory it answered with.
+        b.page(
+            "note_extension_updates",
+            &[
+                ("checked", Value::Int(1)),
+                (
+                    "updated",
+                    Value::text(format!(
+                        r#"[{{"id":"{ITEM}","name":"Reader","from":"1.2.3","version":"1.4.0"}}]"#
+                    )),
+                ),
+                ("failed", Value::text("")),
+            ],
+        );
+        assert_eq!(
+            b.text(&b.root, "extension_notice"),
+            "“Reader” updated to 1.4.0"
+        );
+        b.page(
+            "remember_extensions",
+            &[
+                ("installed", installed("1.4.0")),
+                ("message", Value::text("")),
+            ],
+        );
+        assert_eq!(
+            row_secondary(&b.page_view(), "Reader"),
+            "On (1.4.0)",
+            "the record shows the version that was installed"
+        );
+
+        let report = |checked: i64, updated: &str, failed: &str| {
+            b.page(
+                "note_extension_updates",
+                &[
+                    ("checked", Value::Int(checked)),
+                    ("updated", Value::text(updated)),
+                    ("failed", Value::text(failed)),
+                ],
+            );
+            b.text(&b.root, "extension_notice")
+        };
+        assert_eq!(report(1, "[]", ""), "The extensions are up to date");
+        assert_eq!(
+            report(0, "[]", ""),
+            "No extension from the Chrome Web Store is installed"
+        );
+        assert_eq!(
+            report(1, "[]", "Reader: the store could not be reached"),
+            "The Chrome Web Store could not be checked: Reader: the store could not be reached"
+        );
+    }
+
+    /// Turning an extension on reaches the running engine and shows at once: the record says so
+    /// before the window has restarted, and the inventory that follows agrees.
+    #[test]
+    fn turning_an_extension_on_takes_effect_without_a_restart() {
+        const ITEM: &str = "abcdefghijklmnopabcdefghijklmnop";
+        let on = |enabled: bool| {
+            Value::text(format!(
+                r#"[{{"id":"{ITEM}","name":"Reader","version":"1.2.3","manifest_version":3,"description":"Reads pages","permissions":["storage"],"enabled":{enabled}}}]"#
+            ))
+        };
+        let b = Browser::new();
+        b.page(
+            "remember_extensions",
+            &[("installed", on(false)), ("message", Value::text(""))],
+        );
+        let view = b.page_view();
+        assert_eq!(row_secondary(&view, "Reader"), "Off (1.2.3)");
+        view.fire(&button_key(&view, "Turn the extension on"), "press")
+            .unwrap();
+        assert_eq!(
+            b.page.ops(),
+            ["extension_enable", "extension_list"],
+            "the engine is told, and the record is read again"
+        );
+        assert_eq!(
+            b.page.asked_ops()[0]["op"].as_str(),
+            Some("extension_enable")
+        );
+        assert_eq!(b.page.asked_ops()[0]["extension"].as_str(), Some(ITEM));
+        assert_eq!(b.page.asked_ops()[0]["enabled"].as_bool(), Some(true));
+        assert_eq!(
+            row_secondary(&b.page_view(), "Reader"),
+            "On (1.2.3)",
+            "the record shows it on with no restart"
+        );
+        b.page(
+            "remember_extensions",
+            &[("installed", on(true)), ("message", Value::text(""))],
+        );
+        assert_eq!(row_secondary(&b.page_view(), "Reader"), "On (1.2.3)");
     }
 
     /// The logins the engine keeps for a site are found, captured, saved, filled and forgotten

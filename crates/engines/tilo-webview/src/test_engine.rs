@@ -779,6 +779,7 @@ impl WebViewEngine for TestEngine {
                 });
             }
             WebViewCommand::ExtensionInstall { request_id, .. }
+            | WebViewCommand::ExtensionInstallStore { request_id, .. }
             | WebViewCommand::ExtensionEnable { request_id, .. }
             | WebViewCommand::ExtensionRemove { request_id, .. } => {
                 inner.events.push(WebViewEvent::ExtensionOutcome {
@@ -787,6 +788,14 @@ impl WebViewEngine for TestEngine {
                     kind: String::new(),
                     message: String::new(),
                     id: String::new(),
+                });
+            }
+            WebViewCommand::ExtensionUpdateCheck { request_id } => {
+                inner.events.push(WebViewEvent::ExtensionUpdates {
+                    request_id,
+                    checked: 0,
+                    updated: Vec::new(),
+                    failed: Vec::new(),
                 });
             }
             WebViewCommand::CancelScopedNavigation { request_id } => {

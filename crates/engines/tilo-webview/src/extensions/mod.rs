@@ -4,6 +4,9 @@
 //! window starts.
 
 pub mod crx;
+/// The Chrome Web Store's own pages and update service: a desktop request, so not on the web.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod web_store;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,6 +39,12 @@ pub enum ExtensionError {
     Damaged(String),
     Broken(String),
     NotSaved(std::io::Error),
+    /// The store could not be asked, or its answer left Google's hosts.
+    Download(String),
+    /// The store has no package for this browser.
+    NoPackage,
+    /// What was given names no Chrome Web Store item: neither an extension's id nor its page.
+    NoItem,
 }
 
 impl ExtensionError {
@@ -48,6 +57,9 @@ impl ExtensionError {
             Self::Damaged(_) => "damaged",
             Self::Broken(_) => "broken",
             Self::NotSaved(_) => "not-saved",
+            Self::Download(_) => "download",
+            Self::NoPackage => "no-package",
+            Self::NoItem => "item",
         }
     }
 }
@@ -60,6 +72,11 @@ impl std::fmt::Display for ExtensionError {
             Self::Damaged(detail) => write!(f, "the package is damaged: {detail}"),
             Self::Broken(detail) => write!(f, "the manifest is broken: {detail}"),
             Self::NotSaved(error) => write!(f, "the extension could not be saved: {error}"),
+            Self::Download(detail) => {
+                write!(f, "the Chrome Web Store could not be reached: {detail}")
+            }
+            Self::NoPackage => f.write_str("the Chrome Web Store has no package for this browser"),
+            Self::NoItem => f.write_str("this is no Chrome Web Store item"),
         }
     }
 }
@@ -212,6 +229,89 @@ pub fn install(
     }
     extension.path = dest;
     Ok(extension)
+}
+
+/// How a store package is fetched: the extension's id and, for an update, the version this
+/// device has, answered with the package of a newer version, or `None` when the store has none.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Fetch<'a> = &'a dyn Fn(&str, Option<&str>) -> Result<Option<Vec<u8>>, ExtensionError>;
+
+/// Install the store's item `said` (a store page's address, or the extension's id) under
+/// `root`, and turn it on as installing from the store does. Its identifier is the one its
+/// signing key names, which the package must be signed for.
+///
+/// # Errors
+///
+/// Why nothing was installed: `said` names no item, the store could not be asked, it has no
+/// package for this browser, or the package is damaged or broken.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn add(said: &str, root: &Path, fetch: Fetch<'_>) -> Result<Extension, ExtensionError> {
+    let item = web_store::item(said).ok_or(ExtensionError::NoItem)?;
+    let bytes = fetch(&item.id, None)?.ok_or(ExtensionError::NoPackage)?;
+    let extension = install(&bytes, root, Some(&item.id))?;
+    set_approved(&extension, true)?;
+    Ok(extension)
+}
+
+/// One extension the store answered a newer package for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Updated {
+    /// The version this device had.
+    pub from: String,
+    pub extension: Extension,
+}
+
+/// What asking the store for newer versions came to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Updates {
+    /// How many installed store extensions were asked about.
+    pub checked: usize,
+    /// The ones that were updated, each with the version it replaced.
+    pub updated: Vec<Updated>,
+    /// The ones that could not be checked or installed, in the store's or the package's words.
+    pub failed: Vec<String>,
+}
+
+/// Ask the store for newer versions of the store extensions installed under `root` and install
+/// them, keeping each one as the person had it: one that was on stays on.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn check_updates(root: &Path, fetch: Fetch<'_>) -> Updates {
+    let mut updates = Updates::default();
+    for (extension, enabled) in installed(root) {
+        // Only a package signed for an extension id has an update service entry; an unsigned
+        // zip the person installed by hand is theirs to replace.
+        if !crx::is_extension_id(&extension.id) {
+            continue;
+        }
+        updates.checked += 1;
+        let package = match fetch(&extension.id, Some(&extension.version)) {
+            Ok(package) => package,
+            Err(error) => {
+                updates.failed.push(format!("{}: {error}", extension.name));
+                continue;
+            }
+        };
+        let Some(bytes) = package else {
+            continue;
+        };
+        match install(&bytes, root, Some(&extension.id)) {
+            Ok(updated) => {
+                // The folder was rewritten, so its manifest's digest changed with it: the
+                // approval is keyed to that digest and has to be written again.
+                if enabled && let Err(error) = set_approved(&updated, true) {
+                    updates.failed.push(format!("{}: {error}", updated.name));
+                    continue;
+                }
+                updates.updated.push(Updated {
+                    from: extension.version,
+                    extension: updated,
+                });
+            }
+            Err(error) => updates.failed.push(format!("{}: {error}", extension.name)),
+        }
+    }
+    updates
 }
 
 /// Forget the extension `id`: its folder under `root` and its approval.
@@ -652,6 +752,84 @@ mod tests {
                 "a package signed for another identifier is refused"
             );
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn store_packages_install_on_and_are_kept_up_to_date() {
+        let root = tempfile::tempdir().expect("a root");
+        let signer = crx::fixtures::Signer::new();
+        let id = crx::extension_id(&signer.spki);
+        let manifest = |version: &str| {
+            format!(r#"{{"manifest_version":3,"name":"Reader","version":"{version}"}}"#)
+        };
+        let signed =
+            |version: &str| crx::fixtures::crx(&signer, &[&signer], &package(&manifest(version)));
+
+        let newest = |asked: &str, installed: Option<&str>| {
+            assert_eq!(
+                asked,
+                id.as_str(),
+                "the store is asked for the item's own id"
+            );
+            assert!(
+                installed.is_none(),
+                "installing asks for the newest package"
+            );
+            Ok(Some(signed("1.2.3")))
+        };
+        let extension = add(
+            &format!("https://chromewebstore.google.com/detail/reader/{id}"),
+            root.path(),
+            &newest,
+        )
+        .expect("installed");
+        assert_eq!(
+            extension.id, id,
+            "the package's identifier is the one it is signed for"
+        );
+        assert_eq!(extension.version, "1.2.3");
+        assert!(
+            is_approved(&extension),
+            "installing from the store turns it on"
+        );
+        assert_eq!(approved_paths(root.path()), [extension.path.clone()]);
+
+        // Nothing newer: the store answers with no package, and what is installed stays.
+        let current = |_: &str, installed: Option<&str>| {
+            assert_eq!(installed, Some("1.2.3"));
+            Ok(None)
+        };
+        let none = check_updates(root.path(), &current);
+        assert_eq!(none.checked, 1, "the store extension is asked about");
+        assert!(none.updated.is_empty() && none.failed.is_empty());
+
+        // A newer package installs, stays on, and is what the inventory then reads.
+        let newer = |_: &str, installed: Option<&str>| {
+            assert_eq!(
+                installed,
+                Some("1.2.3"),
+                "the update names the version it has"
+            );
+            Ok(Some(signed("1.4.0")))
+        };
+        let updates = check_updates(root.path(), &newer);
+        assert_eq!(updates.failed, Vec::<String>::new());
+        assert_eq!(updates.updated.len(), 1);
+        assert_eq!(updates.updated[0].from, "1.2.3");
+        assert_eq!(updates.updated[0].extension.version, "1.4.0");
+        let listed = installed(root.path());
+        assert_eq!(listed.len(), 1, "the update replaced the package");
+        assert_eq!(listed[0].0.version, "1.4.0");
+        assert!(listed[0].1, "an extension that was on stays on");
+
+        // A store that cannot be reached says which extension it could not check.
+        let unreachable =
+            |_: &str, _: Option<&str>| Err(ExtensionError::Download("no network".to_owned()));
+        let failed = check_updates(root.path(), &unreachable);
+        assert_eq!(failed.updated.len(), 0);
+        assert_eq!(failed.failed.len(), 1);
+        assert!(failed.failed[0].contains("Reader"), "{:?}", failed.failed);
     }
 
     #[test]

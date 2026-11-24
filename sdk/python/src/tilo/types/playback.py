@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Output` is the app's `tl.so.tilo.playback.Output` at `playback/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `playback/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,6 +21,7 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "PlaybackState",
+    "Notice",
     "Output",
     "Item",
     "Progress",
@@ -209,9 +210,70 @@ SetOutputVolumeArgs = TypedDict("SetOutputVolumeArgs", {
 })
 """The arguments of `set_output_volume`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Output(Resource):
     """Output — `tl.so.tilo.playback.Output`."""
-    __surface__ = "so.tilo.playback@421c5039a7cd481f"
+    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
     mtgbfbe3: str  # kind
     q2afggjg: str  # device
     duy3y22z: str  # name
@@ -221,7 +283,7 @@ class Output(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.playback.Item`."""
-    __surface__ = "so.tilo.playback@421c5039a7cd481f"
+    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
     jsytyrgy: str  # ref
     hbrdxjws: str  # title
     @property
@@ -239,7 +301,7 @@ class Item(Resource):
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.playback.Progress`."""
-    __surface__ = "so.tilo.playback@421c5039a7cd481f"
+    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
     ijcc2upy: str  # ref
     owteykf6: float  # position
     q64zycak: str  # updated
@@ -247,7 +309,7 @@ class Progress(Resource):
 
 class Playback(Resource):
     """Playback — `tl.so.tilo.playback.Playback`."""
-    __surface__ = "so.tilo.playback@421c5039a7cd481f"
+    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
     hnwowp42: str  # track
     sx7vtcfl: str  # title
     eejl5scp: str  # artist
@@ -591,5 +653,5 @@ class Playback(Resource):
 
 class TiloPlayback(Resource):
     """Playback — `tl.so.tilo.playback`."""
-    __surface__ = "so.tilo.playback@421c5039a7cd481f"
+    __surface__ = "so.tilo.playback@4640c21ab213a5f2"
 

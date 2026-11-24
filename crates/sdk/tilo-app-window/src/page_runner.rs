@@ -62,6 +62,17 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
             held.replace(PageSession::new_private(engine, root));
             Ok(Asked::Answered(codec::accepted()))
         }
+        // An extension the person chose arrives as the address of its bytes in this device's
+        // content store: an app names no host path, so the window reads the package here and
+        // hands the engine the bytes.
+        codec::Ask::ExtensionInstall { file } => {
+            let bytes = package_bytes(&file)?;
+            engine_of(page).send(WebViewCommand::ExtensionInstall {
+                request_id: 1,
+                bytes,
+            });
+            Ok(Asked::Answered(codec::accepted()))
+        }
         // A credential action names the page's document, which is the session's to know and the
         // app's never to see: the session asks the page for it and sends the action after.
         codec::Ask::Command(WebViewCommand::Credentials(credential)) => {
@@ -93,6 +104,56 @@ pub fn ask(page: &Page, request: &str) -> Result<Asked, String> {
                 .ok_or_else(|| "this window has no page".to_owned())?;
             Ok(Asked::Waiting(session.ask(None, request)))
         }
+    }
+}
+
+/// The bytes the content address `file` (`tilo-blob://<hash>`) names, from this device's content
+/// store: what the person chose, read where a sandboxed app may not.
+fn package_bytes(file: &str) -> Result<Vec<u8>, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        read_package(
+            |hash| tilo_content_device::device().and_then(|store| store.read(hash)),
+            file,
+        )
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = file;
+        Err("this host keeps no content store".to_owned())
+    }
+}
+
+/// The bytes the content address `file` names, as `read` answers the content at a reference: a
+/// host path names no content a sandboxed app may hold.
+fn read_package(read: impl Fn(&str) -> Option<Vec<u8>>, file: &str) -> Result<Vec<u8>, String> {
+    let hash = file
+        .strip_prefix("tilo-blob://")
+        .ok_or_else(|| format!("`{file}` is no file's address"))?;
+    read(hash).ok_or_else(|| "the package is not on this device".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chosen_package_is_read_from_the_content_store_by_its_address() {
+        let store = tilo_content::ContentStore::memory();
+        let hash = store.put(b"a package").expect("kept");
+        let file = format!("tilo-blob://{hash}");
+        assert_eq!(
+            read_package(|hash| store.read(hash), &file).expect("the package"),
+            b"a package"
+        );
+        assert!(
+            read_package(|hash| store.read(hash), "/home/ada/reader.crx").is_err(),
+            "a host path names no content"
+        );
+        assert!(
+            read_package(|_| None, &file).is_err(),
+            "a package this device does not hold is missing"
+        );
     }
 }
 

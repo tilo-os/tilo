@@ -220,6 +220,17 @@ impl PageSession {
                         .push(codec::extension_outcome_note(*ok, kind, message, id));
                     continue;
                 }
+                // What asking the store for newer versions came to: the app's record's too.
+                WebViewEvent::ExtensionUpdates {
+                    checked,
+                    updated,
+                    failed,
+                    ..
+                } => {
+                    self.notes
+                        .push(codec::extension_updates_note(*checked, updated, failed));
+                    continue;
+                }
                 // How the engine's credential store answered: the forms and accounts it lists,
                 // the capture it took, and what the action came to. A status the session asked
                 // only to learn the page's document is not the person's to see: their own action

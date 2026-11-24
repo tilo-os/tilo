@@ -43,6 +43,8 @@ const SETTLE_TIMEOUT_MS: u32 = 10_000;
 const DRAG_STEPS: u32 = 8;
 /// The longest path an extension package is named by.
 const MAX_EXTENSION_PATH: usize = 4096;
+/// The address a file's bytes stand at in this device's content store.
+const BLOB_SCHEME: &str = "tilo-blob://";
 /// The longest identifier an extension is named by.
 const MAX_EXTENSION_ID: usize = 128;
 
@@ -59,6 +61,10 @@ pub enum Ask {
     /// which holds nothing the person signed in to and goes when the window does. Asked before
     /// the page says anything else, since it settles which engine the page has.
     Private,
+    /// Install the extension package the person chose, named by the address its bytes stand at
+    /// in this device's content store (`tilo-blob://…`). A sandboxed app never names a host
+    /// path, so the window reads the bytes and hands the engine the package.
+    ExtensionInstall { file: String },
 }
 
 /// Read a request an app's action wrote.
@@ -320,19 +326,32 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "site_exceptions" => {
             Ask::Command(WebViewCommand::SetSiteExceptions(texts(&value, "origins")))
         }
-        // The extensions this device keeps: what is installed, one installed from the package at
-        // `path` (a CRX3 package or a plain zip), one turned on or off, and one forgotten. The
-        // engine unpacks and launches them; the app never reads a package.
+        // The extensions this device keeps: what is installed, one installed from the package
+        // the person chose (a CRX3 package or a plain zip), one installed from the Chrome Web
+        // Store, the store asked for newer versions of them, one turned on or off, and one
+        // forgotten. The engine unpacks and launches them; the app never reads a package.
         "extension_list" => Ask::Command(WebViewCommand::ExtensionList { request_id: 1 }),
         "extension_install" => {
-            let path = text(&value, "path").unwrap_or_default();
-            if path.is_empty() || path.len() > MAX_EXTENSION_PATH {
-                return Err("an extension package is named by a path".to_owned());
+            // The chosen file's bytes stand in this device's content store; the window reads
+            // them and hands the engine the package.
+            let file = text(&value, "file").unwrap_or_default();
+            if !file.starts_with(BLOB_SCHEME) || file.len() > MAX_EXTENSION_PATH {
+                return Err("an extension package is named by its content's address".to_owned());
             }
-            Ask::Command(WebViewCommand::ExtensionInstall {
+            Ask::ExtensionInstall { file }
+        }
+        "extension_install_store" => {
+            let item = text(&value, "item").unwrap_or_default();
+            if item.trim().is_empty() || item.len() > MAX_EXTENSION_PATH {
+                return Err("a store item is named by its address or its id".to_owned());
+            }
+            Ask::Command(WebViewCommand::ExtensionInstallStore {
                 request_id: 1,
-                path,
+                item: item.trim().to_owned(),
             })
+        }
+        "extension_update_check" => {
+            Ask::Command(WebViewCommand::ExtensionUpdateCheck { request_id: 1 })
         }
         "extension_enable" => Ask::Command(WebViewCommand::ExtensionEnable {
             request_id: 1,
@@ -734,6 +753,35 @@ pub fn extension_outcome_note(ok: bool, kind: &str, message: &str, id: &str) -> 
     .to_string()
 }
 
+/// What asking the store for newer versions came to, for the window to hand the app as its call:
+/// how many extensions were asked about, which were updated (and what they replaced), and which
+/// could not be.
+#[must_use]
+pub fn extension_updates_note(
+    checked: u32,
+    updated: &[tilo_webview::ExtensionUpdate],
+    failed: &[String],
+) -> String {
+    let updated: Vec<serde_json::Value> = updated
+        .iter()
+        .map(|update| {
+            serde_json::json!({
+                "id": update.id,
+                "name": update.name,
+                "from": update.from,
+                "version": update.version,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "note": "extension_updates",
+        "checked": checked,
+        "updated": serde_json::Value::Array(updated).to_string(),
+        "failed": failed.join("; "),
+    })
+    .to_string()
+}
+
 /// What a page said of one of its downloads as it moves, for the window to hand the app as its
 /// call: the transfer's id, how it stands, what it is called and where it comes from and went,
 /// whether it can be retried, how far it has come, and why it failed.
@@ -1054,6 +1102,36 @@ mod tests {
         };
         assert_eq!(from, Some(12));
         assert_eq!(frame.map(|frame| frame.to_string()), Some("3".to_owned()));
+    }
+
+    #[test]
+    fn an_extension_package_is_named_by_its_content_and_a_host_path_is_refused() {
+        let Ask::ExtensionInstall { file } =
+            decode(r#"{"op": "extension_install", "file": "tilo-blob://aaaa"}"#).unwrap()
+        else {
+            panic!("a chosen package");
+        };
+        assert_eq!(file, "tilo-blob://aaaa");
+        assert!(
+            decode(r#"{"op": "extension_install", "file": "/home/ada/reader.crx"}"#).is_err(),
+            "a sandboxed app names no host path"
+        );
+        assert!(decode(r#"{"op": "extension_install"}"#).is_err());
+
+        // The store's item is its page's address or its id, and the store is asked for updates.
+        let Ask::Command(WebViewCommand::ExtensionInstallStore { item, .. }) = decode(
+            r#"{"op": "extension_install_store", "item": "https://chromewebstore.google.com/detail/x/abcdefghijklmnopabcdefghijklmnop"}"#,
+        )
+        .unwrap()
+        else {
+            panic!("a store item");
+        };
+        assert!(item.ends_with("abcdefghijklmnopabcdefghijklmnop"));
+        assert!(decode(r#"{"op": "extension_install_store", "item": " "}"#).is_err());
+        assert!(matches!(
+            decode(r#"{"op": "extension_update_check"}"#).unwrap(),
+            Ask::Command(WebViewCommand::ExtensionUpdateCheck { .. })
+        ));
     }
 
     #[test]

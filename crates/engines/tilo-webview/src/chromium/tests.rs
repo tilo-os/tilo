@@ -2907,6 +2907,50 @@ tilo_test_env::scenario! {
     }
 }
 
+/// Turning an installed extension on loads it into the running engine, and off unloads it, over
+/// the host's own DevTools pipe: no window restarts to make a change take effect.
+#[test]
+fn an_extension_turned_on_loads_and_off_unloads_without_a_restart() {
+    let queue = Arc::new(CommandQueue::default());
+    let shared = Arc::new(Shared::default());
+    let root = tempfile::tempdir().expect("a root");
+    let signer = crate::extensions::crx::fixtures::Signer::new();
+    let id = crate::extensions::crx::extension_id(&signer.spki);
+    let manifest: &[u8] =
+        br#"{"manifest_version":3,"name":"Reader","version":"1.2.3","permissions":["storage"]}"#;
+    let package = bounded_zip::write_zip(
+        &[("manifest.json".to_owned(), manifest.to_vec())],
+        &bounded_zip::ZipLimits::default(),
+    )
+    .expect("a package");
+    let signed = crate::extensions::crx::fixtures::crx(&signer, &[&signer], &package);
+    let extension = crate::extensions::install(&signed, root.path(), None).expect("installed");
+
+    live_extension(&queue, &shared, 1, &extension, true);
+    let unload = queue.pop().expect("the old version is unloaded first");
+    assert_eq!(unload["op"], "devtools_call");
+    assert_eq!(unload["method"], "Extensions.uninstall");
+    assert_eq!(unload["params"]["id"], json!(id));
+    let access = queue.pop().expect("what it may do is told before it runs");
+    assert_eq!(access["op"], "extension_access");
+    assert_eq!(access["id"], json!(id));
+    assert_eq!(access["permissions"], json!(["storage"]));
+    let load = queue.pop().expect("the extension is loaded");
+    assert_eq!(load["op"], "devtools_call");
+    assert_eq!(load["method"], "Extensions.loadUnpacked");
+    assert_eq!(load["tab"], json!(1));
+    assert_eq!(
+        load["params"]["path"],
+        json!(extension.path.to_string_lossy())
+    );
+
+    // Turning it off unloads it and loads nothing.
+    live_extension(&queue, &shared, 1, &extension, false);
+    let off = queue.pop().expect("it is unloaded");
+    assert_eq!(off["method"], "Extensions.uninstall");
+    assert_eq!(off["params"]["id"], json!(id));
+}
+
 pub(super) fn selected_service_request() -> super::super::ServiceSessionRequest {
     use browser_continuity_core::sessions::{Cookie, SameSite, Service, SessionCookies};
     super::super::ServiceSessionRequest {

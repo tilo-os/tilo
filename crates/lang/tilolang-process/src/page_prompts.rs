@@ -94,6 +94,7 @@ fn note(
         // The page's video appeared or went: the app reads it again, so what it offers to float
         // follows the page.
         "media" => "refresh_page",
+        "extension_updates" => "note_extension_updates",
         _ => {
             tracing::warn!(kind, "a note the app has no page action for");
             return false;

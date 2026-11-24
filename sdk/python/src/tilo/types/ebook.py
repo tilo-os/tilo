@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Book` is the app's `tl.so.tilo.ebook.Book` at `ebook/<resource>`, read with
+`Notice` is the app's `tl.tilo.host.Notice` at `ebook/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,6 +20,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
+    "Notice",
     "Book",
     "Chapter",
     "Mark",
@@ -350,9 +351,70 @@ ClearFoundArgs = TypedDict("ClearFoundArgs", {
 })
 """The arguments of `clear_found`."""
 
+class Notice(Resource):
+    """Notice — `tl.tilo.host.Notice`."""
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
+    @property
+    def notice_to(self) -> str:
+        """to (`notice-to` on the wire)."""
+        return self.fields["notice-to"]
+
+    @notice_to.setter
+    def notice_to(self, value: str) -> None:
+        self.edit("notice-to", value=value)
+    @property
+    def notice_title(self) -> str:
+        """title (`notice-title` on the wire)."""
+        return self.fields["notice-title"]
+
+    @notice_title.setter
+    def notice_title(self, value: str) -> None:
+        self.edit("notice-title", value=value)
+    @property
+    def notice_body(self) -> str:
+        """body (`notice-body` on the wire)."""
+        return self.fields["notice-body"]
+
+    @notice_body.setter
+    def notice_body(self, value: str) -> None:
+        self.edit("notice-body", value=value)
+    @property
+    def notice_opens(self) -> Any:
+        """opens (`notice-opens` on the wire)."""
+        return self.fields["notice-opens"]
+
+    @notice_opens.setter
+    def notice_opens(self, value: Any) -> None:
+        self.edit("notice-opens", value=value)
+    @property
+    def notice_seen(self) -> bool:
+        """seen (`notice-seen` on the wire)."""
+        return self.fields["notice-seen"]
+
+    @notice_seen.setter
+    def notice_seen(self, value: bool) -> None:
+        self.edit("notice-seen", value=value)
+    @property
+    def notice_device(self) -> str:
+        """device (`notice-device` on the wire)."""
+        return self.fields["notice-device"]
+
+    @notice_device.setter
+    def notice_device(self, value: str) -> None:
+        self.edit("notice-device", value=value)
+    @property
+    def notice_actions(self) -> list[str]:
+        """actions (`notice-actions` on the wire)."""
+        return self.fields["notice-actions"]
+
+    @notice_actions.setter
+    def notice_actions(self, value: list[str]) -> None:
+        self.edit("notice-actions", value=value)
+
+
 class Book(Resource):
     """Book — `tl.so.tilo.ebook.Book`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     zzi6jbdk: str  # title
     hzsemqyf: str  # author
     ywdncocc: str  # subject
@@ -607,7 +669,7 @@ class Book(Resource):
 
 class Chapter(Resource):
     """Chapter — `tl.so.tilo.ebook.Chapter`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     njsapppc: str  # title
     hc6oa77y: str  # body
     awonaulm: Book | None  # book
@@ -651,7 +713,7 @@ class Chapter(Resource):
 
 class Mark(Resource):
     """Mark — `tl.so.tilo.ebook.Mark`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     nsx4szpu: str  # kind
     eu36rgok: int  # chapter
     kkwkq4sx: int  # block
@@ -704,7 +766,7 @@ class Mark(Resource):
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.ebook.Progress`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     fw6cx373: str  # who
     hrlsiabz: int  # chapter
     dozgglst: int  # block
@@ -716,7 +778,7 @@ class Progress(Resource):
 
 class Scheme(Resource):
     """Scheme — `tl.so.tilo.ebook.Scheme`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     yjaxgs5w: str  # name
     zfe44ecr: str  # page
     giw4wwwc: str  # ink
@@ -733,7 +795,7 @@ class Scheme(Resource):
 
 class Font(Resource):
     """Font — `tl.so.tilo.ebook.Font`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     jlawoyck: str  # family
     w2n5kzdl: str  # name
     @property
@@ -757,7 +819,7 @@ class Font(Resource):
 
 class Found(Resource):
     """Found — `tl.so.tilo.ebook.Found`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     cuehsj4a: str  # title
     @property
     def _5z23zsgs(self) -> str:
@@ -781,7 +843,7 @@ class Found(Resource):
 
 class Watched(Resource):
     """Watched — `tl.so.tilo.ebook.Watched`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     zfzcnyj7: str  # path
     l4rfzd5q: str  # token
     vs5vpxpc: list[str]  # given
@@ -790,7 +852,7 @@ class Watched(Resource):
 
 class Library(Resource):
     """Library — `tl.so.tilo.ebook.Library`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     rjqqjeka: list[Entry[Book]]  # books
     gark455v: list[Entry[Found]]  # found
     b2rhddat: list[Entry[Scheme]]  # schemes
@@ -1036,7 +1098,7 @@ class Library(Resource):
 
 class Highlight(Resource):
     """Highlight — `tl.so.tilo.ebook.Highlight`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     @property
     def _2mud3bws(self) -> str:
         """name (`2mud3bws` on the wire)."""
@@ -1050,7 +1112,7 @@ class Highlight(Resource):
 
 class Ebook(Resource):
     """Books — `tl.so.tilo.ebook`."""
-    __surface__ = "so.tilo.ebook@9394eac0c7724627"
+    __surface__ = "so.tilo.ebook@6b4be521d8770400"
     def copy_passage(self, *, text: str) -> None:
         """Copies a passage, so it can be pasted anywhere: what a selection's Copy does."""
         return self.action("copy_passage", text=text)

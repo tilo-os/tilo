@@ -986,19 +986,30 @@ pub enum WebViewCommand {
     ExtensionList {
         request_id: u32,
     },
-    /// Install the extension package at `path`, as the person chose it: a CRX3 package or a
-    /// plain zip.
+    /// Install the extension package the person chose, as its bytes: a CRX3 package or a plain
+    /// zip.
     ExtensionInstall {
         request_id: u32,
-        path: String,
+        bytes: Vec<u8>,
     },
-    /// Turn the installed extension `id` on or off; Chromium loads it at its next start.
+    /// Install the Chrome Web Store's item `item` (a store page's address, or the extension's
+    /// id) from the store's update service, turning it on.
+    ExtensionInstallStore {
+        request_id: u32,
+        item: String,
+    },
+    /// Ask the store for newer versions of the store extensions installed here, and install
+    /// them.
+    ExtensionUpdateCheck {
+        request_id: u32,
+    },
+    /// Turn the installed extension `id` on or off, in the running engine.
     ExtensionEnable {
         request_id: u32,
         id: String,
         enabled: bool,
     },
-    /// Forget the installed extension `id`.
+    /// Forget the installed extension `id`, in the running engine.
     ExtensionRemove {
         request_id: u32,
         id: String,
@@ -1113,6 +1124,14 @@ pub enum WebViewEvent {
         kind: String,
         message: String,
         id: String,
+    },
+    /// What asking the store for newer versions came to: how many extensions were asked about,
+    /// which were updated and what they replaced, and which could not be.
+    ExtensionUpdates {
+        request_id: u32,
+        checked: u32,
+        updated: Vec<ExtensionUpdate>,
+        failed: Vec<String>,
     },
     SiteStatus(SiteStatus),
     SiteResult {
@@ -1335,6 +1354,17 @@ pub enum WebViewEvent {
         error: String,
         cancelled: bool,
     },
+}
+
+/// One extension the store answered a newer package for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionUpdate {
+    pub id: String,
+    pub name: String,
+    /// The version this device had before the update.
+    pub from: String,
+    /// The version now installed.
+    pub version: String,
 }
 
 /// One installed extension, as the engine's inventory answers it.

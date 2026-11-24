@@ -389,8 +389,10 @@ type Ask {
     nth: Option<Int> = .none
     key: Option<Text> = .none
     url: Option<Text> = .none
-    /// The path of an extension package the person chose to install.
-    path: Option<Text> = .none
+    /// The address of an extension package the person chose, in this device's content store.
+    file: Option<Text> = .none
+    /// The Chrome Web Store item an install names: its page's address, or the extension's id.
+    item: Option<Text> = .none
     /// The identifier of an installed extension, which turning it on or removing names.
     extension: Option<Text> = .none
     /// The extension's own number for one of its notifications.
@@ -1403,24 +1405,45 @@ action list_extensions(p: Page) -> Answer uses page (
     ask_page(p, json.encode(Ask(op: "extension_list")))
 }
 
-/// Installs the extension package at `path`, a .crx signed by its publisher or a plain .zip: the
-/// engine verifies a signed package, unpacks it under its own identifier, and lists it.
-action install_extension(p: Page, path: Text) -> Answer uses page (
+/// Installs the extension package the person chose, a .crx signed by its publisher or a plain
+/// .zip: the engine verifies a signed package, unpacks it under its own identifier, and lists
+/// it. The person picks the package with the system's own chooser, as any app's file.
+action install_extension(p: Page, file: File) -> Answer uses page (
     icon: .file_plus,
-    label: "Install an extension",
-    shows: [path],
+    label: "Install an extension from a file",
 ) {
-    require path.trim() != "" "Name the extension package"
-    ask_page(p, json.encode(Ask(op: "extension_install", path: .some(path.trim()))))
+    ask_page(p, json.encode(Ask(op: "extension_install", file: .some(file.url))))
 }
 
-/// Turns an installed extension on, or off: Chromium loads the ones that are on when a page's
-/// window starts.
+/// Installs the Chrome Web Store's item `said` (a store page's address, or the extension's id):
+/// its package comes from the store's update service, is verified, and is turned on as the
+/// store installs one.
+action install_store_extension(p: Page, said: Text) -> Answer uses page (
+    icon: .puzzle,
+    label: "Add from the Chrome Web Store",
+    shows: [said],
+) {
+    require said.trim() != "" "Name the extension or its store page"
+    ask_page(p, json.encode(Ask(op: "extension_install_store", item: .some(said.trim()))))
+}
+
+/// Asks the Chrome Web Store for newer versions of the store extensions installed here and
+/// installs them: they are there the next time a page opens, and are loaded now.
+action update_extensions(p: Page) -> Answer uses page (
+    icon: .refresh,
+    label: "Check the extensions for updates",
+) {
+    ask_page(p, json.encode(Ask(op: "extension_update_check")))
+}
+
+/// Turns an installed extension on, or off, in the running window: Chromium loads and unloads
+/// it where the page stands, so nothing waits for a window restart.
 action enable_extension(p: Page, e: Extension, on: Bool = not e.enabled) -> Answer uses page (
     icon: .check,
     label: "Turn the extension on or off",
     shows: [e.name],
 ) {
+    e.enabled = on
     ask_page(p, json.encode(Ask(op: "extension_enable", extension: .some(e.key), enabled: on)))
 }
 
@@ -1500,6 +1523,29 @@ action remember_extensions(p: Page, installed: Text, message: Text) {
 action note_extension(p: Page, ok: Bool, kind: Text, message: Text, id: Text) {
     let b = root Browser
     b.extension_notice = if ok { "" } else { extension_trouble(kind, message) }
+}
+
+/// Writes what asking the Chrome Web Store for newer versions came to, in the person's words.
+/// The window raises it; a person, agent or script never does.
+action note_extension_updates(p: Page, checked: Int, updated: Text, failed: Text) {
+    let b = root Browser
+    let news = match json.parse(updated) {
+        .ok(value) => json_arrays(value),
+        .err(_) => [],
+    }
+    if let first = news.at(0) {
+        if news.len() == 1 {
+            b.extension_notice = "“{json_text(first, "name")}” updated to {json_text(first, "version")}"
+        } else {
+            b.extension_notice = "{news.len()} extensions were updated"
+        }
+    } else if failed != "" {
+        b.extension_notice = "The Chrome Web Store could not be checked: {failed}"
+    } else if checked == 0 {
+        b.extension_notice = "No extension from the Chrome Web Store is installed"
+    } else {
+        b.extension_notice = "The extensions are up to date"
+    }
 }
 
 /// Writes what the engine's credential store answered into the page's record: the forms and
@@ -2336,9 +2382,24 @@ fn extension_trouble(kind: Text, said: Text) -> Text {
         "The package could not be read or saved"
     } else if kind == "package" {
         "That file is no extension package"
+    } else if kind == "item" {
+        "That is no Chrome Web Store extension"
+    } else if kind == "download" {
+        "The Chrome Web Store could not be reached"
+    } else if kind == "no-package" {
+        "The Chrome Web Store has no package for this browser"
     } else if kind == "unknown" {
         "No such extension is installed"
     } else if said != "" { said } else { "The extension could not be changed" }
+}
+
+/// Whether the page at `url` is one of the Chrome Web Store's own items: such a page offers an
+/// install of what it shows, and a look-alike site never does.
+fn is_store_page(url: Text) -> Bool {
+    let origin = origin_of(url)
+    let store = origin == "https://chromewebstore.google.com"
+    let legacy = origin == "https://chrome.google.com"
+    (store or legacy) and url.contains("/detail/")
 }
 
 /// What one of the page's extension buttons is called: the extension's own title for it, else
@@ -2750,7 +2811,7 @@ view page_view(p: Page) {
     state zoom: Float = p.zoom_level
     state reading: Bool = false
     state answer_text: Text = ""
-    state install_path: Text = ""
+    state store_link: Text = ""
     let b = root Browser
     if p.fullscreen {
         page_presented(p, failed)
@@ -2809,6 +2870,11 @@ view page_view(p: Page) {
                         }
                         ui.Button("Bookmark", icon: .star, role: .plain) {
                             on press: bookmark(b, p.url, .some(p.title))
+                        }
+                        if is_store_page(p.url) {
+                            ui.Button("Add to Browser", icon: .puzzle, role: .plain) {
+                                on press: install_store_extension(p, p.url).then(list_extensions(p))
+                            }
                         }
                         ui.Button("Questions", icon: .triangle_alert, role: .plain) {
                             on press: refresh_page(p)
@@ -3043,21 +3109,27 @@ view page_view(p: Page) {
                                         icon: .check,
                                         role: .plain,
                                     ) {
-                                        on press: enable_extension(p, e)
+                                        on press: enable_extension(p, e).then(list_extensions(p))
                                     }
                                     ui.Button("Remove", icon: .trash, role: .plain) {
-                                        on press: remove_extension(p, e)
+                                        on press: remove_extension(p, e).then(list_extensions(p))
                                     }
                                 }
                             }
                             stack(padding: .related) {
+                                ui.Button("Install from a file", icon: .file_plus, role: .plain) {
+                                    on press: file.choose(install_extension(p)).then(list_extensions(p))
+                                }
                                 ui.TextInput(
-                                    bind: install_path,
-                                    placeholder: "Path of an extension package (.crx or .zip)",
+                                    bind: store_link,
+                                    placeholder: "Link to a Chrome Web Store extension",
                                     key: "e",
                                 )
-                                ui.Button("Install", icon: .file_plus, role: .plain) {
-                                    on press: install_extension(p, install_path)
+                                ui.Button("Add from the store", icon: .puzzle, role: .plain) {
+                                    on press: install_store_extension(p, store_link).then(list_extensions(p))
+                                }
+                                ui.Button("Check for updates", icon: .refresh, role: .plain) {
+                                    on press: update_extensions(p).then(list_extensions(p))
                                 }
                             }
                         }

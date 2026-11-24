@@ -438,8 +438,11 @@ d-vsaswu4a = Seitenansicht
     .w-turn-the-extension-off = Erweiterung ausschalten
     .w-turn-the-extension-on = Erweiterung einschalten
     .w-remove = Entfernen
-    .w-path-of-an-extension-package-crx = Pfad eines Erweiterungspakets (.crx oder .zip)
-    .w-install = Installieren
+    .w-install-from-a-file = Aus einer Datei installieren
+    .w-link-to-a-chrome-web-store = Link zu einer Chrome-Web-Store-Erweiterung
+    .w-add-from-the-store = Aus dem Store hinzufügen
+    .w-check-for-updates = Auf Aktualisierungen prüfen
+    .w-add-to-browser = Zum Browser hinzufügen
     .w-notification = Mitteilung
     .w-dismiss = Wegnehmen
     .w-private-window = Privates Fenster
@@ -1513,8 +1516,11 @@ d-kkeg7wgf = Berechtigungen
 
 d-372chbvw = Eingeschaltet
 
-d-2l2hjzlp = Pfad
-    .doc = Der Pfad eines Erweiterungspakets, das die Person installieren möchte.
+d-oerj5bdj = Datei
+    .doc = Die Adresse eines Erweiterungspakets, das die Person gewählt hat, im Inhaltsspeicher dieses Geräts.
+
+d-xic2qsit = Eintrag
+    .doc = Der Eintrag im Chrome Web Store, den eine Installation nennt: die Adresse seiner Seite oder die Kennung der Erweiterung.
 
 d-5px2ripq = Erweiterung
     .doc = Die Kennung einer installierten Erweiterung, die Einschalten oder Entfernen nennt.
@@ -1528,14 +1534,33 @@ d-uq4ctcke = Hinweis zur Erweiterung
 d-fyfcqngs = Installierte Erweiterungen lesen
     .doc = Liest die auf diesem Gerät installierten Erweiterungen in den Eintrag des Browsers.
 
-d-z2yj3nim = Eine Erweiterung installieren
-    .doc = Installiert das Erweiterungspaket am Pfad `path`, eine vom Herausgeber signierte .crx-Datei oder ein einfaches .zip: der Motor prüft ein signiertes Paket, entpackt es unter seiner eigenen Kennung und listet es auf.
-    .w-name-the-extension-package = Nenne das Erweiterungspaket
+d-z2yj3nim = Eine Erweiterung aus einer Datei installieren
+    .doc = Installiert das Erweiterungspaket, das die Person gewählt hat, eine vom Herausgeber signierte .crx-Datei oder ein einfaches .zip: der Motor prüft ein signiertes Paket, entpackt es unter seiner eigenen Kennung und listet es auf.
 
-d-z2yj3nim-path = Pfad
+d-z2yj3nim-file = Datei
+
+d-ytmpzscq = Aus dem Chrome Web Store hinzufügen
+    .doc = Installiert den Eintrag `said` aus dem Chrome Web Store (die Adresse seiner Seite oder die Kennung der Erweiterung): sein Paket kommt vom Aktualisierungsdienst des Stores, wird geprüft und eingeschaltet, wie der Store eine Erweiterung installiert.
+    .w-name-the-extension-or-its-store = Nenne die Erweiterung oder ihre Store-Seite
+
+d-ytmpzscq-said = Adresse oder Kennung
+
+d-wwjywknf = Aus dem Chrome Web Store hinzufügen~present
+
+d-goygbsaa = Die Erweiterungen auf Aktualisierungen prüfen
+    .doc = Fragt den Chrome Web Store nach neueren Versionen der hier installierten Store-Erweiterungen und installiert sie: sie sind da, wenn sich das nächste Mal eine Seite öffnet, und werden jetzt geladen.
+
+d-pipb6lni = Erweiterungsaktualisierungen vermerken
+    .doc = Schreibt, was die Frage nach neueren Versionen im Chrome Web Store ergeben hat, in den Eintrag des Browsers.
+
+d-pipb6lni-checked = Geprüft
+
+d-pipb6lni-updated = Aktualisiert
+
+d-pipb6lni-failed = Fehlgeschlagen
 
 d-ljfxfb7w = Erweiterung ein- oder ausschalten
-    .doc = Schaltet eine installierte Erweiterung ein oder aus: Chromium lädt die eingeschalteten, wenn das Fenster einer Seite startet.
+    .doc = Schaltet eine installierte Erweiterung im laufenden Fenster ein oder aus: Chromium lädt und entlädt sie, wo die Seite steht, sodass nichts auf einen Neustart des Fensters wartet.
 
 d-ljfxfb7w-e = E
 
@@ -1563,8 +1588,6 @@ d-4gc5tpck-kind = Art
 d-4gc5tpck-message = Meldung
 
 d-4gc5tpck-id = Kennung
-
-d-gz3l5gst = Erweiterung installieren~present
 
 d-iymjskx5 = Schlüssel
     .doc = Die Kennung des Motors für die Erweiterung, die Einschalten oder Entfernen nennt.
