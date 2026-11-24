@@ -1,4 +1,4 @@
 # How many crates under apps/ each package in tilo-runtime's graph still reaches; only ever lower.
-tilo-agent-session 27
+tilo-agent-session 21
 tilo-video-render 0
-tilo-workspace-service 3
+tilo-workspace-service 1
