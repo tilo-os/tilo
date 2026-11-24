@@ -1078,6 +1078,26 @@ impl Runtime {
         )
     }
 
+    /// The view `view` of the resource type `ty`: its id when that is what it is, or the name
+    /// its package declares it by.
+    fn view_of_type(&self, ty: &str, view: &str) -> Result<String, RuntimeError> {
+        let registry = self.core.registry.borrow();
+        if registry.view_package(view).is_some() {
+            return Ok(view.to_owned());
+        }
+        registry
+            .type_info(ty)
+            .and_then(|(package, _)| {
+                package
+                    .meta
+                    .views
+                    .iter()
+                    .find(|declared| declared.name == view || declared.id == view)
+                    .map(|declared| declared.id.clone())
+            })
+            .ok_or_else(|| RuntimeError::NotFound(format!("view {view}")))
+    }
+
     /// The `opened action` of the resource type `ty` (an id), by its id: what opening one of its
     /// resources runs, as the person who opens it. `None` for a type that declares none.
     pub fn opened_action(&self, ty: &str) -> Option<String> {
@@ -1146,7 +1166,7 @@ impl Runtime {
             )));
         }
         let view = match view {
-            Some(v) => v.to_owned(),
+            Some(v) => self.view_of_type(&resource.ty, v)?,
             None => self.default_view(&resource.ty).ok_or_else(|| {
                 RuntimeError::NotFound(format!("a default view for type {}", resource.ty))
             })?,
