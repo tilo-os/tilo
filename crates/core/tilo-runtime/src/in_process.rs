@@ -1,17 +1,17 @@
-//! The phone's device: the daemon every Tilo computer runs, started on this process's own
-//! threads, and what the phone's view reads of it and asks it, through the API `tilo` itself
-//! calls (`tilo login`, `tilo ls`). Nothing here holds state of its own: the daemon keeps the
-//! login, the workspaces and their apps.
+//! A device whose daemon runs on an app's own threads, as a phone's does (an Android or iOS app
+//! runs no daemon process of its own): the daemon every Tilo computer runs, and what the app's
+//! views read of it and ask it, through the API `tilo` itself calls (`tilo login`, `tilo ls`).
+//! Nothing here holds state of its own: the daemon keeps the login, the workspaces and their apps.
 
 use std::path::{Path, PathBuf};
 
+use crate::daemon::Running;
 use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Value, json};
 use tilo_api::calls::{Calls, Reach};
 use tilo_device_identity::login::{LOG_IN, Place, RESOURCE};
-use tilo_runtime::daemon::Running;
 
-/// What the phone's view reads of the device: whether a person's identity has it, and their
+/// What an app's view reads of the device: whether a person's identity has it, and their
 /// workspaces, by id and name.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Devices {
@@ -52,10 +52,10 @@ impl Device {
         let running = Running::start(profile).context("the device daemon did not start")?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
-            .thread_name("tilo-phone-api")
+            .thread_name("tilo-device-api")
             .enable_all()
             .build()
-            .context("the phone's API runtime")?;
+            .context("the device's API runtime")?;
         Ok(Self {
             running: Some(running),
             profile: profile.to_owned(),
@@ -216,7 +216,7 @@ impl Device {
         Ok(signing.verifying_key().to_bytes())
     }
 
-    /// Stop the daemon: what the phone does as the app ends.
+    /// Stop the daemon: what the app does as it ends.
     ///
     /// # Errors
     /// The daemon did not stop cleanly.
@@ -228,6 +228,6 @@ impl Device {
     }
 }
 
-/// The agent a phone's login names: the person's own, as `tilo login` names it with no agent
+/// The agent such a device's login names: the person's own, as `tilo login` names it with no agent
 /// given.
 const AGENT: &str = "Your agent";

@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use crate::core::{App, Device, Devices};
+use tilo_runtime::in_process::{App, Device, Devices};
 
 /// How long the worker waits for an ask before reading the device again: a login another device
 /// approved, a workspace joined there, an app installed, all reach the phone within it.

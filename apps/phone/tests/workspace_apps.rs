@@ -31,7 +31,8 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
     // The workspace runs Notes before the phone ever joins it; nothing is installed on the phone.
     server.install(&server::notes_tapp(scratch.path()));
     let laptop = support::Issuing::start(server.runtime.handle(), &server.person, server.entry());
-    let mut phone = tilo_phone::core::Device::start(&support::profile()).expect("the phone's daemon");
+    let mut phone =
+        tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
     phone
         .log_in(&laptop.ticket(), "Pixel")
         .expect("the phone redeems the ticket its person's laptop printed");

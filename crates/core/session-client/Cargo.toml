@@ -158,9 +158,9 @@ test-server = { path = "../../../tools/test-server" }
 # A refused commit reaches the app that made it, mounted headlessly.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 uuid.workspace = true
-# The phone's own device, which joins the person's workspace in the laptop-phone-server flow, and
-# the laptop that prints its ticket.
-tilo-phone = { path = "../../../apps/phone" }
+# The phone's own device, its daemon run in the test's process as the phone's app runs it, which
+# joins the person's workspace in the laptop-phone-server flow.
+tilo-runtime = { path = "../tilo-runtime" }
 tilo-api = { path = "../tilo-api", features = ["test-support"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -78,7 +78,7 @@ impl Home {
 
 /// The daemon's profile, where the phone keeps it.
 pub fn profile() -> PathBuf {
-    tilo_phone::profile()
+    tilo_paths::machine::account_daemon_profile().expect("a home for the daemon's profile")
 }
 
 /// A key made from `seed`, so each test's devices are the same devices on every run.
@@ -210,7 +210,7 @@ pub fn until<T>(what: &str, mut read: impl FnMut() -> Result<T, String>) -> T {
 
 /// What the phone's view shows first: its device, once the daemon answers what it reads. The
 /// person asks the phone to sign in from there.
-pub fn shown(phone: &tilo_phone::core::Device) -> tilo_phone::core::Devices {
+pub fn shown(phone: &tilo_runtime::in_process::Device) -> tilo_runtime::in_process::Devices {
     until("the phone's device answers what its view reads", || {
         phone.devices().map_err(|error| format!("{error:#}"))
     })

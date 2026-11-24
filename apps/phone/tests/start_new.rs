@@ -19,7 +19,8 @@ tilo_automerge_isolate::test_worker!();
 #[test]
 fn a_first_phone_starts_its_person() {
     let _home = support::Home::new();
-    let mut phone = tilo_phone::core::Device::start(&support::profile()).expect("the phone's daemon");
+    let mut phone =
+        tilo_runtime::in_process::Device::start(&support::profile()).expect("the phone's daemon");
     let before = support::shown(&phone);
     assert!(
         !before.signed_in,

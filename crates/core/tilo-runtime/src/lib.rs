@@ -18,6 +18,7 @@ pub mod daemon;
 mod daemon_args;
 pub mod device;
 pub mod host;
+pub mod in_process;
 mod i18n;
 pub mod key_sessions;
 pub mod offload;
