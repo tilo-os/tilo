@@ -247,10 +247,14 @@ def needed_locals(package: dict, local: set[str]) -> set[str]:
     }
 
 
-def foreign_names(names: list[str]) -> set[str]:
-    """Names crates.io holds for a crate whose repository is not this one."""
+def foreign_names(packages: dict[str, dict]) -> set[str]:
+    """Names crates.io holds for a crate whose repository is not this one.
+
+    A crate is ours when crates.io names this repository, or when it names the repository and
+    description our own manifest of that crate declares: a fork (tilo-automerge-fork) credits its
+    upstream's repository, so once a release published it, that is what crates.io says."""
     foreign = set()
-    for name in names:
+    for name, package in sorted(packages.items()):
         crate = crates_io(f"/crates/{name}")
         if crate is None:
             continue
@@ -258,7 +262,10 @@ def foreign_names(names: list[str]) -> set[str]:
         if not isinstance(crate, dict) or not isinstance(crate.get("name"), str) or not crate["name"]:
             raise ValueError(f"crates.io returned invalid crate metadata for {name}; "
                              "cannot determine who holds the name")
-        if (crate.get("repository") or "").rstrip("/") != REPOSITORY:
+        repository = (crate.get("repository") or "").rstrip("/")
+        declared = (package.get("repository") or "").rstrip("/")
+        published_here = repository == declared and crate.get("description") == package.get("description")
+        if repository != REPOSITORY and not published_here:
             foreign.add(name)
     return foreign
 
@@ -632,7 +639,7 @@ def main() -> int:
     if unlisted:
         print(f"Patched crates the set needs as published forks: {', '.join(unlisted)}")
     if args.check_names:
-        foreign = foreign_names(sorted(sdk))
+        foreign = foreign_names(sdk)
         if foreign:
             # Ours would resolve to the other project's wherever our version is asked for, and a
             # release that reaches it stops halfway, after publishing what comes before it.
