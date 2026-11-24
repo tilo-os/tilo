@@ -129,7 +129,15 @@ impl Core {
 
     /// Serve the members root `root` from these members, now and after every change
     /// (`Runtime::serve_members`).
+    ///
+    /// Serving a root it already serves changes nothing: [`Self::set_members`] keeps its reading
+    /// current with every change to the list. A host with no workspace policy asks for it every
+    /// frame, and taking the list again would run every view that reads the members again each
+    /// time, so the window would never rest.
     pub(crate) fn serve_members(&self, root: &ResourceRef) {
+        if self.members_root.borrow().as_ref() == Some(root) {
+            return;
+        }
         self.foreign.borrow_mut().serve(root);
         *self.members_root.borrow_mut() = Some(root.clone());
         let (list, reads) = {

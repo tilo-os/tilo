@@ -278,5 +278,33 @@ view two(r: Workspace) {
              cost is the window, never the length of the conversation"
             );
         }
+
+        phase serving_the_members_root_again_runs_no_view_again;
+        {
+            let (rt, app, open, _) = setup();
+            rt.set_members(membership(), None);
+            let root = ResourceRef {
+                doc: "workspace/members".into(),
+                item: None,
+                ty: "tilo.workspace#Members".into(),
+            };
+            rt.serve_members(&root);
+            let mut v = rt
+                .open_view(&ada(), &app.view("workspace"), vec![Value::resource(&open)])
+                .unwrap();
+            v.poll_patches().unwrap();
+            assert!(!v.woken(), "a view just run has nothing to run again for");
+            // A host with no workspace policy asks its runtime to serve the members root on
+            // every frame: a view run again for it would leave the window a frame to draw on
+            // every one, and the host would never rest.
+            for _ in 0..3 {
+                rt.serve_members(&root);
+                assert!(!v.woken(), "serving the root it already serves changes no member");
+            }
+            rt.set_members(membership()[..1].to_vec(), None);
+            assert!(v.woken(), "a change to the members runs the view again");
+            v.poll_patches().unwrap();
+            assert_eq!(texts(&v, "in "), ["in ada person owner"]);
+        }
     }
 }
