@@ -392,6 +392,16 @@ impl PersonStore for Workspaces {
     ) -> Answer<'_, Result<(), String>> {
         Box::pin(async move {
             let workspace = person_workspace::workspace_id(self);
+            if self.is_member(&workspace).await? {
+                return person_workspace::edit_as_member(
+                    self,
+                    &workspace,
+                    (&app, &name),
+                    authoring.genesis,
+                    authoring.edit,
+                )
+                .await;
+            }
             let cert = self.serving_certificate().clone();
             let applied = Box::pin(self.author_workspace_document_from(
                 (&workspace, &cert),

@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_actions::remote::{DEVICE_SETTINGS, ResourceReads};
-use tilo_device_identity::login::UPDATE;
+use tilo_device_identity::login::{RENAME, UPDATE};
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tilo_workspace_service::workspaces::person_workspace::{self, devices};
@@ -243,37 +243,60 @@ async fn flow_every_device_manages_every_other() {
         .tickets
         .reach_at(laptop_cert.device_public_key, laptop.own.endpoint().addr());
 
-    // The record of the person's devices is kept in their own workspace, which the server holds
-    // here, and its keys are the ones their root certified: each is written there by the device
-    // that holds the workspace, with the one helper a due entry goes through, as the device that
-    // keeps the root does at approve. A device that merely takes part in the workspace, as the
-    // phone and the laptop do here, writes nothing of it.
+    // The record of the person's devices: each device their root certified is kept in it before
+    // anyone asks. The phone holds the person's workspace as a member copy, so its write is
+    // carried to the device that keeps it, which decides it as the person writing their own
+    // record, and the phone's copy has it at once.
     for cert in [&laptop_cert, &phone_cert, &server_cert] {
-        devices::keep(&hosted, cert)
-            .await
-            .expect("the person's certified devices are in their record");
+        person_workspace::apply(
+            phone.own.copies(),
+            devices::DEVICES,
+            devices::Devices::keeping(cert).unwrap(),
+        )
+        .await
+        .expect("the phone keeps the person's device in their record, unasked");
     }
+
+    // The phone lists the laptop and the server and renames them.
     let laptop_key = hex::encode(laptop_cert.device_public_key);
-    // Each device is called what the record says in every list of the person's, the phone's
-    // included.
     for (key, name) in [
         (laptop_key.clone(), "Ada's laptop"),
         (hex::encode(server_cert.device_public_key), "Hallway server"),
     ] {
-        person_workspace::apply(
-            &hosted,
-            devices::DEVICES,
-            devices::Devices::NAME_DEVICE.with((key.clone(), name.to_owned())),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("the person's device {key} is named {name}: {error}"));
+        ask_device(&phone.tickets, RENAME, json!({"device": key, "name": name}))
+            .await
+            .unwrap_or_else(|error| panic!("the phone names the device {key}: {error}"));
     }
-    // Every list of the person's devices reads their record and joins who is here: the record the
-    // workspace is kept with, read as the record API answers it, with the laptop present.
-    let record = person_workspace::document(&hosted, devices::DEVICES)
+    // The phone's writes were carried to the device that keeps the workspace, which decided
+    // them as the person's own: its record calls the devices what the phone called them.
+    let person_key = phone_cert.user_public_key;
+    tilo_test_env::within(
+        "the phone's names reach the record the workspace is kept with",
+        async {
+            loop {
+                let kept = devices::of(&hosted, &person_key).await;
+                let called = |key: &[u8; 32], name: &str| {
+                    kept.listed(&person_key).iter().any(|listed| {
+                        listed.key == hex::encode(key) && listed.device.called(&listed.cert) == name
+                    })
+                };
+                if called(&laptop_cert.device_public_key, "Ada's laptop")
+                    && called(&server_cert.device_public_key, "Hallway server")
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+
+    // Every list of the person's devices reads their record and joins who is here: the phone's
+    // copy, read as the record API answers it, with the laptop present.
+    let record = person_workspace::document(phone.own.copies(), devices::DEVICES)
         .await
-        .expect("the record of the person's devices reads")
-        .expect("the person's workspace keeps their devices");
+        .expect("the phone reads the person's devices")
+        .expect("the phone holds the person's devices");
     let mut held = tilo_actions::remote::HeldCopies::default();
     held.0.insert(devices::DEVICES.1.to_owned(), record);
     let read = held
@@ -281,7 +304,7 @@ async fn flow_every_device_manages_every_other() {
             &tilo_actions::remote::Caller::local_system(),
             &[tilo_actions::remote::ResourceAsk {
                 address: tilo_actions::remote::ResourceAddress {
-                    workspace: person_workspace::workspace_id(&hosted),
+                    workspace: person_workspace::workspace_id(phone.own.copies()),
                     app: devices::DEVICES.0.to_owned(),
                     record: devices::DEVICES.1.to_owned(),
                 },

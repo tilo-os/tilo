@@ -631,8 +631,47 @@ pub fn device_root_record() -> io::Result<std::path::PathBuf> {
 /// Where the device's person's root is kept: under the account the device was set up from, or,
 /// in a person's own service, under the account it runs as.
 fn device_person_root_record() -> io::Result<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(record) = ROOT_RECORD_FOR_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    {
+        return Ok(record);
+    }
     let uid = device_person_uid().unwrap_or_else(crate::seats::own_account);
     root_record(uid)
+}
+
+/// In a test: the record [`device_root_record`] answers while [`root_record_for_test`]'s guard
+/// is held, as if this computer kept that root.
+#[cfg(test)]
+static ROOT_RECORD_FOR_TEST: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+
+/// In a test: have this process's [`device_root_record`] answer `record` until the guard drops.
+/// The daemon keeps one root record for the account it runs as, so a test that needs another
+/// answers it for the calls it makes, and puts it back after.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn root_record_for_test(record: std::path::PathBuf) -> RootRecordForTest {
+    *ROOT_RECORD_FOR_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record);
+    RootRecordForTest(())
+}
+
+/// Answers [`device_root_record`] with the test's record until it drops.
+#[cfg(test)]
+pub(crate) struct RootRecordForTest(());
+
+#[cfg(test)]
+impl Drop for RootRecordForTest {
+    fn drop(&mut self) {
+        *ROOT_RECORD_FOR_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
 }
 
 /// Take identity step `action` (one of the `devices` identity actions) with `args` in the identity

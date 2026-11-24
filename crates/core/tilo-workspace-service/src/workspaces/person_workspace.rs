@@ -179,23 +179,63 @@ async fn apply_as_member<R: Resource>(
     action: Invoke<R>,
 ) -> Result<(), String> {
     let cert = workspaces.serving_certificate().clone();
-    let (mut doc, founding) = match workspaces
+    let start = Box::new(genesis::<R>(workspace)?);
+    edit_as_member(workspaces, workspace, (app, name), Some(start), |doc| {
+        invoke(doc, &cert, action)
+    })
+    .await
+}
+
+/// [`apply_as_member`] for any edit a resource of the person's own workspace takes, typed or
+/// not: `edit` changes `doc`, the record `(app, name)` as this device holds it, from `genesis`
+/// where the workspace holds none yet, and the change is this device's own write, carried to
+/// the device keeping the workspace.
+///
+/// # Errors
+/// This device holds no copy of the workspace, the edit or the founding was refused, or the
+/// write could not be kept.
+pub(in crate::workspaces) async fn edit_as_member<F>(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (app, name): (&str, &str),
+    genesis: Option<Box<automerge::AutoCommit>>,
+    edit: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
+{
+    let (mut doc, heads) = match workspaces
         .resource_document(workspace, app, name)
         .await
         .map_err(|error| error.to_string())?
     {
-        Some(bytes) => (
-            automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?,
-            false,
+        Some(bytes) => {
+            let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+            let heads = doc.get_heads();
+            (doc, Some(heads))
+        }
+        None => (
+            genesis.map_or_else(automerge::AutoCommit::new, |start| *start),
+            None,
         ),
-        None => (genesis::<R>(workspace)?, true),
     };
-    let heads = doc.get_heads();
-    invoke(&mut doc, &cert, action)?;
-    let changes = if founding {
-        doc.save()
-    } else {
-        doc.save_after(&heads)
+    edit(&mut doc)?;
+    if automerge::transaction::Transactable::pending_ops(&doc) != 0 {
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
+    }
+    let founding = heads.is_none();
+    if founding && !super::authored::founds_as_read(&doc, (app, name), workspace) {
+        return Err(format!(
+            "{app} {name} would be founded without the identity every reader of the \
+             workspace's own records checks; it starts from its genesis"
+        ));
+    }
+    let changes = match &heads {
+        Some(heads) => doc.save_after(heads),
+        None => doc.save(),
     };
     if changes.is_empty() {
         return Ok(());
@@ -335,6 +375,9 @@ pub async fn edit_document_on<F>(
 where
     F: FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
 {
+    if workspaces.is_member(workspace).await? {
+        return edit_as_member(workspaces, workspace, (app, name), None, edit).await;
+    }
     let cert = workspaces.serving_certificate().clone();
     let applied = workspaces
         .author_workspace_document_from((workspace, &cert), (app, name), None, edit)

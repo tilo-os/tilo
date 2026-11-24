@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
-    CERTIFY, CertifyInput, ISSUE, LOG_IN, PROVIDER, RESOURCE, SCOPE, Ticket,
+    APPROVE, CERTIFY, CertifyInput, ISSUE, LOG_IN, PROVIDER, RESOURCE, SCOPE, Ticket,
 };
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -1827,4 +1827,100 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
     assert!(listed(), "the device is listed in the person's devices");
     drop(app.stdin.take());
     assert!(app.wait().unwrap().success());
+}
+
+/// A browser's sign-in approved by a device that keeps the person's root: the certificate that
+/// root signs for the tab is kept in the person's devices record at the moment it is signed, so
+/// the tab is one of theirs before anyone is told it was let in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tab_the_root_signs_in_is_listed_with_the_persons_devices() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    // The person's root, kept here: what signs the tab.
+    let identity = tempfile::tempdir().unwrap();
+    tilo_identity::provisioning::import_single_device_root(
+        identity.path(),
+        &root,
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+    let record = tilo_identity::store::resolve_active_identity(identity.path())
+        .expect("the imported root is the active identity");
+    let _root_kept_here = super::services::root_record_for_test(record);
+    // The device that keeps it: its service governs the person's own workspace here, where the
+    // record of their devices is.
+    let state = tempfile::tempdir().unwrap();
+    let (key, cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let address = tilo_server_client::ServerAddress::at(iroh::EndpointAddr::new(
+        iroh::EndpointId::from_bytes(&key.verifying_key().to_bytes())
+            .expect("a device key is an endpoint id"),
+    ));
+    let own = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("laptop"),
+        &key,
+        &cert,
+        &address,
+    )
+    .await
+    .expect("the laptop's service opens");
+    tilo_workspace_service::workspaces::person_workspace::found(own.copies())
+        .await
+        .expect("the laptop keeps the person's own workspace");
+    let service = own.copies().action_service();
+    let tickets = Tickets::new(
+        (key.clone(), cert.clone()),
+        own.endpoint(),
+        None,
+        no_root(),
+        None,
+        Some(Arc::clone(&own)),
+        tilo_device_identity::login::Place::at(
+            state.path().join("laptop-login"),
+            tilo_device_identity::IdentityPaths::under(state.path().join("laptop-keys")),
+        ),
+        service,
+    );
+
+    // `tilo device add <ticket>` for a browser: the tab it names, signed by the root kept here.
+    let tab_key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
+    let tab = tilo_device_identity::login::Tab {
+        device_public_key: hex::encode(tab_key.verifying_key().to_bytes()),
+        label: "Firefox on Linux".into(),
+        key_for: None,
+    };
+    let ticket = tilo_device_identity::login::Ticket {
+        issuer: tilo_api::daemon::enter::reached_of(&iroh::EndpointAddr::new(
+            iroh::EndpointId::from_bytes(&tab_key.verifying_key().to_bytes())
+                .expect("a key is an endpoint id"),
+        )),
+        direction: tilo_device_identity::login::Direction::SignIn,
+        secret: [9; 32],
+    };
+    // The approve is refused after it signs, because this computer's person is not logged in to
+    // tell the browser how it went; what it signed is listed all the same.
+    let refused = ask_device(
+        &tickets,
+        APPROVE,
+        json!({"ticket": ticket.encode(), "tab": tab}),
+    )
+    .await
+    .expect_err("a computer with no login tells no browser it signed it in");
+    assert!(
+        refused.contains("not logged in"),
+        "it is told the browser cannot be answered from here: {refused}"
+    );
+    let person = cert.user_public_key;
+    let listed =
+        tilo_workspace_service::workspaces::person_workspace::devices::of(own.copies(), &person)
+            .await
+            .listed(&person);
+    let signed = listed
+        .iter()
+        .find(|listed| listed.cert.device_public_key == tab_key.verifying_key().to_bytes())
+        .expect("the tab the root signed is listed with the person's devices");
+    assert_eq!(signed.cert.device_label, "Firefox on Linux");
+    assert!(
+        tilo_user_identity::verify_device_cert(&signed.cert).is_ok(),
+        "the listed certificate is the root's own"
+    );
 }

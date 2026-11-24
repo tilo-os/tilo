@@ -214,7 +214,7 @@ impl HeldRecord {
 /// its kind alone ([`collab_types::WORKSPACE_DOCUMENTS`]). Such a record founded without its
 /// identity, or with another workspace's, is refused by every reader that merges it, and
 /// whatever founds the same record properly afterwards cannot make it readable again.
-fn founds_as_read(
+pub(in crate::workspaces) fn founds_as_read(
     document: &automerge::AutoCommit,
     (app, name): (&str, &str),
     workspace: &str,
