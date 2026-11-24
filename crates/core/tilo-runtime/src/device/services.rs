@@ -2483,42 +2483,49 @@ fn broker_services(
     // them, and the calls that keep and forget them here, none of which records a secret.
     let vault: Arc<dyn PublishedResources> =
         Arc::new(super::passwords_vault::Published::new(parts.workspaces));
-    let published: Arc<dyn PublishedResources> = Arc::new(
+    // Nearby Send's offers and transfers, read by the person's shell over the shell link.
+    let nearby: Arc<dyn PublishedResources> = Arc::new(parts.nearby.published());
+    // What is live in the workspaces this device keeps, which the desktop shows.
+    let live: Arc<dyn PublishedResources> = super::live::Published::of(parts.workspaces.copies());
+    // The code of this moment a vault item's seed makes, which an app that shows one-time codes
+    // follows as the item's reading: read here, where the seed is.
+    let vault_codes: Arc<dyn PublishedResources> =
+        Arc::new(tilo_workspace_service::vault_actions::VaultPublished::new(
+            parts.workspaces.copies().clone(),
+            tilo_rt::app().handle().clone(),
+        ));
+    // What this device's daemon keeps itself, each resource served by the provider that keeps it.
+    let kept_here = || {
         super::published::Published::new()
             .serving(
                 &[super::server_settings::SERVER],
                 Arc::clone(&server_settings),
             )
-            // Nearby Send's offers and transfers, read by the person's shell over the shell link.
+            .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
+            .serving(&[tilo_workspace_service::live::RESOURCE], Arc::clone(&live))
+            .serving(&[super::mcp_server::SERVER], Arc::clone(&mcp_server))
             .serving(
-                &[super::nearby::RESOURCE],
-                Arc::new(parts.nearby.published()),
+                &[tilo_actions::remote::model_providers::RESOURCE],
+                Arc::clone(&models),
             )
-            // What is live in the workspaces this device keeps, which the desktop shows.
+            .serving_prefix("vault.item:", Arc::clone(&vault_codes))
             .serving(
-                &[tilo_workspace_service::live::RESOURCE],
-                super::live::Published::of(parts.workspaces.copies()),
+                &[tilo_actions::remote::person_accounts::RESOURCE],
+                Arc::clone(&accounts),
             )
-            .serving(&[super::mcp_server::SERVER], mcp_server)
-            .serving(&[tilo_actions::remote::model_providers::RESOURCE], models)
-            // The code of this moment a vault item's seed makes, which an app that shows
-            // one-time codes follows as the item's reading: read here, where the seed is.
-            .serving_prefix(
-                "vault.item:",
-                Arc::new(tilo_workspace_service::vault_actions::VaultPublished::new(
-                    parts.workspaces.copies().clone(),
-                    tilo_rt::app().handle().clone(),
-                )),
-            )
-            .serving(&[tilo_actions::remote::person_accounts::RESOURCE], accounts)
             .serving(
                 &[tilo_workspace_service::workspaces::passwords_vault::RESOURCE],
-                vault,
+                Arc::clone(&vault),
             )
-            .serving_the_rest(Arc::new(
-                tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
-            )),
-    );
+    };
+    // What the person's shell reads and changes over its link: what the daemon keeps, never what
+    // the seat publishes. The seat is the shell's own, answered on its loop; a read the shell's
+    // loop waits for that asked the seat first would wait on that same loop, and the session
+    // would never start.
+    let shell_published: Arc<dyn PublishedResources> = Arc::new(kept_here());
+    let published: Arc<dyn PublishedResources> = Arc::new(kept_here().serving_the_rest(Arc::new(
+        tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
+    )));
     Ok(ProcessServices {
         audio_output: Some(forwarded.audio_output),
         // A page's view's call is the browser's that shows it; the seat carries every other.
@@ -2626,7 +2633,7 @@ fn broker_services(
             parts.shell_links,
             parts.sockets.join(COLLAB_SOCKET),
             Arc::clone(parts.shell_dispatch),
-            published,
+            shell_published,
             shell_processes(parts.apps, parts.workspaces),
             Arc::clone(&parts.identity),
             Some(live_links(parts.live)),
