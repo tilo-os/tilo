@@ -291,7 +291,7 @@ fn whoever_may_not_read_the_app_asking_gets_no_password() {
                 .collect();
             if !grants.is_empty() {
                 tilo_workspace_service::workspaces::fixtures::record_grants(
-                    workspaces.copies(),
+                    &workspaces,
                     &workspace,
                     &grants,
                 )
@@ -400,16 +400,25 @@ fn the_model_manager_is_told_the_hugging_face_account_alone() {
         );
 
         let cert = workspaces.device_cert().clone();
-        let read = tilo_action_policy::KindSet::of(tilo_action_policy::ActionKind::Read);
-        let node =
-            tilo_action_policy::TreePath::workspace(&workspace).app(tilo_app_id::apps::SETTINGS);
+        // The workspace's policy is what narrows the agent: it may not read the app that asks.
+        let grants = [tilo_action_policy::agent_answers::grant(
+            &workspace,
+            "scout",
+            (
+                &tilo_action_policy::agent_answers::AnswerScope::app(tilo_app_id::apps::SETTINGS),
+                tilo_action_policy::ActionKind::Read,
+            ),
+            tilo_action_policy::Answer::Deny,
+            tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
+        )];
+        tilo_workspace_service::workspaces::fixtures::record_grants(
+            &workspaces,
+            &workspace,
+            &grants,
+        )
+        .await;
         let agent = Caller::delegated_agent("scout", cert.user_public_key, cert.device_public_key)
-            .in_workspace(workspace.clone())
-            .held_to(vec![tilo_action_policy::Rule::new(
-                node,
-                read,
-                tilo_action_policy::Answer::Deny,
-            )]);
+            .in_workspace(workspace.clone());
         let served = served_as(&workspaces, agent);
         let models = served.path().with_file_name("models");
         let ask_for = Ask::SignIn {
