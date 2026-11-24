@@ -99,17 +99,7 @@ fn call_as(r: &Replica, by: &Actor, action: &str, args: Vec<Value>) -> Value {
 
 /// `action` of Chat invoked by `by`, answering what it returned or why it was not done.
 fn invoke_as(r: &Replica, by: &Actor, action: &str, args: Vec<Value>) -> Result<Value, String> {
-    let id = r
-        .host
-        .find_in_packages(|package| {
-            package
-                .meta
-                .actions
-                .iter()
-                .find(|a| a.name == action)
-                .map(|a| a.id.clone())
-        })
-        .unwrap_or_else(|| panic!("no action {action}"));
+    let id = action_id(r, action);
     r.host
         .runtime()
         .invoke_action(by, (id.as_str(), args))
@@ -118,6 +108,20 @@ fn invoke_as(r: &Replica, by: &Actor, action: &str, args: Vec<Value>) -> Result<
             InvokeOutcome::Done(v) => Ok(v),
             other => Err(format!("{other:?}")),
         })
+}
+
+/// The id of `action` among the device's packages.
+fn action_id(r: &Replica, action: &str) -> String {
+    r.host
+        .find_in_packages(|package| {
+            package
+                .meta
+                .actions
+                .iter()
+                .find(|a| a.name == action)
+                .map(|a| a.id.clone())
+        })
+        .unwrap_or_else(|| panic!("no action {action}"))
 }
 
 /// Commit everything the runtime committed, the asks its mentions made included.
