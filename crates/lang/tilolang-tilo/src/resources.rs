@@ -3583,13 +3583,21 @@ impl ResourceStore {
             // not paired yet: two commits of one action, each a version, are two of either. A
             // change of the resources nested in this one joins the latest version of its act.
             let same = stamp.as_ref().and_then(|stamp| {
+                // A commit's changes are stamped alike, whoever each of its records was made for
+                // ([`Store::made_for`]).
+                let unmade = |stamp: &Stamp| Stamp {
+                    acted_for: None,
+                    ..stamp.clone()
+                };
+                let this = unmade(stamp);
+                let of_act = |other: &Option<Stamp>| {
+                    other.as_ref().is_some_and(|other| unmade(other) == this)
+                };
                 if of_nested {
-                    return parts
-                        .iter()
-                        .rposition(|(other, _, _)| other.as_ref() == Some(stamp));
+                    return parts.iter().rposition(|(other, _, _)| of_act(other));
                 }
                 parts.iter().position(|(other, own, of_content)| {
-                    other.as_ref() == Some(stamp) && if content { !of_content } else { !own }
+                    of_act(other) && if content { !of_content } else { !own }
                 })
             });
             let Some(same) = same else {
@@ -3651,10 +3659,15 @@ impl ResourceStore {
                 continue;
             };
             let held = local.get(id).cloned().flatten();
-            let made_for = dirty.made_for.as_ref().map(|person| Stamp {
-                acted_for: Some(person.clone()),
-                ..stamp.clone()
-            });
+            // A record made for its author matters where its type says who reads it.
+            let made_for = dirty
+                .made_for
+                .as_ref()
+                .filter(|_| held.as_ref().is_some_and(|held| self.ruled(&held.kind)))
+                .map(|person| Stamp {
+                    acted_for: Some(person.clone()),
+                    ..stamp.clone()
+                });
             let stamp = made_for.as_ref().unwrap_or(stamp);
             if dirty.removed {
                 if let Some(kind) = &dirty.remove {
