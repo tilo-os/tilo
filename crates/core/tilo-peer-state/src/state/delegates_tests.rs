@@ -5,7 +5,6 @@
 
 use crate::join::WorkspaceId;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use tilo_workspace_join::delegation::{DelegateScope, Delegation};
@@ -15,6 +14,8 @@ use crate::state::{DelegateInactive, MembershipError};
 use crate::{StatePeer, TransportOrigin};
 
 const ROOT_SEED: [u8; 32] = [1; 32];
+/// The agent every delegation here names.
+const AGENT: &str = "scribe";
 
 fn ns(at: SystemTime) -> u64 {
     at.duration_since(SystemTime::UNIX_EPOCH)
@@ -58,7 +59,7 @@ fn delegation(
         person,
         device,
         tilo_workspace_join::delegation::Delegate::Agent {
-            agent_id: "scribe".into(),
+            agent_id: AGENT.into(),
         },
         "Scribe",
         [10, 20, 30],
@@ -72,21 +73,72 @@ fn delegation(
     .unwrap()
 }
 
-/// An edit of the seeded record by `key`, made by the person whose root key is
-/// `person`, as `writer` publishes it.
+/// An edit of the seeded record by the agent whose key and certificate are `agent`, acting for
+/// its person, as `writer` publishes it. An agent's own key writes as the agent, never as its
+/// person, and the change keeps the invocation that key signed, as every agent with a key of its
+/// own asks under it.
 fn edit(
     writer: &mut StatePeer,
-    key: &SigningKey,
-    person: &[u8; 32],
+    (key, cert): (&SigningKey, &DeviceCert),
     now: SystemTime,
 ) -> crate::NeighbourMsg {
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget, SignedCall};
+    use tilo_actions::{
+        ActionAddress, ActionContext, ActionInvoker, Did, EditOp, FieldEdit, InvocationId, PathStep,
+    };
     let mut doc = AutoCommit::load(&writer.document("test.app", "tab:1").unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
         key.verifying_key().to_bytes().to_vec(),
     ));
     let before = doc.get_heads();
     doc.put(ROOT, "by agent", true).unwrap();
-    doc.commit_edit("fixture", "by agent", person);
+    let invocation = InvocationId::new();
+    let mut request = InvokeRequest {
+        invocation,
+        target: RemoteActionTarget {
+            provider: "test.app".into(),
+            address: ActionAddress::new("tab:1", "field-edit"),
+        },
+        argument: InvokeArgument::Text("by agent".into()),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    request.signed = Some(Box::new(
+        tilo_server_protocol::invocation::sign_invocation_now(
+            writer.workspace_id(),
+            &request,
+            cert,
+            key,
+            ns(now),
+        )
+        .unwrap(),
+    ));
+    let context = ActionContext {
+        what: Some(Did::Edit(FieldEdit {
+            ty: "fixture".into(),
+            field: "by agent".into(),
+            path: vec![PathStep::Field("by agent".into())],
+            op: EditOp::Set,
+            old: None,
+            new: None,
+            args: std::collections::BTreeMap::new(),
+        })),
+        source_invocation: Some(invocation),
+        signed: SignedCall::of(&request).map(Box::new),
+        ..ActionContext::for_resource("tab:1", "fixture", "fixture")
+    }
+    .with_invoker(ActionInvoker::agent(AGENT).acting_for(
+        tilo_action_policy::PersonId::from_root(cert.user_public_key),
+    ));
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(context.change_message().unwrap()),
+    );
     writer
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), key, now)
@@ -105,6 +157,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     let workspace = governor.workspace_id().to_owned();
     let person = SigningKey::from_bytes(&ROOT_SEED);
     let (key, cert) = agent(&person, 8);
+    let agent_cert = cert.clone();
     let device = cert.device_public_key;
     let until = now + Duration::from_secs(10);
     let granted = delegation(
@@ -258,7 +311,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
         vec![crate::GovernedAgent {
             device_public_key: device,
             user_public_key: person.verifying_key().to_bytes(),
-            agent_id: "scribe".into(),
+            agent_id: AGENT.into(),
             label: "Scribe".into(),
             color: [10, 20, 30],
             expires_at_ns: ns(until),
@@ -269,8 +322,8 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
 
     // Its edit is signed by its own key, and the governor admits it.
     let mut own = member.clone();
-    let message = edit(&mut own, &key, &person.verifying_key().to_bytes(), now);
-    let late = edit(&mut own, &key, &person.verifying_key().to_bytes(), now);
+    let message = edit(&mut own, (&key, &agent_cert), now);
+    let late = edit(&mut own, (&key, &agent_cert), now);
     assert!(
         governor
             .receive_from(TransportOrigin::ServerDelta(device), message, now)
@@ -341,7 +394,7 @@ tilo_test_env::scenario! {
             .admit_agent(cert.clone(), granted, &authority, now)
             .unwrap();
         let mut member = governor.clone();
-        let before = edit(&mut member, &key, &person.verifying_key().to_bytes(), now);
+        let before = edit(&mut member, (&key, &cert), now);
         // What it wrote and the governor took in before the withdrawal stays
         // its own.
         assert!(
@@ -350,7 +403,7 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .changed
         );
-        let unseen = edit(&mut member, &key, &person.verifying_key().to_bytes(), now);
+        let unseen = edit(&mut member, (&key, &cert), now);
 
         assert!(
             governor
@@ -400,7 +453,7 @@ tilo_test_env::scenario! {
                 .receive_from(TransportOrigin::ServerDelta(device), unseen, withdrawn)
                 .is_err()
         );
-        let after = edit(&mut member, &key, &person.verifying_key().to_bytes(), withdrawn);
+        let after = edit(&mut member, (&key, &cert), withdrawn);
         assert!(
             governor
                 .receive_from(TransportOrigin::ServerDelta(device), after, withdrawn)
