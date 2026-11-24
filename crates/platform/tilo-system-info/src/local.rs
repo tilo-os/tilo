@@ -303,6 +303,9 @@ impl SysinfoProbe {
             kernel_thread: process.memory() == 0,
             cgroup: Some(ALL_PROCESSES.to_owned()),
             command,
+            open_files: process
+                .open_files()
+                .map(|files| u32::try_from(files).unwrap_or(u32::MAX)),
         }
     }
 
