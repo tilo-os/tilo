@@ -91,11 +91,10 @@ fn world() -> World {
 }
 
 impl World {
-    /// Run `source` as the task's program, confirmed; its answer.
+    /// Run `source` as the task's program, with its go-ahead; its answer.
     fn run(&self, source: &str) -> Json {
         self.task.run(
             source,
-            true,
             &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
                 "task-1",
             )),
@@ -458,7 +457,6 @@ fn what_changed_in_the_notes_this_week_is_found_by_when_each_last_changed() {
     let run = |source: &str| {
         task.run(
             source,
-            true,
             &tilolang_tilo::runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::agent(
                 "task-1",
             )),

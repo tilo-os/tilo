@@ -211,7 +211,7 @@ pub struct McpServer<H> {
 
 #[cfg(unix)]
 pub use agent::TaskHosts;
-pub use agent::TaskProgram;
+pub use agent::{Go, TaskProgram};
 pub use agent::{PersonStep, literals_in};
 
 /// The record an agent call worked in: the app's id and the workspace's

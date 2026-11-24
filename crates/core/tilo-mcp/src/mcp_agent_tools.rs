@@ -82,8 +82,8 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo",
-            "Run a tilolang program as this task: `notes.notebook.notes.filter(.pinned)`. Lets and refs (n3) persist. Bulk or destructive programs preview: resend with confirm: true. `undo`, `undo task`, `history task` (across sessions).",
-            json!({"program":string,"confirm":{"type":"boolean"}}),
+            "Run a tilolang program as this task: `notes.notebook.notes.filter(.pinned)`. Lets and refs (n3) persist. A bulk or destructive program waits for your person's yes, and says where. `undo`, `undo task`, `history task` (across sessions).",
+            json!({"program":string}),
             json!(["program"]),
             json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":false}),
         ),

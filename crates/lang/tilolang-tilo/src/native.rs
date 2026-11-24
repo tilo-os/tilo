@@ -730,7 +730,6 @@ impl<'a> NativeReads<'a> {
             Answered::Done(output) => Ok(output.get("value").cloned().unwrap_or(Json::Null)),
             Answered::Refused(why) => Err(format!("{app} refused the read: {why}")),
             Answered::Failed(why) => Err(format!("{app} could not be read: {why}")),
-            Answered::Asks(why) => Err(format!("{app} asks before it reads: {why}")),
         }
     }
 

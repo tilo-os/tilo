@@ -305,11 +305,12 @@ async def test_a_program_answers_its_output_and_steps(workspace, api):
     assert api.asked("POST", "/programs")[-1]["body"] == b'{"program": "notes.notebook.notes"}'
 
 
-async def test_a_program_that_previews_answers_preview(workspace):
-    answer = await workspace.program("preview me")
+async def test_a_program_that_waits_for_its_person_answers_waiting(workspace):
+    answer = await workspace.program("delete everything")
 
-    assert answer.status == "preview"
-    assert answer.changed == 4
+    assert answer.status == "waiting"
+    assert answer.changed == 0
+    assert "ws-1/rec-1" in answer.text
 
 
 async def test_a_program_that_fails_raises_refused(workspace):

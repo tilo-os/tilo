@@ -24,9 +24,9 @@
 //! run, so `undo` takes back the last step, in every app it changed, and `undo task` every step of
 //! this task. `history task` answers from the workspace's runs of this agent, so it lists the
 //! agent's `tilo_do` calls and its work in earlier sessions too, beside the steps this task can
-//! still take back. A program that fails takes back what it changed. One that
-//! would change many resources or destroy something answers with a preview, from a provisional run
-//! that sends nothing, until it is sent again with `confirm`.
+//! still take back. A program that fails takes back what it changed. An agent's program that
+//! would change many resources or destroy something is first previewed, from a provisional run
+//! that sends nothing, and runs once its person says yes ([`Go`]); a person's own runs at once.
 //!
 //! What goes back is tilolang text. Every resource it shows is named by a short reference (`n3`,
 //! `t91`) at the start of its line, which later programs of this session take; a reference the
@@ -122,8 +122,33 @@ impl TaskLink {
 #[serde(deny_unknown_fields)]
 pub(super) struct TiloArgs {
     program: String,
-    #[serde(default)]
-    confirm: bool,
+}
+
+pub use tilo_actions::remote::task_programs::Go;
+
+/// What the `tilo` tool answers for a program that waits for its person's yes: nothing of it ran,
+/// and the asked record it waits in (`<workspace>/<record>`) once the device kept one.
+fn waiting(record: Option<&str>, structured: bool) -> Reply {
+    let text = match record {
+        Some(record) => format!(
+            "waiting for your person's yes: {record}. Nothing ran yet; it runs once they approve. \
+             Go on with what does not need it, and do not send this program again."
+        ),
+        None => "waiting for your person's yes. Nothing ran yet; it runs once they approve. Go on \
+                 with what does not need it, and do not send this program again."
+            .to_owned(),
+    };
+    let mut reply = Reply::ok(text.clone());
+    if structured {
+        reply.structured = Some(json!({
+            "status": "waiting",
+            "record": record,
+            "output": [],
+            "changed": 0,
+            "text": text,
+        }));
+    }
+    reply
 }
 
 /// One step a program of this task made.
@@ -907,7 +932,7 @@ fn preview(answer: &Value) -> String {
                 .unwrap_or("its preview cannot go on"),
         );
     }
-    text.push_str("\nnothing changed; send the same program with confirm: true to apply it");
+    text.push_str("\nnothing changed: it runs once its person says yes");
     text
 }
 
@@ -959,21 +984,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// One program of this task for a runner of the task's own (the Tasks agent's loop) rather
     /// than an MCP client: the same step as the `tilo` tool, read back with what it did.
     /// `this` is what the person pointed at, as a resource literal, which `this` then names.
-    pub async fn task_program(
-        &self,
-        program: &str,
-        confirm: bool,
-        this: Option<&str>,
-    ) -> TaskProgram {
+    pub async fn task_program(&self, program: &str, go: Go, this: Option<&str>) -> TaskProgram {
         if let Some(this) = this {
             let mut programs = self.programs.lock_recover();
             programs.this = Some(this.to_owned());
         }
-        let args = TiloArgs {
-            program: program.to_owned(),
-            confirm,
-        };
-        let (reply, answer, source) = match Box::pin(self.tilo_step(args)).await {
+        let (reply, answer, source) = match Box::pin(self.tilo_step(program, go)).await {
             Ok(ran) => ran,
             Err(text) => {
                 return TaskProgram {
@@ -1018,7 +1034,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if self.programs_on_device && !self.starts_programs() {
             return Box::pin(self.tilo_on_device(args, structured)).await;
         }
-        let (mut reply, answer, _) = Box::pin(self.tilo_step(args)).await?;
+        let (mut reply, answer, _) = Box::pin(self.own_program(&args.program)).await?;
         if structured {
             reply.structured = Some(self.program_answer(answer.as_ref(), &reply));
         }
@@ -1033,9 +1049,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         use tilo_actions::remote::task_programs;
         let mut fields = Map::new();
         fields.insert("program".into(), args.program.into());
-        if args.confirm {
-            fields.insert("confirm".into(), true.into());
-        }
         // A person's programs go on in this server's own program session there, so its `let`s
         // carry from one program to the next and another client's never mix in.
         if self.session_id().is_none()
@@ -1056,12 +1069,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             appearance: None,
             signed: None,
         };
-        let receipt = self
+        let receipt = match self
             .host()
             .invoke(&self.caller(), request)
             .await
             .ok_or_else(|| "the device did not answer".to_owned())?
-            .map_err(Failure::from)?;
+        {
+            Ok(receipt) => receipt,
+            Err(tilo_actions::remote::ActionCallError::ConfirmationRequired(_)) => {
+                return Ok(waiting(None, structured));
+            }
+            Err(error) => return Err(Failure::from(error)),
+        };
         let output = match receipt.status {
             ReceiptStatus::Completed { output } => output,
             ReceiptStatus::Rejected { error } => return Err(Failure::from(error)),
@@ -1073,6 +1092,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     Ok(InvocationUpdate::Succeeded { output, .. }) => output,
                     Ok(InvocationUpdate::Failed { error, .. }) => {
                         return Ok(Reply::failed(error.message));
+                    }
+                    Ok(InvocationUpdate::Progress { phase, message, .. })
+                        if phase == tilo_actions::remote::asked::ASKED_PHASE =>
+                    {
+                        return Ok(waiting(message.as_deref(), structured));
                     }
                     _ => return Err(waited_for_the_task("the device's answer").into()),
                 }
@@ -1130,7 +1154,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         let status = match answer.get("state").and_then(Value::as_str) {
             Some("done") => "ok",
-            Some("preview") => "preview",
             _ => "failed",
         };
         let mut typed = json!({
@@ -1161,13 +1184,44 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         typed
     }
 
-    /// One `tilo` call: its reply, the host's answer when a program ran, and the program as it
-    /// ran.
+    /// `program` as this connection's caller sends it, through the `tilo` tool: a person's own
+    /// runs at once, and an agent's is previewed first, running when its person need not be asked.
+    /// An agent's program that needs their yes waits for it as a step of its session on the
+    /// device ([`tilo_actions::remote::task_programs`]), which this connection, running programs
+    /// itself, cannot ask: it is refused, saying so.
+    async fn own_program(
+        &self,
+        program: &str,
+    ) -> Result<(Reply, Option<Value>, Option<String>), String> {
+        if self.caller.acting().is_person() {
+            return Box::pin(self.tilo_step(program, Go::Run)).await;
+        }
+        let previewed = Box::pin(self.tilo_step(program, Go::Preview)).await?;
+        match previewed.1.as_ref() {
+            Some(answer) if answer.get("state").and_then(Value::as_str) == Some("preview") => {
+                if answer.get("asks").and_then(Value::as_bool) == Some(true) {
+                    let (mut reply, answer, source) = previewed;
+                    reply.failed = true;
+                    reply.text.push_str(
+                        "\nits person is asked first, and this connection cannot ask them: run it \
+                         as a step of this session on the device",
+                    );
+                    return Ok((reply, answer, source));
+                }
+                Box::pin(self.tilo_step(program, Go::Run)).await
+            }
+            _ => Ok(previewed),
+        }
+    }
+
+    /// One program of the task, gone `go`: its reply, the host's answer when a program ran, and
+    /// the program as it ran.
     async fn tilo_step(
         &self,
-        args: TiloArgs,
+        program: &str,
+        go: Go,
     ) -> Result<(Reply, Option<Value>, Option<String>), String> {
-        let program = args.program.trim();
+        let program = program.trim();
         match program {
             "" => return Err("send a program: tilolang statements, one per line".to_owned()),
             "undo" => {
@@ -1195,7 +1249,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         let resolved = resolve_placed(program, &self.programs.lock_recover())?;
         let source = resolved.source.clone();
-        let mut answer = self.run_in_task(&source, args.confirm).await?;
+        let mut answer = self.run_in_task(&source, go).await?;
         resolved.place_detail(&mut answer, &mut self.programs.lock_recover());
         let failed = !matches!(
             answer.get("state").and_then(Value::as_str),
@@ -1411,7 +1465,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             resolve_placed(source, &programs)?
         };
         let source = resolved.source.clone();
-        let mut answer = Box::pin(self.serve_run(&mut task, &source, false, &author)).await?;
+        let mut answer = Box::pin(self.serve_run(&mut task, &source, Go::Run, &author)).await?;
         resolved.place_detail(&mut answer, &mut self.programs.lock_recover());
         let text = self.answered(&source, &answer).text;
         Ok(PersonStep::of(text, answer))
@@ -1458,7 +1512,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let Some(task) = link.as_mut() else {
             return Err("the task's host did not start".to_owned());
         };
-        let ran = Box::pin(self.serve_run(task, &source, false, author)).await;
+        let ran = Box::pin(self.serve_run(task, &source, Go::Run, author)).await;
         let mut answer = match ran {
             Ok(answer) => answer,
             Err(why) => {
@@ -1474,15 +1528,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
     /// Run `source` in the task's host, doing what it reads and invokes as the task, until it
     /// answers. The host is started on the task's first program.
-    async fn run_in_task(&self, source: &str, confirm: bool) -> Result<Value, String> {
+    async fn run_in_task(&self, source: &str, go: Go) -> Result<Value, String> {
         #[cfg(windows)]
         {
-            let _ = (source, confirm);
+            let _ = (source, go);
             Err(programs_absent())
         }
         #[cfg(unix)]
         {
-            self.run_in_task_unix(source, confirm).await
+            self.run_in_task_unix(source, go).await
         }
     }
 
@@ -1491,7 +1545,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         clippy::significant_drop_tightening,
         reason = "the task's link is held while its host runs the program, as its catalogue is read"
     )]
-    async fn run_in_task_unix(&self, source: &str, confirm: bool) -> Result<Value, String> {
+    async fn run_in_task_unix(&self, source: &str, go: Go) -> Result<Value, String> {
         let mut link = self.task.lock().await;
         if link.is_none() {
             *link = Some(self.start_task().await?);
@@ -1503,7 +1557,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             return Err("the task's host did not start".to_owned());
         };
         let author = self.program_author();
-        let ran = Box::pin(self.serve_run(task, source, confirm, &author)).await;
+        let ran = Box::pin(self.serve_run(task, source, go, &author)).await;
         if ran.is_err() {
             // A host that went away takes the task's `let`s with it; the next program starts
             // another.
@@ -1518,20 +1572,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
         task: &mut TaskLink,
         source: &str,
-        confirm: bool,
+        go: Go,
         author: &Value,
     ) -> Result<Value, String> {
         // Who wrote this program: the caller of this call. The host's session runs each program
         // as its own author, so the agent's programs and the person's lines share one session's
         // `let`s and each is attributed to whoever wrote it.
-        task.send(&json!({
-            "run": {
+        let mut sent = Map::new();
+        sent.insert(
+            go.message().to_owned(),
+            json!({
                 "source": source,
-                "confirm": confirm,
                 "author": author,
-            },
-        }))
-        .await?;
+            }),
+        );
+        task.send(&Value::Object(sent)).await?;
         // Which instance answers for each app, found once per program.
         let mut providers: Providers = BTreeMap::new();
         loop {
@@ -1710,7 +1765,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         match tilo_actions::remote::answered(reads, &caller, read).await {
             // An app's record is read through the record API, never as one of the session's
             // readings, as a resource no service publishes is none of its.
-            Ok(answer) => match answer["records"][0].get("value") {
+            Ok(answer) => match answer.pointer("/records/0/value") {
                 Some(value) => json!({"ok": {"reading": value}}),
                 None => json!({"none": true}),
             },
@@ -1822,8 +1877,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     json!({"failed": answer.get("failed").and_then(Value::as_str).map_or_else(|| answer.to_string(), str::to_owned)})
                 }
             }
+            // A program cannot wait inside its run for a person's yes: it goes on with a refusal
+            // saying so.
             Ok(Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })) => {
-                json!({"asks": format!("{action}: asks the person first")})
+                json!({"refused": format!("{action}: it waits for its person's yes")})
             }
             Ok(Err(
                 error @ (tilo_actions::remote::ActionCallError::Refused { .. }
@@ -1909,7 +1966,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let answer = tilo_actions::remote::answered(reads, &caller, read)
             .await
             .map_err(|error| error.to_string())?;
-        let Some(value) = answer["records"][0].get("value") else {
+        let Some(value) = answer.pointer("/records/0/value") else {
             return Err("the workspace answered no list of runs".to_owned());
         };
         let items: Vec<Invocation> = serde_json::from_value(
@@ -2267,7 +2324,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     })
                     .await;
                 if answer.get("ok").is_none() {
-                    let why = ["failed", "refused", "asks"]
+                    let why = ["failed", "refused"]
                         .iter()
                         .find_map(|key| answer.get(*key).and_then(Value::as_str))
                         .unwrap_or("the undo did not run");
@@ -2431,12 +2488,7 @@ mod tests {
             assert_eq!(typed["changed"], 2);
             assert_eq!(typed["apps"], json!(["so.tilo.notes"]));
             assert_eq!(typed["steps"][0]["program"], "notes.pin(n1)");
-            // A preview says so; a failed program carries its detail.
-            let preview = server.program_answer(
-                Some(&json!({"state":"preview","output":[],"complete":true})),
-                &Reply::ok(String::new()),
-            );
-            assert_eq!(preview["status"], "preview");
+            // A failed program carries its detail.
             let refused = server.program_answer(
                 Some(&json!({"state":"rejected","detail":["line 1: no such field"]})),
                 &Reply::failed("error".to_owned()),
@@ -2492,7 +2544,7 @@ mod tests {
             ]});
             assert_eq!(
                 preview(&answer),
-                "preview: 3 actions on 4 resources\n  pin ×2\n  delete_card ×1  destroys\nnothing changed; send the same program with confirm: true to apply it"
+                "preview: 3 actions on 4 resources\n  pin ×2\n  delete_card ×1  destroys\nnothing changed: it runs once its person says yes"
             );
         }
 

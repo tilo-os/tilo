@@ -501,10 +501,7 @@ impl<'a> Caller<'a> {
         match id {
             "runProgram" => {
                 let program: answers::Program = self.json_body()?;
-                let arguments = json!({
-                    "program": program.program,
-                    "confirm": program.confirm.unwrap_or(false),
-                });
+                let arguments = json!({ "program": program.program });
                 let (mut typed, session) = self
                     .session
                     .run_program(

@@ -434,7 +434,7 @@ impl Calls {
             .typed(
                 Some(workspace),
                 "tilo",
-                json!({"program": program, "confirm": false}),
+                json!({"program": program}),
                 Some(fresh_group(title)),
             )
             .await?;

@@ -16,10 +16,32 @@ pub use tilo_app_id::apps::AGENT as APP;
 pub const PROVIDER: &str = "tilo.task-programs";
 /// The resource the step is an action of.
 pub const RESOURCE: &str = "task";
-/// Run one program as one step of the caller's task: `program`, `confirm` (send again a
-/// previewed program), and `this` (what the person pointed at, as a resource literal). Answers
-/// a [`ProgramAnswer`].
+/// Run one program as one step of the caller's task: `program`, and `this` (what the person
+/// pointed at, as a resource literal). An agent's program that would change much or destroy
+/// something waits for its person's yes first ([`super::asked`]). Answers a [`ProgramAnswer`].
 pub const RUN: &str = "run-program";
+
+/// How a program of a task goes in its host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Go {
+    /// Run provisionally, nothing sent: one that changes nothing has answered, and any other
+    /// answers its preview (`state` `preview`, `asks` whether its person is asked first).
+    Preview,
+    /// Run for real: it has its go-ahead (its person approved it, it is their own, or its
+    /// preview showed nothing to ask them about).
+    Run,
+}
+
+impl Go {
+    /// What the task's host is sent the program under.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Preview => "preview",
+            Self::Run => "run",
+        }
+    }
+}
 
 #[must_use]
 pub fn target() -> RemoteActionTarget {

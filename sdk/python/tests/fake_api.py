@@ -861,10 +861,16 @@ class FakeApi:
                 200,
                 {"status": "failed", "output": ["unknown name `boom`"], "changed": 0, "steps": []},
             )
-        if source == "preview me":
+        if source == "delete everything":
             return self.answer(
                 200,
-                {"status": "preview", "output": ["4 changes in notes"], "changed": 4, "steps": []},
+                {
+                    "status": "waiting",
+                    "output": [],
+                    "changed": 0,
+                    "steps": [],
+                    "text": "waiting for your person's yes: ws-1/rec-1",
+                },
             )
         if source == "undo task":
             return self.answer(

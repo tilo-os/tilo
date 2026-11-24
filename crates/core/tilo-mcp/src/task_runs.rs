@@ -5,12 +5,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tilo_actions::remote::task_programs as wire;
+use tilo_actions::remote::task_programs::{self as wire, Go};
 use tilo_actions::remote::{ActionProvider, Outcome, Pending};
 
 use crate::{McpServer, TaskProgram};
 
-/// Run `program` on `api`, the session's own API: the program waits on the task's host and on
+/// Run `program` on `api`, the session's own API, gone `go`: the program waits on the task's host and on
 /// every call it makes, never on the caller's thread. A `stop` set while it runs is answered at
 /// once, so the person hears that it ended, and the API refuses its further calls.
 ///
@@ -19,7 +19,7 @@ use crate::{McpServer, TaskProgram};
 pub fn run<H>(
     api: Arc<McpServer<H>>,
     program: String,
-    confirm: bool,
+    go: Go,
     this: Option<String>,
     stop: Option<Arc<AtomicBool>>,
 ) -> Result<Pending<Outcome>, String>
@@ -38,7 +38,7 @@ where
                         Ok(runtime) => {
                             match runtime.block_on(api.task_program(
                                 &program,
-                                confirm,
+                                go,
                                 this.as_deref(),
                             )) {
                                 Ok(ran) => Ok(outcome(ran)),

@@ -62,8 +62,8 @@ use render::{action_line, action_page, block_line, parse_read_cursor, read_answe
 pub use tilo::TaskHosts;
 #[cfg(unix)]
 pub(super) use tilo::TaskLink;
-pub use tilo::TaskProgram;
 use tilo::actions_note;
+pub use tilo::{Go, TaskProgram};
 /// A person's own line in a run's conversation, run in the task's host as they are
 /// (shell.md §8.1): what the API's `person_line` hands on.
 pub use tilo::{PersonStep, literals_in};

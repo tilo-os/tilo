@@ -57,7 +57,7 @@ pub fn paint(role: Role, text: &str) -> String {
 
 const KEYWORDS: &[&str] = &[
     "let", "if", "else", "match", "for", "in", "fn", "true", "false", "not", "and", "or", "none",
-    "undo", "confirm",
+    "undo",
 ];
 
 /// A line of input with its keywords, strings and numbers coloured, as it is typed.

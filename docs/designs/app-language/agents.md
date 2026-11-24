@@ -53,7 +53,7 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 6. **Steps:** one call is one run group for undo. Its changes each commit at their own action API,
    and a change that calls another action runs that call as a change of its own: nothing is
    atomic across origins (convergence.md, "Calls"). A preview is a provisional run of those
-   invocations; `confirm` sends the same program again.
+   invocations; the person's approve runs the same program for real, in the same session.
 
 ### Reading resources outside their app
 
@@ -184,9 +184,10 @@ grep(/^- \[ \] (.*launch.*)/i, in: docs + notes, changed: -14d)
   action that makes each, in order. Calls to outside origins (a mail server, YouTube) can't be
   atomic with the workspace; they run as calls in order, each a change of its own (convergence.md,
   "Calls").
-- **Preview is a property of the call.** When a program would change many resources or destroy
-  something, the API answers with a preview instead of applying it; the agent sends the same
-  program again with `confirm`.
+- **Preview is a property of the call.** When an agent's program would change many resources or
+  destroy something, it runs provisionally and waits in an asked record for its person: they see
+  the program and what it would do, and their approve runs it. The agent never approves its own
+  call.
 - Drafts and other undoable changes in the workspace just run. Anything that reaches outside or
   is ask-first parks as the person's request, with an editable draft.
 

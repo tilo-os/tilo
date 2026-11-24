@@ -315,10 +315,6 @@ pub struct View {
 pub struct Program {
     /// tilolang: `notes.notebook.notes.filter(.pinned)`.
     pub program: String,
-    /// Runs a program that would change much or destroy something; without
-    /// it such a program answers `preview`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confirm: Option<bool>,
     /// The program session it continues, as an earlier answer named it: the
     /// `let`s its programs bound, the references its answers showed (`n3`),
     /// and the steps `undo` and `history task` take back and list. Without
@@ -329,7 +325,8 @@ pub struct Program {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ProgramAnswer {
-    /// `ok`, `preview` or `failed`.
+    /// `ok`, `waiting` (for its person's yes: `text` names where they answer, and it runs
+    /// once they approve) or `failed`.
     pub status: String,
     /// The program's answer, a line per element.
     #[serde(default)]
@@ -343,7 +340,7 @@ pub struct ProgramAnswer {
     #[serde(default)]
     pub steps: Vec<Value>,
     /// What a person reads: the answer's lines, each resource by its
-    /// reference (`n3`), and what a preview would apply.
+    /// reference (`n3`).
     #[serde(default)]
     pub text: String,
     /// The program session it ran in: send it with the next program to

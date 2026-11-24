@@ -1887,7 +1887,7 @@ impl AppBrokerState {
         if request.target.provider != tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
             && let Some(registered) = self.registered(&request.target.provider)
         {
-            return Pending::ready(self.invoke_registered(caller, origin, &registered, request));
+            return self.invoke_registered(caller, origin, &registered, request);
         }
         if request.target.provider == tilo_actions::remote::own_device::PROVIDER {
             return Pending::ready(self.invoke_own_device(caller, origin, request));

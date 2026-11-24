@@ -295,23 +295,15 @@ class Endpoint:
             "POST", self._invocation_path(invocation) + "/undo", grouped=False
         )
 
-    async def program(
-        self, source: str, confirm: bool | None = None, session: str | None = None
-    ) -> ProgramAnswer:
+    async def program(self, source: str, session: str | None = None) -> ProgramAnswer:
         """Run a tilolang program as one step, in the program session `session` names (an
         earlier answer's `session`), or a new one."""
         body: dict[str, Any] = {"program": source}
-        if confirm is not None:
-            body["confirm"] = confirm
         if session is not None:
             body["session"] = session
         program = ProgramAnswer.of(await self.json("POST", self.path("programs"), json=body))
         if program.status == "failed":
-            raise Refused(
-                "failed",
-                "\n".join(program.output) or "the program failed",
-                ["ws.program(…, confirm=True) runs a program that waits for confirmation"],
-            )
+            raise Refused("failed", "\n".join(program.output) or "the program failed")
         return program
 
     # -- events ----------------------------------------------------------

@@ -26,11 +26,12 @@
 //! the app through the API as the task's invocation, which the broker decides as it decides
 //! `tilo_do`'s and runs the app for when it is not running.
 //!
-//! **Steps.** One program is one step. Run without `confirm`, it first runs provisionally: its
-//! invocations are listed, not sent, and nothing it bound is kept. One that changed nothing has
-//! answered; one that would change many resources or destroy something answers with that list as
-//! its preview; any other runs again for real at once. With `confirm` it runs for real straight
-//! away.
+//! **Steps.** One program is one step. An agent's program is first previewed
+//! ([`TaskSession::preview`]): it runs provisionally, its invocations listed, not sent, and nothing
+//! it bound kept. One that changed nothing has answered; one that would change many resources or
+//! destroy something is asked of its person, showing that list; any other runs for real at once.
+//! A program with its go-ahead (its person approved it, or it is their own) runs for real
+//! ([`TaskSession::run`]).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -113,11 +114,9 @@ pub enum Answered {
     Done(Json),
     /// It ran and failed.
     Failed(String),
-    /// The policy refused it.
+    /// The policy refused it, or it waits for a person's yes, which a program cannot wait for
+    /// inside its run: the program goes on with the refusal.
     Refused(String),
-    /// The person is asked before it runs: a task's program goes on with a refusal saying so,
-    /// since no program waits inside its run.
-    Asks(String),
 }
 
 /// An installed app the task's session holds no package of, with why: a program that names it
@@ -434,33 +433,42 @@ impl TaskSession {
         self.runtime.set_sentence_by(read);
     }
 
-    /// Run `source`, written by `author`, as one step of the task; see the module docs for
-    /// `confirm`. The program runs as its author: the agent's as the agent, a line its person
-    /// typed as the person. The answer: `{state, output, detail, lets, steps, changed, apps}`,
-    /// `state` one of `done`, `preview`, `rejected`, `failed`.
-    pub fn run(&self, source: &str, confirm: bool, author: &Actor) -> Json {
-        if !confirm {
-            let saved = self.session.borrow().clone();
-            let (answer, steps) = self.run_once(source, true, author);
-            if steps.planned.is_empty() {
-                // It changed nothing: it has answered.
-                return answer;
-            }
-            *self.session.borrow_mut() = saved;
-            let ran = answer.get("state") == Some(&json!("done"));
-            if !ran || wants_preview(&steps.planned) {
-                // A provisional run that stopped before its end stopped on what an invocation
-                // it did not send would have answered: what follows is not known, so what is
-                // known is shown first.
-                let mut preview = answer;
-                if let Some(fields) = preview.as_object_mut() {
-                    fields.insert("state".to_owned(), json!("preview"));
-                    fields.insert("lets".to_owned(), json!([]));
-                    fields.insert("complete".to_owned(), json!(ran));
-                }
-                return preview;
-            }
+    /// Run `source`, written by `author`, provisionally: its invocations are listed, not sent.
+    /// One that changed nothing has answered as [`Self::run`] would, and what it bound is kept.
+    /// Any other leaves the session as it was and answers its preview: `state` `preview`, the
+    /// invocations it would make as `steps`, `complete` whether the provisional run reached its
+    /// end, and `asks` whether its person is asked before it runs (it would change many resources
+    /// or destroy something, or what follows is not known).
+    pub fn preview(&self, source: &str, author: &Actor) -> Json {
+        let saved = self.session.borrow().clone();
+        let (answer, steps) = self.run_once(source, true, author);
+        if steps.planned.is_empty() {
+            // It changed nothing: it has answered.
+            return answer;
         }
+        *self.session.borrow_mut() = saved;
+        let ran = answer.get("state") == Some(&json!("done"));
+        let mut preview = answer;
+        if let Some(fields) = preview.as_object_mut() {
+            fields.insert("state".to_owned(), json!("preview"));
+            fields.insert("lets".to_owned(), json!([]));
+            fields.insert("complete".to_owned(), json!(ran));
+            // A provisional run that stopped before its end stopped on what an invocation it
+            // did not send would have answered: what follows is not known, so its person is
+            // asked on what is known.
+            fields.insert(
+                "asks".to_owned(),
+                json!(!ran || wants_preview(&steps.planned)),
+            );
+        }
+        preview
+    }
+
+    /// Run `source`, written by `author`, as one step of the task, for real: it has its go-ahead.
+    /// The program runs as its author: the agent's as the agent, a line its person typed as the
+    /// person. The answer: `{state, output, detail, lets, steps, changed, apps, history}`, `state`
+    /// one of `done`, `rejected`, `failed`.
+    pub fn run(&self, source: &str, author: &Actor) -> Json {
         self.run_once(source, false, author).0
     }
 

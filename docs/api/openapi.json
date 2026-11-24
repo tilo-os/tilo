@@ -1893,13 +1893,6 @@
             "type": "string",
             "description": "tilolang: `notes.notebook.notes.filter(.pinned)`."
           },
-          "confirm": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Runs a program that would change much or destroy something; without\nit such a program answers `preview`."
-          },
           "session": {
             "type": [
               "string",
@@ -1917,7 +1910,7 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "`ok`, `preview` or `failed`."
+            "description": "`ok`, `waiting` (for its person's yes: `text` names where they answer, and it runs\nonce they approve) or `failed`."
           },
           "output": {
             "type": "array",

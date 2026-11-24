@@ -20,7 +20,7 @@
 //!
 //! A program the API runs (`POST …/programs`) runs in a program session of
 //! its own: the `tilo` tool's session (its `let`s, the references its answers
-//! showed, the preview `confirm` applies, the steps `undo` takes back) on a
+//! showed, the steps `undo` takes back) on a
 //! queue of the workspace's session that only that program session's calls
 //! take. The caller names the program session each later program continues;
 //! at most [`MAX_PROGRAM_SESSIONS`] are kept, the least recently used ending

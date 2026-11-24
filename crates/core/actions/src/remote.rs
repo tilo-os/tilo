@@ -1598,6 +1598,22 @@ pub trait ActionProvider {
         self.invoke(caller, request)
     }
 
+    /// Before the dispatch takes `request`, a call nobody approved yet: whether it waits for its
+    /// person's yes ([`asked::approved_or_asks`]), where this provider knows that only by looking
+    /// at the call itself (a program, by running it provisionally). The dispatch takes the call
+    /// once this answers `Ok`, and keeps one refused for want of the yes as its asked record, which
+    /// an approve sends here again, carrying [`InvokeRequest::approval`]. `admitted` is what the
+    /// dispatch knows of the call. `None` for a provider that decides nothing before it runs.
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        let _ = (caller, request, admitted);
+        None
+    }
+
     /// Follow `request`, an admitted call of an action whose contract is
     /// [`ExecutionMode::Live`](crate::ExecutionMode::Live): how to read its result as it is now,
     /// and when that may have changed.

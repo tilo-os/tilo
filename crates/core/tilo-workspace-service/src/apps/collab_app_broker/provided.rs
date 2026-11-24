@@ -18,6 +18,23 @@ use tilo_actions::remote::{
     Pending, ReceiptStatus, Reservation,
 };
 
+/// How a call of a registered provider stands once admitted, before it is taken.
+enum RegisteredAdmission {
+    /// The same call was taken before: its receipt.
+    Taken(InvocationReceipt),
+    /// A call to take.
+    Call(RegisteredCall),
+}
+
+/// A call of a registered provider, admitted and not yet taken.
+struct RegisteredCall {
+    descriptor: tilo_actions::ActionDescriptor,
+    /// The answer the person gave this exact call, consumed.
+    approved: bool,
+    /// What a step of an agent session does in turn goes through: the session's own api.
+    through: Option<Arc<dyn ActionProvider + Send + Sync>>,
+}
+
 /// How long a provider that answered a call as running is left before it is looked at again,
 /// when it cannot say it changed.
 const FOLLOW_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
@@ -247,19 +264,67 @@ impl AppBrokerState {
     /// must be confined to the workspace its connection was admitted to; whatever its reach, the
     /// workspace's policy decides the call under the application its registration names. An
     /// action whose contract asks first needs the person's own confirmation, or the answer they
-    /// gave on their device. The invocation answers `Accepted` at once and records the outcome
-    /// when the provider's call ends, which for a pairing approval may be minutes later.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one call's admission, effect and answer in a single auditable sequence"
-    )]
+    /// gave on their device. A provider that knows whether a call waits for its person's yes only
+    /// by looking at it ([`ActionProvider::asks_first`]) is asked before the call is taken, and a
+    /// call that waits is refused with what its person is shown, for the dispatch to keep as its
+    /// asked record. The invocation answers `Accepted` once taken and records the outcome when
+    /// the provider's call ends, which for a pairing approval may be minutes later.
     pub(super) fn invoke_registered(
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
         registered: &Registered,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionCallError> {
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let admitted = match self.admit_registered(caller, origin, registered, request) {
+            Ok(RegisteredAdmission::Call(admitted)) => admitted,
+            Ok(RegisteredAdmission::Taken(receipt)) => return Pending::ready(Ok(receipt)),
+            Err(error) => return Pending::ready(Err(error)),
+        };
+        let asking = request.approval().is_none().then(|| {
+            registered.answers.asks_first(
+                caller,
+                request,
+                &Admitted {
+                    through: admitted.through.clone(),
+                    stop: Arc::default(),
+                },
+            )
+        });
+        let Some(Some(asking)) = asking else {
+            return Pending::ready(
+                self.take_registered(caller, origin, registered, request, admitted),
+            );
+        };
+        let (state, caller, origin, registered, request) = (
+            Arc::clone(self),
+            caller.clone(),
+            origin.cloned(),
+            registered.clone(),
+            request.clone(),
+        );
+        asking.map(move |asked| match asked {
+            Ok(()) => {
+                state.take_registered(&caller, origin.as_ref(), &registered, &request, admitted)
+            }
+            Err(waits) => {
+                if let Ok(mut log) = state.remote_invocations.lock() {
+                    log.abandon(&request.invocation);
+                }
+                Err(waits)
+            }
+        })
+    }
+
+    /// Admit one call of a provider registered on this device for `caller`, before it is taken:
+    /// what [`Self::take_registered`] goes on with.
+    fn admit_registered(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        registered: &Registered,
+        request: &InvokeRequest,
+    ) -> Result<RegisteredAdmission, ActionCallError> {
         let abandon = |error: ActionCallError| {
             if let Ok(mut log) = self.remote_invocations.lock() {
                 log.abandon(&request.invocation);
@@ -270,7 +335,7 @@ impl AppBrokerState {
         if matches!(reservation, Reservation::Admitted) {
             return self
                 .remote_job(caller, &request.invocation)
-                .map(|job| self.receipt_for(request.invocation, job))
+                .map(|job| RegisteredAdmission::Taken(self.receipt_for(request.invocation, job)))
                 .ok_or(ActionCallError::UnknownInvocation);
         }
         if !registered.reach.devices() && !is_local_host_caller(caller, origin) {
@@ -324,6 +389,51 @@ impl AppBrokerState {
         ) {
             return Err(abandon(ActionCallError::confirmation_required()));
         }
+        // What a step of an agent session does in turn goes through the session's own api.
+        let through = match (&session, origin) {
+            (Some(Ok(_)), Some(origin)) => {
+                self.agent_session_api(caller, origin.clone()).map(|api| {
+                    Arc::new(api) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>
+                })
+            }
+            _ => None,
+        };
+        Ok(RegisteredAdmission::Call(RegisteredCall {
+            descriptor,
+            approved,
+            through,
+        }))
+    }
+
+    /// Take one call [`Self::admit_registered`] admitted, and hand it to its provider.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one call's admission, effect and answer in a single auditable sequence"
+    )]
+    fn take_registered(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        registered: &Registered,
+        request: &InvokeRequest,
+        call: RegisteredCall,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let RegisteredCall {
+            descriptor,
+            approved,
+            through,
+        } = call;
+        let abandon = |error: ActionCallError| {
+            if let Ok(mut log) = self.remote_invocations.lock() {
+                log.abandon(&request.invocation);
+            }
+            error
+        };
+        let Some(workspace_id) = caller.workspace() else {
+            return Err(abandon(ActionCallError::NotPermitted));
+        };
+        let argument = request.argument.to_slot();
+        let app_id = registered.app;
         let admitted = self
             .admit_host_action(
                 caller,
@@ -363,15 +473,6 @@ impl AppBrokerState {
             )?;
             Ok(())
         })?;
-        // What a step of an agent session does in turn goes through the session's own api.
-        let through = match (&session, origin) {
-            (Some(Ok(_)), Some(origin)) => {
-                self.agent_session_api(caller, origin.clone()).map(|api| {
-                    Arc::new(api) as Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>
-                })
-            }
-            _ => None,
-        };
         // A call whose contract declares it cancellable may be asked to stop while it runs: its
         // caller's cancel sets this flag, and the call stops and answers as cancelled.
         let stop = Arc::new(AtomicBool::new(false));
@@ -1249,7 +1350,12 @@ mod identity_admin_tests {
                                 reach: Reach::ThisDevice,
                                 answers: steps as Arc<dyn ActionProvider + Send + Sync>,
                             };
-                            state.invoke_registered(&caller, Some(&origin), &registered, asked)
+                            state
+                                .invoke_registered(&caller, Some(&origin), &registered, asked)
+                                .wait_timeout(tilo_test_env::hang_bound())
+                                .ok()
+                                .flatten()
+                                .expect("the call is answered")
                         });
                         blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                         // The journal writer holds a signed admission but has not

@@ -91,9 +91,6 @@ impl Callees {
                 .map_or_else(Invoked::Failed, Invoked::Done),
             Answered::Failed(why) => Invoked::Failed(why),
             Answered::Refused(why) => Invoked::Refused(why),
-            // A program's host answers every call before the program goes on, so a call the
-            // person is asked about cannot wait there: the program is told it was asked.
-            Answered::Asks(why) => Invoked::Refused(format!("asked: {why}")),
         }
     }
 

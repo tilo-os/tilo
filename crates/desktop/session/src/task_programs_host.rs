@@ -488,7 +488,7 @@ impl Programs for TaskProgramHost {
         tilo_mcp::task_runs::run(
             api,
             request.program,
-            request.confirm,
+            request.go,
             request.this,
             request.stop,
         )

@@ -65,6 +65,18 @@ pub trait Admits {
         admitted: &Admitted,
     ) -> Result<Pending<Outcome>, String>;
 
+    /// Whether a call nobody approved yet waits for its person's yes, found by looking at the
+    /// call itself ([`ActionProvider::asks_first`]).
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        let _ = (caller, request, admitted);
+        None
+    }
+
     /// The action `address` is with `argument`, where it differs from its row
     /// ([`ActionProvider::invocation`]).
     fn described(
@@ -127,6 +139,15 @@ impl<T: Admits> ActionProvider for T {
         admitted: Admitted,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         settled(request.invocation, self.start(caller, &request, &admitted))
+    }
+
+    fn asks_first(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Option<Pending<Result<(), ActionCallError>>> {
+        Admits::asks_first(self, caller, request, admitted)
     }
 
     fn watch(&self, caller: &Caller, request: &InvokeRequest) -> Result<LiveView, String> {

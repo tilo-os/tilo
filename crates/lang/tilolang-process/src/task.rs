@@ -8,8 +8,9 @@
 //! goes out on it to the API, which reads and invokes as the task: the API's connection is the
 //! task's ownership, so nothing here is trusted to say who it is.
 //!
-//! The connection carries one JSON object per line. The API sends `{"run": {source, confirm}}`
-//! or `{"catalogue": {}}` (answered `{"catalogue": …}`: every installed app's declarations,
+//! The connection carries one JSON object per line. The API sends `{"run": {source, author}}` (a
+//! program with its go-ahead: its person approved it, or it is their own), `{"preview": {source,
+//! author}}` (run provisionally, nothing sent: [`TaskSession::preview`]) or `{"catalogue": {}}` (answered `{"catalogue": …}`: every installed app's declarations,
 //! [`TaskSession::catalogue`], and each app whose package did not load with what a program
 //! naming it is told, `can't be reached: <why>`);
 //! while the program runs, the host asks `{"store": {app, record, command}}` for what it reads of
@@ -22,8 +23,8 @@
 //! `read` takes as its item), `{"reads": {app, resource}}` for whether a resource the app
 //! publishes answers a read of itself (answered `{"ok": {"reads": bool}}` or `{"err": why}`: a
 //! resource that does not is read by the document, which takes it as its `item`) and
-//! `{"invoke": {app, resource, action, arguments}}` (answered `{"ok": output}`, `{"failed": why}`,
-//! `{"refused": why}` or `{"asks": why}`), and it ends with `{"answer": …}`
+//! `{"invoke": {app, resource, action, arguments}}` (answered `{"ok": output}`, `{"failed": why}`
+//! or `{"refused": why}`), and it ends with `{"answer": …}`
 //! ([`tilolang_tilo::task::TaskSession::run`]). A native app's document is read by the app itself
 //! ([`tilolang_tilo::native`]), so the host's read of one is its `read` action, invoked like any
 //! other.
@@ -306,14 +307,11 @@ impl Line {
             Answered::Done(output.clone())
         } else if reply.get("refused").is_some() {
             Answered::Refused(why("refused"))
-        } else if reply.get("asks").is_some() {
-            Answered::Asks(why("asks"))
         } else if reply.get("failed").is_some() {
             Answered::Failed(why("failed"))
         } else {
             Answered::Failed(format!(
-                "the API answered the invocation with neither ok, failed, refused nor asks: \
-                 {reply}"
+                "the API answered the invocation with neither ok, failed nor refused: {reply}"
             ))
         }
     }
@@ -597,10 +595,10 @@ impl Task {
             };
         }
         let answer = match message.and_then(|message| program(&message)) {
-            Ok((source, confirm, author)) => {
+            Ok((source, go_ahead, author)) => {
                 let actor = author.actor.clone();
                 *api.caller.borrow_mut() = Some(author);
-                self.session.run(&source, confirm, &actor)
+                self.run(&source, go_ahead, &actor)
             }
             Err(why) => {
                 tracing::warn!(why, "a guest sent the task something that is not a program");
@@ -612,6 +610,15 @@ impl Task {
             return false;
         }
         true
+    }
+
+    /// Run `source`, written by `actor`: for real with its go-ahead, else provisionally.
+    fn run(&self, source: &str, go_ahead: bool, actor: &tilolang_tilo::runtime::Actor) -> Json {
+        if go_ahead {
+            self.session.run(source, actor)
+        } else {
+            self.session.preview(source, actor)
+        }
     }
 
     fn serve_one(&self) -> bool {
@@ -633,10 +640,10 @@ impl Task {
             };
         }
         let answer = match message.and_then(|message| program(&message)) {
-            Ok((source, confirm, author)) => {
+            Ok((source, go_ahead, author)) => {
                 let actor = author.actor.clone();
                 *self.api.caller.borrow_mut() = Some(author);
-                self.session.run(&source, confirm, &actor)
+                self.run(&source, go_ahead, &actor)
             }
             Err(why) => {
                 tracing::warn!(why, "the API sent the task something that is not a program");
@@ -651,18 +658,23 @@ impl Task {
     }
 }
 
-/// The program `message` asks the task to run, whether its changes are confirmed, and who wrote
-/// it: the API names the author of every program, the agent or the person typing.
+/// The program `message` asks the task to run, whether it has its go-ahead (`run`) or is
+/// previewed (`preview`), and who wrote it: the API names the author of every program, the agent or the
+/// person typing.
 fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Caller), String> {
-    let run = message.get("run").ok_or_else(|| {
-        format!("the API sent the task something other than a program: {message}")
-    })?;
+    let (run, go_ahead) = match (message.get("run"), message.get("preview")) {
+        (Some(run), None) => (run, true),
+        (None, Some(previewed)) => (previewed, false),
+        _ => {
+            return Err(format!(
+                "the API sent the task something other than a program: {message}"
+            ));
+        }
+    };
     let source = run
         .get("source")
         .and_then(Json::as_str)
         .ok_or("the API sent a program without its source")?;
-    // An absent `confirm` is a run not confirmed yet: its changes are previewed first.
-    let confirm = run.get("confirm").and_then(Json::as_bool).unwrap_or(false);
     let author = run
         .get("author")
         .ok_or("the API sent a program without its author")?;
@@ -678,7 +690,7 @@ fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Call
             .and_then(Json::as_str)
             .map(str::to_owned),
     };
-    Ok((source.to_owned(), confirm, author))
+    Ok((source.to_owned(), go_ahead, author))
 }
 
 /// What the session says a task's programs may name: the tilolang apps it runs, whose modules
@@ -827,7 +839,7 @@ mod tests {
             api.write_all(b"{\"walk\": {}}\n").expect("sent");
             assert!(task.serve());
             assert_eq!(answer(&mut reader)["answer"]["state"], "failed");
-            api.write_all(b"{\"run\": {\"confirm\": true}}\n")
+            api.write_all(b"{\"run\": {\"author\": {}}}\n")
                 .expect("sent");
             assert!(task.serve());
             let answer = answer(&mut reader);

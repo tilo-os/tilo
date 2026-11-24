@@ -65,8 +65,8 @@ usage:
       a nested session open on this computer instead (dist/dev/nested-session.sh): the
       only one, the one you pick, or SESSION (its state directory, --ready file, runtime
       directory or control socket). Each entry is a program
-      run as one step: lets are kept, refs (n3) name what answers showed, a bulk change
-      previews until `confirm`, `undo` takes a step back.
+      run as one step: lets are kept, refs (n3) name what answers showed, `undo` takes a
+      step back.
   tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--hover X,Y]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR [--theme NAME]... [--bar-at-rest] [--shot-height H]]] [--locale TAG]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and

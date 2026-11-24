@@ -340,9 +340,6 @@ export class FakeApi {
         if (asked.program === "boom") {
           return this.json({ status: "failed", output: [], changed: 0, steps: [] });
         }
-        if (asked.program === "preview me") {
-          return this.json({ status: "preview", output: ["4 changes in notes"], changed: 4, steps: [] });
-        }
         return this.json({
           status: "ok",
           output: ['n1 "Q3 plan"', "1 change in notes"],

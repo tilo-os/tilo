@@ -678,7 +678,7 @@ export function resultOf(answer: ActionAnswer): unknown {
 
 /** What a tilolang program answered: its output, and the steps it took. */
 export interface ProgramAnswer {
-  /** `ok`, `preview` or `failed`. */
+  /** `ok`, `waiting` (for its person's yes: `text` names where they answer) or `failed`. */
   status: string;
   output: string[];
   changed: number;

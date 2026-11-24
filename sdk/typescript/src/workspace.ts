@@ -370,12 +370,8 @@ export class Workspace {
    * Run a tilolang program as one step, in the program session `session` names (an earlier
    * answer's `session`), or a new one.
    */
-  async program(
-    source: string,
-    confirm: boolean | null = null,
-    session: string | null = null,
-  ): Promise<ProgramAnswer> {
-    return (await this.endpoint()).program(source, confirm, session);
+  async program(source: string, session: string | null = null): Promise<ProgramAnswer> {
+    return (await this.endpoint()).program(source, session);
   }
 
   /** Each change, invocation event and presence change, the cursor kept. */

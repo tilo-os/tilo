@@ -1159,7 +1159,7 @@ tilo_test_env::scenario! {
         let agent = tilolang_tilo::runtime::Actor::from(
             tilolang_tilo::runtime::ids::MemberId::agent("task-1"),
         );
-        let answer = session.run("timer.snooze(timer.board, 90m, .some(15m))", true, &agent);
+        let answer = session.run("timer.snooze(timer.board, 90m, .some(15m))", &agent);
         assert_eq!(answer["state"], "done", "{answer:#}");
         let call = api.invoked.borrow().last().cloned().unwrap();
         assert_eq!(call["arguments"]["span"], json!(5400), "{call:#}");

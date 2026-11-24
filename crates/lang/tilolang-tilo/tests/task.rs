@@ -47,9 +47,17 @@ fn task(refused: Vec<&'static str>) -> Task {
 }
 
 impl Task {
-    /// What `source` answers as one step of the task, `confirm`ed or previewed.
-    fn step(&self, source: &str, confirm: bool) -> Json {
-        self.session.run(source, confirm, &agent())
+    /// What `source` answers as one step of the task: run with its go-ahead (`approved`), or
+    /// previewed first and run when its person need not be asked, as an agent's program is.
+    fn step(&self, source: &str, approved: bool) -> Json {
+        if approved {
+            return self.session.run(source, &agent());
+        }
+        let preview = self.session.preview(source, &agent());
+        if preview["state"] == "preview" && preview["asks"] == false {
+            return self.session.run(source, &agent());
+        }
+        preview
     }
 
     /// The one line `source` printed.
@@ -213,7 +221,7 @@ fn an_assignment_is_the_resources_field_edit() {
 }
 
 #[test]
-fn many_changes_are_previewed_and_sent_on_confirm() {
+fn many_changes_are_previewed_and_sent_once_approved() {
     let task = seeded();
     let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    tasks.new_task(tasks.tasks, title: t)\n}\nfor n in notes.notebook.notes {\n    n.title = \"x\"\n}";
     let previewed = task.step(bulk, false);
@@ -282,7 +290,7 @@ tilo_test_env::scenario! {
             "tasks.tasks.items.filter(t -> t.done)",
             "tasks.tasks.items.filter(t -> t.done).len()",
         ] {
-            let answer = session.run(source, false, &agent());
+            let answer = session.preview(source, &agent());
             assert_eq!(answer["state"], "failed", "{source}: {answer:#}");
             assert!(
                 answer["detail"]

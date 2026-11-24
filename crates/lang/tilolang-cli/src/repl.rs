@@ -98,8 +98,6 @@ pub struct Repl {
     workspace: String,
     catalogue: Catalogue,
     names: Vec<String>,
-    /// The program the last answer was a preview of: what `confirm` sends again.
-    previewed: Option<String>,
 }
 
 /// What one entry did: lines to print, or the end of the REPL.
@@ -113,7 +111,6 @@ pub enum Said {
 enum Entry {
     Nothing,
     Command(String),
-    Confirm,
     /// `ls [path]`: what the workspace holds, or what a path holds.
     List(String),
     /// `find words`: what the workspace holds that matches.
@@ -129,9 +126,6 @@ fn parse_entry(text: &str) -> Entry {
     if let Some(command) = text.strip_prefix(':') {
         let name = command.split_whitespace().next().unwrap_or_default();
         return Entry::Command(name.to_owned());
-    }
-    if text == "confirm" {
-        return Entry::Confirm;
     }
     // `ls` and `find text` are no tilolang (`find(…)` is, and stays a program).
     if text == "ls" {
@@ -172,11 +166,10 @@ impl Repl {
             workspace: workspace.to_owned(),
             catalogue: Catalogue::default(),
             names: Vec::new(),
-            previewed: None,
         };
         // Every installed app, from the packages the workspace runs programs against: whether a
         // window of it is open does not matter.
-        let listed = repl.program("catalogue", false).await?;
+        let listed = repl.program("catalogue").await?;
         let catalogue: Json = serde_json::from_str(text_of(&listed).trim())
             .map_err(|_| "the workspace did not list its apps".to_owned())?;
         for (alias, app) in catalogue.as_object().into_iter().flatten() {
@@ -205,22 +198,18 @@ impl Repl {
                     &format!("no command :{other}; :help lists them"),
                 )],
             },
-            Entry::Confirm => match self.previewed.take() {
-                Some(program) => self.run(&program, true).await,
-                None => vec![paint(Role::Note, "no preview waits for confirm")],
-            },
             Entry::List(path) => self.list(&path).await,
             Entry::Find(query) => self.find(&query).await,
-            Entry::Program(program) => self.run(&program, false).await,
+            Entry::Program(program) => self.run(&program).await,
         })
     }
 
     /// Run `source` in the REPL's program session: the answer.
-    async fn program(&self, source: &str, confirm: bool) -> Result<Json, String> {
+    async fn program(&self, source: &str) -> Result<Json, String> {
         Box::pin(self.calls.typed(
             Some(&self.workspace),
             "tilo",
-            json!({"program": source, "confirm": confirm}),
+            json!({"program": source}),
             None,
         ))
         .await
@@ -228,8 +217,8 @@ impl Repl {
     }
 
     /// Send `program` and say its answer.
-    async fn run(&mut self, program: &str, confirm: bool) -> Vec<String> {
-        let answer = match self.program(program, confirm).await {
+    async fn run(&mut self, program: &str) -> Vec<String> {
+        let answer = match self.program(program).await {
             Ok(answer) => answer,
             Err(error) => {
                 // A session the workspace no longer keeps is gone with its lets: the names it
@@ -242,7 +231,6 @@ impl Repl {
         };
         let status = answer.get("status").and_then(Json::as_str).unwrap_or("");
         let failed = status == "failed";
-        self.previewed = (status == "preview").then(|| program.to_owned());
         let mut said = Vec::new();
         for line in lines_of(&answer) {
             if let Some(shown) = render::line_ref(&line)
@@ -348,9 +336,7 @@ tilolang, run in the workspace as you:
   let pinned = notes.notebook.notes.filter(.pinned)
                                kept for the entries after it
   for n in pinned { notes.pin(n) }
-                               one step: applied whole or not at all; one that changes many
-                               resources or destroys something shows a preview first
-  confirm                      apply what the last preview listed
+                               one step: applied whole or not at all
   undo                         take back the last step
   undo task / history task     take back / list every step of this REPL
   ls [path]                    list the apps, or what a path holds
@@ -394,7 +380,7 @@ impl Complete for Repl {
                 .iter()
                 .chain(&self.names)
                 .cloned()
-                .chain(["let", "undo", "confirm", "true", "false", "none"].map(str::to_owned))
+                .chain(["let", "undo", "true", "false", "none"].map(str::to_owned))
             {
                 offer(name);
             }
@@ -647,11 +633,10 @@ mod tests {
     tilo_test_env::scenario! {
         fn an_entry_reads_as_what_the_person_meant;
 
-        phase an_entry_is_a_command_a_confirm_or_a_program;
+        phase an_entry_is_a_command_a_listing_or_a_program;
         {
             assert_eq!(parse_entry("  "), Entry::Nothing);
             assert_eq!(parse_entry(":apps now"), Entry::Command("apps".into()));
-            assert_eq!(parse_entry("confirm"), Entry::Confirm);
             assert_eq!(parse_entry("ls"), Entry::List(String::new()));
             assert_eq!(parse_entry("ls notes/"), Entry::List("notes/".into()));
             assert_eq!(parse_entry("find groceries"), Entry::Find("groceries".into()));
