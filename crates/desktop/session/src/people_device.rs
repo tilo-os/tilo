@@ -369,8 +369,18 @@ impl PeopleDevice {
                 self.surfaces.close("people");
             }
             PeopleEffect::ShowPerson { person } => {
+                let person = person.trim().to_owned();
+                // Opening the card of the person whose view this is is a gesture about the
+                // following itself, not the person working: it leaves the view they follow as it
+                // is, as the bar's own chip does in the shell.
+                if let Some(sync) = &self.sync
+                    && !person.is_empty()
+                    && sync.own().following.as_deref() == Some(person.as_str())
+                {
+                    sync.keep_following_through_gesture();
+                }
                 // An empty key comes back from a card to the roster; anyone else's opens on them.
-                *self.surfaces.person.borrow_mut() = person.trim().to_owned();
+                *self.surfaces.person.borrow_mut() = person;
                 self.surfaces.open("people");
             }
             PeopleEffect::Follow { person } => {
