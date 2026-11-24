@@ -374,9 +374,6 @@ impl TerminalService {
         self.copies
             .apply_app_action(workspace, caller, asked, confirmation)
             .await
-            .map_err(|error| ActionCallError::Refused {
-                reason: error.to_string(),
-            })
     }
 
     /// Record `ran`, a command line the session ran, on its session record through the app's

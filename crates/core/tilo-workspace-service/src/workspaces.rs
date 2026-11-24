@@ -66,6 +66,8 @@ pub use views::ViewReadPolicy;
 mod surfaces_tests;
 #[cfg(feature = "agents")]
 pub mod terminal;
+#[cfg(all(test, feature = "agents"))]
+mod terminal_tests;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 pub(crate) mod device_actions;
 mod follow;

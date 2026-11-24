@@ -154,15 +154,17 @@ impl Workspaces {
     /// # Errors
     ///
     /// No app process here takes the call, the action is refused or fails, or it does not end in
-    /// time.
+    /// time. The app's own answer travels as it is, so the person's yes it waits for
+    /// ([`tilo_actions::remote::ActionCallError::ConfirmationRequired`]) reaches the dispatch
+    /// that keeps the call as their question.
     pub(crate) async fn apply_app_action(
         &self,
         workspace: &str,
         caller: &tilo_actions::remote::Caller,
         asked: RecordAction<'_>,
         confirmation: Option<tilo_actions::remote::Confirmation>,
-    ) -> Result<tilo_actions::ActionOutput, CollaborationError> {
-        use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::remote::ActionCallError> {
+        use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, ReceiptStatus};
 
         /// How long the app has to take the call and answer it.
         const APP_ACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -192,15 +194,20 @@ impl Workspaces {
         };
         let invocation = request.invocation;
         let providers = self.providers();
-        let answer = providers.invoke(caller, request).ok_or_else(|| {
-            CollaborationError::new(format!("no app process runs {app}'s {record} here"))
+        let answer = providers.invoke(caller, request).ok_or_else(|| ActionCallError::Refused {
+            reason: format!("no app process runs {app}'s {record} here"),
         })?;
         let receipt = tokio::task::spawn_blocking(move || answer.wait_timeout(APP_ACTION_WAIT))
             .await
-            .map_err(|error| CollaborationError::new(error.to_string()))?
-            .map_err(|_| CollaborationError::new("the app did not take the call in time"))?
-            .ok_or_else(|| CollaborationError::new("the app dropped the call"))?
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
+            .map_err(|error| ActionCallError::Unavailable {
+                reason: error.to_string(),
+            })?
+            .map_err(|_| ActionCallError::Unavailable {
+                reason: "the app did not take the call in time".into(),
+            })?
+            .ok_or_else(|| ActionCallError::Unavailable {
+                reason: "the app dropped the call".into(),
+            })??;
         let mut status = receipt.status;
         // A call the app took rather than answered is followed until it settles.
         let deadline = tilo_clock::now()
@@ -208,7 +215,9 @@ impl Workspaces {
             .unwrap_or_else(tilo_clock::now);
         while status == ReceiptStatus::Accepted {
             if tilo_clock::now() >= deadline {
-                return Err(CollaborationError::new("the app did not answer in time"));
+                return Err(ActionCallError::Unavailable {
+                    reason: "the app did not answer in time".into(),
+                });
             }
             tokio::time::sleep(APP_ACTION_POLL).await;
             if let Some(Some(state)) = providers.observe(caller, &invocation) {
@@ -217,12 +226,17 @@ impl Workspaces {
         }
         match status {
             ReceiptStatus::Completed { output } => Ok(output),
-            ReceiptStatus::Accepted => Err(CollaborationError::new("the app did not answer")),
-            ReceiptStatus::Rejected { error } => Err(CollaborationError::new(error.to_string())),
-            ReceiptStatus::Failed { error } => Err(CollaborationError::new(error.message)),
-            ReceiptStatus::Cancelled { message } => Err(CollaborationError::new(
-                message.unwrap_or_else(|| "the app cancelled the call".into()),
-            )),
+            ReceiptStatus::Accepted => Err(ActionCallError::Unavailable {
+                reason: "the app did not answer".into(),
+            }),
+            // The app's own answer, its question for the person's yes among them.
+            ReceiptStatus::Rejected { error } => Err(error),
+            ReceiptStatus::Failed { error } => Err(ActionCallError::Refused {
+                reason: error.message,
+            }),
+            ReceiptStatus::Cancelled { message } => Err(ActionCallError::Refused {
+                reason: message.unwrap_or_else(|| "the app cancelled the call".into()),
+            }),
         }
     }
 }
