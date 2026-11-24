@@ -42,8 +42,8 @@ mod instances;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(any(target_os = "macos", windows))]
 mod verified;
+pub(crate) use verified::verify_package;
 #[cfg(windows)]
 mod windows;
 #[cfg(any(target_os = "macos", windows))]

@@ -397,6 +397,149 @@ pub fn resolve_bundle_path(version: &str) -> Option<PathBuf> {
     None
 }
 
+/// The content root hash of the files under `dir`, as a bundle's `bundle.toml` records it: each
+/// file's path from `dir`, '/'-separated, and its BLAKE3, sorted. What a build stamps its own
+/// libraries by, so the build of the runtime an app ships is the build's, never written by hand.
+///
+/// # Errors
+/// A file under `dir` cannot be read, or `dir` cannot be walked.
+pub fn tree_root_hash(dir: &Path) -> std::io::Result<String> {
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        for entry in fs::read_dir(&path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            let bytes = fs::read(&path)?;
+            files.push((relative, blake3::hash(&bytes).to_hex().to_string()));
+        }
+    }
+    files.sort();
+    let mut hasher = blake3::Hasher::new();
+    for (path, hash) in files {
+        hasher.update(path.as_bytes());
+        hasher.update(b"\t");
+        hasher.update(hash.as_bytes());
+        hasher.update(b"\n");
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// The exact runtime builds the host process carries in itself, `<name>/<version>` each: a
+/// phone's APK ships its runtimes inside itself rather than under a bundle root, so an app that
+/// names one is installed and runs without the bundle being fetched.
+///
+/// The host declares them once, before its daemon starts, from the signed manifest it was
+/// packaged with ([`carry_in_host`]); nothing else writes this, and no runtime is ever taken on a
+/// name alone: every build here is exact (a Tilo runtime is its `+native.<digest>` build, a
+/// language runtime the build it was built from).
+static CARRIED: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Why a host's carried runtimes are not what a bundle root can satisfy.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CarriedError {
+    #[error(
+        "a runtime this host carries must name the exact build, not {0:?}: a Tilo runtime is its \
+         `+native.<digest>` build and a language runtime its own `+<flavor>`"
+    )]
+    Inexact(String),
+    #[error("this host declared the runtime builds it carries already")]
+    AlreadyDeclared,
+}
+
+/// Declare the runtime builds this host carries in itself, as its own signed manifest names them:
+/// a phone calls this with the manifest the APK it runs from carries, before its daemon starts.
+///
+/// # Errors
+/// A build is not exact, or the host declared its carried runtimes already.
+pub fn carry_in_host(
+    builds: impl IntoIterator<Item = String>,
+) -> Result<(), CarriedError> {
+    let builds: Vec<String> = builds.into_iter().collect();
+    for build in &builds {
+        if !is_exact_build(build) {
+            return Err(CarriedError::Inexact(build.clone()));
+        }
+    }
+    CARRIED
+        .set(builds)
+        .map_err(|_| CarriedError::AlreadyDeclared)
+}
+
+/// The exact runtime builds this host carries, `<name>/<version>` each; empty for a host whose
+/// runtimes live in the device's bundle root, as a desktop's do.
+#[must_use]
+pub fn carried_builds() -> &'static [String] {
+    CARRIED.get().map_or(&[], Vec::as_slice)
+}
+
+/// The build this host carries that satisfies `wanted`, a runtime an app requires
+/// (`tilo-runtime/2026.07`, `tilo-runtime/2026.07+native.<digest>`, `tilolang/0.1.0+tilolang`):
+/// the same build, or — for an app that names a release — this host's exact build of that
+/// release, whose digest its signed manifest gives. `None` for a build this host does not carry.
+#[must_use]
+pub fn carried(wanted: &str) -> Option<&'static str> {
+    carried_builds()
+        .iter()
+        .find(|build| satisfies(build, wanted))
+        .map(String::as_str)
+}
+
+/// Whether `build`, a build the host carries, is what `wanted` names: an app that names an exact
+/// build runs on that build and no other; one that names a release runs on this host's build of
+/// that release, since its exact build is what the host's manifest pins.
+fn satisfies(build: &str, wanted: &str) -> bool {
+    if build == wanted {
+        return true;
+    }
+    let Some((wanted_name, wanted_version)) = wanted.split_once('/') else {
+        return false;
+    };
+    // An exact build in `wanted` matches only itself, already handled above.
+    if split_abi_version(wanted_version).is_some() || wanted_version.contains('+') {
+        return false;
+    }
+    let Some((build_name, build_version)) = build.split_once('/') else {
+        return false;
+    };
+    build_name == wanted_name
+        && split_abi_version(build_version).is_some_and(|(release, _)| release == wanted_version)
+}
+
+/// Whether `build` (`<name>/<version>`) is exact: a Tilo runtime `+native.<32 hex>` build, or a
+/// language runtime at the build it was built from (`0.1.0+tilolang`).
+fn is_exact_build(build: &str) -> bool {
+    let Some((name, version)) = build.split_once('/') else {
+        return false;
+    };
+    if name.is_empty() {
+        return false;
+    }
+    match split_abi_version(version) {
+        Some((release, digest)) => {
+            !release.is_empty()
+                && digest.len() == ABI_DIGEST_HEX_LEN
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        }
+        None => version
+            .split_once('+')
+            .is_some_and(|(release, flavor)| !release.is_empty() && !flavor.is_empty()),
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct BuildOptions<'a> {
     /// Host root each source path is resolved against; `None` = `/`.
@@ -2747,5 +2890,34 @@ mod tests {
                 assert!(p.ends_with("tilo-runtime/v"), "got {p:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_host_carries_exact_builds_and_never_answers_for_a_bare_name() {
+        let release_only = "tilo-runtime/2026.07".to_owned();
+        assert_eq!(
+            carry_in_host([release_only.clone()]),
+            Err(CarriedError::Inexact(release_only)),
+            "a release alone is no build a host can say it carries"
+        );
+        let tilo = format!("tilo-runtime/2026.07+native.{}", "0123456789abcdef".repeat(2));
+        carry_in_host([tilo.clone(), "tilolang/0.1.0+tilolang".to_owned()]).unwrap();
+        assert_eq!(
+            carried("tilo-runtime/2026.07"),
+            Some(tilo.as_str()),
+            "an app that names a release runs on the host's build of it"
+        );
+        assert_eq!(
+            carried("tilolang/0.1.0+tilolang"),
+            Some("tilolang/0.1.0+tilolang")
+        );
+        for other in [
+            "tilo-runtime/2027.01",
+            "tilo-runtime/2026.07+native.ffffffffffffffffffffffffffffffff",
+            "tilolang/0.2.0+tilolang",
+        ] {
+            assert_eq!(carried(other), None, "{other} is no build this host carries");
+        }
+        assert_eq!(carry_in_host([]), Err(CarriedError::AlreadyDeclared));
     }
 }
