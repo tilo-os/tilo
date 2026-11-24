@@ -112,7 +112,7 @@ elif [ "${TILO_VM_FOUND:-0}" = 1 ]; then
   # The member's daemon makes the person (step 4), as it makes every person.
   found_here=1
 else
-  say "this host has no identity and no TILO_VM_TICKET: make a ticket with \`tilo device add --server\` on an owner device"
+  say "this host has no identity and no TILO_VM_TICKET: a stack.sh up --fresh makes a person whose founding issues the tickets, or take one an owner's device issued"
   exit 1
 fi
 

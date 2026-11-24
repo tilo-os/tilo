@@ -947,7 +947,12 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
 
     // The laptop's first command: through the place every client finds the daemon at.
     FOUNDING_PEER.store(OWN, Ordering::SeqCst);
-    daemon.found(Some("Ada")).unwrap();
+    daemon
+        .found(tilo_api::daemon::Founding {
+            name: Some("Ada".to_owned()),
+            ..tilo_api::daemon::Founding::default()
+        })
+        .unwrap();
     // The person's certificate names the device now, so the daemon starts their services; the
     // device's own actions stand in for them here.
     let frames = crate::device::local::Frames::of_the_device(answers.clone());
@@ -993,9 +998,16 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
         why.contains(tilo_device_identity::login::ALREADY_A_PERSONS),
         "{why}"
     );
-    daemon
-        .found(Some("Someone else"))
+    let again = daemon
+        .found(tilo_api::daemon::Founding {
+            name: Some("Someone else".to_owned()),
+            tickets: vec![tilo_api::daemon::TicketKind::Server],
+        })
         .expect("a command on a device with a person goes on as that person");
+    assert!(
+        again.is_none(),
+        "a person made already is founded no second time, and issues no first ticket: {again:?}"
+    );
     assert_eq!(
         ask(OWN, json!({"native": "account#who"}))["person"],
         person,

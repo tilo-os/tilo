@@ -42,6 +42,9 @@ pub const TICKET_CREDENTIAL: &str = "tilo.ticket";
 const HANDED_AGENT: &str = "tilo";
 /// How often the daemon looks whether a person's certificate now names its key.
 const LOOKING: Duration = Duration::from_secs(2);
+/// How long a founding call waits for the person's own services to start and issue the tickets
+/// it asked for: founding a person opens their workspace here, which is the work of a start.
+const SERVING_WAIT: Duration = Duration::from_secs(120);
 
 /// This computer's device key, its login's place, and the lock that makes this process its one
 /// daemon: taken at boot, before anything else, and handed to the person's services once they
@@ -53,6 +56,59 @@ pub(crate) struct ThisDevice {
     /// The device a ticket made of this computer, once one did: kept in memory for the person's
     /// services to enter through, as nothing of it is written down.
     entered: Entered,
+    /// What the person's services issue the tickets a founding asks for through, once they run.
+    founding: Arc<Founding>,
+}
+
+/// The tickets a person's founding asks for, issued as part of founding them: the founding call
+/// names what it needs, and is answered them once the person's own services run here, which is
+/// where a ticket can be served. A person is founded once, so their first tickets are the ones
+/// their own act issued; nobody else in their account gets any.
+#[derive(Default)]
+pub(crate) struct Founding {
+    /// The person's services, and the person they serve, once they run.
+    serving: std::sync::Mutex<Option<([u8; 32], Arc<super::ticket::Tickets>)>>,
+    /// Told when they do.
+    announced: tokio::sync::Notify,
+}
+
+impl Founding {
+    /// Have the person's services, which serve `person`, issue the tickets a founder asks for
+    /// from now on.
+    pub(crate) fn serving(&self, person: [u8; 32], tickets: Arc<super::ticket::Tickets>) {
+        *self.serving.lock_recover() = Some((person, tickets));
+        self.announced.notify_waiters();
+    }
+
+    /// The tickets `kinds` names, each issued as `person`'s own act on this device: as
+    /// `[{"kind": …, "ticket": …}]`, or why they were not.
+    pub(crate) async fn issue(&self, person: [u8; 32], kinds: &[String]) -> Result<Value, String> {
+        let tickets = tokio::time::timeout(SERVING_WAIT, async {
+            loop {
+                let heard = self.announced.notified();
+                tokio::pin!(heard);
+                heard.as_mut().enable();
+                if let Some((serving, tickets)) = self.serving.lock_recover().clone()
+                    && serving == person
+                {
+                    return tickets;
+                }
+                heard.await;
+            }
+        })
+        .await
+        .map_err(|_| {
+            "this device's person's services did not start in time to issue the tickets"
+                .to_owned()
+        })?;
+        let mut issued = Vec::with_capacity(kinds.len());
+        for kind in kinds {
+            let ticket = tickets.issue_as_person(person, kind).await?;
+            let ticket = ticket.get("ticket").cloned().unwrap_or(Value::Null);
+            issued.push(serde_json::json!({ "kind": kind, "ticket": ticket }));
+        }
+        Ok(Value::Array(issued))
+    }
 }
 
 /// The device a ticket made of this computer while its daemon runs, once one did.
@@ -77,7 +133,13 @@ impl ThisDevice {
             place,
             lock,
             entered: Entered::default(),
+            founding: Arc::default(),
         })
+    }
+
+    /// What the person's own services issue the tickets a founding asks for through.
+    pub(crate) fn founding(&self) -> Arc<Founding> {
+        Arc::clone(&self.founding)
     }
 
     /// Whether this computer's identity is one its person's services can start as: a person's
@@ -95,6 +157,7 @@ impl ThisDevice {
                 key: self.key.clone(),
                 place: self.place.clone(),
                 entered: Arc::clone(&self.entered),
+                founding: Arc::clone(&self.founding),
                 calls: std::sync::Mutex::default(),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
@@ -221,6 +284,8 @@ struct Answering {
     place: Place,
     /// Where the device a ticket made of this computer is kept for its person's services.
     entered: Entered,
+    /// What the person's services issue a founding's tickets through, once they run.
+    founding: Arc<Founding>,
     /// Each invocation taken, and where it is.
     calls: std::sync::Mutex<HashMap<InvocationId, InvocationState>>,
     runtime: tokio::runtime::Handle,
@@ -244,6 +309,7 @@ impl DeviceOnly {
                 key,
                 place,
                 entered: Entered::default(),
+                founding: Arc::default(),
                 calls: std::sync::Mutex::default(),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
@@ -349,6 +415,51 @@ impl DeviceOnly {
         })
     }
 
+    /// Answer the founding `invocation` with the person `person` and the tickets `kinds` names,
+    /// issued as their own act once their services run here: the answer waits for them, and says
+    /// why if they were not issued.
+    fn founding_tickets(
+        &self,
+        invocation: InvocationId,
+        person: String,
+        kinds: Vec<String>,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (done, answer) = tilo_actions::remote::pending();
+        // The call waits for the person's services to issue what was asked: it stands as under
+        // way first, so a caller that asks again under its id reads that same call rather than
+        // founding the person a second time.
+        self.keep(invocation, InvocationUpdate::Accepted { invocation });
+        let (founding, runtime, answering) = (
+            Arc::clone(&self.0.founding),
+            self.0.runtime.clone(),
+            self.clone(),
+        );
+        runtime.spawn(async move {
+            let asked = hex::decode(&person)
+                .ok()
+                .and_then(|key| <[u8; 32]>::try_from(key).ok());
+            let outcome = match asked {
+                Some(person) => founding.issue(person, &kinds).await,
+                None => Err("the person founded is no key".to_owned()),
+            };
+            let update = match outcome {
+                Ok(tickets) => succeeded(
+                    invocation,
+                    serde_json::json!({ "person": person, "tickets": tickets }),
+                ),
+                // The person is founded either way: the tickets they asked for are not, and the
+                // founder reads why and may add the computer another way.
+                Err(why) => succeeded(
+                    invocation,
+                    serde_json::json!({ "person": person, "tickets": [], "tickets_error": why }),
+                ),
+            };
+            let receipt = answering.keep(invocation, update);
+            done.complete(Ok(receipt));
+        });
+        answer
+    }
+
     /// Bring a person back on this device ([`RESTORE`]) from the recovery words or the backup
     /// `args` hold, as [`Self::found`] makes one: their root is kept here from then on.
     fn restore(&self, args: &Value) -> Result<String, Refusal> {
@@ -443,6 +554,21 @@ impl From<String> for Refusal {
             message,
         }
     }
+}
+
+/// What the tickets a founder asks for lets in, as the founding call names them: `server` for a
+/// server, `device` for a computer at hand. Nothing else is issued.
+fn founding_kinds(args: &Value) -> Vec<String> {
+    args.get("tickets")
+        .and_then(Value::as_array)
+        .map(|kinds| {
+            kinds
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The name a new person takes from the account `uid` that made them: its full name, else its
@@ -584,11 +710,28 @@ impl ActionProvider for DeviceOnly {
                 } else {
                     self.restore(&args)
                 };
-                let update = match made {
-                    Ok(person) => succeeded(invocation, serde_json::json!({ "person": person })),
-                    Err(refusal) => failed_as(invocation, refusal.code, &refusal.message),
+                let kinds = if address.action == FOUND {
+                    founding_kinds(&args)
+                } else {
+                    Vec::new()
                 };
-                Pending::ready(Ok(self.keep(invocation, update)))
+                match made {
+                    // A founder that needs the first tickets hands them back in this answer, as
+                    // part of founding: they are issued here once the person's own services run.
+                    Ok(person) if !kinds.is_empty() => {
+                        self.founding_tickets(invocation, person, kinds)
+                    }
+                    Ok(person) => {
+                        Pending::ready(Ok(self.keep(
+                            invocation,
+                            succeeded(invocation, serde_json::json!({ "person": person })),
+                        )))
+                    }
+                    Err(refusal) => Pending::ready(Ok(self.keep(
+                        invocation,
+                        failed_as(invocation, refusal.code, &refusal.message),
+                    ))),
+                }
             }
             _ => Pending::ready(Err(self.needs_a_person())),
         }

@@ -1615,3 +1615,298 @@ fn a_plain_connection_is_an_unnamed_agent_and_may_not_govern() {
         "the person the account is may rename their workspace"
     );
 }
+
+const AGENT_TICKET_TEST: &str =
+    "device::services::tests::an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none";
+
+/// Adding a computer is the person's own act: a plain connection, an unnamed agent of theirs,
+/// that asks for a ticket is answered none, and the call waits as their asking card. Waiting for
+/// the ticket served last to be taken answers which computer took it, and issues nothing.
+#[test]
+fn an_agent_asking_for_a_ticket_is_asked_of_its_person_and_gets_none() {
+    use tilo_actions::InvocationUpdate;
+    use tilo_actions::remote::asked::AskedBy;
+    use tilo_actions::remote::{ActionProvider as _, ReceiptStatus};
+
+    let Some(root) = isolated_root(AGENT_TICKET_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    daemon.workspace().unwrap();
+    let (provider, agent) = daemon.connection_tree_in(None).unwrap();
+    assert!(
+        agent.acting().is_agent(),
+        "a plain connection is an agent of the person's: {agent:?}"
+    );
+    let person_key = daemon.workspaces.device_cert().user_public_key;
+    let issue = |wait: bool| {
+        let mut argument = serde_json::Map::new();
+        argument.insert("server".into(), true.into());
+        if wait {
+            argument.insert("wait".into(), true.into());
+        }
+        tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_device_identity::login::PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    tilo_device_identity::login::RESOURCE,
+                    tilo_device_identity::login::ISSUE,
+                ),
+            },
+            argument: InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    };
+
+    let request = issue(false);
+    let invocation = request.invocation;
+    let receipt = provider
+        .invoke(&agent, request)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the daemon answers the call")
+        .expect("the call is admitted");
+    assert!(
+        !matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "an agent is answered no ticket itself: {:?}",
+        receipt.status
+    );
+    // It waits as the person's asked record, on a device that keeps their root.
+    let asks = tilo_rt::app()
+        .handle()
+        .block_on(daemon.workspaces.copies().asked_kept());
+    let ask = asks
+        .iter()
+        .find(|ask| ask.request.invocation == invocation)
+        .expect("the call waits for the person");
+    assert_eq!(ask.person, hex::encode(person_key));
+    assert_eq!(
+        ask.dispatch,
+        tilo_actions::remote::asked::AT_ROOT,
+        "the root of a device of theirs answers it"
+    );
+    let AskedBy::Agent(by) = &ask.facts.by else {
+        panic!("the card names the agent that asked: {:?}", ask.facts.by);
+    };
+    assert_eq!(
+        by.id,
+        device_agent_id(&person_key, UNNAMED_AGENT),
+        "the agent is the unnamed one the device gave the connection"
+    );
+
+    // Waiting for the ticket served last to be taken is no ticket of its own: it is answered by
+    // the ticket server, which serves none, and never handed on to the person.
+    let waiting = issue(true);
+    let invocation = waiting.invocation;
+    provider
+        .invoke(&agent, waiting)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the daemon answers the call")
+        .expect("the call is admitted");
+    let until = Instant::now() + Duration::from_secs(30);
+    let ended = loop {
+        if let Some(state) = crate::device::ticket::Tickets::observe(&daemon.tickets, &invocation)
+            && state.update.is_terminal()
+        {
+            break state.update;
+        }
+        assert!(Instant::now() < until, "the call ends");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let InvocationUpdate::Failed { error, .. } = ended else {
+        panic!("no ticket is waiting, which the call says: {ended:?}");
+    };
+    assert!(
+        error.message.contains("No ticket is waiting"),
+        "{:?}",
+        error.message
+    );
+}
+
+const AGENT_TICKET_ANSWER_TEST: &str =
+    "device::services::tests::a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it";
+
+/// A ticket an agent of the person's asks for waits as their asking card on the device that
+/// keeps their root: only their yes issues it, a no ends it with none, and stopping it withdraws
+/// the question.
+#[test]
+fn a_ticket_an_agent_asks_for_waits_for_its_person_and_only_a_yes_issues_it() {
+    use tilo_actions::InvocationUpdate;
+    use tilo_actions::remote::asked::{AskedRecords as _, Offer, Resolve};
+    use tilo_actions::remote::{ActionProvider as _, Caller, ReceiptStatus};
+
+    let Some(root) = isolated_root(AGENT_TICKET_ANSWER_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    daemon.workspace().unwrap();
+    let (provider, agent) = daemon.connection_tree_in(None).unwrap();
+    assert!(agent.acting().is_agent(), "a plain connection is an agent");
+    let cert = daemon.workspaces.device_cert();
+    let person = Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let person_key = cert.user_public_key;
+    let issue = || {
+        let mut argument = serde_json::Map::new();
+        argument.insert("server".into(), true.into());
+        tilo_actions::remote::InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_device_identity::login::PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    tilo_device_identity::login::RESOURCE,
+                    tilo_device_identity::login::ISSUE,
+                ),
+            },
+            argument: InvokeArgument::Json(argument),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+            signed: None,
+        }
+    };
+    let store = super::asked_store(&daemon.workspaces).expect("the device keeps asked records");
+    // The device keeps the person's root: it marks itself in their devices record, as a start
+    // does, and answers what waits for that root from here.
+    let kept_root = super::root().expect("the device reads its root").expect("it keeps one");
+    let tickets = (*daemon.tickets).clone();
+    tilo_rt::app().handle().block_on(async {
+        tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+            daemon.workspaces.copies(),
+            &kept_root,
+            cert,
+        )
+        .await
+        .expect("the root marks the device that keeps it");
+        daemon.asked.serve_at_root(tickets);
+    });
+    let requested = |invocation: tilo_actions::InvocationId| {
+        store
+            .asked_of(&person_key)
+            .iter()
+            .any(|ask| ask.record.record == invocation.0.to_string())
+    };
+    let wait_until = |what: &str, mut ready: Box<dyn FnMut() -> bool>| {
+        let until = Instant::now() + Duration::from_secs(60);
+        while !ready() {
+            assert!(
+                Instant::now() < until,
+                "{what} (the device serves at root: {})",
+                daemon.asked.serves_at_root()
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    };
+    let ended = |invocation: tilo_actions::InvocationId| {
+        daemon
+            .asked
+            .observe(&agent, &invocation)
+            .map(|state| state.update)
+            .filter(InvocationUpdate::is_terminal)
+    };
+    let ask = |request: InvokeRequest| {
+        provider
+            .invoke(&agent, request)
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("the daemon answers the call")
+            .expect("the call is admitted")
+    };
+
+    // The agent asks, and is answered no ticket: the call waits as the person's to answer.
+    let request = issue();
+    let invocation = request.invocation;
+    let receipt = ask(request);
+    assert!(
+        !matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "an agent is answered no ticket itself: {:?}",
+        receipt.status
+    );
+    wait_until("the person is asked it", Box::new(|| requested(invocation)));
+
+    // Their yes issues the ticket, as their own act, and it reaches the agent that asked.
+    let at = store
+        .record(&invocation.0.to_string())
+        .expect("the record waits for the person");
+    tilo_rt::app()
+        .handle()
+        .block_on(store.resolve(
+            &at,
+            &person,
+            &Resolve {
+                resolution: Offer::Approve,
+                ..Resolve::default()
+            },
+        ))
+        .expect("the answer is decided at once")
+        .expect("the person's yes is taken");
+    wait_until("the ticket comes back", Box::new(|| ended(invocation).is_some()));
+    let Some(InvocationUpdate::Succeeded { output, .. }) = ended(invocation) else {
+        panic!("the yes issues a ticket: {:?}", ended(invocation));
+    };
+    let value = output.value.expect("the ticket is the answer");
+    let text = value["ticket"].as_str().expect("the answer is a ticket");
+    tilo_device_identity::login::Ticket::parse(text).expect("the issued ticket is a ticket");
+
+    // A no issues nothing.
+    let request = issue();
+    let invocation = request.invocation;
+    ask(request);
+    wait_until("the person is asked it too", Box::new(|| requested(invocation)));
+    let at = store
+        .record(&invocation.0.to_string())
+        .expect("the record waits for the person");
+    tilo_rt::app()
+        .handle()
+        .block_on(store.resolve(
+            &at,
+            &person,
+            &Resolve {
+                resolution: Offer::Decline,
+                ..Resolve::default()
+            },
+        ))
+        .expect("the answer is decided at once")
+        .expect("the person's no is taken");
+    wait_until("the no ends the call", Box::new(|| ended(invocation).is_some()));
+    assert!(
+        matches!(ended(invocation), Some(InvocationUpdate::Cancelled { .. })),
+        "a no ends the call with no ticket: {:?}",
+        ended(invocation)
+    );
+
+    // Stopping a call that waits withdraws the question: nothing runs, and no ticket is issued.
+    let request = issue();
+    let invocation = request.invocation;
+    ask(request);
+    wait_until(
+        "the person is asked it once more",
+        Box::new(|| requested(invocation)),
+    );
+    daemon
+        .asked
+        .cancel(&agent, &invocation)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("the call is taken")
+        .expect("a call that waits is stopped");
+    assert!(
+        matches!(ended(invocation), Some(InvocationUpdate::Cancelled { .. })),
+        "a withdrawn call ends cancelled: {:?}",
+        ended(invocation)
+    );
+}

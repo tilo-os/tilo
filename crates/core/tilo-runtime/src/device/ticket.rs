@@ -693,12 +693,23 @@ const ROOT_PERSON_SIGNED: [&str; 5] = [
     ANSWER_SIGN_IN,
 ];
 
-/// The person `caller` acts as, when it is a person: their root key.
+/// The person `caller` is, when it is a person: their root key.
 fn caller_person(caller: &tilo_actions::remote::Caller) -> Option<[u8; 32]> {
     hex::decode(caller.acting().person_id()?)
         .ok()?
         .try_into()
         .ok()
+}
+
+/// The person whose root signs `caller`'s call: the person themselves, or the one an agent
+/// acting for them acts as. What only that root signs is signed with it, never by the agent.
+fn acting_person(caller: &tilo_actions::remote::Caller) -> Option<[u8; 32]> {
+    caller_person(caller).or_else(|| {
+        hex::decode(caller.acting_for_person()?)
+            .ok()?
+            .try_into()
+            .ok()
+    })
 }
 
 /// The device actions as the device's one dispatch runs them: it admitted the caller, recorded the
@@ -1145,7 +1156,13 @@ impl Tickets {
         let receipt = accepted.receipt();
         self.0.calls.lock_recover().insert(invocation, accepted);
         let served = self.clone();
-        let person = caller_person(caller);
+        // Issuing a ticket is the person's own act: the caller's where it is one, and the person
+        // an agent acting for them acts as, whose root signs it on the device asked.
+        let person = if action == ISSUE {
+            acting_person(caller)
+        } else {
+            caller_person(caller)
+        };
         self.0
             .runtime
             .spawn(super::services::with_root_caller(person, async move {
@@ -1177,18 +1194,45 @@ impl Tickets {
         Pending::ready(Ok(receipt))
     }
 
+    /// Issue the ticket `kind` asks for (`server` for a server, `device` for a computer at hand)
+    /// as `person`'s own act: the ticket as the one string the person hands on.
+    ///
+    /// # Errors
+    /// The kind is no ticket this device issues, the device is not reachable yet, or it keeps no
+    /// root of that person's.
+    pub(crate) async fn issue_as_person(
+        &self,
+        person: [u8; 32],
+        kind: &str,
+    ) -> Result<Value, String> {
+        let args = match kind {
+            "server" => json!({ "server": true }),
+            "device" => json!({}),
+            other => return Err(format!("{other} is no ticket a founding issues")),
+        };
+        // The person just founded holds the root this device keeps, where this computer is the
+        // one their account made them on: otherwise their root is the device's own.
+        let root = super::services::holds_root_for_person(person).then_some(person);
+        super::services::with_root_caller(root, self.issue(&args))
+            .await
+            .map_err(|error| format!("{error:#}"))
+    }
+
     /// Take `request` and wait for it to end: how it ended.
     pub(crate) async fn run_to_end(
         &self,
         request: &InvokeRequest,
         caller: &tilo_actions::remote::Caller,
     ) -> InvocationUpdate {
-        let invocation = request.invocation;
         // The call was kept for this device as one that keeps the caller's person's root: it runs
-        // here with that person's root, as their own call.
-        let person = caller_person(caller);
-        if let Some(Err(error)) =
-            super::services::with_root_caller(person, Tickets::invoke(self, request, caller)).await
+        // here with that root, as their own call. A ticket is the person's own act, and is signed
+        // with the root of the person an agent of theirs acts for ([`Self::invoke`]).
+        let invocation = request.invocation;
+        if let Some(Err(error)) = super::services::with_root_caller(
+            caller_person(caller),
+            Tickets::invoke(self, request, caller),
+        )
+        .await
         {
             return failed(invocation, &error.to_string());
         }
@@ -1340,8 +1384,34 @@ impl Tickets {
 
     /// Whether `request` asks one of the device actions only the person's root signs
     /// ([`tilo_actions::ROOT_ONLY_TAG`]), as their catalogue rows say.
+    ///
+    /// Only waiting for the ticket served last to be taken is none of them: it issues nothing,
+    /// and answers which computer took a ticket the person already let in ([`Self::only_waits`]).
     pub(crate) fn root_only(request: &InvokeRequest) -> bool {
         Self::listed(request).is_some_and(|action| action.contract.root_only())
+            && !Self::only_waits(request)
+    }
+
+    /// Whether `request` only waits for the ticket served last to be taken by a computer,
+    /// issuing no ticket of its own: what `tilo device add` asks once it printed one.
+    pub(crate) fn only_waits(request: &InvokeRequest) -> bool {
+        Self::asks_for_a_ticket(request)
+            && match &request.argument {
+                InvokeArgument::Json(args) => args.get("wait").and_then(Value::as_bool) == Some(true),
+                _ => false,
+            }
+    }
+
+    /// Whether `request` adds a computer: it asks for a ticket, and not only to wait for one.
+    pub(crate) fn adds_a_device(request: &InvokeRequest) -> bool {
+        Self::asks_for_a_ticket(request) && !Self::only_waits(request)
+    }
+
+    /// Whether `request` is `devices#issue` itself, in either of its forms.
+    fn asks_for_a_ticket(request: &InvokeRequest) -> bool {
+        Self::answers(request)
+            && request.target.address.resource == RESOURCE
+            && request.target.address.action == ISSUE
     }
 
     /// The device action `request` asks, as the catalogue lists it.

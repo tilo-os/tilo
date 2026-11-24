@@ -1161,6 +1161,7 @@ impl Daemon {
         stage: &mut dyn FnMut(&str),
         serving: Serving,
         (locked, entered): (Option<[u8; 32]>, Option<Device>),
+        founding: Option<Arc<super::unclaimed::Founding>>,
     ) -> io::Result<Self> {
         // A server keeps the workspaces placed on it: it takes no other server's work. A node
         // whose unit points at an install token waits for its page to install its certificate
@@ -1805,6 +1806,9 @@ impl Daemon {
         stage("publishing the styles the installed packages offer");
         #[cfg(not(windows))]
         let styles = super::styles::publish(&workspaces);
+        // What a founding call that asked for the person's first tickets is answered them with.
+        let founding_person = identity.cert.user_public_key;
+        let founding_tickets = Arc::clone(&tickets);
         let daemon = Self {
             _files_tree: files_tree,
             #[cfg(not(windows))]
@@ -1905,6 +1909,11 @@ impl Daemon {
         match daemon.person() {
             Ok(person) => shell_dispatch.serve(person),
             Err(error) => tracing::warn!(%error, "this daemon's shell reaches no dispatch"),
+        }
+        // A founding call that asked for the person's first tickets is answered them here, from
+        // now on: they are issued as the person's own act, on the device that founded them.
+        if let Some(founding) = founding {
+            founding.serving(founding_person, founding_tickets);
         }
         Ok(daemon)
     }
@@ -2573,9 +2582,10 @@ impl Daemon {
         stage: &mut dyn FnMut(&str),
         dev: bool,
         (device, entered): ([u8; 32], Option<Device>),
+        founding: Arc<super::unclaimed::Founding>,
     ) -> io::Result<Self> {
         let serving = if dev { Serving::Dev } else { Serving::Profile };
-        Self::start(root, stage, serving, (Some(device), entered))
+        Self::start(root, stage, serving, (Some(device), entered), Some(founding))
     }
 }
 
@@ -2583,11 +2593,11 @@ impl RuntimeServices for Daemon {
     type ActionProvider = RuntimeActionProvider;
 
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, Serving::Profile, (None, None))
+        Self::start(root, stage, Serving::Profile, (None, None), None)
     }
 
     fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
-        Self::start(root, stage, Serving::Dev, (None, None))
+        Self::start(root, stage, Serving::Dev, (None, None), None)
     }
 
     /// The person's other devices, as this device asks them.
@@ -3789,9 +3799,18 @@ fn hand_on_to_root(
         on: listed.map(|action| action.resource_label),
         ..Default::default()
     };
-    let run = super::asked::Run::Own {
-        workspace,
-        pressed: None,
+    // An agent asking for the person's root answers as the agent it is, so the card says who
+    // wants it; the person's own call is theirs.
+    let run = match (caller.acting().agent_id(), caller.agent_called()) {
+        (Some(agent), Some(name)) => super::asked::Run::Agent {
+            workspace,
+            agent: agent.to_owned(),
+            name: name.to_owned(),
+        },
+        _ => super::asked::Run::Own {
+            workspace,
+            pressed: None,
+        },
     };
     asked.hand_on(&run, caller, request, (facts, kept))
 }
@@ -4317,11 +4336,19 @@ impl ActionProvider for RuntimeActionProvider {
         if let Some(tickets) = &self.tickets
             && Tickets::answers(&request)
             && (self.is_the_person(caller)
-                || (Tickets::only_reads(&request)
-                    && self
-                        .session
-                        .as_ref()
-                        .is_some_and(|session| session.admits(caller))))
+                || (self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.admits(caller))
+                    && (Tickets::only_reads(&request)
+                        // A ticket is the person's own to issue. An agent acting for them that
+                        // asks for one hands the ask on to a device of theirs that keeps their
+                        // root ([`device_action`]), which asks them once: it is never answered
+                        // the ticket itself. Waiting for the ticket served last to be taken
+                        // issues nothing, and tells which computer took what they let in. A key
+                        // naming their device acts as them, and is answered neither.
+                        || ((Tickets::adds_a_device(&request) || Tickets::only_waits(&request))
+                            && caller.acting().is_agent()))))
         {
             return device_action(
                 (&self.invocations, self.asked.as_ref()),

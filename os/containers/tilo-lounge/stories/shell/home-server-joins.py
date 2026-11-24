@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """A home server joins the person's workspace with a ticket, and holds what is written there.
 
-Ada signs in on her computer and has it print a ticket for a home server — a
+Ada signs in on her computer, and the act that makes her person issues a
+ticket for a home server — a
 computer with its own key, where the `tilo` command and the daemon it starts
 are the whole of Tilo, as a server in the corner of a home is. The server
 spends the ticket with `tilo login`, is certified as one of Ada's devices, and
@@ -34,27 +35,28 @@ def steps(story: Story) -> None:
     server = Computer(story, "Ada’s home server", "Ada’s home server")
     shared: dict = {}
     try:
-        def signs_in():
-            # Her computer's daemon makes the person, so it runs first.
+        def asks():
+            # Her computer's daemon makes the person, so it runs first, and the
+            # act that makes her issues the ticket the home server joins with:
+            # `server` is what makes the certified computer one that keeps a
+            # person's workspaces, not an ordinary member device. A program of
+            # hers issues no ticket on its own, so the ticket comes with her
+            # founding rather than from `tilo device add`.
             ada.start_daemon()
-            said = ada.json("login", "--new-identity", "--name", "Ada", "--json")
+            said = ada.json("login", "--new-identity", "--name", "Ada", "--json",
+                            "--ticket", "server")
             if not said.get("user_public_key"):
                 raise Failed(f"the sign-in made no identity: {said}")
-            return {}
-
-        story.step("Ada signs in on her computer", signs_in)
-
-        def asks():
-            # `--server` is what makes the certified computer one that keeps a
-            # person's workspaces, not an ordinary member device.
-            printed = ada.json("device", "add", "--server", "--json", "--no-wait")
-            ticket = printed.get("ticket") if isinstance(printed, dict) else None
+            tickets = [ticket for ticket in said.get("tickets") or []
+                       if ticket.get("kind") == "server"]
+            ticket = tickets[0].get("ticket") if tickets else None
             if not ticket or not ticket.startswith("tilo1"):
-                raise Failed(f"`tilo device add --server` printed no ticket: {printed}")
+                raise Failed(f"the sign-in issued no ticket for a server: {said}")
             shared["ticket"] = ticket
             return {}
 
-        story.step("Ada asks her computer for a ticket for a home server", asks)
+        story.step("Ada signs in on her computer, and its founding issues a ticket for a "
+                   "home server", asks)
 
         def joins():
             said = server.ok("login", shared["ticket"], "--label", server.label)

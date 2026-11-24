@@ -250,8 +250,26 @@ impl DaemonPlace {
         &self,
         within: Duration,
     ) -> Result<tilo_files::native::socket::Stream, String> {
-        self.wait_for(within)?;
+        self.wait_for(within, None)?;
         tilo_files::native::socket::connect(&self.native).map_err(|error| error.to_string())
+    }
+
+    /// [`Self::reach_native`], founding this account's person with `founding` when this computer
+    /// has none yet: the connection, and the founding answer (their first tickets among it) when
+    /// a person was founded now.
+    ///
+    /// # Errors
+    /// The service did not start, no daemon answered in `within`, or the person could not be
+    /// founded.
+    pub fn reach_native_founding(
+        &self,
+        within: Duration,
+        founding: &Founding,
+    ) -> Result<(tilo_files::native::socket::Stream, Option<serde_json::Value>), String> {
+        let answer = self.wait_for(within, Some(founding))?;
+        let stream =
+            tilo_files::native::socket::connect(&self.native).map_err(|error| error.to_string())?;
+        Ok((stream, answer))
     }
 
     /// Wait until the daemon answers at its native endpoint, starting the service when none
@@ -262,7 +280,7 @@ impl DaemonPlace {
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
     pub fn wait_for_native(&self, within: Duration) -> Result<(), String> {
-        self.wait_for(within)
+        self.wait_for(within, None).map(drop)
     }
 
     /// An agent's connection to the daemon ([`Self::connect`]), starting the service when none
@@ -271,7 +289,7 @@ impl DaemonPlace {
     /// # Errors
     /// The service did not start, or no daemon answered in `within`.
     pub fn reach(&self, within: Duration) -> Result<tilo_files::native::socket::Stream, String> {
-        self.wait_for(within)?;
+        self.wait_for(within, None)?;
         self.connect()
             .ok_or_else(|| format!("{} stopped answering", self.native.display()))
     }
@@ -281,7 +299,11 @@ impl DaemonPlace {
     /// for. A person's own computer that no person's certificate names yet founds its person
     /// here, once its daemon answers, as its first command always has; Tilo OS's device waits
     /// for a sign-in.
-    fn wait_for(&self, within: Duration) -> Result<(), String> {
+    fn wait_for(
+        &self,
+        within: Duration,
+        founding: Option<&Founding>,
+    ) -> Result<Option<serde_json::Value>, String> {
         let socket = &self.native;
         let deadline = Instant::now()
             .checked_add(within)
@@ -289,11 +311,12 @@ impl DaemonPlace {
         let mut started = false;
         loop {
             if tilo_files::native::socket::connect(socket).is_ok() {
-                // A device no person's certificate names serves nobody yet.
+                // A device no person's certificate names serves nobody yet: its own account
+                // founds its person here, as its first command always has.
                 if !self.system && who::who().is_ok_and(|who| !who.claimed) {
-                    self.found(None)?;
+                    return self.found(founding.cloned().unwrap_or_default());
                 }
-                return Ok(());
+                return Ok(None);
             }
             if !started && !self.alive() {
                 started = true;
@@ -311,24 +334,85 @@ impl DaemonPlace {
     }
 }
 
+/// What founding this account's person asks for beside the person: the name they go by, and the
+/// tickets their first device issues as part of founding them.
+#[derive(Clone, Debug, Default)]
+pub struct Founding {
+    /// The name the person goes by, when they gave one.
+    pub name: Option<String>,
+    /// The tickets the founding call is answered, in this order.
+    pub tickets: Vec<TicketKind>,
+}
+
+/// What a ticket a founding person asks for lets in, as `tilo login --new-identity` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TicketKind {
+    /// A computer at hand, which becomes one of their devices, as `tilo device add` adds one.
+    Device,
+    /// A server, which keeps their workspaces.
+    Server,
+}
+
+impl TicketKind {
+    /// What the daemon's founding call names this kind by.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Device => "device",
+            Self::Server => "server",
+        }
+    }
+
+    /// The kind `name` says, when it says one.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "device" => Some(Self::Device),
+            "server" => Some(Self::Server),
+            _ => None,
+        }
+    }
+}
+
+impl Founding {
+    /// What this founding is asked with: the name and the tickets, as the daemon reads them.
+    #[must_use]
+    pub fn arguments(&self) -> serde_json::Value {
+        let mut args = serde_json::Map::new();
+        if let Some(name) = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            args.insert("name".to_owned(), name.into());
+        }
+        if !self.tickets.is_empty() {
+            let kinds: Vec<&str> = self.tickets.iter().map(|kind| kind.as_str()).collect();
+            args.insert("tickets".to_owned(), kinds.into());
+        }
+        serde_json::Value::Object(args)
+    }
+}
+
 impl DaemonPlace {
     /// Ask the daemon to found this computer's person ([`tilo_device_identity::login::FOUND`]),
-    /// named `name` when one is given, as a person's own computer's first command and `tilo login
-    /// --new-identity` do. A device a person's certificate names already refuses it, which is no
-    /// failure here: that person is served.
+    /// named as `founding` says and answered the tickets it asks for, as a person's own
+    /// computer's first command and `tilo login --new-identity` do: the answer (the person and
+    /// their first tickets), or none when a device a person's certificate names already serves
+    /// them, which is no failure here.
     ///
     /// # Errors
     /// The daemon does not answer, or could not found the person.
-    pub fn found(&self, name: Option<&str>) -> Result<(), String> {
-        let args = name.map_or_else(
-            || serde_json::json!({}),
-            |name| serde_json::json!({ "name": name }),
-        );
-        match self.act(tilo_device_identity::login::FOUND, args) {
-            Err(why) if !why.contains(tilo_device_identity::login::ALREADY_A_PERSONS) => Err(
-                format!("Tilo could not set up this computer's person: {why}"),
-            ),
-            _ => Ok(()),
+    pub fn found(&self, founding: Founding) -> Result<Option<serde_json::Value>, String> {
+        // Founding a person starts their services before it can issue the tickets a founder
+        // asked for: the call is answered in parts, and followed until it settles.
+        match self.act_followed(tilo_device_identity::login::FOUND, founding.arguments()) {
+            Ok(answer) => Ok(Some(answer)),
+            Err(why) if why.contains(tilo_device_identity::login::ALREADY_A_PERSONS) => Ok(None),
+            Err(why) => Err(format!(
+                "Tilo could not set up this computer's person: {why}"
+            )),
         }
     }
 

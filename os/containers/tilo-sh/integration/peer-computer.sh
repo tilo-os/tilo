@@ -110,26 +110,23 @@ short() { printf 'short of %s; the folder stood at %s' "$(cat "$logs/folder.log.
 # Log in as a new person who owns the stack, and wait for the holder to show the folder.
 #
 # The person's own computer holds their root. It joins the workspace the stack lets them in to by
-# the invitation its owner sends, then adds this computer with a ticket, as `tilo device add` adds
-# any computer of theirs: the ticket is kept served until this one has logged in with it.
+# the invitation its owner sends, and its founding issued the ticket this computer joins with, as
+# any computer of theirs joins: no program of theirs issues a ticket as them.
 log_in_and_show() {
   say "a person whose own computer holds their identity, an owner of the stack"
-  local key link ticket add
+  local key link ticket made
   # Each computer's daemon runs from the start, as its service runs it, serving the device
   # alone until a login names it.
   serve_daemon "$scratch/person/state" "${person[@]}"
   serve_daemon "$scratch/state" "${computer[@]}"
-  key=$(as_person "$tilo" login --new-identity --name Ada --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["user_public_key"])')
+  made=$(as_person "$tilo" login --new-identity --name Ada --json --ticket device)
+  key=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["user_public_key"])' "$made")
+  ticket=$(python3 -c 'import json,sys
+print([t["ticket"] for t in json.loads(sys.argv[1])["tickets"] if t["kind"] == "device"][0])' "$made")
   bash "$here/../stack.sh" owner "$key" --name Ada >/dev/null
   link=$(bash "$here/../stack.sh" invite -- --role administrator)
   as_person "$tilo" login "$link" >>"$logs/person-login.log" 2>&1
-  as_person "$tilo" device add --json >>"$logs/device-add.log" 2>&1 &
-  add=$!
-  wait_for 60 "the person's computer printed a ticket" test -s "$logs/device-add.log"
-  ticket=$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["ticket"])' "$logs/device-add.log")
-  as_computer "$tilo" login "$ticket" >>"$logs/login.log" 2>&1 \
-    || { kill "$add" 2>/dev/null || true; return 1; }
-  wait "$add" || say "the person's computer did not finish adding this one"
+  as_computer "$tilo" login "$ticket" >>"$logs/login.log" 2>&1 || return 1
   wait_for 120 "the holder shows the folder" shown || {
     say "what this computer says of its folders:"
     as_computer "$tilo" folders >&2 || true

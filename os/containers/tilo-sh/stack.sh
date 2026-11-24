@@ -45,7 +45,8 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
       300 members joined through its entry and 200 chat messages posted
       through the API server (minutes, once per state). --discord starts a
       fake Discord and points the Lounge's Discord sign-in and bridge at
-      it. --fresh wipes the state first (a new Lounge, a new entry).
+      it. --fresh wipes the state first (a new person, a new Lounge, a new
+      entry).
   stack.sh restart [--detach] NAME...
                          after a code change: rebuild each NAME and start it
                          again, the rest left running (server, api, web, tls,
@@ -1109,19 +1110,44 @@ owner_daemon() {
 }
 
 # The user public key of the stack's own person, made the first time: the
-# Lounge's first owner, whose device prints the ticket the server joins with, as
-# production's deployment joins an owner's devices.
+# Lounge's first owner, whose device prints the tickets its computers join with,
+# as production's deployment joins an owner's devices.
 stack_person() {
   local made
   if [[ ! -s $state/owner/key ]]; then
     mkdir -p "$state/owner"
     owner_daemon --before-person
-    made=$(as_owner login --new-identity --json) \
+    # The first tickets come from the founding act itself, the person's own as this computer
+    # makes them: no one is here to approve a computer joining, and the tickets are that
+    # approval, once, for the two the stack adds (its Lounge server and the VM host).
+    made=$(as_owner login --new-identity --json --ticket server --ticket server) \
       || die 'tilo made no person for the stack (tilo login --new-identity)'
     python3 -c 'import json,sys; print(json.loads(sys.argv[1])["user_public_key"])' "$made" \
       > "$state/owner/key" || die "tilo named no person: $made"
+    python3 -c 'import json,sys
+for ticket in json.loads(sys.argv[1])["tickets"]:
+    print(ticket["kind"], ticket["ticket"])' "$made" > "$state/owner/tickets" \
+      || die "tilo issued no first tickets: $made"
   fi
   cat "$state/owner/key"
+}
+
+# take_ticket KIND: one of the first tickets the stack's person issued as they were founded,
+# taken from the list. Prints it, or nothing when none of that kind is left.
+take_ticket() {
+  local kind=$1 file=$state/owner/tickets ticket= line_kind line_ticket
+  [[ -s $file ]] || return 1
+  : > "$file.tmp"
+  while read -r line_kind line_ticket; do
+    if [[ -n $line_kind && -z $ticket && $line_kind == "$kind" ]]; then
+      ticket=$line_ticket
+      continue
+    fi
+    printf '%s %s\n' "$line_kind" "$line_ticket" >> "$file.tmp"
+  done < "$file"
+  mv "$file.tmp" "$file"
+  [[ -n $ticket ]] || return 1
+  printf '%s' "$ticket"
 }
 
 # The API key the stack's own person approved for themself, approved the
@@ -1306,17 +1332,17 @@ vm_host() {
     bash "$here/vm-host.sh" "$@" 9>&-
 }
 
-# The ticket this stack's VM host joins the person's devices with: printed on
-# the stack's own person's device (`tilo device add`) at each
-# start. The host spends it once and keeps its login on its own state disk,
-# which is root's; a host that already holds one ignores the ticket it is given.
+# The ticket this stack's VM host joins the person's devices with: one of the
+# first tickets the stack's own person issued as they were founded. The host
+# spends it once and keeps its login on its own state disk, which is root's, so
+# a host that already joined takes none and a start after the first passes none.
 # A ticket lets a computer in, so no failure prints it.
 host_ticket() {
   local issued
-  issued=$(owner_person device add --server --json --no-wait) \
-    || die 'the stack'"'"'s person printed no ticket for the VM host (tilo device add)'
-  TILO_VM_TICKET=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$issued") \
-    || die "the stack's person printed no ticket (tilo device add --json answered no \"ticket\")"
+  issued=$(take_ticket server || true)
+  [[ -n $issued ]] || [[ -s $state/vm-host-started ]] \
+    || die "the stack's person has no first ticket for the VM host left: one stack.sh up --fresh makes its person again, with a new Lounge"
+  TILO_VM_TICKET=$issued
 }
 
 # The tilo command to drive the stack with: TILO_SH_TILO_BIN, else this
@@ -1942,13 +1968,14 @@ start_native_tls() {
 
 start_native_server() {
   local lounge=${lounge:-$native/lounge} ticket=()
-  # The first start joins the person's devices with a ticket the stack's own
-  # person prints: the daemon spends it once, and the volume keeps the login.
+  # The first start joins the person's devices with one of the first tickets
+  # their founding issued: the daemon spends it once, and the volume keeps the
+  # login.
   if [[ ! -s $state/server/identity/device/cert.bin ]]; then
     local made
-    made=$(owner_person device add --server --json --no-wait) \
-      || die 'the stack'"'"'s person printed no ticket for the Lounge (tilo device add)'
-    ticket=("TILO_TICKET=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["ticket"])' <<<"$made")")
+    made=$(take_ticket server) \
+      || die "the stack's person has no first ticket for the Lounge left: one stack.sh up --fresh makes its person again, with a new Lounge"
+    ticket=("TILO_TICKET=$made")
   fi
   { private_env server "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
@@ -2117,6 +2144,7 @@ up_native() {
     host_device_key
     say 'starting the VM host (Firecracker, as root)'
     vm_host up || die 'the VM host did not start; sudo -E bash '"$here"'/vm-host.sh status says why'
+    : > "$state/vm-host-started"
     say "vm-host up ($((SECONDS - phase))s)"
     phase=$SECONDS
   fi
@@ -2364,6 +2392,7 @@ up_images() {
     host_ticket
     say 'starting the VM host (Firecracker, as root)'
     vm_host up || die 'the VM host did not start; sudo -E bash '"$here"'/vm-host.sh status says why'
+    : > "$state/vm-host-started"
   fi
 
   if [[ -n $discord ]]; then
@@ -2487,6 +2516,10 @@ down() {
     podman_ unshare rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/mail-stand-in" 2>/dev/null \
       || rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" "$state/mail-stand-in"
     rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission"
+    # Whose person the stack was goes with it: a fresh stack's person is made again, and only
+    # the act that makes them issues the first tickets its computers join with.
+    rm -rf "${state:?}/owner"
+    rm -f "$state/vm-host-started"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
     say "stopped; its state stays in $state (stack.sh down --wipe deletes it)"

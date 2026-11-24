@@ -201,7 +201,7 @@ member_device() {
       || fail "the host stopped before it joined: $(podman logs --tail 3 "$host_container" 2>&1)"
     sleep 2
   done
-  fail "the host joined no identity in 180 s: set TILO_VM_TICKET to a ticket \`tilo device add\` printed (podman logs $host_container says why)"
+  fail "the host joined no identity in 180 s: set TILO_VM_TICKET to one of the first tickets the stack's person's founding issued (podman logs $host_container says why)"
 }
 
 # The plans file the server and the host admit by (docs/hosted-browser.md,
@@ -254,8 +254,9 @@ up() {
   [ -e /dev/kvm ] || fail '/dev/kvm: the local stack runs the VMs the tilo.sh VM hosts run, which need KVM'
   [ -n "${TILO_SH_IMAGE_VM_HOST:-}" ] || fail 'TILO_SH_IMAGE_VM_HOST: the vm-host image is not named'
   [ -n "${TILO_SH_HOSTED_GUEST:-}" ] || fail 'TILO_SH_HOSTED_GUEST: the guest image is not named'
-  [ -n "${TILO_VM_TICKET:-}" ] || [ "${TILO_VM_FOUND:-0}" = 1 ] \
-    || fail 'TILO_VM_TICKET: the ticket `tilo device add` printed on an owner device'
+  # TILO_VM_TICKET is one of the first tickets the stack's person issued as they were founded: it
+  # joins this host the first time, and a host whose state disk keeps that login starts without
+  # one. The entrypoint reads both, and says which a host with neither needs.
   local device loop guest_ref image=$TILO_SH_IMAGE_VM_HOST
   if [ -f "$image" ]; then
     image=$(podman load -q -i "$image" | sed -n 's/^Loaded image[s]*: *//p' | tail -n 1)

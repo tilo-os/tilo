@@ -343,10 +343,19 @@ enum Cmd {
         #[arg(long)]
         name: Option<String>,
         /// Print the identity as one line of JSON, `{"user_public_key": …,
-        /// "name": …}`, for a script that declares the key and wants the name
-        /// the person goes by with it.
+        /// "name": …, "tickets": [{"kind": …, "ticket": …}]}`, for a script that
+        /// declares the key, wants the name the person goes by with it, and adds
+        /// the first computers with the tickets.
         #[arg(long, requires = "new_identity")]
         json: bool,
+        /// With `--new-identity`: a ticket this computer's new person issues as part
+        /// of being made, so a script can add the first computers of a fresh
+        /// installation without anyone there to approve them. `server` for a
+        /// server, `device` for a computer at hand; repeat for more. Each is one
+        /// ticket, in this order; only the call that makes the person issues
+        /// them.
+        #[arg(long = "ticket", value_name = "KIND", requires = "new_identity")]
+        tickets: Vec<String>,
         /// Which of your agents runs here, by the name your workspace shows
         /// it under: every computer logged in under one name is one agent,
         /// with its history; another name is another agent. "Your agent"
@@ -463,11 +472,13 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum DeviceCmd {
-    /// Add a computer as one of your devices: print a ticket for `tilo login` there, and wait
-    /// for it.
+    /// Add a computer as one of your devices: ask you to confirm it, print a ticket for
+    /// `tilo login` there, and wait for it.
     #[command(
-        after_help = "Example:\n  tilo device add\n\nThe ticket works once, for 10 minutes. The computer that \
-                      logs in with it reaches this one directly, and this one certifies it as your device."
+        after_help = "Example:\n  tilo device add\n\nAdding a computer is your own act: a program of yours \
+                      asks, and you say yes on the asking card of any of your devices. The ticket works \
+                      once, for 10 minutes. The computer that logs in with it reaches this one directly, \
+                      and this one certifies it as your device."
     )]
     Add {
         /// The ticket a browser's sign-in prompt carried: sign that browser in as you, instead
@@ -1374,8 +1385,18 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
             new_identity: true,
             name,
             json,
+            tickets,
             ..
-        } => identity::new_identity(name.as_deref(), json),
+        } => {
+            let tickets = tickets
+                .iter()
+                .map(|kind| {
+                    tilo_api::daemon::TicketKind::parse(kind)
+                        .ok_or_else(|| anyhow!("{kind} is no ticket kind: `server` or `device`"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            identity::new_identity(name.as_deref(), json, &tickets)
+        }
         Cmd::Login {
             ticket,
             agent,

@@ -123,30 +123,72 @@ pub fn held() -> Result<Option<Person>> {
     }))
 }
 
-/// The person kept here, made first when there is none: whether it was made
-/// now. `name` names a new one; one already kept stays as it is.
+/// A ticket the founding call issued as part of making the person, which their own act asks
+/// for: what it lets in, and the ticket itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirstTicket {
+    /// `server` for a server, `device` for a computer at hand.
+    pub kind: String,
+    pub ticket: String,
+}
+
+/// The first tickets a founding asked for: those it was answered, or why it was not.
+#[derive(Clone, Debug, Default)]
+pub struct FirstTickets {
+    pub tickets: Vec<FirstTicket>,
+    /// Why the tickets asked for were not issued, when they were not.
+    pub error: Option<String>,
+}
+
+/// The person kept here, made first when there is none: whether it was made now, and the tickets
+/// `tickets` asks the founding for. `name` names a new one; one already kept stays as it is.
 ///
 /// A person is made one way: this computer's daemon makes them (`devices#found`), with the class
-/// this computer is, so it needs the daemon running; nothing makes one here instead.
-pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
+/// this computer is, so it needs the daemon running; nothing makes one here instead. The tickets
+/// come back from that same call, as the person's own first act: waiting for them another way is
+/// asking the person to approve, which no one at a fresh computer can.
+pub fn ensure(
+    name: Option<&str>,
+    tickets: &[tilo_api::daemon::TicketKind],
+) -> Result<(Person, bool, FirstTickets)> {
     let made = !holds_root();
     // A person goes by the name they give, else by none until they give one: never their
     // computer's account name or a made-up one.
     let name = name.map(str::trim).filter(|name| !name.is_empty());
+    let mut first = FirstTickets::default();
     if made {
-        login::ensure_daemon()?;
-        // The daemon makes this account's person as it starts, and founds them when its own
-        // answer to this computer's unclaimed device asks it to: a person already kept here is
-        // served, and asking again would wait on the person's part the daemon is starting. One
-        // whose certificate is not written yet has its root certify it as the daemon founds it.
-        if !held().is_ok_and(|person| person.is_some()) {
-            let found = tilo_api::daemon::this_computer().and_then(|place| place.found(name));
-            if let Err(why) = found
-                && held()?.is_none()
-            {
-                return Err(anyhow::Error::msg(why));
+        let founding = tilo_api::daemon::Founding {
+            name: name.map(str::to_owned),
+            tickets: tickets.to_vec(),
+        };
+        let founded = login::ensure_daemon_founding(&founding).map(|(_, answer)| answer);
+        // The daemon makes this account's person as its first command reaches it, and answers
+        // the tickets the founding asked for; a daemon that serves no person yet (the system
+        // unit's) is asked outright. A person already kept here is served, and asking again
+        // would wait on the person's part the daemon is starting.
+        let answer = match founded {
+            Ok(answer) => {
+                if answer.is_some() || held().is_ok_and(|person| person.is_some()) {
+                    answer
+                } else {
+                    tilo_api::daemon::this_computer()
+                        .and_then(|place| place.found(founding.clone()))
+                        .ok()
+                        .flatten()
+                }
             }
-        }
+            Err(why) if held()?.is_none() => return Err(anyhow::Error::msg(why)),
+            Err(_) => None,
+        };
+        first = first_tickets(tickets, answer);
+    } else if !tickets.is_empty() {
+        // A person made already issues nothing: only the call that made them could ask for
+        // their first tickets.
+        first.error = Some(
+            "this computer already has a person, and only the call that makes one issues its \
+             first tickets"
+                .to_owned(),
+        );
     }
     let mut person =
         held()?.context("this computer's daemon made no person it holds the root of")?;
@@ -154,7 +196,43 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     if made && let Some(name) = name {
         keep_name(&mut person, name)?;
     }
-    Ok((person, made))
+    Ok((person, made, first))
+}
+
+/// The tickets `asked` for, read from the founding `answer`: those issued, or why none were.
+fn first_tickets(
+    asked: &[tilo_api::daemon::TicketKind],
+    answer: Option<serde_json::Value>,
+) -> FirstTickets {
+    if asked.is_empty() {
+        return FirstTickets::default();
+    }
+    let Some(answer) = answer else {
+        return FirstTickets {
+            tickets: Vec::new(),
+            error: Some("this computer's person was made without the call that issues them".into()),
+        };
+    };
+    let error = answer
+        .get("tickets_error")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let tickets = answer
+        .get("tickets")
+        .and_then(serde_json::Value::as_array)
+        .map(|tickets| {
+            tickets
+                .iter()
+                .filter_map(|ticket| {
+                    Some(FirstTicket {
+                        kind: ticket.get("kind")?.as_str()?.to_owned(),
+                        ticket: ticket.get("ticket")?.as_str()?.to_owned(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    FirstTickets { tickets, error }
 }
 
 /// Become again the person whose 24-word recovery key `words` is: their root
@@ -208,16 +286,38 @@ pub fn keep_name(person: &mut Person, name: &str) -> Result<()> {
 }
 
 /// `tilo login --new-identity`: make the person, or say there is one, and
-/// print their user public key — or, as one line of JSON, the key and the
-/// name they go by, for a script that declares them somewhere.
-pub fn new_identity(name: Option<&str>, json: bool) -> Result<std::process::ExitCode> {
-    let (person, made) = ensure(name)?;
+/// print their user public key — or, as one line of JSON, the key, the
+/// name they go by and the first tickets `tickets` asked for, for a script
+/// that declares them somewhere and adds the first computers with them.
+///
+/// # Errors
+/// The person could not be made, or the tickets the founding asked for were not issued.
+pub fn new_identity(
+    name: Option<&str>,
+    json: bool,
+    tickets: &[tilo_api::daemon::TicketKind],
+) -> Result<std::process::ExitCode> {
+    let (person, made, first) = ensure(name, tickets)?;
     let dir = dir()?;
+    let missed = first.error.clone();
     if json {
         println!(
             "{}",
-            serde_json::json!({"user_public_key": person.user(), "name": person.name})
+            serde_json::json!({
+                "user_public_key": person.user(),
+                "name": person.name,
+                "tickets": first
+                    .tickets
+                    .iter()
+                    .map(|ticket| serde_json::json!({"kind": ticket.kind, "ticket": ticket.ticket}))
+                    .collect::<Vec<_>>(),
+            })
         );
+        if let Some(why) = missed {
+            return Err(anyhow!(
+                "This computer's person is made, but the tickets asked for were not issued: {why}"
+            ));
+        }
         return Ok(std::process::ExitCode::SUCCESS);
     }
     if made {
@@ -235,6 +335,20 @@ pub fn new_identity(name: Option<&str>, json: bool) -> Result<std::process::Exit
         );
     }
     println!("{}", person.user());
+    for ticket in &first.tickets {
+        let what = if ticket.kind == "server" {
+            "a server"
+        } else {
+            "a computer"
+        };
+        eprintln!("The ticket for {what}:");
+        println!("{}", ticket.ticket);
+    }
+    if let Some(why) = missed {
+        return Err(anyhow!(
+            "This computer's person is made, but the tickets asked for were not issued: {why}"
+        ));
+    }
     Ok(std::process::ExitCode::SUCCESS)
 }
 

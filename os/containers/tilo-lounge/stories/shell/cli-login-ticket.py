@@ -2,8 +2,8 @@
 """Add a second computer with a ticket from the first, and read the workspace from it.
 
 Ada signs in on her computer — a computer where the `tilo` command is the
-whole of Tilo — and has it print a ticket for another computer with `tilo
-device add`. On the second computer she runs `tilo login` with the ticket:
+whole of Tilo — and the act that makes her person issues a ticket for another
+computer. On the second computer she runs `tilo login` with the ticket:
 the first certifies the second's key with Ada's root, the second enters Ada's
 workspace, and it is one of her member devices from then on.
 
@@ -38,29 +38,26 @@ def steps(story: Story) -> None:
     shared: dict = {}
     try:
         def signs_in():
-            # The person's identity on this computer, which holds its root: the
-            # one `tilo device add` certifies another computer with.
-            # Her computer's daemon makes the person, so it runs first.
+            # The person's identity on this computer, which holds its root. Her
+            # computer's daemon makes the person, so it runs first, and the act
+            # that makes her issues the ticket the other computer joins with: a
+            # program of hers issues no ticket on its own.
             ada.start_daemon()
-            said = ada.json("login", "--new-identity", "--name", "Ada", "--json")
+            said = ada.json("login", "--new-identity", "--name", "Ada", "--json",
+                            "--ticket", "device")
             if not said.get("user_public_key"):
                 raise Failed(f"the sign-in made no identity: {said}")
             shared["person"] = said["user_public_key"]
-            return {}
-
-        story.step("Ada signs in on her computer", signs_in)
-
-        def asks():
-            # The ticket a person hands to the other computer. It is one line,
-            # and it admits one computer, once.
-            printed = ada.json("device", "add", "--json", "--no-wait")
-            ticket = printed.get("ticket") if isinstance(printed, dict) else None
+            tickets = [ticket for ticket in said.get("tickets") or []
+                       if ticket.get("kind") == "device"]
+            ticket = tickets[0].get("ticket") if tickets else None
             if not ticket or not ticket.startswith("tilo1"):
-                raise Failed(f"`tilo device add` printed no ticket: {printed}")
+                raise Failed(f"the sign-in issued no ticket for a computer: {said}")
             shared["ticket"] = ticket
             return {}
 
-        story.step("Ada asks her computer for a ticket for another", asks)
+        story.step("Ada signs in on her computer, and its founding issues a ticket for "
+                   "another", signs_in)
 
         def logs_in():
             # The second computer spends the ticket: the first certifies its

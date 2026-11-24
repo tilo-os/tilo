@@ -126,6 +126,9 @@ pub(crate) struct DeviceAsked {
     serving_at_root: std::sync::OnceLock<Arc<AtRoot>>,
     invocations: Arc<Invocations>,
     waiting: Mutex<HashMap<InvocationId, Waiting>>,
+    /// The calls this dispatch handed on to a device that keeps the person's root, by their
+    /// invocation: what it shows how it ended, whoever asked them.
+    handed_on: Mutex<std::collections::HashSet<InvocationId>>,
     /// How each call this dispatch keeps stands while nothing of it runs: waiting, declined,
     /// withdrawn, or refused when it was sent again; with who it runs as, who alone reads it.
     standing: Arc<Mutex<Standing>>,
@@ -194,6 +197,7 @@ impl DeviceAsked {
                 store,
                 invocations,
                 waiting: Mutex::default(),
+                handed_on: Mutex::default(),
                 standing: Arc::default(),
                 admits,
             }
@@ -236,6 +240,8 @@ impl DeviceAsked {
         request: &InvokeRequest,
         (mut facts, kept): (AskedFacts, Option<KeptAsk>),
     ) -> Result<InvocationReceipt, ActionCallError> {
+        // What this device asked on the caller's behalf is its own to show how it ended.
+        self.handed_on.lock_recover().insert(request.invocation);
         if let Some(ask) = kept {
             return Ok(self.follow(caller, &ask));
         }
@@ -297,6 +303,7 @@ impl DeviceAsked {
         let receipt = state.receipt();
         Standing::stand(&self.standing, caller, state);
         if ended.is_some() {
+            self.handed_on.lock_recover().remove(&invocation);
             self.store.settled(&ask.at);
         }
         receipt
@@ -327,17 +334,24 @@ impl DeviceAsked {
     /// once; the device that asked shows how each it handed on ended, and forgets its record.
     pub(crate) fn kept_changed(&self, asks: Vec<KeptAsk>) {
         if self.serving_at_root.get().is_some() {
-            self.store.take_in(asks);
-            return;
+            self.store.take_in(asks.clone());
         }
         let here = self.store.here().map(str::to_owned);
         for ask in asks {
             let caller = ask.caller.clone().restored();
+            // The record this device asked for is its own to show, whoever asked it: the person
+            // at this device, or an agent of theirs it handed the ask on for. One that keeps the
+            // root takes the others up, and shows them none.
+            let mine = caller.device_public_key().map(hex::encode) == here
+                || self
+                    .handed_on
+                    .lock_recover()
+                    .contains(&ask.request.invocation);
             if ask
                 .outcome
                 .as_ref()
                 .is_some_and(InvocationUpdate::is_terminal)
-                && caller.device_public_key().map(hex::encode) == here
+                && mine
             {
                 self.follow(&caller, &ask);
             }
@@ -824,11 +838,22 @@ impl ActionProvider for DeviceAsked {
     }
 
     /// Stopping a call that waits withdraws its question: its person is asked no more.
-    fn cancel(&self, _: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         if !self.waiting.lock_recover().contains_key(id) {
-            return Pending::ready(Err(ActionCallError::NotCancellable {
-                reason: "it has ended".into(),
-            }));
+            // A call this device handed on waits at a device that keeps the person's root:
+            // stopping it withdraws the question there, and its caller reads that it ended.
+            if !self.handed_on.lock_recover().contains(id) {
+                return Pending::ready(Err(ActionCallError::NotCancellable {
+                    reason: "it has ended".into(),
+                }));
+            }
+            let Some(at) = self.store.record(&id.0.to_string()) else {
+                return Pending::ready(Err(ActionCallError::UnknownInvocation));
+            };
+            self.store.withdraw(&at, STOPPED);
+            self.handed_on.lock_recover().remove(id);
+            Standing::stand(&self.standing, caller, cancelled(*id, STOPPED));
+            return Pending::ready(Ok(()));
         }
         let Some(at) = self.store.record(&id.0.to_string()) else {
             return Pending::ready(Err(ActionCallError::UnknownInvocation));

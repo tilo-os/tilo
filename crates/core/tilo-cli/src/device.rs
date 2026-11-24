@@ -8,12 +8,14 @@
 //! `add` has this computer's daemon serve a ticket ([`tilo_device_identity::login`]) on the
 //! endpoint it already runs, while the ticket lasts. A computer that runs `tilo login` with it
 //! reaches this one directly and calls the certify action there; the person's root here certifies
-//! its key. The person ran `add` themselves, so the daemon approves the computer that comes with
-//! the ticket automatically. A device that does not hold the root forwards the same question to
-//! one that does through another approver.
+//! its key. A ticket is the person's own to issue, and a program of theirs is an agent of theirs:
+//! `add` asks them, and serves the ticket once they say yes on the asking card of whichever of
+//! their devices is at hand. A device that does not hold the root hands the same question on to
+//! one that does.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -24,6 +26,10 @@ use tilo_user_identity::DeviceCert;
 use crate::api::{Calls, Reach};
 use crate::login::{self, Device};
 
+/// How long `tilo device add` waits for the person's yes on the asking card: a ticket is asked
+/// of them, and they may answer later than one wait of the call lasts.
+const ASKING_DEADLINE: Duration = Duration::from_secs(15 * 60);
+
 /// `tilo device add`: print a ticket, wait for a computer to log in with it, and say which one
 /// it was. With `no_wait`, print only the ticket: this computer's daemon keeps serving it while
 /// it lasts. With `server`, the computer is a server, which keeps the person's workspaces; with
@@ -31,10 +37,12 @@ use crate::login::{self, Device};
 /// into its own.
 ///
 /// A computer with the person's root and no login adds devices too: the workspace its daemon
-/// serves is where the action is asked.
+/// serves is where the action is asked. Either way the person confirms it on their asking card:
+/// no program of theirs issues a ticket as them.
 ///
 /// # Errors
-/// This computer cannot add devices, or no computer came before the ticket ran out.
+/// This computer cannot add devices, the person did not confirm it, or no computer came before
+/// the ticket ran out.
 #[allow(
     clippy::too_many_lines,
     reason = "one command: the ticket a browser showed, or printing one and waiting for it"
@@ -62,7 +70,20 @@ pub fn add(
         };
         // A role the person did not ask for goes as null, which the daemon reads as none.
         let args = json!({ "plan": plan, "server": server.then_some(true) });
-        let issued = client
+        let what = match (server, plan) {
+            (_, Some(plan)) => format!("the machine {plan} describes"),
+            (true, _) => "a server".to_owned(),
+            _ => "a computer".to_owned(),
+        };
+        // A ticket is the person's own to issue: a program of theirs asks, and they say yes on
+        // the asking card, on whichever of their devices is at hand.
+        if !json {
+            eprintln!(
+                "tilo: adding {what}: confirm on the asking card on any of your devices. \
+                 Nothing is added until you do."
+            );
+        }
+        let mut issued = client
             .act(
                 Some(&workspace),
                 "devices",
@@ -71,6 +92,34 @@ pub fn add(
                 "Add a device",
             )
             .await?;
+        // Their yes may come after one wait of the call lasts: follow the ask until it ends, or
+        // until asking takes longer than a ticket would last.
+        let deadline = Instant::now().checked_add(ASKING_DEADLINE);
+        while issued.get("status").and_then(Value::as_str) == Some("pending")
+            && deadline.is_none_or(|deadline| Instant::now() < deadline)
+        {
+            issued = client.follow(Some(&workspace), issued).await?;
+        }
+        match issued.get("status").and_then(Value::as_str) {
+            // A no, or a withdrawal, ends the call with no ticket.
+            Some("failed" | "cancelled") => {
+                let why = issued
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let why = if why.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {why}")
+                };
+                bail!("Adding {what} was not confirmed, so nothing was added{why}");
+            }
+            Some("pending") => bail!(
+                "Adding {what} still waits for your yes on the asking card on any of your \
+                 devices: approve it there, then run `tilo device add` again."
+            ),
+            _ => {}
+        }
         let ticket = issued
             .get("result")
             .and_then(|answer| answer.get("ticket"))

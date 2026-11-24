@@ -123,7 +123,7 @@ fn running(profile: &Path) -> io::Result<Status> {
             Ok(status) => {
                 if !tilo_api::daemon::system_daemon() {
                     tilo_api::daemon::this_computer()
-                        .and_then(|place| place.found(None))
+                        .and_then(|place| place.found(tilo_api::daemon::Founding::default()))
                         .map_err(io::Error::other)?;
                 }
                 return Ok(status);
@@ -472,29 +472,36 @@ fn serve_device(
     // A device a ticket made enters through the server the ticket named until its copy of the
     // person's own workspace names it.
     let mut entered = device.entered();
+    // What a founding call waits on for the first tickets it asked for.
+    let founding = device.founding();
     let device_key = device.device_key();
     let _lock = device.device_lock();
     loop {
         let mut stage = |stage: &str| tracing::debug!(stage, "starting the person's services");
-        let session =
-            match Daemon::start_locked(profile, &mut stage, dev, (device_key, entered.take())) {
-                Ok(session) => Arc::new(session),
-                // The identity went away before its services could start: keep answering the
-                // device's own actions, which is where founding and logging in are, until it is one
-                // its person's services can start as again.
-                Err(error) if !device.claimed() => {
-                    tracing::info!(
-                        %error,
-                        "this computer has no identity its person's services can start as yet: \
-                         answering the device's own actions"
-                    );
-                    if !device.until_ready(stop) {
-                        return Ok(());
-                    }
-                    continue;
+        let session = match Daemon::start_locked(
+            profile,
+            &mut stage,
+            dev,
+            (device_key, entered.take()),
+            Arc::clone(&founding),
+        ) {
+            Ok(session) => Arc::new(session),
+            // The identity went away before its services could start: keep answering the
+            // device's own actions, which is where founding and logging in are, until it is one
+            // its person's services can start as again.
+            Err(error) if !device.claimed() => {
+                tracing::info!(
+                    %error,
+                    "this computer has no identity its person's services can start as yet: \
+                    answering the device's own actions"
+                );
+                if !device.until_ready(stop) {
+                    return Ok(());
                 }
-                Err(error) => return Err(error),
-            };
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         // Migrations run on the device that holds the data they read.
         session.serve_migrations();
         // A computer that just logged in takes its workspace in while the device is held (below):

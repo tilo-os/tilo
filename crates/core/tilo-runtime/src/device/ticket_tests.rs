@@ -585,6 +585,92 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
     let _ = router.shutdown().await;
 }
 
+/// A person's founding answers the tickets their first device asked for, issued as their own
+/// act: the ticket lets a computer in, with nothing else needed to approve it, which is the one
+/// way a fresh installation adds its first computers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_founding_issues_the_first_tickets_its_person_asked_for_as_their_own_act() {
+    let workspace = tilo_desktop_model::WorkspaceId::new();
+    let (issuer, state, issuer_key, issuer_cert, _paths) =
+        super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;
+    let place = tilo_device_identity::login::Place::at(
+        state.path().join("issuer"),
+        tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
+    );
+    let actions = issuer.copies().action_service();
+    let tickets = Tickets::new(
+        (issuer_key.clone(), issuer_cert.clone()),
+        issuer.endpoint(),
+        None,
+        root_in(state.path().to_path_buf()),
+        Some(FirstWorkspace::founded(Arc::clone(&issuer), workspace)),
+        Some(Arc::clone(&issuer)),
+        place,
+        actions.clone(),
+    );
+    let router = serve(&issuer, actions);
+
+    // The person's own services run, as they do once a founding makes them: what a founding
+    // call's tickets are issued through.
+    let founding = super::unclaimed::Founding::default();
+    founding.serving(issuer_cert.user_public_key, Arc::new(tickets));
+    let issued = founding
+        .issue(issuer_cert.user_public_key, &["device".to_owned()])
+        .await
+        .expect("the founding issues the ticket its person asked for");
+    assert_eq!(issued[0]["kind"], "device", "{issued}");
+    let text = issued[0]["ticket"]
+        .as_str()
+        .expect("the founding answers a ticket")
+        .to_owned();
+    let ticket = Ticket::parse(&text).expect("the founding answers a ticket");
+    assert_eq!(
+        ticket.issuer.endpoint,
+        issuer_key.verifying_key().to_bytes(),
+        "the ticket names the device that founded the person"
+    );
+
+    // A computer with no certificate logs in with it: it is one of the person's devices, in the
+    // workspace this device founded.
+    let (desk_key, desk_cert) = enrol(
+        &SigningKey::from_bytes(&[0x74; 32]),
+        "the desk",
+        DeviceCapabilities::member(),
+    );
+    let desk_endpoint = endpoint(&desk_key).await;
+    let desk_place = tilo_device_identity::login::Place::at(
+        state.path().join("desk"),
+        tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys")),
+    );
+    tilo_device_identity::persist::adopt_device_key(desk_place.keys(), &desk_key.to_bytes())
+        .unwrap();
+    let desk = Tickets::new(
+        (desk_key.clone(), desk_cert),
+        desk_endpoint.clone(),
+        None,
+        no_root(),
+        None,
+        None,
+        desk_place,
+        ActionService::new(desk_key.clone(), Arc::new(NoActions)),
+    );
+    let answer = ask_device(
+        &desk,
+        LOG_IN,
+        json!({"ticket": text, "agent": "Codex", "label": "Codex on desk"}),
+    )
+    .await
+    .unwrap_or_else(|why| panic!("the ticket lets a computer in: {why}"));
+    assert_eq!(answer["workspace"], workspace.to_string());
+    assert!(
+        desk.logged_in().borrow().is_some(),
+        "the computer is one of the person's devices now"
+    );
+
+    desk_endpoint.close().await;
+    let _ = router.shutdown().await;
+}
+
 /// The person's own server, holding their Servers workspace: where a role's entry is written.
 struct ServersHost {
     server: tilo_server::daemon::Server,
@@ -1348,6 +1434,11 @@ async fn a_revoke_on_a_device_without_the_root_is_answered_and_run_at_one_that_k
     std::fs::create_dir_all(&rootless_store_dir).unwrap();
     home.env().set("XDG_CONFIG_HOME", &rootless_store_dir);
     let copies = issuer.copies();
+    // The person's own workspace, where a call that only their root signs waits for a device
+    // that keeps it.
+    tilo_workspace_service::workspaces::person_workspace::found(copies)
+        .await
+        .expect("the person's own workspace is founded here");
     let tickets = |root: RootSource, at: &str, cert: &DeviceCert| {
         Tickets::new(
             (key.clone(), cert.clone()),

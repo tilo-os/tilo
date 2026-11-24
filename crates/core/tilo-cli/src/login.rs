@@ -176,7 +176,8 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
     let grant = verified.grant().clone();
     // The name the person gave is theirs in the workspace; the device keeps a label of its own.
     let asked = name.map(str::trim).filter(|name| !name.is_empty());
-    let (mut person, made) = crate::identity::ensure(asked.or(grant.invitee_name.as_deref()))?;
+    let (mut person, made, _) =
+        crate::identity::ensure(asked.or(grant.invitee_name.as_deref()), &[])?;
     if let Some(name) = asked {
         crate::identity::keep_name(&mut person, name)?;
     }
@@ -494,6 +495,20 @@ const ANSWERING: std::time::Duration = std::time::Duration::from_secs(60);
 pub(crate) fn ensure_daemon() -> Result<std::os::unix::net::UnixStream> {
     tilo_api::daemon::this_computer()
         .and_then(|place| place.reach_native(ANSWERING))
+        .map_err(anyhow::Error::msg)
+}
+
+/// [`ensure_daemon`], founding this account's person with `founding` when this computer has none
+/// yet: the connection, and the founding answer (the first tickets it asked for among it) when a
+/// person was founded now.
+pub(crate) fn ensure_daemon_founding(
+    founding: &tilo_api::daemon::Founding,
+) -> Result<(
+    std::os::unix::net::UnixStream,
+    Option<serde_json::Value>,
+)> {
+    tilo_api::daemon::this_computer()
+        .and_then(|place| place.reach_native_founding(ANSWERING, founding))
         .map_err(anyhow::Error::msg)
 }
 

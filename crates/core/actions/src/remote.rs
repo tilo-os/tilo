@@ -555,8 +555,10 @@ pub mod device_tickets {
     #[must_use]
     pub fn descriptor(action: &str) -> Option<crate::ActionDescriptor> {
         let (label, description, kind, mut contract, params) = listed(action)?;
-        // Only the person's root signs a revocation: a device that keeps none is capped for it.
-        if action == REVOKE {
+        // Only the person's root signs a revocation, and issues the ticket that lets a computer
+        // in: a device that keeps none hands it on, and an agent that asks for one waits for
+        // their yes.
+        if matches!(action, ISSUE | REVOKE) {
             contract.tags.push(crate::ROOT_ONLY_TAG.to_owned());
         }
         Some(crate::ActionDescriptor {
