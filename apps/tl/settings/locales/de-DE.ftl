@@ -1542,6 +1542,15 @@ d-v6duuqqr = Storage pane
     .w-free-2 = { $size_words } freigeben
     .w-stop-keeping-here = Nicht mehr hier behalten
     .w-keep-here = Hier behalten
+    .w-fetched-workspace-files = Geholte Arbeitsbereichsdateien
+    .w-files-fetched-from-another-device-kept = Von einem anderen Gerät geholte Dateien, hier behalten, damit sie sofort öffnen.
+    .w-prefetch-files = Dateien vorausladen
+    .w-download-the-files-you-are-likely = Die Dateien herunterladen, die du wahrscheinlich als Nächstes öffnest, bevor du sie öffnest
+    .w-space-for-fetched-files = Platz für geholte Dateien
+    .w-how-much-of-this-disk-fetched = Wie viel dieser Platte geholte Dateien belegen dürfen
+    .w-prefetching-pauses-on-metered-networks-low = Das Vorausladen pausiert in getakteten Netzen, bei niedrigem Akkustand und auf einer vollen Platte. Offline behaltene Dateien und Dateien, die nur auf diesem Gerät liegen, zählen nicht gegen diesen Platz.
+    .w-free-fetched-files = Geholte Dateien freigeben
+    .w-in-files-can-be-freed-they = { $size_words } in { $len } Dateien lassen sich freigeben; sie werden beim Öffnen erneut geladen
     .w-your-other-devices = Deine anderen Geräte
     .w-none-of-your-other-devices-is = Noch ist keines deiner anderen Geräte hier.
 

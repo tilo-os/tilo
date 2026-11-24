@@ -4,6 +4,10 @@
 //! The scan covers the same roots the disk's storage policy does: installed apps, the apps'
 //! data, the apps' cache and the synced replica. What a workspace holds on its servers is the
 //! workspace service's reading, not this one.
+//!
+//! How the filesystem daemon fetches and keeps the workspace files it syncs is here too: the
+//! prefetch switch and the space fetched files may take, and the synced files whose copy on this
+//! device can be dropped without losing anything.
 
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +90,51 @@ impl WorkspaceHold {
     }
 }
 
+/// How this device fetches and keeps the workspace files it syncs: whether it fetches the files
+/// a person is likely to open next before they open them, and how many bytes of fetched files it
+/// keeps.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct CachePolicy {
+    /// Fetch predicted files ahead of their open. Network, battery and disk checks still apply.
+    pub prefetch: bool,
+    /// Bytes of fetched files to keep; `None` is the share of the disk the daemon chooses,
+    /// which a person reads as "Automatic". Kept and only-here files are kept regardless.
+    #[serde(default)]
+    pub budget_bytes: Option<u64>,
+}
+
+/// The space fetched files may take, in the words the action takes them.
+pub const CACHE_SIZES: [&str; 6] = ["Automatic", "5 GB", "10 GB", "25 GB", "50 GB", "100 GB"];
+
+/// The bytes `size` names, as [`CACHE_SIZES`] spells it: `Some(None)` is the daemon's own share
+/// of the disk, and `None` a size it does not offer.
+#[must_use]
+pub fn cache_budget(size: &str) -> Option<Option<u64>> {
+    if size == "Automatic" {
+        return Some(None);
+    }
+    CACHE_SIZES
+        .iter()
+        .filter(|offered| **offered == size)
+        .find_map(|offered| offered.strip_suffix(" GB"))
+        .and_then(|gigabytes| gigabytes.parse::<u64>().ok())
+        .map(|gigabytes| Some(gigabytes.saturating_mul(1_000_000_000)))
+}
+
+/// A synced workspace file whose copy on this device can be freed without losing anything: the
+/// workspace has it elsewhere, or it downloads again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct ReclaimableFile {
+    /// The workspace the file belongs to, as the reading names its workspaces.
+    pub workspace: String,
+    /// The file's path in that workspace.
+    pub path: String,
+    /// The bytes its copy here takes.
+    pub bytes: u64,
+}
+
 /// What this computer's storage reads as now.
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
@@ -100,6 +149,19 @@ pub struct Storage {
     /// Why what this device holds of its workspaces could not be read, when it could not.
     #[serde(default)]
     pub residency_error: Option<String>,
+    /// How this device fetches and keeps the workspace files it syncs, when its files can be
+    /// reached.
+    #[serde(default)]
+    pub cache_policy: Option<CachePolicy>,
+    /// Synced files whose copy here can be freed without losing anything, largest first.
+    #[serde(default)]
+    pub reclaimable: Vec<ReclaimableFile>,
+    /// Every byte freeing [`Self::reclaimable`] gives back.
+    #[serde(default)]
+    pub reclaimable_bytes: u64,
+    /// Why the synced files this device holds could not be read, when they could not.
+    #[serde(default)]
+    pub sync_error: Option<String>,
     /// The kinds found, largest first.
     pub categories: Vec<CategoryUsage>,
     /// The largest items found, largest first.
@@ -172,4 +234,57 @@ pub enum StorageAction {
         #[param("The workspace whose fetched files to free, as the reading lists it")]
         workspace: String,
     },
+    /// Fetch the workspace files likely to be opened next before they are opened, or only when
+    /// they are opened.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "download",
+        keywords = "prefetch, download ahead, vorausladen"
+    )]
+    SetPrefetch {
+        /// Whether to fetch files ahead of their open.
+        #[param("Whether to fetch files ahead of their open")]
+        on: bool,
+    },
+    /// Set how much space files fetched from another device may take on this device.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        idempotent,
+        icon = "hard-drive",
+        keywords = "cache size, space for fetched files, cache-größe"
+    )]
+    SetCacheSize {
+        /// The space to keep, as `CACHE_SIZES` names it.
+        #[param("The space to keep", choices = CACHE_SIZES)]
+        size: String,
+    },
+    /// Free one synced file's copy on this device. The workspace keeps it elsewhere, and opening
+    /// it here fetches it again.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "free a file, remove local copy, datei freigeben"
+    )]
+    FreeFile {
+        /// The file's workspace, as the reading lists it.
+        #[param("The file's workspace, as the reading lists it")]
+        workspace: String,
+        /// The file's path in that workspace.
+        #[param("The file's path in its workspace, as the reading lists it")]
+        path: String,
+    },
+    /// Free every synced file whose copy here can be freed without losing anything.
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash",
+        keywords = "free synced files, free space, synchronisierte dateien freigeben"
+    )]
+    FreeSyncedFiles,
 }

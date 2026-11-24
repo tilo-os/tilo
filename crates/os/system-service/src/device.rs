@@ -150,6 +150,14 @@ pub enum StorageChange {
     KeepHere { workspace: String, keep: bool },
     /// Free a workspace's fetched cache.
     FreeCache { workspace: String },
+    /// Fetch predicted workspace files ahead of their open, or only when they are opened.
+    SetPrefetch { on: bool },
+    /// Set the bytes of fetched workspace files this device keeps; `None` is the daemon's own.
+    SetCacheSize { bytes: Option<u64> },
+    /// Free one synced file's copy on this device.
+    FreeFile { workspace: String, path: String },
+    /// Free every synced file whose copy here can be freed without losing anything.
+    FreeSyncedFiles,
 }
 
 /// A change to make on the accounts: what a person, an agent or a script asked of the `users`
@@ -825,6 +833,12 @@ impl System for OsSystem {
                 crate::storage::keep_here(workspace, *keep)
             }
             StorageChange::FreeCache { workspace } => crate::storage::free_cache(workspace),
+            StorageChange::SetPrefetch { on } => crate::storage::set_prefetch(*on),
+            StorageChange::SetCacheSize { bytes } => crate::storage::set_cache_size(*bytes),
+            StorageChange::FreeFile { workspace, path } => {
+                crate::storage::free_file(workspace, path)
+            }
+            StorageChange::FreeSyncedFiles => crate::storage::free_synced_files(),
         }
     }
 
