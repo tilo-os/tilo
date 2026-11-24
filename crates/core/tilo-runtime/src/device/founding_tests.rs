@@ -259,14 +259,13 @@ fn a_founding_call_asked_for_tickets_is_followed_after_its_person_serves() {
     // invocation, so it can be followed where it is however far it got.
     let asked = json!({ "name": "Ada", "tickets": ["server"] });
     let invocation = tilo_actions::InvocationId::new().0.to_string();
+    // The answer may come at once or, as the founder reads it, say the call stands under way
+    // (its tickets are issued once the person's services run): either is a call to follow.
     let made = ask(
         &socket,
         &followed_request("devices#found", &asked, Some(&invocation), 0),
     );
-    assert_ne!(
-        made["result"]["isError"], true,
-        "no person was made: {made}"
-    );
+    assert!(made.get("error").is_none(), "the daemon did not answer: {made}");
 
     running
         .wait_for_person(Duration::from_secs(120))
