@@ -36,11 +36,12 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Carries `command` out, as the workspace's store does for a connection of it.
+    /// Carries `command` out, as the workspace's store does for a connection of the person
+    /// `reader`: a read answers only what that person reads.
     ///
     /// # Errors
     /// Why the store refused the write.
-    pub fn command(&self, command: Command) -> Result<Reply, String> {
+    pub fn command(&self, command: Command, reader: &str) -> Result<Reply, String> {
         if let Command::Turn {
             address,
             inputs,
@@ -73,7 +74,8 @@ impl Workspace {
                 Err(refused) => Err(refused.to_string()),
             };
         }
-        wire::read(&self.store.borrow(), &command, &|_| true)
+        let reader = reader.to_ascii_lowercase();
+        wire::read(&self.store.borrow(), &command, &wire::reads_as(&reader))
             .ok_or_else(|| "the store answered no read".to_owned())
     }
 
@@ -414,7 +416,7 @@ impl PeerTransport for Broker {
                     .ok()
                     .map(|command| self.bus.workspace.records_written(command))
                     .unwrap_or_default();
-                let reply = parsed.and_then(|command| self.bus.workspace.command(command));
+                let reply = parsed.and_then(|command| self.bus.workspace.command(command, &self.person));
                 let result = reply.and_then(|reply| {
                     serde_json::to_vec(&reply).map_err(|error| error.to_string())
                 });

@@ -432,6 +432,15 @@ fn write_into(
     Ok(())
 }
 
+/// Whether the person `reader` (their key as a reader set names them) reads what the reader set
+/// `readers` names: `*` names every member, and nobody reads as no one. What every host of the
+/// store answers a read by.
+pub fn reads_as(reader: &str) -> impl Fn(&str) -> bool + '_ {
+    move |readers| {
+        !reader.is_empty() && (readers == "*" || readers.split(',').any(|person| person == reader))
+    }
+}
+
 /// Answers the read `command` from `store`, of only what `may_read` admits; `None` for a write.
 #[must_use]
 pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -> Option<Reply> {

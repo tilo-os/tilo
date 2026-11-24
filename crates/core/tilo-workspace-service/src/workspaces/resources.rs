@@ -271,7 +271,7 @@ impl Resources {
             return;
         }
         self.live_shown = Some(revision);
-        let may_read = |readers: &str| readers == "*" || readers.split(',').any(|p| p == reader);
+        let may_read = tilo_resource_store::wire::reads_as(&reader);
         let shown = store
             .live(&may_read)
             .into_iter()
@@ -1805,12 +1805,10 @@ fn may_write_as_viewer(
     Ok(())
 }
 
-/// Whether the reader set `readers` names `reader`: `*` names everyone.
+/// Whether the reader set `readers` names `reader` ([`tilo_resource_store::wire::reads_as`]).
 #[cfg(feature = "apps")]
 fn may_read(reader: String) -> impl Fn(&str) -> bool {
-    move |readers| {
-        !reader.is_empty() && (readers == "*" || readers.split(',').any(|person| person == reader))
-    }
+    move |readers| tilo_resource_store::wire::reads_as(&reader)(readers)
 }
 
 #[cfg(feature = "apps")]

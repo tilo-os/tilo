@@ -1035,7 +1035,7 @@ impl PeerTransport for SlowBroker {
             } => {
                 let result = serde_json::from_slice(&command)
                     .map_err(|error| error.to_string())
-                    .and_then(|command| self.workspace.command(command))
+                    .and_then(|command| self.workspace.command(command, "ada"))
                     .and_then(|reply| {
                         serde_json::to_vec(&reply).map_err(|error| error.to_string())
                     });
