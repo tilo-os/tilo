@@ -671,6 +671,60 @@ mod cases {
         assert!(refused.is_err(), "a press on a dimmed button is refused");
     }
 
+    /// A notification an extension showed is drawn on the page with its buttons, and what the
+    /// person presses reaches the engine with the extension, its notification and the button.
+    #[test]
+    fn an_extensions_notification_is_shown_and_answered_on_the_page() {
+        let b = Browser::new();
+        b.page.answer_asks(json!({
+            "extension_notices": [{
+                "id": "abcdefghijklmnopabcdefghijklmnop",
+                "notification": "n1",
+                "title": "Saved for later",
+                "message": "Three pages kept",
+                "buttons": ["Open", "Later"],
+            }],
+        }));
+        b.page("refresh_page", &[]);
+        let view = b.page_view();
+        assert!(
+            of_kind(view.tree(), "ui.Banner")
+                .iter()
+                .any(|banner| banner.props.get("title") == Some(&Value::text("Saved for later"))),
+            "the notification is a banner on the page:\n{}",
+            dump(view.tree())
+        );
+
+        view.fire(&button_key(&view, "Later"), "press").unwrap();
+        assert_eq!(
+            b.page.last()["op"].as_str(),
+            Some("extension_notice_chosen"),
+            "the engine hears which button was pressed"
+        );
+        assert_eq!(
+            b.page.last()["extension"].as_str(),
+            Some("abcdefghijklmnopabcdefghijklmnop")
+        );
+        assert_eq!(b.page.last()["notification"].as_str(), Some("n1"));
+        assert_eq!(
+            b.page.last()["button"].as_str(),
+            Some("1"),
+            "the second button is the second one"
+        );
+
+        let view = b.page_view();
+        view.fire(&button_key(&view, "Dismiss"), "press").unwrap();
+        assert_eq!(
+            b.page.last()["op"].as_str(),
+            Some("extension_notice_chosen")
+        );
+        assert!(
+            b.page.last()["button"].is_null(),
+            "taking it away presses no button: {}",
+            b.page.last()
+        );
+    }
+
     /// A saved download is shown in Files by calling Files' own action: the Browser names the
     /// place and Files, the app that knows the device's files, shows it. The Browser never reads
     /// a folder itself.

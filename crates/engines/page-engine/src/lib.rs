@@ -11,7 +11,7 @@ pub mod codec;
 mod asks;
 mod prompts;
 
-pub use asks::{Asks, Download, ExtensionButton, Menu};
+pub use asks::{Asks, Download, ExtensionButton, ExtensionNotice, Menu};
 pub use prompts::{Prompt, PromptChange, PromptKey, PromptKind, Prompts};
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
@@ -632,6 +632,43 @@ mod tests {
         assert_eq!(note["note"], "open");
         assert_eq!(note["url"], "https://example.org/popup");
         assert_eq!(note["popup"], true, "a popup is shown as a page of its own");
+    }
+
+    /// An extension's notification is kept while it shows and gone when the extension takes it
+    /// back, and the person's press on one of its buttons reaches the engine by number.
+    #[test]
+    fn an_extensions_notification_is_kept_until_the_extension_takes_it_back() {
+        let test = TestEngine::new();
+        let mut session = PageSession::new(test.clone());
+        test.push_event(WebViewEvent::ExtensionNotification {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            notification: "n1".to_owned(),
+            notice: Some(tilo_webview::ExtensionNotice {
+                title: "Saved".to_owned(),
+                message: "Three pages kept".to_owned(),
+                context: String::new(),
+                items: Vec::new(),
+                buttons: vec!["Open".to_owned(), "Later".to_owned()],
+                progress: None,
+                silent: false,
+            }),
+        });
+        session.poll();
+        let notices = &session.asks().extension_notices;
+        assert_eq!(notices.len(), 1, "one notification: {notices:?}");
+        assert_eq!(notices[0].title, "Saved");
+        assert_eq!(notices[0].buttons, ["Open", "Later"]);
+
+        test.push_event(WebViewEvent::ExtensionNotification {
+            id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            notification: "n1".to_owned(),
+            notice: None,
+        });
+        session.poll();
+        assert!(
+            session.asks().extension_notices.is_empty(),
+            "the extension took it back"
+        );
     }
 
     /// A page a script opened (a popup the site sized, a plain new tab) is a note the window

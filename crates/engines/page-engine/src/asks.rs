@@ -65,6 +65,17 @@ pub struct ExtensionButton {
     pub popup: bool,
 }
 
+/// One notification an extension showed, as the person reads it: the extension it is from, the
+/// extension's own number for it, what it says, and the buttons it offers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionNotice {
+    pub id: String,
+    pub notification: String,
+    pub title: String,
+    pub message: String,
+    pub buttons: Vec<String>,
+}
+
 /// An ask a person answers: the id that names the question, and what it asks.
 pub type Permission = (u32, String, String);
 
@@ -96,6 +107,8 @@ pub struct Asks {
     pub extensions: Vec<tilo_webview::ExtensionEntry>,
     /// The toolbar buttons the page's extensions show, in the order the engine named them.
     pub extension_buttons: Vec<ExtensionButton>,
+    /// The notifications the page's extensions showed and have not taken back.
+    pub extension_notices: Vec<ExtensionNotice>,
 }
 
 impl Asks {
@@ -179,6 +192,24 @@ impl Asks {
                 }
             }
             WebViewEvent::ExtensionActionReset => self.extension_buttons.clear(),
+            WebViewEvent::ExtensionNotification {
+                id,
+                notification,
+                notice,
+            } => {
+                let held = notice.as_ref().map(|notice| ExtensionNotice {
+                    id: id.clone(),
+                    notification: notification.clone(),
+                    title: notice.title.clone(),
+                    message: notice.message.clone(),
+                    buttons: notice.buttons.clone(),
+                });
+                self.extension_notices
+                    .retain(|shown| &shown.id != id || &shown.notification != notification);
+                if let Some(notice) = held {
+                    self.extension_notices.push(notice);
+                }
+            }
             WebViewEvent::NavigationHistory {
                 direction, entries, ..
             } => match direction {

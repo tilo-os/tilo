@@ -138,6 +138,8 @@ type Page (title: title) {
     login_notice: Text = ""
     /// The toolbar buttons this page's extensions show, as the engine last reported them.
     buttons: Collection<PageButton>
+    /// The notifications this page's extensions showed and have not taken back.
+    notices: Collection<ExtensionNotice>
     /// The pages before this one and the ones after it, as the engine last answered the window's
     /// request for them.
     back: Collection<HistoryEntry>
@@ -287,6 +289,21 @@ type PageButton (title: label) {
     }
 }
 
+/// One notification an extension showed: the extension it is from, the extension's own number
+/// for it, what it says, and the buttons it offers.
+type ExtensionNotice (title: title) {
+    /// The engine's identifier of the extension that showed it.
+    ext: Text
+    notification: Text
+    title: Text
+    message: Text
+    buttons: List<Text>
+
+    search {
+        hide ext
+    }
+}
+
 /// One extension installed on this device: what it is, what its manifest asks for, and whether
 /// the person turned it on. Chromium loads the ones that are on when a page's window starts.
 type Extension (title: name) {
@@ -355,6 +372,8 @@ type Ask {
     path: Option<Text> = .none
     /// The identifier of an installed extension, which turning it on or removing names.
     extension: Option<Text> = .none
+    /// The extension's own number for one of its notifications.
+    notification: Option<Text> = .none
     level: Option<Float> = .none
     values: Option<List<Text>> = .none
     /// What each question of a form is answered with, by the question's name.
@@ -1011,6 +1030,11 @@ action refresh_page(p: Page) -> Answer uses page (
     for b in buttons {
         p.buttons.insert(b)
     }
+    let notices = notices_of(value)
+    p.notices.remove_where(n -> true)
+    for n in notices {
+        p.notices.insert(n)
+    }
     let before = history_of(value, "back")
     p.back.remove_where(e -> true)
     for e in before {
@@ -1340,6 +1364,43 @@ action click_extension(p: Page, b: PageButton) -> Answer uses page (
 ) {
     require b.enabled "The extension turned its button off on this page"
     ask_page(p, json.encode(Ask(op: "extension_click", extension: .some(b.ext))))
+}
+
+/// Presses one of the buttons a notification an extension showed offers.
+action choose_extension_notice(p: Page, n: ExtensionNotice, button: Text) -> Answer uses page (
+    icon: .check,
+    label: "Press the notification's button",
+    shows: [n.title],
+) {
+    ask_page(
+        p,
+        json.encode(
+            Ask(
+                op: "extension_notice_chosen",
+                extension: .some(n.ext),
+                notification: .some(n.notification),
+                button: .some(button),
+            ),
+        ),
+    )
+}
+
+/// Takes a notification an extension showed away without pressing anything.
+action dismiss_extension_notice(p: Page, n: ExtensionNotice) -> Answer uses page (
+    icon: .x,
+    label: "Take the notification away",
+    shows: [n.title],
+) {
+    ask_page(
+        p,
+        json.encode(
+            Ask(
+                op: "extension_notice_chosen",
+                extension: .some(n.ext),
+                notification: .some(n.notification),
+            ),
+        ),
+    )
 }
 
 /// Writes the extensions a page's window listed into the Browser's record. The window raises it;
@@ -2207,6 +2268,49 @@ fn button_label(b: Browser, button: PageButton) -> Text {
     if button.badge != "" { "{name} · {button.badge}" } else { name }
 }
 
+/// The notifications the page's extensions showed, as the engine last reported them.
+fn notices_of(value: json.Value) -> List<ExtensionNotice> {
+    let found: List<ExtensionNotice> = []
+    for held in json_arrays(json_field(value, "extension_notices") ?? value) {
+        let ext = json_text(held, "id")
+        let notification = json_text(held, "notification")
+        if ext != "" and notification != "" {
+            found = [
+                found,
+                [
+                    ExtensionNotice(
+                        ext: ext,
+                        notification: notification,
+                        title: json_text(held, "title"),
+                        message: json_text(held, "message"),
+                        buttons: json_words_list(held, "buttons"),
+                    ),
+                ],
+            ]
+                .flat_map(x -> x)
+        }
+    }
+    found
+}
+
+/// The words a JSON field holds as a list, as the list they are.
+fn json_words_list(value: json.Value, key: Text) -> List<Text> {
+    if let held = json_field(value, key) {
+        json_arrays(held)
+            .map(
+                v -> match v {
+                    .string(text) => text,
+                    .object(_) => "",
+                    .array(_) => "",
+                    .number(_) => "",
+                    .bool(_) => "",
+                    .null => "",
+                },
+            )
+            .filter(word -> word != "")
+    } else { [] }
+}
+
 /// The toolbar buttons the page's extensions show, as the engine last reported them.
 fn buttons_of(value: json.Value) -> List<PageButton> {
     let found: List<PageButton> = []
@@ -2596,6 +2700,29 @@ view page_view(p: Page) {
                         for button in p.buttons {
                             ui.Button(button_label(b, button), icon: .puzzle, role: .plain) {
                                 on press: click_extension(p, button)
+                            }
+                        }
+                    }
+                }
+                for n in p.notices {
+                    stack(padding: .related) {
+                        ui.Banner(
+                            if n.title == "" { "Notification" } else { n.title },
+                            message: n.message,
+                            kind: .info,
+                        )
+                        row {
+                            for offered in n.buttons {
+                                ui.Button(offered, role: .plain) {
+                                    on press: choose_extension_notice(
+                                        p,
+                                        n,
+                                        "{n.buttons.index_of(offered) ?? 0}",
+                                    )
+                                }
+                            }
+                            ui.Button("Dismiss", icon: .x, role: .plain) {
+                                on press: dismiss_extension_notice(p, n)
                             }
                         }
                     }

@@ -436,6 +436,8 @@ d-vsaswu4a = Seitenansicht
     .w-remove = Entfernen
     .w-path-of-an-extension-package-crx = Pfad eines Erweiterungspakets (.crx oder .zip)
     .w-install = Installieren
+    .w-notification = Mitteilung
+    .w-dismiss = Wegnehmen
     .w-private-window = Privates Fenster
     .w-this-window-keeps-nothing-when-it = Dieses Fenster behält nichts, wenn es schließt: kein Verlauf, keine Anmeldungen und keine Cookies außer denen der Seite.
 
@@ -1599,3 +1601,39 @@ d-asvx3wpo = Erweiterung drücken
 d-asvx3wpo-b = B
 
 d-5r7zzpz6 = Erweiterung drücken~present
+
+d-3wa3bkzu = Mitteilungen
+    .doc = Die Mitteilungen, die die Erweiterungen dieser Seite gezeigt haben und nicht zurückgenommen haben.
+
+d-4rjencjg = Erweiterungsmitteilung
+    .doc = Eine Mitteilung, die eine Erweiterung gezeigt hat: die Erweiterung, von der sie kommt, ihre eigene Nummer dafür, was sie sagt und welche Knöpfe sie anbietet.
+    .noun = { $count ->
+        [one] Erweiterungsmitteilung
+       *[other] Erweiterungsmitteilungen
+    }
+
+d-bmmxddfi = Erweiterung
+    .doc = Die Kennung des Motors für die Erweiterung, die die Mitteilung gezeigt hat.
+
+d-7wjg3mlt = Mitteilung
+
+d-sqkziu2x = Titel
+
+d-h27qgqgy = Meldung
+
+d-c3idm5kp = Knöpfe
+
+d-xtjgu4pr = Mitteilung
+    .doc = Die eigene Nummer der Erweiterung für eine ihrer Mitteilungen.
+
+d-mowvq7xq = Knopf der Mitteilung drücken
+    .doc = Drückt einen der Knöpfe, die eine Mitteilung einer Erweiterung anbietet.
+
+d-mowvq7xq-n = M
+
+d-mowvq7xq-button = Knopf
+
+d-w6ubskp2 = Mitteilung wegnehmen
+    .doc = Nimmt eine Mitteilung, die eine Erweiterung gezeigt hat, weg, ohne etwas zu drücken.
+
+d-w6ubskp2-n = M

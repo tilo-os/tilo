@@ -342,6 +342,13 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             request_id: 1,
             id: extension_id(&value)?,
         }),
+        // What the person did with a notification an extension showed: pressed one of its
+        // buttons, or took it away.
+        "extension_notice_chosen" => Ask::Command(WebViewCommand::ExtensionNotificationChosen {
+            id: extension_id(&value)?,
+            notification: text(&value, "notification").unwrap_or_default(),
+            button: text(&value, "button").and_then(|button| button.parse::<u8>().ok()),
+        }),
         // A press on an extension's toolbar button: the engine runs the extension's action, or
         // opens the page it offers.
         "extension_click" => Ask::Command(WebViewCommand::ExtensionClick {
@@ -533,6 +540,19 @@ pub fn asks_json(asks: &Asks) -> String {
                     "badge": button.badge,
                     "enabled": button.enabled,
                     "popup": button.popup,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "extension_notices": asks
+            .extension_notices
+            .iter()
+            .map(|notice| {
+                serde_json::json!({
+                    "id": notice.id,
+                    "notification": notice.notification,
+                    "title": notice.title,
+                    "message": notice.message,
+                    "buttons": notice.buttons,
                 })
             })
             .collect::<Vec<_>>(),
