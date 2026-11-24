@@ -6793,6 +6793,67 @@
       }
     },
     {
+      "name": "Terminal",
+      "doc": "A terminal's grid: what a running shell printed and the input that reaches it.\nThe window of the app, the grid and the program inside it are one thing: a terminal has no address bar, no search of its own and no chrome — the app's own window bar carries where the session runs, and find over the scrollback is the window's.",
+      "props": [
+        {
+          "name": "session",
+          "doc": "The session this grid shows, as the app's record names it.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "What the grid shows, for assistive technology: \"Terminal, Build\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "copy_on_select",
+          "doc": "Finishing a selection also copies it to the clipboard, not only to the primary selection.",
+          "type": "bool"
+        },
+        {
+          "name": "bell_flash",
+          "doc": "Flash the grid when the program rings the bell.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "title",
+          "doc": "The program set the window's title.",
+          "value": "text"
+        },
+        {
+          "name": "finished",
+          "doc": "A run the shell marked ended; carries it as JSON.",
+          "value": "text"
+        },
+        {
+          "name": "exit",
+          "doc": "The shell ended: carries \"exited\", its status, or why the connection was lost.",
+          "value": "text"
+        },
+        {
+          "name": "selected",
+          "doc": "A selection was finished: carries the text it copied.",
+          "value": "text"
+        },
+        {
+          "name": "rung",
+          "doc": "The bell rang.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Terminal",
+        "label": "label"
+      }
+    },
+    {
       "name": "Text",
       "doc": "Words on the page, set in one of the design system's text roles. What it says is content, never looked up as interface copy.",
       "props": [

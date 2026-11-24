@@ -121,6 +121,10 @@ pub struct Reconciler {
     /// per window, so the window holds it and not the app whose view it draws. Its session is
     /// the engine's one reader, which the window also asks for the app's page calls.
     shown_page: crate::page_runner::Page,
+    /// The terminal sessions the window holds, as the handles it hands its `ui.Terminal` nodes:
+    /// made again whenever a session was opened or released.
+    #[cfg(not(target_arch = "wasm32"))]
+    terminals: crate::terminal::Handles,
 }
 
 fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
@@ -544,6 +548,8 @@ impl Reconciler {
             broken: Rc::default(),
             filling: HashMap::new(),
             shown_page: Rc::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            terminals: crate::terminal::Handles::default(),
         }
     }
 
@@ -563,6 +569,8 @@ impl Reconciler {
             broken: Rc::clone(&other.broken),
             filling: HashMap::new(),
             shown_page: Rc::clone(&other.shown_page),
+            #[cfg(not(target_arch = "wasm32"))]
+            terminals: crate::terminal::Handles::default(),
         }
     }
 
@@ -766,6 +774,14 @@ impl Reconciler {
             ui::webview::set_window_engine(Some(engine));
             ui::webview::set_window_page(Some(Rc::clone(&self.shown_page)));
         }
+        // A terminal is shown with the sessions this window holds, as a page is with its engine:
+        // the node names one by id and the window hands them in while it is built.
+        #[cfg(not(target_arch = "wasm32"))]
+        let outer_terminals = ui::terminal::window_sessions();
+        #[cfg(not(target_arch = "wasm32"))]
+        if description.name == "Terminal" {
+            ui::terminal::set_window_sessions(Some(self.terminals.now()));
+        }
         let built = {
             let mut source = NodeSource::new(node, description, self);
             // The control says what it does, where it is built (`Registry::build`): the window
@@ -775,6 +791,8 @@ impl Reconciler {
         };
         ui::webview::set_window_engine(outer);
         ui::webview::set_window_page(outer_page);
+        #[cfg(not(target_arch = "wasm32"))]
+        ui::terminal::set_window_sessions(outer_terminals);
         built.unwrap_or_else(|error| {
             self.note_broken(node, &error);
             self.text_of(node, "", TextRole::Caption)

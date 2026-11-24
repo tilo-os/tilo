@@ -393,6 +393,8 @@ pub use native::warmup;
 pub mod text_input {
     pub use tilo_webview::text_input::{Failure, Receipt, Resolver};
 }
+pub mod key_input;
+pub mod terminal;
 pub mod webview;
 pub mod widget;
 pub mod window_icon;

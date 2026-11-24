@@ -33,6 +33,10 @@ pub mod parse;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod input;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod live;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ops;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod provider;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod selection;
@@ -182,4 +186,28 @@ pub fn safe_osc_text(bytes: &[u8], max_bytes: usize) -> Option<String> {
         return None;
     }
     Some(text.to_string())
+}
+
+/// Whether `url` is a plain public web address: `http` or `https`, with an authority, no
+/// credentials, no query and no fragment, and no whitespace or control character. A terminal
+/// prints what a program tells it to, so a link it offers is only ever one that cannot carry a
+/// secret — a `file:` path, a token in a query, or `user:password@`.
+#[must_use]
+pub fn is_public_web_link(url: &str) -> bool {
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    if rest.is_empty()
+        || rest.contains(['?', '#', '@', '\\'])
+        || rest
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return false;
+    }
+    rest.split_once('/')
+        .map_or(!rest.is_empty(), |(authority, _)| !authority.is_empty())
 }

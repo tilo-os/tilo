@@ -26,6 +26,8 @@ mod media_source;
 pub mod page_runner;
 pub mod pane;
 pub mod reconcile;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod terminal;
 pub mod rows;
 pub mod shell;
 pub mod window;
