@@ -492,49 +492,63 @@ impl Driver {
     // ---- frames ----
 
     /// One frame of the app, as a display asks for one: its model pumped, synchronized, laid out and
-    /// painted into the driver's scene. Whether the app wants another frame; a host runs that one
-    /// when it polls, as a window's frame clock does, and [`Self::idle`] runs the ones owed to rest.
+    /// painted into the driver's scene. A frame whose sync or layout left more to settle runs again
+    /// at once, so what the driver shows is the app at rest. Whether the app wants another frame.
     fn run_frame(&mut self) -> bool {
         let _running = self.running();
-        // The bar first, as a window's frame refreshes it: its height is part of the app's top
-        // inset.
-        if self.bar_at_rest {
-            self.rest_bar();
-        } else if let Some(bar) = self.bar.as_mut() {
-            let _shown = bar.refresh(&mut self.app, &self.surface);
+        // What the widgets' update moves — a pan, a fade, a closure that answers what it waits for —
+        // advances in the surface frame's own model pump, which a window runs before it synchronizes.
+        let mut again = true;
+        for _ in 0..crate::widget::SETTLE_FRAMES {
+            // The bar first, as a window's frame refreshes it: its height is part of the app's
+            // top inset.
+            if self.bar_at_rest {
+                self.rest_bar();
+            } else if let Some(bar) = self.bar.as_mut() {
+                let _shown = bar.refresh(&mut self.app, &self.surface);
+            }
+            self.app.surface_accessibility();
+            self.scene.reset();
+            self.surface.redraw.set(false);
+            let declared = crate::window_toolbar::revision();
+            let recording = self.records.begin(&self.scene);
+            again = self.app.surface_frame_with_damage(
+                &self.surface,
+                &mut self.scene,
+                &mut self.damage,
+            );
+            self.records.finish(recording, &self.scene);
+            // What the app declared for its bar in this frame's sync (a part's new name after a
+            // press) shows in the next frame, which runs at once, as a window's bar shows it in
+            // the frame after the declaration.
+            let redeclared = self.bar.is_some() && crate::window_toolbar::revision() != declared;
+            if let Some(bar) = self.bar.as_mut().filter(|_| !self.bar_at_rest) {
+                let transform = vello::kurbo::Affine::scale(self.surface.scale.get());
+                bar.draw(&mut self.app, &mut self.scene, transform);
+                let _ = bar.take_repaint();
+                again |= bar.needs_frame();
+            }
+            // The pointers a host placed over the app are drawn last, as a window draws the
+            // members' pointers over everything.
+            self.paint_placed_pointers();
+            self.frames = self.frames.wrapping_add(1);
+            if redeclared {
+                continue;
+            }
+            // What the peer answered during the frame (the broker's reply to a call the app
+            // made) is taken up at once, as a window's next frame takes up a socket's.
+            if (!again || !self.app.unsettled()) && !self.peer_delivering() {
+                break;
+            }
         }
-        }
-        self.app.surface_accessibility();
-        self.scene.reset();
-        self.surface.redraw.set(false);
-        let recording = self.records.begin(&self.scene);
-        // What the widgets' update moves — a pan, a fade, a closure that answers what it waits
-        // for — advances in the surface frame's own model pump, as a window's frame does before it
-        // synchronizes; the frame's pack runs it once.
-        let mut again = self.app.surface_frame_with_damage(
-            &self.surface,
-            &mut self.scene,
-            &mut self.damage,
-        );
-        self.records.finish(recording, &self.scene);
-        if let Some(bar) = self.bar.as_mut().filter(|_| !self.bar_at_rest) {
-            let transform = vello::kurbo::Affine::scale(self.surface.scale.get());
-            bar.draw(&mut self.app, &mut self.scene, transform);
-            let _ = bar.take_repaint();
-            again |= bar.needs_frame();
-        }
-        // The pointers a host placed over the app are drawn last, as a window draws the members'
-        // pointers over everything.
-        self.paint_placed_pointers();
-        self.frames = self.frames.wrapping_add(1);
         let _ = self.damage.take();
         let _ = self.app.refresh_semantic_tree();
         self.note_retained_frame();
         self.check_retained_geometry_if_due();
-        // What the app asked of its broker in this frame is answered; the host's next frame takes
-        // the answer up, as a window's takes up a socket's. A frame the host runs to rest is
-        // [`Self::idle`]'s or [`Self::wait_until`]'s, each of which polls again.
-        let _ = self.serve_peer();
+        // What the app asked of its broker in this frame is answered in the frame after.
+        if self.serve_peer() {
+            return self.run_frame();
+        }
         again
     }
 
