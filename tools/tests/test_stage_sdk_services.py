@@ -34,12 +34,12 @@ class SdkServiceStagingTests(unittest.TestCase):
         return manifest
 
     def test_the_identity_requirement_is_the_runtime_version_the_image_serves(self):
-        original = (ROOT / "apps/file-explorer/tilo-app.toml").read_text()
+        original = (ROOT / "apps/terminal/tilo-app.toml").read_text()
         staged = tomllib.loads(self.stamp(original).read_text())
         self.assertEqual(staged["sandbox"]["services"]["identity"], IDENTITY)
 
     def test_actual_app_staging_adds_only_negotiated_identity_requirement(self):
-        original = (ROOT / "apps/file-explorer/tilo-app.toml").read_text()
+        original = (ROOT / "apps/terminal/tilo-app.toml").read_text()
         expected = tomllib.loads(original)
         expected["package"]["runtime"] = RUNTIME
         expected["sandbox"]["services"]["identity"] = IDENTITY
@@ -55,7 +55,8 @@ class SdkServiceStagingTests(unittest.TestCase):
 
     def test_every_current_sdk_app_manifest_can_declare_presentation(self):
         manifests = sorted((ROOT / "apps").glob("*/tilo-app.toml"))
-        self.assertGreaterEqual(len(manifests), 40, "the shipped app fleet is missing")
+        # The native apps that ship as a tapp; the fleet's tilolang packages carry no manifest.
+        self.assertGreaterEqual(len(manifests), 10, "the shipped app fleet is missing")
         # Each app's stamp is a few processes that mostly wait; the apps' run side by side.
         with ThreadPoolExecutor(max_workers=8) as pool:
             stamps = list(pool.map(lambda authored: self.stamped(authored.read_text()), manifests))
@@ -70,7 +71,7 @@ class SdkServiceStagingTests(unittest.TestCase):
                 )
 
     def test_authored_legacy_identity_contract_remains_legacy(self):
-        original = (ROOT / "apps/file-explorer/tilo-app.toml").read_text()
+        original = (ROOT / "apps/terminal/tilo-app.toml").read_text()
         original = original.replace("[sandbox.services]", '[sandbox.services]\nidentity = "required@1"')
         expected = tomllib.loads(original)
         expected["package"]["runtime"] = RUNTIME
