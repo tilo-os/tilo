@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.playback@1ab30e8876f33e9b";
+export const SURFACE = "so.tilo.playback@421c5039a7cd481f";
 
 /** Whether the player stands still, plays, or has nothing at all. One of "stopped", "playing", "paused". */
 export type PlaybackState = "stopped" | "playing" | "paused";
@@ -41,6 +41,11 @@ export interface SetCurrentArgs {
 /** The arguments of `set_playing`. */
 export interface SetPlayingArgs {
   on: boolean;
+}
+
+/** The arguments of `set_source`. */
+export interface SetSourceArgs {
+  source: string;
 }
 
 /** The arguments of `set_length`. */
@@ -79,6 +84,10 @@ export interface ToggleArgs {
 
 /** The arguments of `pause`. */
 export interface PauseArgs {
+}
+
+/** The arguments of `stop`. */
+export interface StopArgs {
 }
 
 /** The arguments of `next`. */
@@ -255,6 +264,12 @@ export interface Playback extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set_playing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   set_playingMany(items: SetPlayingArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Where what plays comes from, as the app that knows it answered again: a video's other quality, or the address it was asked for once more. The player opens it, and the live card and another device name the same bytes. */
+  set_source(args: {
+    source: string;
+  }): Promise<void>;
+  /** Runs `set_source` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_sourceMany(items: SetSourceArgs[]): Promise<tilo.ActionAnswer[]>;
   /** What the player reports of its length, once the decoder knows it. */
   set_length(args: {
     seconds: number;
@@ -298,6 +313,10 @@ export interface Playback extends tilo.Resource {
   pause(): Promise<void>;
   /** Runs `pause` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   pauseMany(items: PauseArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stops what plays: it plays on no device, and the shell shows it no more. */
+  stop(): Promise<void>;
+  /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The item after this one: the queue's next, or the first when repeat is on. */
   next(): Promise<void>;
   /** Runs `next` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -400,7 +419,7 @@ export interface Playback extends tilo.Resource {
 
 /** The actions `Playback` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const PLAYBACK_ACTIONS = ["play_list", "play_listMany", "set_current", "set_currentMany", "set_playing", "set_playingMany", "set_length", "set_lengthMany", "remember_position", "remember_positionMany", "set_position", "set_positionMany", "set_share", "set_shareMany", "resume", "resumeMany", "play", "playMany", "toggle", "toggleMany", "pause", "pauseMany", "next", "nextMany", "previous", "previousMany", "select", "selectMany", "seek_by", "seek_byMany", "seek", "seekMany", "set_volume", "set_volumeMany", "mute", "muteMany", "shuffle_toggle", "shuffle_toggleMany", "cycle_repeat", "cycle_repeatMany", "queue_add", "queue_addMany", "queue_play_next", "queue_play_nextMany", "queue_remove", "queue_removeMany", "queue_move", "queue_moveMany", "add_output", "add_outputMany", "remove_output", "remove_outputMany", "move_to", "move_toMany", "set_output_volume", "set_output_volumeMany"] as const;
+export const PLAYBACK_ACTIONS = ["play_list", "play_listMany", "set_current", "set_currentMany", "set_playing", "set_playingMany", "set_source", "set_sourceMany", "set_length", "set_lengthMany", "remember_position", "remember_positionMany", "set_position", "set_positionMany", "set_share", "set_shareMany", "resume", "resumeMany", "play", "playMany", "toggle", "toggleMany", "pause", "pauseMany", "stop", "stopMany", "next", "nextMany", "previous", "previousMany", "select", "selectMany", "seek_by", "seek_byMany", "seek", "seekMany", "set_volume", "set_volumeMany", "mute", "muteMany", "shuffle_toggle", "shuffle_toggleMany", "cycle_repeat", "cycle_repeatMany", "queue_add", "queue_addMany", "queue_play_next", "queue_play_nextMany", "queue_remove", "queue_removeMany", "queue_move", "queue_moveMany", "add_output", "add_outputMany", "remove_output", "remove_outputMany", "move_to", "move_toMany", "set_output_volume", "set_output_volumeMany"] as const;
 
 /** The `tl.so.tilo.playback.Playback` kind at `path`. */
 export function playback(ws: tilo.Workspace, path: string): Playback {

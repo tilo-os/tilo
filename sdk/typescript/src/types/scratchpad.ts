@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Note` is a `Resource` of the app's `scratchpad.note`, made by its factory with the
+ * `Note` is a `Resource` of the app's `tl.so.tilo.scratchpad.Note`, made by its factory with the
  * resource's path (`scratchpad/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,19 +22,69 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.scratchpad@ff83eaec31c5d048";
+export const SURFACE = "so.tilo.scratchpad@152da6a4ce46695f";
 
-/** Note — `scratchpad.note`. */
+/** The arguments of `edit-block`. */
+export interface EditBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `insert-block`. */
+export interface InsertBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `delete-block`. */
+export interface DeleteBlockArgs {
+  block: string;
+}
+
+/** Note — `tl.so.tilo.scratchpad.Note`. */
 export interface Note extends tilo.Resource {
-  body: string;
+  "5pw3hsgd": string;  // body
+  /** Set one paragraph of a rich-text field to what a Markdown text says. */
+  editBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  editBlockMany(items: EditBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Put a paragraph before the one the address names. */
+  insertBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insertBlockMany(items: InsertBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Remove the paragraph the address names, and the paragraphs it holds. */
+  deleteBlock(args: {
+    block: string;
+  }): Promise<void>;
+  /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteBlockMany(items: DeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Note` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTE_ACTIONS = [] as const;
+export const NOTE_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany"] as const;
 
-/** The `scratchpad.note` kind at `path`. */
+/** The `tl.so.tilo.scratchpad.Note` kind at `path`. */
 export function note(ws: tilo.Workspace, path: string): Note {
   return resourceProxy(ws, path, SURFACE, NOTE_ACTIONS) as unknown as Note;
+}
+
+/** Scratchpad — `tl.so.tilo.scratchpad`. */
+export interface Scratchpad extends tilo.Resource {
+}
+
+/** The actions `Scratchpad` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SCRATCHPAD_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.scratchpad` kind at `path`. */
+export function scratchpad(ws: tilo.Workspace, path: string): Scratchpad {
+  return resourceProxy(ws, path, SURFACE, SCRATCHPAD_ACTIONS) as unknown as Scratchpad;
 }
 

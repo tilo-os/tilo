@@ -22,15 +22,15 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.assistant@75370d0d3f793cec";
+export const SURFACE = "so.tilo.assistant@2cd0d3ff8fc75ce5";
 
 export interface Agent {
   id: string;
   name: string;
+  avatar: string | null;
   acts_for: string;
   model: string | null;
   mcp_client: string | null;
-  bound: Bound[];
   spend_limit_micros: number | null;
   spent: Spent | null;
   state: AgentState;
@@ -39,15 +39,43 @@ export interface Agent {
   sub: Sub | null;
   sub_depth: number | null;
   sub_at_once: number | null;
+  runs_on: RunsOn[];
 }
 
-/** One of "active", "retired". */
-export type AgentState = "active" | "retired";
+/** One of "active", "retired", "paused". */
+export type AgentState = "active" | "retired" | "paused";
 
-export interface Bound {
-  node: string;
-  kinds: string[];
-  answer: string;
+export interface Coding {
+  harness: string;
+  harness_name: string;
+  repository: string;
+  directory: string;
+  branch: string;
+  base: string;
+  session: string;
+  process: CodingProcess | null;
+  spent_micros: number;
+}
+
+export interface CodingHarness {
+  id: string;
+  name: string;
+}
+
+export interface CodingProcess {
+  started_ms: number;
+  ended_ms: number | null;
+  ended: string;
+  exit: number | null;
+  words: string;
+  stopped_by: string;
+}
+
+export interface NewCoding {
+  harness: string | null;
+  repository: string;
+  branch: string | null;
+  base: string | null;
 }
 
 export interface NewSubAgent {
@@ -59,6 +87,7 @@ export interface NewSubAgent {
   model: string | null;
   task: string | null;
   id: string | null;
+  coding: NewCoding | null;
 }
 
 export interface Note {
@@ -83,6 +112,12 @@ export interface ProducedAt {
   resource: string;
 }
 
+export interface RunsOn {
+  device: string;
+  ticket: string | null;
+  certificate: string | null;
+}
+
 export interface Spent {
   day: string;
   cost_micros: number;
@@ -98,20 +133,35 @@ export interface Sub {
   kind: string;
   depth: number;
   task: string | null;
-  conversation: string;
   stands: Stands;
   since: number;
   line: string;
   notes: Note[];
   produced: Produced[];
+  coding: Coding | null;
 }
 
 /** The arguments of `create-agent`. */
 export interface CreateAgentArgs {
   name: string;
+  avatar?: string;
   id?: string;
   model?: string;
   mcp_client?: string;
+}
+
+/** The arguments of `wait-to-run-agent`. */
+export interface WaitToRunAgentArgs {
+  agent: string;
+  device: string;
+  ticket: string;
+}
+
+/** The arguments of `run-agent-on`. */
+export interface RunAgentOnArgs {
+  agent: string;
+  device: string;
+  certificate: string;
 }
 
 /** The arguments of `set-agent-spend-limit`. */
@@ -133,6 +183,12 @@ export interface RenameAgentArgs {
   name: string;
 }
 
+/** The arguments of `set-agent-avatar`. */
+export interface SetAgentAvatarArgs {
+  agent: string;
+  avatar?: string;
+}
+
 /** The arguments of `set-agent-model`. */
 export interface SetAgentModelArgs {
   agent: string;
@@ -145,10 +201,14 @@ export interface SetAgentInstructionArgs {
   instruction?: string;
 }
 
-/** The arguments of `set-agent-bound`. */
-export interface SetAgentBoundArgs {
+/** The arguments of `pause-agent`. */
+export interface PauseAgentArgs {
   agent: string;
-  bound: Bound[];
+}
+
+/** The arguments of `resume-agent`. */
+export interface ResumeAgentArgs {
+  agent: string;
 }
 
 /** The arguments of `retire-agent`. */
@@ -166,6 +226,7 @@ export interface StartSubAgentArgs {
   model?: string;
   task?: string;
   id?: string;
+  coding?: NewCoding;
 }
 
 /** The arguments of `note-sub-agent`. */
@@ -195,6 +256,15 @@ export interface SubAgentProducedArgs {
   at?: ProducedAt;
 }
 
+/** The arguments of `sub-agent-coding`. */
+export interface SubAgentCodingArgs {
+  agent: string;
+  process?: CodingProcess;
+  session?: string;
+  spent_micros?: number;
+  harness?: CodingHarness;
+}
+
 /** The arguments of `set-sub-agent-limits`. */
 export interface SetSubAgentLimitsArgs {
   agent: string;
@@ -220,12 +290,27 @@ export interface WorkspaceAgent extends tilo.Resource {
   agents: Array<tilo.Entry<Agent>>;
   createAgent(args: {
     name: string;
+    avatar?: string;
     id?: string;
     model?: string;
     mcp_client?: string;
   }): Promise<void>;
   /** Runs `create-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   createAgentMany(items: CreateAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  waitToRunAgent(args: {
+    agent: string;
+    device: string;
+    ticket: string;
+  }): Promise<void>;
+  /** Runs `wait-to-run-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  waitToRunAgentMany(items: WaitToRunAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  runAgentOn(args: {
+    agent: string;
+    device: string;
+    certificate: string;
+  }): Promise<void>;
+  /** Runs `run-agent-on` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  runAgentOnMany(items: RunAgentOnArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentSpendLimit(args: {
     agent: string;
     limit_micros?: number;
@@ -245,6 +330,12 @@ export interface WorkspaceAgent extends tilo.Resource {
   }): Promise<void>;
   /** Runs `rename-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   renameAgentMany(items: RenameAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  setAgentAvatar(args: {
+    agent: string;
+    avatar?: string;
+  }): Promise<void>;
+  /** Runs `set-agent-avatar` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setAgentAvatarMany(items: SetAgentAvatarArgs[]): Promise<tilo.ActionAnswer[]>;
   setAgentModel(args: {
     agent: string;
     model?: string;
@@ -257,12 +348,16 @@ export interface WorkspaceAgent extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-agent-instruction` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentInstructionMany(items: SetAgentInstructionArgs[]): Promise<tilo.ActionAnswer[]>;
-  setAgentBound(args: {
+  pauseAgent(args: {
     agent: string;
-    bound: Bound[];
   }): Promise<void>;
-  /** Runs `set-agent-bound` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setAgentBoundMany(items: SetAgentBoundArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `pause-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pauseAgentMany(items: PauseAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  resumeAgent(args: {
+    agent: string;
+  }): Promise<void>;
+  /** Runs `resume-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  resumeAgentMany(items: ResumeAgentArgs[]): Promise<tilo.ActionAnswer[]>;
   retireAgent(args: {
     agent: string;
   }): Promise<void>;
@@ -277,6 +372,7 @@ export interface WorkspaceAgent extends tilo.Resource {
     model?: string;
     task?: string;
     id?: string;
+    coding?: NewCoding;
   }): Promise<void>;
   /** Runs `start-sub-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   startSubAgentMany(items: StartSubAgentArgs[]): Promise<tilo.ActionAnswer[]>;
@@ -307,6 +403,15 @@ export interface WorkspaceAgent extends tilo.Resource {
   }): Promise<void>;
   /** Runs `sub-agent-produced` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   subAgentProducedMany(items: SubAgentProducedArgs[]): Promise<tilo.ActionAnswer[]>;
+  subAgentCoding(args: {
+    agent: string;
+    process?: CodingProcess;
+    session?: string;
+    spent_micros?: number;
+    harness?: CodingHarness;
+  }): Promise<void>;
+  /** Runs `sub-agent-coding` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  subAgentCodingMany(items: SubAgentCodingArgs[]): Promise<tilo.ActionAnswer[]>;
   setSubAgentLimits(args: {
     agent: string;
     depth?: number;
@@ -318,7 +423,7 @@ export interface WorkspaceAgent extends tilo.Resource {
 
 /** The actions `WorkspaceAgent` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACEAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany", "startSubAgent", "startSubAgentMany", "noteSubAgent", "noteSubAgentMany", "stopSubAgent", "stopSubAgentMany", "subAgentStands", "subAgentStandsMany", "subAgentProduced", "subAgentProducedMany", "setSubAgentLimits", "setSubAgentLimitsMany"] as const;
+export const WORKSPACEAGENT_ACTIONS = ["createAgent", "createAgentMany", "waitToRunAgent", "waitToRunAgentMany", "runAgentOn", "runAgentOnMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "renameAgent", "renameAgentMany", "setAgentAvatar", "setAgentAvatarMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "pauseAgent", "pauseAgentMany", "resumeAgent", "resumeAgentMany", "retireAgent", "retireAgentMany", "startSubAgent", "startSubAgentMany", "noteSubAgent", "noteSubAgentMany", "stopSubAgent", "stopSubAgentMany", "subAgentStands", "subAgentStandsMany", "subAgentProduced", "subAgentProducedMany", "subAgentCoding", "subAgentCodingMany", "setSubAgentLimits", "setSubAgentLimitsMany"] as const;
 
 /** The `tilo.workspace.agent` kind at `path`. */
 export function workspaceAgent(ws: tilo.Workspace, path: string): WorkspaceAgent {

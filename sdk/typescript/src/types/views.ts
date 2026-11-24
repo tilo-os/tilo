@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.views@f3e265f5edc755d2";
+export const SURFACE = "so.tilo.lang.views@adf05c68ac36395f";
 
 /** A kind of device a person chooses how things show on. One of "desktop", "tablet", "phone". */
 export type Device = "desktop" | "tablet" | "phone";

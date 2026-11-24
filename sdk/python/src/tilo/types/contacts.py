@@ -27,6 +27,9 @@ __all__ = [
     "Group",
     "Book",
     "Contacts",
+    "EditBlockArgs",
+    "InsertBlockArgs",
+    "DeleteBlockArgs",
     "RenameArgs",
     "FavoriteArgs",
     "RemovePhoneArgs",
@@ -40,11 +43,29 @@ __all__ = [
     "ChangeArgs",
     "ForgetArgs",
     "ShareArgs",
+    "ShareCardArgs",
     "UnshareArgs",
 ]
 
 MergeField = Literal["name", "org", "role", "website", "birthday", "notes"]
 """What a merge may take from the card that goes: the values each card keeps one of. Numbers, mailboxes, addresses and groups always come over; these are the person's to choose."""
+
+EditBlockArgs = TypedDict("EditBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `edit-block`."""
+
+InsertBlockArgs = TypedDict("InsertBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `insert-block`."""
+
+DeleteBlockArgs = TypedDict("DeleteBlockArgs", {
+    "block": "str",
+})
+"""The arguments of `delete-block`."""
 
 RenameArgs = TypedDict("RenameArgs", {
     "name": "str",
@@ -84,6 +105,7 @@ GroupArgs = TypedDict("GroupArgs", {
 
 DeleteArgs = TypedDict("DeleteArgs", {
     "c": "Contact",
+    "directory": NotRequired["Any | None"],
 })
 """The arguments of `delete`."""
 
@@ -91,6 +113,7 @@ MergeIntoArgs = TypedDict("MergeIntoArgs", {
     "keep": "Contact",
     "goes": "Contact",
     "take": NotRequired["list[MergeField] | None"],
+    "directory": NotRequired["Any | None"],
 })
 """The arguments of `merge_into`."""
 
@@ -127,22 +150,29 @@ ShareArgs = TypedDict("ShareArgs", {
 })
 """The arguments of `share`."""
 
+ShareCardArgs = TypedDict("ShareCardArgs", {
+    "d": "Any",
+    "c": "Contact",
+})
+"""The arguments of `share_card`."""
+
 UnshareArgs = TypedDict("UnshareArgs", {
     "d": "Any",
     "person": "Any",
+    "c": "Contact",
 })
 """The arguments of `unshare`."""
 
 class Labeled(Resource):
     """Labeled — `tl.so.tilo.contacts.Labeled`."""
-    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    __surface__ = "so.tilo.contacts@1b03874977f50857"
     fzyd2a52: str  # label
     b4cilqkx: str  # value
 
 
 class Address(Resource):
     """Address — `tl.so.tilo.contacts.Address`."""
-    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    __surface__ = "so.tilo.contacts@1b03874977f50857"
     @property
     def _5iipld72(self) -> str:
         """label (`5iipld72` on the wire)."""
@@ -160,7 +190,7 @@ class Address(Resource):
 
 class Contact(Resource):
     """Contact — `tl.so.tilo.contacts.Contact`."""
-    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    __surface__ = "so.tilo.contacts@1b03874977f50857"
     zut4kvim: str  # name
     rfhxkccf: str  # org
     @property
@@ -187,6 +217,40 @@ class Contact(Resource):
     vea52w55: list[str]  # groups
     ur3qshor: bool  # favorite
     kvhikhu4: str  # photo
+    szrijd7k: str  # person
+    q3um3t7j: str  # uid
+
+    def edit_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Set one paragraph of a rich-text field to what a Markdown text says."""
+        return self.action("edit-block", block=block, text=text)
+
+    def edit_block_many(self, items: list[EditBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit-block", items)
+
+    def insert_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Put a paragraph before the one the address names."""
+        return self.action("insert-block", block=block, text=text)
+
+    def insert_block_many(self, items: list[InsertBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert-block", items)
+
+    def delete_block(self, *, block: str) -> None:
+        """Remove the paragraph the address names, and the paragraphs it holds."""
+        return self.action("delete-block", block=block)
+
+    def delete_block_many(self, items: list[DeleteBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-block", items)
 
     def rename(self, *, name: str) -> None:
         """Renames a contact."""
@@ -278,18 +342,18 @@ class Contact(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"rename", "rename_many", "favorite", "favorite_many", "add_phone", "remove_phone", "remove_phone_many", "add_email", "remove_email", "remove_email_many", "add_address", "remove_address", "remove_address_many", "ungroup", "ungroup_many", "export_contact"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "rename", "rename_many", "favorite", "favorite_many", "add_phone", "remove_phone", "remove_phone_many", "add_email", "remove_email", "remove_email_many", "add_address", "remove_address", "remove_address_many", "ungroup", "ungroup_many", "export_contact"})
 
 
 class Group(Resource):
     """Group — `tl.so.tilo.contacts.Group`."""
-    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    __surface__ = "so.tilo.contacts@1b03874977f50857"
     jn6l7z6v: str  # name
 
 
 class Book(Resource):
     """Book — `tl.so.tilo.contacts.Book`."""
-    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    __surface__ = "so.tilo.contacts@1b03874977f50857"
     qfj7l6eu: list[Entry[Contact]]  # contacts
     uyyz5pg2: list[Entry[Group]]  # groups
 
@@ -302,6 +366,10 @@ class Book(Resource):
         if name is not None:
             args["name"] = name
         return self.action("new_contact", **args)
+
+    def named_or_new(self, *, name: str) -> Contact:
+        """Finds the contact the workspace keeps under `name`, or adds one: what brings someone in from another service — a task given to them before they joined — to one card, however many imports name them."""
+        return self.action("named_or_new", name=name)
 
     def group(self,
         *,
@@ -319,9 +387,17 @@ class Book(Resource):
         """Starts a group the book offers as a place, with nobody in it yet."""
         return self.action("new_group", name=name)
 
-    def delete(self, *, c: Contact) -> None:
-        """Deletes a contact from the book."""
-        return self.action("delete", c=c)
+    def delete(self,
+        *,
+        c: Contact,
+        directory: Any | None = None,
+    ) -> None:
+        """Deletes a contact from the book, and with it the person the workspace's apps know of it where the window hands the directory: what Mail, Calendar and Messages reach it by goes too."""
+        args: dict[str, Any] = {}
+        args["c"] = c
+        if directory is not None:
+            args["directory"] = directory
+        return self.action("delete", **args)
 
     def delete_many(self, items: list[DeleteArgs]) -> list[dict[str, Any]]:
         """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -332,6 +408,7 @@ class Book(Resource):
         keep: Contact,
         goes: Contact,
         take: list[MergeField] | None = None,
+        directory: Any | None = None,
     ) -> None:
         """Merges the card that goes into the one that stays: every number, mailbox, address and group of both is the card that stays, the fields `take` names come from the card that goes, and the card that goes is deleted. One change, so undo brings both cards back."""
         args: dict[str, Any] = {}
@@ -339,6 +416,8 @@ class Book(Resource):
         args["goes"] = goes
         if take is not None:
             args["take"] = take
+        if directory is not None:
+            args["directory"] = directory
         return self.action("merge_into", **args)
 
     def merge_into_many(self, items: list[MergeIntoArgs]) -> list[dict[str, Any]]:
@@ -367,12 +446,12 @@ class Book(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_contact", "group", "group_many", "new_group", "delete", "delete_many", "merge_into", "merge_into_many", "export_book", "import_vcard", "add_contacts", "add_card", "find_for_address"})
+    __actions__ = frozenset({"new_contact", "named_or_new", "group", "group_many", "new_group", "delete", "delete_many", "merge_into", "merge_into_many", "export_book", "import_vcard", "add_contacts", "add_card", "find_for_address"})
 
 
 class Contacts(Resource):
     """Contacts — `tl.so.tilo.contacts`."""
-    __surface__ = "so.tilo.contacts@c6768c5776239d02"
+    __surface__ = "so.tilo.contacts@1b03874977f50857"
     def confirm(self,
         *,
         d: Any,
@@ -423,20 +502,33 @@ class Contacts(Resource):
         person: Any,
         c: Contact,
     ) -> None:
-        """Shares this card with the workspace's apps, under the person it is: the name, the numbers and the mailboxes another app reads of a contact before it writes to them."""
+        """Shares this card with the workspace's apps, under the person it is: the name, the numbers and the mailboxes another app reads of a contact before it writes to them. The card keeps that person's id, so it stops being shared, or is shared again, as the same person."""
         return self.action("share", d=d, person=person, c=c)
 
     def share_many(self, items: list[ShareArgs]) -> list[dict[str, Any]]:
         """Runs `share` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("share", items)
 
+    def share_card(self,
+        *,
+        d: Any,
+        c: Contact,
+    ) -> None:
+        """Shares a card the workspace's apps do not know yet: a person of its own is made for it, so Mail, Calendar and Messages can name it and find it by its numbers and mailboxes."""
+        return self.action("share_card", d=d, c=c)
+
+    def share_card_many(self, items: list[ShareCardArgs]) -> list[dict[str, Any]]:
+        """Runs `share_card` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("share_card", items)
+
     def unshare(self,
         *,
         d: Any,
         person: Any,
+        c: Contact,
     ) -> None:
-        """Takes the contact out of the directory, leaving its card in the book: what the apps read of it stops naming it."""
-        return self.action("unshare", d=d, person=person)
+        """Takes the contact out of the directory, leaving its card in the book: what the apps read of it stops naming it, and the card is no person of the directory's until it is shared again."""
+        return self.action("unshare", d=d, person=person, c=c)
 
     def unshare_many(self, items: list[UnshareArgs]) -> list[dict[str, Any]]:
         """Runs `unshare` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -444,6 +536,6 @@ class Contacts(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"confirm", "confirm_many", "change", "change_many", "forget", "forget_many", "share", "share_many", "unshare", "unshare_many"})
+    __actions__ = frozenset({"confirm", "confirm_many", "change", "change_many", "forget", "forget_many", "share", "share_many", "share_card", "share_card_many", "unshare", "unshare_many"})
 
 

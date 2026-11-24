@@ -229,6 +229,7 @@ fields = [
   { path = "people.*.phones", type = { list = "text" } },
   { path = "people.*.emails", type = { list = "text" } },
   { path = "people.*.photo", type = "text" },
+  { path = "people.*.photo_size", type = "int" },
   { path = "people.*.endpoints", type = { collection = { named = "Endpoint" } }, stored = "collection" },
   { path = "people.*.endpoints.*.service", type = "text" },
   { path = "people.*.endpoints.*.recipient", type = "text" },
@@ -322,7 +323,7 @@ params = [
 id = "project-contacts"
 kind = "undoable"
 params = [
-  { name = "people", type = { list = { named = "Projected" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } }, photo = { type = "string" } }, required = ["person", "label", "phones", "emails"] } } },
+  { name = "people", type = { list = { named = "Projected" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } }, photo = { type = "string" }, photo_size = { type = "integer", minimum = 0 } }, required = ["person", "label", "phones", "emails"] } } },
   { name = "removed", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
 ]
 
@@ -353,6 +354,7 @@ fields = [
   { name = "phones", type = { list = "text" } },
   { name = "emails", type = { list = "text" } },
   { name = "photo", type = "text" },
+  { name = "photo_size", type = "int" },
   { name = "endpoints", type = { collection = { named = "Endpoint" } } },
 ]
 
@@ -364,5 +366,6 @@ fields = [
   { name = "phones", type = { list = "text" } },
   { name = "emails", type = { list = "text" } },
   { name = "photo", type = "text" },
+  { name = "photo_size", type = "int" },
 ]
 

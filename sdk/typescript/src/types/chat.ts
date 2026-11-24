@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Workspace` is a `Resource` of the app's `chat.workspace`, made by its factory with the
+ * `Conversations` is a `Resource` of the app's `tl.so.tilo.chat.Conversations`, made by its factory with the
  * resource's path (`chat/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,817 +22,284 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@4c16479f75faf9f5";
+export const SURFACE = "so.tilo.chat@fad4433c99a76a17";
 
-export interface Category {
-  name: string;
-}
-
-/** One of "text", "voice". */
-export type ChannelKind = "text" | "voice";
-
-export interface ChannelPlace {
-  channel: string;
-  category: string | null;
-}
-
-export interface ContextField {
-  key: string;
-  value: string;
-}
-
-export interface Conversation {
-  category: string | null;
-  name: string;
-  topic: string;
-  kind: ChannelKind;
-  archived: boolean;
-  members: string[];
-}
-
-export interface CropRef {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export interface Destination {
-  workspace: string;
-  provider: string;
-  channel: string;
-}
-
-export interface FeedbackReport {
-  submission: Submission | null;
-  author: string;
-  ts: number;
-  triage: Array<tilo.Entry<Triage>>;
-  reactions: unknown;
-}
-
-export interface FrameTimings {
-  frames: number[];
-  budget: number;
-}
-
-/** One of "name", "email", "phone", "address", "account", "credential", "personal". */
-export type Hidden = "name" | "email" | "phone" | "address" | "account" | "credential" | "personal";
-
-export interface Interaction {
-  at: number;
-  app: string;
-  action: string;
-  resource: string;
-  label: string | null;
-  outcome: Outcome;
-}
-
-/** One of "done", "refused", "failed". */
-export type Outcome = "done" | "refused" | "failed";
-
-export interface Part {
-  text: string;
-  hidden: Hidden | null;
-}
-
-export interface ReadMark {
-  part: number;
-  seen: number;
-}
-
-export interface RecordingRef {
-  hash: string;
-  app: string;
-  app_name: string;
-  kind: string;
-  from_ms: number;
-  to_ms: number;
-  steps: number;
-  bytes: number;
-}
-
-export interface ResourceRef {
-  kind: string;
-  id: string;
-  label: string;
-  span: Span | null;
-}
-
-export interface ReviewedFeedback {
-  text: string;
-  context: ContextField[];
-  screenshot: ScreenshotRef | null;
-  selections: ReviewedSelection[];
-  interactions: Interaction[];
-  timings: FrameTimings | null;
-  recording: RecordingRef | null;
-}
-
-export interface ReviewedSelection {
-  app: string;
-  app_name: string;
-  build: string | null;
-  path: string;
-  role: string;
-  kind: string | null;
-  record: string | null;
-  label: ReviewedText | null;
-  texts: ReviewedText[];
-  note: ReviewedText | null;
-  crop: CropRef | null;
-}
-
-export interface ReviewedText {
-  kind: TextKind;
-  parts: Part[];
-}
-
-export interface ScreenshotRef {
-  hash: string;
-  width: number;
-  height: number;
-}
-
-export interface Span {
-  start: number;
-  end: number;
-  unit: SpanUnit;
-}
-
-/** One of "Chars", "Bytes". */
-export type SpanUnit = "Chars" | "Bytes";
-
-export interface Submission {
-  id: string;
-  destination: Destination;
-  feedback: ReviewedFeedback;
-}
-
-export interface Summary {
-  text: string;
-  through: string;
-  through_ts: number;
-}
-
-/** One of "interface", "content". */
-export type TextKind = "interface" | "content";
-
-export interface Triage {
-  author: string;
-  ts: number;
-  update: TriageUpdate | null;
-}
-
-/** One of investigating, resolved, reopen, duplicate, task: an object whose case the app tags it with. */
-export type TriageUpdate = Record<string, unknown>;
-
-export interface WorkspaceFiles {
-  largest: number;
-  member_hourly: number;
-}
-
-/** One of "complete", "truncated", "refused", "cancelled", "failed". */
-export type AgentFinish = "complete" | "truncated" | "refused" | "cancelled" | "failed";
-
-/** One of asked, applied, no_change, refused: an object whose case the app tags it with. */
-export type AgentStepOutcome = Record<string, unknown>;
-
-/** One of taken, waiting, doing, provider_finished, done, refused: an object whose case the app tags it with. */
-export type AgentWorkState = Record<string, unknown>;
-
-/** One of Item, Items, Text: an object whose case the app tags it with. */
-export type Anchor = Record<string, unknown>;
-
-export interface Answered {
-  provider: string;
-  model: string;
-  label: string;
-  cost_micros: number;
-  tokens: number;
-}
-
-export interface Answered2 {
-  answer: string;
-  device: string;
-  at: number;
-}
-
-/** One of resource, text, image, video, file: an object whose case the app tags it with. */
-export type Attached = Record<string, unknown>;
-
-export interface Cause {
-  kind: string;
-  label: string;
-  key: string;
-  person: string;
-}
-
-export interface Choice {
-  id: string;
-  label: string;
-}
-
-/** One of Bool, Int, Str: an object whose case the app tags it with. */
-export type ClipAttr = Record<string, unknown>;
-
-export interface ClipBlock {
-  kind: string;
-  text: string;
-  marks: MarkSpan[];
-  level: number | null;
-  ordered: boolean | null;
-  align: string | null;
-  attrs: Record<string, ClipAttr>;
-}
-
-export interface Earlier {
-  version: number;
-  source: string;
-  reads: string[];
-  at: number;
-}
-
-export interface MarkSpan {
-  start: number;
-  end: number;
-  name: string;
-  value: MarkValue;
-}
-
-/** One of Bool, Int, Str: an object whose case the app tags it with. */
-export type MarkValue = Record<string, unknown>;
-
-export interface Mention {
-  user: string;
-  start: number;
-  len: number;
-  is_agent: boolean;
-}
-
-export interface Message {
-  channel: string;
-  author: string;
-  ts: number;
-  text: string;
-  body: ClipBlock[];
-  edited: boolean;
-  history: Revision[];
-  parent: string | null;
-  quoted: Quote | null;
-  reactions: unknown;
-  mentions: Mention[];
-  attachments: Attached[];
-  pinned: boolean;
-  work: Work | null;
-  appearance: ShownAs | null;
-  acting: unknown | null;
-  author_name: string | null;
-  origin: Origin | null;
-  share: WindowShare | null;
-  question: Question | null;
-  cause: Cause | null;
-  stopped: Stopped | null;
-  view: View | null;
-  attempts: number;
-}
-
-export interface NewMessage {
-  id: string | null;
-  channel: string;
-  text: string;
-  parent: string | null;
-  quoted: Quote | null;
-  body: ClipBlock[] | null;
-  attachments: Attached[];
-  mentions: Mention[] | null;
-  written: number | null;
-  origin: Origin | null;
-}
-
-export interface Origin {
-  author: string;
-  handle: string | null;
-  source: string;
-  url: string | null;
-  reference: string | null;
-  created_ms: number | null;
-  updated_ms: number | null;
-}
-
-export interface MessagesOutcome {
-  outcome: string;
-  at: number;
-  detail: string;
-}
-
-export interface ProviderStream {
-  run: string;
-  sequence: number;
-  reasoning: string;
-  progress: string;
-  finish: AgentFinish | null;
-  detail: string;
-}
-
-export interface Question {
-  kind: string;
-  person: string;
-  answers: Choice[];
-  detail: string;
-  answered: Answered2 | null;
-  outcome: MessagesOutcome | null;
-  withdrawn: Withdrawn | null;
-}
-
-export interface Quote {
-  text: string;
-  start: number;
-  end: number;
-}
-
-export interface ResourceAt {
-  app: string;
-  record: string | null;
-  reference: ResourceRef;
-}
-
-export interface Revision {
-  ts: number;
-  text: string;
-}
-
-/** One of "view", "edit". */
-export type ShareAccess = "view" | "edit";
-
-export interface ShownAs {
-  name: string;
-  avatar: string | null;
-  persona: ShownPersona | null;
-}
-
-export interface ShownPersona {
-  service: string;
-  account: string;
-  linked: string | null;
-}
-
-export interface Starting {
-  kind: string;
-  label: string;
-  key: string;
-}
-
-export interface Step {
-  id: string;
-  sequence: number;
-  resource: string;
-  label: string;
-  outcome: AgentStepOutcome | null;
-}
-
-export interface StepUpdate {
-  id: string;
-  sequence: number;
-  resource: string;
-  label: string;
-  outcome: string;
-  why: string | null;
-}
-
-export interface Stopped {
-  attempt: number;
-  at: number;
-}
-
-export interface Transition {
-  state: AgentWorkState;
-  since: number;
-}
-
-export interface View {
-  source: string;
-  reads: string[];
-  version: number;
-  at: number;
-  earlier: Earlier[];
-}
-
-export interface WindowShare {
-  access: ShareAccess;
-  open: boolean;
-  ended: boolean;
-}
-
-export interface Withdrawn {
-  at: number;
-  why: string;
-}
-
-export interface Work {
-  stream: ProviderStream | null;
-  state: Transition | null;
-  trace: Array<tilo.Entry<Step>>;
-  failure_detail: string | null;
-  answered: Answered | null;
-}
-
-export interface WorkUpdate {
-  state: string;
-  app: string | null;
-  did: string | null;
-  about: string | null;
-  trace: StepUpdate[];
-  detail: string | null;
-  answered: Answered | null;
-}
-
-export interface Decision {
-  id: string;
-  person: string;
-  reports: string[];
-  outcome: ModerationOutcome;
-  until_ms: number | null;
-  reasoning: string;
-  model: string;
-  reverted: Reverted[];
-  by: string;
-  at_ms: number;
-  overturned_by: string | null;
-  overturn_note: string | null;
-  overturned_at_ms: number | null;
-}
-
-/** One of "no-action", "restrict", "ban". */
-export type ModerationOutcome = "no-action" | "restrict" | "ban";
-
-export interface Report {
-  id: string;
-  reporter: string;
-  person: string;
-  app: string | null;
-  record: string | null;
-  item: string | null;
-  reason: string;
-  at_ms: number;
-  decision: string | null;
-}
-
-export interface Reverted {
-  app: string;
-  record: string;
-  run: string;
-  changes: number;
-}
-
-export interface Ruling {
-  outcome: ModerationOutcome;
-  until_ms: number | null;
-  reasoning: string;
-  model: string;
-  reverted: Reverted[];
-}
-
+/** One emoji of the workspace. */
 export interface Emoji {
-  image: unknown;
-  added_by: string;
-  added_at: number;
+  image: unknown;  // Its picture
+  added_by: string;  // Who added it: they may remove it again
+  added_at: number;  // When, in milliseconds since the Unix epoch
 }
 
-export interface Example {
-  id: string;
-  accepted: boolean;
-  text: string;
-  note: string;
-  at: number;
+/** One decision, with the reasoning that led to it. */
+export interface Decision {
+  id: string;  // Id
+  person: string;  // Person
+  reports: string[];  // The reports it settles
+  outcome: Outcome;  // Outcome
+  until_ms: number | null;  // When a restriction lapses
+  reasoning: string;  // The model's reasoning, or the Moderator's, in their words
+  model: string;  // The model that judged, empty for a person's own decision
+  reverted: Reverted[];  // What it took back
+  by: string;  // Who decided: the agent or the Moderator
+  at_ms: number;  // At ms
+  overturned_by: string | null;  // Overturned by
+  overturn_note: string | null;  // Overturn note
+  overturned_at_ms: number | null;  // Overturned at ms
 }
 
-export interface Skill {
-  name: string;
-  work: string;
-  how: string;
-  form: string;
-  model: string | null;
-  examples: Example[];
-  at: number;
-  by: string | null;
+/** What a decision does to the person. One of "no-action", "restrict", "ban". */
+export type Outcome = "no-action" | "restrict" | "ban";
+
+/** One report of a person, optionally pointing at what they did. */
+export interface Report {
+  id: string;  // Id
+  reporter: string;  // Who reported; the moderation agent for its own heuristics
+  person: string;  // Whom the report is about
+  app: string | null;  // The app, resource and item reported, when the report is about content
+  record: string | null;  // Record
+  item: string | null;  // Item
+  reason: string;  // Reason
+  at_ms: number;  // At ms
+  decision: string | null;  // The decision that settled it
 }
 
-/** The arguments of `begin-chat`. */
-export interface BeginChatArgs {
+/** A resource whose changes by the person a decision took back, and the run that did it, so overturning can take the take-back back. */
+export interface Reverted {
+  app: string;  // App
+  record: string;  // Record
+  run: string;  // The history run the moderation agent's undo ran in
+  changes: number;  // How many of the person's changes it took back
 }
 
-/** The arguments of `create-category`. */
-export interface CreateCategoryArgs {
-  name: string;
+/** What was decided about a person, and why. */
+export interface Ruling {
+  outcome: Outcome;
+  until_ms: number | null;
+  reasoning: string;
+  model: string;
+  reverted: Reverted[];
 }
 
-/** The arguments of `create-channel`. */
-export interface CreateChannelArgs {
-  name: string;
-  category?: string;
-  kind?: ChannelKind;
-  topic?: string;
+/** The arguments of `delete_channel`. */
+export interface DeleteChannelArgs {
+  ch: TextChannel | VoiceChannel;
 }
 
-/** The arguments of `create-channel-with-id`. */
-export interface CreateChannelWithIdArgs {
-  id: string;
-  name: string;
-  category?: string;
-  kind?: ChannelKind;
-  topic?: string;
-  members?: unknown[];
-}
-
-/** The arguments of `delete-category`. */
+/** The arguments of `delete_category`. */
 export interface DeleteCategoryArgs {
-  category: string;
+  c: Category;
 }
 
-/** The arguments of `move-channel`. */
+/** The arguments of `move_channel`. */
 export interface MoveChannelArgs {
-  channel: string;
-  up: boolean;
+  ch: TextChannel | VoiceChannel;
+  category?: Category;
+  at?: number;
 }
 
-/** The arguments of `move-category`. */
+/** The arguments of `move_category`. */
 export interface MoveCategoryArgs {
-  category: string;
-  up: boolean;
+  c: Category;
+  at?: number;
 }
 
-/** The arguments of `arrange-channels`. */
-export interface ArrangeChannelsArgs {
-  categories: string[];
-  channels: ChannelPlace[];
+/** The arguments of `bridge`. */
+export interface BridgeArgs {
+  service: string;
+  outside_id?: string;
 }
 
-/** The arguments of `set-channel-category`. */
-export interface SetChannelCategoryArgs {
-  channel: string;
-  category?: string;
+/** The arguments of `unbridge`. */
+export interface UnbridgeArgs {
 }
 
-/** The arguments of `rename-channel`. */
-export interface RenameChannelArgs {
-  channel: string;
+/** The arguments of `delete_channel`. */
+export interface CategoryDeleteChannelArgs {
+  ch: TextChannel | VoiceChannel;
+}
+
+/** The arguments of `rename_category`. */
+export interface RenameCategoryArgs {
   name: string;
 }
 
-/** The arguments of `set-channel-topic`. */
-export interface SetChannelTopicArgs {
-  channel: string;
+/** The arguments of `bridge`. */
+export interface VoiceChannelBridgeArgs {
+  service: string;
+  outside_id?: string;
+}
+
+/** The arguments of `unbridge`. */
+export interface VoiceChannelUnbridgeArgs {
+}
+
+/** The arguments of `rename_voice_channel`. */
+export interface RenameVoiceChannelArgs {
+  name: string;
+}
+
+/** The arguments of `bridge`. */
+export interface TextChannelBridgeArgs {
+  service: string;
+  outside_id?: string;
+}
+
+/** The arguments of `unbridge`. */
+export interface TextChannelUnbridgeArgs {
+}
+
+/** The arguments of `summarize`. */
+export interface SummarizeArgs {
+  summary: string;
+}
+
+/** The arguments of `rename_channel`. */
+export interface RenameChannelArgs {
+  name: string;
+}
+
+/** The arguments of `set_topic`. */
+export interface SetTopicArgs {
   topic: string;
 }
 
-/** The arguments of `archive-channel`. */
+/** The arguments of `archive_channel`. */
 export interface ArchiveChannelArgs {
-  channel: string;
-  archived: boolean;
+  archived?: boolean;
 }
 
-/** The arguments of `rename-category`. */
-export interface RenameCategoryArgs {
-  category: string;
-  name: string;
+/** The arguments of `delete`. */
+export interface DeleteArgs {
+  m: Message;
 }
 
-/** The arguments of `delete-channel`. */
-export interface DeleteChannelArgs {
-  channel: string;
-}
-
-/** The arguments of `mark-read`. */
-export interface MarkReadArgs {
-  channel: string;
-  part: number;
-  seen: number;
-}
-
-/** The arguments of `keep-summary`. */
-export interface KeepSummaryArgs {
-  through: string;
-  through_ts: number;
+/** The arguments of `edit-block`. */
+export interface EditBlockArgs {
+  block: string;
   text: string;
-  conversation: string;
 }
 
-/** The arguments of `submit-feedback`. */
-export interface SubmitFeedbackArgs {
-  channel: string;
-  submission: unknown;
-}
-
-/** The arguments of `triage`. */
-export interface TriageArgs {
-  report: string;
-  update: unknown;
-}
-
-/** The arguments of `post`. */
-export interface PostArgs {
-  channel: string;
+/** The arguments of `insert-block`. */
+export interface InsertBlockArgs {
+  block: string;
   text: string;
-  id?: string;
-  parent?: string;
-  quoted?: Quote;
-  body?: ClipBlock[];
-  attachments?: Attached[];
-  mentions?: Mention[];
-  written?: number;
-  origin?: Origin;
 }
 
-/** The arguments of `post-file`. */
-export interface PostFileArgs {
-  channel: string;
-  content: string;
-  name: string;
-  text?: string;
-  attachment?: Attached;
-  mentions?: Mention[];
+/** The arguments of `delete-block`. */
+export interface DeleteBlockArgs {
+  block: string;
 }
 
-/** The arguments of `share-resource`. */
-export interface ShareResourceArgs {
-  channel: string;
-  attached: ResourceAt;
-  text?: string;
-  mentions?: Mention[];
-}
-
-/** The arguments of `share-window`. */
-export interface ShareWindowArgs {
-  channel: string;
-  attached: ResourceAt;
-  access?: ShareAccess;
-  text?: string;
-  mentions?: Mention[];
-}
-
-/** The arguments of `stop-sharing`. */
-export interface StopSharingArgs {
-  message: string;
-}
-
-/** The arguments of `set-share-access`. */
-export interface SetShareAccessArgs {
-  message: string;
-  access: ShareAccess;
-}
-
-/** The arguments of `share-open`. */
-export interface ShareOpenArgs {
-  message: string;
-  open: boolean;
-}
-
-/** The arguments of `deliver-message`. */
-export interface DeliverMessageArgs {
-  channel: string;
-  author: string;
-  body: string;
-  ts?: number;
-}
-
-/** The arguments of `import-message`. */
-export interface ImportMessageArgs {
-  channel: string;
-  text: string;
-  origin: Origin;
-  parent?: string;
-  attachments?: Attached[];
-}
-
-/** The arguments of `edit-message`. */
-export interface EditMessageArgs {
-  message: string;
-  text: string;
-  body?: ClipBlock[];
-  mentions?: Mention[];
-}
-
-/** The arguments of `delete-message`. */
-export interface DeleteMessageArgs {
-  message: string;
-}
-
-/** The arguments of `remove-message`. */
-export interface RemoveMessageArgs {
-  message: string;
+/** The arguments of `relay_reaction`. */
+export interface RelayReactionArgs {
+  emoji: string;
+  persona: string;
+  by: string;
+  given?: boolean;
 }
 
 /** The arguments of `pin`. */
 export interface PinArgs {
-  message: string;
-  pinned: boolean;
+  pinned?: boolean;
 }
 
-/** The arguments of `retry`. */
-export interface RetryArgs {
-  message: string;
-  reply: string;
+/** The arguments of `react`. */
+export interface ReactArgs {
+  emoji: string;
 }
 
-/** The arguments of `record-work`. */
-export interface RecordWorkArgs {
-  message: string;
-  work: WorkUpdate;
-  say?: string;
+/** The arguments of `decide`. */
+export interface DecideArgs {
+  decision: string;
 }
 
-/** The arguments of `ask`. */
-export interface AskArgs {
-  channel: string;
+/** The arguments of `summarize`. */
+export interface ThreadSummarizeArgs {
+  summary: string;
+}
+
+/** The arguments of `delete`. */
+export interface ThreadDeleteArgs {
+  m: Message;
+}
+
+/** The arguments of `bridge`. */
+export interface DirectBridgeArgs {
+  service: string;
+  outside_id?: string;
+}
+
+/** The arguments of `unbridge`. */
+export interface DirectUnbridgeArgs {
+}
+
+/** The arguments of `summarize`. */
+export interface DirectSummarizeArgs {
+  summary: string;
+}
+
+/** The arguments of `delete`. */
+export interface DirectDeleteArgs {
+  m: Message;
+}
+
+/** The arguments of `edit-block`. */
+export interface DraftEditBlockArgs {
+  block: string;
   text: string;
-  answers?: Choice[];
-  kind?: string;
-  detail?: unknown;
-  parent?: string;
 }
 
-/** The arguments of `answer-question`. */
-export interface AnswerQuestionArgs {
-  message: string;
-  answer: string;
-  device?: string;
-}
-
-/** The arguments of `withdraw-question`. */
-export interface WithdrawQuestionArgs {
-  message: string;
-  why?: string;
-}
-
-/** The arguments of `settle-question`. */
-export interface SettleQuestionArgs {
-  message: string;
-  outcome: string;
-  detail?: string;
-}
-
-/** The arguments of `ask-agent`. */
-export interface AskAgentArgs {
+/** The arguments of `insert-block`. */
+export interface DraftInsertBlockArgs {
+  block: string;
   text: string;
-  channel: string;
-  cause: Starting;
-  members?: unknown[];
-  message?: string;
 }
 
-/** The arguments of `stop-agent`. */
-export interface StopAgentArgs {
-  message: string;
+/** The arguments of `delete-block`. */
+export interface DraftDeleteBlockArgs {
+  block: string;
 }
 
-/** The arguments of `post-view`. */
-export interface PostViewArgs {
-  channel: string;
-  text: string;
-  source: string;
-  reads: string[];
-  parent?: string;
-}
-
-/** The arguments of `answer-with-view`. */
-export interface AnswerWithViewArgs {
-  message: string;
-  source: string;
-  reads: string[];
-  say?: string;
-}
-
-/** The arguments of `rewrite-view`. */
-export interface RewriteViewArgs {
-  message: string;
-  source: string;
-  reads: string[];
-}
-
-/** The arguments of `carry-counts`. */
-export interface CarryCountsArgs {
-  earlier: Record<string, Record<string, number>>;
-}
-
-/** The arguments of `stream-output`. */
-export interface StreamOutputArgs {
-  channel: string;
-  reply: string;
-  event: unknown;
+/** The arguments of `correct_skill`. */
+export interface CorrectSkillArgs {
   name?: string;
+  work?: string;
+  how?: string;
+  form?: string;
+  model?: string;
 }
 
-/** The arguments of `start-draft`. */
-export interface StartDraftArgs {
-  key: string;
+/** The arguments of `forget_skill`. */
+export interface ForgetSkillArgs {
 }
 
-/** The arguments of `import-previous`. */
-export interface ImportPreviousArgs {
-  receipt: string;
-  key: string;
-  markdown: string;
+/** The arguments of `keep_example`. */
+export interface KeepExampleArgs {
+  text: string;
+  accepted: boolean;
+  note?: string;
+}
+
+/** The arguments of `drop_example`. */
+export interface DropExampleArgs {
+  example: Example;
+}
+
+/** The arguments of `add-emoji`. */
+export interface AddEmojiArgs {
+  name: string;
+  image: string;
+}
+
+/** The arguments of `remove-emoji`. */
+export interface RemoveEmojiArgs {
+  name: string;
+}
+
+/** The arguments of `remove-any-emoji`. */
+export interface RemoveAnyEmojiArgs {
+  name: string;
 }
 
 /** The arguments of `report-message`. */
@@ -862,490 +329,701 @@ export interface OverturnDecisionArgs {
   note: string;
 }
 
-/** The arguments of `add-emoji`. */
-export interface AddEmojiArgs {
-  name: string;
-  image: string;
-}
-
-/** The arguments of `remove-emoji`. */
-export interface RemoveEmojiArgs {
-  name: string;
-}
-
-/** The arguments of `remove-any-emoji`. */
-export interface RemoveAnyEmojiArgs {
-  name: string;
-}
-
-/** The arguments of `write-skill`. */
-export interface WriteSkillArgs {
-  name: string;
-  work: string;
-  how: string;
-  form?: string;
-  model?: string;
-}
-
-/** The arguments of `correct-skill`. */
-export interface CorrectSkillArgs {
-  skill: string;
-  name?: string;
-  work?: string;
-  how?: string;
-  form?: string;
-  model?: string;
-}
-
-/** The arguments of `keep-example`. */
-export interface KeepExampleArgs {
-  skill: string;
-  text: string;
-  accepted: boolean;
-  note?: string;
-}
-
-/** The arguments of `drop-example`. */
-export interface DropExampleArgs {
-  skill: string;
-  example: string;
-}
-
-/** The arguments of `forget-skill`. */
-export interface ForgetSkillArgs {
-  skill: string;
-}
-
-/** Chat — `chat.workspace`. */
-export interface Workspace extends tilo.Resource {
-  readonly categories: Array<tilo.Entry<Category>>;
-  readonly channels: Array<tilo.Entry<Conversation>>;
-  read: Record<string, Record<string, ReadMark>>;
-  feedback: Array<tilo.Entry<FeedbackReport>>;
-  readonly files: WorkspaceFiles;
-  readonly summaries: Record<string, Record<string, Summary>>;
-  beginChat(): Promise<void>;
-  /** Runs `begin-chat` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  beginChatMany(items: BeginChatArgs[]): Promise<tilo.ActionAnswer[]>;
-  createCategory(args: {
-    name: string;
-  }): Promise<void>;
-  /** Runs `create-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  createCategoryMany(items: CreateCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
-  createChannel(args: {
-    name: string;
-    category?: string;
-    kind?: ChannelKind;
+/** Conversations — `tl.so.tilo.chat.Conversations`. */
+export interface Conversations extends tilo.Resource {
+  "5kzdptyg": Array<tilo.Entry<Category | Direct | TextChannel | VoiceChannel>>;  // channels
+  n2xgh234: Array<tilo.Entry<Skill>>;  // skills
+  "64vv225r": Array<tilo.Entry<Draft>>;  // drafts
+  /** Adds a text channel to the sidebar, under `category` when it is given and about `topic` when that is. */
+  new_channel(args?: {
+    name?: string;
     topic?: string;
+    category?: Category;
+  }): Promise<TextChannel>;
+  /** Adds a category to the sidebar. */
+  new_category(args?: {
+    name?: string;
+  }): Promise<Category>;
+  /** Adds a voice channel to the sidebar, under `category` when it is given. */
+  new_voice_channel(args?: {
+    name?: string;
+    category?: Category;
+  }): Promise<VoiceChannel>;
+  /** Starts a skill, called `name`. What it is for and how its work is done are written on its page, or by an agent told to share the guidance with the workspace. */
+  new_skill(args?: {
+    name?: string;
+  }): Promise<Skill>;
+  /** Files a problem report, what someone ran into while using Tilo, in the workspace's #feedback channel, which the first report opens. The people who read the reports there answer, react and start a thread under one as under any message. The channel is made under one key on every device, so reports filed apart open one. */
+  report_problem(args: {
+    body: string;
+  }): Promise<Message>;
+  /** Opens the direct message between the invoker and `who`, in the sidebar, or the one already open between the two of them: two people have one conversation, not a new empty one each time. With yourself it is your notes to self. A person is someone of the workspace: one who is not in it is refused, since no one but its members reads what is written here. */
+  message_person(args: {
+    who: string;
+  }): Promise<Direct>;
+  /** The direct conversation between the invoker and `who`, none while the two of them have none: what an agent, a script or another app reads to find it, opening and making nothing. With yourself it is your notes to self. */
+  conversation_with(args: {
+    who: string;
+  }): Promise<Direct | null>;
+  /** Writes `body` to `who`, a person or an agent, in the one direct conversation with them: the one already open, else a new one in the sidebar. The message is sent as every message is. */
+  write_to(args: {
+    who: string;
+    body: string;
+  }): Promise<Message>;
+  /** Deletes a channel and what was said in it, from the sidebar or the category it is in. */
+  delete_channel(args: {
+    ch: TextChannel | VoiceChannel;
   }): Promise<void>;
-  /** Runs `create-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  createChannelMany(items: CreateChannelArgs[]): Promise<tilo.ActionAnswer[]>;
-  createChannelWithId(args: {
-    id: string;
+  /** Runs `delete_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_channelMany(items: DeleteChannelArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes a category that holds no channel. */
+  delete_category(args: {
+    c: Category;
+  }): Promise<void>;
+  /** Runs `delete_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_categoryMany(items: DeleteCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves a channel to a place in the sidebar: under `category`, or outside any, at `at` among the channels listed there (the end when it is negative). A move keeps the channel and what was written in it. */
+  move_channel(args: {
+    ch: TextChannel | VoiceChannel;
+    category?: Category;
+    at?: number;
+  }): Promise<void>;
+  /** Runs `move_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_channelMany(items: MoveChannelArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Moves a category to a place in the sidebar, at `at` among the categories and channels listed there (the end when it is negative). Its own channels move with it. */
+  move_category(args: {
+    c: Category;
+    at?: number;
+  }): Promise<void>;
+  /** Runs `move_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  move_categoryMany(items: MoveCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Conversations` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CONVERSATIONS_ACTIONS = ["new_channel", "new_category", "new_voice_channel", "new_skill", "report_problem", "message_person", "conversation_with", "write_to", "delete_channel", "delete_channelMany", "delete_category", "delete_categoryMany", "move_channel", "move_channelMany", "move_category", "move_categoryMany"] as const;
+
+/** The `tl.so.tilo.chat.Conversations` kind at `path`. */
+export function conversations(ws: tilo.Workspace, path: string): Conversations {
+  return resourceProxy(ws, path, SURFACE, CONVERSATIONS_ACTIONS) as unknown as Conversations;
+}
+
+/** Category — `tl.so.tilo.chat.Category`. */
+export interface Category extends tilo.Resource {
+  hbhrds5c: string;  // name
+  hvqgmwrk: Array<tilo.Entry<TextChannel | VoiceChannel>>;  // channels
+  "5pfbdqqj": string;  // service
+  vvs4ecqz: string;  // outside_id
+  /** How one kind of work is done in this workspace: what a person writes down once, and what an agent reads before it starts that work. Carries a conversation to an outside service: its name as people read it ('Discord') and the id it has there. The bridge's own actions keep what joins the two sides; this is what every view reads to show the place a conversation is also said in. */
+  bridge(args: {
+    service: string;
+    outside_id?: string;
+  }): Promise<void>;
+  /** Runs `bridge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  bridgeMany(items: BridgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps a conversation here: no service carries it any more. */
+  unbridge(): Promise<void>;
+  /** Runs `unbridge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  unbridgeMany(items: UnbridgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes a channel and what was said in it, from the sidebar or the category it is in. */
+  delete_channel(args: {
+    ch: TextChannel | VoiceChannel;
+  }): Promise<void>;
+  /** Runs `delete_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_channelMany(items: CategoryDeleteChannelArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Renames a category. Its channels stay in it. */
+  rename_category(args: {
     name: string;
-    category?: string;
-    kind?: ChannelKind;
-    topic?: string;
-    members?: unknown[];
   }): Promise<void>;
-  /** Runs `create-channel-with-id` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  createChannelWithIdMany(items: CreateChannelWithIdArgs[]): Promise<tilo.ActionAnswer[]>;
-  deleteCategory(args: {
-    category: string;
+  /** Runs `rename_category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_categoryMany(items: RenameCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Category` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CATEGORY_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "delete_channel", "delete_channelMany", "rename_category", "rename_categoryMany"] as const;
+
+/** The `tl.so.tilo.chat.Category` kind at `path`. */
+export function category(ws: tilo.Workspace, path: string): Category {
+  return resourceProxy(ws, path, SURFACE, CATEGORY_ACTIONS) as unknown as Category;
+}
+
+/** VoiceChannel — `tl.so.tilo.chat.VoiceChannel`. */
+export interface VoiceChannel extends tilo.Resource {
+  olqjezxu: string;  // name
+  enzjdbyp: string;  // service
+  nvzanb5n: string;  // outside_id
+  /** How one kind of work is done in this workspace: what a person writes down once, and what an agent reads before it starts that work. Carries a conversation to an outside service: its name as people read it ('Discord') and the id it has there. The bridge's own actions keep what joins the two sides; this is what every view reads to show the place a conversation is also said in. */
+  bridge(args: {
+    service: string;
+    outside_id?: string;
   }): Promise<void>;
-  /** Runs `delete-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteCategoryMany(items: DeleteCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
-  moveChannel(args: {
-    channel: string;
-    up: boolean;
-  }): Promise<void>;
-  /** Runs `move-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  moveChannelMany(items: MoveChannelArgs[]): Promise<tilo.ActionAnswer[]>;
-  moveCategory(args: {
-    category: string;
-    up: boolean;
-  }): Promise<void>;
-  /** Runs `move-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  moveCategoryMany(items: MoveCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
-  arrangeChannels(args: {
-    categories: string[];
-    channels: ChannelPlace[];
-  }): Promise<void>;
-  /** Runs `arrange-channels` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  arrangeChannelsMany(items: ArrangeChannelsArgs[]): Promise<tilo.ActionAnswer[]>;
-  setChannelCategory(args: {
-    channel: string;
-    category?: string;
-  }): Promise<void>;
-  /** Runs `set-channel-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setChannelCategoryMany(items: SetChannelCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
-  renameChannel(args: {
-    channel: string;
+  /** Runs `bridge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  bridgeMany(items: VoiceChannelBridgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps a conversation here: no service carries it any more. */
+  unbridge(): Promise<void>;
+  /** Runs `unbridge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  unbridgeMany(items: VoiceChannelUnbridgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Renames a voice channel. A call in it is untouched. */
+  rename_voice_channel(args: {
     name: string;
   }): Promise<void>;
-  /** Runs `rename-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  renameChannelMany(items: RenameChannelArgs[]): Promise<tilo.ActionAnswer[]>;
-  setChannelTopic(args: {
-    channel: string;
+  /** Runs `rename_voice_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_voice_channelMany(items: RenameVoiceChannelArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `VoiceChannel` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const VOICECHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "rename_voice_channel", "rename_voice_channelMany"] as const;
+
+/** The `tl.so.tilo.chat.VoiceChannel` kind at `path`. */
+export function voiceChannel(ws: tilo.Workspace, path: string): VoiceChannel {
+  return resourceProxy(ws, path, SURFACE, VOICECHANNEL_ACTIONS) as unknown as VoiceChannel;
+}
+
+/** TextChannel — `tl.so.tilo.chat.TextChannel`. */
+export interface TextChannel extends tilo.Resource {
+  x3haugpo: string;  // name
+  u6b35mgm: string;  // topic
+  fld77g72: string;  // summary
+  ksuxpopi: Array<tilo.Entry<Message>>;  // messages
+  ztou5nin: Array<tilo.Entry<Thread>>;  // threads
+  kgihivmr: Array<tilo.Entry<ChatReport>>;  // reports
+  byf6kyop: boolean;  // archived
+  eqr5qd3v: string;  // service
+  elvv3ebj: string;  // outside_id
+  /** How one kind of work is done in this workspace: what a person writes down once, and what an agent reads before it starts that work. Carries a conversation to an outside service: its name as people read it ('Discord') and the id it has there. The bridge's own actions keep what joins the two sides; this is what every view reads to show the place a conversation is also said in. */
+  bridge(args: {
+    service: string;
+    outside_id?: string;
+  }): Promise<void>;
+  /** Runs `bridge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  bridgeMany(items: TextChannelBridgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps a conversation here: no service carries it any more. */
+  unbridge(): Promise<void>;
+  /** Runs `unbridge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  unbridgeMany(items: TextChannelUnbridgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. */
+  send(args?: {
+    body?: string;
+    reply_to?: Message;
+    attachments?: unknown[];
+    turn?: string;
+    draft?: Draft;
+  }): Promise<Message>;
+  /** Writes down what has been said in a conversation so far, replacing what was written before: what an agent's next turn there reads in place of the messages it covers. */
+  summarize(args: {
+    summary: string;
+  }): Promise<void>;
+  /** Runs `summarize` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  summarizeMany(items: SummarizeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views. */
+  send_view(args: {
+    title: string;
+    definition: string;
+  }): Promise<Message>;
+  /** Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays. */
+  relay(args: {
+    body: string;
+    by: string;
+    written_in: string;
+    written?: number;
+    attachments?: unknown[];
+    reply_to?: Message;
+    avatar?: string;
+    service?: string;
+    outside_emoji?: OutsideEmoji[];
+  }): Promise<Message>;
+  /** Renames a text channel. What was said in it stays. */
+  rename_channel(args: {
+    name: string;
+  }): Promise<void>;
+  /** Runs `rename_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_channelMany(items: RenameChannelArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Says what a channel is for, in its topic. */
+  set_topic(args: {
     topic: string;
   }): Promise<void>;
-  /** Runs `set-channel-topic` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setChannelTopicMany(items: SetChannelTopicArgs[]): Promise<tilo.ActionAnswer[]>;
-  archiveChannel(args: {
-    channel: string;
-    archived: boolean;
+  /** Runs `set_topic` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_topicMany(items: SetTopicArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets a channel aside, out of the sidebar, keeping everything said in it, or brings it back. */
+  archive_channel(args?: {
+    archived?: boolean;
   }): Promise<void>;
-  /** Runs `archive-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  archiveChannelMany(items: ArchiveChannelArgs[]): Promise<tilo.ActionAnswer[]>;
-  renameCategory(args: {
-    category: string;
-    name: string;
+  /** Runs `archive_channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  archive_channelMany(items: ArchiveChannelArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted, as far as the one deleting reads them. */
+  delete(args: {
+    m: Message;
   }): Promise<void>;
-  /** Runs `rename-category` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  renameCategoryMany(items: RenameCategoryArgs[]): Promise<tilo.ActionAnswer[]>;
-  deleteChannel(args: {
-    channel: string;
-  }): Promise<void>;
-  /** Runs `delete-channel` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteChannelMany(items: DeleteChannelArgs[]): Promise<tilo.ActionAnswer[]>;
-  markRead(args: {
-    channel: string;
-    part: number;
-    seen: number;
-  }): Promise<void>;
-  /** Runs `mark-read` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  markReadMany(items: MarkReadArgs[]): Promise<tilo.ActionAnswer[]>;
-  keepSummary(args: {
-    through: string;
-    through_ts: number;
-    text: string;
-    conversation: string;
-  }): Promise<void>;
-  /** Runs `keep-summary` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  keepSummaryMany(items: KeepSummaryArgs[]): Promise<tilo.ActionAnswer[]>;
-  submitFeedback(args: {
-    channel: string;
-    submission: unknown;
-  }): Promise<void>;
-  /** Runs `submit-feedback` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  submitFeedbackMany(items: SubmitFeedbackArgs[]): Promise<tilo.ActionAnswer[]>;
-  triage(args: {
-    report: string;
-    update: unknown;
-  }): Promise<void>;
-  /** Runs `triage` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  triageMany(items: TriageArgs[]): Promise<tilo.ActionAnswer[]>;
-  exportContent(args: {
-    channel: string;
-    format?: string;
-  }): Promise<void>;
-  startCall(): Promise<void>;
-  selectInput(args: {
-    channel: string;
-    input: string;
-  }): Promise<void>;
+  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Reports a message of a conversation to the workspace's moderators, saying why when the reporter does. Who reported it is the report's history's, so moderators see who asked; the conversation keeps it, with who wrote the message and what it said, after the message is deleted. */
+  report(args: {
+    m: Message;
+    reason?: string;
+  }): Promise<ChatReport>;
+  /** Starts a thread from a message of a channel or a direct conversation, named after what the message says. */
+  start_thread(args: {
+    m: Message;
+    name?: string;
+  }): Promise<Thread>;
 }
 
-/** The actions `Workspace` reaches before it is read: `ws` calls them without a
+/** The actions `TextChannel` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACE_ACTIONS = ["beginChat", "beginChatMany", "createCategory", "createCategoryMany", "createChannel", "createChannelMany", "createChannelWithId", "createChannelWithIdMany", "deleteCategory", "deleteCategoryMany", "moveChannel", "moveChannelMany", "moveCategory", "moveCategoryMany", "arrangeChannels", "arrangeChannelsMany", "setChannelCategory", "setChannelCategoryMany", "renameChannel", "renameChannelMany", "setChannelTopic", "setChannelTopicMany", "archiveChannel", "archiveChannelMany", "renameCategory", "renameCategoryMany", "deleteChannel", "deleteChannelMany", "markRead", "markReadMany", "keepSummary", "keepSummaryMany", "submitFeedback", "submitFeedbackMany", "triage", "triageMany", "exportContent", "startCall", "selectInput"] as const;
+export const TEXTCHANNEL_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "send", "summarize", "summarizeMany", "send_view", "relay", "rename_channel", "rename_channelMany", "set_topic", "set_topicMany", "archive_channel", "archive_channelMany", "delete", "deleteMany", "report", "start_thread"] as const;
 
-/** The `chat.workspace` kind at `path`. */
-export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path, SURFACE, WORKSPACE_ACTIONS) as unknown as Workspace;
+/** The `tl.so.tilo.chat.TextChannel` kind at `path`. */
+export function textChannel(ws: tilo.Workspace, path: string): TextChannel {
+  return resourceProxy(ws, path, SURFACE, TEXTCHANNEL_ACTIONS) as unknown as TextChannel;
 }
 
-/** Messages — `chat.messages`. */
-export interface Messages extends tilo.Resource {
-  readonly messages: Array<tilo.Entry<Message>>;
-  readonly earlier: Record<string, Record<string, number>>;
-  post(args: {
-    channel: string;
+/** OutsideAuthor — `tl.so.tilo.chat.OutsideAuthor`. */
+export interface OutsideAuthor extends tilo.Resource {
+  "5fxndhc2": string;  // name
+  zkszdahn: string;  // avatar
+  yycajap4: string;  // service
+}
+
+/** The actions `OutsideAuthor` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const OUTSIDEAUTHOR_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.OutsideAuthor` kind at `path`. */
+export function outsideAuthor(ws: tilo.Workspace, path: string): OutsideAuthor {
+  return resourceProxy(ws, path, SURFACE, OUTSIDEAUTHOR_ACTIONS) as unknown as OutsideAuthor;
+}
+
+/** OutsideEmoji — `tl.so.tilo.chat.OutsideEmoji`. */
+export interface OutsideEmoji extends tilo.Resource {
+  ldtylgfu: string;  // name
+  jjutyqgx: string;  // picture
+}
+
+/** The actions `OutsideEmoji` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const OUTSIDEEMOJI_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.OutsideEmoji` kind at `path`. */
+export function outsideEmoji(ws: tilo.Workspace, path: string): OutsideEmoji {
+  return resourceProxy(ws, path, SURFACE, OUTSIDEEMOJI_ACTIONS) as unknown as OutsideEmoji;
+}
+
+/** Message — `tl.so.tilo.chat.Message`. */
+export interface Message extends tilo.Resource {
+  xfrqdy3y: string;  // body
+  "4uwxpnw2": Message | null;  // reply_to
+  kxekobh6: Thread | null;  // thread
+  mwily5kw: Array<tilo.Entry<Part>>;  // parts
+  "4zr7hti6": boolean;  // pinned
+  hj4axvbu: string;  // turn
+  ofad24rc: Record<string, string[]>;  // reactions
+  dh6346no: string;  // sent_view
+  wqxsenb3: OutsideAuthor | null;  // outside
+  bbu6225x: Array<tilo.Entry<OutsideEmoji>>;  // outside_emoji
+  tz5yw5dt: string;  // by
+  "4da5gcom": string;  // written_in
+  mmlcexsa: number;  // written
+  jcgolgdf: string;  // reacted
+  "6luxdz2x": Array<tilo.Entry<RelayedReaction>>;  // relayed_reactions
+  n7d27huf: Array<tilo.Entry<Attached>>;  // attachments
+  /** Set one paragraph of a rich-text field to what a Markdown text says. */
+  editBlock(args: {
+    block: string;
     text: string;
-    id?: string;
-    parent?: string;
-    quoted?: Quote;
-    body?: ClipBlock[];
-    attachments?: Attached[];
-    mentions?: Mention[];
-    written?: number;
-    origin?: Origin;
   }): Promise<void>;
-  /** Runs `post` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  postMany(items: PostArgs[]): Promise<tilo.ActionAnswer[]>;
-  postFile(args: {
-    channel: string;
-    content: string;
-    name: string;
-    text?: string;
-    attachment?: Attached;
-    mentions?: Mention[];
-  }): Promise<void>;
-  /** Runs `post-file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  postFileMany(items: PostFileArgs[]): Promise<tilo.ActionAnswer[]>;
-  shareResource(args: {
-    channel: string;
-    attached: ResourceAt;
-    text?: string;
-    mentions?: Mention[];
-  }): Promise<void>;
-  /** Runs `share-resource` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  shareResourceMany(items: ShareResourceArgs[]): Promise<tilo.ActionAnswer[]>;
-  shareWindow(args: {
-    channel: string;
-    attached: ResourceAt;
-    access?: ShareAccess;
-    text?: string;
-    mentions?: Mention[];
-  }): Promise<void>;
-  /** Runs `share-window` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  shareWindowMany(items: ShareWindowArgs[]): Promise<tilo.ActionAnswer[]>;
-  stopSharing(args: {
-    message: string;
-  }): Promise<void>;
-  /** Runs `stop-sharing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  stopSharingMany(items: StopSharingArgs[]): Promise<tilo.ActionAnswer[]>;
-  setShareAccess(args: {
-    message: string;
-    access: ShareAccess;
-  }): Promise<void>;
-  /** Runs `set-share-access` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setShareAccessMany(items: SetShareAccessArgs[]): Promise<tilo.ActionAnswer[]>;
-  shareOpen(args: {
-    message: string;
-    open: boolean;
-  }): Promise<void>;
-  /** Runs `share-open` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  shareOpenMany(items: ShareOpenArgs[]): Promise<tilo.ActionAnswer[]>;
-  deliverMessage(args: {
-    channel: string;
-    author: string;
-    body: string;
-    ts?: number;
-  }): Promise<void>;
-  /** Runs `deliver-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deliverMessageMany(items: DeliverMessageArgs[]): Promise<tilo.ActionAnswer[]>;
-  importMessage(args: {
-    channel: string;
+  /** Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  editBlockMany(items: EditBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Put a paragraph before the one the address names. */
+  insertBlock(args: {
+    block: string;
     text: string;
-    origin: Origin;
-    parent?: string;
-    attachments?: Attached[];
   }): Promise<void>;
-  /** Runs `import-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  importMessageMany(items: ImportMessageArgs[]): Promise<tilo.ActionAnswer[]>;
-  editMessage(args: {
-    message: string;
-    text: string;
-    body?: ClipBlock[];
-    mentions?: Mention[];
+  /** Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insertBlockMany(items: InsertBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Remove the paragraph the address names, and the paragraphs it holds. */
+  deleteBlock(args: {
+    block: string;
   }): Promise<void>;
-  /** Runs `edit-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  editMessageMany(items: EditMessageArgs[]): Promise<tilo.ActionAnswer[]>;
-  deleteMessage(args: {
-    message: string;
+  /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteBlockMany(items: DeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Relays a reaction someone gave a message where it was written, as that place names them: the counterpart of `relay` for a reaction. A bridge carrying another service's conversation here makes these, so a reaction made there shows under the person's name rather than the bridge's; `given` false takes it back. The reaction's history names the bridge, and the message says whom it relays. */
+  relay_reaction(args: {
+    emoji: string;
+    persona: string;
+    by: string;
+    given?: boolean;
   }): Promise<void>;
-  /** Runs `delete-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteMessageMany(items: DeleteMessageArgs[]): Promise<tilo.ActionAnswer[]>;
-  removeMessage(args: {
-    message: string;
-  }): Promise<void>;
-  /** Runs `remove-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  removeMessageMany(items: RemoveMessageArgs[]): Promise<tilo.ActionAnswer[]>;
-  pin(args: {
-    message: string;
-    pinned: boolean;
+  /** Runs `relay_reaction` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  relay_reactionMany(items: RelayReactionArgs[]): Promise<tilo.ActionAnswer[]>;
+  // the app's `edit` action is the SDK's own: run it with `action("edit")`.
+  /** Pins a message to its channel, or unpins it. */
+  pin(args?: {
+    pinned?: boolean;
   }): Promise<void>;
   /** Runs `pin` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   pinMany(items: PinArgs[]): Promise<tilo.ActionAnswer[]>;
-  retry(args: {
-    message: string;
-    reply: string;
+  /** Adds your reaction with an emoji to a message, or takes it back when you had reacted with it. */
+  react(args: {
+    emoji: string;
   }): Promise<void>;
-  /** Runs `retry` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  retryMany(items: RetryArgs[]): Promise<tilo.ActionAnswer[]>;
-  recordWork(args: {
-    message: string;
-    work: WorkUpdate;
-    say?: string;
-  }): Promise<void>;
-  /** Runs `record-work` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  recordWorkMany(items: RecordWorkArgs[]): Promise<tilo.ActionAnswer[]>;
-  ask(args: {
-    channel: string;
-    text: string;
-    answers?: Choice[];
-    kind?: string;
-    detail?: unknown;
-    parent?: string;
-  }): Promise<void>;
-  /** Runs `ask` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  askMany(items: AskArgs[]): Promise<tilo.ActionAnswer[]>;
-  answerQuestion(args: {
-    message: string;
-    answer: string;
-    device?: string;
-  }): Promise<void>;
-  /** Runs `answer-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  answerQuestionMany(items: AnswerQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
-  withdrawQuestion(args: {
-    message: string;
-    why?: string;
-  }): Promise<void>;
-  /** Runs `withdraw-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  withdrawQuestionMany(items: WithdrawQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
-  settleQuestion(args: {
-    message: string;
-    outcome: string;
-    detail?: string;
-  }): Promise<void>;
-  /** Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  settleQuestionMany(items: SettleQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
-  askAgent(args: {
-    text: string;
-    channel: string;
-    cause: Starting;
-    members?: unknown[];
-    message?: string;
-  }): Promise<void>;
-  /** Runs `ask-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  askAgentMany(items: AskAgentArgs[]): Promise<tilo.ActionAnswer[]>;
-  stopAgent(args: {
-    message: string;
-  }): Promise<void>;
-  /** Runs `stop-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  stopAgentMany(items: StopAgentArgs[]): Promise<tilo.ActionAnswer[]>;
-  postView(args: {
-    channel: string;
-    text: string;
-    source: string;
-    reads: string[];
-    parent?: string;
-  }): Promise<void>;
-  /** Runs `post-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  postViewMany(items: PostViewArgs[]): Promise<tilo.ActionAnswer[]>;
-  answerWithView(args: {
-    message: string;
-    source: string;
-    reads: string[];
-    say?: string;
-  }): Promise<void>;
-  /** Runs `answer-with-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  answerWithViewMany(items: AnswerWithViewArgs[]): Promise<tilo.ActionAnswer[]>;
-  rewriteView(args: {
-    message: string;
-    source: string;
-    reads: string[];
-  }): Promise<void>;
-  /** Runs `rewrite-view` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  rewriteViewMany(items: RewriteViewArgs[]): Promise<tilo.ActionAnswer[]>;
-  carryCounts(args: {
-    earlier: Record<string, Record<string, number>>;
-  }): Promise<void>;
-  /** Runs `carry-counts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  carryCountsMany(items: CarryCountsArgs[]): Promise<tilo.ActionAnswer[]>;
-  streamOutput(args: {
-    channel: string;
-    reply: string;
-    event: unknown;
-    name?: string;
-  }): Promise<void>;
-  /** Runs `stream-output` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  streamOutputMany(items: StreamOutputArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `react` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reactMany(items: ReactArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
-/** The actions `Messages` reaches before it is read: `ws` calls them without a
+/** The actions `Message` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGES_ACTIONS = ["post", "postMany", "postFile", "postFileMany", "shareResource", "shareResourceMany", "shareWindow", "shareWindowMany", "stopSharing", "stopSharingMany", "setShareAccess", "setShareAccessMany", "shareOpen", "shareOpenMany", "deliverMessage", "deliverMessageMany", "importMessage", "importMessageMany", "editMessage", "editMessageMany", "deleteMessage", "deleteMessageMany", "removeMessage", "removeMessageMany", "pin", "pinMany", "retry", "retryMany", "recordWork", "recordWorkMany", "ask", "askMany", "answerQuestion", "answerQuestionMany", "withdrawQuestion", "withdrawQuestionMany", "settleQuestion", "settleQuestionMany", "askAgent", "askAgentMany", "stopAgent", "stopAgentMany", "postView", "postViewMany", "answerWithView", "answerWithViewMany", "rewriteView", "rewriteViewMany", "carryCounts", "carryCountsMany", "streamOutput", "streamOutputMany"] as const;
+export const MESSAGE_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "relay_reaction", "relay_reactionMany", "pin", "pinMany", "react", "reactMany"] as const;
 
-/** The `chat.messages` kind at `path`. */
-export function messages(ws: tilo.Workspace, path: string): Messages {
-  return resourceProxy(ws, path, SURFACE, MESSAGES_ACTIONS) as unknown as Messages;
+/** The `tl.so.tilo.chat.Message` kind at `path`. */
+export function message(ws: tilo.Workspace, path: string): Message {
+  return resourceProxy(ws, path, SURFACE, MESSAGE_ACTIONS) as unknown as Message;
 }
 
-/** Chat drafts — `chat.drafts`. */
-export interface Drafts extends tilo.Resource {
-  drafts: Record<string, string>;
-  readonly imported: string[];
-  startDraft(args: {
-    key: string;
-  }): Promise<void>;
-  /** Runs `start-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  startDraftMany(items: StartDraftArgs[]): Promise<tilo.ActionAnswer[]>;
-  importPrevious(args: {
-    receipt: string;
-    key: string;
-    markdown: string;
-  }): Promise<void>;
-  /** Runs `import-previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  importPreviousMany(items: ImportPreviousArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `Drafts` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const DRAFTS_ACTIONS = ["startDraft", "startDraftMany", "importPrevious", "importPreviousMany"] as const;
-
-/** The `chat.drafts` kind at `path`. */
-export function drafts(ws: tilo.Workspace, path: string): Drafts {
-  return resourceProxy(ws, path, SURFACE, DRAFTS_ACTIONS) as unknown as Drafts;
-}
-
-/** Moderation — `tilo.moderation`. */
-export interface Moderation extends tilo.Resource {
-  readonly reports: Array<tilo.Entry<Report>>;
-  readonly decisions: Array<tilo.Entry<Decision>>;
-  reportMessage(args: {
-    message: string;
-    author: unknown;
-    reason: string;
-  }): Promise<void>;
-  /** Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  reportMessageMany(items: ReportMessageArgs[]): Promise<tilo.ActionAnswer[]>;
-  reportPerson(args: {
-    person: unknown;
-    reason: string;
-  }): Promise<void>;
-  /** Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  reportPersonMany(items: ReportPersonArgs[]): Promise<tilo.ActionAnswer[]>;
-  decideReports(args: {
-    id: string;
-    person: unknown;
-    reports: string[];
-    ruling: Ruling;
-  }): Promise<void>;
-  /** Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  decideReportsMany(items: DecideReportsArgs[]): Promise<tilo.ActionAnswer[]>;
-  overturnDecision(args: {
+/** Report — `tl.so.tilo.chat.Report`. */
+export interface ChatReport extends tilo.Resource {
+  jqcabz2h: Message | null;  // message
+  e3zqz33a: string | null;  // person
+  adip7bw4: string;  // said
+  bmfbgqt6: string;  // reason
+  "3oner4zg": string;  // decision
+  /** Settles a report: what a moderator decided about it. */
+  decide(args: {
     decision: string;
-    note: string;
   }): Promise<void>;
-  /** Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  overturnDecisionMany(items: OverturnDecisionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `decide` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  decideMany(items: DecideArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
-/** The actions `Moderation` reaches before it is read: `ws` calls them without a
+/** The actions `ChatReport` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MODERATION_ACTIONS = ["reportMessage", "reportMessageMany", "reportPerson", "reportPersonMany", "decideReports", "decideReportsMany", "overturnDecision", "overturnDecisionMany"] as const;
+export const CHATREPORT_ACTIONS = ["decide", "decideMany"] as const;
 
-/** The `tilo.moderation` kind at `path`. */
-export function moderation(ws: tilo.Workspace, path: string): Moderation {
-  return resourceProxy(ws, path, SURFACE, MODERATION_ACTIONS) as unknown as Moderation;
+/** The `tl.so.tilo.chat.Report` kind at `path`. */
+export function chatReport(ws: tilo.Workspace, path: string): ChatReport {
+  return resourceProxy(ws, path, SURFACE, CHATREPORT_ACTIONS) as unknown as ChatReport;
+}
+
+/** Thread — `tl.so.tilo.chat.Thread`. */
+export interface Thread extends tilo.Resource {
+  xuvfifa5: string;  // name
+  cv664irm: string;  // summary
+  ijy454g6: Array<tilo.Entry<Message>>;  // messages
+  "2ki7h2z5": boolean;  // archived
+  ep7fvntj: Array<tilo.Entry<ChatReport>>;  // reports
+  /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. */
+  send(args?: {
+    body?: string;
+    reply_to?: Message;
+    attachments?: unknown[];
+    turn?: string;
+    draft?: Draft;
+  }): Promise<Message>;
+  /** Writes down what has been said in a conversation so far, replacing what was written before: what an agent's next turn there reads in place of the messages it covers. */
+  summarize(args: {
+    summary: string;
+  }): Promise<void>;
+  /** Runs `summarize` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  summarizeMany(items: ThreadSummarizeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views. */
+  send_view(args: {
+    title: string;
+    definition: string;
+  }): Promise<Message>;
+  /** Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays. */
+  relay(args: {
+    body: string;
+    by: string;
+    written_in: string;
+    written?: number;
+    attachments?: unknown[];
+    reply_to?: Message;
+    avatar?: string;
+    service?: string;
+    outside_emoji?: OutsideEmoji[];
+  }): Promise<Message>;
+  /** Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted, as far as the one deleting reads them. */
+  delete(args: {
+    m: Message;
+  }): Promise<void>;
+  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteMany(items: ThreadDeleteArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Reports a message of a conversation to the workspace's moderators, saying why when the reporter does. Who reported it is the report's history's, so moderators see who asked; the conversation keeps it, with who wrote the message and what it said, after the message is deleted. */
+  report(args: {
+    m: Message;
+    reason?: string;
+  }): Promise<ChatReport>;
+}
+
+/** The actions `Thread` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const THREAD_ACTIONS = ["send", "summarize", "summarizeMany", "send_view", "relay", "delete", "deleteMany", "report"] as const;
+
+/** The `tl.so.tilo.chat.Thread` kind at `path`. */
+export function thread(ws: tilo.Workspace, path: string): Thread {
+  return resourceProxy(ws, path, SURFACE, THREAD_ACTIONS) as unknown as Thread;
+}
+
+/** Direct — `tl.so.tilo.chat.Direct`. */
+export interface Direct extends tilo.Resource {
+  "5stv6ro7": string;  // name
+  wph25aa5: string[];  // people
+  ycadyqh5: string;  // person
+  s7ol3kl4: string;  // summary
+  y65whtrn: Array<tilo.Entry<Message>>;  // messages
+  "3p73kpuw": Array<tilo.Entry<Thread>>;  // threads
+  doiukw5i: Array<tilo.Entry<ChatReport>>;  // reports
+  a7u4jddr: string;  // service
+  f4cfgfpu: string;  // outside_id
+  /** How one kind of work is done in this workspace: what a person writes down once, and what an agent reads before it starts that work. Carries a conversation to an outside service: its name as people read it ('Discord') and the id it has there. The bridge's own actions keep what joins the two sides; this is what every view reads to show the place a conversation is also said in. */
+  bridge(args: {
+    service: string;
+    outside_id?: string;
+  }): Promise<void>;
+  /** Runs `bridge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  bridgeMany(items: DirectBridgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps a conversation here: no service carries it any more. */
+  unbridge(): Promise<void>;
+  /** Runs `unbridge` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  unbridgeMany(items: DirectUnbridgeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** How many messages of a direct conversation the person asking has not read: the number its row shows beside the other person, and what an agent or a script reads of it. */
+  unread_count(): Promise<number>;
+  /** Posts a message in a channel, a thread or a direct conversation as the invoker, answering another when `reply_to` names one. History and the catch-up say what a person did in its own words, counting the messages a step of them holds. A message in a direct conversation is news to the other people in it: each is told once, on every device of theirs, who wrote and what, and choosing the notice opens the conversation. A composer names the person's `draft`: what it holds is the message, and the draft is emptied in the same change, so the press is one step to undo. What is sent without a draft is the `body` given, as a program writing a message says it. */
+  send(args?: {
+    body?: string;
+    reply_to?: Message;
+    attachments?: unknown[];
+    turn?: string;
+    draft?: Draft;
+  }): Promise<Message>;
+  /** Writes down what has been said in a conversation so far, replacing what was written before: what an agent's next turn there reads in place of the messages it covers. */
+  summarize(args: {
+    summary: string;
+  }): Promise<void>;
+  /** Runs `summarize` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  summarizeMany(items: DirectSummarizeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sends a view as a message: its title as what the message says, its definition for anyone who reads it to add to their own views. */
+  send_view(args: {
+    title: string;
+    definition: string;
+  }): Promise<Message>;
+  /** Posts a message written on another service, as it was written there: who wrote it, as that service names them, where and when. A bridge relays another service's conversation this way; the message's history names the bridge, and the message says whom it relays. */
+  relay(args: {
+    body: string;
+    by: string;
+    written_in: string;
+    written?: number;
+    attachments?: unknown[];
+    reply_to?: Message;
+    avatar?: string;
+    service?: string;
+    outside_emoji?: OutsideEmoji[];
+  }): Promise<Message>;
+  /** Deletes a message from the channel or thread it is in. Its author, or anyone the channel's permissions allow, may: the platform undoes it rather than asking first, and the removal is a version of the message, so who removed it stays answerable. Its reports stay, saying it was deleted, as far as the one deleting reads them. */
+  delete(args: {
+    m: Message;
+  }): Promise<void>;
+  /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteMany(items: DirectDeleteArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Reports a message of a conversation to the workspace's moderators, saying why when the reporter does. Who reported it is the report's history's, so moderators see who asked; the conversation keeps it, with who wrote the message and what it said, after the message is deleted. */
+  report(args: {
+    m: Message;
+    reason?: string;
+  }): Promise<ChatReport>;
+  /** Starts a thread from a message of a channel or a direct conversation, named after what the message says. */
+  start_thread(args: {
+    m: Message;
+    name?: string;
+  }): Promise<Thread>;
+}
+
+/** The actions `Direct` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DIRECT_ACTIONS = ["bridge", "bridgeMany", "unbridge", "unbridgeMany", "unread_count", "send", "summarize", "summarizeMany", "send_view", "relay", "delete", "deleteMany", "report", "start_thread"] as const;
+
+/** The `tl.so.tilo.chat.Direct` kind at `path`. */
+export function direct(ws: tilo.Workspace, path: string): Direct {
+  return resourceProxy(ws, path, SURFACE, DIRECT_ACTIONS) as unknown as Direct;
+}
+
+/** Draft — `tl.so.tilo.chat.Draft`. */
+export interface Draft extends tilo.Resource {
+  "5shwuvrs": Direct | TextChannel | Thread;  // conversation
+  rxmavdj2: string;  // body
+  /** Set one paragraph of a rich-text field to what a Markdown text says. */
+  editBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  editBlockMany(items: DraftEditBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Put a paragraph before the one the address names. */
+  insertBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insertBlockMany(items: DraftInsertBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Remove the paragraph the address names, and the paragraphs it holds. */
+  deleteBlock(args: {
+    block: string;
+  }): Promise<void>;
+  /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteBlockMany(items: DraftDeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Draft` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DRAFT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany"] as const;
+
+/** The `tl.so.tilo.chat.Draft` kind at `path`. */
+export function draft(ws: tilo.Workspace, path: string): Draft {
+  return resourceProxy(ws, path, SURFACE, DRAFT_ACTIONS) as unknown as Draft;
+}
+
+/** Attached — `tl.so.tilo.chat.Attached`. */
+export interface Attached extends tilo.Resource {
+  qsdc77jc: string;  // name
+  h5lqkkjt: string;  // media
+  g7nx7a7g: number;  // size
+  wu2n7dpm: string;  // blob
+}
+
+/** The actions `Attached` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ATTACHED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.Attached` kind at `path`. */
+export function attached(ws: tilo.Workspace, path: string): Attached {
+  return resourceProxy(ws, path, SURFACE, ATTACHED_ACTIONS) as unknown as Attached;
+}
+
+/** RelayedReaction — `tl.so.tilo.chat.RelayedReaction`. */
+export interface RelayedReaction extends tilo.Resource {
+  r2zcptjt: string;  // emoji
+  awgtnj33: string;  // persona
+  hammizbi: string;  // by
+}
+
+/** The actions `RelayedReaction` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const RELAYEDREACTION_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.RelayedReaction` kind at `path`. */
+export function relayedReaction(ws: tilo.Workspace, path: string): RelayedReaction {
+  return resourceProxy(ws, path, SURFACE, RELAYEDREACTION_ACTIONS) as unknown as RelayedReaction;
+}
+
+/** Part — `tl.so.tilo.chat.Part`. */
+export interface Part extends tilo.Resource {
+  zevnbs3i: string;  // kind
+  "3hkzkqvr": string;  // body
+}
+
+/** The actions `Part` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PART_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.Part` kind at `path`. */
+export function part(ws: tilo.Workspace, path: string): Part {
+  return resourceProxy(ws, path, SURFACE, PART_ACTIONS) as unknown as Part;
+}
+
+/** Skill — `tl.so.tilo.chat.Skill`. */
+export interface Skill extends tilo.Resource {
+  gfk6pm4a: string;  // name
+  gnfldsvz: string;  // work
+  bn3w5doj: string;  // how
+  ijpa4i7d: string;  // form
+  "3wlkwi6k": string;  // model
+  bxx5rykt: Array<tilo.Entry<Example>>;  // examples
+  /** Corrects a skill: only what is given changes, and what is left out stays as it is. */
+  correct_skill(args?: {
+    name?: string;
+    work?: string;
+    how?: string;
+    form?: string;
+    model?: string;
+  }): Promise<void>;
+  /** Runs `correct_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  correct_skillMany(items: CorrectSkillArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Forgets a skill: no later turn reads it. */
+  forget_skill(): Promise<void>;
+  /** Runs `forget_skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  forget_skillMany(items: ForgetSkillArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps an example of a skill: a result the person accepted (more like this) or rejected (less like this), with what they said about it. The same result said again is that example, moved newest, and a skill keeps its newest twelve. */
+  keep_example(args: {
+    text: string;
+    accepted: boolean;
+    note?: string;
+  }): Promise<void>;
+  /** Runs `keep_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keep_exampleMany(items: KeepExampleArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes an example out of a skill. */
+  drop_example(args: {
+    example: Example;
+  }): Promise<void>;
+  /** Runs `drop_example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  drop_exampleMany(items: DropExampleArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Skill` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SKILL_ACTIONS = ["correct_skill", "correct_skillMany", "forget_skill", "forget_skillMany", "keep_example", "keep_exampleMany", "drop_example", "drop_exampleMany"] as const;
+
+/** The `tl.so.tilo.chat.Skill` kind at `path`. */
+export function skill(ws: tilo.Workspace, path: string): Skill {
+  return resourceProxy(ws, path, SURFACE, SKILL_ACTIONS) as unknown as Skill;
+}
+
+/** Example — `tl.so.tilo.chat.Example`. */
+export interface Example extends tilo.Resource {
+  fspydtu6: string;  // text
+  "2u2ngevv": boolean;  // accepted
+  agcun6lt: string;  // note
+  "3ccutu3r": number;  // at
+}
+
+/** The actions `Example` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const EXAMPLE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat.Example` kind at `path`. */
+export function example(ws: tilo.Workspace, path: string): Example {
+  return resourceProxy(ws, path, SURFACE, EXAMPLE_ACTIONS) as unknown as Example;
+}
+
+/** Chat — `tl.so.tilo.chat`. */
+export interface Chat extends tilo.Resource {
+}
+
+/** The actions `Chat` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CHAT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.chat` kind at `path`. */
+export function chat(ws: tilo.Workspace, path: string): Chat {
+  return resourceProxy(ws, path, SURFACE, CHAT_ACTIONS) as unknown as Chat;
 }
 
 /** Workspace emoji — `tilo.workspace.emoji`. */
 export interface WorkspaceEmoji extends tilo.Resource {
-  emoji: Record<string, Emoji>;
+  emoji: Record<string, Emoji>;  // Emoji
+  /** A picture (PNG or WebP, base64, at most 12 000 bytes; 64 pixels a side draws sharply) under a name of 2 to 32 letters, digits and underscores, written `:name:` in reactions and text. */
   addEmoji(args: {
     name: string;
     image: string;
   }): Promise<void>;
   /** Runs `add-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addEmojiMany(items: AddEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** One you added. */
   removeEmoji(args: {
     name: string;
   }): Promise<void>;
   /** Runs `remove-emoji` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeEmojiMany(items: RemoveEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Someone else's emoji: the workspace's roles decide who may. */
   removeAnyEmoji(args: {
     name: string;
   }): Promise<void>;
@@ -1362,55 +1040,49 @@ export function workspaceEmoji(ws: tilo.Workspace, path: string): WorkspaceEmoji
   return resourceProxy(ws, path, SURFACE, WORKSPACEEMOJI_ACTIONS) as unknown as WorkspaceEmoji;
 }
 
-/** Workspace Skills — `chat.skills`. */
-export interface Skills extends tilo.Resource {
-  readonly skills: Array<tilo.Entry<Skill>>;
-  writeSkill(args: {
-    name: string;
-    work: string;
-    how: string;
-    form?: string;
-    model?: string;
+/** Moderation — `tilo.moderation`. */
+export interface Moderation extends tilo.Resource {
+  readonly reports: Array<tilo.Entry<Report>>;  // Reports
+  readonly decisions: Array<tilo.Entry<Decision>>;  // Decisions
+  /** Tells the workspace's moderators that this message, and its author, should not be here. */
+  reportMessage(args: {
+    message: string;
+    author: unknown;
+    reason: string;
   }): Promise<void>;
-  /** Runs `write-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  writeSkillMany(items: WriteSkillArgs[]): Promise<tilo.ActionAnswer[]>;
-  correctSkill(args: {
-    skill: string;
-    name?: string;
-    work?: string;
-    how?: string;
-    form?: string;
-    model?: string;
+  /** Runs `report-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reportMessageMany(items: ReportMessageArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Tells the workspace's moderators that this person is misbehaving. */
+  reportPerson(args: {
+    person: unknown;
+    reason: string;
   }): Promise<void>;
-  /** Runs `correct-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  correctSkillMany(items: CorrectSkillArgs[]): Promise<tilo.ActionAnswer[]>;
-  keepExample(args: {
-    skill: string;
-    text: string;
-    accepted: boolean;
-    note?: string;
+  /** Runs `report-person` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reportPersonMany(items: ReportPersonArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Decide on a person. Resources what was done about a person and why, settling the reports named. */
+  decideReports(args: {
+    id: string;
+    person: unknown;
+    reports: string[];
+    ruling: Ruling;
   }): Promise<void>;
-  /** Runs `keep-example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  keepExampleMany(items: KeepExampleArgs[]): Promise<tilo.ActionAnswer[]>;
-  dropExample(args: {
-    skill: string;
-    example: string;
+  /** Runs `decide-reports` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  decideReportsMany(items: DecideReportsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Marks a decision as overturned by a Moderator, who lifts its restriction or ban and brings back what it took back. */
+  overturnDecision(args: {
+    decision: string;
+    note: string;
   }): Promise<void>;
-  /** Runs `drop-example` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  dropExampleMany(items: DropExampleArgs[]): Promise<tilo.ActionAnswer[]>;
-  forgetSkill(args: {
-    skill: string;
-  }): Promise<void>;
-  /** Runs `forget-skill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  forgetSkillMany(items: ForgetSkillArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `overturn-decision` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  overturnDecisionMany(items: OverturnDecisionArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
-/** The actions `Skills` reaches before it is read: `ws` calls them without a
+/** The actions `Moderation` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SKILLS_ACTIONS = ["writeSkill", "writeSkillMany", "correctSkill", "correctSkillMany", "keepExample", "keepExampleMany", "dropExample", "dropExampleMany", "forgetSkill", "forgetSkillMany"] as const;
+export const MODERATION_ACTIONS = ["reportMessage", "reportMessageMany", "reportPerson", "reportPersonMany", "decideReports", "decideReportsMany", "overturnDecision", "overturnDecisionMany"] as const;
 
-/** The `chat.skills` kind at `path`. */
-export function skills(ws: tilo.Workspace, path: string): Skills {
-  return resourceProxy(ws, path, SURFACE, SKILLS_ACTIONS) as unknown as Skills;
+/** The `tilo.moderation` kind at `path`. */
+export function moderation(ws: tilo.Workspace, path: string): Moderation {
+  return resourceProxy(ws, path, SURFACE, MODERATION_ACTIONS) as unknown as Moderation;
 }
 

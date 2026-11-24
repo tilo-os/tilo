@@ -22,7 +22,24 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@0cae88f4b96a6398";
+export const SURFACE = "so.tilo.notes@a850357236087c79";
+
+/** The arguments of `edit-block`. */
+export interface EditBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `insert-block`. */
+export interface InsertBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `delete-block`. */
+export interface DeleteBlockArgs {
+  block: string;
+}
 
 /** The arguments of `pin`. */
 export interface PinArgs {
@@ -76,6 +93,11 @@ export interface ReactArgs {
 export interface InsertImageArgs {
   image: unknown;
   alt?: string;
+}
+
+/** The arguments of `place_image`. */
+export interface PlaceImageArgs {
+  image: unknown;
 }
 
 /** The arguments of `keep_image`. */
@@ -150,6 +172,28 @@ export interface Note extends tilo.Resource {
   zex2vawx: string;  // page
   rnhwkv6z: string;  // created
   "2od7mwir": string;  // updated
+  q4w7m2xk: string;  // chosen
+  v8n3t5jb: number;  // chosen_count
+  /** Set one paragraph of a rich-text field to what a Markdown text says. */
+  editBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  editBlockMany(items: EditBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Put a paragraph before the one the address names. */
+  insertBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insertBlockMany(items: InsertBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Remove the paragraph the address names, and the paragraphs it holds. */
+  deleteBlock(args: {
+    block: string;
+  }): Promise<void>;
+  /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteBlockMany(items: DeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Starts a note inside `n`'s own, after the notes it already holds, titled `words` when the caller knows them already (a `/page` in one of `n`'s blocks names the page it makes with the words that stood there): the note the window has open too, so a person writing one starts the note it stands under without finding its row. It is `n`'s action, so the window offers it for the note it shows and its row offers it. */
   new_child(args?: {
     words?: string;
@@ -186,7 +230,7 @@ export interface Note extends tilo.Resource {
   }): Promise<void>;
   /** Runs `retitle` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   retitleMany(items: RetitleArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Writes `text` (Markdown) at the end of a note, under what it says already: a line, a list or a paragraph added to it. */
+  /** Writes `text` (Markdown) at the end of a note, as paragraphs of its own under what it says already: a line, a list or a paragraph added to it, never running on into its last paragraph. */
   add_text(args: {
     text: string;
   }): Promise<void>;
@@ -221,7 +265,13 @@ export interface Note extends tilo.Resource {
   }): Promise<void>;
   /** Runs `insert_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   insert_imageMany(items: InsertImageArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note holds the address of its bytes, and the name it came in as, which an export writes beside it. `picture` is the editor's word of it: its name, then the address of its content. */
+  /** Writes a picture in where the person is writing: the picture the person chose is handed to the editor, which puts it at the caret, as its own `/image` command does. The note keeps the address of its bytes and the name it came in as, which an export writes beside the note. */
+  place_image(args: {
+    image: unknown;
+  }): Promise<void>;
+  /** Runs `place_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  place_imageMany(items: PlaceImageArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note holds the address of its bytes, and the name it came in as, which an export writes beside it. `picture` is the editor's word of it: its name, then the address of its content. A picture already named by the note — one the person chose with `place_image` — keeps that name. */
   keep_image(args: {
     picture: string[];
   }): Promise<void>;
@@ -235,7 +285,7 @@ export interface Note extends tilo.Resource {
 
 /** The actions `Note` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const NOTE_ACTIONS = ["new_child", "pin", "pinMany", "indent", "indentMany", "outdent", "outdentMany", "move_up", "move_upMany", "move_down", "move_downMany", "retitle", "retitleMany", "add_text", "add_textMany", "tag", "tagMany", "untag", "untagMany", "find_text", "react", "reactMany", "insert_image", "insert_imageMany", "keep_image", "keep_imageMany", "export_markdown", "export_note"] as const;
+export const NOTE_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "new_child", "pin", "pinMany", "indent", "indentMany", "outdent", "outdentMany", "move_up", "move_upMany", "move_down", "move_downMany", "retitle", "retitleMany", "add_text", "add_textMany", "tag", "tagMany", "untag", "untagMany", "find_text", "react", "reactMany", "insert_image", "insert_imageMany", "place_image", "place_imageMany", "keep_image", "keep_imageMany", "export_markdown", "export_note"] as const;
 
 /** The `tl.so.tilo.notes.Note` kind at `path`. */
 export function note(ws: tilo.Workspace, path: string): Note {
@@ -292,10 +342,10 @@ export interface Notebook extends tilo.Resource {
   }): Promise<void>;
   /** Runs `append_to_note` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   append_to_noteMany(items: AppendToNoteArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it. */
+  /** Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it. */
   file_note(args: {
     title: string;
-    name: string;
+    tag: string;
   }): Promise<Note>;
   /** Makes a tag of the notebook named `name`, or gives the one already named that: the name is what people, agents and scripts know a tag by. */
   new_tag(args?: {

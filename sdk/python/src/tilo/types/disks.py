@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`System` is the app's `disks.system` at `disks/<resource>`, read with
+`Disks` is the app's `tl.so.tilo.disks.Disks` at `disks/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,51 +20,63 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "System",
+    "Disks",
+    "TiloDisks",
     "NameDriveArgs",
 ]
 
 NameDriveArgs = TypedDict("NameDriveArgs", {
     "serial": "str",
-    "name": NotRequired["str | None"],
+    "name": "str",
 })
-"""The arguments of `name-drive`."""
+"""The arguments of `name_drive`."""
 
-class System(Resource):
-    """Storage devices — `disks.system`."""
-    __surface__ = "so.tilo.disks@16aeb729799dc193"
-    names: dict[str, str]
+class Disks(Resource):
+    """Disks — `tl.so.tilo.disks.Disks`."""
+    __surface__ = "so.tilo.disks@4735aa45d7142f43"
+    @property
+    def _6mf2skfm(self) -> dict[str, str]:
+        """names (`6mf2skfm` on the wire)."""
+        return self.fields["6mf2skfm"]
+
+    @_6mf2skfm.setter
+    def _6mf2skfm(self, value: dict[str, str]) -> None:
+        self.edit("6mf2skfm", value=value)
 
     def name_drive(self,
         *,
         serial: str,
-        name: str | None = None,
+        name: str,
     ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["serial"] = serial
-        if name is not None:
-            args["name"] = name
-        return self.action("name-drive", **args)
+        """A drive's name in the words of the person reading it, by its serial."""
+        return self.action("name_drive", serial=serial, name=name)
 
     def name_drive_many(self, items: list[NameDriveArgs]) -> list[dict[str, Any]]:
-        """Runs `name-drive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("name-drive", items)
-
-    def rescan(self) -> None:
-        """Runs the app's action."""
-        return self.action("rescan")
-
-    def select(self, *, device: str) -> None:
-        """Runs the app's action."""
-        return self.action("select", device=device)
-
-    def show_tab(self, *, tab: str) -> None:
-        """Runs the app's action."""
-        return self.action("show-tab", tab=tab)
+        """Runs `name_drive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("name_drive", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"name_drive", "name_drive_many", "rescan", "select", "show_tab"})
+    __actions__ = frozenset({"name_drive", "name_drive_many"})
+
+
+class TiloDisks(Resource):
+    """Disks — `tl.so.tilo.disks`."""
+    __surface__ = "so.tilo.disks@4735aa45d7142f43"
+    def mount_first(self, *, drive: Any) -> None:
+        """Mounts the drive's first partition, which is what a drive without a filesystem of its own holds."""
+        return self.action("mount_first", drive=drive)
+
+    def format_device(self,
+        *,
+        device_name: str,
+        filesystem: str,
+    ) -> None:
+        """Erases the device the confirmation named, and writes the chosen filesystem."""
+        return self.action("format_device", device_name=device_name, filesystem=filesystem)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"mount_first", "format_device"})
 
 

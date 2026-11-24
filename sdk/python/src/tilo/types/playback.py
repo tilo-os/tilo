@@ -29,6 +29,7 @@ __all__ = [
     "PlayListArgs",
     "SetCurrentArgs",
     "SetPlayingArgs",
+    "SetSourceArgs",
     "SetLengthArgs",
     "RememberPositionArgs",
     "SetPositionArgs",
@@ -37,6 +38,7 @@ __all__ = [
     "PlayArgs",
     "ToggleArgs",
     "PauseArgs",
+    "StopArgs",
     "NextArgs",
     "PreviousArgs",
     "SelectArgs",
@@ -75,6 +77,11 @@ SetPlayingArgs = TypedDict("SetPlayingArgs", {
 })
 """The arguments of `set_playing`."""
 
+SetSourceArgs = TypedDict("SetSourceArgs", {
+    "source": "str",
+})
+"""The arguments of `set_source`."""
+
 SetLengthArgs = TypedDict("SetLengthArgs", {
     "seconds": "float",
 })
@@ -112,6 +119,10 @@ ToggleArgs = TypedDict("ToggleArgs", {
 PauseArgs = TypedDict("PauseArgs", {
 })
 """The arguments of `pause`."""
+
+StopArgs = TypedDict("StopArgs", {
+})
+"""The arguments of `stop`."""
 
 NextArgs = TypedDict("NextArgs", {
 })
@@ -200,7 +211,7 @@ SetOutputVolumeArgs = TypedDict("SetOutputVolumeArgs", {
 
 class Output(Resource):
     """Output — `tl.so.tilo.playback.Output`."""
-    __surface__ = "so.tilo.playback@1ab30e8876f33e9b"
+    __surface__ = "so.tilo.playback@421c5039a7cd481f"
     mtgbfbe3: str  # kind
     q2afggjg: str  # device
     duy3y22z: str  # name
@@ -210,7 +221,7 @@ class Output(Resource):
 
 class Item(Resource):
     """Item — `tl.so.tilo.playback.Item`."""
-    __surface__ = "so.tilo.playback@1ab30e8876f33e9b"
+    __surface__ = "so.tilo.playback@421c5039a7cd481f"
     jsytyrgy: str  # ref
     hbrdxjws: str  # title
     @property
@@ -228,7 +239,7 @@ class Item(Resource):
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.playback.Progress`."""
-    __surface__ = "so.tilo.playback@1ab30e8876f33e9b"
+    __surface__ = "so.tilo.playback@421c5039a7cd481f"
     ijcc2upy: str  # ref
     owteykf6: float  # position
     q64zycak: str  # updated
@@ -236,7 +247,7 @@ class Progress(Resource):
 
 class Playback(Resource):
     """Playback — `tl.so.tilo.playback.Playback`."""
-    __surface__ = "so.tilo.playback@1ab30e8876f33e9b"
+    __surface__ = "so.tilo.playback@421c5039a7cd481f"
     hnwowp42: str  # track
     sx7vtcfl: str  # title
     eejl5scp: str  # artist
@@ -298,6 +309,14 @@ class Playback(Resource):
     def set_playing_many(self, items: list[SetPlayingArgs]) -> list[dict[str, Any]]:
         """Runs `set_playing` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set_playing", items)
+
+    def set_source(self, *, source: str) -> None:
+        """Where what plays comes from, as the app that knows it answered again: a video's other quality, or the address it was asked for once more. The player opens it, and the live card and another device name the same bytes."""
+        return self.action("set_source", source=source)
+
+    def set_source_many(self, items: list[SetSourceArgs]) -> list[dict[str, Any]]:
+        """Runs `set_source` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_source", items)
 
     def set_length(self, *, seconds: float) -> None:
         """What the player reports of its length, once the decoder knows it."""
@@ -366,6 +385,14 @@ class Playback(Resource):
     def pause_many(self, items: list[PauseArgs]) -> list[dict[str, Any]]:
         """Runs `pause` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("pause", items)
+
+    def stop(self) -> None:
+        """Stops what plays: it plays on no device, and the shell shows it no more."""
+        return self.action("stop")
+
+    def stop_many(self, items: list[StopArgs]) -> list[dict[str, Any]]:
+        """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("stop", items)
 
     def next(self) -> None:
         """The item after this one: the queue's next, or the first when repeat is on."""
@@ -559,10 +586,10 @@ class Playback(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"play_list", "play_list_many", "set_current", "set_current_many", "set_playing", "set_playing_many", "set_length", "set_length_many", "remember_position", "remember_position_many", "set_position", "set_position_many", "set_share", "set_share_many", "resume", "resume_many", "play", "play_many", "toggle", "toggle_many", "pause", "pause_many", "next", "next_many", "previous", "previous_many", "select", "select_many", "seek_by", "seek_by_many", "seek", "seek_many", "set_volume", "set_volume_many", "mute", "mute_many", "shuffle_toggle", "shuffle_toggle_many", "cycle_repeat", "cycle_repeat_many", "queue_add", "queue_add_many", "queue_play_next", "queue_play_next_many", "queue_remove", "queue_remove_many", "queue_move", "queue_move_many", "add_output", "add_output_many", "remove_output", "remove_output_many", "move_to", "move_to_many", "set_output_volume", "set_output_volume_many"})
+    __actions__ = frozenset({"play_list", "play_list_many", "set_current", "set_current_many", "set_playing", "set_playing_many", "set_source", "set_source_many", "set_length", "set_length_many", "remember_position", "remember_position_many", "set_position", "set_position_many", "set_share", "set_share_many", "resume", "resume_many", "play", "play_many", "toggle", "toggle_many", "pause", "pause_many", "stop", "stop_many", "next", "next_many", "previous", "previous_many", "select", "select_many", "seek_by", "seek_by_many", "seek", "seek_many", "set_volume", "set_volume_many", "mute", "mute_many", "shuffle_toggle", "shuffle_toggle_many", "cycle_repeat", "cycle_repeat_many", "queue_add", "queue_add_many", "queue_play_next", "queue_play_next_many", "queue_remove", "queue_remove_many", "queue_move", "queue_move_many", "add_output", "add_output_many", "remove_output", "remove_output_many", "move_to", "move_to_many", "set_output_volume", "set_output_volume_many"})
 
 
 class TiloPlayback(Resource):
     """Playback — `tl.so.tilo.playback`."""
-    __surface__ = "so.tilo.playback@1ab30e8876f33e9b"
+    __surface__ = "so.tilo.playback@421c5039a7cd481f"
 

@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Workbook` is the app's `sheets.workbook` at `sheets/<resource>`, read with
+`Workbook` is the app's `tl.so.tilo.sheets.Workbook` at `sheets/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,289 +20,473 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "Area",
-    "Author",
-    "CellWrite",
-    "Chart",
     "ChartKind",
-    "ClipAttr",
-    "ClipBlock",
-    "Comment",
-    "CommentCells",
     "Currency",
     "DateStyle",
-    "DocSettings",
-    "ImportedSheet",
-    "MarkSpan",
-    "MarkValue",
-    "Reply",
-    "Sheet",
-    "SheetSpec",
     "TimeStyle",
     "Workbook",
+    "Sheet",
+    "Chart",
+    "Comment",
+    "Reply",
+    "SheetInput",
+    "BookInput",
+    "RecordsRequest",
+    "UpsertRequest",
+    "RecordWrites",
+    "Extent",
+    "Sheets",
     "SetTitleArgs",
-    "DuplicateSheetArgs",
+    "RenameSheetArgs",
     "DeleteSheetArgs",
+    "PlaceSheetArgs",
+    "MoveSheetArgs",
+    "WriteCellsArgs",
+    "SetCellsArgs",
+    "PasteCellsArgs",
+    "ClearCellsArgs",
+    "FormatCellsArgs",
+    "ToggleBoldArgs",
+    "AutosumArgs",
+    "SumSelectionArgs",
     "InsertRowsArgs",
+    "DeleteRowsArgs",
     "InsertColumnsArgs",
     "DeleteColumnsArgs",
-    "ImportSheetsArgs",
-    "AddChartArgs",
-    "EditChartArgs",
-    "DeleteChartArgs",
-    "RenameSheetArgs",
-    "CommentArgs",
-    "ReplyArgs",
-    "EditCommentArgs",
+    "SortRowsArgs",
+    "FillArgs",
+    "ApplyEditArgs",
     "DeleteCommentArgs",
+    "SetSettingsArgs",
+    "ImportTableArgs",
+    "EditCellsArgs",
+    "SetSheetHiddenArgs",
+    "SetSheetColorArgs",
+    "ClearSheetColorArgs",
+    "DeleteChartArgs",
+    "ResizeColumnArgs",
+    "ResizeRowArgs",
+    "EditChartArgs",
+    "EditBlockArgs",
+    "InsertBlockArgs",
+    "DeleteBlockArgs",
+    "ResolveArgs",
+    "EditCommentArgs",
+    "ReplyEditBlockArgs",
+    "ReplyInsertBlockArgs",
+    "ReplyDeleteBlockArgs",
+    "EditReplyArgs",
 ]
 
-class Area(TypedDict):
-    top: str
-    left: str
-    bottom: str
-    right: str
+ChartKind = Literal["column", "line"]
+"""What a chart draws: columns side by side, or a line over its points."""
 
-Author = dict[str, Any]
-"""One of member, named: an object whose case the app tags it with."""
+Currency = Literal["usd", "eur", "gbp", "jpy", "chf", "cad", "aud", "cny", "inr"]
+"""The currency a bare money format shows in."""
 
-class CellWrite(TypedDict):
-    cell: str
-    input: str | None
-    format: Any | None
-    bold: bool | None
+DateStyle = Literal["language", "iso", "us", "eu", "long"]
+"""How a cell writes a date: the language's own, ISO, a US or European order, or spelled out."""
 
-class Chart(TypedDict):
-    title: str
-    kind: ChartKind
-    area: Area
-
-ChartKind = Literal["Column", "Line"]
-
-ClipAttr = dict[str, Any]
-"""One of Bool, Int, Str: an object whose case the app tags it with."""
-
-class ClipBlock(TypedDict):
-    kind: str
-    text: str
-    marks: list[MarkSpan]
-    level: int | None
-    ordered: bool | None
-    align: str | None
-    attrs: dict[str, ClipAttr]
-
-class Comment(TypedDict):
-    anchor: CommentCells
-    author: Author
-    date: str
-    text: str
-    body: list[ClipBlock]
-    resolved: bool
-    replies: list[Entry[Reply]]
-
-class CommentCells(TypedDict):
-    sheet: str
-    area: Area
-
-Currency = Literal["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "CNY", "INR"]
-
-DateStyle = Literal["Language", "ISO", "US", "EU", "Long"]
-
-class DocSettings(TypedDict):
-    currency: Currency | None
-    date_format: DateStyle | None
-    time_format: TimeStyle | None
-
-class ImportedSheet(TypedDict):
-    name: str
-    cells: list[CellWrite]
-    hidden: bool
-
-class MarkSpan(TypedDict):
-    start: int
-    end: int
-    name: str
-    value: MarkValue
-
-MarkValue = dict[str, Any]
-"""One of Bool, Int, Str: an object whose case the app tags it with."""
-
-class Reply(TypedDict):
-    author: Author
-    date: str
-    text: str
-    body: list[ClipBlock]
-
-class Sheet(TypedDict):
-    name: str
-    source: str | None
-    color: int | None
-    cells: Any
-    charts: list[Entry[Chart]]
-    hidden: bool
-    cut: list[str]
-
-class SheetSpec(TypedDict):
-    name: str | None
-    after: str | None
-    rows: list[list[Any]] | None
-    columns: list[str] | None
-    records: list[Any] | None
-    formats: dict[str, str] | None
-    workbook: str | None
-
-TimeStyle = Literal["Language", "H24", "H12"]
+TimeStyle = Literal["language", "h24", "h12"]
+"""How a cell writes a clock time: the language's own, 24-hour or 12-hour."""
 
 SetTitleArgs = TypedDict("SetTitleArgs", {
     "title": "str",
 })
-"""The arguments of `set-title`."""
+"""The arguments of `set_title`."""
 
-DuplicateSheetArgs = TypedDict("DuplicateSheetArgs", {
-    "sheet": "str",
+RenameSheetArgs = TypedDict("RenameSheetArgs", {
+    "s": "Sheet",
+    "name": "str",
 })
-"""The arguments of `duplicate-sheet`."""
+"""The arguments of `rename_sheet`."""
 
 DeleteSheetArgs = TypedDict("DeleteSheetArgs", {
-    "sheet": "str",
+    "s": "Sheet",
 })
-"""The arguments of `delete-sheet`."""
+"""The arguments of `delete_sheet`."""
+
+PlaceSheetArgs = TypedDict("PlaceSheetArgs", {
+    "s": "Sheet",
+    "before": "Sheet",
+})
+"""The arguments of `place_sheet`."""
+
+MoveSheetArgs = TypedDict("MoveSheetArgs", {
+    "s": "Sheet",
+    "at": "int",
+})
+"""The arguments of `move_sheet`."""
+
+WriteCellsArgs = TypedDict("WriteCellsArgs", {
+    "sheet": "str",
+    "refs": "list[str]",
+    "inputs": "list[str]",
+    "seen": NotRequired["str | None"],
+})
+"""The arguments of `write_cells`."""
+
+SetCellsArgs = TypedDict("SetCellsArgs", {
+    "s": "Sheet",
+    "start": "str",
+    "rows": "list[list[str]]",
+    "seen": NotRequired["str | None"],
+})
+"""The arguments of `set_cells`."""
+
+PasteCellsArgs = TypedDict("PasteCellsArgs", {
+    "s": "Sheet",
+    "at": "str",
+})
+"""The arguments of `paste_cells`."""
+
+ClearCellsArgs = TypedDict("ClearCellsArgs", {
+    "s": "Sheet",
+    "area": "str",
+})
+"""The arguments of `clear_cells`."""
+
+FormatCellsArgs = TypedDict("FormatCellsArgs", {
+    "s": "Sheet",
+    "range": "str",
+    "format": NotRequired["str | None"],
+    "bold": NotRequired["bool | None"],
+})
+"""The arguments of `format_cells`."""
+
+ToggleBoldArgs = TypedDict("ToggleBoldArgs", {
+    "s": "Sheet",
+    "range": "str",
+})
+"""The arguments of `toggle_bold`."""
+
+AutosumArgs = TypedDict("AutosumArgs", {
+    "s": "Sheet",
+    "at": "str",
+})
+"""The arguments of `autosum`."""
+
+SumSelectionArgs = TypedDict("SumSelectionArgs", {
+    "s": "Sheet",
+    "range": "str",
+})
+"""The arguments of `sum_selection`."""
 
 InsertRowsArgs = TypedDict("InsertRowsArgs", {
-    "sheet": "str",
+    "s": "Sheet",
     "at": "int",
     "count": NotRequired["int | None"],
 })
-"""The arguments of `insert-rows`."""
+"""The arguments of `insert_rows`."""
+
+DeleteRowsArgs = TypedDict("DeleteRowsArgs", {
+    "s": "Sheet",
+    "rows": "list[int]",
+})
+"""The arguments of `delete_rows`."""
 
 InsertColumnsArgs = TypedDict("InsertColumnsArgs", {
-    "sheet": "str",
+    "s": "Sheet",
     "at": "str",
     "count": NotRequired["int | None"],
 })
-"""The arguments of `insert-columns`."""
+"""The arguments of `insert_columns`."""
 
 DeleteColumnsArgs = TypedDict("DeleteColumnsArgs", {
-    "sheet": "str",
+    "s": "Sheet",
     "columns": "list[str]",
 })
-"""The arguments of `delete-columns`."""
+"""The arguments of `delete_columns`."""
 
-ImportSheetsArgs = TypedDict("ImportSheetsArgs", {
-    "sheets": "list[ImportedSheet]",
-    "source": NotRequired["str | None"],
-    "title": NotRequired["str | None"],
-})
-"""The arguments of `import-sheets`."""
-
-AddChartArgs = TypedDict("AddChartArgs", {
-    "sheet": "str",
+SortRowsArgs = TypedDict("SortRowsArgs", {
+    "s": "Sheet",
     "range": "str",
-    "kind": "str",
-    "title": "str",
+    "by": "str",
+    "descending": NotRequired["bool | None"],
 })
-"""The arguments of `add-chart`."""
+"""The arguments of `sort_rows`."""
 
-EditChartArgs = TypedDict("EditChartArgs", {
-    "sheet": "str",
-    "chart": "str",
-    "title": "str",
-    "kind": NotRequired["Any | None"],
-    "range": NotRequired["Any | None"],
+FillArgs = TypedDict("FillArgs", {
+    "s": "Sheet",
+    "pair": "list[str]",
 })
-"""The arguments of `edit-chart`."""
+"""The arguments of `fill`."""
 
-DeleteChartArgs = TypedDict("DeleteChartArgs", {
-    "sheet": "str",
-    "chart": "str",
+ApplyEditArgs = TypedDict("ApplyEditArgs", {
+    "change": "str",
 })
-"""The arguments of `delete-chart`."""
-
-RenameSheetArgs = TypedDict("RenameSheetArgs", {
-    "sheet": "str",
-    "name": "str",
-})
-"""The arguments of `rename-sheet`."""
-
-CommentArgs = TypedDict("CommentArgs", {
-    "sheet": "str",
-    "range": "str",
-    "text": "str",
-})
-"""The arguments of `comment`."""
-
-ReplyArgs = TypedDict("ReplyArgs", {
-    "comment": "str",
-    "text": "str",
-})
-"""The arguments of `reply`."""
-
-EditCommentArgs = TypedDict("EditCommentArgs", {
-    "comment": "str",
-    "body": "str",
-})
-"""The arguments of `edit-comment`."""
+"""The arguments of `apply_edit`."""
 
 DeleteCommentArgs = TypedDict("DeleteCommentArgs", {
-    "comment": "str",
+    "c": "Comment",
 })
-"""The arguments of `delete-comment`."""
+"""The arguments of `delete_comment`."""
+
+SetSettingsArgs = TypedDict("SetSettingsArgs", {
+    "currency": NotRequired["Currency | None"],
+    "date_style": NotRequired["DateStyle | None"],
+    "time_style": NotRequired["TimeStyle | None"],
+})
+"""The arguments of `set_settings`."""
+
+ImportTableArgs = TypedDict("ImportTableArgs", {
+    "file": "Any",
+})
+"""The arguments of `import_table`."""
+
+EditCellsArgs = TypedDict("EditCellsArgs", {
+    "s": "Sheet",
+    "pairs": "list[str]",
+})
+"""The arguments of `edit_cells`."""
+
+SetSheetHiddenArgs = TypedDict("SetSheetHiddenArgs", {
+    "hidden": "bool",
+})
+"""The arguments of `set_sheet_hidden`."""
+
+SetSheetColorArgs = TypedDict("SetSheetColorArgs", {
+    "color": "int",
+})
+"""The arguments of `set_sheet_color`."""
+
+ClearSheetColorArgs = TypedDict("ClearSheetColorArgs", {
+})
+"""The arguments of `clear_sheet_color`."""
+
+DeleteChartArgs = TypedDict("DeleteChartArgs", {
+    "c": "Chart",
+})
+"""The arguments of `delete_chart`."""
+
+ResizeColumnArgs = TypedDict("ResizeColumnArgs", {
+    "pair": "list[str]",
+})
+"""The arguments of `resize_column`."""
+
+ResizeRowArgs = TypedDict("ResizeRowArgs", {
+    "pair": "list[str]",
+})
+"""The arguments of `resize_row`."""
+
+EditChartArgs = TypedDict("EditChartArgs", {
+    "title": NotRequired["str | None"],
+    "kind": NotRequired["ChartKind | None"],
+    "range": NotRequired["str | None"],
+})
+"""The arguments of `edit_chart`."""
+
+EditBlockArgs = TypedDict("EditBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `edit-block`."""
+
+InsertBlockArgs = TypedDict("InsertBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `insert-block`."""
+
+DeleteBlockArgs = TypedDict("DeleteBlockArgs", {
+    "block": "str",
+})
+"""The arguments of `delete-block`."""
+
+ResolveArgs = TypedDict("ResolveArgs", {
+    "resolved": NotRequired["bool | None"],
+})
+"""The arguments of `resolve`."""
+
+EditCommentArgs = TypedDict("EditCommentArgs", {
+    "text": NotRequired["str | None"],
+})
+"""The arguments of `edit_comment`."""
+
+ReplyEditBlockArgs = TypedDict("ReplyEditBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `edit-block`."""
+
+ReplyInsertBlockArgs = TypedDict("ReplyInsertBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `insert-block`."""
+
+ReplyDeleteBlockArgs = TypedDict("ReplyDeleteBlockArgs", {
+    "block": "str",
+})
+"""The arguments of `delete-block`."""
+
+EditReplyArgs = TypedDict("EditReplyArgs", {
+    "text": NotRequired["str | None"],
+})
+"""The arguments of `edit_reply`."""
 
 class Workbook(Resource):
-    """Workbook — `sheets.workbook`."""
-    __surface__ = "so.tilo.sheets@f20b70bb99dc3da6"
-    sheets: list[Entry[Sheet]]
-    comments: list[Entry[Comment]]
-    settings: DocSettings
-    title: str | None
+    """Workbook — `tl.so.tilo.sheets.Workbook`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    meovofcz: str  # title
+    pkbcb37f: list[Entry[Sheet]]  # sheets
+    xwh3fsa2: list[Entry[Comment]]  # comments
+    r7ipin2u: Currency  # currency
+    @property
+    def _33jfkdmv(self) -> DateStyle:
+        """date_style (`33jfkdmv` on the wire)."""
+        return self.fields["33jfkdmv"]
+
+    @_33jfkdmv.setter
+    def _33jfkdmv(self, value: DateStyle) -> None:
+        self.edit("33jfkdmv", value=value)
+    wvlwcqju: TimeStyle  # time_style
+    qetlxegv: int  # structure
+
+    def read_cells(self,
+        *,
+        sheet: str,
+        range: str | None = None,
+        formulas: bool | None = None,
+    ) -> list[str]:
+        """What the cells of `range` of the sheet named `sheet` show, row by row from its first cell to its last, or their input as typed when `formulas`: what a person reads in the grid, for an agent that never opened the window."""
+        args: dict[str, Any] = {}
+        args["sheet"] = sheet
+        if range is not None:
+            args["range"] = range
+        if formulas is not None:
+            args["formulas"] = formulas
+        return self.action("read_cells", **args)
 
     def new_sheet(self,
         *,
         name: str | None = None,
-        after: str | None = None,
-        rows: list[list[Any]] | None = None,
-        columns: list[str] | None = None,
-        records: list[Any] | None = None,
-        formats: dict[str, str] | None = None,
-        workbook: str | None = None,
-    ) -> Any:
-        """Runs the app's action."""
+    ) -> Sheet:
+        """Adds a sheet at the end, named `name` or the next free `SheetN`."""
         args: dict[str, Any] = {}
         if name is not None:
             args["name"] = name
-        if after is not None:
-            args["after"] = after
-        if rows is not None:
-            args["rows"] = rows
-        if columns is not None:
-            args["columns"] = columns
-        if records is not None:
-            args["records"] = records
-        if formats is not None:
-            args["formats"] = formats
-        if workbook is not None:
-            args["workbook"] = workbook
-        return self.action("new-sheet", **args)
+        return self.action("new_sheet", **args)
+
+    def new_sheet_after(self,
+        *,
+        after: Sheet,
+        name: str | None = None,
+    ) -> Sheet:
+        """Adds a sheet right after `after`, so a new tab stands where the person is."""
+        args: dict[str, Any] = {}
+        args["after"] = after
+        if name is not None:
+            args["name"] = name
+        return self.action("new_sheet_after", **args)
 
     def set_title(self, *, title: str) -> None:
-        """Runs the app's action."""
-        return self.action("set-title", title=title)
+        """Names the workbook, so it is found and listed by that name."""
+        return self.action("set_title", title=title)
 
     def set_title_many(self, items: list[SetTitleArgs]) -> list[dict[str, Any]]:
-        """Runs `set-title` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-title", items)
+        """Runs `set_title` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_title", items)
+
+    def rename_sheet(self,
+        *,
+        s: Sheet,
+        name: str,
+    ) -> None:
+        """Renames a sheet; every formula that reads it follows it to its new name."""
+        return self.action("rename_sheet", s=s, name=name)
+
+    def rename_sheet_many(self, items: list[RenameSheetArgs]) -> list[dict[str, Any]]:
+        """Runs `rename_sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("rename_sheet", items)
+
+    def duplicate_sheet(self, *, s: Sheet) -> Sheet:
+        """Copies a sheet and everything on it, under a name of its own, right after it."""
+        return self.action("duplicate_sheet", s=s)
+
+    def delete_sheet(self, *, s: Sheet) -> None:
+        """Deletes a sheet and what was said about it."""
+        return self.action("delete_sheet", s=s)
+
+    def delete_sheet_many(self, items: list[DeleteSheetArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_sheet", items)
+
+    def place_sheet(self,
+        *,
+        s: Sheet,
+        before: Sheet,
+    ) -> None:
+        """Puts a sheet's tab right before another, so the person reorders the tabs."""
+        return self.action("place_sheet", s=s, before=before)
+
+    def place_sheet_many(self, items: list[PlaceSheetArgs]) -> list[dict[str, Any]]:
+        """Runs `place_sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("place_sheet", items)
+
+    def move_sheet(self,
+        *,
+        s: Sheet,
+        at: int,
+    ) -> None:
+        """Moves a sheet's tab to `at`, the place among the tabs a person sees that a drag reports."""
+        return self.action("move_sheet", s=s, at=at)
+
+    def move_sheet_many(self, items: list[MoveSheetArgs]) -> list[dict[str, Any]]:
+        """Runs `move_sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move_sheet", items)
+
+    def write_cells(self,
+        *,
+        sheet: str,
+        refs: list[str],
+        inputs: list[str],
+        seen: str | None = None,
+    ) -> None:
+        """Writes the inputs `inputs` into the cells `refs`, by position: an empty input clears its cell. A typed entry keeps the format it is read in (a date, money, a percent), unless the cell has one the person set. A `seen` stamp refuses the write when rows, columns or sheets have moved since it was read."""
+        args: dict[str, Any] = {}
+        args["sheet"] = sheet
+        args["refs"] = refs
+        args["inputs"] = inputs
+        if seen is not None:
+            args["seen"] = seen
+        return self.action("write_cells", **args)
+
+    def write_cells_many(self, items: list[WriteCellsArgs]) -> list[dict[str, Any]]:
+        """Runs `write_cells` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("write_cells", items)
+
+    def set_cells(self,
+        *,
+        s: Sheet,
+        start: str,
+        rows: list[list[str]],
+        seen: str | None = None,
+    ) -> None:
+        """Sets cells from a start cell, row by row: what a table handed to the workbook writes."""
+        args: dict[str, Any] = {}
+        args["s"] = s
+        args["start"] = start
+        args["rows"] = rows
+        if seen is not None:
+            args["seen"] = seen
+        return self.action("set_cells", **args)
+
+    def set_cells_many(self, items: list[SetCellsArgs]) -> list[dict[str, Any]]:
+        """Runs `set_cells` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_cells", items)
 
     def set_records(self,
         *,
-        sheet: str,
-        records: list[Any],
+        s: Sheet,
+        records: list[dict[str, str]],
         row: int | None = None,
         columns: list[str] | None = None,
         key: str | None = None,
     ) -> Any:
-        """Runs the app's action."""
+        """Writes records into a sheet by column header: each record an object keyed by the sheet's headers, so a value a record leaves out leaves its cell instead of shifting the row after it. `row` is the first data row (the row under the headers when left out), `columns` the headers a sheet that has none starts with, and `key` the header that identifies a record's row rather than writing a new one."""
         args: dict[str, Any] = {}
-        args["sheet"] = sheet
+        args["s"] = s
         args["records"] = records
         if row is not None:
             args["row"] = row
@@ -310,343 +494,630 @@ class Workbook(Resource):
             args["columns"] = columns
         if key is not None:
             args["key"] = key
-        return self.action("set-records", **args)
+        return self.action("set_records", **args)
 
     def upsert_item(self,
         *,
-        sheet: str,
-        match: dict[str, Any],
-        value: dict[str, Any],
+        s: Sheet,
+        matching: dict[str, str],
+        value: dict[str, str],
     ) -> Any:
-        """Runs the app's action."""
-        return self.action("upsert-item", sheet=sheet, match=match, value=value)
+        """Writes a record into a sheet by the values that identify its row: `matching` names the headers and values that find the row, and `value` the cells it takes. A row nothing matches is made under the headers."""
+        return self.action("upsert_item", s=s, matching=matching, value=value)
 
-    def duplicate_sheet(self, *, sheet: str) -> None:
-        """Runs the app's action."""
-        return self.action("duplicate-sheet", sheet=sheet)
-
-    def duplicate_sheet_many(self, items: list[DuplicateSheetArgs]) -> list[dict[str, Any]]:
-        """Runs `duplicate-sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("duplicate-sheet", items)
-
-    def delete_sheet(self, *, sheet: str) -> None:
-        """Runs the app's action."""
-        return self.action("delete-sheet", sheet=sheet)
-
-    def delete_sheet_many(self, items: list[DeleteSheetArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete-sheet", items)
-
-    def set_cells(self,
+    def cut_cells(self,
         *,
-        sheet: str,
-        start: str,
-        rows: list[list[Any]],
-        seen: str | None = None,
-    ) -> Any:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["sheet"] = sheet
-        args["start"] = start
-        args["rows"] = rows
-        if seen is not None:
-            args["seen"] = seen
-        return self.action("set-cells", **args)
+        s: Sheet,
+        area: str,
+        text: str,
+    ) -> None:
+        """Cuts the cells a person chose: copies them as `copy_cells` does, then clears them."""
+        return self.action("cut_cells", s=s, area=area, text=text)
 
-    def write_cells(self,
+    def paste_cells(self,
         *,
-        sheet: str,
-        cells: list[CellWrite],
-        seen: str | None = None,
-    ) -> Any:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["sheet"] = sheet
-        args["cells"] = cells
-        if seen is not None:
-            args["seen"] = seen
-        return self.action("write-cells", **args)
+        s: Sheet,
+        at: str,
+    ) -> None:
+        """Writes the table on the person's clipboard into the cells from `at`: a line per row and a tab between columns. Nothing on the clipboard writes nothing."""
+        return self.action("paste_cells", s=s, at=at)
+
+    def paste_cells_many(self, items: list[PasteCellsArgs]) -> list[dict[str, Any]]:
+        """Runs `paste_cells` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("paste_cells", items)
+
+    def clear_cells(self,
+        *,
+        s: Sheet,
+        area: str,
+    ) -> None:
+        """Clears the cells `area` names."""
+        return self.action("clear_cells", s=s, area=area)
+
+    def clear_cells_many(self, items: list[ClearCellsArgs]) -> list[dict[str, Any]]:
+        """Runs `clear_cells` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("clear_cells", items)
 
     def format_cells(self,
         *,
-        sheet: str,
+        s: Sheet,
         range: str,
-        format: Any | None = None,
+        format: str | None = None,
         bold: bool | None = None,
-    ) -> Any:
-        """Runs the app's action."""
+    ) -> None:
+        """Sets the format of the cells `range` (a code such as `currency:EUR`, `percent` or `date:ISO`), and their weight when `bold` is given."""
         args: dict[str, Any] = {}
-        args["sheet"] = sheet
+        args["s"] = s
         args["range"] = range
         if format is not None:
             args["format"] = format
         if bold is not None:
             args["bold"] = bold
-        return self.action("format-cells", **args)
+        return self.action("format_cells", **args)
+
+    def format_cells_many(self, items: list[FormatCellsArgs]) -> list[dict[str, Any]]:
+        """Runs `format_cells` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("format_cells", items)
+
+    def toggle_bold(self,
+        *,
+        s: Sheet,
+        range: str,
+    ) -> None:
+        """Makes the cells `range` bold, or regular when any one of them already is."""
+        return self.action("toggle_bold", s=s, range=range)
+
+    def toggle_bold_many(self, items: list[ToggleBoldArgs]) -> list[dict[str, Any]]:
+        """Runs `toggle_bold` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("toggle_bold", items)
+
+    def autosum(self,
+        *,
+        s: Sheet,
+        at: str,
+    ) -> None:
+        """Writes the sum of the numbers above `at` into it, the run stopping at a blank, a word or an existing total: the AutoSum button."""
+        return self.action("autosum", s=s, at=at)
+
+    def autosum_many(self, items: list[AutosumArgs]) -> list[dict[str, Any]]:
+        """Runs `autosum` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("autosum", items)
+
+    def sum_selection(self,
+        *,
+        s: Sheet,
+        range: str,
+    ) -> None:
+        """Adds up each column of the selection into the row under it."""
+        return self.action("sum_selection", s=s, range=range)
+
+    def sum_selection_many(self, items: list[SumSelectionArgs]) -> list[dict[str, Any]]:
+        """Runs `sum_selection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("sum_selection", items)
+
+    def insert_rows(self,
+        *,
+        s: Sheet,
+        at: int,
+        count: int | None = None,
+    ) -> None:
+        """Inserts `count` rows above the row `at`, counting from 1."""
+        args: dict[str, Any] = {}
+        args["s"] = s
+        args["at"] = at
+        if count is not None:
+            args["count"] = count
+        return self.action("insert_rows", **args)
+
+    def insert_rows_many(self, items: list[InsertRowsArgs]) -> list[dict[str, Any]]:
+        """Runs `insert_rows` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert_rows", items)
+
+    def delete_rows(self,
+        *,
+        s: Sheet,
+        rows: list[int],
+    ) -> None:
+        """Deletes the rows `rows`, counting from 1."""
+        return self.action("delete_rows", s=s, rows=rows)
+
+    def delete_rows_many(self, items: list[DeleteRowsArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_rows` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_rows", items)
+
+    def insert_columns(self,
+        *,
+        s: Sheet,
+        at: str,
+        count: int | None = None,
+    ) -> None:
+        """Inserts `count` columns left of the column `at`, by its letters."""
+        args: dict[str, Any] = {}
+        args["s"] = s
+        args["at"] = at
+        if count is not None:
+            args["count"] = count
+        return self.action("insert_columns", **args)
+
+    def insert_columns_many(self, items: list[InsertColumnsArgs]) -> list[dict[str, Any]]:
+        """Runs `insert_columns` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert_columns", items)
+
+    def delete_columns(self,
+        *,
+        s: Sheet,
+        columns: list[str],
+    ) -> None:
+        """Deletes the columns `columns`, by their letters."""
+        return self.action("delete_columns", s=s, columns=columns)
+
+    def delete_columns_many(self, items: list[DeleteColumnsArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_columns` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_columns", items)
 
     def sort_rows(self,
         *,
-        sheet: str,
+        s: Sheet,
         range: str,
         by: str,
         descending: bool | None = None,
-    ) -> Any:
-        """Runs the app's action."""
+    ) -> None:
+        """Sorts the rows of `range` by the values under the column `by`, by its letters."""
         args: dict[str, Any] = {}
-        args["sheet"] = sheet
+        args["s"] = s
         args["range"] = range
         args["by"] = by
         if descending is not None:
             args["descending"] = descending
-        return self.action("sort-rows", **args)
+        return self.action("sort_rows", **args)
 
-    def insert_rows(self,
+    def sort_rows_many(self, items: list[SortRowsArgs]) -> list[dict[str, Any]]:
+        """Runs `sort_rows` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("sort_rows", items)
+
+    def fill(self,
         *,
-        sheet: str,
-        at: int,
-        count: int | None = None,
+        s: Sheet,
+        pair: list[str],
     ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["sheet"] = sheet
-        args["at"] = at
-        if count is not None:
-            args["count"] = count
-        return self.action("insert-rows", **args)
+        """Extends the cells `source` over `target`, as dragging the fill handle does: numbers count on, dates follow their step and a pattern of words repeats. The pair carries the cells it copies from and the cells it fills, as the grid reports them."""
+        return self.action("fill", s=s, pair=pair)
 
-    def insert_rows_many(self, items: list[InsertRowsArgs]) -> list[dict[str, Any]]:
-        """Runs `insert-rows` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("insert-rows", items)
+    def fill_many(self, items: list[FillArgs]) -> list[dict[str, Any]]:
+        """Runs `fill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("fill", items)
 
-    def delete_rows(self,
-        *,
-        sheet: str,
-        rows: list[int],
-    ) -> Any:
-        """Runs the app's action."""
-        return self.action("delete-rows", sheet=sheet, rows=rows)
+    def apply_edit(self, *, change: str) -> None:
+        """Applies one structural change to the workbook and keeps every sheet as the engine leaves it: its cells, their formats and the cells shown bold, its name when the change renamed it, and the cells its charts and comments are about."""
+        return self.action("apply_edit", change=change)
 
-    def insert_columns(self,
-        *,
-        sheet: str,
-        at: str,
-        count: int | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["sheet"] = sheet
-        args["at"] = at
-        if count is not None:
-            args["count"] = count
-        return self.action("insert-columns", **args)
-
-    def insert_columns_many(self, items: list[InsertColumnsArgs]) -> list[dict[str, Any]]:
-        """Runs `insert-columns` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("insert-columns", items)
-
-    def delete_columns(self,
-        *,
-        sheet: str,
-        columns: list[str],
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("delete-columns", sheet=sheet, columns=columns)
-
-    def delete_columns_many(self, items: list[DeleteColumnsArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-columns` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete-columns", items)
-
-    def import_sheets(self,
-        *,
-        sheets: list[ImportedSheet],
-        source: str | None = None,
-        title: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["sheets"] = sheets
-        if source is not None:
-            args["source"] = source
-        if title is not None:
-            args["title"] = title
-        return self.action("import-sheets", **args)
-
-    def import_sheets_many(self, items: list[ImportSheetsArgs]) -> list[dict[str, Any]]:
-        """Runs `import-sheets` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("import-sheets", items)
-
-    def add_chart(self,
-        *,
-        sheet: str,
-        range: str,
-        kind: str,
-        title: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("add-chart", sheet=sheet, range=range, kind=kind, title=title)
-
-    def add_chart_many(self, items: list[AddChartArgs]) -> list[dict[str, Any]]:
-        """Runs `add-chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("add-chart", items)
-
-    def edit_chart(self,
-        *,
-        sheet: str,
-        chart: str,
-        title: str,
-        kind: Any | None = None,
-        range: Any | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["sheet"] = sheet
-        args["chart"] = chart
-        args["title"] = title
-        if kind is not None:
-            args["kind"] = kind
-        if range is not None:
-            args["range"] = range
-        return self.action("edit-chart", **args)
-
-    def edit_chart_many(self, items: list[EditChartArgs]) -> list[dict[str, Any]]:
-        """Runs `edit-chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("edit-chart", items)
-
-    def delete_chart(self,
-        *,
-        sheet: str,
-        chart: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("delete-chart", sheet=sheet, chart=chart)
-
-    def delete_chart_many(self, items: list[DeleteChartArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete-chart", items)
-
-    def rename_sheet(self,
-        *,
-        sheet: str,
-        name: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("rename-sheet", sheet=sheet, name=name)
-
-    def rename_sheet_many(self, items: list[RenameSheetArgs]) -> list[dict[str, Any]]:
-        """Runs `rename-sheet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("rename-sheet", items)
+    def apply_edit_many(self, items: list[ApplyEditArgs]) -> list[dict[str, Any]]:
+        """Runs `apply_edit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("apply_edit", items)
 
     def comment(self,
         *,
         sheet: str,
         range: str,
         text: str,
-    ) -> None:
-        """Runs the app's action."""
+    ) -> Comment:
+        """Says `text` about the cells `range` of a sheet."""
         return self.action("comment", sheet=sheet, range=range, text=text)
 
-    def comment_many(self, items: list[CommentArgs]) -> list[dict[str, Any]]:
-        """Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("comment", items)
-
-    def reply(self,
-        *,
-        comment: str,
-        text: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("reply", comment=comment, text=text)
-
-    def reply_many(self, items: list[ReplyArgs]) -> list[dict[str, Any]]:
-        """Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("reply", items)
-
-    def edit_comment(self,
-        *,
-        comment: str,
-        body: str,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("edit-comment", comment=comment, body=body)
-
-    def edit_comment_many(self, items: list[EditCommentArgs]) -> list[dict[str, Any]]:
-        """Runs `edit-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("edit-comment", items)
-
-    def delete_comment(self, *, comment: str) -> None:
-        """Runs the app's action."""
-        return self.action("delete-comment", comment=comment)
+    def delete_comment(self, *, c: Comment) -> None:
+        """Deletes a comment and its replies. Only its author may."""
+        return self.action("delete_comment", c=c)
 
     def delete_comment_many(self, items: list[DeleteCommentArgs]) -> list[dict[str, Any]]:
-        """Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("delete-comment", items)
+        """Runs `delete_comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_comment", items)
 
-    def export_xlsx_content(self) -> None:
-        """Runs the app's action."""
-        return self.action("export-xlsx-content")
-
-    def export_csv_content(self,
+    def set_settings(self,
         *,
-        sheet: str | None = None,
+        currency: Currency | None = None,
+        date_style: DateStyle | None = None,
+        time_style: TimeStyle | None = None,
     ) -> None:
-        """Runs the app's action."""
+        """Sets the workbook's currency, date style and time style: what a cell's bare money, date and time formats are read in."""
         args: dict[str, Any] = {}
-        if sheet is not None:
-            args["sheet"] = sheet
-        return self.action("export-csv-content", **args)
+        if currency is not None:
+            args["currency"] = currency
+        if date_style is not None:
+            args["date_style"] = date_style
+        if time_style is not None:
+            args["time_style"] = time_style
+        return self.action("set_settings", **args)
 
-    def read_file(self,
-        *,
-        file: str,
-        sheet: str | None = None,
-        from_: int | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["file"] = file
-        if sheet is not None:
-            args["sheet"] = sheet
-        if from_ is not None:
-            args["from"] = from_
-        return self.action("read-file", **args)
+    def set_settings_many(self, items: list[SetSettingsArgs]) -> list[dict[str, Any]]:
+        """Runs `set_settings` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_settings", items)
 
-    def read_content(self,
-        *,
-        content: str,
-        name: str,
-        sheet: str | None = None,
-        from_: int | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["content"] = content
-        args["name"] = name
-        if sheet is not None:
-            args["sheet"] = sheet
-        if from_ is not None:
-            args["from"] = from_
-        return self.action("read-content", **args)
+    def import_table(self, *, file: Any) -> None:
+        """Imports a table, a workbook or a Notion export as new sheets after the ones the workbook holds."""
+        return self.action("import_table", file=file)
 
-    def read_cells(self,
+    def import_table_many(self, items: list[ImportTableArgs]) -> list[dict[str, Any]]:
+        """Runs `import_table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import_table", items)
+
+    def read_content(self) -> str:
+        """The workbook as the engine reads it, as text: its sheets, its cells as typed and the currency its bare money format shows in. An agent reads a sheet's content without the window."""
+        return self.action("read_content")
+
+    def export_workbook(self) -> Any:
+        """The workbook as an Excel file."""
+        return self.action("export_workbook")
+
+    def export_ods(self) -> Any:
+        """The workbook as an OpenDocument spreadsheet."""
+        return self.action("export_ods")
+
+    def export_table(self, *, s: Sheet) -> Any:
+        """One sheet as a table file."""
+        return self.action("export_table", s=s)
+
+    def edit_cells(self,
         *,
-        sheet: str,
-        range: str | None = None,
-        from_: int | None = None,
-        shown: bool | None = None,
+        s: Sheet,
+        pairs: list[str],
     ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["sheet"] = sheet
-        if range is not None:
-            args["range"] = range
-        if from_ is not None:
-            args["from"] = from_
-        if shown is not None:
-            args["shown"] = shown
-        return self.action("read-cells", **args)
+        """Writes the cells a grid edit reports: pairs of reference and input, in order."""
+        return self.action("edit_cells", s=s, pairs=pairs)
+
+    def edit_cells_many(self, items: list[EditCellsArgs]) -> list[dict[str, Any]]:
+        """Runs `edit_cells` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit_cells", items)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_sheet", "set_title", "set_title_many", "set_records", "upsert_item", "duplicate_sheet", "duplicate_sheet_many", "delete_sheet", "delete_sheet_many", "set_cells", "write_cells", "format_cells", "sort_rows", "insert_rows", "insert_rows_many", "delete_rows", "insert_columns", "insert_columns_many", "delete_columns", "delete_columns_many", "import_sheets", "import_sheets_many", "add_chart", "add_chart_many", "edit_chart", "edit_chart_many", "delete_chart", "delete_chart_many", "rename_sheet", "rename_sheet_many", "comment", "comment_many", "reply", "reply_many", "edit_comment", "edit_comment_many", "delete_comment", "delete_comment_many", "export_xlsx_content", "export_csv_content", "read_file", "read_content", "read_cells"})
+    __actions__ = frozenset({"read_cells", "new_sheet", "new_sheet_after", "set_title", "set_title_many", "rename_sheet", "rename_sheet_many", "duplicate_sheet", "delete_sheet", "delete_sheet_many", "place_sheet", "place_sheet_many", "move_sheet", "move_sheet_many", "write_cells", "write_cells_many", "set_cells", "set_cells_many", "set_records", "upsert_item", "cut_cells", "paste_cells", "paste_cells_many", "clear_cells", "clear_cells_many", "format_cells", "format_cells_many", "toggle_bold", "toggle_bold_many", "autosum", "autosum_many", "sum_selection", "sum_selection_many", "insert_rows", "insert_rows_many", "delete_rows", "delete_rows_many", "insert_columns", "insert_columns_many", "delete_columns", "delete_columns_many", "sort_rows", "sort_rows_many", "fill", "fill_many", "apply_edit", "apply_edit_many", "comment", "delete_comment", "delete_comment_many", "set_settings", "set_settings_many", "import_table", "import_table_many", "read_content", "export_workbook", "export_ods", "export_table", "edit_cells", "edit_cells_many"})
+
+
+class Sheet(Resource):
+    """Sheet — `tl.so.tilo.sheets.Sheet`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    l36xpi4o: str  # name
+    hotvvuda: str  # source
+    @property
+    def _6jss3eyn(self) -> int | None:
+        """color (`6jss3eyn` on the wire)."""
+        return self.fields["6jss3eyn"]
+
+    @_6jss3eyn.setter
+    def _6jss3eyn(self, value: int | None) -> None:
+        self.edit("6jss3eyn", value=value)
+    @property
+    def _6xebiw3n(self) -> dict[str, str]:
+        """cells (`6xebiw3n` on the wire)."""
+        return self.fields["6xebiw3n"]
+
+    @_6xebiw3n.setter
+    def _6xebiw3n(self, value: dict[str, str]) -> None:
+        self.edit("6xebiw3n", value=value)
+    s2rtlgut: dict[str, str]  # formats
+    vy3vanj2: list[str]  # bold
+    d2szrgfm: dict[str, str]  # widths
+    km7cpljo: dict[str, str]  # heights
+    lsltfxgz: list[Entry[Chart]]  # charts
+    @property
+    def _5lw5xfqk(self) -> bool:
+        """hidden (`5lw5xfqk` on the wire)."""
+        return self.fields["5lw5xfqk"]
+
+    @_5lw5xfqk.setter
+    def _5lw5xfqk(self, value: bool) -> None:
+        self.edit("5lw5xfqk", value=value)
+
+    def set_sheet_hidden(self, *, hidden: bool) -> None:
+        """Hides a sheet's tab, or shows it again."""
+        return self.action("set_sheet_hidden", hidden=hidden)
+
+    def set_sheet_hidden_many(self, items: list[SetSheetHiddenArgs]) -> list[dict[str, Any]]:
+        """Runs `set_sheet_hidden` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_sheet_hidden", items)
+
+    def set_sheet_color(self, *, color: int) -> None:
+        """Gives a sheet's tab a colour from the palette, by its place in it."""
+        return self.action("set_sheet_color", color=color)
+
+    def set_sheet_color_many(self, items: list[SetSheetColorArgs]) -> list[dict[str, Any]]:
+        """Runs `set_sheet_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set_sheet_color", items)
+
+    def clear_sheet_color(self) -> None:
+        """Gives a sheet's tab no colour of its own, so it takes the theme's."""
+        return self.action("clear_sheet_color")
+
+    def clear_sheet_color_many(self, items: list[ClearSheetColorArgs]) -> list[dict[str, Any]]:
+        """Runs `clear_sheet_color` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("clear_sheet_color", items)
+
+    def add_chart(self,
+        *,
+        range: str,
+        kind: ChartKind,
+        title: str,
+    ) -> Chart:
+        """Charts the cells `range` as a column or a line chart, titled `title`."""
+        return self.action("add_chart", range=range, kind=kind, title=title)
+
+    def delete_chart(self, *, c: Chart) -> None:
+        """Deletes a chart."""
+        return self.action("delete_chart", c=c)
+
+    def delete_chart_many(self, items: list[DeleteChartArgs]) -> list[dict[str, Any]]:
+        """Runs `delete_chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete_chart", items)
+
+    def resize_column(self, *, pair: list[str]) -> None:
+        """Keeps the width the person dragged a column to: the pair carries its letter and its width."""
+        return self.action("resize_column", pair=pair)
+
+    def resize_column_many(self, items: list[ResizeColumnArgs]) -> list[dict[str, Any]]:
+        """Runs `resize_column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("resize_column", items)
+
+    def resize_row(self, *, pair: list[str]) -> None:
+        """Keeps the height the person dragged a row to: the pair carries its number and its height."""
+        return self.action("resize_row", pair=pair)
+
+    def resize_row_many(self, items: list[ResizeRowArgs]) -> list[dict[str, Any]]:
+        """Runs `resize_row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("resize_row", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_sheet_hidden", "set_sheet_hidden_many", "set_sheet_color", "set_sheet_color_many", "clear_sheet_color", "clear_sheet_color_many", "add_chart", "delete_chart", "delete_chart_many", "resize_column", "resize_column_many", "resize_row", "resize_row_many"})
+
+
+class Chart(Resource):
+    """Chart — `tl.so.tilo.sheets.Chart`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    iipmzvk6: str  # title
+    todwcigp: ChartKind  # kind
+    urs2nvtf: str  # range
+
+    def edit_chart(self,
+        *,
+        title: str | None = None,
+        kind: ChartKind | None = None,
+        range: str | None = None,
+    ) -> None:
+        """Changes a chart: its title, and its kind or the cells it charts when given."""
+        args: dict[str, Any] = {}
+        if title is not None:
+            args["title"] = title
+        if kind is not None:
+            args["kind"] = kind
+        if range is not None:
+            args["range"] = range
+        return self.action("edit_chart", **args)
+
+    def edit_chart_many(self, items: list[EditChartArgs]) -> list[dict[str, Any]]:
+        """Runs `edit_chart` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit_chart", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"edit_chart", "edit_chart_many"})
+
+
+class Comment(Resource):
+    """Comment — `tl.so.tilo.sheets.Comment`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    fhfswroi: str  # sheet
+    lfxsmldw: str  # range
+    @property
+    def _437c6ryq(self) -> str:
+        """text (`437c6ryq` on the wire)."""
+        return self.fields["437c6ryq"]
+
+    @_437c6ryq.setter
+    def _437c6ryq(self, value: str) -> None:
+        self.edit("437c6ryq", value=value)
+    nosjmdwd: bool  # resolved
+    @property
+    def _64zcrzt6(self) -> list[Entry[Reply]]:
+        """replies (`64zcrzt6` on the wire)."""
+        return self.fields["64zcrzt6"]
+
+    @_64zcrzt6.setter
+    def _64zcrzt6(self, value: list[Entry[Reply]]) -> None:
+        self.edit("64zcrzt6", value=value)
+
+    def edit_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Set one paragraph of a rich-text field to what a Markdown text says."""
+        return self.action("edit-block", block=block, text=text)
+
+    def edit_block_many(self, items: list[EditBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit-block", items)
+
+    def insert_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Put a paragraph before the one the address names."""
+        return self.action("insert-block", block=block, text=text)
+
+    def insert_block_many(self, items: list[InsertBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert-block", items)
+
+    def delete_block(self, *, block: str) -> None:
+        """Remove the paragraph the address names, and the paragraphs it holds."""
+        return self.action("delete-block", block=block)
+
+    def delete_block_many(self, items: list[DeleteBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-block", items)
+
+    def reply(self, *, text: str) -> Reply:
+        """Answers a comment."""
+        return self.action("reply", text=text)
+
+    def resolve(self,
+        *,
+        resolved: bool | None = None,
+    ) -> None:
+        """Resolves a comment, or opens it again."""
+        args: dict[str, Any] = {}
+        if resolved is not None:
+            args["resolved"] = resolved
+        return self.action("resolve", **args)
+
+    def resolve_many(self, items: list[ResolveArgs]) -> list[dict[str, Any]]:
+        """Runs `resolve` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("resolve", items)
+
+    def edit_comment(self,
+        *,
+        text: str | None = None,
+    ) -> None:
+        """Changes what a comment says. Only its author may."""
+        args: dict[str, Any] = {}
+        if text is not None:
+            args["text"] = text
+        return self.action("edit_comment", **args)
+
+    def edit_comment_many(self, items: list[EditCommentArgs]) -> list[dict[str, Any]]:
+        """Runs `edit_comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit_comment", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "reply", "resolve", "resolve_many", "edit_comment", "edit_comment_many"})
+
+
+class Reply(Resource):
+    """Reply — `tl.so.tilo.sheets.Reply`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    rehztzuy: str  # text
+
+    def edit_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Set one paragraph of a rich-text field to what a Markdown text says."""
+        return self.action("edit-block", block=block, text=text)
+
+    def edit_block_many(self, items: list[ReplyEditBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit-block", items)
+
+    def insert_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Put a paragraph before the one the address names."""
+        return self.action("insert-block", block=block, text=text)
+
+    def insert_block_many(self, items: list[ReplyInsertBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert-block", items)
+
+    def delete_block(self, *, block: str) -> None:
+        """Remove the paragraph the address names, and the paragraphs it holds."""
+        return self.action("delete-block", block=block)
+
+    def delete_block_many(self, items: list[ReplyDeleteBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-block", items)
+
+    def edit_reply(self,
+        *,
+        text: str | None = None,
+    ) -> None:
+        """Changes what a reply says. Only its author may."""
+        args: dict[str, Any] = {}
+        if text is not None:
+            args["text"] = text
+        return self.action("edit_reply", **args)
+
+    def edit_reply_many(self, items: list[EditReplyArgs]) -> list[dict[str, Any]]:
+        """Runs `edit_reply` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit_reply", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "edit_reply", "edit_reply_many"})
+
+
+class SheetInput(Resource):
+    """SheetInput — `tl.so.tilo.sheets.SheetInput`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    d4n4c4j6: str  # name
+    iitrsrcd: bool  # hidden
+    owwnyfq7: dict[str, str]  # cells
+    ftagyrff: dict[str, str]  # formats
+    xrjhhdys: list[str]  # bold
+
+
+class BookInput(Resource):
+    """BookInput — `tl.so.tilo.sheets.BookInput`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    z2cfbg2g: list[SheetInput]  # sheets
+    ktfpf6rx: str  # currency
+
+
+class RecordsRequest(Resource):
+    """RecordsRequest — `tl.so.tilo.sheets.RecordsRequest`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    quawedop: list[dict[str, str]]  # records
+    uslgkxn3: int | None  # row
+    vstmdg7x: list[str] | None  # columns
+    bou7m624: str | None  # key
+
+
+class UpsertRequest(Resource):
+    """UpsertRequest — `tl.so.tilo.sheets.UpsertRequest`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    styf7w4a: list[dict[str, str]]  # records
+    s3tgj4q3: dict[str, str]  # matching
+    wlypu6mi: dict[str, str]  # value
+
+
+class RecordWrites(Resource):
+    """RecordWrites — `tl.so.tilo.sheets.RecordWrites`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    tloxk2t5: dict[str, str]  # cells
+    chuotih4: dict[str, str]  # formats
+
+
+class Extent(Resource):
+    """Extent — `tl.so.tilo.sheets.Extent`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    @property
+    def _5pdxnqaj(self) -> int:
+        """columns (`5pdxnqaj` on the wire)."""
+        return self.fields["5pdxnqaj"]
+
+    @_5pdxnqaj.setter
+    def _5pdxnqaj(self, value: int) -> None:
+        self.edit("5pdxnqaj", value=value)
+    hmh5rxxy: int  # rows
+
+
+class Sheets(Resource):
+    """Sheets — `tl.so.tilo.sheets`."""
+    __surface__ = "so.tilo.sheets@772f8bff971fef35"
+    def copy_cells(self, *, text: str) -> None:
+        """Copies the cells a person chose to their clipboard as a table: a line per row and a tab between columns, which a sheet, a word processor or a mail app reads."""
+        return self.action("copy_cells", text=text)
+
+    def read_file(self, *, file: Any) -> Any:
+        """What a spreadsheet file holds, as the sheets the app keeps: each sheet's name, whether its tab is hidden, and its cells as typed by their A1 reference. An agent reads a table without the window."""
+        return self.action("read_file", file=file)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"copy_cells", "read_file"})
 
 

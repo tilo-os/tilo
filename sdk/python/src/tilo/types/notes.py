@@ -25,6 +25,9 @@ __all__ = [
     "Tag",
     "Found",
     "Notes",
+    "EditBlockArgs",
+    "InsertBlockArgs",
+    "DeleteBlockArgs",
     "PinArgs",
     "IndentArgs",
     "OutdentArgs",
@@ -36,6 +39,7 @@ __all__ = [
     "UntagArgs",
     "ReactArgs",
     "InsertImageArgs",
+    "PlaceImageArgs",
     "KeepImageArgs",
     "MoveToArgs",
     "MoveAfterArgs",
@@ -47,6 +51,23 @@ __all__ = [
     "ImportArchiveArgs",
     "ImportDroppedArgs",
 ]
+
+EditBlockArgs = TypedDict("EditBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `edit-block`."""
+
+InsertBlockArgs = TypedDict("InsertBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `insert-block`."""
+
+DeleteBlockArgs = TypedDict("DeleteBlockArgs", {
+    "block": "str",
+})
+"""The arguments of `delete-block`."""
 
 PinArgs = TypedDict("PinArgs", {
     "pinned": NotRequired["bool | None"],
@@ -101,6 +122,11 @@ InsertImageArgs = TypedDict("InsertImageArgs", {
     "alt": NotRequired["str | None"],
 })
 """The arguments of `insert_image`."""
+
+PlaceImageArgs = TypedDict("PlaceImageArgs", {
+    "image": "Any",
+})
+"""The arguments of `place_image`."""
 
 KeepImageArgs = TypedDict("KeepImageArgs", {
     "picture": "list[str]",
@@ -159,7 +185,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Note(Resource):
     """Note — `tl.so.tilo.notes.Note`."""
-    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
+    __surface__ = "so.tilo.notes@a850357236087c79"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -182,6 +208,40 @@ class Note(Resource):
     @_2od7mwir.setter
     def _2od7mwir(self, value: str) -> None:
         self.edit("2od7mwir", value=value)
+    q4w7m2xk: str  # chosen
+    v8n3t5jb: int  # chosen_count
+
+    def edit_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Set one paragraph of a rich-text field to what a Markdown text says."""
+        return self.action("edit-block", block=block, text=text)
+
+    def edit_block_many(self, items: list[EditBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit-block", items)
+
+    def insert_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Put a paragraph before the one the address names."""
+        return self.action("insert-block", block=block, text=text)
+
+    def insert_block_many(self, items: list[InsertBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert-block", items)
+
+    def delete_block(self, *, block: str) -> None:
+        """Remove the paragraph the address names, and the paragraphs it holds."""
+        return self.action("delete-block", block=block)
+
+    def delete_block_many(self, items: list[DeleteBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-block", items)
 
     def new_child(self,
         *,
@@ -260,7 +320,7 @@ class Note(Resource):
         return self.many("retitle", items)
 
     def add_text(self, *, text: str) -> None:
-        """Writes `text` (Markdown) at the end of a note, under what it says already: a line, a list or a paragraph added to it."""
+        """Writes `text` (Markdown) at the end of a note, as paragraphs of its own under what it says already: a line, a list or a paragraph added to it, never running on into its last paragraph."""
         return self.action("add_text", text=text)
 
     def add_text_many(self, items: list[AddTextArgs]) -> list[dict[str, Any]]:
@@ -311,8 +371,16 @@ class Note(Resource):
         """Runs `insert_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("insert_image", items)
 
+    def place_image(self, *, image: Any) -> None:
+        """Writes a picture in where the person is writing: the picture the person chose is handed to the editor, which puts it at the caret, as its own `/image` command does. The note keeps the address of its bytes and the name it came in as, which an export writes beside the note."""
+        return self.action("place_image", image=image)
+
+    def place_image_many(self, items: list[PlaceImageArgs]) -> list[dict[str, Any]]:
+        """Runs `place_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("place_image", items)
+
     def keep_image(self, *, picture: list[str]) -> None:
-        """Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note holds the address of its bytes, and the name it came in as, which an export writes beside it. `picture` is the editor's word of it: its name, then the address of its content."""
+        """Keeps a picture the editor wrote into a note where the person pasted or dropped it: the note holds the address of its bytes, and the name it came in as, which an export writes beside it. `picture` is the editor's word of it: its name, then the address of its content. A picture already named by the note — one the person chose with `place_image` — keeps that name."""
         return self.action("keep_image", picture=picture)
 
     def keep_image_many(self, items: list[KeepImageArgs]) -> list[dict[str, Any]]:
@@ -329,12 +397,12 @@ class Note(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_child", "pin", "pin_many", "indent", "indent_many", "outdent", "outdent_many", "move_up", "move_up_many", "move_down", "move_down_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "find_text", "react", "react_many", "insert_image", "insert_image_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "new_child", "pin", "pin_many", "indent", "indent_many", "outdent", "outdent_many", "move_up", "move_up_many", "move_down", "move_down_many", "retitle", "retitle_many", "add_text", "add_text_many", "tag", "tag_many", "untag", "untag_many", "find_text", "react", "react_many", "insert_image", "insert_image_many", "place_image", "place_image_many", "keep_image", "keep_image_many", "export_markdown", "export_note"})
 
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.notes.Notebook`."""
-    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
+    __surface__ = "so.tilo.notes@a850357236087c79"
     tmqqtkeb: list[Entry[Note]]  # notes
     qgq6mcy7: list[Entry[Note]]  # set_aside
     dq2mnb22: list[Entry[Tag]]  # tags
@@ -424,10 +492,10 @@ class Notebook(Resource):
     def file_note(self,
         *,
         title: str,
-        name: str,
+        tag: str,
     ) -> Note:
-        """Files a note titled `title` and carrying the tag `name` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it."""
-        return self.action("file_note", title=title, name=name)
+        """Files a note titled `title` and tagged `tag` in one step: what another app writes down of what it did (Today's morning) without waiting on the note it made to name it."""
+        return self.action("file_note", title=title, tag=tag)
 
     def new_tag(self,
         *,
@@ -532,13 +600,13 @@ class Notebook(Resource):
 
 class Tag(Resource):
     """Tag — `tl.so.tilo.notes.Tag`."""
-    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
+    __surface__ = "so.tilo.notes@a850357236087c79"
     itadoh74: str  # name
 
 
 class Found(Resource):
     """Found — `tl.so.tilo.notes.Found`."""
-    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
+    __surface__ = "so.tilo.notes@a850357236087c79"
     dxxdlopq: int  # at
     @property
     def _2vlaqp45(self) -> str:
@@ -552,5 +620,5 @@ class Found(Resource):
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.notes`."""
-    __surface__ = "so.tilo.notes@0cae88f4b96a6398"
+    __surface__ = "so.tilo.notes@a850357236087c79"
 

@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `System` is a `Resource` of the app's `disks.system`, made by its factory with the
+ * `Disks` is a `Resource` of the app's `tl.so.tilo.disks.Disks`, made by its factory with the
  * resource's path (`disks/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,38 +22,54 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.disks@16aeb729799dc193";
+export const SURFACE = "so.tilo.disks@4735aa45d7142f43";
 
-/** The arguments of `name-drive`. */
+/** The arguments of `name_drive`. */
 export interface NameDriveArgs {
   serial: string;
-  name?: string;
+  name: string;
 }
 
-/** Storage devices — `disks.system`. */
-export interface System extends tilo.Resource {
-  names: Record<string, string>;
-  nameDrive(args: {
+/** Disks — `tl.so.tilo.disks.Disks`. */
+export interface Disks extends tilo.Resource {
+  "6mf2skfm": Record<string, string>;  // names
+  /** A drive's name in the words of the person reading it, by its serial. */
+  name_drive(args: {
     serial: string;
-    name?: string;
+    name: string;
   }): Promise<void>;
-  /** Runs `name-drive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  nameDriveMany(items: NameDriveArgs[]): Promise<tilo.ActionAnswer[]>;
-  rescan(): Promise<void>;
-  select(args: {
-    device: string;
+  /** Runs `name_drive` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  name_driveMany(items: NameDriveArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Disks` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DISKS_ACTIONS = ["name_drive", "name_driveMany"] as const;
+
+/** The `tl.so.tilo.disks.Disks` kind at `path`. */
+export function disks(ws: tilo.Workspace, path: string): Disks {
+  return resourceProxy(ws, path, SURFACE, DISKS_ACTIONS) as unknown as Disks;
+}
+
+/** Disks — `tl.so.tilo.disks`. */
+export interface TiloDisks extends tilo.Resource {
+  /** Mounts the drive's first partition, which is what a drive without a filesystem of its own holds. */
+  mount_first(args: {
+    drive: unknown;
   }): Promise<void>;
-  showTab(args: {
-    tab: string;
+  /** Erases the device the confirmation named, and writes the chosen filesystem. */
+  format_device(args: {
+    device_name: string;
+    filesystem: string;
   }): Promise<void>;
 }
 
-/** The actions `System` reaches before it is read: `ws` calls them without a
+/** The actions `TiloDisks` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SYSTEM_ACTIONS = ["nameDrive", "nameDriveMany", "rescan", "select", "showTab"] as const;
+export const TILODISKS_ACTIONS = ["mount_first", "format_device"] as const;
 
-/** The `disks.system` kind at `path`. */
-export function system(ws: tilo.Workspace, path: string): System {
-  return resourceProxy(ws, path, SURFACE, SYSTEM_ACTIONS) as unknown as System;
+/** The `tl.so.tilo.disks` kind at `path`. */
+export function tiloDisks(ws: tilo.Workspace, path: string): TiloDisks {
+  return resourceProxy(ws, path, SURFACE, TILODISKS_ACTIONS) as unknown as TiloDisks;
 }
 

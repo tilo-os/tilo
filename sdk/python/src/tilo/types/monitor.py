@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Processes` is the app's `monitor.processes` at `monitor/<resource>`, read with
+`Row` is the app's `tl.so.tilo.monitor.Row` at `monitor/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -20,44 +20,39 @@ from typing import Any, Literal, NotRequired, TypedDict
 from tilo import Entry, Invocation, Resource
 
 __all__ = [
-    "SortKey",
-    "Processes",
+    "Row",
+    "Monitor",
+    "TiloMonitor",
 ]
 
-SortKey = Literal["pid", "name", "user", "cpu", "mem", "threads"]
+class Row(Resource):
+    """Row — `tl.so.tilo.monitor.Row`."""
+    __surface__ = "so.tilo.monitor@9c68f8bfdaae9287"
+    uoc4p4dx: Any  # process
+    qwzsalow: int  # depth
+    @property
+    def _6waph57m(self) -> bool:
+        """has_children (`6waph57m` on the wire)."""
+        return self.fields["6waph57m"]
 
-class Processes(Resource):
-    """Processes — `monitor.processes`."""
-    __surface__ = "so.tilo.monitor@e3caa5dcd2dff80f"
-    sort: SortKey
-    ascending: bool
-    flat: bool
+    @_6waph57m.setter
+    def _6waph57m(self, value: bool) -> None:
+        self.edit("6waph57m", value=value)
 
-    # the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
-    def show_tab(self, *, tab: str) -> None:
-        """Runs the app's action."""
-        return self.action("show-tab", tab=tab)
 
-    def filter(self,
-        *,
-        query: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        if query is not None:
-            args["query"] = query
-        return self.action("filter", **args)
+class Monitor(Resource):
+    """Monitor — `tl.so.tilo.monitor.Monitor`."""
+    __surface__ = "so.tilo.monitor@9c68f8bfdaae9287"
 
-    def inspect(self, *, process: str) -> None:
-        """Runs the app's action."""
-        return self.action("inspect", process=process)
-
-    def copy_pid(self, *, process: str) -> None:
-        """Runs the app's action."""
-        return self.action("copy-pid", process=process)
+class TiloMonitor(Resource):
+    """System Monitor — `tl.so.tilo.monitor`."""
+    __surface__ = "so.tilo.monitor@9c68f8bfdaae9287"
+    def end_app(self, *, application: str) -> None:
+        """Asks every process of an app to close."""
+        return self.action("end_app", application=application)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"show_tab", "filter", "inspect", "copy_pid"})
+    __actions__ = frozenset({"end_app"})
 
 

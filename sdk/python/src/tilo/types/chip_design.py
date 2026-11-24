@@ -324,14 +324,14 @@ TapGraphArgs = TypedDict("TapGraphArgs", {
 
 class Port(Resource):
     """Port — `tl.so.tilo.chip-design.Port`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     esvx2n72: str  # key
     vjm4mdax: str  # data_type
 
 
 class Operator(Resource):
     """Operator — `tl.so.tilo.chip-design.Operator`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     wxkbwcn5: str  # node
     e6aj4t7l: OperatorKind  # kind
     nbs52ikt: list[int]  # shape
@@ -348,7 +348,7 @@ class Operator(Resource):
 
 class Connection(Resource):
     """Connection — `tl.so.tilo.chip-design.Connection`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     sqqjxtyw: str  # from_node
     hk3nk2x5: str  # from_port
     xgc3rbc2: str  # to_node
@@ -367,7 +367,7 @@ class Connection(Resource):
 
 class Assumptions(Resource):
     """Assumptions — `tl.so.tilo.chip-design.Assumptions`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     run6wd4l: int  # logical_parameters
     smx2rwim: int  # weight_bits
     kclrpitf: int  # kv_bits
@@ -383,7 +383,7 @@ class Assumptions(Resource):
 
 class Report(Resource):
     """Report — `tl.so.tilo.chip-design.Report`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     twijrbwn: str  # digest
     @property
     def _7rep5j6b(self) -> str:
@@ -434,14 +434,14 @@ class Report(Resource):
 
 class Check(Resource):
     """Check — `tl.so.tilo.chip-design.Check`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     i2clfcou: str  # name
     arunp5tg: CheckResult  # result
 
 
 class Tool(Resource):
     """Tool — `tl.so.tilo.chip-design.Tool`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     @property
     def _6l36tmym(self) -> str:
         """name (`6l36tmym` on the wire)."""
@@ -463,7 +463,7 @@ class Tool(Resource):
 
 class Artifact(Resource):
     """Artifact — `tl.so.tilo.chip-design.Artifact`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     @property
     def _4d7avciq(self) -> str:
         """name (`4d7avciq` on the wire)."""
@@ -477,21 +477,21 @@ class Artifact(Resource):
 
 class Digest(Resource):
     """Digest — `tl.so.tilo.chip-design.Digest`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     r4lv3eu7: str  # name
     pn5tgrsn: str  # sha256
 
 
 class CellCount(Resource):
     """CellCount — `tl.so.tilo.chip-design.CellCount`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     r4l4iqx2: str  # name
     vxrpbdeb: int  # count
 
 
 class Observation(Resource):
     """Observation — `tl.so.tilo.chip-design.Observation`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     l3my4c7u: str  # label
     boatafil: ObservationKind  # kind
     jbgmt4ie: Comparison  # comparison
@@ -578,7 +578,7 @@ class Observation(Resource):
 
 class Memory(Resource):
     """Memory — `tl.so.tilo.chip-design.Memory`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     imhcxbpl: str  # name
     eifw7p4n: int  # width_bits
     @property
@@ -612,7 +612,7 @@ class Memory(Resource):
 
 class Variant(Resource):
     """Variant — `tl.so.tilo.chip-design.Variant`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     zl5mvubo: str  # identity
     @property
     def _4y2sweqe(self) -> bool:
@@ -648,7 +648,7 @@ class Variant(Resource):
 
 class StageLink(Resource):
     """StageLink — `tl.so.tilo.chip-design.StageLink`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     @property
     def _2bpp44k7(self) -> str:
         """name (`2bpp44k7` on the wire)."""
@@ -664,7 +664,7 @@ class StageLink(Resource):
 
 class Stage(Resource):
     """Stage — `tl.so.tilo.chip-design.Stage`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     @property
     def _4qfzbkq5(self) -> str:
         """key (`4qfzbkq5` on the wire)."""
@@ -725,7 +725,7 @@ class Stage(Resource):
 
 class Macro(Resource):
     """Macro — `tl.so.tilo.chip-design.Macro`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     l2pfdak5: str  # slot
     shgem24v: str  # name
     oo4l5j2f: str  # master
@@ -746,7 +746,7 @@ class Macro(Resource):
 
 class Dependency(Resource):
     """Dependency — `tl.so.tilo.chip-design.Dependency`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     lifw33iv: str  # from
     lau4lbgx: str  # to
     vuoz6p3k: DependencyKind  # kind
@@ -755,7 +755,7 @@ class Dependency(Resource):
 
 class Subflow(Resource):
     """Subflow — `tl.so.tilo.chip-design.Subflow`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     utp25rwu: str  # key
     @property
     def _2hn4pjda(self) -> str:
@@ -770,7 +770,7 @@ class Subflow(Resource):
 
 class Receipt(Resource):
     """Receipt — `tl.so.tilo.chip-design.Receipt`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     mhsaondd: str  # digest
     nw7f6brj: str  # source
     x37f53ms: str  # evidence
@@ -968,7 +968,7 @@ class Receipt(Resource):
 
 class Project(Resource):
     """Project — `tl.so.tilo.chip-design.Project`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     @property
     def _5vvat77h(self) -> list[Entry[Report]]:
         """reports (`5vvat77h` on the wire)."""
@@ -1376,13 +1376,13 @@ class Project(Resource):
 
 class ImportAsk(Resource):
     """ImportAsk — `tl.so.tilo.chip-design.ImportAsk`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     fmuu7ss2: str  # json
 
 
 class NodeAsk(Resource):
     """NodeAsk — `tl.so.tilo.chip-design.NodeAsk`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     zcgjq6hw: str  # id
     xj4chp77: OperatorKind  # kind
     qzhhc7sz: list[int]  # shape
@@ -1393,7 +1393,7 @@ class NodeAsk(Resource):
 
 class EdgeAsk(Resource):
     """EdgeAsk — `tl.so.tilo.chip-design.EdgeAsk`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     cem5h5og: str  # from_node
     og4slduv: str  # from_port
     esecrerr: str  # to_node
@@ -1409,7 +1409,7 @@ class EdgeAsk(Resource):
 
 class GraphAsk(Resource):
     """GraphAsk — `tl.so.tilo.chip-design.GraphAsk`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     @property
     def _6ydpdgb2(self) -> list[NodeAsk]:
         """nodes (`6ydpdgb2` on the wire)."""
@@ -1430,7 +1430,7 @@ class GraphAsk(Resource):
 
 class OutcomeOf(Resource):
     """OutcomeOf — `tl.so.tilo.chip-design.OutcomeOf`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
     bf2avrry: str  # digest
     wfpvvvxh: bool  # active
     @property
@@ -1445,5 +1445,5 @@ class OutcomeOf(Resource):
 
 class ChipDesign(Resource):
     """Chip Design — `tl.so.tilo.chip-design`."""
-    __surface__ = "so.tilo.chip-design@8fd250eb68edc4ee"
+    __surface__ = "so.tilo.chip-design@49f91fca41a22962"
 

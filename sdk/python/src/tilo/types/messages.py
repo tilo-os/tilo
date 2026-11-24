@@ -22,7 +22,9 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Conversation",
     "Message",
+    "AccountSync",
     "ListedAccount",
+    "SyncHealth",
     "Endpoint",
     "Person",
     "Projected",
@@ -31,6 +33,7 @@ __all__ = [
     "Identities",
     "PublishBrowserIdentityArgs",
     "SaveAccountArgs",
+    "ReportSyncArgs",
     "RemoveAccountArgs",
     "ProjectContactArgs",
     "RemoveContactArgs",
@@ -59,12 +62,23 @@ Message = TypedDict("Message", {
     "queued": "bool",
 })
 
+class AccountSync(TypedDict):
+    device: str
+    health: SyncHealth
+    attempted_ms: int
+    succeeded_ms: int | None
+    signed_in_ms: int | None
+    message: str
+
 class ListedAccount(TypedDict):
     type_id: str
     display_name: str
     config: Any
     enabled: bool
     tint: int
+    sync: AccountSync | None
+
+SyncHealth = Literal["never", "syncing", "healthy", "offline", "needs_sign_in", "error"]
 
 class Endpoint(TypedDict):
     service: str
@@ -79,6 +93,7 @@ class Person(TypedDict):
     phones: list[str]
     emails: list[str]
     photo: str
+    photo_size: int
     endpoints: list[Entry[Endpoint]]
 
 class Projected(TypedDict):
@@ -87,6 +102,7 @@ class Projected(TypedDict):
     phones: list[str]
     emails: list[str]
     photo: str
+    photo_size: int
 
 PublishBrowserIdentityArgs = TypedDict("PublishBrowserIdentityArgs", {
     "root": "str",
@@ -104,6 +120,16 @@ SaveAccountArgs = TypedDict("SaveAccountArgs", {
     "tint": "int",
 })
 """The arguments of `save-account`."""
+
+ReportSyncArgs = TypedDict("ReportSyncArgs", {
+    "account": "str",
+    "device": "str",
+    "health": "SyncHealth",
+    "at_ms": "int",
+    "signed_in": "bool",
+    "message": "str",
+})
+"""The arguments of `report-sync`."""
 
 RemoveAccountArgs = TypedDict("RemoveAccountArgs", {
     "account": "str",
@@ -185,7 +211,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Messages(Resource):
     """Messages — `tilo.messages`."""
-    __surface__ = "so.tilo.messages@afef5fd05110757d"
+    __surface__ = "so.tilo.messages@b7d2192713cc1608"
     @property
     def conversations(self) -> list[Entry[Conversation]]:
         """Read only."""
@@ -291,7 +317,7 @@ class Messages(Resource):
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.messages@afef5fd05110757d"
+    __surface__ = "so.tilo.messages@b7d2192713cc1608"
     accounts: list[Entry[ListedAccount]]
 
     def publish_browser_identity(self,
@@ -323,6 +349,22 @@ class Accounts(Resource):
         """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("save-account", items)
 
+    def report_sync(self,
+        *,
+        account: str,
+        device: str,
+        health: SyncHealth,
+        at_ms: int,
+        signed_in: bool,
+        message: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("report-sync", account=account, device=device, health=health, at_ms=at_ms, signed_in=signed_in, message=message)
+
+    def report_sync_many(self, items: list[ReportSyncArgs]) -> list[dict[str, Any]]:
+        """Runs `report-sync` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("report-sync", items)
+
     def remove_account(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("remove-account", account=account)
@@ -333,12 +375,12 @@ class Accounts(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many"})
+    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "report_sync", "report_sync_many", "remove_account", "remove_account_many"})
 
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.messages@afef5fd05110757d"
+    __surface__ = "so.tilo.messages@b7d2192713cc1608"
     people: list[Entry[Person]]
 
     def project_contact(self,

@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Library` is a `Resource` of the app's `snippets.library`, made by its factory with the
+ * `Snippet` is a `Resource` of the app's `tl.so.tilo.snippets.Snippet`, made by its factory with the
  * resource's path (`snippets/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,111 +22,204 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.snippets@d0e7416d8c0a049e";
+export const SURFACE = "so.tilo.snippets@cf9df303c6aa7519";
 
-/** One of "text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile". */
+/** The kind of text a snippet is written in: its badge in the list and the colours its body is shown with. One of "text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile". */
 export type Language = "text" | "shell" | "rust" | "sql" | "git" | "python" | "javascript" | "json" | "yaml" | "markdown" | "html" | "css" | "toml" | "dockerfile";
 
-export interface Snippet {
-  title: string;
-  body: string;
-  description: string;
-  favorite: boolean;
-  folder: string;
-  language: Language;
-  tags: string[];
-  uses: number;
+/** The arguments of `star`. */
+export interface StarArgs {
+  starred?: boolean;
 }
 
-/** The arguments of `new-snippet`. */
-export interface NewSnippetArgs {
-  title: string;
-  folder?: string;
+/** The arguments of `set_tags`. */
+export interface SetTagsArgs {
+  tags: string;
 }
 
-/** The arguments of `duplicate`. */
-export interface DuplicateArgs {
-  snippet: string;
-  title?: string;
+/** The arguments of `untag`. */
+export interface UntagArgs {
+  tag: string;
+}
+
+/** The arguments of `cancel_fill`. */
+export interface CancelFillArgs {
+}
+
+/** The arguments of `clear_fill`. */
+export interface ClearFillArgs {
 }
 
 /** The arguments of `delete`. */
 export interface DeleteArgs {
-  snippet: string;
+  snippet: Snippet;
 }
 
-/** The arguments of `record-use`. */
-export interface RecordUseArgs {
-  snippet: string;
-}
-
-/** The arguments of `rename-folder`. */
+/** The arguments of `rename_folder`. */
 export interface RenameFolderArgs {
   folder: string;
   to: string;
 }
 
-/** The arguments of `rename-tag`. */
+/** The arguments of `rename_tag`. */
 export interface RenameTagArgs {
   tag: string;
   to: string;
 }
 
-/** The arguments of `remove-tag`. */
+/** The arguments of `remove_tag`. */
 export interface RemoveTagArgs {
   tag: string;
 }
 
-/** Snippet library — `snippets.library`. */
+/** Snippet — `tl.so.tilo.snippets.Snippet`. */
+export interface Snippet extends tilo.Resource {
+  f7zljrnp: string;  // title
+  "5k3zya5m": string;  // body
+  wziqkkiz: string;  // description
+  rorcz6y2: boolean;  // favorite
+  b5ooyg4x: string;  // folder
+  "26cc5hue": Language;  // language
+  te2jwa3o: string[];  // tags
+  kkfkhxfb: number;  // uses
+  /** Stars a snippet, or takes the star back. */
+  star(args?: {
+    starred?: boolean;
+  }): Promise<void>;
+  /** Runs `star` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  starMany(items: StarArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Gives a snippet the tags a person typed, comma-separated: each trimmed, lower case, without `#`, at most 24 of them. */
+  set_tags(args: {
+    tags: string;
+  }): Promise<void>;
+  /** Runs `set_tags` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_tagsMany(items: SetTagsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes one tag off one snippet. */
+  untag(args: {
+    tag: string;
+  }): Promise<void>;
+  /** Runs `untag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  untagMany(items: UntagArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Copies a snippet's body to the clipboard, and counts the use. A snippet with variables is filled in first (`begin_fill`), so what is copied is what the person meant. */
+  copy(): Promise<void>;
+}
+
+/** The actions `Snippet` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SNIPPET_ACTIONS = ["star", "starMany", "set_tags", "set_tagsMany", "untag", "untagMany", "copy"] as const;
+
+/** The `tl.so.tilo.snippets.Snippet` kind at `path`. */
+export function snippet(ws: tilo.Workspace, path: string): Snippet {
+  return resourceProxy(ws, path, SURFACE, SNIPPET_ACTIONS) as unknown as Snippet;
+}
+
+/** FillValue — `tl.so.tilo.snippets.FillValue`. */
+export interface FillValue extends tilo.Resource {
+  u5ym5ttn: string;  // name
+  h5vss6x5: string;  // value
+}
+
+/** The actions `FillValue` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FILLVALUE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.snippets.FillValue` kind at `path`. */
+export function fillValue(ws: tilo.Workspace, path: string): FillValue {
+  return resourceProxy(ws, path, SURFACE, FILLVALUE_ACTIONS) as unknown as FillValue;
+}
+
+/** Fill — `tl.so.tilo.snippets.Fill`. */
+export interface Fill extends tilo.Resource {
+  qxvejddr: Snippet | null;  // snippet
+  e6uc6jtt: Array<tilo.Entry<FillValue>>;  // values
+  /** Puts the filling away without copying. */
+  cancel_fill(): Promise<void>;
+  /** Runs `cancel_fill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  cancel_fillMany(items: CancelFillArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Empties a filling, so the sheet closes. */
+  clear_fill(): Promise<void>;
+  /** Runs `clear_fill` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  clear_fillMany(items: ClearFillArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Fill` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FILL_ACTIONS = ["cancel_fill", "cancel_fillMany", "clear_fill", "clear_fillMany"] as const;
+
+/** The `tl.so.tilo.snippets.Fill` kind at `path`. */
+export function fill(ws: tilo.Workspace, path: string): Fill {
+  return resourceProxy(ws, path, SURFACE, FILL_ACTIONS) as unknown as Fill;
+}
+
+/** Library — `tl.so.tilo.snippets.Library`. */
 export interface Library extends tilo.Resource {
-  snippets: Array<tilo.Entry<Snippet>>;
-  newSnippet(args: {
+  g5k73yqh: Array<tilo.Entry<Snippet>>;  // snippets
+  avqtjv3w: Array<tilo.Entry<Fill>>;  // fills
+  /** Makes a snippet, filed under `folder` when it names one. */
+  new_snippet(args: {
     title: string;
     folder?: string;
-  }): Promise<void>;
-  /** Runs `new-snippet` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  newSnippetMany(items: NewSnippetArgs[]): Promise<tilo.ActionAnswer[]>;
+  }): Promise<Snippet>;
+  /** Makes a second copy of a snippet, right after it; its word count starts again from nothing. */
   duplicate(args: {
-    snippet: string;
+    snippet: Snippet;
     title?: string;
-  }): Promise<void>;
-  /** Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  duplicateMany(items: DuplicateArgs[]): Promise<tilo.ActionAnswer[]>;
+  }): Promise<Snippet>;
+  /** Deletes a snippet from the library. Undo brings it back. */
   delete(args: {
-    snippet: string;
+    snippet: Snippet;
   }): Promise<void>;
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
-  recordUse(args: {
-    snippet: string;
-  }): Promise<void>;
-  /** Runs `record-use` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  recordUseMany(items: RecordUseArgs[]): Promise<tilo.ActionAnswer[]>;
-  renameFolder(args: {
+  /** Renames a folder everywhere it is used; an empty new name files its snippets under nothing. */
+  rename_folder(args: {
     folder: string;
     to: string;
   }): Promise<void>;
-  /** Runs `rename-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  renameFolderMany(items: RenameFolderArgs[]): Promise<tilo.ActionAnswer[]>;
-  renameTag(args: {
+  /** Runs `rename_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_folderMany(items: RenameFolderArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Renames a tag everywhere it is used. */
+  rename_tag(args: {
     tag: string;
     to: string;
   }): Promise<void>;
-  /** Runs `rename-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  renameTagMany(items: RenameTagArgs[]): Promise<tilo.ActionAnswer[]>;
-  removeTag(args: {
+  /** Runs `rename_tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  rename_tagMany(items: RenameTagArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Takes a tag off every snippet that carries it. */
+  remove_tag(args: {
     tag: string;
   }): Promise<void>;
-  /** Runs `remove-tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  removeTagMany(items: RemoveTagArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `remove_tag` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remove_tagMany(items: RemoveTagArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Starts filling in a snippet's variables: one field for each variable its body holds, emptied. */
+  begin_fill(args: {
+    snippet: Snippet;
+  }): Promise<Fill>;
+  /** Copies the filled body, counts the use, and puts the filling away. */
+  copy_filled(args: {
+    fill: Fill;
+  }): Promise<void>;
 }
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["newSnippet", "newSnippetMany", "duplicate", "duplicateMany", "delete", "deleteMany", "recordUse", "recordUseMany", "renameFolder", "renameFolderMany", "renameTag", "renameTagMany", "removeTag", "removeTagMany"] as const;
+export const LIBRARY_ACTIONS = ["new_snippet", "duplicate", "delete", "deleteMany", "rename_folder", "rename_folderMany", "rename_tag", "rename_tagMany", "remove_tag", "remove_tagMany", "begin_fill", "copy_filled"] as const;
 
-/** The `snippets.library` kind at `path`. */
+/** The `tl.so.tilo.snippets.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
   return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
+}
+
+/** Snippets — `tl.so.tilo.snippets`. */
+export interface Snippets extends tilo.Resource {
+}
+
+/** The actions `Snippets` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SNIPPETS_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.snippets` kind at `path`. */
+export function snippets(ws: tilo.Workspace, path: string): Snippets {
+  return resourceProxy(ws, path, SURFACE, SNIPPETS_ACTIONS) as unknown as Snippets;
 }
 

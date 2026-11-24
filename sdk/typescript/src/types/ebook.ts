@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.ebook@3b10ed27c5684dba";
+export const SURFACE = "so.tilo.ebook@3c775f5a9ed1c847";
 
 /** The arguments of `remove_book`. */
 export interface RemoveBookArgs {
@@ -111,9 +111,57 @@ export interface DeleteMarkArgs {
   m: Mark;
 }
 
+/** The arguments of `edit-block`. */
+export interface EditBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `insert-block`. */
+export interface InsertBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `delete-block`. */
+export interface DeleteBlockArgs {
+  block: string;
+}
+
+/** The arguments of `edit-block`. */
+export interface MarkEditBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `insert-block`. */
+export interface MarkInsertBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `delete-block`. */
+export interface MarkDeleteBlockArgs {
+  block: string;
+}
+
 /** The arguments of `drop_books`. */
 export interface DropBooksArgs {
   files: unknown[];
+}
+
+/** The arguments of `watch_folder`. */
+export interface WatchFolderArgs {
+  path: string;
+}
+
+/** The arguments of `scan_folder`. */
+export interface ScanFolderArgs {
+  path: string;
+}
+
+/** The arguments of `foldered`. */
+export interface FolderedArgs {
 }
 
 /** The arguments of `set_text_size`. */
@@ -160,11 +208,6 @@ export interface DeleteSchemeArgs {
 /** The arguments of `find_books`. */
 export interface FindBooksArgs {
   query: string;
-}
-
-/** The arguments of `download_found`. */
-export interface DownloadFoundArgs {
-  f: Found;
 }
 
 /** The arguments of `clear_found`. */
@@ -298,11 +341,31 @@ export interface Chapter extends tilo.Resource {
   njsapppc: string;  // title
   hc6oa77y: string;  // body
   awonaulm: Book | null;  // book
+  /** Set one paragraph of a rich-text field to what a Markdown text says. */
+  editBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  editBlockMany(items: EditBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Put a paragraph before the one the address names. */
+  insertBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insertBlockMany(items: InsertBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Remove the paragraph the address names, and the paragraphs it holds. */
+  deleteBlock(args: {
+    block: string;
+  }): Promise<void>;
+  /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteBlockMany(items: DeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Chapter` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CHAPTER_ACTIONS = [] as const;
+export const CHAPTER_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany"] as const;
 
 /** The `tl.so.tilo.ebook.Chapter` kind at `path`. */
 export function chapter(ws: tilo.Workspace, path: string): Chapter {
@@ -322,32 +385,36 @@ export interface Mark extends tilo.Resource {
   qzbrg6g6: string;  // created
   jt22d5yp: string;  // on
   gjbrlgkj: Book | null;  // book
-  vpgm2esg: Piece[];  // pieces
+  vpgm2esg: number[];  // pieces
+  /** Set one paragraph of a rich-text field to what a Markdown text says. */
+  editBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  editBlockMany(items: MarkEditBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Put a paragraph before the one the address names. */
+  insertBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insertBlockMany(items: MarkInsertBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Remove the paragraph the address names, and the paragraphs it holds. */
+  deleteBlock(args: {
+    block: string;
+  }): Promise<void>;
+  /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteBlockMany(items: MarkDeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Mark` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MARK_ACTIONS = [] as const;
+export const MARK_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany"] as const;
 
 /** The `tl.so.tilo.ebook.Mark` kind at `path`. */
 export function mark(ws: tilo.Workspace, path: string): Mark {
   return resourceProxy(ws, path, SURFACE, MARK_ACTIONS) as unknown as Mark;
-}
-
-/** Piece — `tl.so.tilo.ebook.Piece`. */
-export interface Piece extends tilo.Resource {
-  el2sirvc: number;  // block
-  wjiavs4p: number;  // start
-  mk52mcqy: number;  // end
-}
-
-/** The actions `Piece` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const PIECE_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.ebook.Piece` kind at `path`. */
-export function piece(ws: tilo.Workspace, path: string): Piece {
-  return resourceProxy(ws, path, SURFACE, PIECE_ACTIONS) as unknown as Piece;
 }
 
 /** Progress — `tl.so.tilo.ebook.Progress`. */
@@ -405,6 +472,23 @@ export function found(ws: tilo.Workspace, path: string): Found {
   return resourceProxy(ws, path, SURFACE, FOUND_ACTIONS) as unknown as Found;
 }
 
+/** Watched — `tl.so.tilo.ebook.Watched`. */
+export interface Watched extends tilo.Resource {
+  zfzcnyj7: string;  // path
+  l4rfzd5q: string;  // token
+  vs5vpxpc: string[];  // given
+  dafaqxgm: string;  // added
+}
+
+/** The actions `Watched` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WATCHED_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.ebook.Watched` kind at `path`. */
+export function watched(ws: tilo.Workspace, path: string): Watched {
+  return resourceProxy(ws, path, SURFACE, WATCHED_ACTIONS) as unknown as Watched;
+}
+
 /** Library — `tl.so.tilo.ebook.Library`. */
 export interface Library extends tilo.Resource {
   rjqqjeka: Array<tilo.Entry<Book>>;  // books
@@ -418,6 +502,8 @@ export interface Library extends tilo.Resource {
   "7iepiv5z": string;  // draft_scheme
   wc5z47pj: string;  // custom_page
   yiozk22e: string;  // custom_ink
+  dww4lfs6: string;  // draft_folder
+  trpwrvrr: Array<tilo.Entry<Watched>>;  // folders
   /** Adds the EPUB `file` to the shelf and opens it. Its title, author and language are the book's own; each chapter becomes a resource holding its words, so the book is searchable and a reader opens the chapter they are at. */
   open_book(args: {
     file: unknown;
@@ -428,6 +514,22 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `drop_books` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   drop_booksMany(items: DropBooksArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Watches the folder `path` for books: each EPUB it holds, and each that arrives, becomes a book, keeping the person's place as one they opened themselves does. */
+  watch_folder(args: {
+    path: string;
+  }): Promise<void>;
+  /** Runs `watch_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  watch_folderMany(items: WatchFolderArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Reads the folder `path`'s EPUBs, giving a book to each file the library does not hold yet. */
+  scan_folder(args: {
+    path: string;
+  }): Promise<void>;
+  /** Runs `scan_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  scan_folderMany(items: ScanFolderArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Reads every watched folder again: what the platform runs when one of them changes. */
+  foldered(): Promise<void>;
+  /** Runs `foldered` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  folderedMany(items: FolderedArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Sets the page's text size, within what a page can be read at. */
   set_text_size(args: {
     size: number;
@@ -482,12 +584,10 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
   /** Runs `find_books` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   find_booksMany(items: FindBooksArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Downloads the book an online search found and opens it. */
+  /** Downloads the book an online search found and opens it: the window opens the book the action returns, as it opens what any primary action makes. An answer that did not come leaves the book found, so the person can ask again. */
   download_found(args: {
     f: Found;
-  }): Promise<void>;
-  /** Runs `download_found` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  download_foundMany(items: DownloadFoundArgs[]): Promise<tilo.ActionAnswer[]>;
+  }): Promise<Book | null>;
   /** Takes an online search's answers away. */
   clear_found(): Promise<void>;
   /** Runs `clear_found` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -496,56 +596,11 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["open_book", "drop_books", "drop_booksMany", "set_text_size", "set_text_sizeMany", "set_line_spacing", "set_line_spacingMany", "set_face", "set_faceMany", "set_justified", "set_justifiedMany", "cycle_scheme", "cycle_schemeMany", "set_scheme", "set_schemeMany", "add_scheme", "add_schemeMany", "delete_scheme", "delete_schemeMany", "find_books", "find_booksMany", "download_found", "download_foundMany", "clear_found", "clear_foundMany"] as const;
+export const LIBRARY_ACTIONS = ["open_book", "drop_books", "drop_booksMany", "watch_folder", "watch_folderMany", "scan_folder", "scan_folderMany", "foldered", "folderedMany", "set_text_size", "set_text_sizeMany", "set_line_spacing", "set_line_spacingMany", "set_face", "set_faceMany", "set_justified", "set_justifiedMany", "cycle_scheme", "cycle_schemeMany", "set_scheme", "set_schemeMany", "add_scheme", "add_schemeMany", "delete_scheme", "delete_schemeMany", "find_books", "find_booksMany", "download_found", "clear_found", "clear_foundMany"] as const;
 
 /** The `tl.so.tilo.ebook.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
   return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
-}
-
-/** FoundAuthor — `tl.so.tilo.ebook.FoundAuthor`. */
-export interface FoundAuthor extends tilo.Resource {
-  j3ucstoe: string;  // name
-}
-
-/** The actions `FoundAuthor` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const FOUNDAUTHOR_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.ebook.FoundAuthor` kind at `path`. */
-export function foundAuthor(ws: tilo.Workspace, path: string): FoundAuthor {
-  return resourceProxy(ws, path, SURFACE, FOUNDAUTHOR_ACTIONS) as unknown as FoundAuthor;
-}
-
-/** FoundBook — `tl.so.tilo.ebook.FoundBook`. */
-export interface FoundBook extends tilo.Resource {
-  v7nyajgy: string;  // title
-  a4rek4qh: FoundAuthor[] | null;  // authors
-  "7uazgom7": string[] | null;  // languages
-  uw6rgipi: Record<string, string> | null;  // formats
-}
-
-/** The actions `FoundBook` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const FOUNDBOOK_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.ebook.FoundBook` kind at `path`. */
-export function foundBook(ws: tilo.Workspace, path: string): FoundBook {
-  return resourceProxy(ws, path, SURFACE, FOUNDBOOK_ACTIONS) as unknown as FoundBook;
-}
-
-/** FoundAnswer — `tl.so.tilo.ebook.FoundAnswer`. */
-export interface FoundAnswer extends tilo.Resource {
-  ngjj6bkr: FoundBook[];  // results
-}
-
-/** The actions `FoundAnswer` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const FOUNDANSWER_ACTIONS = [] as const;
-
-/** The `tl.so.tilo.ebook.FoundAnswer` kind at `path`. */
-export function foundAnswer(ws: tilo.Workspace, path: string): FoundAnswer {
-  return resourceProxy(ws, path, SURFACE, FOUNDANSWER_ACTIONS) as unknown as FoundAnswer;
 }
 
 /** Books — `tl.so.tilo.ebook`. */

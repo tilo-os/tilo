@@ -22,39 +22,48 @@ from tilo import Entry, Invocation, Resource
 __all__ = [
     "Agent",
     "AgentState",
-    "Bound",
+    "Coding",
+    "CodingHarness",
+    "CodingProcess",
+    "NewCoding",
     "NewSubAgent",
     "Note",
     "Produced",
     "ProducedAt",
+    "RunsOn",
     "Spent",
     "Stands",
     "Sub",
     "Window",
     "WorkspaceAgent",
     "CreateAgentArgs",
+    "WaitToRunAgentArgs",
+    "RunAgentOnArgs",
     "SetAgentSpendLimitArgs",
     "RecordAgentSpendArgs",
     "RenameAgentArgs",
+    "SetAgentAvatarArgs",
     "SetAgentModelArgs",
     "SetAgentInstructionArgs",
-    "SetAgentBoundArgs",
+    "PauseAgentArgs",
+    "ResumeAgentArgs",
     "RetireAgentArgs",
     "StartSubAgentArgs",
     "NoteSubAgentArgs",
     "StopSubAgentArgs",
     "SubAgentStandsArgs",
     "SubAgentProducedArgs",
+    "SubAgentCodingArgs",
     "SetSubAgentLimitsArgs",
 ]
 
 class Agent(TypedDict):
     id: str
     name: str
+    avatar: str | None
     acts_for: str
     model: str | None
     mcp_client: str | None
-    bound: list[Bound]
     spend_limit_micros: int | None
     spent: Spent | None
     state: AgentState
@@ -63,13 +72,38 @@ class Agent(TypedDict):
     sub: Sub | None
     sub_depth: int | None
     sub_at_once: int | None
+    runs_on: list[RunsOn]
 
-AgentState = Literal["active", "retired"]
+AgentState = Literal["active", "retired", "paused"]
 
-class Bound(TypedDict):
-    node: str
-    kinds: list[str]
-    answer: str
+class Coding(TypedDict):
+    harness: str
+    harness_name: str
+    repository: str
+    directory: str
+    branch: str
+    base: str
+    session: str
+    process: CodingProcess | None
+    spent_micros: int
+
+class CodingHarness(TypedDict):
+    id: str
+    name: str
+
+class CodingProcess(TypedDict):
+    started_ms: int
+    ended_ms: int | None
+    ended: str
+    exit: int | None
+    words: str
+    stopped_by: str
+
+class NewCoding(TypedDict):
+    harness: str | None
+    repository: str
+    branch: str | None
+    base: str | None
 
 class NewSubAgent(TypedDict):
     name: str
@@ -80,6 +114,7 @@ class NewSubAgent(TypedDict):
     model: str | None
     task: str | None
     id: str | None
+    coding: NewCoding | None
 
 class Note(TypedDict):
     id: str
@@ -100,6 +135,11 @@ class ProducedAt(TypedDict):
     document: str
     resource: str
 
+class RunsOn(TypedDict):
+    device: str
+    ticket: str | None
+    certificate: str | None
+
 class Spent(TypedDict):
     day: str
     cost_micros: int
@@ -113,20 +153,35 @@ class Sub(TypedDict):
     kind: str
     depth: int
     task: str | None
-    conversation: str
     stands: Stands
     since: int
     line: str
     notes: list[Note]
     produced: list[Produced]
+    coding: Coding | None
 
 CreateAgentArgs = TypedDict("CreateAgentArgs", {
     "name": "str",
+    "avatar": NotRequired["str | None"],
     "id": NotRequired["str | None"],
     "model": NotRequired["str | None"],
     "mcp_client": NotRequired["str | None"],
 })
 """The arguments of `create-agent`."""
+
+WaitToRunAgentArgs = TypedDict("WaitToRunAgentArgs", {
+    "agent": "str",
+    "device": "str",
+    "ticket": "str",
+})
+"""The arguments of `wait-to-run-agent`."""
+
+RunAgentOnArgs = TypedDict("RunAgentOnArgs", {
+    "agent": "str",
+    "device": "str",
+    "certificate": "str",
+})
+"""The arguments of `run-agent-on`."""
 
 SetAgentSpendLimitArgs = TypedDict("SetAgentSpendLimitArgs", {
     "agent": "str",
@@ -147,6 +202,12 @@ RenameAgentArgs = TypedDict("RenameAgentArgs", {
 })
 """The arguments of `rename-agent`."""
 
+SetAgentAvatarArgs = TypedDict("SetAgentAvatarArgs", {
+    "agent": "str",
+    "avatar": NotRequired["str | None"],
+})
+"""The arguments of `set-agent-avatar`."""
+
 SetAgentModelArgs = TypedDict("SetAgentModelArgs", {
     "agent": "str",
     "model": NotRequired["str | None"],
@@ -159,11 +220,15 @@ SetAgentInstructionArgs = TypedDict("SetAgentInstructionArgs", {
 })
 """The arguments of `set-agent-instruction`."""
 
-SetAgentBoundArgs = TypedDict("SetAgentBoundArgs", {
+PauseAgentArgs = TypedDict("PauseAgentArgs", {
     "agent": "str",
-    "bound": "list[Bound]",
 })
-"""The arguments of `set-agent-bound`."""
+"""The arguments of `pause-agent`."""
+
+ResumeAgentArgs = TypedDict("ResumeAgentArgs", {
+    "agent": "str",
+})
+"""The arguments of `resume-agent`."""
 
 RetireAgentArgs = TypedDict("RetireAgentArgs", {
     "agent": "str",
@@ -179,6 +244,7 @@ StartSubAgentArgs = TypedDict("StartSubAgentArgs", {
     "model": NotRequired["str | None"],
     "task": NotRequired["str | None"],
     "id": NotRequired["str | None"],
+    "coding": NotRequired["NewCoding | None"],
 })
 """The arguments of `start-sub-agent`."""
 
@@ -209,6 +275,15 @@ SubAgentProducedArgs = TypedDict("SubAgentProducedArgs", {
 })
 """The arguments of `sub-agent-produced`."""
 
+SubAgentCodingArgs = TypedDict("SubAgentCodingArgs", {
+    "agent": "str",
+    "process": NotRequired["CodingProcess | None"],
+    "session": NotRequired["str | None"],
+    "spent_micros": NotRequired["int | None"],
+    "harness": NotRequired["CodingHarness | None"],
+})
+"""The arguments of `sub-agent-coding`."""
+
 SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
     "agent": "str",
     "depth": NotRequired["int | None"],
@@ -218,16 +293,17 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Window(Resource):
     """Assistant window — `assistant.window`."""
-    __surface__ = "so.tilo.assistant@75370d0d3f793cec"
+    __surface__ = "so.tilo.assistant@2cd0d3ff8fc75ce5"
 
 class WorkspaceAgent(Resource):
     """Agents — `tilo.workspace.agent`."""
-    __surface__ = "so.tilo.assistant@75370d0d3f793cec"
+    __surface__ = "so.tilo.assistant@2cd0d3ff8fc75ce5"
     agents: list[Entry[Agent]]
 
     def create_agent(self,
         *,
         name: str,
+        avatar: str | None = None,
         id: str | None = None,
         model: str | None = None,
         mcp_client: str | None = None,
@@ -235,6 +311,8 @@ class WorkspaceAgent(Resource):
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["name"] = name
+        if avatar is not None:
+            args["avatar"] = avatar
         if id is not None:
             args["id"] = id
         if model is not None:
@@ -246,6 +324,32 @@ class WorkspaceAgent(Resource):
     def create_agent_many(self, items: list[CreateAgentArgs]) -> list[dict[str, Any]]:
         """Runs `create-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("create-agent", items)
+
+    def wait_to_run_agent(self,
+        *,
+        agent: str,
+        device: str,
+        ticket: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("wait-to-run-agent", agent=agent, device=device, ticket=ticket)
+
+    def wait_to_run_agent_many(self, items: list[WaitToRunAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `wait-to-run-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("wait-to-run-agent", items)
+
+    def run_agent_on(self,
+        *,
+        agent: str,
+        device: str,
+        certificate: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("run-agent-on", agent=agent, device=device, certificate=certificate)
+
+    def run_agent_on_many(self, items: list[RunAgentOnArgs]) -> list[dict[str, Any]]:
+        """Runs `run-agent-on` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("run-agent-on", items)
 
     def set_agent_spend_limit(self,
         *,
@@ -288,6 +392,22 @@ class WorkspaceAgent(Resource):
         """Runs `rename-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("rename-agent", items)
 
+    def set_agent_avatar(self,
+        *,
+        agent: str,
+        avatar: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["agent"] = agent
+        if avatar is not None:
+            args["avatar"] = avatar
+        return self.action("set-agent-avatar", **args)
+
+    def set_agent_avatar_many(self, items: list[SetAgentAvatarArgs]) -> list[dict[str, Any]]:
+        """Runs `set-agent-avatar` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("set-agent-avatar", items)
+
     def set_agent_model(self,
         *,
         agent: str,
@@ -320,17 +440,21 @@ class WorkspaceAgent(Resource):
         """Runs `set-agent-instruction` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-agent-instruction", items)
 
-    def set_agent_bound(self,
-        *,
-        agent: str,
-        bound: list[Bound],
-    ) -> None:
+    def pause_agent(self, *, agent: str) -> None:
         """Runs the app's action."""
-        return self.action("set-agent-bound", agent=agent, bound=bound)
+        return self.action("pause-agent", agent=agent)
 
-    def set_agent_bound_many(self, items: list[SetAgentBoundArgs]) -> list[dict[str, Any]]:
-        """Runs `set-agent-bound` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-agent-bound", items)
+    def pause_agent_many(self, items: list[PauseAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `pause-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("pause-agent", items)
+
+    def resume_agent(self, *, agent: str) -> None:
+        """Runs the app's action."""
+        return self.action("resume-agent", agent=agent)
+
+    def resume_agent_many(self, items: list[ResumeAgentArgs]) -> list[dict[str, Any]]:
+        """Runs `resume-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("resume-agent", items)
 
     def retire_agent(self, *, agent: str) -> None:
         """Runs the app's action."""
@@ -350,6 +474,7 @@ class WorkspaceAgent(Resource):
         model: str | None = None,
         task: str | None = None,
         id: str | None = None,
+        coding: NewCoding | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -367,6 +492,8 @@ class WorkspaceAgent(Resource):
             args["task"] = task
         if id is not None:
             args["id"] = id
+        if coding is not None:
+            args["coding"] = coding
         return self.action("start-sub-agent", **args)
 
     def start_sub_agent_many(self, items: list[StartSubAgentArgs]) -> list[dict[str, Any]]:
@@ -434,6 +561,31 @@ class WorkspaceAgent(Resource):
         """Runs `sub-agent-produced` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("sub-agent-produced", items)
 
+    def sub_agent_coding(self,
+        *,
+        agent: str,
+        process: CodingProcess | None = None,
+        session: str | None = None,
+        spent_micros: int | None = None,
+        harness: CodingHarness | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["agent"] = agent
+        if process is not None:
+            args["process"] = process
+        if session is not None:
+            args["session"] = session
+        if spent_micros is not None:
+            args["spent_micros"] = spent_micros
+        if harness is not None:
+            args["harness"] = harness
+        return self.action("sub-agent-coding", **args)
+
+    def sub_agent_coding_many(self, items: list[SubAgentCodingArgs]) -> list[dict[str, Any]]:
+        """Runs `sub-agent-coding` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("sub-agent-coding", items)
+
     def set_sub_agent_limits(self,
         *,
         agent: str,
@@ -455,6 +607,6 @@ class WorkspaceAgent(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many", "start_sub_agent", "start_sub_agent_many", "note_sub_agent", "note_sub_agent_many", "stop_sub_agent", "stop_sub_agent_many", "sub_agent_stands", "sub_agent_stands_many", "sub_agent_produced", "sub_agent_produced_many", "set_sub_agent_limits", "set_sub_agent_limits_many"})
+    __actions__ = frozenset({"create_agent", "create_agent_many", "wait_to_run_agent", "wait_to_run_agent_many", "run_agent_on", "run_agent_on_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "rename_agent", "rename_agent_many", "set_agent_avatar", "set_agent_avatar_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "pause_agent", "pause_agent_many", "resume_agent", "resume_agent_many", "retire_agent", "retire_agent_many", "start_sub_agent", "start_sub_agent_many", "note_sub_agent", "note_sub_agent_many", "stop_sub_agent", "stop_sub_agent_many", "sub_agent_stands", "sub_agent_stands_many", "sub_agent_produced", "sub_agent_produced_many", "sub_agent_coding", "sub_agent_coding_many", "set_sub_agent_limits", "set_sub_agent_limits_many"})
 
 

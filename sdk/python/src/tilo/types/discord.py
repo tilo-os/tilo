@@ -58,8 +58,6 @@ __all__ = [
     "RoleSpec",
     "SendOp",
     "StartThreadOp",
-    "Context",
-    "Links",
     "Guild",
     "ConnectArgs",
     "ObserveLayoutArgs",
@@ -294,17 +292,6 @@ class StartThreadOp(TypedDict):
     name: str
     tilo: str
 
-class Context(TypedDict):
-    avatars: str
-    link: str
-    links: Links | None
-
-class Links(TypedDict):
-    web_entry: str
-    origin: str
-    workspace: str
-    host_device: str
-
 ConnectArgs = TypedDict("ConnectArgs", {
     "guild_id": "str",
     "name": "str",
@@ -431,7 +418,7 @@ ReportVoiceArgs = TypedDict("ReportVoiceArgs", {
 
 class Guild(Resource):
     """Discord server — `discord.guild`."""
-    __surface__ = "so.tilo.discord@8cdd5fc7bfe08e63"
+    __surface__ = "so.tilo.discord@eb7d7dffae66c33d"
     @property
     def guild_id(self) -> str:
         """Read only."""
@@ -810,7 +797,7 @@ class Guild(Resource):
         *,
         event: Any,
         chat: Any,
-        context: Context | None = None,
+        context: Any | None = None,
         workspace: Any | None = None,
         emoji: Any | None = None,
     ) -> None:

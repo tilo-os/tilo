@@ -22,13 +22,30 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.gallery@50b5417c4f24c633";
+export const SURFACE = "so.tilo.lang.gallery@578137dcb8e9a15c";
 
 /** What a pinned app is, and the picture it shows on a dock. One of "notes", "tasks", "mail". */
 export type Kind = "notes" | "tasks" | "mail";
 
 /** How soon a report is due, as a case the report holds. One of "none", "low", "medium", "high". */
 export type Urgency = "none" | "low" | "medium" | "high";
+
+/** The arguments of `edit-block`. */
+export interface EditBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `insert-block`. */
+export interface InsertBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `delete-block`. */
+export interface DeleteBlockArgs {
+  block: string;
+}
 
 /** The arguments of `finish`. */
 export interface FinishArgs {
@@ -37,6 +54,23 @@ export interface FinishArgs {
 /** The arguments of `react`. */
 export interface ReactArgs {
   emoji: string;
+}
+
+/** The arguments of `edit-block`. */
+export interface GalleryEditBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `insert-block`. */
+export interface GalleryInsertBlockArgs {
+  block: string;
+  text: string;
+}
+
+/** The arguments of `delete-block`. */
+export interface GalleryDeleteBlockArgs {
+  block: string;
 }
 
 /** The arguments of `add_item`. */
@@ -64,6 +98,26 @@ export interface Item extends tilo.Resource {
   znpp3agb: string;  // notes
   xttl6aec: string;  // stage
   "44yujnht": Record<string, string[]>;  // reactions
+  /** Set one paragraph of a rich-text field to what a Markdown text says. */
+  editBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  editBlockMany(items: EditBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Put a paragraph before the one the address names. */
+  insertBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insertBlockMany(items: InsertBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Remove the paragraph the address names, and the paragraphs it holds. */
+  deleteBlock(args: {
+    block: string;
+  }): Promise<void>;
+  /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteBlockMany(items: DeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Marks an item done. */
   finish(): Promise<void>;
   /** Runs `finish` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -78,7 +132,7 @@ export interface Item extends tilo.Resource {
 
 /** The actions `Item` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ITEM_ACTIONS = ["finish", "finishMany", "react", "reactMany"] as const;
+export const ITEM_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "finish", "finishMany", "react", "reactMany"] as const;
 
 /** The `tl.so.tilo.lang.gallery.Item` kind at `path`. */
 export function item(ws: tilo.Workspace, path: string): Item {
@@ -108,6 +162,12 @@ export interface Gallery extends tilo.Resource {
   jxnozq52: string;  // controls_notes
   fqnths44: boolean;  // controls_background
   "6fezt7u6": boolean;  // controls_lettering
+  uuapjl23: boolean;  // states_off
+  mes2qxjc: boolean;  // states_on
+  "6v7qgjgp": string;  // states_name
+  fja32xcb: string;  // states_wrong
+  dnr3rpdd: number;  // states_share
+  dgjzr3us: string;  // states_room
   "5fbblehc": Array<tilo.Entry<Item>>;  // backlog_items
   rbbe5kqg: string;  // backlog_draft
   frzefp4n: Array<tilo.Entry<Item>>;  // release_items
@@ -120,6 +180,26 @@ export interface Gallery extends tilo.Resource {
   qd46u3ke: number;  // media_at
   "3tdz6w5q": string;  // media_source
   wivzmqm3: Array<tilo.Entry<Pinned>>;  // chrome_apps
+  /** Set one paragraph of a rich-text field to what a Markdown text says. */
+  editBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  editBlockMany(items: GalleryEditBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Put a paragraph before the one the address names. */
+  insertBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insertBlockMany(items: GalleryInsertBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Remove the paragraph the address names, and the paragraphs it holds. */
+  deleteBlock(args: {
+    block: string;
+  }): Promise<void>;
+  /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteBlockMany(items: GalleryDeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Adds what the backlog's line says as an item to do, and clears the line. */
   add_item(): Promise<void>;
   /** Runs `add_item` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -146,7 +226,7 @@ export interface Gallery extends tilo.Resource {
 
 /** The actions `Gallery` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const GALLERY_ACTIONS = ["add_item", "add_itemMany", "remove_item", "remove_itemMany", "note_change", "note_changeMany", "seek_to", "seek_toMany"] as const;
+export const GALLERY_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "add_item", "add_itemMany", "remove_item", "remove_itemMany", "note_change", "note_changeMany", "seek_to", "seek_toMany"] as const;
 
 /** The `tl.so.tilo.lang.gallery.Gallery` kind at `path`. */
 export function gallery(ws: tilo.Workspace, path: string): Gallery {

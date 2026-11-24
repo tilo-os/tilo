@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.messages@afef5fd05110757d";
+export const SURFACE = "so.tilo.messages@b7d2192713cc1608";
 
 export interface Conversation {
   with: string;
@@ -39,13 +39,26 @@ export interface Message {
   queued: boolean;
 }
 
+export interface AccountSync {
+  device: string;
+  health: SyncHealth;
+  attempted_ms: number;
+  succeeded_ms: number | null;
+  signed_in_ms: number | null;
+  message: string;
+}
+
 export interface ListedAccount {
   type_id: string;
   display_name: string;
   config: unknown;
   enabled: boolean;
   tint: number;
+  sync: AccountSync | null;
 }
+
+/** One of "never", "syncing", "healthy", "offline", "needs_sign_in", "error". */
+export type SyncHealth = "never" | "syncing" | "healthy" | "offline" | "needs_sign_in" | "error";
 
 export interface Endpoint {
   service: string;
@@ -61,6 +74,7 @@ export interface Person {
   phones: string[];
   emails: string[];
   photo: string;
+  photo_size: number;
   endpoints: Array<tilo.Entry<Endpoint>>;
 }
 
@@ -70,6 +84,7 @@ export interface Projected {
   phones: string[];
   emails: string[];
   photo: string;
+  photo_size: number;
 }
 
 /** The arguments of `publish-browser-identity`. */
@@ -87,6 +102,16 @@ export interface SaveAccountArgs {
   config: unknown;
   enabled: boolean;
   tint: number;
+}
+
+/** The arguments of `report-sync`. */
+export interface ReportSyncArgs {
+  account: string;
+  device: string;
+  health: SyncHealth;
+  at_ms: number;
+  signed_in: boolean;
+  message: string;
 }
 
 /** The arguments of `remove-account`. */
@@ -244,6 +269,16 @@ export interface Accounts extends tilo.Resource {
   }): Promise<void>;
   /** Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   saveAccountMany(items: SaveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
+  reportSync(args: {
+    account: string;
+    device: string;
+    health: SyncHealth;
+    at_ms: number;
+    signed_in: boolean;
+    message: string;
+  }): Promise<void>;
+  /** Runs `report-sync` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reportSyncMany(items: ReportSyncArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAccount(args: {
     account: string;
   }): Promise<void>;
@@ -253,7 +288,7 @@ export interface Accounts extends tilo.Resource {
 
 /** The actions `Accounts` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ACCOUNTS_ACTIONS = ["publishBrowserIdentity", "publishBrowserIdentityMany", "saveAccount", "saveAccountMany", "removeAccount", "removeAccountMany"] as const;
+export const ACCOUNTS_ACTIONS = ["publishBrowserIdentity", "publishBrowserIdentityMany", "saveAccount", "saveAccountMany", "reportSync", "reportSyncMany", "removeAccount", "removeAccountMany"] as const;
 
 /** The `tilo.accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {

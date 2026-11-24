@@ -22,11 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.music@556982751cbdd6ac";
-
-/** The arguments of `play_song`. */
-export interface PlaySongArgs {
-}
+export const SURFACE = "so.tilo.music@bf6284a032db1f3e";
 
 /** The arguments of `like`. */
 export interface LikeArgs {
@@ -82,6 +78,16 @@ export interface AddToQueueArgs {
 
 /** The arguments of `play_next`. */
 export interface PlayNextArgs {
+  t: Track;
+}
+
+/** The arguments of `hide_rec`. */
+export interface HideRecArgs {
+  t: Track;
+}
+
+/** The arguments of `restore_rec`. */
+export interface RestoreRecArgs {
   t: Track;
 }
 
@@ -142,8 +148,8 @@ export interface Track extends tilo.Resource {
   wt3jlodv: boolean;  // liked
   /** Plays one song, alone: what a row's press does. The place is the shared session's own record, so the song continues on this device or another. */
   play_song(): Promise<void>;
-  /** Runs `play_song` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  play_songMany(items: PlaySongArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Plays a suggested song. */
+  play_rec(): Promise<void>;
   /** Likes a song, or takes the like back. */
   like(args?: {
     liked?: boolean;
@@ -160,7 +166,7 @@ export interface Track extends tilo.Resource {
 
 /** The actions `Track` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TRACK_ACTIONS = ["play_song", "play_songMany", "like", "likeMany", "keep_offline", "remove_offline", "remove_offlineMany"] as const;
+export const TRACK_ACTIONS = ["play_song", "play_rec", "like", "likeMany", "keep_offline", "remove_offline", "remove_offlineMany"] as const;
 
 /** The `tl.so.tilo.music.Track` kind at `path`. */
 export function track(ws: tilo.Workspace, path: string): Track {
@@ -247,6 +253,24 @@ export function playlist(ws: tilo.Workspace, path: string): Playlist {
   return resourceProxy(ws, path, SURFACE, PLAYLIST_ACTIONS) as unknown as Playlist;
 }
 
+/** SpotifyDevice — `tl.so.tilo.music.SpotifyDevice`. */
+export interface SpotifyDevice extends tilo.Resource {
+  "4ruem7bk": string;  // key
+  fysa7usi: string;  // name
+  ajgkhxtc: string;  // kind
+  njju5rcv: boolean;  // active
+  daqeango: number;  // volume
+}
+
+/** The actions `SpotifyDevice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SPOTIFYDEVICE_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.music.SpotifyDevice` kind at `path`. */
+export function spotifyDevice(ws: tilo.Workspace, path: string): SpotifyDevice {
+  return resourceProxy(ws, path, SURFACE, SPOTIFYDEVICE_ACTIONS) as unknown as SpotifyDevice;
+}
+
 /** Section — `tl.so.tilo.music.Section`. */
 export interface Section extends tilo.Resource {
   jsrmddga: string;  // key
@@ -329,12 +353,12 @@ export function mixtape(ws: tilo.Workspace, path: string): Mixtape {
 
 /** Taste — `tl.so.tilo.music.Taste`. */
 export interface Taste extends tilo.Resource {
-  biz2rcqc: boolean;  // similar_artists
   nhxvxvrt: boolean;  // followed_artists
   fygjzxca: boolean;  // liked_songs
   splmmoir: boolean;  // saved_albums
   gfhj3dh4: string[];  // dismissed
   oa6ryv4n: string[];  // preferred
+  nsvv7dnn: string[];  // hidden
 }
 
 /** The actions `Taste` reaches before it is read: `ws` calls them without a
@@ -359,6 +383,15 @@ export interface Library extends tilo.Resource {
   u4kuzao5: Taste;  // taste
   scejauac: unknown | null;  // playing
   tnkopk2m: Array<tilo.Entry<unknown>>;  // sessions
+  cjoykprs: Array<tilo.Entry<SpotifyDevice>>;  // devices
+  d6agrwhu: string;  // spotify_state
+  wzbxwvai: string;  // spotify_account
+  q6fvzfwi: string;  // spotify_product
+  bnnshdna: string;  // spotify_trouble
+  rwf7lfs6: string;  // connect_url
+  gghnswba: string;  // spotify_active
+  sdkihe6k: string;  // spotify_now
+  "22kwzmah": boolean;  // spotify_playing
   wout6rgv: string;  // catalogue
   olobgipa: string;  // search_state
   foqrtqa3: string;  // search_trouble
@@ -386,6 +419,18 @@ export interface Library extends tilo.Resource {
   play_nextMany(items: PlayNextArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Asks for the words of what plays, keeping the session it asks for. */
   lyrics_now(): Promise<void>;
+  /** Hides a song from the suggestions. History can undo it, and the taste page brings it back. */
+  hide_rec(args: {
+    t: Track;
+  }): Promise<void>;
+  /** Runs `hide_rec` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  hide_recMany(items: HideRecArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Brings a hidden song back into the suggestions. */
+  restore_rec(args: {
+    t: Track;
+  }): Promise<void>;
+  /** Runs `restore_rec` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  restore_recMany(items: RestoreRecArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Asks the catalogue for the songs, albums, artists and playlists a query finds. */
   search(args: {
     query: string;
@@ -415,6 +460,30 @@ export interface Library extends tilo.Resource {
   set_catalogue(args: {
     which: string;
   }): Promise<void>;
+  /** Connects the person's Spotify: the page they sign in on is shown in the Spotify section. */
+  connect_spotify(): Promise<void>;
+  /** Takes the sign-in the person gave on Spotify's page. */
+  finish_spotify(): Promise<void>;
+  /** Forgets this device's Spotify sign-in. */
+  disconnect_spotify(): Promise<void>;
+  /** Reads the places Spotify plays on. */
+  spotify_devices(): Promise<void>;
+  /** Moves what plays to `d`, from the beginning. */
+  transfer_playback(args: {
+    d: SpotifyDevice;
+  }): Promise<void>;
+  /** Plays `uri` on Spotify, where it plays: empty plays what was playing. */
+  remote_play(args?: {
+    uri?: string;
+  }): Promise<void>;
+  /** Pauses what plays on Spotify. */
+  remote_pause(): Promise<void>;
+  /** Plays what follows on Spotify. */
+  remote_next(): Promise<void>;
+  /** Plays what played before on Spotify. */
+  remote_previous(): Promise<void>;
+  /** Reads what plays on Spotify now. */
+  spotify_now(): Promise<void>;
   /** Turns one of the recommendations' switches. */
   update_taste(args: {
     which: string;
@@ -438,7 +507,7 @@ export interface Library extends tilo.Resource {
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["session", "open_audio_file", "add_to_queue", "add_to_queueMany", "play_next", "play_nextMany", "lyrics_now", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failureMany", "new_mixtape", "new_mixtapeMany", "set_catalogue", "update_taste", "update_tasteMany", "dismiss_artist", "dismiss_artistMany", "prefer_artist", "prefer_artistMany"] as const;
+export const LIBRARY_ACTIONS = ["session", "open_audio_file", "add_to_queue", "add_to_queueMany", "play_next", "play_nextMany", "lyrics_now", "hide_rec", "hide_recMany", "restore_rec", "restore_recMany", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failureMany", "new_mixtape", "new_mixtapeMany", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "update_taste", "update_tasteMany", "dismiss_artist", "dismiss_artistMany", "prefer_artist", "prefer_artistMany"] as const;
 
 /** The `tl.so.tilo.music.Library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

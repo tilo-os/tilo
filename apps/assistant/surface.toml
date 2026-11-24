@@ -1,4 +1,4 @@
-# Written by `tilo-app surface`; review changes like an API change.
+# Written by `tilolang surface`; review changes like an API change.
 
 format = 2
 
@@ -16,6 +16,7 @@ fields = [
   { path = "agents", type = { collection = { named = "Agent" } }, stored = "keyed" },
   { path = "agents.*.id", type = "text" },
   { path = "agents.*.name", type = "text", label = true },
+  { path = "agents.*.avatar", type = { option = "text" } },
   { path = "agents.*.acts_for", type = "text" },
   { path = "agents.*.model", type = { option = "text" } },
   { path = "agents.*.mcp_client", type = { option = "text" } },
@@ -56,6 +57,7 @@ fields = [
   { path = "agents.*.sub.coding.spent_micros", type = "int" },
   { path = "agents.*.sub_depth", type = { option = "int" } },
   { path = "agents.*.sub_at_once", type = { option = "int" } },
+  { path = "agents.*.runs_on", type = { list = { named = "RunsOn" } } },
 ]
 
 [[resources.verbs]]
@@ -63,9 +65,28 @@ id = "create-agent"
 kind = "undoable"
 params = [
   { name = "name", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "avatar", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "mcp_client", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "wait-to-run-agent"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "ticket", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "run-agent-on"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "device", type = "text", required = true, schema = { type = "string" } },
+  { name = "certificate", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -94,6 +115,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-agent-avatar"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "avatar", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "set-agent-model"
 kind = "undoable"
 params = [
@@ -107,6 +136,20 @@ kind = "undoable"
 params = [
   { name = "agent", type = "text", required = true, schema = { type = "string" } },
   { name = "instruction", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "pause-agent"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "resume-agent"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -191,6 +234,7 @@ name = "Agent"
 fields = [
   { name = "id", type = "text" },
   { name = "name", type = "text" },
+  { name = "avatar", type = { option = "text" } },
   { name = "acts_for", type = "text" },
   { name = "model", type = { option = "text" } },
   { name = "mcp_client", type = { option = "text" } },
@@ -202,6 +246,7 @@ fields = [
   { name = "sub", type = { option = { named = "Sub" } } },
   { name = "sub_depth", type = { option = "int" } },
   { name = "sub_at_once", type = { option = "int" } },
+  { name = "runs_on", type = { list = { named = "RunsOn" } } },
 ]
 
 [[resources.types]]
@@ -209,6 +254,7 @@ name = "AgentState"
 cases = [
   { name = "active" },
   { name = "retired" },
+  { name = "paused" },
 ]
 
 [[resources.types]]
@@ -292,6 +338,14 @@ fields = [
   { name = "app", type = "text" },
   { name = "document", type = "text" },
   { name = "resource", type = "text" },
+]
+
+[[resources.types]]
+name = "RunsOn"
+fields = [
+  { name = "device", type = "text" },
+  { name = "ticket", type = { option = "text" } },
+  { name = "certificate", type = { option = "text" } },
 ]
 
 [[resources.types]]

@@ -24,13 +24,13 @@ __all__ = [
     "Album",
     "Artist",
     "Playlist",
+    "SpotifyDevice",
     "Section",
     "Suggestion",
     "Mixtape",
     "Taste",
     "Library",
     "Music",
-    "PlaySongArgs",
     "LikeArgs",
     "RemoveOfflineArgs",
     "PlayAlbumArgs",
@@ -43,6 +43,8 @@ __all__ = [
     "SetCoverArgs",
     "AddToQueueArgs",
     "PlayNextArgs",
+    "HideRecArgs",
+    "RestoreRecArgs",
     "NoteFailureArgs",
     "NewMixtapeArgs",
     "UpdateTasteArgs",
@@ -51,10 +53,6 @@ __all__ = [
     "QueueMovedArgs",
     "LikePlayingArgs",
 ]
-
-PlaySongArgs = TypedDict("PlaySongArgs", {
-})
-"""The arguments of `play_song`."""
 
 LikeArgs = TypedDict("LikeArgs", {
     "liked": NotRequired["bool | None"],
@@ -113,6 +111,16 @@ PlayNextArgs = TypedDict("PlayNextArgs", {
 })
 """The arguments of `play_next`."""
 
+HideRecArgs = TypedDict("HideRecArgs", {
+    "t": "Track",
+})
+"""The arguments of `hide_rec`."""
+
+RestoreRecArgs = TypedDict("RestoreRecArgs", {
+    "t": "Track",
+})
+"""The arguments of `restore_rec`."""
+
 NoteFailureArgs = TypedDict("NoteFailureArgs", {
     "reason": "str",
 })
@@ -153,7 +161,7 @@ LikePlayingArgs = TypedDict("LikePlayingArgs", {
 
 class Track(Resource):
     """Track — `tl.so.tilo.music.Track`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     wapyyydf: str  # key
     zpnajesf: str  # title
     pzaz5i7w: str  # artist
@@ -202,9 +210,9 @@ class Track(Resource):
         """Plays one song, alone: what a row's press does. The place is the shared session's own record, so the song continues on this device or another."""
         return self.action("play_song")
 
-    def play_song_many(self, items: list[PlaySongArgs]) -> list[dict[str, Any]]:
-        """Runs `play_song` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("play_song", items)
+    def play_rec(self) -> None:
+        """Plays a suggested song."""
+        return self.action("play_rec")
 
     def like(self,
         *,
@@ -234,12 +242,12 @@ class Track(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"play_song", "play_song_many", "like", "like_many", "keep_offline", "remove_offline", "remove_offline_many"})
+    __actions__ = frozenset({"play_song", "play_rec", "like", "like_many", "keep_offline", "remove_offline", "remove_offline_many"})
 
 
 class Album(Resource):
     """Album — `tl.so.tilo.music.Album`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     xlmick3d: str  # key
     ui7q6nc2: str  # title
     c36cztfw: str  # artist
@@ -293,7 +301,7 @@ class Album(Resource):
 
 class Artist(Resource):
     """Artist — `tl.so.tilo.music.Artist`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     a3jwtsne: str  # key
     aht5vji7: str  # name
     p7suhaoo: int  # subscribers
@@ -326,7 +334,7 @@ class Artist(Resource):
 
 class Playlist(Resource):
     """Playlist — `tl.so.tilo.music.Playlist`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     zliedtfz: str  # key
     rtkxqj2p: str  # title
     htibtwee: str  # subtitle
@@ -350,9 +358,26 @@ class Playlist(Resource):
     __actions__ = frozenset({"open_playlist"})
 
 
+class SpotifyDevice(Resource):
+    """SpotifyDevice — `tl.so.tilo.music.SpotifyDevice`."""
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
+    @property
+    def _4ruem7bk(self) -> str:
+        """key (`4ruem7bk` on the wire)."""
+        return self.fields["4ruem7bk"]
+
+    @_4ruem7bk.setter
+    def _4ruem7bk(self, value: str) -> None:
+        self.edit("4ruem7bk", value=value)
+    fysa7usi: str  # name
+    ajgkhxtc: str  # kind
+    njju5rcv: bool  # active
+    daqeango: int  # volume
+
+
 class Section(Resource):
     """Section — `tl.so.tilo.music.Section`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     jsrmddga: str  # key
     @property
     def _2kqqdved(self) -> str:
@@ -367,7 +392,7 @@ class Section(Resource):
 
 class Suggestion(Resource):
     """Suggestion — `tl.so.tilo.music.Suggestion`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     qh34h2ch: str  # key
     xh6birha: str  # section
     a5bkjkyq: str  # kind
@@ -393,7 +418,7 @@ class Suggestion(Resource):
 
 class Mixtape(Resource):
     """Mixtape — `tl.so.tilo.music.Mixtape`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     @property
     def _5d2oxk4b(self) -> str:
         """name (`5d2oxk4b` on the wire)."""
@@ -452,18 +477,18 @@ class Mixtape(Resource):
 
 class Taste(Resource):
     """Taste — `tl.so.tilo.music.Taste`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
-    biz2rcqc: bool  # similar_artists
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     nhxvxvrt: bool  # followed_artists
     fygjzxca: bool  # liked_songs
     splmmoir: bool  # saved_albums
     gfhj3dh4: list[str]  # dismissed
     oa6ryv4n: list[str]  # preferred
+    nsvv7dnn: list[str]  # hidden
 
 
 class Library(Resource):
     """Library — `tl.so.tilo.music.Library`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     hkr3ia6d: str  # name
     cp5uymkx: list[Entry[Track]]  # tracks
     phkx3ocv: list[Entry[Album]]  # albums
@@ -475,6 +500,22 @@ class Library(Resource):
     u4kuzao5: Taste  # taste
     scejauac: Any | None  # playing
     tnkopk2m: list[Entry[Any]]  # sessions
+    cjoykprs: list[Entry[SpotifyDevice]]  # devices
+    d6agrwhu: str  # spotify_state
+    wzbxwvai: str  # spotify_account
+    q6fvzfwi: str  # spotify_product
+    bnnshdna: str  # spotify_trouble
+    rwf7lfs6: str  # connect_url
+    gghnswba: str  # spotify_active
+    sdkihe6k: str  # spotify_now
+    @property
+    def _22kwzmah(self) -> bool:
+        """spotify_playing (`22kwzmah` on the wire)."""
+        return self.fields["22kwzmah"]
+
+    @_22kwzmah.setter
+    def _22kwzmah(self, value: bool) -> None:
+        self.edit("22kwzmah", value=value)
     wout6rgv: str  # catalogue
     olobgipa: str  # search_state
     foqrtqa3: str  # search_trouble
@@ -511,6 +552,22 @@ class Library(Resource):
         """Asks for the words of what plays, keeping the session it asks for."""
         return self.action("lyrics_now")
 
+    def hide_rec(self, *, t: Track) -> None:
+        """Hides a song from the suggestions. History can undo it, and the taste page brings it back."""
+        return self.action("hide_rec", t=t)
+
+    def hide_rec_many(self, items: list[HideRecArgs]) -> list[dict[str, Any]]:
+        """Runs `hide_rec` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("hide_rec", items)
+
+    def restore_rec(self, *, t: Track) -> None:
+        """Brings a hidden song back into the suggestions."""
+        return self.action("restore_rec", t=t)
+
+    def restore_rec_many(self, items: list[RestoreRecArgs]) -> list[dict[str, Any]]:
+        """Runs `restore_rec` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("restore_rec", items)
+
     def search(self, *, query: str) -> None:
         """Asks the catalogue for the songs, albums, artists and playlists a query finds."""
         return self.action("search", query=query)
@@ -544,6 +601,52 @@ class Library(Resource):
         """Chooses which catalogue the app asks."""
         return self.action("set_catalogue", which=which)
 
+    def connect_spotify(self) -> None:
+        """Connects the person's Spotify: the page they sign in on is shown in the Spotify section."""
+        return self.action("connect_spotify")
+
+    def finish_spotify(self) -> None:
+        """Takes the sign-in the person gave on Spotify's page."""
+        return self.action("finish_spotify")
+
+    def disconnect_spotify(self) -> None:
+        """Forgets this device's Spotify sign-in."""
+        return self.action("disconnect_spotify")
+
+    def spotify_devices(self) -> None:
+        """Reads the places Spotify plays on."""
+        return self.action("spotify_devices")
+
+    def transfer_playback(self, *, d: SpotifyDevice) -> None:
+        """Moves what plays to `d`, from the beginning."""
+        return self.action("transfer_playback", d=d)
+
+    def remote_play(self,
+        *,
+        uri: str | None = None,
+    ) -> None:
+        """Plays `uri` on Spotify, where it plays: empty plays what was playing."""
+        args: dict[str, Any] = {}
+        if uri is not None:
+            args["uri"] = uri
+        return self.action("remote_play", **args)
+
+    def remote_pause(self) -> None:
+        """Pauses what plays on Spotify."""
+        return self.action("remote_pause")
+
+    def remote_next(self) -> None:
+        """Plays what follows on Spotify."""
+        return self.action("remote_next")
+
+    def remote_previous(self) -> None:
+        """Plays what played before on Spotify."""
+        return self.action("remote_previous")
+
+    def spotify_now(self) -> None:
+        """Reads what plays on Spotify now."""
+        return self.action("spotify_now")
+
     def update_taste(self,
         *,
         which: str,
@@ -574,12 +677,12 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"session", "open_audio_file", "add_to_queue", "add_to_queue_many", "play_next", "play_next_many", "lyrics_now", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failure_many", "new_mixtape", "new_mixtape_many", "set_catalogue", "update_taste", "update_taste_many", "dismiss_artist", "dismiss_artist_many", "prefer_artist", "prefer_artist_many"})
+    __actions__ = frozenset({"session", "open_audio_file", "add_to_queue", "add_to_queue_many", "play_next", "play_next_many", "lyrics_now", "hide_rec", "hide_rec_many", "restore_rec", "restore_rec_many", "search", "open_suggestion", "lyrics_of", "note_failure", "note_failure_many", "new_mixtape", "new_mixtape_many", "set_catalogue", "connect_spotify", "finish_spotify", "disconnect_spotify", "spotify_devices", "transfer_playback", "remote_play", "remote_pause", "remote_next", "remote_previous", "spotify_now", "update_taste", "update_taste_many", "dismiss_artist", "dismiss_artist_many", "prefer_artist", "prefer_artist_many"})
 
 
 class Music(Resource):
     """Music — `tl.so.tilo.music`."""
-    __surface__ = "so.tilo.music@556982751cbdd6ac"
+    __surface__ = "so.tilo.music@bf6284a032db1f3e"
     def queue_moved(self,
         *,
         p: Any,

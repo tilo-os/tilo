@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.discord@8cdd5fc7bfe08e63";
+export const SURFACE = "so.tilo.discord@eb7d7dffae66c33d";
 
 export interface AnswerInteractionOp {
   interaction: string;
@@ -271,19 +271,6 @@ export interface StartThreadOp {
   message: string;
   name: string;
   tilo: string;
-}
-
-export interface Context {
-  avatars: string;
-  link: string;
-  links: Links | null;
-}
-
-export interface Links {
-  web_entry: string;
-  origin: string;
-  workspace: string;
-  host_device: string;
 }
 
 /** The arguments of `connect`. */
@@ -619,7 +606,7 @@ export interface Guild extends tilo.Resource {
   planEvent(args: {
     event: unknown;
     chat: unknown;
-    context?: Context;
+    context?: unknown;
     workspace?: unknown;
     emoji?: unknown;
   }): Promise<void>;

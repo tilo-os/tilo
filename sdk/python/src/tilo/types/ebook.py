@@ -23,14 +23,11 @@ __all__ = [
     "Book",
     "Chapter",
     "Mark",
-    "Piece",
     "Progress",
     "Scheme",
     "Found",
+    "Watched",
     "Library",
-    "FoundAuthor",
-    "FoundBook",
-    "FoundAnswer",
     "Ebook",
     "RemoveBookArgs",
     "RecordAtArgs",
@@ -45,7 +42,16 @@ __all__ = [
     "CommentArgs",
     "ChangeColorArgs",
     "DeleteMarkArgs",
+    "EditBlockArgs",
+    "InsertBlockArgs",
+    "DeleteBlockArgs",
+    "MarkEditBlockArgs",
+    "MarkInsertBlockArgs",
+    "MarkDeleteBlockArgs",
     "DropBooksArgs",
+    "WatchFolderArgs",
+    "ScanFolderArgs",
+    "FolderedArgs",
     "SetTextSizeArgs",
     "SetLineSpacingArgs",
     "SetFaceArgs",
@@ -55,7 +61,6 @@ __all__ = [
     "AddSchemeArgs",
     "DeleteSchemeArgs",
     "FindBooksArgs",
-    "DownloadFoundArgs",
     "ClearFoundArgs",
 ]
 
@@ -146,10 +151,58 @@ DeleteMarkArgs = TypedDict("DeleteMarkArgs", {
 })
 """The arguments of `delete_mark`."""
 
+EditBlockArgs = TypedDict("EditBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `edit-block`."""
+
+InsertBlockArgs = TypedDict("InsertBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `insert-block`."""
+
+DeleteBlockArgs = TypedDict("DeleteBlockArgs", {
+    "block": "str",
+})
+"""The arguments of `delete-block`."""
+
+MarkEditBlockArgs = TypedDict("MarkEditBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `edit-block`."""
+
+MarkInsertBlockArgs = TypedDict("MarkInsertBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `insert-block`."""
+
+MarkDeleteBlockArgs = TypedDict("MarkDeleteBlockArgs", {
+    "block": "str",
+})
+"""The arguments of `delete-block`."""
+
 DropBooksArgs = TypedDict("DropBooksArgs", {
     "files": "list[Any]",
 })
 """The arguments of `drop_books`."""
+
+WatchFolderArgs = TypedDict("WatchFolderArgs", {
+    "path": "str",
+})
+"""The arguments of `watch_folder`."""
+
+ScanFolderArgs = TypedDict("ScanFolderArgs", {
+    "path": "str",
+})
+"""The arguments of `scan_folder`."""
+
+FolderedArgs = TypedDict("FolderedArgs", {
+})
+"""The arguments of `foldered`."""
 
 SetTextSizeArgs = TypedDict("SetTextSizeArgs", {
     "size": "float",
@@ -197,18 +250,13 @@ FindBooksArgs = TypedDict("FindBooksArgs", {
 })
 """The arguments of `find_books`."""
 
-DownloadFoundArgs = TypedDict("DownloadFoundArgs", {
-    "f": "Found",
-})
-"""The arguments of `download_found`."""
-
 ClearFoundArgs = TypedDict("ClearFoundArgs", {
 })
 """The arguments of `clear_found`."""
 
 class Book(Resource):
     """Book — `tl.so.tilo.ebook.Book`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
+    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
     zzi6jbdk: str  # title
     hzsemqyf: str  # author
     ywdncocc: str  # subject
@@ -387,15 +435,51 @@ class Book(Resource):
 
 class Chapter(Resource):
     """Chapter — `tl.so.tilo.ebook.Chapter`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
+    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
     njsapppc: str  # title
     hc6oa77y: str  # body
     awonaulm: Book | None  # book
 
+    def edit_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Set one paragraph of a rich-text field to what a Markdown text says."""
+        return self.action("edit-block", block=block, text=text)
+
+    def edit_block_many(self, items: list[EditBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit-block", items)
+
+    def insert_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Put a paragraph before the one the address names."""
+        return self.action("insert-block", block=block, text=text)
+
+    def insert_block_many(self, items: list[InsertBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert-block", items)
+
+    def delete_block(self, *, block: str) -> None:
+        """Remove the paragraph the address names, and the paragraphs it holds."""
+        return self.action("delete-block", block=block)
+
+    def delete_block_many(self, items: list[DeleteBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-block", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many"})
+
 
 class Mark(Resource):
     """Mark — `tl.so.tilo.ebook.Mark`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
+    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
     nsx4szpu: str  # kind
     eu36rgok: int  # chapter
     kkwkq4sx: int  # block
@@ -407,20 +491,48 @@ class Mark(Resource):
     qzbrg6g6: str  # created
     jt22d5yp: str  # on
     gjbrlgkj: Book | None  # book
-    vpgm2esg: list[Piece]  # pieces
+    vpgm2esg: list[int]  # pieces
 
+    def edit_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Set one paragraph of a rich-text field to what a Markdown text says."""
+        return self.action("edit-block", block=block, text=text)
 
-class Piece(Resource):
-    """Piece — `tl.so.tilo.ebook.Piece`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
-    el2sirvc: int  # block
-    wjiavs4p: int  # start
-    mk52mcqy: int  # end
+    def edit_block_many(self, items: list[MarkEditBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit-block", items)
+
+    def insert_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Put a paragraph before the one the address names."""
+        return self.action("insert-block", block=block, text=text)
+
+    def insert_block_many(self, items: list[MarkInsertBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert-block", items)
+
+    def delete_block(self, *, block: str) -> None:
+        """Remove the paragraph the address names, and the paragraphs it holds."""
+        return self.action("delete-block", block=block)
+
+    def delete_block_many(self, items: list[MarkDeleteBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-block", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many"})
 
 
 class Progress(Resource):
     """Progress — `tl.so.tilo.ebook.Progress`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
+    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
     fw6cx373: str  # who
     hrlsiabz: int  # chapter
     dozgglst: int  # block
@@ -431,7 +543,7 @@ class Progress(Resource):
 
 class Scheme(Resource):
     """Scheme — `tl.so.tilo.ebook.Scheme`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
+    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
     yjaxgs5w: str  # name
     zfe44ecr: str  # page
     giw4wwwc: str  # ink
@@ -448,7 +560,7 @@ class Scheme(Resource):
 
 class Found(Resource):
     """Found — `tl.so.tilo.ebook.Found`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
+    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
     cuehsj4a: str  # title
     @property
     def _5z23zsgs(self) -> str:
@@ -470,9 +582,18 @@ class Found(Resource):
     fhfwqqv3: str  # query
 
 
+class Watched(Resource):
+    """Watched — `tl.so.tilo.ebook.Watched`."""
+    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
+    zfzcnyj7: str  # path
+    l4rfzd5q: str  # token
+    vs5vpxpc: list[str]  # given
+    dafaqxgm: str  # added
+
+
 class Library(Resource):
     """Library — `tl.so.tilo.ebook.Library`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
+    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
     rjqqjeka: list[Entry[Book]]  # books
     gark455v: list[Entry[Found]]  # found
     b2rhddat: list[Entry[Scheme]]  # schemes
@@ -512,6 +633,8 @@ class Library(Resource):
         self.edit("7iepiv5z", value=value)
     wc5z47pj: str  # custom_page
     yiozk22e: str  # custom_ink
+    dww4lfs6: str  # draft_folder
+    trpwrvrr: list[Entry[Watched]]  # folders
 
     def open_book(self, *, file: Any) -> Book:
         """Adds the EPUB `file` to the shelf and opens it. Its title, author and language are the book's own; each chapter becomes a resource holding its words, so the book is searchable and a reader opens the chapter they are at."""
@@ -524,6 +647,30 @@ class Library(Resource):
     def drop_books_many(self, items: list[DropBooksArgs]) -> list[dict[str, Any]]:
         """Runs `drop_books` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("drop_books", items)
+
+    def watch_folder(self, *, path: str) -> None:
+        """Watches the folder `path` for books: each EPUB it holds, and each that arrives, becomes a book, keeping the person's place as one they opened themselves does."""
+        return self.action("watch_folder", path=path)
+
+    def watch_folder_many(self, items: list[WatchFolderArgs]) -> list[dict[str, Any]]:
+        """Runs `watch_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("watch_folder", items)
+
+    def scan_folder(self, *, path: str) -> None:
+        """Reads the folder `path`'s EPUBs, giving a book to each file the library does not hold yet."""
+        return self.action("scan_folder", path=path)
+
+    def scan_folder_many(self, items: list[ScanFolderArgs]) -> list[dict[str, Any]]:
+        """Runs `scan_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("scan_folder", items)
+
+    def foldered(self) -> None:
+        """Reads every watched folder again: what the platform runs when one of them changes."""
+        return self.action("foldered")
+
+    def foldered_many(self, items: list[FolderedArgs]) -> list[dict[str, Any]]:
+        """Runs `foldered` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("foldered", items)
 
     def set_text_size(self, *, size: float) -> None:
         """Sets the page's text size, within what a page can be read at."""
@@ -602,13 +749,9 @@ class Library(Resource):
         """Runs `find_books` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("find_books", items)
 
-    def download_found(self, *, f: Found) -> None:
-        """Downloads the book an online search found and opens it."""
+    def download_found(self, *, f: Found) -> Book | None:
+        """Downloads the book an online search found and opens it: the window opens the book the action returns, as it opens what any primary action makes. An answer that did not come leaves the book found, so the person can ask again."""
         return self.action("download_found", f=f)
-
-    def download_found_many(self, items: list[DownloadFoundArgs]) -> list[dict[str, Any]]:
-        """Runs `download_found` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("download_found", items)
 
     def clear_found(self) -> None:
         """Takes an online search's answers away."""
@@ -620,38 +763,10 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"open_book", "drop_books", "drop_books_many", "set_text_size", "set_text_size_many", "set_line_spacing", "set_line_spacing_many", "set_face", "set_face_many", "set_justified", "set_justified_many", "cycle_scheme", "cycle_scheme_many", "set_scheme", "set_scheme_many", "add_scheme", "add_scheme_many", "delete_scheme", "delete_scheme_many", "find_books", "find_books_many", "download_found", "download_found_many", "clear_found", "clear_found_many"})
-
-
-class FoundAuthor(Resource):
-    """FoundAuthor — `tl.so.tilo.ebook.FoundAuthor`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
-    j3ucstoe: str  # name
-
-
-class FoundBook(Resource):
-    """FoundBook — `tl.so.tilo.ebook.FoundBook`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
-    v7nyajgy: str  # title
-    a4rek4qh: list[FoundAuthor] | None  # authors
-    @property
-    def _7uazgom7(self) -> list[str] | None:
-        """languages (`7uazgom7` on the wire)."""
-        return self.fields["7uazgom7"]
-
-    @_7uazgom7.setter
-    def _7uazgom7(self, value: list[str] | None) -> None:
-        self.edit("7uazgom7", value=value)
-    uw6rgipi: dict[str, str] | None  # formats
-
-
-class FoundAnswer(Resource):
-    """FoundAnswer — `tl.so.tilo.ebook.FoundAnswer`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
-    ngjj6bkr: list[FoundBook]  # results
+    __actions__ = frozenset({"open_book", "drop_books", "drop_books_many", "watch_folder", "watch_folder_many", "scan_folder", "scan_folder_many", "foldered", "foldered_many", "set_text_size", "set_text_size_many", "set_line_spacing", "set_line_spacing_many", "set_face", "set_face_many", "set_justified", "set_justified_many", "cycle_scheme", "cycle_scheme_many", "set_scheme", "set_scheme_many", "add_scheme", "add_scheme_many", "delete_scheme", "delete_scheme_many", "find_books", "find_books_many", "download_found", "clear_found", "clear_found_many"})
 
 
 class Ebook(Resource):
     """Books — `tl.so.tilo.ebook`."""
-    __surface__ = "so.tilo.ebook@3b10ed27c5684dba"
+    __surface__ = "so.tilo.ebook@3c775f5a9ed1c847"
 

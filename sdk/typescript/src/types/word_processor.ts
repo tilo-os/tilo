@@ -1,10 +1,10 @@
 /**
- * Types for Word Processor (`so.tilo.word-processor`), from the app's surface.
+ * Types for Writer (`so.tilo.word-processor`), from the app's surface.
  *
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Document` is a `Resource` of the app's `word-processor.document`, made by its factory with the
+ * `Document` is a `Resource` of the app's `tl.so.tilo.word-processor.Document`, made by its factory with the
  * resource's path (`word-processor/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,130 +22,75 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.word-processor@aef8d21eae3890e2";
+export const SURFACE = "so.tilo.word-processor@9dfee430825ad200";
 
-/** One of member, named: an object whose case the app tags it with. */
-export type Author = Record<string, unknown>;
-
-/** One of Bool, Int, Str: an object whose case the app tags it with. */
-export type ClipAttr = Record<string, unknown>;
-
-export interface ClipBlock {
-  kind: string;
+/** The arguments of `edit-block`. */
+export interface EditBlockArgs {
+  block: string;
   text: string;
-  marks: MarkSpan[];
-  level: number | null;
-  ordered: boolean | null;
-  align: string | null;
-  attrs: Record<string, ClipAttr>;
 }
 
-export interface Comment {
-  anchor: unknown;
-  author: Author;
-  date: string;
+/** The arguments of `insert-block`. */
+export interface InsertBlockArgs {
+  block: string;
   text: string;
-  body: ClipBlock[];
-  resolved: boolean;
-  replies: Array<tilo.Entry<Reply>>;
 }
 
-export interface MarkSpan {
-  start: number;
-  end: number;
-  name: string;
-  value: MarkValue;
+/** The arguments of `delete-block`. */
+export interface DeleteBlockArgs {
+  block: string;
 }
 
-/** One of Bool, Int, Str: an object whose case the app tags it with. */
-export type MarkValue = Record<string, unknown>;
+/** The arguments of `dismiss_notice`. */
+export interface DismissNoticeArgs {
+}
 
-export interface Reply {
-  author: Author;
-  date: string;
+/** The arguments of `append_paragraph`. */
+export interface AppendParagraphArgs {
   text: string;
-  body: ClipBlock[];
 }
 
-export interface ReadDocument {
-  file: string;
-  format: string;
-  text: string | null;
-  from: number | null;
-  next: number | null;
-  total: number | null;
-  picture: string | null;
-  media_type: string | null;
-  bytes: number | null;
-  width: number | null;
-  height: number | null;
+/** The arguments of `replace_body`. */
+export interface ReplaceBodyArgs {
+  markdown: string;
 }
 
-/** The arguments of `delete-row`. */
+/** The arguments of `replace_text`. */
+export interface ReplaceTextArgs {
+  find: string;
+  replace: string;
+  all?: boolean;
+}
+
+/** The arguments of `insert_table`. */
+export interface InsertTableArgs {
+  rows?: number;
+  columns?: number;
+}
+
+/** The arguments of `add_row`. */
+export interface AddRowArgs {
+}
+
+/** The arguments of `add_column`. */
+export interface AddColumnArgs {
+}
+
+/** The arguments of `delete_row`. */
 export interface DeleteRowArgs {
-  table: string;
   row: number;
 }
 
-/** The arguments of `delete-column`. */
+/** The arguments of `delete_column`. */
 export interface DeleteColumnArgs {
-  table: string;
   column: number;
 }
 
-/** The arguments of `delete-table`. */
+/** The arguments of `delete_table`. */
 export interface DeleteTableArgs {
-  table: string;
 }
 
-/** The arguments of `delete-image`. */
-export interface DeleteImageArgs {
-  image: string;
-}
-
-/** The arguments of `accept-change`. */
-export interface AcceptChangeArgs {
-  change: string;
-}
-
-/** The arguments of `reject-change`. */
-export interface RejectChangeArgs {
-  change: string;
-}
-
-/** The arguments of `accept-all-changes`. */
-export interface AcceptAllChangesArgs {
-}
-
-/** The arguments of `reject-all-changes`. */
-export interface RejectAllChangesArgs {
-}
-
-/** The arguments of `add-comment`. */
-export interface AddCommentArgs {
-  block: string;
-  start: number;
-  end: number;
-  text: string;
-}
-
-/** The arguments of `reply-to-comment`. */
-export interface ReplyToCommentArgs {
-  comment: string;
-  text: string;
-  body?: ClipBlock[];
-}
-
-/** The arguments of `resolve-comment`. */
-export interface ResolveCommentArgs {
-  comment: string;
-}
-
-/** The arguments of `adopt-comments`. */
-export interface AdoptCommentsArgs {
-}
-
-/** The arguments of `set-page-margins`. */
+/** The arguments of `set_page_margins`. */
 export interface SetPageMarginsArgs {
   top: number;
   right: number;
@@ -153,139 +98,255 @@ export interface SetPageMarginsArgs {
   left: number;
 }
 
-/** The arguments of `generate-toc`. */
+/** The arguments of `set_paper`. */
+export interface SetPaperArgs {
+  paper: string;
+}
+
+/** The arguments of `generate_toc`. */
 export interface GenerateTocArgs {
 }
 
-/** The arguments of `note-file-written`. */
-export interface NoteFileWrittenArgs {
-  digest: string;
+/** The arguments of `set_hyperlink`. */
+export interface SetHyperlinkArgs {
+  target: string;
+  text?: string;
 }
 
-/** Document — `word-processor.document`. */
+/** The arguments of `insert_page_break`. */
+export interface InsertPageBreakArgs {
+}
+
+/** The arguments of `paste`. */
+export interface PasteArgs {
+  text?: string;
+  markdown?: string;
+}
+
+/** The arguments of `replace_selection`. */
+export interface ReplaceSelectionArgs {
+  text: string;
+}
+
+/** The arguments of `place_image`. */
+export interface PlaceImageArgs {
+  image: unknown;
+}
+
+/** The arguments of `delete_image`. */
+export interface DeleteImageArgs {
+  image: string;
+}
+
+/** The arguments of `react`. */
+export interface ReactArgs {
+  emoji: string;
+}
+
+/** Document — `tl.so.tilo.word-processor.Document`. */
 export interface Document extends tilo.Resource {
-  body: string;
-  comments: Array<tilo.Entry<Comment>>;
-  appendParagraph(args: {
+  "76ypz5mr": string;  // title
+  myqdqp23: string;  // body
+  "6dmyhevh": number;  // margin_top
+  "5kuottk3": number;  // margin_right
+  u7wfrpxp: number;  // margin_bottom
+  tim24jvi: number;  // margin_left
+  "5lzglfac": string;  // paper
+  wdffnjds: string;  // started
+  "4hldj6md": Record<string, string[]>;  // reactions
+  mgawklxl: string;  // notice
+  mpu4ekps: string;  // chosen
+  po3yh2xl: number;  // chosen_count
+  /** Set one paragraph of a rich-text field to what a Markdown text says. */
+  editBlock(args: {
+    block: string;
     text: string;
-  }): Promise<unknown>;
-  replaceBody(args: {
+  }): Promise<void>;
+  /** Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  editBlockMany(items: EditBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Put a paragraph before the one the address names. */
+  insertBlock(args: {
+    block: string;
+    text: string;
+  }): Promise<void>;
+  /** Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insertBlockMany(items: InsertBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Remove the paragraph the address names, and the paragraphs it holds. */
+  deleteBlock(args: {
+    block: string;
+  }): Promise<void>;
+  /** Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  deleteBlockMany(items: DeleteBlockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Starts the document over: a blank page, or the Markdown one of the templates starts with. A document that holds words is replaced all the same — the change is one the person takes back, as every change is, and the templates are named in the File menu beside New. */
+  new_document(args?: {
+    template?: string;
+  }): Promise<Document>;
+  /** Takes away the reason the page shows over the writing: the person read it. */
+  dismiss_notice(): Promise<void>;
+  /** Runs `dismiss_notice` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  dismiss_noticeMany(items: DismissNoticeArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds a paragraph of `text` at the end of the document, as Markdown says it. */
+  append_paragraph(args: {
+    text: string;
+  }): Promise<void>;
+  /** Runs `append_paragraph` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  append_paragraphMany(items: AppendParagraphArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Replaces the whole body from Markdown: headings, lists, pipe tables, emphasis and links. A picture is not written into the Markdown; it is placed with `place_image`. */
+  replace_body(args: {
     markdown: string;
-  }): Promise<unknown>;
-  replaceText(args: {
+  }): Promise<void>;
+  /** Runs `replace_body` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  replace_bodyMany(items: ReplaceBodyArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** What the document says as Markdown, ready for an agent or a file. */
+  read_content(): Promise<string>;
+  /** Finds `find` in the document and replaces the first of it, or every one, with `replace`. A paragraph's marks stay around the words that stay. */
+  replace_text(args: {
     find: string;
     replace: string;
     all?: boolean;
-  }): Promise<unknown>;
-  insertTable(args: {
-    after: string;
-    rows: number;
-    columns: number;
-  }): Promise<unknown>;
-  addRow(args: {
-    table: string;
-  }): Promise<unknown>;
-  addColumn(args: {
-    table: string;
-  }): Promise<unknown>;
-  deleteRow(args: {
-    table: string;
+  }): Promise<void>;
+  /** Runs `replace_text` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  replace_textMany(items: ReplaceTextArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Inserts an empty table of `rows` by `columns` where the writing ends, its head the first row. */
+  insert_table(args?: {
+    rows?: number;
+    columns?: number;
+  }): Promise<void>;
+  /** Runs `insert_table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insert_tableMany(items: InsertTableArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds a row like the last of the document's first table, under it. */
+  add_row(): Promise<void>;
+  /** Runs `add_row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  add_rowMany(items: AddRowArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds a cell to every row of the document's first table. */
+  add_column(): Promise<void>;
+  /** Runs `add_column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  add_columnMany(items: AddColumnArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes a row of the document's first table, counted from its head at 1. */
+  delete_row(args: {
     row: number;
   }): Promise<void>;
-  /** Runs `delete-row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteRowMany(items: DeleteRowArgs[]): Promise<tilo.ActionAnswer[]>;
-  deleteColumn(args: {
-    table: string;
+  /** Runs `delete_row` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_rowMany(items: DeleteRowArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes a column of the document's first table, counted from its left at 1. */
+  delete_column(args: {
     column: number;
   }): Promise<void>;
-  /** Runs `delete-column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteColumnMany(items: DeleteColumnArgs[]): Promise<tilo.ActionAnswer[]>;
-  deleteTable(args: {
-    table: string;
-  }): Promise<void>;
-  /** Runs `delete-table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteTableMany(items: DeleteTableArgs[]): Promise<tilo.ActionAnswer[]>;
-  deleteImage(args: {
-    image: string;
-  }): Promise<void>;
-  /** Runs `delete-image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  deleteImageMany(items: DeleteImageArgs[]): Promise<tilo.ActionAnswer[]>;
-  acceptChange(args: {
-    change: string;
-  }): Promise<void>;
-  /** Runs `accept-change` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  acceptChangeMany(items: AcceptChangeArgs[]): Promise<tilo.ActionAnswer[]>;
-  rejectChange(args: {
-    change: string;
-  }): Promise<void>;
-  /** Runs `reject-change` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  rejectChangeMany(items: RejectChangeArgs[]): Promise<tilo.ActionAnswer[]>;
-  acceptAllChanges(): Promise<void>;
-  /** Runs `accept-all-changes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  acceptAllChangesMany(items: AcceptAllChangesArgs[]): Promise<tilo.ActionAnswer[]>;
-  rejectAllChanges(): Promise<void>;
-  /** Runs `reject-all-changes` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  rejectAllChangesMany(items: RejectAllChangesArgs[]): Promise<tilo.ActionAnswer[]>;
-  addComment(args: {
-    block: string;
-    start: number;
-    end: number;
-    text: string;
-  }): Promise<void>;
-  /** Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  addCommentMany(items: AddCommentArgs[]): Promise<tilo.ActionAnswer[]>;
-  replyToComment(args: {
-    comment: string;
-    text: string;
-    body?: ClipBlock[];
-  }): Promise<void>;
-  /** Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  replyToCommentMany(items: ReplyToCommentArgs[]): Promise<tilo.ActionAnswer[]>;
-  resolveComment(args: {
-    comment: string;
-  }): Promise<void>;
-  /** Runs `resolve-comment` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  resolveCommentMany(items: ResolveCommentArgs[]): Promise<tilo.ActionAnswer[]>;
-  adoptComments(): Promise<void>;
-  /** Runs `adopt-comments` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  adoptCommentsMany(items: AdoptCommentsArgs[]): Promise<tilo.ActionAnswer[]>;
-  setPageMargins(args: {
+  /** Runs `delete_column` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_columnMany(items: DeleteColumnArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Deletes the document's first table and everything it holds. */
+  delete_table(): Promise<void>;
+  /** Runs `delete_table` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_tableMany(items: DeleteTableArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets the page's margins, in points from the page's edges. */
+  set_page_margins(args: {
     top: number;
     right: number;
     bottom: number;
     left: number;
   }): Promise<void>;
-  /** Runs `set-page-margins` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setPageMarginsMany(items: SetPageMarginsArgs[]): Promise<tilo.ActionAnswer[]>;
-  generateToc(): Promise<void>;
-  /** Runs `generate-toc` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  generateTocMany(items: GenerateTocArgs[]): Promise<tilo.ActionAnswer[]>;
-  noteFileWritten(args: {
-    digest: string;
+  /** Runs `set_page_margins` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_page_marginsMany(items: SetPageMarginsArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets the paper the page is written on: A4, Letter or Legal. */
+  set_paper(args: {
+    paper: string;
   }): Promise<void>;
-  /** Runs `note-file-written` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  noteFileWrittenMany(items: NoteFileWrittenArgs[]): Promise<tilo.ActionAnswer[]>;
-  shareImage(): Promise<void>;
-  readFile(args: {
-    file: string;
-    from?: number;
-  }): Promise<ReadDocument>;
-  readContent(args: {
-    content: string;
-    name: string;
-    from?: number;
-  }): Promise<ReadDocument>;
-  exportContent(args?: {
-    format?: string;
+  /** Runs `set_paper` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_paperMany(items: SetPaperArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Writes a table of contents at the head of the document. It is a field, not a copy: the page draws the document's headings into it as they stand, so an entry a person writes or takes away shows there at once. A document without headings is refused: there is nothing to list. */
+  generate_toc(): Promise<void>;
+  /** Runs `generate_toc` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  generate_tocMany(items: GenerateTocArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Gives the document's words a link at the end of it, reading `text` or the address itself. */
+  set_hyperlink(args: {
+    target: string;
+    text?: string;
   }): Promise<void>;
+  /** Runs `set_hyperlink` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_hyperlinkMany(items: SetHyperlinkArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Insert a page break at the end of the writing. */
+  insert_page_break(): Promise<void>;
+  /** Runs `insert_page_break` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  insert_page_breakMany(items: InsertPageBreakArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Puts `markdown` at the end of the writing, as a paste does. */
+  paste(args?: {
+    text?: string;
+    markdown?: string;
+  }): Promise<void>;
+  /** Runs `paste` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pasteMany(items: PasteArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Replaces the whole body with `text`, as Markdown. */
+  replace_selection(args: {
+    text: string;
+  }): Promise<void>;
+  /** Runs `replace_selection` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  replace_selectionMany(items: ReplaceSelectionArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Writes a picture in where the person is writing: the person picks the file, and the page hands the address of its content to the editor, which puts it at the caret. The document keeps the address rather than the picture. */
+  place_image(args: {
+    image: unknown;
+  }): Promise<void>;
+  /** Runs `place_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  place_imageMany(items: PlaceImageArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The first picture the document shows, as content another app can take. */
+  share_image(): Promise<unknown>;
+  /** Deletes the picture whose address is `image`. */
+  delete_image(args: {
+    image: string;
+  }): Promise<void>;
+  /** Runs `delete_image` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  delete_imageMany(items: DeleteImageArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds your reaction with an emoji to the document, or takes it back when you had reacted with it: a press on one of the pills in the bar, or the pick the add button opened. */
+  react(args: {
+    emoji: string;
+  }): Promise<void>;
+  /** Runs `react` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reactMany(items: ReactArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Says something about the document, in the thread beside its page. When `at` names a paragraph and `start..end` cover words in it, the remark is anchored there: the editor marks the words and stands the comment's marker in the margin beside them, so it always points at what it was made about. The comment and its anchor are one change. */
+  comment_on(args: {
+    text: string;
+    at?: string;
+    start?: number;
+    end?: number;
+  }): Promise<unknown>;
+  /** Opens a file into the document: a Word, OpenDocument, RTF, EPUB or HTML file read by the device's codecs as the Markdown the editor shows, Markdown as it stands, and plain text as one paragraph a line. A file no codec here reads is refused with what it is. Opening a file is one change, which the person takes back as any other. */
+  open_document(args: {
+    file: unknown;
+  }): Promise<Document>;
+  /** The document as a Markdown file, named by its title. */
+  export_content(): Promise<unknown>;
+  /** The document as a plain-text file: its words, a paragraph a line. */
+  export_text(): Promise<unknown>;
+  /** The document as a Word, OpenDocument, RTF, EPUB or PDF file, named by its title: what a person sends someone who does not write in Tilo. The bytes are the device's codecs'. */
+  export_document(args: {
+    format: string;
+  }): Promise<unknown>;
+  /** The document as one HTML page: its headings, lists and paragraphs, and its words. */
+  export_html(): Promise<unknown>;
+  /** Reads a file and answers what it says, without touching the document: what an agent reads a document through before it decides what to do with it. */
+  read_file(args: {
+    file: unknown;
+  }): Promise<string>;
 }
 
 /** The actions `Document` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DOCUMENT_ACTIONS = ["appendParagraph", "replaceBody", "replaceText", "insertTable", "addRow", "addColumn", "deleteRow", "deleteRowMany", "deleteColumn", "deleteColumnMany", "deleteTable", "deleteTableMany", "deleteImage", "deleteImageMany", "acceptChange", "acceptChangeMany", "rejectChange", "rejectChangeMany", "acceptAllChanges", "acceptAllChangesMany", "rejectAllChanges", "rejectAllChangesMany", "addComment", "addCommentMany", "replyToComment", "replyToCommentMany", "resolveComment", "resolveCommentMany", "adoptComments", "adoptCommentsMany", "setPageMargins", "setPageMarginsMany", "generateToc", "generateTocMany", "noteFileWritten", "noteFileWrittenMany", "shareImage", "readFile", "readContent", "exportContent"] as const;
+export const DOCUMENT_ACTIONS = ["editBlock", "editBlockMany", "insertBlock", "insertBlockMany", "deleteBlock", "deleteBlockMany", "new_document", "dismiss_notice", "dismiss_noticeMany", "append_paragraph", "append_paragraphMany", "replace_body", "replace_bodyMany", "read_content", "replace_text", "replace_textMany", "insert_table", "insert_tableMany", "add_row", "add_rowMany", "add_column", "add_columnMany", "delete_row", "delete_rowMany", "delete_column", "delete_columnMany", "delete_table", "delete_tableMany", "set_page_margins", "set_page_marginsMany", "set_paper", "set_paperMany", "generate_toc", "generate_tocMany", "set_hyperlink", "set_hyperlinkMany", "insert_page_break", "insert_page_breakMany", "paste", "pasteMany", "replace_selection", "replace_selectionMany", "place_image", "place_imageMany", "share_image", "delete_image", "delete_imageMany", "react", "reactMany", "comment_on", "open_document", "export_content", "export_text", "export_document", "export_html", "read_file"] as const;
 
-/** The `word-processor.document` kind at `path`. */
+/** The `tl.so.tilo.word-processor.Document` kind at `path`. */
 export function wordProcessorDocument(ws: tilo.Workspace, path: string): Document {
   return resourceProxy(ws, path, SURFACE, DOCUMENT_ACTIONS) as unknown as Document;
+}
+
+/** Writer — `tl.so.tilo.word-processor`. */
+export interface WordProcessor extends tilo.Resource {
+}
+
+/** The actions `WordProcessor` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORDPROCESSOR_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.word-processor` kind at `path`. */
+export function wordProcessor(ws: tilo.Workspace, path: string): WordProcessor {
+  return resourceProxy(ws, path, SURFACE, WORDPROCESSOR_ACTIONS) as unknown as WordProcessor;
 }
 

@@ -32,8 +32,14 @@ __all__ = [
     "Photo",
     "Pinned",
     "LangGallery",
+    "EditBlockArgs",
+    "InsertBlockArgs",
+    "DeleteBlockArgs",
     "FinishArgs",
     "ReactArgs",
+    "GalleryEditBlockArgs",
+    "GalleryInsertBlockArgs",
+    "GalleryDeleteBlockArgs",
     "AddItemArgs",
     "RemoveItemArgs",
     "NoteChangeArgs",
@@ -46,6 +52,23 @@ Kind = Literal["notes", "tasks", "mail"]
 Urgency = Literal["none", "low", "medium", "high"]
 """How soon a report is due, as a case the report holds."""
 
+EditBlockArgs = TypedDict("EditBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `edit-block`."""
+
+InsertBlockArgs = TypedDict("InsertBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `insert-block`."""
+
+DeleteBlockArgs = TypedDict("DeleteBlockArgs", {
+    "block": "str",
+})
+"""The arguments of `delete-block`."""
+
 FinishArgs = TypedDict("FinishArgs", {
 })
 """The arguments of `finish`."""
@@ -54,6 +77,23 @@ ReactArgs = TypedDict("ReactArgs", {
     "emoji": "str",
 })
 """The arguments of `react`."""
+
+GalleryEditBlockArgs = TypedDict("GalleryEditBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `edit-block`."""
+
+GalleryInsertBlockArgs = TypedDict("GalleryInsertBlockArgs", {
+    "block": "str",
+    "text": "str",
+})
+"""The arguments of `insert-block`."""
+
+GalleryDeleteBlockArgs = TypedDict("GalleryDeleteBlockArgs", {
+    "block": "str",
+})
+"""The arguments of `delete-block`."""
 
 AddItemArgs = TypedDict("AddItemArgs", {
 })
@@ -76,7 +116,7 @@ SeekToArgs = TypedDict("SeekToArgs", {
 
 class Item(Resource):
     """Item — `tl.so.tilo.lang.gallery.Item`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     n5clkmib: str  # title
     znpp3agb: str  # notes
     xttl6aec: str  # stage
@@ -88,6 +128,38 @@ class Item(Resource):
     @_44yujnht.setter
     def _44yujnht(self, value: dict[str, list[str]]) -> None:
         self.edit("44yujnht", value=value)
+
+    def edit_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Set one paragraph of a rich-text field to what a Markdown text says."""
+        return self.action("edit-block", block=block, text=text)
+
+    def edit_block_many(self, items: list[EditBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit-block", items)
+
+    def insert_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Put a paragraph before the one the address names."""
+        return self.action("insert-block", block=block, text=text)
+
+    def insert_block_many(self, items: list[InsertBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert-block", items)
+
+    def delete_block(self, *, block: str) -> None:
+        """Remove the paragraph the address names, and the paragraphs it holds."""
+        return self.action("delete-block", block=block)
+
+    def delete_block_many(self, items: list[DeleteBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-block", items)
 
     def finish(self) -> None:
         """Marks an item done."""
@@ -107,12 +179,12 @@ class Item(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"finish", "finish_many", "react", "react_many"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "finish", "finish_many", "react", "react_many"})
 
 
 class Gallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery.Gallery`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     bmdkc22s: str  # name
     cbwtcaei: str  # basics_note
     kwuh65ek: str  # controls_title
@@ -162,6 +234,19 @@ class Gallery(Resource):
     @_6fezt7u6.setter
     def _6fezt7u6(self, value: bool) -> None:
         self.edit("6fezt7u6", value=value)
+    uuapjl23: bool  # states_off
+    mes2qxjc: bool  # states_on
+    @property
+    def _6v7qgjgp(self) -> str:
+        """states_name (`6v7qgjgp` on the wire)."""
+        return self.fields["6v7qgjgp"]
+
+    @_6v7qgjgp.setter
+    def _6v7qgjgp(self, value: str) -> None:
+        self.edit("6v7qgjgp", value=value)
+    fja32xcb: str  # states_wrong
+    dnr3rpdd: float  # states_share
+    dgjzr3us: str  # states_room
     @property
     def _5fbblehc(self) -> list[Entry[Item]]:
         """backlog_items (`5fbblehc` on the wire)."""
@@ -195,6 +280,38 @@ class Gallery(Resource):
     def _3tdz6w5q(self, value: str) -> None:
         self.edit("3tdz6w5q", value=value)
     wivzmqm3: list[Entry[Pinned]]  # chrome_apps
+
+    def edit_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Set one paragraph of a rich-text field to what a Markdown text says."""
+        return self.action("edit-block", block=block, text=text)
+
+    def edit_block_many(self, items: list[GalleryEditBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `edit-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("edit-block", items)
+
+    def insert_block(self,
+        *,
+        block: str,
+        text: str,
+    ) -> None:
+        """Put a paragraph before the one the address names."""
+        return self.action("insert-block", block=block, text=text)
+
+    def insert_block_many(self, items: list[GalleryInsertBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `insert-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("insert-block", items)
+
+    def delete_block(self, *, block: str) -> None:
+        """Remove the paragraph the address names, and the paragraphs it holds."""
+        return self.action("delete-block", block=block)
+
+    def delete_block_many(self, items: list[GalleryDeleteBlockArgs]) -> list[dict[str, Any]]:
+        """Runs `delete-block` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("delete-block", items)
 
     def add_item(self) -> None:
         """Adds what the backlog's line says as an item to do, and clears the line."""
@@ -230,12 +347,12 @@ class Gallery(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"add_item", "add_item_many", "remove_item", "remove_item_many", "note_change", "note_change_many", "seek_to", "seek_to_many"})
+    __actions__ = frozenset({"edit_block", "edit_block_many", "insert_block", "insert_block_many", "delete_block", "delete_block_many", "add_item", "add_item_many", "remove_item", "remove_item_many", "note_change", "note_change_many", "seek_to", "seek_to_many"})
 
 
 class Row(Resource):
     """Row — `tl.so.tilo.lang.gallery.Row`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     od2pk6d3: str  # title
     jqhagvfx: str  # state
     pu34cefb: int  # size
@@ -243,7 +360,7 @@ class Row(Resource):
 
 class Node(Resource):
     """Node — `tl.so.tilo.lang.gallery.Node`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     sartpsxo: str  # title
     iqq34vjp: Node | None  # parent
     jd5rkocy: bool  # folder
@@ -259,7 +376,7 @@ class Node(Resource):
 
 class Message(Resource):
     """Message — `tl.so.tilo.lang.gallery.Message`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     lcfap66g: str  # title
     ssylkjtu: str  # from
     vyexrz4i: str  # body
@@ -269,21 +386,21 @@ class Message(Resource):
 
 class Card(Resource):
     """Card — `tl.so.tilo.lang.gallery.Card`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     y5gdkqew: str  # title
     ii4dp5pl: int  # count
 
 
 class Change(Resource):
     """Change — `tl.so.tilo.lang.gallery.Change`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     dmejdwow: str  # title
     kbnmru3y: str  # summary
 
 
 class Photo(Resource):
     """Photo — `tl.so.tilo.lang.gallery.Photo`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     @property
     def _6zq4etzb(self) -> str:
         """title (`6zq4etzb` on the wire)."""
@@ -306,7 +423,7 @@ class Photo(Resource):
 
 class Pinned(Resource):
     """Pinned — `tl.so.tilo.lang.gallery.Pinned`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     ciwf3kva: str  # title
     @property
     def _5tfi5mod(self) -> Kind:
@@ -320,7 +437,7 @@ class Pinned(Resource):
 
 class LangGallery(Resource):
     """Gallery — `tl.so.tilo.lang.gallery`."""
-    __surface__ = "so.tilo.lang.gallery@50b5417c4f24c633"
+    __surface__ = "so.tilo.lang.gallery@578137dcb8e9a15c"
     def note_item(self,
         *,
         last: str,

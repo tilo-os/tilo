@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.maps@525f43aac9b3cfe3";
+export const SURFACE = "so.tilo.maps@b6685eb700dd4f73";
 
 /** What a place is: the marker's ink, the card's glyph, and the OpenStreetMap class it maps from. One of "landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other". */
 export type Category = "landmark" | "cafe" | "restaurant" | "bar" | "museum" | "park" | "transit" | "hotel" | "shop" | "hospital" | "other";
@@ -200,14 +200,14 @@ export interface ClearOfflineAreasArgs {
 
 /** Place — `tl.so.tilo.maps.Place`. */
 export interface Place extends tilo.Resource {
-  "7omk6fxl": string;  // name
-  jzfkismo: string;  // key
-  krefztsk: Category;  // category
-  oo5cyi2s: string;  // address
-  if6ecymb: number;  // latitude
-  xj2tbyfv: number;  // longitude
-  yb5xojzc: boolean;  // saved
-  xrhsgfmm: boolean;  // found
+  rcalop4o: string;  // name
+  m5b55osu: string;  // key
+  lozw4dq7: Category;  // category
+  opf2vbzc: string;  // address
+  fiavc35r: number;  // latitude
+  w552wzze: number;  // longitude
+  qoo35pg5: boolean;  // saved
+  sewsxq7v: boolean;  // found
   /** Keeps a place in the person's places, or takes it out. */
   save_place(args?: {
     saved?: boolean;
@@ -227,9 +227,9 @@ export function place(ws: tilo.Workspace, path: string): Place {
 
 /** Step — `tl.so.tilo.maps.Step`. */
 export interface Step extends tilo.Resource {
-  jslvd2zo: string;  // instruction
-  bx4d2y62: number;  // distance_m
-  "2wu6uhb6": Maneuver;  // maneuver
+  nfgqw3um: string;  // instruction
+  bvjnbo5z: number;  // distance_m
+  a4qv6woo: Maneuver;  // maneuver
 }
 
 /** The actions `Step` reaches before it is read: `ws` calls them without a
@@ -243,9 +243,9 @@ export function step(ws: tilo.Workspace, path: string): Step {
 
 /** Route — `tl.so.tilo.maps.Route`. */
 export interface Route extends tilo.Resource {
-  w2mcf323: TravelMode;  // mode
-  xl7mdkpo: number;  // distance_m
-  rdp44rmk: number;  // duration_s
+  ymsz4m34: TravelMode;  // mode
+  ty6bfuoo: number;  // distance_m
+  wc6ysmvx: number;  // duration_s
   uyrheaim: number[];  // geometry
   fyf6eckz: string;  // from_name
   bwd4zoxi: string;  // to_name

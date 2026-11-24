@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.lang.board@f2864a51bc2ab54e";
+export const SURFACE = "so.tilo.lang.board@d251d37a6dd55a9f";
 
 /** The arguments of `move_to`. */
 export interface MoveToArgs {

@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Shell` is a `Resource` of the app's `tl.so.tilo.shell.Shell`, made by its factory with the
+ * `Picking` is a `Resource` of the app's `tl.so.tilo.shell.Picking`, made by its factory with the
  * resource's path (`shell/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,10 +22,13 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shell@344292e2209225c3";
+export const SURFACE = "so.tilo.shell@052b0a2cc4e9385f";
 
 /** One part a person can put on the top bar, in their order. The case's icon is the glyph the settings and the drag ghost show for it. One of "menu", "workspace", "app_menu", "strip", "tasks", "clock", "people", "status", "power", "agent", "spacer". */
 export type BarPartKind = "menu" | "workspace" | "app_menu" | "strip" | "tasks" | "clock" | "people" | "status" | "power" | "agent" | "spacer";
+
+/** The corner of the display the cards of what is live dock in. One of "top_leading", "top_trailing", "bottom_leading", "bottom_trailing". */
+export type CardCorner = "top_leading" | "top_trailing" | "bottom_leading" | "bottom_trailing";
 
 /** A named set of the settings, which the person applies in one action: a chrome preset. `Viewing.style` (layout.tl) is the *view* — how the same places are shown — and is a different setting; this one names the bar and the dock. One of "tilo", "macos", "windows", "gnome", "minimal", "windows_desktop". */
 export type ChromePreset = "tilo" | "macos" | "windows" | "gnome" | "minimal" | "windows_desktop";
@@ -44,6 +47,15 @@ export type Showing = "always" | "no_overlap" | "edge_reveal" | "auto_hide";
 
 /** How large the parts are. One of "small", "regular", "large". */
 export type Size = "small" | "regular" | "large";
+
+/** The arguments of `open_folder`. */
+export interface OpenFolderArgs {
+  path: string;
+}
+
+/** The arguments of `close_folder`. */
+export interface CloseFolderArgs {
+}
 
 /** The arguments of `asked_on_canvas`. */
 export interface AskedOnCanvasArgs {
@@ -99,6 +111,11 @@ export interface ShowBarArgs {
 /** The arguments of `dock_on`. */
 export interface DockOnArgs {
   edge: Edge;
+}
+
+/** The arguments of `dock_cards`. */
+export interface DockCardsArgs {
+  corner: CardCorner;
 }
 
 /** The arguments of `set_dock_fit`. */
@@ -184,6 +201,14 @@ export interface UnpinArgs {
   item: DockItem;
 }
 
+/** The arguments of `report_problem`. */
+export interface ReportProblemArgs {
+}
+
+/** The arguments of `cancel_report`. */
+export interface CancelReportArgs {
+}
+
 /** The arguments of `open_style_settings`. */
 export interface OpenStyleSettingsArgs {
 }
@@ -205,6 +230,10 @@ export interface SetStripsTabsArgs {
 /** The arguments of `set_frames_snap`. */
 export interface SetFramesSnapArgs {
   on: boolean;
+}
+
+/** The arguments of `recents_of_an_afternoon`. */
+export interface RecentsOfAnAfternoonArgs {
 }
 
 /** The arguments of `tab_place_here`. */
@@ -258,6 +287,51 @@ export interface ShowPlaceArgs {
   place: unknown;
 }
 
+/** The arguments of `equal_widths`. */
+export interface EqualWidthsArgs {
+  w: unknown;
+}
+
+/** Picking — `tl.so.tilo.shell.Picking`. */
+export interface Picking extends tilo.Resource {
+  "5xjx7oct": string;  // folder
+  "5esxwq2o": unknown[];  // entries
+  /** Show the folder `path` to choose files in, as this device reads it now. */
+  open_folder(args: {
+    path: string;
+  }): Promise<void>;
+  /** Runs `open_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  open_folderMany(items: OpenFolderArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Stop showing a folder: the question that asked for files is answered. */
+  close_folder(): Promise<void>;
+  /** Runs `close_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  close_folderMany(items: CloseFolderArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Picking` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PICKING_ACTIONS = ["open_folder", "open_folderMany", "close_folder", "close_folderMany"] as const;
+
+/** The `tl.so.tilo.shell.Picking` kind at `path`. */
+export function picking(ws: tilo.Workspace, path: string): Picking {
+  return resourceProxy(ws, path, SURFACE, PICKING_ACTIONS) as unknown as Picking;
+}
+
+/** CallEdit — `tl.so.tilo.shell.CallEdit`. */
+export interface CallEdit extends tilo.Resource {
+  r6c6zjdg: string[];  // path
+  "5fhfjzcm": string;  // text
+}
+
+/** The actions `CallEdit` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CALLEDIT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.shell.CallEdit` kind at `path`. */
+export function callEdit(ws: tilo.Workspace, path: string): CallEdit {
+  return resourceProxy(ws, path, SURFACE, CALLEDIT_ACTIONS) as unknown as CallEdit;
+}
+
 /** Shell — `tl.so.tilo.shell.Shell`. */
 export interface Shell extends tilo.Resource {
   qsrjrjkd: ChromePreset;  // preset
@@ -277,13 +351,17 @@ export interface Shell extends tilo.Resource {
   nz74n3iu: Showing;  // dock_showing
   wx25jsef: Size;  // dock_size
   hx5alotd: Array<tilo.Entry<DockItem>>;  // dock_items
+  ftcph3ii: CardCorner;  // cards_corner
   ffa2ohzm: boolean;  // dock_running
   h5oo7js2: boolean;  // dock_launcher
   "5n4s55tz": boolean;  // dock_zoom
-  "4zknrelh": boolean;  // settings_open
-  dwct4abs: boolean;  // strips_tabs
-  gfmzi3qr: boolean;  // frames_snap
+  "7xqpekfu": boolean;  // settings_open
+  ayatksvb: boolean;  // strips_tabs
+  fyquhn4g: boolean;  // frames_snap
   "6bamt22e": boolean;  // canvas_asked
+  dpb7af4j: boolean;  // reporting
+  "7bxopjro": ReportPick[];  // report_picks
+  r6satdro: number[];  // report_area
   /** The person asked on the canvas: the hint the empty canvas says until then has been said (`Shell.canvas_asked`), and stays away from now on. */
   asked_on_canvas(): Promise<void>;
   /** Runs `asked_on_canvas` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -344,6 +422,12 @@ export interface Shell extends tilo.Resource {
   }): Promise<void>;
   /** Runs `dock_on` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   dock_onMany(items: DockOnArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Docks the cards of what is live in the corner `corner` of the display in use. */
+  dock_cards(args: {
+    corner: CardCorner;
+  }): Promise<void>;
+  /** Runs `dock_cards` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  dock_cardsMany(items: DockCardsArgs[]): Promise<tilo.ActionAnswer[]>;
   set_dock_fit(args: {
     fit: Fit;
   }): Promise<void>;
@@ -442,6 +526,22 @@ export interface Shell extends tilo.Resource {
   open_item(args: {
     key: string;
   }): Promise<void>;
+  /** Start a pick: what a report about a problem is about, chosen on the whole screen. The windows stand as cards; one is picked, and the report's box opens about it. */
+  report_problem(): Promise<void>;
+  /** Runs `report_problem` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  report_problemMany(items: ReportProblemArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** The window `key` is what the report is about: it joins the report, the picker closes, and the report's box opens about the window, the person free to point at the part of it that is wrong. */
+  pick_report_window(args: {
+    key: string;
+  }): Promise<void>;
+  /** The rectangle `area` the person dragged over the picker — its x, y, width and height in canvas pixels — picks the window it covers first, as a click on that card does. A rectangle over none of them keeps the picker up, its outline saying what was covered. */
+  pick_report_region(args: {
+    area: number[];
+  }): Promise<void>;
+  /** Leave the pick with nothing attached: no window, no report. */
+  cancel_report(): Promise<void>;
+  /** Runs `cancel_report` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  cancel_reportMany(items: CancelReportArgs[]): Promise<tilo.ActionAnswer[]>;
   /** The style's own settings, and the two ways of changing a style (`docs/designs/app-language/ shell.md` §6): without an agent, in the one place a person's settings live, and with an agent, by the same actions the person's controls run. Every setting here is plain tilolang state with a default (`chrome.tl`'s `Shell` document), so a person who never touches it gets the style as it ships, and the values live in the layout's own document, synced with the person's devices, with history and undo. Each setting is one action, so an agent — the canvas conversation or the REPL — changes it with the same call a press does, attributed and undoable: `shell.set_dock_edge(shell.shell, edge: shell.Edge.left)`. The style's settings stand over the shell (`style_panel`), opened by the bar's style menu (`style_menu`, `strips.tl`): a person changes the shell they look at without leaving it, as `shell.md` §6 asks. Opens the chosen style's settings over the shell: what the bar's style menu's entry runs, and what the REPL or the canvas agent calls too. */
   open_style_settings(): Promise<void>;
   /** Runs `open_style_settings` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -472,7 +572,7 @@ export interface Shell extends tilo.Resource {
 
 /** The actions `Shell` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SHELL_ACTIONS = ["asked_on_canvas", "asked_on_canvasMany", "apply", "applyMany", "show_app_menus", "show_app_menusMany", "hide_app_menus", "hide_app_menusMany", "reset", "resetMany", "bar_on", "bar_onMany", "set_bar_fit", "set_bar_fitMany", "set_bar_finish", "set_bar_finishMany", "set_bar_showing", "set_bar_showingMany", "set_bar_size", "set_bar_sizeMany", "show_bar", "show_barMany", "dock_on", "dock_onMany", "set_dock_fit", "set_dock_fitMany", "set_dock_finish", "set_dock_finishMany", "set_dock_showing", "set_dock_showingMany", "set_dock_size", "set_dock_sizeMany", "show_dock", "show_dockMany", "set_dock_running", "set_dock_runningMany", "set_dock_launcher", "set_dock_launcherMany", "set_dock_zoom", "set_dock_zoomMany", "move_part", "move_partMany", "place_part", "place_partMany", "show_part", "show_partMany", "move_item", "move_itemMany", "place_item", "place_itemMany", "pin", "pinMany", "unpin", "unpinMany", "open_item", "open_style_settings", "open_style_settingsMany", "close_style_settings", "close_style_settingsMany", "show_style_settings", "show_style_settingsMany", "set_strips_tabs", "set_strips_tabsMany", "set_frames_snap", "set_frames_snapMany"] as const;
+export const SHELL_ACTIONS = ["asked_on_canvas", "asked_on_canvasMany", "apply", "applyMany", "show_app_menus", "show_app_menusMany", "hide_app_menus", "hide_app_menusMany", "reset", "resetMany", "bar_on", "bar_onMany", "set_bar_fit", "set_bar_fitMany", "set_bar_finish", "set_bar_finishMany", "set_bar_showing", "set_bar_showingMany", "set_bar_size", "set_bar_sizeMany", "show_bar", "show_barMany", "dock_on", "dock_onMany", "dock_cards", "dock_cardsMany", "set_dock_fit", "set_dock_fitMany", "set_dock_finish", "set_dock_finishMany", "set_dock_showing", "set_dock_showingMany", "set_dock_size", "set_dock_sizeMany", "show_dock", "show_dockMany", "set_dock_running", "set_dock_runningMany", "set_dock_launcher", "set_dock_launcherMany", "set_dock_zoom", "set_dock_zoomMany", "move_part", "move_partMany", "place_part", "place_partMany", "show_part", "show_partMany", "move_item", "move_itemMany", "place_item", "place_itemMany", "pin", "pinMany", "unpin", "unpinMany", "open_item", "report_problem", "report_problemMany", "pick_report_window", "pick_report_region", "cancel_report", "cancel_reportMany", "open_style_settings", "open_style_settingsMany", "close_style_settings", "close_style_settingsMany", "show_style_settings", "show_style_settingsMany", "set_strips_tabs", "set_strips_tabsMany", "set_frames_snap", "set_frames_snapMany"] as const;
 
 /** The `tl.so.tilo.shell.Shell` kind at `path`. */
 export function shell(ws: tilo.Workspace, path: string): Shell {
@@ -514,6 +614,22 @@ export function dockItem(ws: tilo.Workspace, path: string): DockItem {
   return resourceProxy(ws, path, SURFACE, DOCKITEM_ACTIONS) as unknown as DockItem;
 }
 
+/** ReportPick — `tl.so.tilo.shell.ReportPick`. */
+export interface ReportPick extends tilo.Resource {
+  hb2dxuji: string;  // key
+  hu4bokd4: string;  // title
+  abe7lbj4: string;  // app_name
+}
+
+/** The actions `ReportPick` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const REPORTPICK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.shell.ReportPick` kind at `path`. */
+export function reportPick(ws: tilo.Workspace, path: string): ReportPick {
+  return resourceProxy(ws, path, SURFACE, REPORTPICK_ACTIONS) as unknown as ReportPick;
+}
+
 /** Layout — `tl.so.tilo.shell.Layout`. */
 export interface Layout extends tilo.Resource {
   uykuo63i: string;  // person
@@ -525,6 +641,7 @@ export interface Layout extends tilo.Resource {
   "2ug5q5cq": Array<tilo.Entry<LayoutPlace>>;  // places
   dt4vnrqa: Array<tilo.Entry<LayoutQuery>>;  // queries
   fqirvfzw: Array<tilo.Entry<LayoutRef>>;  // refs
+  cswol6ca: Array<tilo.Entry<LayoutRecent>>;  // recents
   /** Adds a workspace, with one row, to `a`, and returns the row's key. */
   a_workspace(args: {
     name: string;
@@ -538,6 +655,13 @@ export interface Layout extends tilo.Resource {
     row: string;
     name: string;
     width: number;
+  }): Promise<string>;
+  /** Adds a strip named `name` to `row` at `width`, shown on `display`, and returns its key. */
+  a_strip_on(args: {
+    row: string;
+    name: string;
+    width: number;
+    display: number;
   }): Promise<string>;
   /** Adds a place showing the note at `index` of the notebook to `strip`, and returns its key. */
   a_note_place(args: {
@@ -555,6 +679,10 @@ export interface Layout extends tilo.Resource {
     strip: string;
     text: string;
   }): Promise<string>;
+  /** Ada's opens of an afternoon and two of Mia's, newest first, as the session lists them. */
+  recents_of_an_afternoon(): Promise<void>;
+  /** Runs `recents_of_an_afternoon` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  recents_of_an_afternoonMany(items: RecentsOfAnAfternoonArgs[]): Promise<tilo.ActionAnswer[]>;
   /** Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags one window's bar onto another's to make its tabs, and the window's menu's 'Move into … as a tab' runs the same arranging action. The place lands after the strip's other tabs and comes to the front of them, so the window shows what was dropped on it. A place already in this strip is only brought to the front, so dropping a window on itself raises it rather than opening a second place. The strip comes forward with it. */
   tab_place_here(args: {
     s: LayoutStrip;
@@ -580,11 +708,33 @@ export interface Layout extends tilo.Resource {
 
 /** The actions `Layout` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LAYOUT_ACTIONS = ["a_workspace", "a_front_workspace", "a_strip", "a_note_place", "a_foreign_place", "a_query_place", "tab_place_here", "tab_place_hereMany", "reorder_place", "reorder_placeMany", "bring_forward", "bring_forwardMany"] as const;
+export const LAYOUT_ACTIONS = ["a_workspace", "a_front_workspace", "a_strip", "a_strip_on", "a_note_place", "a_foreign_place", "a_query_place", "recents_of_an_afternoon", "recents_of_an_afternoonMany", "tab_place_here", "tab_place_hereMany", "reorder_place", "reorder_placeMany", "bring_forward", "bring_forwardMany"] as const;
 
 /** The `tl.so.tilo.shell.Layout` kind at `path`. */
 export function layout(ws: tilo.Workspace, path: string): Layout {
   return resourceProxy(ws, path, SURFACE, LAYOUT_ACTIONS) as unknown as Layout;
+}
+
+/** LayoutRecent — `tl.so.tilo.shell.LayoutRecent`. */
+export interface LayoutRecent extends tilo.Resource {
+  zyqmwz53: string;  // key
+  g5lvltn4: string;  // resource
+  "33ygyyvo": string;  // title
+  rgnzsrl5: string;  // origin_app
+  qegnrgvk: string;  // app_title
+  wpv5ccaw: string;  // kind
+  nk3qn5vg: string;  // by
+  n77p6zrw: string;  // at
+  "5xciib7g": boolean;  // mine
+}
+
+/** The actions `LayoutRecent` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LAYOUTRECENT_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.shell.LayoutRecent` kind at `path`. */
+export function layoutRecent(ws: tilo.Workspace, path: string): LayoutRecent {
+  return resourceProxy(ws, path, SURFACE, LAYOUTRECENT_ACTIONS) as unknown as LayoutRecent;
 }
 
 /** LayoutQuery — `tl.so.tilo.shell.LayoutQuery`. */
@@ -629,6 +779,7 @@ export interface LayoutWorkspace extends tilo.Resource {
   "5zibpqs6": string;  // key
   b2vzzczj: string;  // name
   hwfwvs3f: boolean;  // current
+  jbtiqjt4: string;  // home
 }
 
 /** The actions `LayoutWorkspace` reaches before it is read: `ws` calls them without a
@@ -678,6 +829,7 @@ export interface LayoutStrip extends tilo.Resource {
   dufcke3u: string;  // key
   x42tiiqe: string;  // workspace
   dvberkpa: string;  // row
+  ssbg6dg6: number;  // display
   "7ekq6qgi": number;  // width
   "2cbikm5m": boolean;  // maximized
   yk2oxjrj: string;  // active
@@ -743,6 +895,20 @@ export function viewing(ws: tilo.Workspace, path: string): Viewing {
 
 /** Shell — `tl.so.tilo.shell`. */
 export interface TiloShell extends tilo.Resource {
+  /** Name the workspace `key` what the person typed: the workspace's own published `rename`, so the name reaches every device and every list of it. A blank name is nothing to do. */
+  rename_workspace(args: {
+    key: string;
+    name: string;
+  }): Promise<void>;
+  /** Name the strip `key` what the person typed: one arranging action of the session's, so a script and an agent rename as a press does. A blank name is nothing to do. */
+  rename_strip(args: {
+    key: string;
+    name: string;
+  }): Promise<void>;
+  /** Decline the question at `key`: its asked record's own `resolve`, called by its address as any caller calls it. */
+  decline(args: {
+    key: string;
+  }): Promise<void>;
   /** Gives the place `key` the size a drag of its edge or corner left it at, `size` its width and height in canvas pixels: one arranging step of the person's, its corner where it stood. */
   size_place(args: {
     key: string;
@@ -762,10 +928,19 @@ export interface TiloShell extends tilo.Resource {
   }): Promise<void>;
   /** Runs `place_dropped` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   place_droppedMany(items: PlaceDroppedArgs[]): Promise<tilo.ActionAnswer[]>;
-  /** Enter's work on a query: the first app the text finds opens, so typing 'no' and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the shell's own rows do not hold. */
-  open_first(args: {
-    query: string;
+  /** Puts the surface away once a recent resource is opened again beside the window in front, by the same `open` an agent and a reference's press run. */
+  put_history_away(): Promise<void>;
+  /** What choosing the row the person reached does, read off the row's value: opening an application or a window here, running a row the search found, or one of the shell's own surfaces. A row is only ever one of those, so a raw choice — what is typed with no row under it — opens the first row the text finds, or searches everywhere for it. */
+  choose_launcher_row(args: {
+    choice: string;
+    current: boolean;
   }): Promise<void>;
+  /** Open the shell's surface `surface` (`overview`, `workspaces`, `centre`), as the bar's own controls do. */
+  open_surface(args: {
+    surface: string;
+  }): Promise<void>;
+  /** Leave the launcher: the surface stack goes back to the shell at rest. */
+  close_launcher(): Promise<void>;
   /** Turn the VPN on through its first profile, or off through the one connected: the tile's one press, whichever way it flips. */
   toggle_vpn(args: {
     v: unknown;
@@ -797,11 +972,26 @@ export interface TiloShell extends tilo.Resource {
   }): Promise<void>;
   /** Runs `show_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   show_placeMany(items: ShowPlaceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Move the window `w` before the window `before` of its strip: one place along it. */
+  move_before(args: {
+    w: unknown;
+    before: string;
+  }): Promise<void>;
+  /** Move the window `w` one place to the trailing side: before the window after the next, or last in its strip while none stands there. */
+  move_right(args: {
+    w: unknown;
+  }): Promise<void>;
+  /** Give every window of the row the same share of it: what 'every window the same' does where a person sees their windows side by side in a band. */
+  equal_widths(args: {
+    w: unknown;
+  }): Promise<void>;
+  /** Runs `equal_widths` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  equal_widthsMany(items: EqualWidthsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `TiloShell` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TILOSHELL_ACTIONS = ["size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "open_first", "toggle_vpn", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany", "detach_place", "show_place", "show_placeMany"] as const;
+export const TILOSHELL_ACTIONS = ["rename_workspace", "rename_strip", "decline", "size_place", "size_placeMany", "drew_place", "place_dropped", "place_droppedMany", "put_history_away", "choose_launcher_row", "open_surface", "close_launcher", "toggle_vpn", "a_style_settings", "query_show", "query_showMany", "query_retry", "query_retryMany", "detach_place", "show_place", "show_placeMany", "move_before", "move_right", "equal_widths", "equal_widthsMany"] as const;
 
 /** The `tl.so.tilo.shell` kind at `path`. */
 export function tiloShell(ws: tilo.Workspace, path: string): TiloShell {

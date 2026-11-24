@@ -3,7 +3,7 @@
 `tilo sdk gen --lang python` writes this file from the app's `surface.toml`;
 write it again rather than editing it.
 
-`Shell` is the app's `tl.so.tilo.shell.Shell` at `shell/<resource>`, read with
+`Picking` is the app's `tl.so.tilo.shell.Picking` at `shell/<resource>`, read with
 `await ….load()`: its fields are the app's fields (read-only ones without a setter)
 and its methods are its actions. A method answers what the app declares; an action
 that takes longer answers an `Invocation`. A record is the dict the wire carries, and an
@@ -21,16 +21,21 @@ from tilo import Entry, Invocation, Resource
 
 __all__ = [
     "BarPartKind",
+    "CardCorner",
     "ChromePreset",
     "Edge",
     "Finish",
     "Fit",
     "Showing",
     "Size",
+    "Picking",
+    "CallEdit",
     "Shell",
     "BarPart",
     "DockItem",
+    "ReportPick",
     "Layout",
+    "LayoutRecent",
     "LayoutQuery",
     "LayoutRef",
     "LayoutWorkspace",
@@ -40,6 +45,8 @@ __all__ = [
     "LayoutPlace",
     "Viewing",
     "TiloShell",
+    "OpenFolderArgs",
+    "CloseFolderArgs",
     "AskedOnCanvasArgs",
     "ApplyArgs",
     "ShowAppMenusArgs",
@@ -52,6 +59,7 @@ __all__ = [
     "SetBarSizeArgs",
     "ShowBarArgs",
     "DockOnArgs",
+    "DockCardsArgs",
     "SetDockFitArgs",
     "SetDockFinishArgs",
     "SetDockShowingArgs",
@@ -67,11 +75,14 @@ __all__ = [
     "PlaceItemArgs",
     "PinArgs",
     "UnpinArgs",
+    "ReportProblemArgs",
+    "CancelReportArgs",
     "OpenStyleSettingsArgs",
     "CloseStyleSettingsArgs",
     "ShowStyleSettingsArgs",
     "SetStripsTabsArgs",
     "SetFramesSnapArgs",
+    "RecentsOfAnAfternoonArgs",
     "TabPlaceHereArgs",
     "ReorderPlaceArgs",
     "BringForwardArgs",
@@ -81,10 +92,14 @@ __all__ = [
     "QueryShowArgs",
     "QueryRetryArgs",
     "ShowPlaceArgs",
+    "EqualWidthsArgs",
 ]
 
 BarPartKind = Literal["menu", "workspace", "app_menu", "strip", "tasks", "clock", "people", "status", "power", "agent", "spacer"]
 """One part a person can put on the top bar, in their order. The case's icon is the glyph the settings and the drag ghost show for it."""
+
+CardCorner = Literal["top_leading", "top_trailing", "bottom_leading", "bottom_trailing"]
+"""The corner of the display the cards of what is live dock in."""
 
 ChromePreset = Literal["tilo", "macos", "windows", "gnome", "minimal", "windows_desktop"]
 """A named set of the settings, which the person applies in one action: a chrome preset. `Viewing.style` (layout.tl) is the *view* — how the same places are shown — and is a different setting; this one names the bar and the dock."""
@@ -103,6 +118,15 @@ Showing = Literal["always", "no_overlap", "edge_reveal", "auto_hide"]
 
 Size = Literal["small", "regular", "large"]
 """How large the parts are."""
+
+OpenFolderArgs = TypedDict("OpenFolderArgs", {
+    "path": "str",
+})
+"""The arguments of `open_folder`."""
+
+CloseFolderArgs = TypedDict("CloseFolderArgs", {
+})
+"""The arguments of `close_folder`."""
 
 AskedOnCanvasArgs = TypedDict("AskedOnCanvasArgs", {
 })
@@ -159,6 +183,11 @@ DockOnArgs = TypedDict("DockOnArgs", {
     "edge": "Edge",
 })
 """The arguments of `dock_on`."""
+
+DockCardsArgs = TypedDict("DockCardsArgs", {
+    "corner": "CardCorner",
+})
+"""The arguments of `dock_cards`."""
 
 SetDockFitArgs = TypedDict("SetDockFitArgs", {
     "fit": "Fit",
@@ -243,6 +272,14 @@ UnpinArgs = TypedDict("UnpinArgs", {
 })
 """The arguments of `unpin`."""
 
+ReportProblemArgs = TypedDict("ReportProblemArgs", {
+})
+"""The arguments of `report_problem`."""
+
+CancelReportArgs = TypedDict("CancelReportArgs", {
+})
+"""The arguments of `cancel_report`."""
+
 OpenStyleSettingsArgs = TypedDict("OpenStyleSettingsArgs", {
 })
 """The arguments of `open_style_settings`."""
@@ -265,6 +302,10 @@ SetFramesSnapArgs = TypedDict("SetFramesSnapArgs", {
     "on": "bool",
 })
 """The arguments of `set_frames_snap`."""
+
+RecentsOfAnAfternoonArgs = TypedDict("RecentsOfAnAfternoonArgs", {
+})
+"""The arguments of `recents_of_an_afternoon`."""
 
 TabPlaceHereArgs = TypedDict("TabPlaceHereArgs", {
     "s": "LayoutStrip",
@@ -317,9 +358,69 @@ ShowPlaceArgs = TypedDict("ShowPlaceArgs", {
 })
 """The arguments of `show_place`."""
 
+EqualWidthsArgs = TypedDict("EqualWidthsArgs", {
+    "w": "Any",
+})
+"""The arguments of `equal_widths`."""
+
+class Picking(Resource):
+    """Picking — `tl.so.tilo.shell.Picking`."""
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
+    @property
+    def _5xjx7oct(self) -> str:
+        """folder (`5xjx7oct` on the wire)."""
+        return self.fields["5xjx7oct"]
+
+    @_5xjx7oct.setter
+    def _5xjx7oct(self, value: str) -> None:
+        self.edit("5xjx7oct", value=value)
+    @property
+    def _5esxwq2o(self) -> list[Any]:
+        """entries (`5esxwq2o` on the wire)."""
+        return self.fields["5esxwq2o"]
+
+    @_5esxwq2o.setter
+    def _5esxwq2o(self, value: list[Any]) -> None:
+        self.edit("5esxwq2o", value=value)
+
+    def open_folder(self, *, path: str) -> None:
+        """Show the folder `path` to choose files in, as this device reads it now."""
+        return self.action("open_folder", path=path)
+
+    def open_folder_many(self, items: list[OpenFolderArgs]) -> list[dict[str, Any]]:
+        """Runs `open_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("open_folder", items)
+
+    def close_folder(self) -> None:
+        """Stop showing a folder: the question that asked for files is answered."""
+        return self.action("close_folder")
+
+    def close_folder_many(self, items: list[CloseFolderArgs]) -> list[dict[str, Any]]:
+        """Runs `close_folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("close_folder", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"open_folder", "open_folder_many", "close_folder", "close_folder_many"})
+
+
+class CallEdit(Resource):
+    """CallEdit — `tl.so.tilo.shell.CallEdit`."""
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
+    r6c6zjdg: list[str]  # path
+    @property
+    def _5fhfjzcm(self) -> str:
+        """text (`5fhfjzcm` on the wire)."""
+        return self.fields["5fhfjzcm"]
+
+    @_5fhfjzcm.setter
+    def _5fhfjzcm(self, value: str) -> None:
+        self.edit("5fhfjzcm", value=value)
+
+
 class Shell(Resource):
     """Shell — `tl.so.tilo.shell.Shell`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     qsrjrjkd: ChromePreset  # preset
     @property
     def _2se66uzq(self) -> ChromePreset:
@@ -358,6 +459,7 @@ class Shell(Resource):
     nz74n3iu: Showing  # dock_showing
     wx25jsef: Size  # dock_size
     hx5alotd: list[Entry[DockItem]]  # dock_items
+    ftcph3ii: CardCorner  # cards_corner
     ffa2ohzm: bool  # dock_running
     h5oo7js2: bool  # dock_launcher
     @property
@@ -369,15 +471,15 @@ class Shell(Resource):
     def _5n4s55tz(self, value: bool) -> None:
         self.edit("5n4s55tz", value=value)
     @property
-    def _4zknrelh(self) -> bool:
-        """settings_open (`4zknrelh` on the wire)."""
-        return self.fields["4zknrelh"]
+    def _7xqpekfu(self) -> bool:
+        """settings_open (`7xqpekfu` on the wire)."""
+        return self.fields["7xqpekfu"]
 
-    @_4zknrelh.setter
-    def _4zknrelh(self, value: bool) -> None:
-        self.edit("4zknrelh", value=value)
-    dwct4abs: bool  # strips_tabs
-    gfmzi3qr: bool  # frames_snap
+    @_7xqpekfu.setter
+    def _7xqpekfu(self, value: bool) -> None:
+        self.edit("7xqpekfu", value=value)
+    ayatksvb: bool  # strips_tabs
+    fyquhn4g: bool  # frames_snap
     @property
     def _6bamt22e(self) -> bool:
         """canvas_asked (`6bamt22e` on the wire)."""
@@ -386,6 +488,16 @@ class Shell(Resource):
     @_6bamt22e.setter
     def _6bamt22e(self, value: bool) -> None:
         self.edit("6bamt22e", value=value)
+    dpb7af4j: bool  # reporting
+    @property
+    def _7bxopjro(self) -> list[ReportPick]:
+        """report_picks (`7bxopjro` on the wire)."""
+        return self.fields["7bxopjro"]
+
+    @_7bxopjro.setter
+    def _7bxopjro(self, value: list[ReportPick]) -> None:
+        self.edit("7bxopjro", value=value)
+    r6satdro: list[int]  # report_area
 
     def asked_on_canvas(self) -> None:
         """The person asked on the canvas: the hint the empty canvas says until then has been said (`Shell.canvas_asked`), and stays away from now on."""
@@ -488,6 +600,14 @@ class Shell(Resource):
     def dock_on_many(self, items: list[DockOnArgs]) -> list[dict[str, Any]]:
         """Runs `dock_on` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("dock_on", items)
+
+    def dock_cards(self, *, corner: CardCorner) -> None:
+        """Docks the cards of what is live in the corner `corner` of the display in use."""
+        return self.action("dock_cards", corner=corner)
+
+    def dock_cards_many(self, items: list[DockCardsArgs]) -> list[dict[str, Any]]:
+        """Runs `dock_cards` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("dock_cards", items)
 
     def set_dock_fit(self, *, fit: Fit) -> None:
         """Runs the app's action."""
@@ -651,6 +771,30 @@ class Shell(Resource):
         """What a press on a dock item does, by the app the item stands for: a window of that app on this screen comes to the front, so the shell says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy. An app with no window open is opened (`session.open_app`), and the launcher shows. It takes the app's key and not the item: an item the shell's document holds reaches an action as a document reference, and the press names the one thing it needs, so a run's item reaches it without a `DockItem` parameter to fit."""
         return self.action("open_item", key=key)
 
+    def report_problem(self) -> None:
+        """Start a pick: what a report about a problem is about, chosen on the whole screen. The windows stand as cards; one is picked, and the report's box opens about it."""
+        return self.action("report_problem")
+
+    def report_problem_many(self, items: list[ReportProblemArgs]) -> list[dict[str, Any]]:
+        """Runs `report_problem` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("report_problem", items)
+
+    def pick_report_window(self, *, key: str) -> None:
+        """The window `key` is what the report is about: it joins the report, the picker closes, and the report's box opens about the window, the person free to point at the part of it that is wrong."""
+        return self.action("pick_report_window", key=key)
+
+    def pick_report_region(self, *, area: list[int]) -> None:
+        """The rectangle `area` the person dragged over the picker — its x, y, width and height in canvas pixels — picks the window it covers first, as a click on that card does. A rectangle over none of them keeps the picker up, its outline saying what was covered."""
+        return self.action("pick_report_region", area=area)
+
+    def cancel_report(self) -> None:
+        """Leave the pick with nothing attached: no window, no report."""
+        return self.action("cancel_report")
+
+    def cancel_report_many(self, items: list[CancelReportArgs]) -> list[dict[str, Any]]:
+        """Runs `cancel_report` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("cancel_report", items)
+
     def open_style_settings(self) -> None:
         """The style's own settings, and the two ways of changing a style (`docs/designs/app-language/ shell.md` §6): without an agent, in the one place a person's settings live, and with an agent, by the same actions the person's controls run. Every setting here is plain tilolang state with a default (`chrome.tl`'s `Shell` document), so a person who never touches it gets the style as it ships, and the values live in the layout's own document, synced with the person's devices, with history and undo. Each setting is one action, so an agent — the canvas conversation or the REPL — changes it with the same call a press does, attributed and undoable: `shell.set_dock_edge(shell.shell, edge: shell.Edge.left)`. The style's settings stand over the shell (`style_panel`), opened by the bar's style menu (`style_menu`, `strips.tl`): a person changes the shell they look at without leaving it, as `shell.md` §6 asks. Opens the chosen style's settings over the shell: what the bar's style menu's entry runs, and what the REPL or the canvas agent calls too."""
         return self.action("open_style_settings")
@@ -699,19 +843,19 @@ class Shell(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"asked_on_canvas", "asked_on_canvas_many", "apply", "apply_many", "show_app_menus", "show_app_menus_many", "hide_app_menus", "hide_app_menus_many", "reset", "reset_many", "bar_on", "bar_on_many", "set_bar_fit", "set_bar_fit_many", "set_bar_finish", "set_bar_finish_many", "set_bar_showing", "set_bar_showing_many", "set_bar_size", "set_bar_size_many", "show_bar", "show_bar_many", "dock_on", "dock_on_many", "set_dock_fit", "set_dock_fit_many", "set_dock_finish", "set_dock_finish_many", "set_dock_showing", "set_dock_showing_many", "set_dock_size", "set_dock_size_many", "show_dock", "show_dock_many", "set_dock_running", "set_dock_running_many", "set_dock_launcher", "set_dock_launcher_many", "set_dock_zoom", "set_dock_zoom_many", "move_part", "move_part_many", "place_part", "place_part_many", "show_part", "show_part_many", "move_item", "move_item_many", "place_item", "place_item_many", "pin", "pin_many", "unpin", "unpin_many", "open_item", "open_style_settings", "open_style_settings_many", "close_style_settings", "close_style_settings_many", "show_style_settings", "show_style_settings_many", "set_strips_tabs", "set_strips_tabs_many", "set_frames_snap", "set_frames_snap_many"})
+    __actions__ = frozenset({"asked_on_canvas", "asked_on_canvas_many", "apply", "apply_many", "show_app_menus", "show_app_menus_many", "hide_app_menus", "hide_app_menus_many", "reset", "reset_many", "bar_on", "bar_on_many", "set_bar_fit", "set_bar_fit_many", "set_bar_finish", "set_bar_finish_many", "set_bar_showing", "set_bar_showing_many", "set_bar_size", "set_bar_size_many", "show_bar", "show_bar_many", "dock_on", "dock_on_many", "dock_cards", "dock_cards_many", "set_dock_fit", "set_dock_fit_many", "set_dock_finish", "set_dock_finish_many", "set_dock_showing", "set_dock_showing_many", "set_dock_size", "set_dock_size_many", "show_dock", "show_dock_many", "set_dock_running", "set_dock_running_many", "set_dock_launcher", "set_dock_launcher_many", "set_dock_zoom", "set_dock_zoom_many", "move_part", "move_part_many", "place_part", "place_part_many", "show_part", "show_part_many", "move_item", "move_item_many", "place_item", "place_item_many", "pin", "pin_many", "unpin", "unpin_many", "open_item", "report_problem", "report_problem_many", "pick_report_window", "pick_report_region", "cancel_report", "cancel_report_many", "open_style_settings", "open_style_settings_many", "close_style_settings", "close_style_settings_many", "show_style_settings", "show_style_settings_many", "set_strips_tabs", "set_strips_tabs_many", "set_frames_snap", "set_frames_snap_many"})
 
 
 class BarPart(Resource):
     """BarPart — `tl.so.tilo.shell.BarPart`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     fjzbw5un: BarPartKind  # kind
     pbly7ymy: bool  # shown
 
 
 class DockItem(Resource):
     """DockItem — `tl.so.tilo.shell.DockItem`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     rfsefuzv: str  # key
     qsnrl2gk: str  # title
     @property
@@ -735,9 +879,17 @@ class DockItem(Resource):
     e7ft4mly: bool  # attention
 
 
+class ReportPick(Resource):
+    """ReportPick — `tl.so.tilo.shell.ReportPick`."""
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
+    hb2dxuji: str  # key
+    hu4bokd4: str  # title
+    abe7lbj4: str  # app_name
+
+
 class Layout(Resource):
     """Layout — `tl.so.tilo.shell.Layout`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     uykuo63i: str  # person
     k4p3z4ee: str  # front
     yb7sokzs: list[Entry[LayoutPerson]]  # people
@@ -768,6 +920,7 @@ class Layout(Resource):
         self.edit("2ug5q5cq", value=value)
     dt4vnrqa: list[Entry[LayoutQuery]]  # queries
     fqirvfzw: list[Entry[LayoutRef]]  # refs
+    cswol6ca: list[Entry[LayoutRecent]]  # recents
 
     def a_workspace(self, *, name: str) -> str:
         """Adds a workspace, with one row, to `a`, and returns the row's key."""
@@ -785,6 +938,16 @@ class Layout(Resource):
     ) -> str:
         """Adds a strip named `name` to `row` at `width`, and returns its key."""
         return self.action("a_strip", row=row, name=name, width=width)
+
+    def a_strip_on(self,
+        *,
+        row: str,
+        name: str,
+        width: int,
+        display: int,
+    ) -> str:
+        """Adds a strip named `name` to `row` at `width`, shown on `display`, and returns its key."""
+        return self.action("a_strip_on", row=row, name=name, width=width, display=display)
 
     def a_note_place(self,
         *,
@@ -810,6 +973,14 @@ class Layout(Resource):
     ) -> str:
         """Adds a place showing a search for `text` to `strip`, with the two matches the notes app answered, and returns the place's key: the state a place stands in until the person chooses one of the resources it found (shell.md §8)."""
         return self.action("a_query_place", strip=strip, text=text)
+
+    def recents_of_an_afternoon(self) -> None:
+        """Ada's opens of an afternoon and two of Mia's, newest first, as the session lists them."""
+        return self.action("recents_of_an_afternoon")
+
+    def recents_of_an_afternoon_many(self, items: list[RecentsOfAnAfternoonArgs]) -> list[dict[str, Any]]:
+        """Runs `recents_of_an_afternoon` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("recents_of_an_afternoon", items)
 
     def tab_place_here(self,
         *,
@@ -846,12 +1017,40 @@ class Layout(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"a_workspace", "a_front_workspace", "a_strip", "a_note_place", "a_foreign_place", "a_query_place", "tab_place_here", "tab_place_here_many", "reorder_place", "reorder_place_many", "bring_forward", "bring_forward_many"})
+    __actions__ = frozenset({"a_workspace", "a_front_workspace", "a_strip", "a_strip_on", "a_note_place", "a_foreign_place", "a_query_place", "recents_of_an_afternoon", "recents_of_an_afternoon_many", "tab_place_here", "tab_place_here_many", "reorder_place", "reorder_place_many", "bring_forward", "bring_forward_many"})
+
+
+class LayoutRecent(Resource):
+    """LayoutRecent — `tl.so.tilo.shell.LayoutRecent`."""
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
+    zyqmwz53: str  # key
+    g5lvltn4: str  # resource
+    @property
+    def _33ygyyvo(self) -> str:
+        """title (`33ygyyvo` on the wire)."""
+        return self.fields["33ygyyvo"]
+
+    @_33ygyyvo.setter
+    def _33ygyyvo(self, value: str) -> None:
+        self.edit("33ygyyvo", value=value)
+    rgnzsrl5: str  # origin_app
+    qegnrgvk: str  # app_title
+    wpv5ccaw: str  # kind
+    nk3qn5vg: str  # by
+    n77p6zrw: str  # at
+    @property
+    def _5xciib7g(self) -> bool:
+        """mine (`5xciib7g` on the wire)."""
+        return self.fields["5xciib7g"]
+
+    @_5xciib7g.setter
+    def _5xciib7g(self, value: bool) -> None:
+        self.edit("5xciib7g", value=value)
 
 
 class LayoutQuery(Resource):
     """LayoutQuery — `tl.so.tilo.shell.LayoutQuery`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     @property
     def _6jget5cg(self) -> str:
         """key (`6jget5cg` on the wire)."""
@@ -869,7 +1068,7 @@ class LayoutQuery(Resource):
 
 class LayoutRef(Resource):
     """LayoutRef — `tl.so.tilo.shell.LayoutRef`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     k652vouu: str  # key
     vdsinb5l: str  # query
     vj5mgxi6: str  # address
@@ -886,7 +1085,7 @@ class LayoutRef(Resource):
 
 class LayoutWorkspace(Resource):
     """LayoutWorkspace — `tl.so.tilo.shell.LayoutWorkspace`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     @property
     def _5zibpqs6(self) -> str:
         """key (`5zibpqs6` on the wire)."""
@@ -897,11 +1096,12 @@ class LayoutWorkspace(Resource):
         self.edit("5zibpqs6", value=value)
     b2vzzczj: str  # name
     hwfwvs3f: bool  # current
+    jbtiqjt4: str  # home
 
 
 class LayoutPerson(Resource):
     """LayoutPerson — `tl.so.tilo.shell.LayoutPerson`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     @property
     def _3rpmhtjf(self) -> str:
         """key (`3rpmhtjf` on the wire)."""
@@ -922,7 +1122,7 @@ class LayoutPerson(Resource):
 
 class LayoutRow(Resource):
     """LayoutRow — `tl.so.tilo.shell.LayoutRow`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     @property
     def _3xc5xbon(self) -> str:
         """key (`3xc5xbon` on the wire)."""
@@ -939,10 +1139,11 @@ class LayoutRow(Resource):
 
 class LayoutStrip(Resource):
     """LayoutStrip — `tl.so.tilo.shell.LayoutStrip`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     dufcke3u: str  # key
     x42tiiqe: str  # workspace
     dvberkpa: str  # row
+    ssbg6dg6: int  # display
     @property
     def _7ekq6qgi(self) -> int:
         """width (`7ekq6qgi` on the wire)."""
@@ -978,7 +1179,7 @@ class LayoutStrip(Resource):
 
 class LayoutPlace(Resource):
     """LayoutPlace — `tl.so.tilo.shell.LayoutPlace`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     ba3kyokq: str  # key
     @property
     def _7dno3n47(self) -> str:
@@ -999,7 +1200,7 @@ class LayoutPlace(Resource):
 
 class Viewing(Resource):
     """Viewing — `tl.so.tilo.shell.Viewing`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
     kna5sco4: str  # style
 
     def show_style(self, *, style: str) -> None:
@@ -1017,7 +1218,27 @@ class Viewing(Resource):
 
 class TiloShell(Resource):
     """Shell — `tl.so.tilo.shell`."""
-    __surface__ = "so.tilo.shell@344292e2209225c3"
+    __surface__ = "so.tilo.shell@052b0a2cc4e9385f"
+    def rename_workspace(self,
+        *,
+        key: str,
+        name: str,
+    ) -> None:
+        """Name the workspace `key` what the person typed: the workspace's own published `rename`, so the name reaches every device and every list of it. A blank name is nothing to do."""
+        return self.action("rename_workspace", key=key, name=name)
+
+    def rename_strip(self,
+        *,
+        key: str,
+        name: str,
+    ) -> None:
+        """Name the strip `key` what the person typed: one arranging action of the session's, so a script and an agent rename as a press does. A blank name is nothing to do."""
+        return self.action("rename_strip", key=key, name=name)
+
+    def decline(self, *, key: str) -> None:
+        """Decline the question at `key`: its asked record's own `resolve`, called by its address as any caller calls it."""
+        return self.action("decline", key=key)
+
     def size_place(self,
         *,
         key: str,
@@ -1050,9 +1271,25 @@ class TiloShell(Resource):
         """Runs `place_dropped` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("place_dropped", items)
 
-    def open_first(self, *, query: str) -> None:
-        """Enter's work on a query: the first app the text finds opens, so typing 'no' and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the shell's own rows do not hold."""
-        return self.action("open_first", query=query)
+    def put_history_away(self) -> None:
+        """Puts the surface away once a recent resource is opened again beside the window in front, by the same `open` an agent and a reference's press run."""
+        return self.action("put_history_away")
+
+    def choose_launcher_row(self,
+        *,
+        choice: str,
+        current: bool,
+    ) -> None:
+        """What choosing the row the person reached does, read off the row's value: opening an application or a window here, running a row the search found, or one of the shell's own surfaces. A row is only ever one of those, so a raw choice — what is typed with no row under it — opens the first row the text finds, or searches everywhere for it."""
+        return self.action("choose_launcher_row", choice=choice, current=current)
+
+    def open_surface(self, *, surface: str) -> None:
+        """Open the shell's surface `surface` (`overview`, `workspaces`, `centre`), as the bar's own controls do."""
+        return self.action("open_surface", surface=surface)
+
+    def close_launcher(self) -> None:
+        """Leave the launcher: the surface stack goes back to the shell at rest."""
+        return self.action("close_launcher")
 
     def toggle_vpn(self, *, v: Any) -> None:
         """Turn the VPN on through its first profile, or off through the one connected: the tile's one press, whichever way it flips."""
@@ -1094,8 +1331,28 @@ class TiloShell(Resource):
         """Runs `show_place` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("show_place", items)
 
+    def move_before(self,
+        *,
+        w: Any,
+        before: str,
+    ) -> None:
+        """Move the window `w` before the window `before` of its strip: one place along it."""
+        return self.action("move_before", w=w, before=before)
+
+    def move_right(self, *, w: Any) -> None:
+        """Move the window `w` one place to the trailing side: before the window after the next, or last in its strip while none stands there."""
+        return self.action("move_right", w=w)
+
+    def equal_widths(self, *, w: Any) -> None:
+        """Give every window of the row the same share of it: what 'every window the same' does where a person sees their windows side by side in a band."""
+        return self.action("equal_widths", w=w)
+
+    def equal_widths_many(self, items: list[EqualWidthsArgs]) -> list[dict[str, Any]]:
+        """Runs `equal_widths` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("equal_widths", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"size_place", "size_place_many", "drew_place", "place_dropped", "place_dropped_many", "open_first", "toggle_vpn", "a_style_settings", "query_show", "query_show_many", "query_retry", "query_retry_many", "detach_place", "show_place", "show_place_many"})
+    __actions__ = frozenset({"rename_workspace", "rename_strip", "decline", "size_place", "size_place_many", "drew_place", "place_dropped", "place_dropped_many", "put_history_away", "choose_launcher_row", "open_surface", "close_launcher", "toggle_vpn", "a_style_settings", "query_show", "query_show_many", "query_retry", "query_retry_many", "detach_place", "show_place", "show_place_many", "move_before", "move_right", "equal_widths", "equal_widths_many"})
 
 
