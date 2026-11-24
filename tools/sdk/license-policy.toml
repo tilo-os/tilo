@@ -62,6 +62,16 @@ client_roots = [
     "tilo-workspace-join",     # signed invitations and join proofs
 ]
 
+# The published crates people build apps on (LICENSING.md): each one's whole graph
+# ships to whoever depends on it, so tools/sdk/check_builder_licenses.py holds it
+# to the expressions above. tilo-ui, tilo-app, tilolang-cli and tilolang-web join
+# once their graphs are MIT.
+builder_roots = [
+    "tilolang",
+    "tilolang-lex",
+    "tilolang-runtime",
+]
+
 # Every Tilo crate those entry points reach, as one list. The client side is MIT
 # end to end (LICENSING.md), so a crate joining this list is a licensing
 # decision, not a build fix: one only a desktop, a server or a workspace's own

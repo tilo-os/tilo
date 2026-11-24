@@ -3,12 +3,18 @@
 - **Tilo shell, OS and host runtime etc.: [AGPL-3.0-only](LICENSE).**
 - **What you build apps with: [MIT](LICENSE-MIT).** This is the UI toolkit
   (`tilo-ui`), the Rust app SDK (`tilo-app` with `tilo-resource`, `tilo-view`,
-  `tilo-history` and `tilo-doc`), and tilolang: its compiler (`tilolang`,
-  `tilolang-lex`), its runtime (`tilolang-runtime`), the `tilolang` command and
-  its browser build. Everything those crates need is MIT too, such as the
-  calendar recurrence rules, the spreadsheet engine and the document formats a
-  tilolang program reads. They are published on crates.io, and you can use them
-  in your own program or app, open source or nonfree, inside Tilo or without it.
+  `tilo-history` and `tilo-doc`), and tilolang's compiler (`tilolang`,
+  `tilolang-lex`) and runtime (`tilolang-runtime`). You can use them in your own
+  program or app, open source or nonfree, inside Tilo or without it, and they
+  are published on crates.io. Everything the compiler and runtime need is MIT
+  too, such as the calendar recurrence rules, the spreadsheet engine and the
+  document formats a tilolang program reads.
+  [`tools/sdk/check_builder_licenses.py`](tools/sdk/check_builder_licenses.py)
+  refuses an AGPL crate anywhere in their dependency graphs. `tilo-ui` and
+  `tilo-app` still depend on a few AGPL crates, and the `tilolang` command
+  (`tilolang-cli`) and its browser build (`tilolang-web`) link AGPL parts of
+  Tilo; they join the check, and the command and browser build become MIT, once
+  they no longer do.
 - **The client side you reach a workspace by: [MIT](LICENSE-MIT).** A program
   that acts on a person's workspaces from outside Tilo — entering one over iroh
   as one of their devices, with their key, and asking its host for records and
