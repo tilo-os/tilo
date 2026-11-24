@@ -1146,19 +1146,14 @@ fn device_options(
     }
 }
 
-/// The surface apps the session starts itself: its lock screen, its on-screen keyboard, and quick
-/// settings. Each runs when what it shows is wanted; a machine without one loses that surface,
-/// never the session.
+/// The surface apps the session starts itself: its lock screen and its on-screen keyboard. Each
+/// runs when what it shows is wanted; a machine without one loses that surface, never the session.
 #[cfg(target_os = "linux")]
 fn surfaces() -> Vec<tilo_session::surfaces::Surface> {
     let mut surfaces = lock_screen();
     match tilo_session::keyboard::surface() {
         Ok(keyboard) => surfaces.push(keyboard),
         Err(error) => eprintln!("tilo-session: no on-screen keyboard: {error}"),
-    }
-    match tilo_session::quick_settings::surface() {
-        Ok(panel) => surfaces.push(panel),
-        Err(error) => eprintln!("tilo-session: no quick settings: {error}"),
     }
     surfaces
 }

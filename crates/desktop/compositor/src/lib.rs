@@ -2681,7 +2681,7 @@ impl Compositor {
             .collect()
     }
 
-    /// Show the session's layer surface `namespace` (`tilo-quick-settings`),
+    /// Show the session's layer surface `namespace`,
     /// or hide it: a surface whose app the session keeps running between
     /// openings stands hidden instead — drawing nothing, taking no input and
     /// keeping no room — so opening it again costs no start.

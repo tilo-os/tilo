@@ -493,8 +493,6 @@ zune-jpeg = { version = "0.5" }
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
-atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
-atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
@@ -528,8 +526,6 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
-atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
-atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }
@@ -564,8 +560,6 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
-atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
-atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
@@ -599,8 +593,6 @@ x11rb-protocol = { version = "0.13", default-features = false, features = ["res"
 ahash = { version = "0.8", features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
-atspi-common = { path = "../../vendor/atspi-common", default-features = false, features = ["wrappers", "zbus"] }
-atspi-proxies = { path = "../../vendor/atspi-proxies", default-features = false, features = ["tokio", "wrappers"] }
 brotli = { version = "8" }
 derive_more = { version = "2", default-features = false, features = ["add", "add_assign"] }
 derive_more-impl = { version = "2", default-features = false, features = ["add", "add_assign"] }

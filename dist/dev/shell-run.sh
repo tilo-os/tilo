@@ -106,13 +106,9 @@ if ((build)) && [[ $profile == nested ]]; then
     say "building the nested profile (dist/dev/nested-session-build.sh)"
     TILO_NESTED_APPS="${rust_apps[*]}" "$repo_root/dist/dev/nested-session-build.sh"
 elif ((build)); then
-    say "building tilo-session, tilo-runtime, tilo-quick-settings, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
-    # Quick settings is a surface app the session starts beside itself: built here, it is found
-    # beside the session before the system's own, which is another tree's build and reads
-    # another shape of the session's readings.
+    say "building tilo-session, tilo-runtime, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
     (cd "$repo_root" && cargo build --locked -p tilo-session --bin tilo-session \
         -p tilo-runtime --bin tilo-runtime \
-        -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
         -p launcher --bin tilo-launcher -p install --bin tilo-install \
         -p tilo-app-package-cli --bin tilo-app-package \
@@ -132,7 +128,7 @@ elif ((build)); then
     # (dist/dev/build-provenance.sh).
     "$repo_root/dist/dev/build-provenance.sh" write "$bin"
 fi
-for tool in tilo-session tilo-runtime tilo-quick-settings tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
+for tool in tilo-session tilo-runtime tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle fs tilo-model-gateway; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
 # The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`

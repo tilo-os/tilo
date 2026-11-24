@@ -820,7 +820,7 @@ impl crate::Session {
         let position_ms = *position_ms as f64;
         crate::devices::handoff(
             &self.shared,
-            Some(tilo_quick_settings::MediaOffer {
+            Some(crate::hosted::MediaOffer {
                 request_id: hex::encode(envelope.request_id),
                 package_id: app_id.to_owned(),
                 title: title.to_owned(),

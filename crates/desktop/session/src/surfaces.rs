@@ -1483,7 +1483,7 @@ mod tests {
 
         phase a_bar_tells_the_app_where_its_window_goes;
         {
-            let bar = Surface::new("topbar", "/usr/bin/tilo-quick-settings")
+            let bar = Surface::new("topbar", "/usr/bin/tilo-bar")
                 .layer(Layer::Top)
                 .namespace("tilo-bar")
                 .anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT)
@@ -1520,7 +1520,7 @@ mod tests {
             // nothing of the desktop, it would take them from a host desktop the session happens to run
             // inside.
             let environment: std::collections::BTreeMap<String, String> =
-                Surface::new("quick-settings", "/usr/bin/tilo-quick-settings")
+                Surface::new("osk", "/usr/bin/osk")
                     .environment()
                     .into_iter()
                     .collect();

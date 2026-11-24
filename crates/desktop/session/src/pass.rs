@@ -510,10 +510,6 @@ impl Session {
             self.shared.overlays.deadline(now),
             self.shared.restore.borrow().next_deadline(),
             self.shared.waking.next_deadline(),
-            // Quick settings is this session's own layer: its app drew the
-            // panel once and the pose the compositor grows it by is set here,
-            // so the pass that moves it is this loop's to schedule.
-            self.quick_settings_panel.next_pass(now),
             self.capture_studio
                 .as_ref()
                 .and_then(crate::capture_studio::CaptureStudio::next_deadline),
@@ -527,13 +523,6 @@ impl Session {
             crate::platform::keys::next_readout_deadline(&self.shared.waiting.borrow()),
             // A Super held alone turns into the keys at one instant, whatever else is due.
             self.shared.super_tap_deadline(),
-            // The caret the clipboard panel waits for stops being waited for on the compositor's
-            // clock.
-            self.shared
-                .pending_paste
-                .get()
-                .then(|| self.compositor.caret_deadline())
-                .flatten(),
             self.compositor.layer_settle_deadline(),
             Some(self.update_finish.next_deadline()),
         ];
@@ -759,13 +748,9 @@ impl Session {
         // follows every change this pass made, so a workspace the person just came into is theirs
         // there too when their first action in it arrives.
         self.publish_layout();
-        // What the bar and the session's roles asked of the chrome is carried out, and the
-        // clipboard panel a key asked for goes up beside the caret: the session this pass lays out
-        // and publishes names them, not the one after.
+        // What the bar and the session's roles asked of the chrome is carried out: the session
+        // this pass lays out and publishes names it, not the one after.
         self.shared.follow_intents();
-        self.follow_pending_paste();
-        // Quick settings runs while the stack has its part up, where the stack placed it.
-        self.follow_quick_settings();
         // Which apps stopped answering reaches the session, and the person's Wait or Force quit
         // reaches the compositor.
         self.follow_app_liveness();

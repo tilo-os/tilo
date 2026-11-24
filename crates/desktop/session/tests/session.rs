@@ -25,10 +25,12 @@ use tilo_actions::ResourceSpec;
 use tilo_app::framework::testing::HeadlessApp;
 use tilo_compositor::clipboard_history::TEXT_MIME;
 use tilo_compositor::{Compositor, InputEvent, KeyRepeat, OutputConfig, Selection};
-use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND, launchpad_card_id};
 use tilo_onboarding::OnboardingEffect;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
-use tilo_session::{CLIPBOARD_RESOURCE, Options, Session, quick_settings};
+use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
+use tilo_session_core::desktop::verbs::{
+    CHROME_RESOURCE, LAUNCHPAD_RESOURCE, WINDOW_KIND, launchpad_card_id,
+};
 use tilo_session_core::surfaces::Published;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerEffect, FileRequest};
@@ -366,7 +368,8 @@ fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
         "the window sits where the strip laid its tab out"
     );
     assert!(
-        f64::from(rect.1) >= f64::from(tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX).floor(),
+        f64::from(rect.1)
+            >= f64::from(tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX).floor(),
         "under the top bar: {rect:?}"
     );
 }
@@ -600,7 +603,8 @@ fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
     let mut client = mapped(&mut session, APP);
     let (id, rect) = window(session.compositor(), APP).unwrap();
     assert!(
-        f64::from(rect.1) >= f64::from(tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX).floor(),
+        f64::from(rect.1)
+            >= f64::from(tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX).floor(),
         "the window stands under the bar: {rect:?}"
     );
     assert!(
@@ -712,24 +716,6 @@ fn key(session: &mut Session, keycode: u32, pressed: bool) {
 fn tap(session: &mut Session, keycode: u32) {
     key(session, keycode, true);
     key(session, keycode, false);
-}
-
-/// A session with the quick settings panel installed: the surface probe this package ships stands
-/// in for its app, staying up while the session keeps it. The environment it reads is held for the
-/// test's life.
-fn session_with_quick_settings() -> (Session, ScopedEnv) {
-    let mut environment = ScopedEnv::new();
-    environment.set("SURFACE_PROBE_STAY", "1");
-    let panel = quick_settings::surface_of(tilo_test_env::sibling_binary(
-        "tilo-session",
-        "tilo-surface-probe",
-    ));
-    let session = crate::common::headless(Options {
-        surfaces: vec![panel],
-        collab: false,
-        ..Options::default()
-    });
-    (session, environment)
 }
 
 fn find_resource(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
@@ -1446,43 +1432,29 @@ fn the_session_publishes_the_actions_only_it_can_carry_out() {
 }
 
 #[test]
-fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
+fn quick_settings_opens_by_its_action_and_its_shortcut_closes_it() {
     let _settled = ui::motion::testing::settled();
-    let (mut session, _panel) = session_with_quick_settings();
+    let mut session = session();
     invoke(&mut session, CHROME_RESOURCE, "quick-settings");
     assert!(session.quick_settings_open());
     session.step(Duration::from_millis(1)).unwrap();
-    // On the shell, far from the panel at the right.
-    for event in [
-        InputEvent::PointerMotion { x: 100.0, y: 400.0 },
-        InputEvent::PointerButton {
-            button: 0x110,
-            pressed: true,
-        },
-        InputEvent::PointerButton {
-            button: 0x110,
-            pressed: false,
-        },
-    ] {
-        session.compositor().input(event).unwrap();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
-    assert!(
-        !session.quick_settings_open(),
-        "the press outside closed it"
-    );
-    // Its shortcut opens it again.
-    session
-        .invoke(
-            CHROME_RESOURCE,
-            "shortcut",
-            &serde_json::json!({"action": "quick_settings"})
-                .as_object()
-                .cloned()
-                .unwrap(),
-        )
-        .unwrap();
-    assert!(session.quick_settings_open());
+    // Its shortcut closes it, and opens it again.
+    let shortcut = |session: &mut Session| {
+        session
+            .invoke(
+                CHROME_RESOURCE,
+                "shortcut",
+                &serde_json::json!({"action": "quick_settings"})
+                    .as_object()
+                    .cloned()
+                    .unwrap(),
+            )
+            .unwrap();
+    };
+    shortcut(&mut session);
+    assert!(!session.quick_settings_open(), "the shortcut closed it");
+    shortcut(&mut session);
+    assert!(session.quick_settings_open(), "and opens it again");
 }
 
 #[test]

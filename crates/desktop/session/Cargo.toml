@@ -223,7 +223,6 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../desktop-entry" }
 # The person's accessibility settings: the assists, the colour filter and
 # the magnifier the compositor applies.
 tilo-accessibility-settings = { path = "../tilo-accessibility-settings" }
-tilo-quick-settings = { path = "../../session/quick-settings" }
 tilo-onboarding-session = { path = "../onboarding-session" }
 # What an entry's invitation is verified as before a workspace is joined: only
 # a grant signed for this person's key joins it.
@@ -524,7 +523,6 @@ futures-util.workspace = true
 tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tilo-audio-service = { path = "../../os/audio-service" }
 tilo-onboarding = { path = "../onboarding" }
-tilo-quick-settings = { path = "../../session/quick-settings", features = ["test-support"] }
 # The tilolang shell's parts are tested over the instance's test support.
 tilolang-tilo = { path = "../../lang/tilolang-tilo", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support"] }

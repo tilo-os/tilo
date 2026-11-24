@@ -23,7 +23,7 @@ use crate::platform::surfaces::{ShellDesktop, WidgetSurface};
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::osd::OsdKind;
-use tilo_session_core::desktop::overlays::{Overlays, Part};
+use tilo_session_core::desktop::overlays::{Overlay, Overlays};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::Surfaces;
 use ui::host_operation::ResourceOperationStart;
@@ -612,10 +612,9 @@ impl Session {
         // The keys a held Super reaches: the session says them, the chrome draws them.
         let super_peek = tilo_session_core::desktop::super_peek::SuperPeek::default();
         // The surfaces the shell shows over its windows, and where each stands: the shell's own
-        // views, or the quick settings' app where the device has one and the shell draws it. The
-        // shell's API and the chrome's API open them through it.
+        // views, the quick settings among them. The shell's API and the chrome's API open them
+        // through it.
         let surfaces = crate::device_lists::Surfaces {
-            status_panel: crate::quick_settings::installed(&options.surfaces),
             overlays: overlays.clone(),
             notices: notices.clone(),
             overview: overview.open_flag(),
@@ -630,10 +629,6 @@ impl Session {
         // The strips list's flag, for the keys Escape reaches before the surfaces move into the
         // pass that draws them.
         let strips_flag = Rc::clone(&surfaces.strips);
-        // What the keys ask the panel's own app, which the surface loop hands
-        // the running app each pass. A device whose shell draws the panel has
-        // one; the shell's own view of the quick settings answers its own keys.
-        let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
         let lists_surface: tilo_session_core::surfaces::Shared =
             crate::shell::lists_surface(desktop.clone(), surfaces.clone());
         published.add(Rc::clone(&lists_surface));
@@ -888,7 +883,9 @@ impl Session {
                     identify: numbers.ask(),
                     invitable: Rc::clone(&invitable),
                 },
-                !crate::quick_settings::installed(&options.surfaces),
+                // The shell draws the quick settings (`quick.tl`), so the bar's status keys
+                // open no panel of the chrome's own.
+                true,
                 sync.clone(),
                 options.launches.notes(),
                 view.clone(),
@@ -1683,10 +1680,6 @@ impl Session {
             box_ask: Cell::default(),
             feedback,
             intents,
-            quick_settings: crate::quick_settings::installed(&options.surfaces),
-            panel_asks: Rc::clone(&panel_asks),
-            pending_paste: Cell::new(false),
-            panel_back: Cell::new(None),
             overlays,
             surfaces: one_surface,
             published,
@@ -1938,9 +1931,6 @@ impl Session {
             windows: crate::window_motion::WindowMotions::new(
                 (options.presentation)().theme.motion(),
             ),
-            quick_settings_panel: crate::quick_settings::PanelMotion::new(
-                (options.presentation)().theme.motion(),
-            ),
             warmth,
             language: crate::i18n::Language::new(),
             formats: crate::formats::Formats::new(),
@@ -1949,10 +1939,6 @@ impl Session {
             keyboard_preference: options.config.on_screen_keyboard,
             keyboard_run: crate::keyboard::Run::default(),
             keyboard_starts: 0,
-            quick_settings_run: crate::quick_settings::Run::Down,
-            quick_settings_starts: 0,
-            quick_settings_keyboard: crate::quick_settings::PanelKeys::Settled,
-            quick_settings_asked: None,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             app_wire,
@@ -2084,14 +2070,10 @@ impl Session {
         self.follow_fullscreen();
         self.shared.follow_invitable();
         for surface in &self.surface_apps {
-            // The lock screen is started when the session locks, the
-            // on-screen keyboard when the person may need it and quick
-            // settings while its part is up: what their windows show is never
-            // the shell's to open.
-            if surface.lock
-                || surface.name == crate::keyboard::SURFACE
-                || surface.name == crate::quick_settings::SURFACE
-            {
+            // The lock screen is started when the session locks and the
+            // on-screen keyboard when the person may need it: what their
+            // windows show is never the shell's to open.
+            if surface.lock || surface.name == crate::keyboard::SURFACE {
                 continue;
             }
             let workspace = self.shared.active_workspace_id();
@@ -2163,20 +2145,6 @@ impl Session {
                 name: None,
             });
         }
-    }
-
-    /// Put the clipboard panel up beside the caret once the field it was asked in has committed
-    /// where its last key left the caret, or once the compositor stops waiting for that commit:
-    /// the panel stands under the line the person sees, not one their app drew before.
-    pub(crate) fn follow_pending_paste(&mut self) {
-        if !self.shared.pending_paste.get() || !self.compositor.caret_settled() {
-            return;
-        }
-        self.shared.pending_paste.set(false);
-        // This pass's reading of the caret, which the overlays follow next pass: the panel is
-        // placed beside where it stands now, not a pass behind.
-        self.shared.overlays.set_caret(self.caret.get());
-        self.shared.open_clipboard_beside_caret();
     }
 
     /// The display the person works on, as the compositor places it: the shell's focused display,
@@ -2634,10 +2602,10 @@ impl Session {
         self.setup.as_ref().is_some_and(|setup| setup.borrow().up())
     }
 
-    /// Whether quick settings is open.
+    /// Whether quick settings is open: the shell's surface over the windows.
     #[must_use]
     pub fn quick_settings_open(&self) -> bool {
-        self.shared.overlays.is_open(Part::QuickSettings)
+        self.shared.overlays.here() == Overlay::QuickSettings
     }
 
     /// The input preferences the compositor runs with now.

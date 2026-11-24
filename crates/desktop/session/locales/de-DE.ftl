@@ -624,3 +624,19 @@ so-tilo-session-banners-decline-call = Den Anruf ablehnen
 
 # Wie der Schreibtisch gegenüber assistiven Technologien heißt.
 desktop = Schreibtisch
+
+## The Devices section's rows: what a device says of itself, and what a press on it does.
+devices-row-offline = Offline
+devices-row-online = Online
+devices-row-nearby = In der Nähe
+devices-row-play-here = { $media } hier abspielen
+devices-row-wake = Aufwecken
+devices-row-action-dismiss = Verwerfen
+devices-row-action-send = Senden
+devices-row-action-stop = Beenden
+devices-row-allow-audio = Diese Tonübertragung einmal erlauben
+devices-row-audio-app = Ton der fokussierten App
+devices-row-audio-choose = Wähle unten ein Gerät
+devices-row-decline-audio = Diese Tonübertragung ablehnen
+devices-row-requested-allow-once = { $source } fragt danach
+devices-row-send-here = Nimmt den Ton dieses Geräts

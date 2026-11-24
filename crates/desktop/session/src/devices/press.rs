@@ -11,10 +11,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::hosted::{ASK_KEY, ROUTE_KEY, RowPart, SOUND_KEY};
 use crate::platform::fabric::SharedLink;
 use crate::platform::fabric::{DeviceId, MediaSourceLocator, PersonalFabricAction};
-use tilo_quick_settings::RowPart;
-use tilo_quick_settings::hosted::{ASK_KEY, ROUTE_KEY, SOUND_KEY};
 use tilo_speaker_service::remote_audio;
 
 use crate::{Shared, devices};

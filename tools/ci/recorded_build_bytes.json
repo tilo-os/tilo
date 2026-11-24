@@ -299,7 +299,6 @@
   "tilo-process": {"libraries": 2309856, "tests": 12421088},
   "tilo-projector": {"libraries": 1060806, "tests": 163705520},
   "tilo-pycompat": {"libraries": 1483666, "tests": 4554040},
-  "tilo-quick-settings": {"libraries": 26440207, "tests": 7887878312},
   "tilo-recurrence": {"libraries": 1641910, "tests": 15501888},
   "tilo-reference": {"libraries": 5179639, "tests": 37167680},
   "tilo-server": {"libraries": 83692322, "tests": 6605869968},

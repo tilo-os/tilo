@@ -77,14 +77,6 @@ const WINDOWS: &[Window] = &[
         )),
     },
     Window {
-        name: "quick settings",
-        source: catalogue!("/../../session/quick-settings/locales/en-US.ftl"),
-        german: Some((
-            "de-DE",
-            catalogue!("/../../session/quick-settings/locales/de-DE.ftl"),
-        )),
-    },
-    Window {
         name: "Tasks",
         source: catalogue!("/../../../apps/tl/tasks/locales/en-US.ftl"),
         german: Some((

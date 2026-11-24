@@ -4,12 +4,15 @@
 //! the chrome leaves to its host, and the tray clicks an application answers.
 
 use tilo_actions::ActionAddress;
-use tilo_session_core::desktop::host::chrome::ChromeIntent;
-use tilo_session_core::desktop::host::contract::{BRANCH_WORKSPACE, DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS};
-use tilo_session_core::desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
-use tilo_session_core::desktop::overlays::{Anchor, Part};
-use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE};
 use tilo_desktop_model::WorkspaceId;
+use tilo_session_core::desktop::host::chrome::ChromeIntent;
+use tilo_session_core::desktop::host::contract::{
+    BRANCH_WORKSPACE, DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE,
+    REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN,
+    WORKSPACE_SETTINGS,
+};
+use tilo_session_core::desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SHELL_RESOURCE};
 use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
@@ -19,9 +22,6 @@ use crate::{
     BoxAsk, Magnify, SessionAction, SessionCommand, Shared, identity, people, workspace_settings,
     workspaces,
 };
-
-/// How far a popover stands clear of the caret it was opened from, logical pixels.
-const CARET_GAP: f64 = 6.0;
 
 impl Shared {
     /// Carry out what the desktop asked since the last frame.
@@ -187,19 +187,7 @@ impl Shared {
     /// that place.
     pub(crate) fn bar_ask(&self, intent: ChromeIntent) {
         match intent {
-            ChromeIntent::ToggleQuickSettings => {
-                // The press that closed it is still being delivered: the same press does not open
-                // it again.
-                if self.quick_settings && !self.overlays.dismissed_recently(Part::QuickSettings) {
-                    if self.overlays.is_open(Part::QuickSettings) {
-                        self.overlays.close(Part::QuickSettings);
-                    } else {
-                        self.surfaces.clear_shell();
-                        self.surfaces.clear_panel();
-                        self.overlays.open(Part::QuickSettings, None);
-                    }
-                }
-            }
+            ChromeIntent::ToggleQuickSettings => self.toggle_quick_settings(),
             ChromeIntent::ShowQuickSettings => self.show_quick_settings(),
             // The bar's faces, the launcher's Happening now header and a press on someone in a
             // banner all open who is here: one surface at a time, so what stood over the shell goes
@@ -355,7 +343,12 @@ impl Shared {
     /// Carry out what a person's card asked of the agent session it shows: a session this device
     /// serves is acted on here, where the connection, its workspace and its run are known; any
     /// other through its agent's card in Console.
-    fn agent_ask(&self, who: &str, client: &str, ask: tilo_session_core::desktop::launchpad::AgentAsk) {
+    fn agent_ask(
+        &self,
+        who: &str,
+        client: &str,
+        ask: tilo_session_core::desktop::launchpad::AgentAsk,
+    ) {
         #[cfg(target_os = "linux")]
         if let Some(session) = self.agent_session_of(who) {
             self.agent_session_ask(&session, ask);
@@ -490,7 +483,11 @@ impl Shared {
     /// the bar. An item that went away between the click and this ask, or a request the application
     /// refuses, is said so in the log rather than passed over in silence: the person saw their
     /// click do nothing and this is why.
-    fn tray_request(&self, key: &str, request: tilo_session_core::desktop::host::chrome::AppTrayRequest) {
+    fn tray_request(
+        &self,
+        key: &str,
+        request: tilo_session_core::desktop::host::chrome::AppTrayRequest,
+    ) {
         use tilo_session_core::desktop::host::chrome::AppTrayRequest;
         let Some(tray) = &self.tray else {
             tracing::warn!(key, "no tray is served: the click reaches no application");
@@ -718,47 +715,14 @@ impl Shared {
         }
     }
 
+    /// Show the quick settings: the shell's surface over the windows.
     fn show_quick_settings(&self) {
-        if self.quick_settings {
-            self.overlays.open(Part::QuickSettings, None);
-        }
-    }
-
-    /// Open the panel where the person types, for the clipboard's copies: beside the caret that
-    /// asked for it, and under the tray when no field holds one.
-    /// A key moves the field's caret before its app commits it, so the panel waits for that
-    /// commit: placed now, it would stand at the caret from before the app's last redraw.
-    fn show_quick_settings_beside_caret(&self) {
-        if !self.quick_settings {
-            return;
-        }
-        self.pending_paste.set(true);
-    }
-
-    /// Put the clipboard panel up beside the caret the shell has now, on its paste page.
-    pub(crate) fn open_clipboard_beside_caret(&self) {
-        if !self.quick_settings {
-            return;
-        }
-        let anchor = self
-            .overlays
-            .caret()
-            .map(|at| Anchor::Beside { at, gap: CARET_GAP });
-        // The surface the field stands in (the shell's search) stays up under it, and has the
-        // keyboard back for the paste.
-        self.overlays.open_over(Part::QuickSettings, anchor);
-        self.panel_asks.borrow_mut().push("paste");
+        self.surfaces.open(crate::quick_settings::SURFACE);
     }
 
     /// Close the quick settings when they are up, open them otherwise.
     fn toggle_quick_settings(&self) {
-        if self.quick_settings {
-            if self.overlays.is_open(Part::QuickSettings) {
-                self.overlays.close(Part::QuickSettings);
-            } else {
-                self.overlays.open(Part::QuickSettings, None);
-            }
-        }
+        self.surfaces.toggle(crate::quick_settings::SURFACE);
     }
 
     /// A desktop shortcut the shell left to its host: the device's own answers, and the surfaces
@@ -774,9 +738,9 @@ impl Shared {
                 invocations
                     .push(Invocation::new(CHROME_RESOURCE, "notifications").with("open", true));
             }
-            ShortcutAction::ClipboardHistory => {
-                self.show_quick_settings_beside_caret();
-            }
+            // Quick settings, where the shell draws the device's panel. It lists none of the
+            // clipboard's copies, so nothing is pasted from it.
+            ShortcutAction::ClipboardHistory => self.show_quick_settings(),
             ShortcutAction::Search => {
                 invocations.push(Invocation::new(SHELL_RESOURCE, "search"));
             }

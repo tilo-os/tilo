@@ -18,19 +18,16 @@
               outlives every call made into it"
 )]
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::common::tree::{layout_tree, window};
 use serde_json::{Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX;
 use tilo_desktop_model::{Layout, WindowGroup, WindowWidth};
 use tilo_session::shell::state::{FOCUS, WINDOW_MENU};
-use tilo_session::surfaces::Surface;
-use tilo_session::{Options, Session, quick_settings};
+use tilo_session::{Options, Session};
+use tilo_session_core::desktop::overlays::TOPBAR_HEIGHT_PX;
 use tilo_session_core::shell::OVERLAYS;
-use tilo_test_env::ScopedEnv;
 
 /// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
@@ -61,11 +58,10 @@ fn near(actual: f64, expected: f64, what: &str) {
 }
 
 /// A headless session showing `tree` , with a turn taken so its shell has laid the windows out.
-fn session_with(tree: Layout, panel: Option<Surface>) -> Session {
+fn session_with(tree: Layout) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            surfaces: panel.into_iter().collect(),
             collab: false,
             ..Options::default()
         },
@@ -75,34 +71,9 @@ fn session_with(tree: Layout, panel: Option<Surface>) -> Session {
     session
 }
 
-/// The session with no quick settings app installed.
+/// The session over the layout every test starts from.
 fn session() -> Session {
-    session_with(layout_tree(), None)
-}
-
-/// The panel's app for this package's tests: the surface probe the session package ships,
-/// in place of a view that draws the panel and stays up while the session keeps it.
-fn panel_binary() -> PathBuf {
-    tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
-}
-
-/// The environment its stand-in app reads, held for the test's life: it draws nothing, and stays up
-/// until the session stops it.
-fn panel_environment() -> ScopedEnv {
-    let mut environment = ScopedEnv::new();
-    environment.set("SURFACE_PROBE_STAY", "1");
-    environment
-}
-
-/// The session with the quick settings panel installed and its app running while the stack has the
-/// popover up.
-fn session_with_quick_settings() -> (Session, ScopedEnv) {
-    let environment = panel_environment();
-    let session = session_with(
-        layout_tree(),
-        Some(quick_settings::surface_of(panel_binary())),
-    );
-    (session, environment)
+    session_with(layout_tree())
 }
 
 /// The arguments of an invocation, as JSON spells them.
@@ -287,7 +258,7 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
 
 #[test]
 fn escape_closes_the_topmost_surface_that_answers_it() {
-    let (mut session, _panel) = session_with_quick_settings();
+    let mut session = session();
     session
         .invoke(
             WINDOW_MENU,
@@ -363,7 +334,7 @@ fn the_shells_surface_and_the_popovers_stand_one_at_a_time() {
             maximized: false,
             focus_history: Vec::new(),
         });
-    let mut session = session_with(tree, None);
+    let mut session = session_with(tree);
     assert_eq!(here(&session), "none");
     assert_eq!(front(&session), "Notes");
 
@@ -479,7 +450,7 @@ fn a_press_on_the_shell_closes_the_workspace_menu_the_chrome_hangs_off_its_chip(
 
 #[test]
 fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
-    let (mut session, _panel) = session_with_quick_settings();
+    let mut session = session();
     let bar = f64::from(TOPBAR_HEIGHT_PX).ceil();
 
     open(&mut session, "quick-settings", None);
@@ -541,92 +512,13 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     );
 }
 
-/// The panel's app starts with the session, hidden, so the first opening only shows it; the stack
-/// places it, and opening it somewhere else moves the surface it stands on.
-#[test]
-fn the_panel_runs_before_its_first_opening_and_moves_where_the_stack_places_it() {
-    let (mut session, _panel) = session_with_quick_settings();
-    assert!(
-        session.surfaces().running("quick-settings"),
-        "the app runs before the panel is first opened"
-    );
-    assert_eq!(
-        session
-            .compositor()
-            .layer_shown(quick_settings::SURFACE_NAMESPACE),
-        Some(false),
-        "hidden, drawing nothing"
-    );
-    open(&mut session, "quick-settings", None);
-    assert!(session.surfaces().running("quick-settings"));
-    open(&mut session, "quick-settings", Some("top-leading:8"));
-    assert!(
-        session.surfaces().running("quick-settings"),
-        "it stands where the stack places it now"
-    );
-}
-
-#[test]
-fn the_panel_stands_hidden_between_openings_and_the_next_opening_starts_nothing() {
-    let (mut session, _panel) = session_with_quick_settings();
-    open(&mut session, "quick-settings", None);
-    assert!(
-        session.surfaces().running("quick-settings"),
-        "the app draws the panel"
-    );
-    assert_eq!(
-        session
-            .compositor()
-            .layer_shown(quick_settings::SURFACE_NAMESPACE),
-        Some(true),
-        "and the compositor shows it"
-    );
-
-    // Closed: the app keeps running, hidden, so the next opening draws the panel instead of
-    // starting it.
-    session
-        .invoke(
-            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
-            "quick-settings",
-            &args(&json!({})),
-        )
-        .expect("the bar asks for the panel");
-    session.step(REFRESH).expect("a turn of the session");
-    assert!(!session.quick_settings_open());
-    assert!(
-        session.surfaces().running("quick-settings"),
-        "the panel's app is resident"
-    );
-    assert_eq!(
-        session
-            .compositor()
-            .layer_shown(quick_settings::SURFACE_NAMESPACE),
-        Some(false),
-        "and hidden, drawing nothing and keeping no room"
-    );
-
-    open(&mut session, "quick-settings", None);
-    assert!(session.quick_settings_open());
-    assert!(
-        session.surfaces().running("quick-settings"),
-        "the opening started nothing"
-    );
-    assert_eq!(
-        session
-            .compositor()
-            .layer_shown(quick_settings::SURFACE_NAMESPACE),
-        Some(true),
-        "the surface it stands on is shown again"
-    );
-}
-
 /// What of the person's stood over the shell goes down with the lock: a panel up at the moment the
 /// session locks was theirs to open, not one to find again over the lock screen when they unlock.
 #[test]
 fn locking_closes_the_panel_the_person_had_open() {
-    let (mut session, _panel) = session_with_quick_settings();
+    let mut session = session();
     open(&mut session, "quick-settings", None);
-    assert!(session.quick_settings_open(), "the panel is up");
+    assert_eq!(parts(&session), ["quick-settings"], "the panel is up");
     // The person locks the screen from the panel's own power menu.
     session.compositor().lock_now().expect("the screen locks");
     session.step(REFRESH).expect("a turn of the session");
@@ -635,7 +527,6 @@ fn locking_closes_the_panel_the_person_had_open() {
         "nothing of the person's stands over the lock: {:?}",
         parts(&session)
     );
-    assert!(!session.quick_settings_open(), "the panel went down");
     // Unlocking does not bring it back: what the person opened was not theirs to find again.
     session.compositor().unlock().expect("the screen unlocks");
     session.step(REFRESH).expect("a turn of the session");
@@ -644,106 +535,4 @@ fn locking_closes_the_panel_the_person_had_open() {
         "unlocking brings back no surface: {:?}",
         parts(&session)
     );
-    assert!(!session.quick_settings_open(), "and the panel stays down");
-}
-
-#[test]
-fn a_press_outside_the_popover_closes_it_and_one_inside_it_does_not() {
-    let (mut session, _panel) = session_with_quick_settings();
-    open(&mut session, "quick-settings", None);
-    assert!(session.quick_settings_open());
-
-    // Inside the panel: the person works in it, and it stays.
-    let (x, y, w, h) = place(&session, "quick-settings");
-    press(&mut session, x + w / 2.0, y + h / 2.0);
-    assert!(
-        session.quick_settings_open(),
-        "a press in the panel is the panel's"
-    );
-
-    // Anywhere else on the shell: it closes, and what the press landed on still gets it.
-    press(&mut session, 100.0, 400.0);
-    assert!(
-        !session.quick_settings_open(),
-        "the press outside closed it"
-    );
-    assert!(parts(&session).is_empty());
-    assert_eq!(focus(&session), "window");
-}
-
-#[test]
-fn a_dismissing_press_does_not_reopen_what_it_closed() {
-    let (mut session, _panel) = session_with_quick_settings();
-    open(&mut session, "quick-settings", None);
-    // The person's finger goes down on the bar, outside the panel: the panel closes, and the bar's
-    // own toggle — raised by that same press — must not put it back up under the finger.
-    session
-        .compositor()
-        .input(InputEvent::PointerMotion { x: 100.0, y: 400.0 })
-        .expect("the pointer");
-    session
-        .compositor()
-        .input(InputEvent::PointerButton {
-            button: 0x110,
-            pressed: true,
-        })
-        .expect("the button");
-    session.step(REFRESH).expect("a turn of the session");
-    assert!(
-        !session.quick_settings_open(),
-        "the press outside closed it"
-    );
-    session
-        .invoke(
-            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
-            "quick-settings",
-            &args(&json!({})),
-        )
-        .expect("the bar asks for the panel");
-    session.step(REFRESH).expect("a turn of the session");
-    assert!(
-        !session.quick_settings_open(),
-        "the press that closed it did not open it again"
-    );
-
-    // The finger comes up: the press is over, and the next ask opens it.
-    session
-        .compositor()
-        .input(InputEvent::PointerButton {
-            button: 0x110,
-            pressed: false,
-        })
-        .expect("the button");
-    session.step(REFRESH).expect("a turn of the session");
-    session
-        .invoke(
-            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
-            "quick-settings",
-            &args(&json!({})),
-        )
-        .expect("the bar asks for the panel");
-    session.step(REFRESH).expect("a turn of the session");
-    assert!(session.quick_settings_open(), "a press of its own opens it");
-}
-
-#[test]
-fn a_quick_click_on_the_bar_closes_the_panel_and_leaves_it_closed() {
-    let (mut session, _panel) = session_with_quick_settings();
-    open(&mut session, "quick-settings", None);
-
-    // The person taps the status cluster's readings, at the bar's trailing end beyond the bell the
-    // cluster opens with: the click comes up before the session has carried out the toggle its
-    // press raised, and the press that closed the panel still does not open it again.
-    let button = (f64::from(WIDTH) - 6.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
-    quick_click(&mut session, button.0, button.1);
-    session.step(REFRESH).expect("a turn of the session");
-    assert!(
-        !session.quick_settings_open(),
-        "the click that closed the panel did not open it again"
-    );
-
-    // The next click is its own: it opens the panel again.
-    quick_click(&mut session, button.0, button.1);
-    session.step(REFRESH).expect("a turn of the session");
-    assert!(session.quick_settings_open(), "a click of its own opens it");
 }

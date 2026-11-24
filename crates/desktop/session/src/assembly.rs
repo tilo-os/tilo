@@ -91,20 +91,6 @@ pub(crate) struct Shared {
     pub(crate) feedback: Option<crate::feedback::Destination>,
     /// Where the chrome takes intents the session raises.
     pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    /// Whether this session shows quick settings at all: its app is one of the
-    /// surface apps it runs, and the bar's status keys open its part.
-    pub(crate) quick_settings: bool,
-    /// What the keys asked the panel to show before it ran — the notifications,
-    /// the clipboard opened to paste, the page Escape goes back from — waiting
-    /// for its app to be up.
-    pub(crate) panel_asks: Rc<RefCell<Vec<&'static str>>>,
-    /// Whether the clipboard panel a key asked for at the caret waits for the field it was pressed
-    /// in to commit the caret its last key moved.
-    pub(crate) pending_paste: Cell<bool>,
-    /// The ask the panel goes back on, while it has not answered whether it
-    /// had anywhere to go back to: Escape closes the panel only from its main
-    /// page, and the panel says which page that is.
-    pub(crate) panel_back: Cell<Option<u64>>,
     /// What stands over the windows: its menus, quick settings, the picker
     /// and the rest, and which of them holds the keyboard.
     pub(crate) overlays: Overlays,
@@ -203,7 +189,7 @@ pub(crate) struct Shared {
     /// now-playing card shows it, until they continue it here: published
     /// beside the person's devices.
     #[cfg(target_os = "linux")]
-    pub(crate) handoff: Rc<std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>>,
+    pub(crate) handoff: Rc<std::cell::RefCell<Option<crate::hosted::MediaOffer>>>,
     /// The wakes this session takes part in.
     #[cfg(target_os = "linux")]
     pub(crate) waking: Rc<crate::wake::Wake>,
@@ -542,9 +528,6 @@ pub struct Session {
     /// The windows opening and closing.
     #[cfg(target_os = "linux")]
     pub(crate) windows: crate::window_motion::WindowMotions,
-    /// The quick settings panel coming and going, which the compositor draws.
-    #[cfg(target_os = "linux")]
-    pub(crate) quick_settings_panel: crate::quick_settings::PanelMotion,
     /// The temperature and colour every app window is told, as the settings
     /// and wallpapers last said them.
     #[cfg(target_os = "linux")]
@@ -580,20 +563,6 @@ pub struct Session {
     /// so one that keeps exiting is given up on rather than started for ever.
     #[cfg(target_os = "linux")]
     pub(crate) keyboard_starts: u32,
-    /// Whether quick settings' app runs, and how often it was started: one
-    /// that keeps exiting is given up on until the panel is opened anew.
-    #[cfg(target_os = "linux")]
-    pub(crate) quick_settings_run: crate::quick_settings::Run,
-    #[cfg(target_os = "linux")]
-    pub(crate) quick_settings_starts: u32,
-    /// Whether quick settings, opened for its controls, is still to take the keyboard once its
-    /// surface stands: the person works it from the keys that opened it.
-    #[cfg(target_os = "linux")]
-    pub(crate) quick_settings_keyboard: crate::quick_settings::PanelKeys,
-    /// The ask for the page an opening panel shows, until its app answers it: the panel shows from
-    /// the first frame its app draws after that answer.
-    #[cfg(target_os = "linux")]
-    pub(crate) quick_settings_asked: Option<u64>,
     /// The portal's link to the loop, while the portal serves.
     #[cfg(target_os = "linux")]
     pub(crate) portal: Option<crate::portal_link::SessionLink>,

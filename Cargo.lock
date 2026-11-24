@@ -20305,38 +20305,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-quick-settings"
-version = "0.1.0"
-dependencies = [
- "atspi-proxies",
- "image",
- "os-actions",
- "serde",
- "serde_json",
- "settings-store",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-audio-service",
- "tilo-color-pipeline",
- "tilo-compositor",
- "tilo-connectivity-service",
- "tilo-media",
- "tilo-power-mgmt",
- "tilo-quick-settings",
- "tilo-service",
- "tilo-session",
- "tilo-session-core",
- "tilo-session-power",
- "tilo-system-resources",
- "tilo-test-env",
- "tokio",
- "tracing",
- "workspace-hack",
- "zbus",
-]
-
-[[package]]
 name = "tilo-recurrence"
 version = "0.1.0"
 dependencies = [
@@ -21182,7 +21150,6 @@ dependencies = [
  "tilo-presentation",
  "tilo-process",
  "tilo-projector",
- "tilo-quick-settings",
  "tilo-reference",
  "tilo-render-protocol",
  "tilo-render-service",
@@ -26687,8 +26654,6 @@ dependencies = [
  "ash",
  "ashpd",
  "async-channel 2.5.0",
- "atspi-common",
- "atspi-proxies",
  "base16ct 0.2.0",
  "base16ct 1.0.0",
  "base64 0.22.1",
@@ -28338,7 +28303,6 @@ dependencies = [
  "tilo-process-services",
  "tilo-projector",
  "tilo-pycompat",
- "tilo-quick-settings",
  "tilo-recurrence",
  "tilo-reference",
  "tilo-render-protocol",

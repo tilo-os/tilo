@@ -62,7 +62,7 @@ fn session() -> Session {
 }
 
 /// The layout as the session publishes it on its API: what an agent reads.
-fn centre(session: &Session) -> tilo_quick_settings::hosted::NotificationCentre {
+fn centre(session: &Session) -> tilo_session::hosted::NotificationCentre {
     serde_json::from_value(
         session
             .read("session:notifications")

@@ -25,8 +25,7 @@ use tilo_actions::ApiError;
 use tilo_actions::remote::{RemoteActionTarget, application_action_target};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_search::providers::AppEntry;
-use tilo_quick_settings::RowPart;
-use tilo_quick_settings::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, SOUND_KEY};
+use tilo_session::hosted::{ASK_KEY, DevicesReading, HostedActions, ROUTE_KEY, RowPart, SOUND_KEY};
 use tilo_session::platform::fabric::wake::{self, MagicPackets};
 use tilo_session::platform::fabric::{
     DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, Ipv4Subnet, MediaSourceLocator,
@@ -471,7 +470,7 @@ impl Harness {
     }
 
     /// The Devices section's rows, as the published reading lists them.
-    fn rows(&self) -> Vec<tilo_quick_settings::hosted::HostedRow> {
+    fn rows(&self) -> Vec<tilo_session::hosted::HostedRow> {
         self.reading()
             .map(|reading| reading.rows())
             .unwrap_or_default()
@@ -969,7 +968,7 @@ fn open_devices(harness: &mut Harness) {
 }
 
 /// The row `key` names, as the session publishes it.
-fn row(harness: &Harness, key: &str) -> tilo_quick_settings::hosted::HostedRow {
+fn row(harness: &Harness, key: &str) -> tilo_session::hosted::HostedRow {
     harness
         .rows()
         .into_iter()
@@ -978,7 +977,7 @@ fn row(harness: &Harness, key: &str) -> tilo_quick_settings::hosted::HostedRow {
 }
 
 /// The one row whose key starts with `prefix` .
-fn the_row(harness: &Harness, prefix: &str) -> tilo_quick_settings::hosted::HostedRow {
+fn the_row(harness: &Harness, prefix: &str) -> tilo_session::hosted::HostedRow {
     let rows = harness.rows();
     let found = rows
         .iter()

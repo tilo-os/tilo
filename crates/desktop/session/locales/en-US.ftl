@@ -619,3 +619,19 @@ so-tilo-session-banners-decline-call = Decline the call
 
 # What the desktop is called to assistive technology.
 desktop = Desktop
+
+## The Devices section's rows: what a device says of itself, and what a press on it does.
+devices-row-offline = Offline
+devices-row-online = Online
+devices-row-nearby = Nearby
+devices-row-play-here = Play { $media } here
+devices-row-wake = Wake
+devices-row-action-dismiss = Dismiss
+devices-row-action-send = Send
+devices-row-action-stop = Stop
+devices-row-allow-audio = Allow this remote audio once
+devices-row-audio-app = Audio of the focused app
+devices-row-audio-choose = Choose a device below
+devices-row-decline-audio = Decline this remote audio
+devices-row-requested-allow-once = { $source } asked for this
+devices-row-send-here = Takes this device's sound

@@ -16,14 +16,13 @@ use crate::platform::fabric::ContinuityNotificationProjection;
 use crate::platform::fabric::SharedLink;
 use crate::platform::fabric::{DeviceId, PersonalFabricAction};
 
+use crate::hosted::NotificationCentre;
 use serde_json::{Map, Value};
 use settings_store::notification_policy::{EffectiveNotificationPolicy, NotificationPolicy};
 use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
-use tilo_session_core::desktop::state::banners::BannerAsk;
 use tilo_lock::MutexRecover as _;
 use tilo_notifications_service::{Arrival, Caller, Callers, CloseReason, Notifications, Sender};
-use tilo_quick_settings::hosted::NotificationCentre;
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_session_core::desktop::notifications;
@@ -31,6 +30,7 @@ use tilo_session_core::desktop::notifications::{
     ContinuityNotificationId, Notification, NotificationIconKind, NotificationPerson, QuietReason,
     RemoteNotificationRoute, ScheduledNotificationTarget,
 };
+use tilo_session_core::desktop::state::banners::BannerAsk;
 use tilo_session_core::desktop::state::{DesktopNotifications, NotificationOutcome};
 use tilo_session_power::PowerLink;
 
@@ -747,7 +747,7 @@ impl SessionNotifications {
             .iter()
             .chain(log.history().iter())
             .rev()
-            .map(|notification| tilo_quick_settings::hosted::Notice {
+            .map(|notification| crate::hosted::Notice {
                 number: notification.id,
                 title: notification.title.clone(),
                 body: notification.body.clone(),
@@ -757,7 +757,7 @@ impl SessionNotifications {
                 actions: notification
                     .actions
                     .iter()
-                    .map(|(key, label)| tilo_quick_settings::hosted::NoticeAction {
+                    .map(|(key, label)| crate::hosted::NoticeAction {
                         key: key.clone(),
                         label: label.clone(),
                     })

@@ -1284,7 +1284,6 @@ doc = false
 "tilo-process-services" = { path = "../../crates/sdk/tilo-process-services", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
 "tilo-projector" = { path = "../../crates/services/projector", default-features = false, features = ["default", "miracast"] }
 "tilo-pycompat" = { path = "../../crates/os/tilo-pycompat", default-features = false, features = [] }
-"tilo-quick-settings" = { path = "../../crates/session/quick-settings", default-features = false, features = ["test-support"] }
 "tilo-recurrence" = { path = "../../crates/engines/tilo-recurrence", default-features = false, features = [] }
 "tilo-reference" = { path = "../../crates/core/reference", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../crates/ui/tilo-render-protocol", default-features = false, features = [] }
@@ -3897,7 +3896,6 @@ doc = false
 "tilo-process-services" = { path = "../../crates/sdk/tilo-process-services", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
 "tilo-projector" = { path = "../../crates/services/projector", default-features = false, features = ["default", "miracast"] }
 "tilo-pycompat" = { path = "../../crates/os/tilo-pycompat", default-features = false, features = [] }
-"tilo-quick-settings" = { path = "../../crates/session/quick-settings", default-features = false, features = ["test-support"] }
 "tilo-recurrence" = { path = "../../crates/engines/tilo-recurrence", default-features = false, features = [] }
 "tilo-reference" = { path = "../../crates/core/reference", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../crates/ui/tilo-render-protocol", default-features = false, features = [] }

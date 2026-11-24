@@ -223,7 +223,7 @@ impl Service for LockService {
 #[must_use]
 pub fn media(
     readings: &crate::status::Shared,
-    offered: Option<&tilo_quick_settings::MediaOffer>,
+    offered: Option<&crate::hosted::MediaOffer>,
 ) -> Option<Media> {
     let playing = readings
         .borrow()
@@ -328,7 +328,7 @@ mod tests {
         let readings: crate::status::Shared = Rc::default();
         assert!(media(&readings, None).is_none(), "nothing plays here");
 
-        let offer = tilo_quick_settings::MediaOffer {
+        let offer = crate::hosted::MediaOffer {
             request_id: "0123456789abcdef0123456789abcdef".to_owned(),
             package_id: "so.tilo.music".to_owned(),
             title: "Tea".to_owned(),

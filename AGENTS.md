@@ -124,7 +124,7 @@ ask whether the larger thing could be done a better way; if it could, say so bef
 - Session: `t cargo test --locked -p tilo-session MODULE::` names one of the session's
   tests (the desktop, its windows and its strips) there; `t cargo check --locked -p
   tilo-session --tests` type-checks them while you iterate. A test that starts another
-  app (the lock screen, the on-screen keyboard, the quick-settings panel) belongs to
+  app (the lock screen, the on-screen keyboard) belongs to
   `t test`: t builds those apps for the job (`t.toml` `starts`), which a plain
   `cargo test` does not.
 - Browser crates: `t cargo check --locked --target wasm32-unknown-unknown -p NAME` too.

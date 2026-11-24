@@ -1,13 +1,48 @@
-//! Rows the desktop describes and the panel shows: the Devices section's
-//! device fabric rows and the Clipboard section's copies.
+//! What the session publishes for the quick settings to draw: the Devices section's device
+//! fabric rows and sounds, the clipboard's copies and the notification centre.
 //!
-//! The desktop holds the device fabric and the clipboard history, so it
-//! describes each row ([`HostedRow`]) while its section shows; the panel
-//! lists the rows and names which of a row's buttons was pressed in its
-//! effects ([`crate::RowPart`]).
+//! The session holds the device fabric, the clipboard history and the notifications, so it
+//! describes each row ([`HostedRow`]) while its section shows, and a press names which of a row's
+//! buttons it was ([`RowPart`]).
 
 use ui::icons::Icon;
-use ui::tilo_resource;
+
+pub use tilo_session_core::desktop::now_playing::Offer as MediaOffer;
+
+/// What was pressed on a row of the Devices section.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum RowPart {
+    /// The row itself.
+    Row,
+    /// The one action the row names (stop, cancel, try again).
+    Action,
+    /// Allow, on a request.
+    Allow,
+    /// Decline, on a request.
+    Decline,
+    /// Drive the device with this machine's pointer.
+    Control,
+}
+
+/// One of the person's devices a Bluetooth accessory can move to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoffTarget {
+    pub id: String,
+    pub label: String,
+    pub online: bool,
+    /// This device.
+    pub local: bool,
+}
 
 /// What a row offers besides a press on its body.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,27 +135,27 @@ pub fn device_rows(
                 key: device.id.clone(),
                 title: device.label.clone(),
                 detail: crate::i18n::t(if takes_sound {
-                    "qs-devices-send-here"
+                    "devices-row-send-here"
                 } else if device.nearby {
-                    "qs-devices-nearby"
+                    "devices-row-nearby"
                 } else if device.online {
-                    "qs-devices-online"
+                    "devices-row-online"
                 } else {
-                    "qs-devices-offline"
+                    "devices-row-offline"
                 }),
                 icon: Icon::Monitor,
                 selected: false,
                 enabled: true,
                 actions: if takes_sound {
-                    HostedActions::Select(crate::i18n::t("qs-devices-action-send"))
+                    HostedActions::Select(crate::i18n::t("devices-row-action-send"))
                 } else {
                     match playing {
                         Some(title) if device.online => HostedActions::Select(crate::i18n::t_args(
-                            "qs-devices-play-here",
+                            "devices-row-play-here",
                             &[("media", title.into())],
                         )),
                         _ if !device.online && device.wakeable => {
-                            HostedActions::Select(crate::i18n::t("qs-devices-wake"))
+                            HostedActions::Select(crate::i18n::t("devices-row-wake"))
                         }
                         _ => HostedActions::None,
                     }
@@ -187,9 +222,9 @@ pub fn remote_audio_rows(
         key: format!("{SOUND_KEY}{}", sound.token),
         title: sound.label.clone(),
         detail: crate::i18n::t(if sound.application {
-            "qs-devices-audio-app"
+            "devices-row-audio-app"
         } else {
-            "qs-devices-audio-choose"
+            "devices-row-audio-choose"
         }),
         icon: Icon::Volume2,
         selected: chosen == Some(sound.token),
@@ -199,19 +234,19 @@ pub fn remote_audio_rows(
     let asks = asks.iter().map(|ask| HostedRow {
         key: format!("{ASK_KEY}{}", ask.id),
         title: crate::i18n::t_args(
-            "qs-devices-play-here",
+            "devices-row-play-here",
             &[("media", ask.media.as_str().into())],
         ),
         detail: crate::i18n::t_args(
-            "qs-devices-requested-allow-once",
+            "devices-row-requested-allow-once",
             &[("source", ask.source.as_str().into())],
         ),
         icon: Icon::Volume2,
         selected: false,
         enabled: true,
         actions: HostedActions::Pair {
-            first: (Icon::Check, crate::i18n::t("qs-devices-allow-audio")),
-            second: (Icon::X, crate::i18n::t("qs-devices-decline-audio")),
+            first: (Icon::Check, crate::i18n::t("devices-row-allow-audio")),
+            second: (Icon::X, crate::i18n::t("devices-row-decline-audio")),
         },
     });
     let routes = routes.iter().map(|route| HostedRow {
@@ -222,9 +257,9 @@ pub fn remote_audio_rows(
         selected: false,
         enabled: true,
         actions: HostedActions::Select(crate::i18n::t(if route.stopped {
-            "qs-devices-action-dismiss"
+            "devices-row-action-dismiss"
         } else {
-            "qs-devices-action-stop"
+            "devices-row-action-stop"
         })),
     });
     // What waits for an answer comes first, then what travels, then what can
@@ -235,10 +270,10 @@ pub fn remote_audio_rows(
 /// The same devices as an accessory's page lists where it can move to, this
 /// device included and marked local.
 #[must_use]
-pub fn handoff_targets(devices: &[PersonalDevice]) -> Vec<crate::HandoffTarget> {
+pub fn handoff_targets(devices: &[PersonalDevice]) -> Vec<HandoffTarget> {
     devices
         .iter()
-        .map(|device| crate::HandoffTarget {
+        .map(|device| HandoffTarget {
             id: device.id.clone(),
             label: device.label.clone(),
             online: device.online,
@@ -264,7 +299,7 @@ pub struct DevicesReading {
     pub asks: Vec<SoundAsk>,
     /// What another of the person's devices was playing, until the person
     /// continues it here: the now-playing card offers it.
-    pub offer: Option<crate::MediaOffer>,
+    pub offer: Option<MediaOffer>,
 }
 
 impl DevicesReading {
@@ -283,7 +318,7 @@ impl DevicesReading {
 
     /// The same devices as an accessory's page lists where it can move to.
     #[must_use]
-    pub fn targets(&self) -> Vec<crate::HandoffTarget> {
+    pub fn targets(&self) -> Vec<HandoffTarget> {
         handoff_targets(&self.devices)
     }
 
@@ -335,7 +370,7 @@ pub struct ClipboardCopy {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    ui::tilo_resource::JsonSchema,
+    tilo_resource::JsonSchema,
 )]
 pub struct NotificationCentre {
     /// How many the person has not read.
@@ -366,7 +401,7 @@ pub struct NotificationCentre {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    ui::tilo_resource::JsonSchema,
+    tilo_resource::JsonSchema,
 )]
 pub struct Notice {
     /// What the verbs name it by.
@@ -391,161 +426,9 @@ pub struct Notice {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    ui::tilo_resource::JsonSchema,
+    tilo_resource::JsonSchema,
 )]
 pub struct NoticeAction {
     pub key: String,
     pub label: String,
-}
-
-/// Formats whose copies are pictures.
-const IMAGE_MIMES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
-
-/// The longest title a text copy shows before the line is cut.
-const TITLE_CHARS: usize = 120;
-
-/// The Clipboard section and its row for `copies`, newest first, as of
-/// `now_ms`.
-#[must_use]
-pub fn clipboard_view(copies: &[ClipboardCopy], now_ms: u64) -> crate::ClipboardView {
-    crate::ClipboardView {
-        total: copies.len(),
-        rows: copies
-            .iter()
-            .map(|copy| clipboard_row(copy, now_ms))
-            .collect(),
-    }
-}
-
-/// One copy's row: what it holds, how long ago, and where it came from.
-fn clipboard_row(copy: &ClipboardCopy, now_ms: u64) -> HostedRow {
-    // The format says what the row is; the text is what it holds, which for
-    // a copy of files is the first file's name.
-    let files = ui::dnd::is_file_mime(&copy.mime);
-    let title = if let Some(text) = copy.text.as_deref() {
-        title_of(text)
-    } else if files {
-        crate::i18n::t("qs-copy-files")
-    } else if IMAGE_MIMES.contains(&copy.mime.as_str()) {
-        crate::i18n::t("qs-copy-image")
-    } else {
-        crate::i18n::t("qs-copy-formatted")
-    };
-    let icon = if files {
-        Icon::Folder
-    } else if IMAGE_MIMES.contains(&copy.mime.as_str()) {
-        Icon::Image
-    } else {
-        Icon::FileText
-    };
-    let seconds = now_ms.saturating_sub(copy.created_ms) / 1000;
-    let age = ui::format::relative(i64::try_from(seconds).unwrap_or(i64::MAX));
-    let detail = match &copy.from {
-        Some(device) => crate::i18n::t_args(
-            "qs-copy-detail-from",
-            &[("age", age.into()), ("device", device.as_str().into())],
-        ),
-        None => crate::i18n::t_args("qs-copy-detail-this-device", &[("age", age.into())]),
-    };
-    HostedRow {
-        key: copy.key.clone(),
-        title,
-        detail,
-        icon,
-        selected: false,
-        enabled: true,
-        actions: HostedActions::Clipboard {
-            pinned: copy.pinned,
-            pin: String::new(),
-            remove: String::new(),
-        },
-    }
-}
-
-/// A text copy's title: its first line with its runs of whitespace closed
-/// up, cut at [`TITLE_CHARS`].
-fn title_of(text: &str) -> String {
-    let line = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default();
-    let closed = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    if closed.chars().count() <= TITLE_CHARS {
-        return closed;
-    }
-    let cut: String = closed.chars().take(TITLE_CHARS).collect();
-    format!("{}…", cut.trim_end())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The format a text copy travels in.
-    const TEXT: &str = "text/plain;charset=utf-8";
-
-    fn copy(mime: &str, text: Option<&str>) -> ClipboardCopy {
-        ClipboardCopy {
-            key: "k".to_owned(),
-            mime: mime.to_owned(),
-            text: text.map(str::to_owned),
-            created_ms: 0,
-            pinned: false,
-            from: None,
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn a_copy_is_listed_by_what_it_is_and_where_it_came_from;
-
-        phase a_copy_says_when_and_where_it_was_copied;
-        {
-            // Case `a_copy_says_which_device_it_came_from`:
-            // A copy shared from another device names it, and one made here says
-            // it came from this computer, both after how long ago it was made.
-            let now = 1_000_000;
-            let mut here = copy(TEXT, Some("made here"));
-            here.created_ms = now - 30_000;
-            let mut there = copy(TEXT, Some("made there"));
-            there.created_ms = now - 30_000;
-            there.from = Some("laptop".to_owned());
-            let view = clipboard_view(&[here, there], now);
-            assert!(
-                view.rows[0].detail.ends_with(", from this computer"),
-                "a copy made here: {}",
-                view.rows[0].detail
-            );
-            assert!(
-                view.rows[1].detail.ends_with(", from laptop"),
-                "a copy shared from a laptop: {}",
-                view.rows[1].detail
-            );
-            assert!(
-                !view.rows[1].detail.starts_with(", from"),
-                "the age comes first: {}",
-                view.rows[1].detail
-            );
-        }
-
-        phase a_copied_file_is_a_folder_row_named_after_the_first_file;
-        {
-            // Case `a_file_copy_lists_as_the_files_it_is`:
-            // A copy of files is not formatted text: it is a folder, named by
-            // the first file, so the row says what was copied.
-            let view = clipboard_view(
-                &[copy("text/uri-list", Some("holiday.png"))],
-                ui::time::unix_now_ms(),
-            );
-            assert_eq!(view.rows[0].title, "holiday.png");
-            assert_eq!(view.rows[0].icon, Icon::Folder);
-
-            // Case `a_file_copy_without_a_name_still_says_files`:
-            // With no path to show, the row still says files rather than
-            // claiming a format it does not hold.
-            let view = clipboard_view(&[copy("x-special/gnome-copied-files", None)], 0);
-            assert_eq!(view.rows[0].icon, Icon::Folder);
-            assert_ne!(view.rows[0].title, "");
-        }
-    }
 }

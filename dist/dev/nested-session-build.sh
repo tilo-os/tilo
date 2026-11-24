@@ -106,7 +106,7 @@ host_profile=nested
 # account installs it where the session looks for it, and the session locks.
 host_bins=(tilo-session tilo-runtime tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
            tilo-model-gateway tilo-ush tilo-control tilolang-process tilolang nested-session-bus
-           tilo-quick-settings fs projector-stand-in fake-model-providers tilo-unlock-helper)
+           fs projector-stand-in fake-model-providers tilo-unlock-helper)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
@@ -125,7 +125,6 @@ build_host() {
         -p tilo-app-package-cli --bin tilo-app-package \
         -p runtime-bundle --bin tilo-runtime-bundle \
         -p tilo-control --bin tilo-control \
-        -p tilo-quick-settings --bin tilo-quick-settings \
         -p tilo-fs --bin fs \
         -p projector-stand-in --bin projector-stand-in \
         -p fake-model-providers --bin fake-model-providers \
@@ -172,7 +171,6 @@ build_surfaces() {
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" \
         -p tilo-lock-screen --bin tilo-lock-screen \
-        -p tilo-quick-settings --bin tilo-quick-settings \
         -p osk --bin osk \
         -p tilo-audio-service --bin tilo-audio
 }
@@ -299,7 +297,7 @@ mkdir -p "$out/bin" "$out/thin-app"
 for name in "${host_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
 # The session's surfaces, which it starts from beside its own executable under
 # the names the OS image installs them as (`osk` ships as `/usr/bin/tilo-osk`).
-for name in tilo-lock-screen tilo-quick-settings tilo-audio; do
+for name in tilo-lock-screen tilo-audio; do
     cp -p "$target/$host_profile/$name" "$out/bin/"
 done
 cp -p "$target/$host_profile/osk" "$out/bin/tilo-osk"

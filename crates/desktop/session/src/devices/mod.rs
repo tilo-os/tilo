@@ -24,14 +24,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::hosted::{
+    DevicesReading, MediaOffer, PersonalDevice, RowPart, SendableSound, SoundAsk, SoundRoute,
+};
 use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
-use tilo_quick_settings::hosted::{
-    DevicesReading, PersonalDevice, SendableSound, SoundAsk, SoundRoute,
-};
-use tilo_quick_settings::{MediaOffer, RowPart};
 use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_speaker_service::remote_audio::{self, RemoteAudioPhase};
@@ -304,7 +303,7 @@ impl Service for Served {
 /// Land a session another of the person's devices hands this one, so the now-playing card offers to
 /// continue it here; `None` clears it. The devices' reading carries it ([`crate::devices`]), so the
 /// panel shows the offer as it shows the rows, and continuing it names the same one back.
-pub(crate) fn handoff(shared: &crate::Shared, offer: Option<tilo_quick_settings::MediaOffer>) {
+pub(crate) fn handoff(shared: &crate::Shared, offer: Option<MediaOffer>) {
     *shared.handoff.borrow_mut() = offer;
 }
 

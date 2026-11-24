@@ -1,7 +1,7 @@
 //! A panel the session starts is an ordinary app: it reaches what the session's services publish
 //! the way Settings does, as the launch the session recorded for it.
 //! These start a surface app through the session's own surface machinery — the same call that
-//! starts Quick Settings and the top bar — and let it read and change the sound service's `sound`
+//! starts the lock screen and the on-screen keyboard — and let it read and change the sound service's `sound`
 //! resource. It is admitted only because the session started it: a process of the same app that the
 //! session did not start reaches nothing.
 
@@ -61,7 +61,7 @@ fn panel_binary() -> PathBuf {
 }
 
 /// The session the panel talks to: headless, hosting the sound service, with its app wire on `socket`
-/// and the panel started the way it starts Quick Settings.
+/// and the panel started the way it starts the on-screen keyboard.
 fn session_with_panel(socket: &Path) -> Session {
     let wake = LoopWake::default();
     let services: Vec<Box<dyn Service>> = sound(&wake);

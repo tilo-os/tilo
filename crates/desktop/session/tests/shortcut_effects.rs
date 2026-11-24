@@ -15,7 +15,6 @@
               outlives every call made into it"
 )]
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use tilo_compositor::{InputEvent, OutputConfig};
@@ -23,14 +22,13 @@ use tilo_session_core::surface::Scroll;
 /// The platform search the shell opens on its chord.
 const HOST_SEARCH: &str = "tilo.host:search";
 use crate::common::tree::window;
-use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
     AppKind, Layout, Strip, StripId, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_session::shell::state::WINDOW_MENU;
-use tilo_session::{Options, Session, SessionConfig, quick_settings};
+use tilo_session::{Options, Session, SessionConfig};
+use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
 use tilo_sheets::SheetState as _;
-use tilo_test_env::ScopedEnv;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome, fixed_shortcut};
 
 /// One display's refresh: how often the session asks its clients for their next frame.
@@ -101,20 +99,6 @@ fn layout_tree() -> Layout {
     tree
 }
 
-/// The panel's app, as the session starts it: a stand-in that stays up while the stack has the
-/// panel open.
-fn panel_binary() -> PathBuf {
-    tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
-}
-
-/// What the stand-in panel reads so it stays up until the session stops it,
-/// held for the test's life.
-fn panel_environment() -> ScopedEnv {
-    let mut environment = ScopedEnv::new();
-    environment.set("SURFACE_PROBE_STAY", "1");
-    environment
-}
-
 fn session_with(tree: Layout) -> Session {
     session_with_config(tree, SessionConfig::default())
 }
@@ -123,7 +107,6 @@ fn session_with_config(tree: Layout, config: SessionConfig) -> Session {
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
         Options {
-            surfaces: vec![quick_settings::surface_of(panel_binary())],
             collab: false,
             config,
             ..Options::default()
@@ -302,7 +285,6 @@ fn apps(session: &Session) -> Vec<String> {
 /// front's menu, the guide, quick settings and its pages, a conversation, and the magnifier's zoom.
 #[test]
 fn the_session_answers_every_shortcut_of_its_side() {
-    let _panel = panel_environment();
     for action in ShortcutAction::ALL
         .into_iter()
         .filter(|action| action.home() == ShortcutHome::Session)
@@ -390,12 +372,11 @@ fn the_session_answers_every_shortcut_of_its_side() {
 tilo_test_env::scenario! {
     fn the_session_answers_its_shortcuts;
 
-    phase super_v_puts_the_clipboard_panel_up_in_the_pass_it_is_pressed_in;
-    // The clipboard panel Super+V asks for is up in the pass the key is pressed in, beside a caret
-    // nothing waits for: no frame goes by with the key answered and the panel still down.
+    phase super_v_puts_the_quick_settings_up_in_the_pass_it_is_pressed_in;
+    // The quick settings Super+V asks for are up in the pass the key is pressed in: no frame goes
+    // by with the key answered and the panel still down.
     {
-        let _panel = panel_environment();
-        let mut session = session_with(layout_tree());
+            let mut session = session_with(layout_tree());
         key(&mut session, KEY_LEFT_META, true);
         session
             .compositor()
@@ -415,8 +396,7 @@ tilo_test_env::scenario! {
     // A pointer action between Super's press and its release is no tap: the person was using the
     // pointer, not reaching for the search.
     {
-        let _panel = panel_environment();
-        let mut session = session_with(layout_tree());
+            let mut session = session_with(layout_tree());
         key(&mut session, KEY_LEFT_META, true);
         session
             .compositor()
@@ -439,7 +419,6 @@ tilo_test_env::scenario! {
 /// so Super+W closes the window in front and opens no search.
 #[test]
 fn a_tap_of_super_alone_opens_search_and_a_chord_does_not() {
-    let _panel = panel_environment();
     let mut session = session_with(layout_tree());
     // A tap is a press and a release with nothing between, offered before the loop takes a frame:
     // the hold it is told apart from is measured on the clock, so a slow frame between the two
@@ -481,7 +460,6 @@ fn a_tap_of_super_alone_opens_search_and_a_chord_does_not() {
 /// focus, and a chord pressed while they show runs and takes them away.
 #[test]
 fn holding_super_shows_the_keys_and_letting_go_takes_them_away() {
-    let _panel = panel_environment();
     let mut session = session_with(layout_tree());
     let focused = session
         .compositor()
@@ -629,7 +607,6 @@ fn until_a_row(session: &mut Session, title: &str) {
 /// reads as they bound it.
 #[test]
 fn the_window_menu_shows_the_chord_the_table_binds() {
-    let _panel = panel_environment();
     let mine = KeyChord::parse("Ctrl+Alt+F").expect("a chord");
     let mut config = SessionConfig::default();
     config
@@ -712,7 +689,6 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
 /// and the next window's menu opens as it always does.
 #[test]
 fn the_window_menu_closes_with_the_window_it_belongs_to() {
-    let _panel = panel_environment();
     let mut session = session_with(layout_tree());
     press(&mut session, ShortcutAction::TabMenu);
     until(&mut session, "the window menu", |session| {
@@ -759,7 +735,6 @@ fn the_window_menu_closes_with_the_window_it_belongs_to() {
 /// shell's own test follows.
 #[test]
 fn the_search_shows_the_chord_beside_the_action() {
-    let _panel = panel_environment();
     let mut session = session_with(layout_tree());
     let chord = ShortcutConfig::default()
         .bindings

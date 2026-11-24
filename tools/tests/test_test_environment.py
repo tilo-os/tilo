@@ -175,13 +175,12 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(siblings["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
         self.assertEqual(siblings["command"][2:], [
             "tilo-lock-screen:tilo-lock-screen", "osk:osk",
-            "tilo-quick-settings:tilo-quick-settings",
             "tilolang-process:tilolang-process", "launcher:tilo-launcher",
         ])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "session-siblings"]
-            expected = ([("package(tilo-session) or package(tilo-quick-settings)",
+            expected = ([("package(tilo-session)",
                          {"host": 'cfg(target_os = "linux")'})]
                         if profile == "default" else [])
             self.assertEqual(
