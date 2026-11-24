@@ -646,7 +646,7 @@ fn published(
             kind: tilo_actions::ActionKind::Undoable,
             operation: tilo_actions::OperationKind::Document,
             confirm: false,
-            asks: None,
+            asks: Vec::new(),
             keywords: Vec::new(),
             icon: None,
         },
