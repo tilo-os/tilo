@@ -100,7 +100,7 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
     ;;
   runtime)
     sdk="${3:?SDK archive}" out="${4:?output directory}"
-    windows_platform_tests="tilo-socket tilo-shm tilo-render-protocol runtime-portal launcher-windows tilo-fs-client tilo-identity"
+    windows_platform_tests="tilo-socket tilo-shm tilo-render-protocol tilo-runtime-portal launcher-windows tilo-fs-client tilo-identity"
     use_windows_sdk "$arch" "$sdk"
     if [ "$arch" = x86_64 ]; then
       gstreamer="${TMPDIR:-/tmp}/gstreamer-sdk-$arch"
