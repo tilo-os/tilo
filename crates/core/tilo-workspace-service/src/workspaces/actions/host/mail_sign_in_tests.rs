@@ -277,7 +277,9 @@ async fn the_listing_answers_older_accounts_and_ones_that_feed_no_mail() {
         "provider": "nextcloud",
         "server_url": "https://cloud.example.test",
         "username": "ada",
-        "services": {"mail": false, "calendar": true, "files": false},
+        "use_mail": false,
+        "use_calendar": true,
+        "use_files": false,
     });
     setup
         .workspaces
