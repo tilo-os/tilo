@@ -1594,6 +1594,7 @@ async fn shell_on_a_joined_workspace(
                 published: None,
                 workspaces: member.workspaces().clone(),
                 identity: None,
+                live: None,
             })),
             ..crate::apps::services::ProcessServices::default()
         },

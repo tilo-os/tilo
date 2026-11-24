@@ -53,6 +53,11 @@ mod pace;
 #[cfg(feature = "live_session")]
 pub mod live;
 
+/// The carrier over one byte stream: a desktop session's link to its own device daemon, which
+/// takes it into the relay it runs or on to another device's.
+#[cfg(all(feature = "relay", feature = "iroh", not(target_arch = "wasm32")))]
+pub mod link;
+
 #[cfg(feature = "relay")]
 mod mirror;
 

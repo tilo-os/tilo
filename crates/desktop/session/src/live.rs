@@ -1,20 +1,20 @@
-//! The live session between the devices of a workspace: one sealed `moq-lite` session per workspace,
-//! carried over this session's own iroh endpoint, and the relay role the device serving the
-//! workspace takes for the others.
-//! Which device relays is durable workspace state, not presence and not the live session itself, so every
-//! device names the same one without asking anyone ([`relay_of`]): the device whose signed
+//! The live session between the devices of a workspace: one sealed `moq-lite` session per
+//! workspace, which this session takes part in through its own device's daemon.
+//! Which device relays is durable workspace state, not presence and not the live session itself, so
+//! every device names the same one without asking anyone ([`relay_of`]): the device whose signed
 //! address the workspace's governance holds, while it is a member. Two people's own devices
-//! sharing a workspace one of them serves have a live session without a server. Every session
-//! serves [`tilo_live::relay::Relay`] on its endpoint, and its ALPN handler admits a connection
-//! only for a workspace the session relays now, as the workspace's state names it: a device only
-//! when the certificate it presents is the roster's own and the handshake proved the key. It cuts
-//! a session when the workspace's membership or keys move.
-//! While that relay does not take a device in — it is away, does not know the device yet, or is
+//! sharing a workspace one of them serves have a live session without a server.
+//! The device's daemon holds its one endpoint, and with it the relay of every workspace this
+//! device serves. This session captures, encodes and draws, and is a `moq-lite` client of that
+//! relay like any other device: each workspace's live session runs over a link on the daemon's
+//! socket ([`tilo_live::link`]), which the daemon takes into its own relay, for a workspace this
+//! device serves, or on to the relay of the device serving it. The relay admits this device by
+//! the certificate it presents as its grant, as it admits every device.
+//! While that relay does not take this device in — it is away, does not know the device yet, or is
 //! admitting as many devices as it takes at once — the device asks it again, waiting longer each
 //! time, since a relay that comes back says nothing to the devices that missed it.
-//! Every other member dials that relay over iroh ([`tilo_live::native`]) with its device
-//! certificate as its grant, and each member seals its own tracks under the scope's channel
-//! content keys ([`tilo_live::live_session::LiveSession`]): the relay copies bytes it cannot open, and it is a
+//! Each member seals its own tracks under the scope's channel content keys
+//! ([`tilo_live::live_session::LiveSession`]): the relay copies bytes it cannot open, and it is a
 //! member that holds them already.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,20 +24,14 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use collab_types::scope::Scope;
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{EndpointAddr, EndpointId};
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::frame::LiveKeys;
 use tilo_live::grant;
-use tilo_live::live::{self, Namespace};
+use tilo_live::link;
 use tilo_live::live_session::{Heard, Join, LiveError, LiveSession};
-use tilo_live::native;
-use tilo_live::relay::{
-    Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
-};
 use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
-use tilo_network_actor::own_service::Protocols;
-use tilo_user_identity::{DeviceCert, EndpointDelegation};
 
 use crate::engine::Engine;
 use crate::workspace_keys::{self, Device};
@@ -147,7 +141,7 @@ pub enum LiveState {
     /// and the relay is asked again like one that was not reached.
     Busy { relay: Relayer },
     /// `relay` answered and did not admit this device, which presented the keys of `epoch`. Why
-    /// is the relay's to say ([`TurnedAway`]): it tells the device it turns away nothing but that.
+    /// is the relay's to say, in its journal: it tells the device it turns away nothing but that.
     Refused { relay: Relayer, epoch: u64 },
 }
 
@@ -209,279 +203,20 @@ impl Missed {
     }
 }
 
-/// Why a relay turned a device away from a workspace's live session. The relay knows, and the device
-/// it turned away is told only that it was not let in: so the relay's journal and its own reading
-/// say it ([`TurnedAway`]), where the person whose devices these are reads both.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Refusal {
-    /// The grant names no workspace.
-    Unparsed,
-    /// Who is in the workspace cannot be read on this relay.
-    Unread,
-    /// The grant asks for a scope this relay carries no live session for.
-    Scope,
-    /// This device does not relay the workspace: it is not the device serving it.
-    NotRelayedHere,
-    /// The certificate the grant carries does not read as one.
-    CertificateUnread,
-    /// The certificate the grant carries ran out.
-    CertificateExpired,
-    /// The workspace holds no device of the certificate's key.
-    NotAMember,
-    /// The workspace holds another certificate for the device than the one it presented.
-    CertificateDiffers,
-    /// The connection's endpoint is not the device, and the device did not sign for it, or that
-    /// signature ran out.
-    Endpoint,
-    /// The device seals under keys this relay already moved past: it presented `presented`, and
-    /// the workspace's media channel is at `newest` here.
-    KeysBehind { presented: u64, newest: u64 },
-}
-
-impl Refusal {
-    /// The word a reading and the journal say it by: what a tool branches on.
-    #[must_use]
-    pub const fn word(&self) -> &'static str {
-        match self {
-            Self::Unparsed => "grant-unparsed",
-            Self::Unread => "membership-unread",
-            Self::Scope => "scope-not-carried",
-            Self::NotRelayedHere => "not-relayed-here",
-            Self::CertificateUnread => "certificate-unread",
-            Self::CertificateExpired => "certificate-expired",
-            Self::NotAMember => "not-a-member",
-            Self::CertificateDiffers => "certificate-differs",
-            Self::Endpoint => "endpoint-not-the-device",
-            Self::KeysBehind { .. } => "keys-behind",
-        }
-    }
-}
-
-/// One endpoint this relay turned away from a workspace's live session, and has not let in since.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TurnedAway {
-    /// The endpoint the handshake proved: a device's key, or the key a page dials under.
-    pub peer: [u8; 32],
-    /// What its person called it, when it is a device the workspace holds and they named it.
-    pub name: String,
-    /// Why it was turned away the last time it asked.
-    pub why: Refusal,
-    /// How often it asked and was turned away since it was last let in.
-    pub times: u32,
-}
-
-/// How many endpoints a workspace's reading keeps as turned away: a relay answers whoever dials
-/// it, so what it remembers of them is bounded.
-const TURNED_AWAY_KEPT: usize = 8;
-
-/// Note in `turned` that `peer` was turned away for `why`. Answers whether that is news: the
-/// endpoint was not turned away before, or for another reason.
-fn note_turned_away(
-    turned: &mut BTreeMap<[u8; 32], TurnedAway>,
-    peer: [u8; 32],
-    name: String,
-    why: Refusal,
-) -> bool {
-    if let Some(known) = turned.get_mut(&peer) {
-        let news = known.why.word() != why.word();
-        known.why = why;
-        known.name = name;
-        known.times = known.times.saturating_add(1);
-        return news;
-    }
-    if turned.len() >= TURNED_AWAY_KEPT {
-        turned.pop_first();
-    }
-    turned.insert(
-        peer,
-        TurnedAway {
-            peer,
-            name,
-            why,
-            times: 1,
-        },
-    );
-    true
-}
-
-/// Whether a device that presented the keys of `presented` seals under keys a relay that saw
-/// `newest` still opens: a device behind would publish nothing anyone opens.
-const fn keys_current(presented: u64, newest: u64) -> Result<(), Refusal> {
-    if presented < newest {
-        return Err(Refusal::KeysBehind { presented, newest });
-    }
-    Ok(())
-}
-
-/// What one granted preface asked for, once its certificate is bound to the handshake and to the
-/// workspace's roster.
-struct Request {
-    workspace: WorkspaceId,
-    device: [u8; 32],
-}
-
-/// Bind a grant to the transport and the roster:
-///
-/// * the certificate is byte for byte the row the workspace's governance
-///   holds for its device — the membership every device already syncs, so a
-///   device presenting another device's certificate, or one the workspace
-///   removed, is refused;
-/// * the connection's endpoint speaks for that device: it is the device's own
-///   key, or one the device signed an [`EndpointDelegation`] for, live now,
-///   which is how a page whose device key cannot leave `WebCrypto` dials;
-/// * the certificate has not expired, and the workspace is one this device
-///   relays now, by the same rule every member applies ([`relay_of`]).
-fn bind(
-    peer: Peer,
-    grant: &grant::Native,
-    devices: &[Device],
-    host: Option<[u8; 32]>,
-    own: [u8; 32],
-    now_ns: u64,
-) -> Result<Request, Refusal> {
-    let Peer(endpoint) = peer;
-    let workspace =
-        WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Refusal::Unparsed)?;
-    // One scope per workspace today: the workspace itself.
-    if grant.scope != scope_of(workspace).id() {
-        return Err(Refusal::Scope);
-    }
-    // Only the device the workspace's state names relays.
-    if relay_of(devices, host, now_ns) != Some(own) {
-        return Err(Refusal::NotRelayedHere);
-    }
-    let certificate: DeviceCert =
-        serde_json::from_slice(&grant.certificate).map_err(|_| Refusal::CertificateUnread)?;
-    if certificate.is_expired_at(now_ns) {
-        return Err(Refusal::CertificateExpired);
-    }
-    let device = certificate.device_public_key;
-    let admitted = devices
-        .iter()
-        .find(|admitted| admitted.device == device)
-        .ok_or(Refusal::NotAMember)?;
-    if certificate != admitted.cert {
-        return Err(Refusal::CertificateDiffers);
-    }
-    if endpoint != device {
-        let delegation: EndpointDelegation =
-            serde_json::from_slice(&grant.delegation).map_err(|_| Refusal::Endpoint)?;
-        if delegation.device_public_key != device {
-            return Err(Refusal::Endpoint);
-        }
-        delegation
-            .verify(&endpoint, now_ns)
-            .map_err(|_| Refusal::Endpoint)?;
-    }
-    Ok(Request { workspace, device })
-}
-
-/// What each call of each workspace this relay carries allows, by the tag its tracks name
-/// ([`collab_types::calls::tag`]).
-type CallsByTag =
-    Arc<Mutex<BTreeMap<WorkspaceId, BTreeMap<String, collab_types::calls::CallRule>>>>;
-
-/// One admitted session: its publication, the scope it hears, and the watch it is cut by.
-struct Permit {
-    engine: Arc<Engine>,
-    changed: tokio::sync::watch::Receiver<u64>,
-    /// What the workspace's calls allow: the call tracks it carries for this session.
-    calls: CallsByTag,
-    /// The person the session's device is (their root as hex).
-    person: String,
-    device: [u8; 32],
-    workspace: WorkspaceId,
-    workspace_name: String,
-    scope: String,
-    publication: String,
-    prefix: String,
-}
-
-impl SessionAuthorization for Permit {
-    fn publication(&self) -> Option<&str> {
-        Some(&self.publication)
-    }
-
-    fn subscriptions(&self) -> &[String] {
-        // Every namespace under the scope is offered, and each is judged as it is offered: a device
-        // that joins after this session opened is heard without a new session.
-        &[]
-    }
-
-    fn subscription_prefix(&self) -> Option<&str> {
-        Some(&self.prefix)
-    }
-
-    fn current(&self, direction: Direction, namespace: &str) -> bool {
-        let Some(name) = Namespace::parse(namespace) else {
-            return false;
-        };
-        if name.workspace_id() != self.workspace_name || name.scope_id() != self.scope {
-            return false;
-        }
-        // The workspace's membership as it is now: a device it removed, or one whose certificate
-        // ran out, is not admitted any more.
-        let Ok(devices) = workspace_keys::devices_of(&self.engine, self.workspace) else {
-            return false;
-        };
-        if !devices.iter().any(|device| device.device == name.device()) {
-            return false;
-        }
-        match direction {
-            Direction::Publish => name.device() == self.device,
-            Direction::Subscribe => true,
-        }
-    }
-
-    fn changed(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
-        Some(self.changed.clone())
-    }
-
-    fn call(&self, direction: Direction, call: &str) -> bool {
-        let may = self
-            .calls
-            .lock_recover()
-            .get(&self.workspace)
-            .and_then(|calls| calls.get(call))
-            .map_or(collab_types::calls::Directions::BOTH, |rule| {
-                rule.may(Some(&self.person))
-            });
-        match direction {
-            Direction::Publish => may.publish,
-            Direction::Subscribe => may.subscribe,
-        }
-    }
-}
-
 /// One joined live session: through which relay, and the session itself.
 struct Joined {
     relay: [u8; 32],
     live_session: Arc<LiveSession>,
 }
 
-/// What the relay role and the live sessions share: this session's engine, its own device, the epochs it
-/// saw, what it joined, and the change signal an open session re-observes on.
+/// What the live sessions share: this session's engine, its own device, what it joined, and how
+/// far each workspace's live session came.
 struct Shared {
     engine: Arc<Engine>,
     device: [u8; 32],
-    /// The newest content-key epoch seen in each workspace: a grant that predates a rotation this
-    /// device already applied is refused.
-    epochs: Mutex<BTreeMap<WorkspaceId, u64>>,
-    /// The devices each workspace admitted when this device last read it: a
-    /// member the workspace removed is a change the open sessions re-observe,
-    /// so its session is cut on the removal and not on its next request.
-    rosters: Mutex<BTreeMap<WorkspaceId, BTreeSet<[u8; 32]>>>,
-    /// What each workspace's calls allowed when this device last read it: a call that ended or
-    /// denied someone is a change the open sessions re-observe, so its tracks stop on it.
-    calls: CallsByTag,
-    /// Told when a workspace's membership, keys or calls moved.
-    changed: tokio::sync::watch::Sender<u64>,
     live_sessions: Mutex<BTreeMap<WorkspaceId, Joined>>,
     /// How far each workspace's live session came here, as it was last settled ([`LiveState`]).
     states: Mutex<BTreeMap<WorkspaceId, LiveState>>,
-    /// The endpoints this relay turned away from each workspace's live session and has not let in since,
-    /// and why ([`TurnedAway`]): of the workspaces this session runs a live session for, and no others.
-    turned: Mutex<BTreeMap<WorkspaceId, BTreeMap<[u8; 32], TurnedAway>>>,
     /// Counts each move of a state and each live session opened: what the session reads the states
     /// and the live sessions again on, and not on every pass.
     moves: std::sync::atomic::AtomicU64,
@@ -499,7 +234,12 @@ struct Shared {
     /// Where a device that holds none of a workspace's media keys is lent the keys of its own
     /// streams ([`MediaKeysLender`]): a session in a workspace's VM, once it can ask its host.
     lender: std::sync::OnceLock<Arc<dyn MediaKeysLender>>,
+    /// What opens a link on the daemon's socket ([`Live::open_links`]).
+    links: std::sync::OnceLock<Links>,
 }
+
+/// What opens one link of the live session on the daemon's socket.
+type Links = Arc<dyn Fn() -> link::Opening + Send + Sync>;
 
 /// One sender's media keys, lent: what a device confined to its own record publishes its presence,
 /// windows and pages with on a workspace's live session, holding nothing that opens anyone's stream
@@ -517,151 +257,6 @@ pub(crate) trait MediaKeysLender: Send + Sync {
 
 /// How long one ask for lent keys is waited for before the live session waits for the next event instead.
 const LEND_PATIENCE: Duration = Duration::from_secs(20);
-
-impl RelayAuthority for Shared {
-    fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
-        Box::pin(std::future::ready(self.decide(peer, proof)))
-    }
-
-    /// An endpoint none of the workspaces this session read names as a device: told from the
-    /// rosters it last read ([`Self::observe_roster`]), with no read of its own. A session that
-    /// has read none yet cannot tell, and calls nobody a stranger. An endpoint that is no device,
-    /// as the key a page dials under, is one, and is judged by its grant like any other.
-    fn stranger(&self, peer: Peer) -> bool {
-        let Peer(endpoint) = peer;
-        let rosters = self.rosters.lock_recover();
-        !rosters.is_empty() && !rosters.values().any(|devices| devices.contains(&endpoint))
-    }
-}
-
-impl Shared {
-    /// Whether `peer` may take part in the live session its grant (`proof`) names, from what this
-    /// device holds of the workspace now.
-    fn decide(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
-        let Peer(endpoint) = peer;
-        let named = grant::Native::parse(proof).and_then(|grant| {
-            let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace))?;
-            Some((grant, workspace))
-        });
-        let Some((grant, workspace)) = named else {
-            tracing::debug!(peer = %hex::encode(endpoint), why = Refusal::Unparsed.word(),
-                "a device was turned away from the live session");
-            return Err(Denied);
-        };
-        let devices = workspace_keys::devices_of(&self.engine, workspace);
-        let judged = match &devices {
-            Ok(devices) => self.judge(peer, &grant, workspace, devices),
-            Err(_) => Err(Refusal::Unread),
-        };
-        match judged {
-            Ok(permit) => {
-                self.let_in(workspace, endpoint);
-                Ok(permit)
-            }
-            Err(why) => {
-                let name = devices
-                    .as_deref()
-                    .map(|devices| relayer(devices, endpoint, self.device).name)
-                    .unwrap_or_default();
-                self.turned_away(workspace, endpoint, name, why);
-                Err(Denied)
-            }
-        }
-    }
-
-    /// [`Self::decide`] for a grant that names `workspace`, whose devices are `devices`: the
-    /// session it is admitted as, or why it is turned away.
-    fn judge(
-        &self,
-        peer: Peer,
-        grant: &grant::Native,
-        workspace: WorkspaceId,
-        devices: &[Device],
-    ) -> Result<Arc<dyn SessionAuthorization>, Refusal> {
-        let host = self.engine.holder_of(workspace);
-        let request = bind(peer, grant, devices, host, self.device, now_ns())?;
-        // A device that sealed under an epoch this relay already moved past would publish nothing
-        // anyone opens: it is refused at the preface.
-        let newest = self
-            .epochs
-            .lock_recover()
-            .get(&workspace)
-            .copied()
-            .unwrap_or(0);
-        keys_current(grant.epoch, newest)?;
-        let scope = scope_of(request.workspace);
-        let person = devices
-            .iter()
-            .find(|admitted| admitted.device == request.device)
-            .map(|admitted| hex::encode(admitted.cert.user_public_key))
-            .unwrap_or_default();
-        Ok(Arc::new(Permit {
-            engine: Arc::clone(&self.engine),
-            changed: self.changed.subscribe(),
-            calls: Arc::clone(&self.calls),
-            person,
-            device: request.device,
-            workspace: request.workspace,
-            workspace_name: request.workspace.to_string(),
-            publication: Namespace::new(&scope, request.device).path(),
-            prefix: live::devices(&scope),
-            scope: scope.id(),
-        }))
-    }
-
-    /// `peer` was turned away from `workspace` 's live session for `why` : the journal says so when that
-    /// is news, and so does this session's reading for a workspace it runs a live session for, which
-    /// counts the asks that follow and is read again ever less often as they repeat. A relay
-    /// answers whoever dials it, so nothing is kept of a workspace this session does not hold.
-    fn turned_away(&self, workspace: WorkspaceId, peer: [u8; 32], name: String, why: Refusal) {
-        let (presented, newest) = match why {
-            Refusal::KeysBehind { presented, newest } => (Some(presented), Some(newest)),
-            _ => (None, None),
-        };
-        if !self.states.lock_recover().contains_key(&workspace) {
-            tracing::debug!(%workspace, peer = %hex::encode(peer), why = why.word(),
-                "a device was turned away from the live session of a workspace this session runs \
-                 no live_session for");
-            return;
-        }
-        let (news, times) = {
-            let mut turned = self.turned.lock_recover();
-            let of_workspace = turned.entry(workspace).or_default();
-            let news = note_turned_away(of_workspace, peer, name, why);
-            let times = of_workspace.get(&peer).map_or(1, |kept| kept.times);
-            drop(turned);
-            (news, times)
-        };
-        if news {
-            tracing::warn!(%workspace, peer = %hex::encode(peer), why = why.word(), ?presented,
-                ?newest, "a device was turned away from this workspace's live session");
-        } else {
-            tracing::debug!(%workspace, peer = %hex::encode(peer), why = why.word(), ?presented,
-                ?newest, "a device was turned away from this workspace's live session again");
-        }
-        // The reading says it when it is news, and then ever less often: a device that asks again
-        // every few seconds, or an endpoint that dials in a loop, wakes the session a handful of
-        // times and no more.
-        if news || times.is_power_of_two() {
-            self.moved();
-        }
-    }
-
-    /// `peer` was let into `workspace` 's live session: it is no longer one this relay turned away.
-    fn let_in(&self, workspace: WorkspaceId, peer: [u8; 32]) {
-        let was = self
-            .turned
-            .lock_recover()
-            .get_mut(&workspace)
-            .and_then(|turned| turned.remove(&peer));
-        if let Some(was) = was {
-            tracing::info!(%workspace, peer = %hex::encode(peer), why = was.why.word(),
-                times = was.times,
-                "a device this relay turned away is in the workspace's live session now");
-            self.moved();
-        }
-    }
-}
 
 impl Shared {
     /// This workspace's devices, and the one among them that may relay its live session; `None` —
@@ -705,7 +300,7 @@ impl Shared {
 
     /// Read `workspace` as it is now and join its relay, move the live session's keys and roster when
     /// they changed, or leave when the workspace names no relay any more.
-    async fn settle(self: &Arc<Self>, workspace: WorkspaceId, endpoint: &Endpoint, relay: &Relay) {
+    async fn settle(self: &Arc<Self>, workspace: WorkspaceId) {
         let Some((devices, serving)) = self.relay_for(workspace) else {
             return;
         };
@@ -725,12 +320,8 @@ impl Shared {
                 (LiveKeys::from(lent), true)
             }
         };
-        self.observe(workspace, keys.epoch());
-        self.observe_roster(workspace, &devices);
-        // What the workspace's calls allow: whose call media the live session opens and sends,
-        // and which call tracks this relay carries for whom.
+        // What the workspace's calls allow: whose call media the live session opens and sends.
         let (rules, persons) = self.engine.call_gate(&workspace.to_string());
-        self.observe_calls(workspace, &rules);
         let roster = Roster::new(devices.iter().map(|device| device.device));
         let scope = scope_of(workspace);
         let kept = {
@@ -772,16 +363,14 @@ impl Shared {
             publish: true,
             presence: true,
         };
-        let opened = if serving == self.device {
-            LiveSession::local(relay, &join)
-        } else if let Some((addr, grant)) = self.dial_target(workspace, &scope, epoch, serving) {
-            let carrier = native::Iroh::new(endpoint.clone(), addr);
-            LiveSession::join_within(Arc::new(carrier), &grant, join, ATTEMPT).await
-        } else {
-            // Where the relay is reached, or the grant it asks for, is not here yet: it was not
-            // reached, and is asked again.
-            Err(LiveError::Unavailable)
-        };
+        let opened =
+            if let Some((dial, grant)) = self.dial_target(workspace, &scope, epoch, serving) {
+                LiveSession::join_within(dial, &grant, join, ATTEMPT).await
+            } else {
+                // Where the relay is reached, or the grant it asks for, is not here yet: it was not
+                // reached, and is asked again.
+                Err(LiveError::Unavailable)
+            };
         let live_session = match opened {
             Ok(live_session) => live_session,
             Err(error) => {
@@ -872,7 +461,6 @@ impl Shared {
         self.stand(workspace, open);
         // A live session opened again where one stood is another live session, whatever its state says.
         self.moved();
-        self.bump();
     }
 
     /// Tell the session that a state moved or a live session opened: it reads both again.
@@ -882,26 +470,41 @@ impl Shared {
         (self.wake)();
     }
 
-    /// Where the workspace's serving device `serving` is reached and the grant that admits this
-    /// device there, or `None` when either is not here yet.
+    /// The carrier to the workspace's serving device `serving`, through this device's daemon, and
+    /// the grant that admits this device there, or `None` when either is not here yet: this
+    /// session has no link to its daemon, or no certificate or keys to present.
     fn dial_target(
         &self,
         workspace: WorkspaceId,
         scope: &Scope,
         epoch: u64,
         serving: [u8; 32],
-    ) -> Option<(EndpointAddr, Vec<u8>)> {
-        let relay_id = match EndpointId::from_bytes(&serving) {
-            Ok(relay_id) => relay_id,
-            Err(error) => {
-                tilo_failure::ignored!(
-                    "a device key that names no endpoint cannot be dialed, and the workspace's \
-                     next settle reads its state again",
-                    tracing::debug!(%workspace, %error,
-                        "the workspace's serving device key is no endpoint")
-                );
-                return None;
-            }
+    ) -> Option<(Arc<dyn tilo_live::admit::Dial>, Vec<u8>)> {
+        let links = Arc::clone(self.links.get()?);
+        let toward = if serving == self.device {
+            link::Toward::Here
+        } else {
+            let relay_id = match EndpointId::from_bytes(&serving) {
+                Ok(relay_id) => relay_id,
+                Err(error) => {
+                    tilo_failure::ignored!(
+                        "a device key that names no endpoint cannot be dialed, and the workspace's \
+                         next settle reads its state again",
+                        tracing::debug!(%workspace, %error,
+                            "the workspace's serving device key is no endpoint")
+                    );
+                    return None;
+                }
+            };
+            // The member this enrollment pinned is reached at the address its host signed, which
+            // is its endpoint's, not its device key's.
+            let addr = self
+                .engine
+                .holder_address(workspace)
+                .as_ref()
+                .filter(|(pinned, _)| *pinned == serving)
+                .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
+            link::Toward::Relay(addr)
         };
         let grant = match self.grant(workspace, scope, epoch) {
             Ok(grant) => grant,
@@ -915,15 +518,8 @@ impl Shared {
                 return None;
             }
         };
-        // The member this enrollment pinned is reached at the address its host signed, which is
-        // its endpoint's, not its device key's.
-        let addr = self
-            .engine
-            .holder_address(workspace)
-            .as_ref()
-            .filter(|(pinned, _)| *pinned == serving)
-            .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
-        Some((addr, grant))
+        let dial = link::Daemon::new(move || links(), toward);
+        Some((Arc::new(dial), grant))
     }
 
     /// The grant this device presents to be admitted into `workspace` 's scope: its certificate,
@@ -939,51 +535,6 @@ impl Shared {
             Vec::new(),
         )
         .map(|grant| grant.encode())
-    }
-
-    /// Note that `workspace` seals under `epoch` from now on, and tell the sessions open on this
-    /// relay.
-    fn observe(&self, workspace: WorkspaceId, epoch: u64) {
-        let mut epochs = self.epochs.lock_recover();
-        let newest = epochs.get(&workspace).copied().unwrap_or(0);
-        if epoch <= newest {
-            return;
-        }
-        epochs.insert(workspace, epoch);
-        drop(epochs);
-        self.bump();
-    }
-
-    /// Note who `workspace` admits now, and tell the sessions open on this relay when that moved.
-    fn observe_roster(&self, workspace: WorkspaceId, admitted: &[Device]) {
-        let devices: BTreeSet<[u8; 32]> = admitted.iter().map(|device| device.device).collect();
-        let moved = {
-            let mut rosters = self.rosters.lock_recover();
-            match rosters.insert(workspace, devices.clone()) {
-                Some(before) => before != devices,
-                None => false,
-            }
-        };
-        if moved {
-            self.bump();
-        }
-    }
-
-    /// Note what `workspace` 's calls allow now, and tell the sessions open on this relay when that
-    /// moved.
-    fn observe_calls(
-        &self,
-        workspace: WorkspaceId,
-        rules: &BTreeMap<String, collab_types::calls::CallRule>,
-    ) {
-        let by_tag: BTreeMap<String, collab_types::calls::CallRule> = rules
-            .iter()
-            .map(|(channel, rule)| (collab_types::calls::tag(channel), rule.clone()))
-            .collect();
-        let moved = self.calls.lock_recover().insert(workspace, by_tag.clone()) != Some(by_tag);
-        if moved {
-            self.bump();
-        }
     }
 
     /// Whether this device is in `workspace` 's live session now.
@@ -1040,14 +591,9 @@ impl Shared {
         )
     }
 
-    /// Stop carrying `workspace` : the live session is closed and its sessions cut.
+    /// Stop taking part in `workspace`: its live session is closed.
     fn withdraw(&self, workspace: WorkspaceId) {
-        self.rosters.lock_recover().remove(&workspace);
-        self.calls.lock_recover().remove(&workspace);
-        let gone = self.live_sessions.lock_recover().remove(&workspace);
-        if gone.is_some() {
-            self.bump();
-        }
+        drop(self.live_sessions.lock_recover().remove(&workspace));
     }
 
     /// A live session of `workspace` ended: settle the workspace again, through its relay.
@@ -1061,87 +607,73 @@ impl Shared {
         }
         self.nudge(workspace).notify_one();
     }
-
-    fn bump(&self) {
-        self.changed
-            .send_modify(|count| *count = count.wrapping_add(1));
-    }
 }
 
-/// The live session of one session: its relay role and the live sessions it joined,
-/// on a thread of their own.
+/// The endpoints the device's relay turned away from each workspace's live session and has not
+/// let in since, by workspace, each as the daemon says it ([`link::TURNED_AWAY`]).
+pub(crate) type TurnedAwayLists = BTreeMap<String, Vec<serde_json::Value>>;
+
+/// The live session of one session: the live sessions it joined, on a thread of their own.
 pub struct Live {
     shared: Arc<Shared>,
-    /// The relay this device's ALPN handler serves, told to it once it is created: the handler is
-    /// installed before the endpoint binds, and the relay is created on the live session's own runtime.
-    relayed: tokio::sync::watch::Sender<Option<Arc<Relay>>>,
+    /// Whom the device's relay turned away, as its daemon publishes it, once followed.
+    turned: Option<crate::followed_resource::FollowedReading<TurnedAwayLists>>,
     /// Told when the session ends; dropping it ends the live session's thread.
     stopped: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
-    /// The ALPN handler this session serves, handed over before the endpoint binds
-    /// ([`Self::protocols`]): which workspaces it relays is read per connection, from their state.
-    protocols: Protocols,
 }
 
 impl std::fmt::Debug for Live {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Live")
-            .field(
-                "relay",
-                &self.shared.engine.identity().device_cert.device_public_key,
-            )
+            .field("device", &hex::encode(self.shared.device))
             .finish_non_exhaustive()
     }
 }
 
 impl Live {
-    /// This session's live session, and what it answers on the endpoint for the workspaces it relays:
-    /// its ALPN handler, handed to the session before the endpoint binds
-    /// ([`crate::sync::Client::start`]).
-    /// Nothing runs until [`Self::attach`] hands it the session's endpoint.
+    /// This session's live session. Nothing runs until [`Self::open_links`] hands it the way to
+    /// its daemon.
     pub(crate) fn new(engine: Arc<Engine>, wake: Arc<dyn Fn() + Send + Sync>) -> Self {
         let device = engine.identity().device_cert.device_public_key;
-        let (changed, _) = tokio::sync::watch::channel(0);
         let shared = Arc::new(Shared {
             engine,
             device,
-            epochs: Mutex::new(BTreeMap::new()),
-            rosters: Mutex::new(BTreeMap::new()),
-            calls: Arc::default(),
-            changed,
             live_sessions: Mutex::new(BTreeMap::new()),
             states: Mutex::new(BTreeMap::new()),
-            turned: Mutex::new(BTreeMap::new()),
             moves: std::sync::atomic::AtomicU64::new(0),
             nudges: Mutex::new(BTreeMap::new()),
             readopt: tokio::sync::Notify::new(),
             wake,
             runtime: std::sync::OnceLock::new(),
             lender: std::sync::OnceLock::new(),
+            links: std::sync::OnceLock::new(),
         });
-        let (relayed, named) = tokio::sync::watch::channel::<Option<Arc<Relay>>>(None);
-        let handler = native::handler(move |session: native::Session| {
-            let mut named = named.clone();
-            async move {
-                let Some(relay) = served(&mut named).await else {
-                    return;
-                };
-                // A session this relay admitted may open what an admitted session opens, on this
-                // session's endpoint as on any other.
-                native::serve_on(&relay, session).await;
-            }
-        });
-        let protocols = vec![(
-            native::ALPN.to_vec(),
-            Box::<dyn iroh::protocol::DynProtocolHandler>::from(handler),
-        )];
         Self {
             shared,
-            relayed,
+            turned: None,
             stopped: None,
             thread: None,
-            protocols,
         }
+    }
+
+    /// Show `turned`, whom the device's relay turned away as its daemon publishes it, beside the
+    /// live sessions from now on ([`Self::turned_away`]).
+    pub(crate) fn follow_turned_away(
+        &mut self,
+        turned: crate::followed_resource::FollowedReading<TurnedAwayLists>,
+    ) {
+        self.turned = Some(turned);
+    }
+
+    /// The endpoints the device's relay turned away from each workspace's live session and has
+    /// not let in since, by workspace: none until its daemon's reading arrived.
+    #[must_use]
+    pub(crate) fn turned_away(&self) -> TurnedAwayLists {
+        self.turned
+            .as_ref()
+            .map(crate::followed_resource::FollowedReading::get)
+            .unwrap_or_default()
     }
 
     /// Have `lender` lend this device its own streams' media keys in every workspace whose keys
@@ -1170,15 +702,18 @@ impl Live {
         self.shared.readopt.notify_one();
     }
 
-    /// Run for the rest of the session on `endpoint` : this device's relay role, for the workspaces
-    /// that name it, and one live session per workspace it holds.
-    pub(crate) fn attach(&mut self, endpoint: Endpoint) {
+    /// Run for the rest of the session, opening each workspace's link with `links` on the
+    /// daemon's socket: one live session per workspace this device holds. Only the first call
+    /// counts.
+    pub(crate) fn open_links(&mut self, links: Links) {
+        if self.shared.links.set(links).is_err() {
+            return;
+        }
         let (stop, stopped) = tokio::sync::mpsc::unbounded_channel();
         let shared = Arc::clone(&self.shared);
-        let relayed = self.relayed.clone();
         match std::thread::Builder::new()
             .name("tilo-live".into())
-            .spawn(move || run(shared, endpoint, relayed, stopped))
+            .spawn(move || run(shared, stopped))
         {
             Ok(thread) => {
                 self.thread = Some(thread);
@@ -1186,11 +721,6 @@ impl Live {
             }
             Err(error) => tracing::warn!(%error, "the live session runs no thread"),
         }
-    }
-
-    /// The protocols this session serves on its endpoint for the live session.
-    pub(crate) fn protocols(&mut self) -> Protocols {
-        std::mem::take(&mut self.protocols)
     }
 
     /// The next object heard in `workspace` 's live session, or `None` .
@@ -1227,26 +757,19 @@ impl Live {
             .collect()
     }
 
-    /// The endpoints this device's relay turned away from each workspace's live session and has not let
-    /// in since, by workspace, and why: what the relay knows and the device it turned away is not
-    /// told.
-    #[must_use]
-    pub fn turned_away(&self) -> Vec<(WorkspaceId, Vec<TurnedAway>)> {
-        self.shared
-            .turned
-            .lock_recover()
-            .iter()
-            .filter(|(_, turned)| !turned.is_empty())
-            .map(|(workspace, turned)| (*workspace, turned.values().cloned().collect()))
-            .collect()
-    }
-
-    /// Moves whenever a state did, a live session opened or a device was turned away or let in:
-    /// [`Self::states`], [`Self::live_sessions`] and [`Self::turned_away`] say nothing new while it
-    /// stands still.
+    /// Moves whenever a state did, a live session opened or whom the relay turned away did:
+    /// [`Self::states`], [`Self::live_sessions`] and [`Self::turned_away`] say nothing new while
+    /// it stands still.
     #[must_use]
     pub fn states_revision(&self) -> u64 {
-        self.shared.moves.load(std::sync::atomic::Ordering::Relaxed)
+        let turned = self
+            .turned
+            .as_ref()
+            .map_or(0, crate::followed_resource::FollowedReading::revision);
+        self.shared
+            .moves
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(turned)
     }
 
     /// The runtime the live sessions run on, once it started: a live session asked to show a track starts its
@@ -1305,32 +828,9 @@ impl Drop for Live {
     }
 }
 
-/// Wait for the relay this device's handler serves, if it ever is one.
-async fn served(
-    named: &mut tokio::sync::watch::Receiver<Option<Arc<Relay>>>,
-) -> Option<Arc<Relay>> {
-    loop {
-        let held = {
-            let now = named.borrow();
-            now.clone()
-        };
-        if held.is_some() {
-            return held;
-        }
-        if named.changed().await.is_err() {
-            return None;
-        }
-    }
-}
-
-/// The live session's thread: its relay role, and one reconciler per workspace,
-/// each woken by the channel service when the workspace moved.
-fn run(
-    shared: Arc<Shared>,
-    endpoint: Endpoint,
-    relayed: tokio::sync::watch::Sender<Option<Arc<Relay>>>,
-    mut stopped: tokio::sync::mpsc::UnboundedReceiver<()>,
-) {
+/// The live session's thread: one reconciler per workspace, each woken by the channel service when
+/// the workspace moved.
+fn run(shared: Arc<Shared>, mut stopped: tokio::sync::mpsc::UnboundedReceiver<()>) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1340,15 +840,12 @@ fn run(
     };
     let _ = shared.runtime.set(runtime.handle().clone());
     runtime.block_on(async move {
-        let authority: Arc<dyn RelayAuthority> = Arc::clone(&shared) as Arc<dyn RelayAuthority>;
-        let serving = Arc::new(Relay::new(authority));
-        relayed.send_replace(Some(Arc::clone(&serving)));
         tracing::debug!(device = %hex::encode(shared.device),
-            "the live session runs on this session's endpoint");
+            "the live session runs through this device's daemon");
         let keys = shared.engine.keys();
         let mut keyed = keys.generation();
         let mut known = BTreeSet::new();
-        adopt(&shared, &endpoint, &serving, &mut known);
+        adopt(&shared, &mut known);
         // A workspace this session joins later opens its live session the same way: the session says
         // when its host admitted this device ([`Live::workspace_arrived`]), its channel keys
         // arriving is announced by the channel service, and the workspace list is read again then.
@@ -1359,10 +856,10 @@ fn run(
                 _ = stopped.recv() => break,
                 changed = keys.changed(keyed) => {
                     keyed = changed;
-                    adopt(&shared, &endpoint, &serving, &mut known);
+                    adopt(&shared, &mut known);
                 }
                 () = shared.readopt.notified() => {
-                    adopt(&shared, &endpoint, &serving, &mut known);
+                    adopt(&shared, &mut known);
                 }
             }
         }
@@ -1370,20 +867,10 @@ fn run(
 }
 
 /// Start a reconciler for every workspace of `shared` this session has not opened a live session for yet.
-fn adopt(
-    shared: &Arc<Shared>,
-    endpoint: &Endpoint,
-    relay: &Arc<Relay>,
-    known: &mut BTreeSet<WorkspaceId>,
-) {
+fn adopt(shared: &Arc<Shared>, known: &mut BTreeSet<WorkspaceId>) {
     for workspace in shared.engine.workspaces() {
         if known.insert(workspace) {
-            tokio::spawn(reconcile(
-                Arc::clone(shared),
-                workspace,
-                endpoint.clone(),
-                Arc::clone(relay),
-            ));
+            tokio::spawn(reconcile(Arc::clone(shared), workspace));
         }
     }
 }
@@ -1398,20 +885,13 @@ fn adopt(
 /// started before the device relaying the workspace was reachable stayed out of the workspace's
 /// live session for as long as both ran: no presence, no call and no shared window crossed, and
 /// nothing said so.
-async fn reconcile(
-    shared: Arc<Shared>,
-    workspace: WorkspaceId,
-    endpoint: Endpoint,
-    relay: Arc<Relay>,
-) {
+async fn reconcile(shared: Arc<Shared>, workspace: WorkspaceId) {
     let keys = shared.engine.keys();
     let nudge = shared.nudge(workspace);
     let mut after = 0;
     let mut missed: u32 = 0;
     loop {
-        Arc::clone(&shared)
-            .settle(workspace, &endpoint, &relay)
-            .await;
+        Arc::clone(&shared).settle(workspace).await;
         missed = if shared.awaits_relay(workspace) {
             missed.saturating_add(1)
         } else {
@@ -1434,7 +914,7 @@ async fn reconcile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_user_identity::DeviceCapabilities;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
     fn cert(device: [u8; 32], expires_at_ns: Option<u64>) -> DeviceCert {
         DeviceCert {
@@ -1457,7 +937,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_relay_admits_the_devices_its_certificates_and_grants_name;
+        fn a_workspaces_relay_is_the_device_its_state_names;
 
         phase the_device_serving_the_workspace_relays;
         {
@@ -1473,152 +953,6 @@ mod tests {
             );
             let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
             assert!(relay_of(&devices, Some([1; 32]), 10).is_none());
-        }
-
-        phase an_ordinary_device_hosting_the_workspace_admits_its_devices;
-        {
-            let workspace = WorkspaceId::new();
-            let mine = cert([1; 32], None);
-            let other = cert([2; 32], None);
-            let devices = vec![
-                Device {
-                    device: [1; 32],
-                    cert: mine,
-                },
-                Device {
-                    device: [2; 32],
-                    cert: other.clone(),
-                },
-            ];
-            let asked = grant(workspace, &other);
-            assert!(
-                bind(Peer([2; 32]), &asked, &devices, Some([1; 32]), [1; 32], 10).is_ok(),
-                "the device hosting the workspace relays it"
-            );
-            assert!(
-                bind(Peer([2; 32]), &asked, &devices, Some([2; 32]), [1; 32], 10).is_err(),
-                "a device that hosts nothing here and may not host relays nothing"
-            );
-        }
-
-        phase an_expired_certificate_relays_nothing;
-        {
-            let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
-            assert_eq!(relay_of(&devices, Some([2; 32]), 10), Some([2; 32]));
-            let devices = vec![device([1; 32], Some(10)), device([2; 32], None)];
-            assert!(
-                relay_of(&devices, Some([1; 32]), 10).is_none(),
-                "a serving device whose certificate expired relays nothing"
-            );
-        }
-
-        phase a_grant_is_admitted_only_for_the_handshakes_own_device;
-        {
-            let workspace = WorkspaceId::new();
-            let mine = cert([1; 32], None);
-            let other = cert([2; 32], None);
-            let devices = vec![
-                Device {
-                    device: [1; 32],
-                    cert: mine.clone(),
-                },
-                Device {
-                    device: [2; 32],
-                    cert: other.clone(),
-                },
-            ];
-            assert!(
-                admits([1; 32], &grant(workspace, &mine), &devices, [1; 32], 10),
-                "the relay admits the device whose certificate it holds"
-            );
-            assert!(
-                !admits([2; 32], &grant(workspace, &mine), &devices, [1; 32], 10),
-                "a device presenting another's certificate is refused"
-            );
-            assert!(
-                !admits([3; 32], &grant(workspace, &other), &devices, [1; 32], 10),
-                "a device that is not on the roster is refused"
-            );
-        }
-
-        phase a_delegated_transport_is_admitted_as_its_device_only_while_it_lasts;
-        // A page keeps its device key unextractable, so it dials under a key of its own and presents
-        // the device's signature for it: the relay admits that endpoint as the device, and refuses an
-        // endpoint the device never signed for or whose delegation ran out.
-        {
-            let workspace = WorkspaceId::new();
-            let device_key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
-            let page_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
-            let page = page_key.verifying_key().to_bytes();
-            let mine = cert(device_key.verifying_key().to_bytes(), None);
-            let devices = vec![Device {
-                device: mine.device_public_key,
-                cert: mine.clone(),
-            }];
-            let delegation = tilo_user_identity::sign_endpoint_delegation(
-                &device_key,
-                page,
-                100,
-                60 * 60 * 1_000_000_000,
-            )
-            .unwrap();
-            let mut delegated = grant(workspace, &mine);
-            delegated.delegation = serde_json::to_vec(&delegation).unwrap();
-            assert!(
-                admits(page, &delegated, &devices, mine.device_public_key, 200),
-                "the page's endpoint speaks for the device that signed for it"
-            );
-            assert!(
-                !admits(
-                    page,
-                    &grant(workspace, &mine),
-                    &devices,
-                    mine.device_public_key,
-                    200
-                ),
-                "without the device's signature the endpoint is somebody else"
-            );
-            let later = 100 + 60 * 60 * 1_000_000_000;
-            assert!(
-                !admits(page, &delegated, &devices, mine.device_public_key, later),
-                "an expired delegation admits nobody"
-            );
-            let mut anyone = delegated;
-            anyone.delegation = serde_json::to_vec(
-                &tilo_user_identity::sign_endpoint_delegation(&page_key, page, 100, 1000).unwrap(),
-            )
-            .unwrap();
-            assert!(
-                !admits(page, &anyone, &devices, mine.device_public_key, 200),
-                "an endpoint cannot vouch for itself"
-            );
-        }
-
-        phase a_grant_must_name_a_relay_of_this_workspace_and_this_scope;
-        {
-            let workspace = WorkspaceId::new();
-            let mine = cert([2; 32], None);
-            let lower = cert([1; 32], None);
-            let devices = vec![
-                Device {
-                    device: [2; 32],
-                    cert: mine.clone(),
-                },
-                Device {
-                    device: [1; 32],
-                    cert: lower,
-                },
-            ];
-            assert!(
-                admits([2; 32], &grant(workspace, &mine), &devices, [2; 32], 10),
-                "the device serving the workspace admits"
-            );
-            let mut elsewhere = grant(workspace, &mine);
-            elsewhere.scope = Scope::resource(workspace.to_string(), "elsewhere").id();
-            assert!(
-                !admits([2; 32], &elsewhere, &devices, [2; 32], 10),
-                "a scope this session carries no live session for is refused"
-            );
         }
 
         phase a_relay_is_named_as_its_certificate_names_it;
@@ -1638,42 +972,6 @@ mod tests {
             assert_eq!(relayer(&devices, [7; 32], [1; 32]).name, "");
         }
 
-        phase an_expired_certificate_is_refused_at_the_preface;
-        {
-            let workspace = WorkspaceId::new();
-            let expired = cert([1; 32], Some(5));
-            let devices = vec![Device {
-                device: [1; 32],
-                cert: expired.clone(),
-            }];
-            assert!(
-                !admits([1; 32], &grant(workspace, &expired), &devices, [1; 32], 5),
-                "an expired certificate relays nothing and admits nothing"
-            );
-        }
-    }
-
-    /// Whether a relay that is `own`, in a workspace nobody hosts here, admits `grant` from the
-    /// endpoint `peer` at `now_ns`.
-    fn admits(
-        peer: [u8; 32],
-        grant: &grant::Native,
-        devices: &[Device],
-        own: [u8; 32],
-        now_ns: u64,
-    ) -> bool {
-        bind(Peer(peer), grant, devices, Some(own), own, now_ns).is_ok()
-    }
-
-    fn grant(workspace: WorkspaceId, device: &DeviceCert) -> grant::Native {
-        grant::Native::new(
-            *workspace.as_uuid().as_bytes(),
-            &scope_of(workspace).id(),
-            1,
-            serde_json::to_vec(device).unwrap(),
-            Vec::new(),
-        )
-        .unwrap()
     }
 
     tilo_test_env::scenario! {
@@ -1802,106 +1100,5 @@ mod tests {
             );
         }
 
-        phase a_relay_that_turns_a_device_away_says_why;
-        // A relay that turns a device away says why, each case by its own word: a device that is not
-        // in the workspace, one presenting a certificate the workspace does not hold for it, an
-        // endpoint that is not the device, a scope this relay does not carry, and a device that does
-        // not serve the workspace.
-        {
-            let workspace = WorkspaceId::new();
-            let mine = cert([1; 32], None);
-            let other = cert([2; 32], None);
-            let devices = vec![
-                Device {
-                    device: [1; 32],
-                    cert: mine.clone(),
-                },
-                Device {
-                    device: [2; 32],
-                    cert: other.clone(),
-                },
-            ];
-            // The first device serves the workspace.
-            let why = |peer: [u8; 32], grant: &grant::Native, own: [u8; 32]| {
-                bind(Peer(peer), grant, &devices, Some([1; 32]), own, 10)
-                    .err()
-                    .map(|refusal| refusal.word())
-            };
-            assert_eq!(why([2; 32], &grant(workspace, &other), [1; 32]), None);
-            let stranger = cert([3; 32], None);
-            assert_eq!(
-                why([3; 32], &grant(workspace, &stranger), [1; 32]),
-                Some("not-a-member")
-            );
-            let mut renamed = other.clone();
-            renamed.device_label = "Another name".to_owned();
-            assert_eq!(
-                why([2; 32], &grant(workspace, &renamed), [1; 32]),
-                Some("certificate-differs")
-            );
-            assert_eq!(
-                why([3; 32], &grant(workspace, &other), [1; 32]),
-                Some("endpoint-not-the-device")
-            );
-            let mut elsewhere = grant(workspace, &other);
-            elsewhere.scope = Scope::resource(workspace.to_string(), "elsewhere").id();
-            assert_eq!(why([2; 32], &elsewhere, [1; 32]), Some("scope-not-carried"));
-            assert_eq!(
-                why([1; 32], &grant(workspace, &mine), [2; 32]),
-                Some("not-relayed-here")
-            );
-        }
-
-        phase a_device_behind_the_relays_keys_is_turned_away_with_both_epochs;
-        // A device whose keys are behind the relay's is turned away with both epochs, and one at the
-        // relay's epoch or past it is not: the relay follows the keys later than the device did.
-        {
-            assert_eq!(
-                keys_current(3, 4),
-                Err(Refusal::KeysBehind {
-                    presented: 3,
-                    newest: 4
-                })
-            );
-            assert_eq!(keys_current(4, 4), Ok(()));
-            assert_eq!(keys_current(5, 4), Ok(()));
-        }
-
-        phase what_a_relay_keeps_of_the_devices_it_turned_away_is_bounded;
-        // What a relay keeps of the endpoints it turned away is bounded, counts how often each asked,
-        // and says only a new reason as news.
-        {
-            let mut turned = BTreeMap::new();
-            let behind = Refusal::KeysBehind {
-                presented: 3,
-                newest: 4,
-            };
-            assert!(note_turned_away(
-                &mut turned,
-                [1; 32],
-                "Ada's laptop".to_owned(),
-                behind
-            ));
-            assert!(!note_turned_away(
-                &mut turned,
-                [1; 32],
-                "Ada's laptop".to_owned(),
-                Refusal::KeysBehind {
-                    presented: 3,
-                    newest: 5
-                }
-            ));
-            assert!(note_turned_away(
-                &mut turned,
-                [1; 32],
-                "Ada's laptop".to_owned(),
-                Refusal::NotAMember
-            ));
-            assert_eq!(turned.get(&[1; 32]).map(|turned| turned.times), Some(3));
-            for peer in 2..=20_u8 {
-                note_turned_away(&mut turned, [peer; 32], String::new(), Refusal::NotAMember);
-            }
-            assert_eq!(turned.len(), TURNED_AWAY_KEPT);
-        }
     }
 }

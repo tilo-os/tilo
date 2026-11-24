@@ -788,40 +788,45 @@ pub struct Device {
 /// workspace removed, or whose certificate ran out, is not one, and what it sent or would receive
 /// is refused from then on.
 pub fn devices_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Vec<Device>, String> {
+    engine
+        .owner()
+        .with_current(workspace, |view| admitted_devices(view.peer()))
+}
+
+/// The devices `peer`'s workspace admits now, with the certificate it holds of each: what
+/// [`devices_of`] reads, wherever the workspace's replica is held.
+///
+/// # Errors
+/// The workspace's governance or its admitted state does not read.
+pub fn admitted_devices(peer: &tilo_peer_state::StatePeer) -> Result<Vec<Device>, String> {
     let now = tilo_clock::wall();
-    engine.owner().with_current(workspace, |view| {
-        let admitted: BTreeSet<[u8; 32]> = view
-            .peer()
-            .governance()
-            .governed_access(now)?
-            .member_devices
-            .into_iter()
-            .collect();
-        let document = view
-            .peer()
-            .admitted_workspace()
-            .ok_or("no admitted workspace")?;
-        let mut devices = BTreeMap::new();
-        for bytes in tilo_peer_state::workspace::governance_of(Some(document))
-            .identities
-            .values()
-        {
-            let Ok(row) = tilo_peer_state::workspace::identity_row(bytes) else {
-                continue;
-            };
-            let device = row.device_cert.device_public_key;
-            if admitted.contains(&device) {
-                devices.insert(
+    let admitted: BTreeSet<[u8; 32]> = peer
+        .governance()
+        .governed_access(now)?
+        .member_devices
+        .into_iter()
+        .collect();
+    let document = peer.admitted_workspace().ok_or("no admitted workspace")?;
+    let mut devices = BTreeMap::new();
+    for bytes in tilo_peer_state::workspace::governance_of(Some(document))
+        .identities
+        .values()
+    {
+        let Ok(row) = tilo_peer_state::workspace::identity_row(bytes) else {
+            continue;
+        };
+        let device = row.device_cert.device_public_key;
+        if admitted.contains(&device) {
+            devices.insert(
+                device,
+                Device {
                     device,
-                    Device {
-                        device,
-                        cert: row.device_cert,
-                    },
-                );
-            }
+                    cert: row.device_cert,
+                },
+            );
         }
-        Ok(devices.into_values().collect())
-    })
+    }
+    Ok(devices.into_values().collect())
 }
 
 /// The roster of `workspace` , as [`devices_of`] reads it: the devices whose window streams carry

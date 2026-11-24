@@ -459,6 +459,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "HandedTo" = "enum external"
 "HandedTo::Collaboration" = "#0 unit"
 "HandedTo::Identity" = "#1 unit"
+"HandedTo::Live" = "#2 unit"
 "Handle" = "tuple(u64)"
 "HistoryOp" = "enum external"
 "HistoryOp::checkpoint" = "#3 struct"

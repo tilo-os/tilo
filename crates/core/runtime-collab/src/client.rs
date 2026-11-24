@@ -1857,6 +1857,23 @@ impl ShellClient {
             .await
     }
 
+    /// A connection the daemon carries as one link of this shell's live session
+    /// (`tilo_live::link`): one end of a pair made here, the other handed over on this link.
+    ///
+    /// # Errors
+    /// The link carries no descriptors, or the daemon runs no live session.
+    pub async fn live(&self) -> Result<tokio::net::UnixStream, NotAvailable> {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        self.hand(
+            crate::wire::shell::HandedTo::Live,
+            std::os::fd::OwnedFd::from(theirs),
+            None,
+        )
+        .await?;
+        ours.set_nonblocking(true)?;
+        Ok(tokio::net::UnixStream::from_std(ours)?)
+    }
+
     async fn hand(
         &self,
         to: crate::wire::shell::HandedTo,

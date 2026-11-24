@@ -4,7 +4,7 @@
 //! them, and the session is its client. The daemon admits a shell by its launch, as it admits an
 //! app: it makes a link for one shell, a connection it opened itself with a one-use secret, and
 //! hands it to the shell it starts ([`SHELL_FD_ENV`]). A process that holds no link, whatever
-//! account it runs as, is not the shell. A shell connection asks four things of the daemon:
+//! account it runs as, is not the shell. A shell connection asks five things of the daemon:
 //!
 //! - the documents of the workspaces the device holds, read for the device itself and written as
 //!   it: [`ShellCall`] carries what `tilo_peer_state::workspace_documents::DeviceDocuments` and
@@ -17,6 +17,8 @@
 //!   workspace's keeping device over tilo-actions/1 otherwise;
 //! - the device's tilolang processes, to which the shell hands each of its windows' instances
 //!   ([`ShellCall::Processes`]);
+//! - the links of the workspaces' live sessions, which the daemon carries into the relay it runs
+//!   or on to another device's: each a connection the shell hands over ([`HandedTo::Live`]);
 //! - how each workspace stands (its people, its policy, its hosts and what this device may do
 //!   there): resources the daemon publishes and the shell watches on the same connection
 //!   ([`super::Operation::Services`], [`super::Operation::Watch`]).
@@ -75,6 +77,10 @@ pub enum HandedTo {
     /// The identity service: what the app signs with in its workspace. An app presents itself
     /// there by what it says, so the connection carries no [`VouchedApp`].
     Identity,
+    /// The device's live session: the connection is one link of the shell's (`tilo_live::link`),
+    /// which the daemon carries into the relay it runs or on to another device's. It is the
+    /// shell's own, so it carries no [`VouchedApp`].
+    Live,
 }
 
 /// The app a [`Vouch`] admits its connection as.

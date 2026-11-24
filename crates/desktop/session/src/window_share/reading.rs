@@ -42,7 +42,8 @@
 //! A relay tells the device it turns away nothing but that. So a live session that was refused says which
 //! epoch's keys this device presented (`presented`), and the live session of the device that relays the
 //! workspace lists the endpoints it turned away and has not let in since, each with why
-//! (`turned_away`): the two readings side by side say what the refused device alone cannot.
+//! (`turned_away`, as its daemon publishes them: [`tilo_live::link::TURNED_AWAY`]): the two
+//! readings side by side say what the refused device alone cannot.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -53,7 +54,7 @@ use tilo_live::live_session::{LiveSession, MAX_HEARD};
 use tilo_session_core::desktop::i18n::{t, t_args};
 
 use super::WindowShares;
-use crate::live::{LiveState, Refusal, Relayer, TurnedAway};
+use crate::live::{LiveState, Relayer};
 use crate::sync::Client;
 
 impl WindowShares {
@@ -392,7 +393,7 @@ fn live_row(
     workspace: &str,
     state: &LiveState,
     live_session: Option<&LiveSession>,
-    turned: &[TurnedAway],
+    turned: &[Value],
 ) -> Value {
     let relay = match state {
         LiveState::Open { relay, .. }
@@ -410,7 +411,6 @@ fn live_row(
         LiveState::Refused { epoch, .. } => Some(*epoch),
         _ => None,
     };
-    let turned_away: Vec<Value> = turned.iter().map(turned_row).collect();
     let asked_for: BTreeSet<TabId> = live_session
         .map(|live_session| {
             live_session
@@ -431,32 +431,13 @@ fn live_row(
         "epoch": epoch,
         "lent_keys": matches!(state, LiveState::Open { lent: true, .. }),
         "presented": presented,
-        "turned_away": turned_away,
+        "turned_away": turned,
         "heard": live_session.map_or(0, LiveSession::heard_total),
         "refused": live_session.map(LiveSession::refusals).unwrap_or_default(),
         "asked_for": asked_for,
         "unheard": unheard,
         "unheard_why": unheard_why(unheard),
         "not_heard": not_heard(unheard),
-    })
-}
-
-/// One endpoint this device's relay turned away, as the reading says it: the endpoint's key, the
-/// name of the device when the workspace holds it and its person named it, why in the word a tool
-/// branches on, how often it asked, and for a device whose keys are behind the epoch it presented
-/// and the one the relay is at.
-fn turned_row(turned: &TurnedAway) -> Value {
-    let (presented, newest) = match turned.why {
-        Refusal::KeysBehind { presented, newest } => (Some(presented), Some(newest)),
-        _ => (None, None),
-    };
-    json!({
-        "device": hex::encode(turned.peer),
-        "name": turned.name,
-        "why": turned.why.word(),
-        "presented": presented,
-        "newest": newest,
-        "times": turned.times,
     })
 }
 
@@ -556,56 +537,6 @@ mod tests {
             let refusal = row["waiting_for"].as_str().expect("what it waits for");
             assert!(refusal.contains("Ada's desktop"), "{refusal}");
             assert_ne!(refusal, waits);
-        }
-
-        phase a_relay_says_which_devices_it_turned_away_and_why;
-        // The device that relays a workspace says which endpoints it turned away from its live session and
-        // why: a device whose keys are behind with both epochs, any other by its reason alone.
-        {
-            let open = LiveState::Open {
-                relay: relay("Ada's desktop", true),
-                epoch: 4,
-                lent: false,
-            };
-            let turned = [
-                TurnedAway {
-                    peer: [0x0f; 32],
-                    name: "Ada's laptop".to_owned(),
-                    why: Refusal::KeysBehind {
-                        presented: 3,
-                        newest: 4,
-                    },
-                    times: 7,
-                },
-                TurnedAway {
-                    peer: [0x19; 32],
-                    name: String::new(),
-                    why: Refusal::NotAMember,
-                    times: 1,
-                },
-            ];
-            let row = live_row(WORKSPACE, &open, None, &turned);
-            assert_eq!(
-                row["turned_away"],
-                json!([
-                    {
-                        "device": hex::encode([0x0f; 32]),
-                        "name": "Ada's laptop",
-                        "why": "keys-behind",
-                        "presented": 3,
-                        "newest": 4,
-                        "times": 7,
-                    },
-                    {
-                        "device": hex::encode([0x19; 32]),
-                        "name": "",
-                        "why": "not-a-member",
-                        "presented": null,
-                        "newest": null,
-                        "times": 1,
-                    },
-                ])
-            );
         }
 
         phase a_live_session_whose_relay_was_busy_says_so_in_its_own_words;

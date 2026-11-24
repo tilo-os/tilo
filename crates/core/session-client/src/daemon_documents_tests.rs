@@ -196,6 +196,7 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
             published: None,
             workspaces: host.workspaces().clone(),
             identity: None,
+            live: None,
         })),
         ..ProcessServices::default()
     };

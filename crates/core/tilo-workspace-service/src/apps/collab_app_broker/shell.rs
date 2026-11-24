@@ -195,6 +195,23 @@ impl Handed {
     }
 }
 
+/// Carry `connection`, which the shell handed over as a link of its live session, into the
+/// device's live session until it ends.
+fn carry_live(
+    shell: &Shell,
+    connection: runtime_portal::descriptors::Owned,
+) -> Result<ShellReply, String> {
+    let live = shell
+        .services
+        .live
+        .clone()
+        .ok_or("this device runs no live session")?;
+    let stream = tilo_socket::tokio::from_std(handed_stream(connection)?)
+        .map_err(|error| format!("the live link cannot be carried: {error}"))?;
+    tokio::spawn(live(stream));
+    Ok(ShellReply::Vouched)
+}
+
 /// Serve the connection `vouch` hands over as the app it names, on `shell`'s broker: the
 /// descriptors it numbers are taken off the shell's link.
 fn vouch_for(
@@ -212,6 +229,12 @@ fn vouch_for(
             .ok_or_else(|| format!("the shell handed no {what} as descriptor {number}"))
     };
     let connection = taken(connection, "connection")?;
+    if to == runtime_collab::wire::shell::HandedTo::Live {
+        if app.is_some() {
+            return Err("a link of the live session is vouched for by no launch".to_owned());
+        }
+        return carry_live(shell, connection);
+    }
     if to == runtime_collab::wire::shell::HandedTo::Identity {
         if app.is_some() {
             return Err("an identity connection is vouched for by no launch".to_owned());

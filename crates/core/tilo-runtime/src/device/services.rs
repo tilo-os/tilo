@@ -1516,6 +1516,15 @@ impl Daemon {
             tilo_device_identity::login::PROVIDER,
             Arc::new(super::ticket::OnThisDevice(Tickets::clone(&tickets))),
         );
+        // The relay of the workspaces this device serves, on its endpoint: a server's keeping runs
+        // its own, which this device's live session joins.
+        let live = {
+            let _entered = tilo_rt::app().handle().enter();
+            super::live_relay::Live::new(
+                &workspaces,
+                kept.as_ref().and_then(super::keep::Kept::live_relay),
+            )
+        };
         stage("serving the device's endpoint");
         let endpoint_router = serve_device_endpoint(EndpointServing {
             workspaces: &workspaces,
@@ -1523,7 +1532,7 @@ impl Daemon {
             actions,
             host: (founded.is_some() || kept.is_some()).then(|| workspaces.service().as_ref()),
             kept: kept_protocols,
-            terminals,
+            terminals: terminals.into_iter().chain(live.protocols()).collect(),
         });
         // What is the person's alone is kept in their own workspace, read and written here on
         // this daemon's runtime once its service holds it: their devices, and the answers they
@@ -1641,6 +1650,7 @@ impl Daemon {
                 shell_links: &shell_links,
                 shell_dispatch: &shell_dispatch,
                 identity: identity_broker.handover(),
+                live: &live,
             },
             brokers,
             Arc::clone(&fanout),
@@ -2293,6 +2303,19 @@ struct BrokerParts<'a> {
     /// The identity service, serving the connections those shells take for it from the person's
     /// apps.
     identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
+    /// The device's live session, which carries those shells' live links.
+    live: &'a Arc<super::live_relay::Live>,
+}
+
+/// What carries a shell's live links: `live`, for as long as each link lasts.
+fn live_links(
+    live: &Arc<super::live_relay::Live>,
+) -> tilo_workspace_service::apps::shell::LiveLinks {
+    let live = Arc::clone(live);
+    Arc::new(move |stream| {
+        let live = Arc::clone(&live);
+        Box::pin(async move { live.serve_link(stream).await })
+    })
 }
 
 /// Start the collaboration broker over this profile's services.
@@ -2555,6 +2578,7 @@ fn broker_services(
             published,
             shell_processes(parts.apps, parts.workspaces),
             Arc::clone(&parts.identity),
+            Some(live_links(parts.live)),
         ))),
         // A workspace placed on a host has its records changed there: the person's actions on
         // them are sent to the host, which decides and runs them, and the change reaches this

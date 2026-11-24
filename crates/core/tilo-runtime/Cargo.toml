@@ -125,6 +125,9 @@ tilo-agent-session = { path = "../agent-session" }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 # The groups a device's key service settles, and what their members seal is checked against.
 tilo-workspace-keys = { path = "../workspace-keys" }
+# The relay of the workspaces this device serves, and the person's desktop session's links into
+# it or on to another device's.
+tilo-live = { path = "../tilo-live", features = ["relay", "iroh"] }
 # This computer's login, the daemon's place, and Tilo's API the daemon serves as the device.
 tilo-api = { path = "../tilo-api" }
 # The one migration engine, served as this device's actions.

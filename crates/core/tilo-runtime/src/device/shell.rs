@@ -49,6 +49,7 @@ pub(crate) fn services(
     published: Arc<dyn PublishedResources>,
     processes: Option<tilo_workspace_service::apps::shell::ShellProcesses>,
     identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
+    live: Option<tilo_workspace_service::apps::shell::LiveLinks>,
 ) -> ShellServices {
     let standing = Standing::new(Arc::clone(workspaces));
     standing.follow();
@@ -64,6 +65,7 @@ pub(crate) fn services(
             move || copies.document_writes()
         }),
         workspaces: copies,
+        live,
         actions: Arc::new(Actions {
             kept: Arc::new(Kept {
                 workspaces: Arc::clone(workspaces),

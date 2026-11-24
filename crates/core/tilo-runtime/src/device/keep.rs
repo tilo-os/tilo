@@ -389,6 +389,14 @@ pub(crate) struct On<'a> {
     pub(crate) browser_sessions: Option<tilo_server::browser_sessions::Sessions>,
 }
 
+impl Kept {
+    /// The relay of the live session this server keeps: the one the device's live session runs
+    /// on, so the relay's protocol is answered once.
+    pub(crate) fn live_relay(&self) -> Option<tilo_live::relay::Relay> {
+        self.server.as_ref().and_then(Server::live_relay)
+    }
+}
+
 /// What this server keeps, for as long as it runs.
 pub(crate) struct Kept {
     server: Option<Server>,

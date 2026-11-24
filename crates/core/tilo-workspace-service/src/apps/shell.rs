@@ -141,4 +141,13 @@ pub struct ShellServices {
     /// The device's identity service, serving a connection the shell took for it from one of the
     /// person's apps: `None` where the device runs none.
     pub identity: Option<std::sync::Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>>,
+    /// What carries a link of the shell's live session (`tilo_live::link`), handed over as a
+    /// connection the shell made for it ([`runtime_collab::wire::shell::HandedTo::Live`]): the
+    /// device's live session, which runs its relay. `None` where the device runs none, and a
+    /// link is refused.
+    pub live: Option<LiveLinks>,
 }
+
+/// What carries one admitted link of a shell's live session until it ends.
+pub type LiveLinks =
+    Arc<dyn Fn(tilo_socket::tokio::Stream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;

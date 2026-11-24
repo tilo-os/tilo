@@ -93,22 +93,17 @@ fn wait_for_bound(
         .map_err(std::io::Error::other)
 }
 
-/// Hand what the endpoint that bound carries to what speaks on it: the live session takes it, the
-/// channels' link says through it, and this device's presence is the live session's own.
+/// Hand what the endpoint that bound carries to what speaks on it: the channels' link says
+/// through it.
 #[cfg(target_os = "linux")]
 fn attach_bound(
-    live: &mut Option<crate::live::Live>,
     link: Option<&Arc<KeyLink>>,
     outbox: HostOutbox,
     endpoint: Option<&iroh::Endpoint>,
-) -> Option<Arc<dyn SayPresence>> {
-    let endpoint = endpoint?;
-    if let Some(live) = live {
-        live.attach(endpoint.clone());
+) {
+    if endpoint.is_some() {
+        link.inspect(|link| link.attach(Arc::new(outbox)));
     }
-    link.inspect(|link| link.attach(Arc::new(outbox)));
-    live.as_ref()
-        .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>)
 }
 
 /// What this desktop's endpoint carries beside the client's own commands: the ownership sessions and
@@ -567,6 +562,16 @@ impl Local {
         self.live().map_or(0, |live| live.states_revision())
     }
 
+    /// The endpoints the device's relay turned away from each workspace's live session and has
+    /// not let in since, by workspace ([`crate::live::Live::turned_away`]).
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn live_turned_away(&self) -> crate::live::TurnedAwayLists {
+        self.live()
+            .map(|live| live.turned_away())
+            .unwrap_or_default()
+    }
+
     /// How far each workspace's live session came on this device, by workspace
     /// ([`crate::live::LiveState`]): nothing for a session that runs no live session.
     #[must_use]
@@ -599,24 +604,6 @@ impl Local {
                 live.states()
                     .into_iter()
                     .map(|(workspace, state)| (workspace.to_string(), state))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// The endpoints this device's relay turned away from each workspace's live session and has not
-    /// let in since, by workspace, and why ([`crate::live::TurnedAway`]): nothing for a session
-    /// that runs no live session.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn live_turned_away(
-        &self,
-    ) -> std::collections::BTreeMap<String, Vec<crate::live::TurnedAway>> {
-        self.live()
-            .map(|live| {
-                live.turned_away()
-                    .into_iter()
-                    .map(|(workspace, turned)| (workspace.to_string(), turned))
                     .collect()
             })
             .unwrap_or_default()
@@ -1156,8 +1143,7 @@ impl Drop for Client {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
         {
-            // The live sessions dial through this endpoint: they end before it does,
-            // and before the thread that holds it joins.
+            // The live sessions end before the peer network's thread joins.
             self.hosting.local.live.borrow_mut().take();
             let _ = self.outgoing.send(Cmd::Stop);
             if let Some(thread) = self.thread.take() {
@@ -1193,23 +1179,6 @@ pub struct Entry {
     pub lan: Option<tilo_endpoint_reachability::Nearby>,
 }
 
-/// The live session's relay role, when this device may serve one: one more protocol on the
-/// endpoint this session binds, among `beside`, and every protocol the endpoint serves then.
-#[cfg(target_os = "linux")]
-fn live_beside(
-    engine: Option<&Arc<Engine>>,
-    wake: &Arc<dyn Fn() + Send + Sync>,
-    beside: &mut tilo_network_actor::own_service::Protocols,
-) -> (Option<crate::live::Live>, Vec<Vec<u8>>) {
-    let mut live =
-        engine.map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(wake)));
-    if let Some(live) = &mut live {
-        beside.extend(live.protocols());
-    }
-    let served = beside.iter().map(|(alpn, _)| alpn.clone()).collect();
-    (live, served)
-}
-
 impl Client {
     /// Take part in the peer network: bind this device's endpoint, start the peer actor,
     /// and from then on hear the workspaces the session joins. `beside` is what else this session
@@ -1222,7 +1191,7 @@ impl Client {
         entry: Entry,
         engine: Option<Arc<Engine>>,
         questions: Option<tilo_service::AskSender>,
-        mut beside: tilo_network_actor::own_service::Protocols,
+        beside: tilo_network_actor::own_service::Protocols,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);
         let live_rows = tilo_workspace_service::live::LiveRows::default();
@@ -1258,7 +1227,12 @@ impl Client {
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
         let reached = binding.reached.clone();
-        let (mut live, served) = live_beside(engine.as_ref(), &wake, &mut beside);
+        // The workspaces' live sessions run through this device's daemon, which holds the relay
+        // and the device's endpoint ([`Self::live_through`]).
+        let live = engine
+            .as_ref()
+            .map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(&wake)));
+        let served = beside.iter().map(|(alpn, _)| alpn.clone()).collect();
         let thread = std::thread::Builder::new()
             .name("tilo-sync".into())
             .spawn(move || {
@@ -1277,7 +1251,11 @@ impl Client {
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
-        let saying = attach_bound(&mut live, link.as_ref(), link_outbox, endpoint_handle.get());
+        attach_bound(link.as_ref(), link_outbox, endpoint_handle.get());
+        // This device's presence is the live session's own.
+        let saying = live
+            .as_ref()
+            .map(|live| Arc::new(live.saying()) as Arc<dyn SayPresence>);
         let inner = SessionClient::over(
             Transport {
                 outgoing: Arc::clone(&outgoing),
@@ -1526,13 +1504,11 @@ impl Client {
         self.hosting.local.live_states()
     }
 
-    /// The endpoints this device's relay turned away from each workspace's live session and has not
-    /// let in since, by workspace, and why ([`crate::live::TurnedAway`]).
+    /// The endpoints the device's relay turned away from each workspace's live session and has
+    /// not let in since, by workspace ([`crate::live::Live::turned_away`]).
     #[must_use]
     #[cfg(target_os = "linux")]
-    pub(crate) fn live_turned_away(
-        &self,
-    ) -> std::collections::BTreeMap<String, Vec<crate::live::TurnedAway>> {
+    pub(crate) fn live_turned_away(&self) -> crate::live::TurnedAwayLists {
         self.hosting.local.live_turned_away()
     }
 
@@ -1612,6 +1588,37 @@ impl Client {
         if let Some(live) = self.hosting.local.live() {
             live.workspace_arrived();
         }
+    }
+
+    /// Run the workspaces' live sessions through this device's daemon from now on: each link opens
+    /// on `daemon`, the shell link the daemon handed this session, as a stream of the daemon's
+    /// socket the daemon carries into its relay or on to another device's. Nothing to run on a
+    /// session that keeps no workspaces.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn live_through(
+        &self,
+        daemon: runtime_collab::ShellClient,
+        turned: crate::followed_resource::FollowedReading<crate::live::TurnedAwayLists>,
+    ) {
+        let mut held = self.hosting.local.live.borrow_mut();
+        let Some(live) = held.as_mut() else {
+            return;
+        };
+        live.follow_turned_away(turned);
+        live.open_links(Arc::new(move || {
+            let daemon = daemon.clone();
+            Box::pin(async move {
+                let stream = daemon
+                    .live()
+                    .await
+                    .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
+                let (reader, writer) = stream.into_split();
+                Ok((
+                    Box::new(reader) as Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+                    Box::new(writer) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+                ))
+            })
+        }));
     }
 
     /// Have this session's live session lent its own streams' media keys by `lender` in every

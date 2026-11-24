@@ -253,8 +253,9 @@ pub(crate) struct WindowShares {
     /// again when `live_seen` moved, and the windows a member's session is sent pictures of now: what
     /// the reading says beside the shares ([`reading`]).
     live: BTreeMap<String, crate::live::LiveState>,
-    /// The endpoints this device's relay turned away from each workspace's live session, and why.
-    turned: BTreeMap<String, Vec<crate::live::TurnedAway>>,
+    /// The endpoints this device's relay turned away from each workspace's live session, and why,
+    /// as its daemon publishes them.
+    turned: crate::live::TurnedAwayLists,
     live_seen: u64,
     live_sessions: BTreeMap<String, std::sync::Weak<LiveSession>>,
     streaming: BTreeSet<TabId>,

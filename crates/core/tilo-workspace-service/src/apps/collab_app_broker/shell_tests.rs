@@ -236,6 +236,22 @@ struct Device {
 }
 
 async fn device_with_shell() -> Device {
+    device_carrying(Some(echoed_live())).await
+}
+
+/// The device's live session as the daemon carries a shell's link into it: each byte the link
+/// sends comes back on it, until the shell closes it.
+fn echoed_live() -> crate::apps::shell::LiveLinks {
+    Arc::new(|stream: tilo_socket::tokio::Stream| {
+        Box::pin(async move {
+            let (mut read, mut write) = stream.into_split();
+            let _ = tokio::io::copy(&mut read, &mut write).await;
+        })
+    })
+}
+
+/// A device whose daemon carries its shell's live links with `live`, or runs no live session.
+async fn device_carrying(live: Option<crate::apps::shell::LiveLinks>) -> Device {
     let dir = tempfile::tempdir().unwrap();
     super::tests::secure_socket_parent(dir.path()).unwrap();
     let mut workspace = crate::apps::test_support::Workspace::new(
@@ -278,6 +294,7 @@ async fn device_with_shell() -> Device {
                 published: None,
                 workspaces: host.workspaces().clone(),
                 identity: None,
+                live,
             })),
             // A person's call an app makes is admitted with its evidence, as on a device.
             journal_root: Some(dir.path().join("invocations")),
@@ -573,6 +590,31 @@ async fn a_vouch_for_a_connection_never_handed_over_is_refused() {
         .unwrap_err();
     assert!(
         refused.to_string().contains("handed no connection"),
+        "{refused}"
+    );
+}
+
+/// A link of the shell's live session is one end of a pair the shell hands over on its own link:
+/// the daemon carries the other into the device's live session, and what the shell sends on its
+/// end comes back from there.
+#[tokio::test(flavor = "current_thread")]
+async fn the_daemon_carries_a_live_link_the_shell_hands_over() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let device = device_with_shell().await;
+    let mut link = device.shell.live().await.unwrap();
+    link.write_all(b"voice before video").await.unwrap();
+    let mut heard = [0_u8; 18];
+    link.read_exact(&mut heard).await.unwrap();
+    assert_eq!(&heard, b"voice before video");
+}
+
+/// A device that runs no live session refuses a live link, saying so.
+#[tokio::test(flavor = "current_thread")]
+async fn a_live_link_is_refused_where_no_live_session_runs() {
+    let device = device_carrying(None).await;
+    let refused = device.shell.live().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("runs no live session"),
         "{refused}"
     );
 }

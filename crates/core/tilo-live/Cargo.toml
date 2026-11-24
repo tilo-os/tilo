@@ -29,7 +29,7 @@ thiserror.workspace = true
 bytes = { workspace = true, optional = true }
 # The relay's copying and admission run on whatever executor the host drives them from, so the
 # crate asks tokio only for its channels and timers; a runtime is the caller's.
-tokio = { workspace = true, optional = true, features = ["macros", "sync", "time"] }
+tokio = { workspace = true, optional = true, features = ["io-util", "macros", "sync", "time"] }
 # A frame names its stream in a stream's handshake; a carrier's handshake is
 # serde too.
 serde = { workspace = true, features = ["derive"] }
@@ -66,6 +66,10 @@ required-features = ["relay", "iroh"]
 
 [[test]]
 name = "live_session"
+required-features = ["relay", "iroh"]
+
+[[test]]
+name = "live_link"
 required-features = ["relay", "iroh"]
 
 [lints]

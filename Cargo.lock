@@ -19491,6 +19491,7 @@ dependencies = [
  "tilo-identity",
  "tilo-identity-client",
  "tilo-key-group",
+ "tilo-live",
  "tilo-lock",
  "tilo-mcp",
  "tilo-migrate",

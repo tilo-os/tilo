@@ -86,6 +86,7 @@ impl TestDaemon {
                 published: None,
                 workspaces: workspaces.clone(),
                 identity: None,
+                live: None,
             })),
             // The providers registered on the device, the seat a shell serves among them.
             providers: Some(workspaces.providers()),

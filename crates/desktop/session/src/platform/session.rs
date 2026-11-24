@@ -771,6 +771,16 @@ impl Session {
         // shelf its records' content lives on, beside their records, and serves it on its
         // document-media socket, where this session reads and keeps it.
         let record_content = crate::record_content::open(options.content_socket.clone());
+        // The workspaces' live sessions run through the device's daemon, which relays them.
+        // Whom its relay turned away, and why, is the daemon's own reading: shown beside them.
+        if let (Some(sync), Ok(link)) = (&sync, &daemon_link) {
+            let turned = crate::followed_resource::FollowedReading::follow(
+                &daemon,
+                (&own_workspace, tilo_live::link::TURNED_AWAY),
+                options.wake.handle(),
+            );
+            sync.live_through(link.clone(), turned);
+        }
         // What other members send here is the workspaces' to admit: their
         // policies are read from the shell this session shows.
         if let Some(sync) = &sync {
