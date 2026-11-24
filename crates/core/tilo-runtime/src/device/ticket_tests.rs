@@ -330,7 +330,7 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     let place = tilo_device_identity::login::Place::at(state.path().join("desk"), keys);
     let desk = Tickets::new(
         (desk_key.clone(), desk_cert),
-        desk_endpoint,
+        desk_endpoint.clone(),
         None,
         no_root(),
         None,
@@ -383,12 +383,30 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         "the ticket is spent: {spent:?}"
     );
 
+    // The desk's daemon starts again as that device: its workspace service, on the desk's
+    // endpoint, holds what the login enters, and its session reads through it.
+    desk_endpoint.close().await;
+    let desk_service = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("desk-service"),
+        &desk_key,
+        &desk_login.cert,
+        &tilo_api::daemon::enter::server_of(&desk_login)
+            .await
+            .unwrap(),
+    )
+    .await
+    .expect("the desk's service opens");
     let desk_session = tilo_test_env::within(
         "the desk enters",
-        tilo_api::daemon::enter::connect(&desk_key, &desk_login, None),
+        tilo_api::daemon::enter::connect(&desk_key, &desk_login, Some(desk_service.lent())),
     )
     .await
     .expect("the desk enters as the person's device");
+    tilo_test_env::within(
+        "the desk holds what it entered",
+        desk_service.hold(&desk_session),
+    )
+    .await;
     // The desk takes the person's own workspace in by its id at the device its ticket names,
     // without anything listing it there.
     let own = tilo_server_protocol::WorkspaceId::parse(&own).unwrap();
@@ -540,9 +558,17 @@ async fn a_device_with_the_persons_root_and_no_login_adds_a_computer_into_the_wo
     // The desk enters the workspace the issuer founded: a device its person's root certified is
     // that person's device, and needs no invitation.
     desk_endpoint.close().await;
+    let desk_service = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("desk-service"),
+        &desk_key,
+        &login.cert,
+        &tilo_api::daemon::enter::server_of(&login).await.unwrap(),
+    )
+    .await
+    .expect("the desk's service opens");
     let entered = tilo_test_env::within(
         "the desk enters the founded workspace",
-        tilo_api::daemon::enter::connect(&desk_key, &login, None),
+        tilo_api::daemon::enter::connect(&desk_key, &login, Some(desk_service.lent())),
     )
     .await
     .expect("the desk enters the founded workspace");
