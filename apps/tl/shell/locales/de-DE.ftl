@@ -2005,9 +2005,7 @@ d-6dc6ihf7-kind = Art
 
 d-6dc6ihf7-at = Bei
 
-d-6dc6ihf7-across = Breite
-
-d-6dc6ihf7-down = Höhe
+d-6dc6ihf7-room = Raum
 
 d-6dc6ihf7-display = Bildschirm
 

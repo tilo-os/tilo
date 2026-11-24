@@ -10903,6 +10903,38 @@
       ]
     },
     {
+      "kind": "room",
+      "label": "Room",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "x",
+          "stored": "value",
+          "type": "float",
+          "readonly": true
+        },
+        {
+          "path": "y",
+          "stored": "value",
+          "type": "float",
+          "readonly": true
+        },
+        {
+          "path": "width",
+          "stored": "value",
+          "type": "float",
+          "readonly": true
+        },
+        {
+          "path": "height",
+          "stored": "value",
+          "type": "float",
+          "readonly": true
+        }
+      ]
+    },
+    {
       "kind": "clock",
       "label": "Clock",
       "version": 1,

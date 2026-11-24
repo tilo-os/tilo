@@ -27,6 +27,11 @@ pub const PERSON_DISPLAYS_RESOURCE: &str = "session:person-displays";
 /// reading (its view runs on that part's runtime), so what a shell draws is its display's.
 pub const SCREEN_RESOURCE: &str = "session:screen";
 
+/// The room the shell's own chrome leaves on each part: the display less the band the bar and
+/// the dock hug, measured from the frame the part's style laid out (`device.room`). Each part's
+/// own reading, like its display.
+pub const ROOM_RESOURCE: &str = "session:room";
+
 /// The shell's own record: the package's named root `shell` (`root shell: Shell`), reached in
 /// its views as `shell`.
 pub const SHELL_RECORD: &str = "shell";

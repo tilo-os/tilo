@@ -30,6 +30,7 @@ pub mod overlays;
 pub mod people;
 pub mod privacy;
 pub mod quick_settings;
+pub mod room;
 pub mod shares;
 pub mod time;
 pub mod windows;
@@ -84,6 +85,8 @@ pub fn device_surfaces() -> Vec<Surface> {
         time::surface(),
         // Whether the person is typing, which what would cover their text steps aside for.
         input::surface(),
+        // The room the shell's own bar and dock leave a widget on a display.
+        room::surface(),
         clock::surface(),
         controls::apps_surface(),
         lists::windows_surface(),

@@ -309,6 +309,11 @@ pub struct SessionOrigin {
     screen: RefCell<Option<serde_json::Value>>,
     screen_generation: Cell<u64>,
     screen_seen: Cell<u64>,
+    /// The room this part's display leaves a widget, as its views read it (`session:room`),
+    /// measured from what its style laid out, and how often it was told one.
+    room: RefCell<Option<serde_json::Value>>,
+    room_generation: Cell<u64>,
+    room_seen: Cell<u64>,
 }
 
 impl SessionOrigin {
@@ -327,6 +332,9 @@ impl SessionOrigin {
             screen: RefCell::new(None),
             screen_generation: Cell::new(0),
             screen_seen: Cell::new(0),
+            room: RefCell::new(None),
+            room_generation: Cell::new(0),
+            room_seen: Cell::new(0),
         }
     }
 
@@ -339,6 +347,18 @@ impl SessionOrigin {
         *self.screen.borrow_mut() = display;
         self.screen_generation
             .set(self.screen_generation.get().wrapping_add(1));
+    }
+
+    /// The room this part's display leaves a widget, as its views read it (`device.room`):
+    /// measured from the frame its style laid out. Whether it differs from the last.
+    pub fn set_room(&mut self, room: Option<serde_json::Value>) -> bool {
+        if *self.room.borrow() == room {
+            return false;
+        }
+        *self.room.borrow_mut() = room;
+        self.room_generation
+            .set(self.room_generation.get().wrapping_add(1));
+        true
     }
 }
 
@@ -386,6 +406,7 @@ impl Origin for SessionOrigin {
             || self.link.packages_generation.get() > self.packages_seen.get()
             || self.link.published_generation.get() > self.published_seen.get()
             || self.screen_generation.get() > self.screen_seen.get()
+            || self.room_generation.get() > self.room_seen.get()
             || self
                 .link
                 .readings_generation
@@ -1080,7 +1101,7 @@ impl ShellPart {
             // no window there.
             wells.for_part(gone.id.to_string()).clear();
         }
-        self.screen = display.clone();
+        self.screen.clone_from(&display);
         self.widgets.install_wells(
             self.wells
                 .clone()
@@ -1110,6 +1131,25 @@ impl ShellPart {
     /// Whether the display the part stood on went, and it stands nowhere now.
     fn retired(&self) -> bool {
         self.gone.is_some()
+    }
+
+    /// Measure the room the style's own chrome leaves this part's display, from the frame it just
+    /// laid out: every bar and dock it drew takes the display's band it rides, and the views read
+    /// what is left as `device.room` to keep a widget clear of both. Whether what they read
+    /// changed.
+    fn measure_room(&self) -> bool {
+        if self.hidden() {
+            return false;
+        }
+        let (width, height) = self.widgets.placement().size;
+        let display = (0.0, 0.0, f64::from(width.max(1)), f64::from(height.max(1)));
+        let mut chrome = Vec::new();
+        collect_chrome(self.widgets.host().root_widget(), &mut chrome);
+        let room = tilo_device_surfaces::room::Room::of(display, &chrome);
+        let Ok(reading) = serde_json::to_value(room) else {
+            return false;
+        };
+        self.origin.borrow_mut().set_room(Some(reading))
     }
 
     /// Whether the part shows nothing at all now: its display went, or a fullscreen window
@@ -1512,6 +1552,26 @@ impl ShellPart {
         }
         drew || changed
     }
+}
+
+/// Every body of the shell's chrome `widget` holds — a bar or a dock, as `ui.Chrome` names it —
+/// as the rectangle it was laid out at, in the part's logical pixels.
+fn collect_chrome(
+    widget: &dyn ui::widget::Widget,
+    out: &mut Vec<tilo_device_surfaces::room::Chrome>,
+) {
+    if widget.name() == "Chrome" {
+        let rect = widget.get_rect();
+        if rect.width() > 0.0 && rect.height() > 0.0 {
+            out.push(tilo_device_surfaces::room::Chrome {
+                x: rect.x0,
+                y: rect.y0,
+                width: rect.width(),
+                height: rect.height(),
+            });
+        }
+    }
+    widget.for_each_child(&mut |child| collect_chrome(child, out));
 }
 
 pub mod readings;

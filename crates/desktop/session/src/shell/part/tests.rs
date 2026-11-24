@@ -1242,6 +1242,55 @@ fn with_a_short_surface_up_the_dock_rides_the_outputs_bottom_edge() {
     }
 }
 
+/// The room a widget rests in is what the chrome the style laid out leaves of the display: the
+/// bar's band comes off the top and the dock's off the foot, at whatever height the theme and
+/// the person's settings gave them, so a widget placed at the foot stands above the dock rather
+/// than under it.
+#[test]
+fn the_room_a_widget_rests_in_is_what_the_bar_and_dock_left() {
+    let (mut part, _link) = part();
+    for _ in 0..4 {
+        part.prepare_frame();
+    }
+    let measured = part
+        .origin
+        .borrow()
+        .room
+        .borrow()
+        .clone()
+        .expect("the part measured the room its chrome leaves");
+    let room: tilo_device_surfaces::room::Room =
+        serde_json::from_value(measured).expect("the room reads");
+    assert!(
+        room.x.abs() < 0.5,
+        "nothing stands at the leading edge: {room:?}"
+    );
+    assert!(
+        (room.width - 1280.0).abs() < 0.5,
+        "nothing narrows the room across the display: {room:?}"
+    );
+    // Every node the bar names — its body and the run it holds — stands above the room.
+    let bar = part.control_bounds_all("Top bar");
+    assert!(!bar.is_empty(), "the bar stands across the top");
+    for (_, y, _, height) in bar {
+        assert!(
+            room.y + 0.5 >= y + height,
+            "the bar's band comes off the top: {room:?}, with the bar at {y}+{height}"
+        );
+    }
+    // The dock's body takes the display's foot: the room ends at its top edge.
+    let dock = part.control_bounds_all("Dock");
+    let docks_top = dock
+        .iter()
+        .map(|(_, y, _, _)| *y)
+        .fold(f64::INFINITY, f64::min);
+    assert!(docks_top.is_finite(), "the dock rides the foot");
+    assert!(
+        (room.y + room.height - docks_top).abs() < 0.5,
+        "the dock's band comes off the foot: {room:?}, with the dock at {docks_top}"
+    );
+}
+
 /// A display wide enough for every part: the bar names the strip and shows the person the
 /// session publishes with nothing touching the shell. The part hands the app the space the
 /// frame gave its view the moment it is laid out, so the bar is full rather than waiting for

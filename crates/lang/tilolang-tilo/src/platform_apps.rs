@@ -147,6 +147,9 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("banners", "Banners", "session:banners"),
     ("time", "Time", "session:time"),
     ("input", "Input", "session:input"),
+    // The room the shell's bar and dock leave on the display the view draws, measured from what
+    // its style laid out, so a widget stands clear of both at any size they are.
+    ("room", "Room", "session:room"),
     ("clock", "Clock", "session:clock"),
     ("apps", "Apps", "session:apps"),
     ("windows", "Windows", "session:windows"),

@@ -333,10 +333,13 @@ impl SessionOrigin {
                 continue;
             }
             // The display a part draws on is that part's own reading: the session publishes it
-            // to this runtime, never through the shared layout every part draws.
-            let own = (id == tilo_session_core::shell::SCREEN_RESOURCE)
-                .then(|| self.screen.borrow().clone())
-                .flatten();
+            // to this runtime, never through the shared layout every part draws. The room its
+            // style's chrome leaves is its own the same way.
+            let own = match id.as_str() {
+                tilo_session_core::shell::SCREEN_RESOURCE => self.screen.borrow().clone(),
+                tilo_session_core::shell::ROOM_RESOURCE => self.room.borrow().clone(),
+                _ => None,
+            };
             let Some((ty, held)) = readings.get(&id) else {
                 continue;
             };
@@ -401,6 +404,32 @@ impl SessionOrigin {
                         .readings_generation
                         .borrow()
                         .get(tilo_session_core::shell::SCREEN_RESOURCE)
+                        .copied()
+                        .unwrap_or(0),
+                );
+            }
+        }
+        // The room this part's style leaves a widget, measured from the frame it laid out since
+        // this part last polled: it is told to this runtime too, though the session's shared
+        // reading of the resource has not moved.
+        let room = self.room_generation.get();
+        if room > self.room_seen.get() {
+            self.room_seen.set(room);
+            if let Some(reading) = self.room.borrow().clone()
+                && let Some((ty, _)) = readings.get(tilo_session_core::shell::ROOM_RESOURCE)
+                && let Some(target) =
+                    ResourceRef::parse_id(tilo_session_core::shell::ROOM_RESOURCE, ty.clone())
+            {
+                match cx.host.runtime().set_reading(&target, &reading.to_string()) {
+                    Ok(changed) => moved |= changed,
+                    Err(error) => tracing::error!(%error, "the part's room was refused"),
+                }
+                seen.insert(
+                    tilo_session_core::shell::ROOM_RESOURCE.to_owned(),
+                    self.link
+                        .readings_generation
+                        .borrow()
+                        .get(tilo_session_core::shell::ROOM_RESOURCE)
                         .copied()
                         .unwrap_or(0),
                 );
