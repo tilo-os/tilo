@@ -1575,7 +1575,9 @@ view home(t: Tasks) {
                 }
             } else if t.items.is_empty() {
                 ui.EmptyState("No tasks here", icon: .list_checks)
-            } else {
+            } else if not all_done {
+                // With everything done, the all-done state above the list is the one calm word:
+                // the column beside it says nothing more.
                 ui.EmptyState(phrase("tilolang-nothing-open"), icon: .list_checks, inline: true)
             }
         }
