@@ -9,7 +9,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 /// A `tilo` answering MCP's JSON-RPC lines as `tilo mcp --as-me` does, its answers picked by
 /// `TILO_FAKE`: `signed-in` (the login's workspace, Home), `account` (no default workspace;
-/// the account lists one, Solo), `nobody` (nobody signed in) or `old` (a `tilo` from before
+/// the account lists one, Solo), `accounts` (the account lists two, Solo and Band), `nobody` (nobody signed in) or `old` (a `tilo` from before
 /// `--as-me`, which refuses it). It writes its arguments, then
 /// the desktop socket it was pointed at, then every line it reads, to `TILO_FAKE_LOG`.
 const FAKE_TILO: &str = r#"#!/bin/sh
@@ -30,17 +30,24 @@ while IFS= read -r line; do
     *'"initialize"'*)
       case $TILO_FAKE in
         nobody) answer '"error":{"code":-32002,"message":"not signed in","data":{"reason":"not_signed_in"}}' ;;
-        account) answer '"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"tilo"}}' ;;
+        account|accounts) answer '"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"tilo"}}' ;;
         *) answer '"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"tilo"},"_meta":{"so.tilo.mcp":{"workspace":{"id":"3ee4a797","name":"Home"}}}}' ;;
       esac ;;
     *'account/workspaces#list'*)
-      typed '{"status":"done","result":{"workspaces":[{"id":"5010","name":"Solo"}]}}' ;;
+      case $TILO_FAKE in
+        accounts) typed '{"status":"done","result":{"workspaces":[{"id":"5010","name":"Solo"},{"id":"7020","name":"Band"}]}}' ;;
+        *) typed '{"status":"done","result":{"workspaces":[{"id":"5010","name":"Solo"}]}}' ;;
+      esac ;;
+    *'"tilo_find"'*)
+      typed '{"result":{"hits":[{"path":"notes/Groceries","label":"Groceries"}]}}' ;;
     *'"program":"catalogue"'*)
       typed '{"status":"done","text":"{\"notes\":{\"signatures\":[{\"name\":\"pin\",\"signature\":\"action pin(note: Note)\"}]}}"}' ;;
     *'"program":"notes.pin(n3)"'*)
       typed '{"status":"done","output":["pinned n3 Groceries"],"text":"pinned n3 Groceries"}' ;;
     *'"program":"notes.nope()"'*)
       answer '"result":{"isError":true,"content":[{"type":"text","text":"error: notes has no action nope"}],"structuredContent":{"status":"failed","text":"error: notes has no action nope"}}' ;;
+    *'"program":"undo"'*)
+      typed '{"status":"done","text":"undone: step 1, pinned n3"}' ;;
     *'"path":"secret"'*)
       answer '"result":{"isError":true,"content":[{"type":"text","text":"you may not read secret"}],"structuredContent":{"error":{"code":"forbidden","message":"you may not read secret"}}}' ;;
     *'"tilo_ls"'*)
@@ -145,7 +152,7 @@ tilo_test_env::scenario! {
         let runtime = tempfile::tempdir().unwrap();
         let (ok, out, err) = installed.repl(
             &["--workspace", "Home", "--key-file", "/keys/ada.key"],
-            "ls\nnotes.pin(n3)\nnotes.nope()\nls secret\n",
+            "ls\nnotes.pin(n3)\nnotes.nope()\nls secret\nfind groceries\n:apps\nundo\n",
             "signed-in",
             SYSTEM_PATH,
             runtime.path(),
@@ -162,6 +169,9 @@ tilo_test_env::scenario! {
             out.contains("error: you may not read secret"),
             "a call the tool refused: {out}"
         );
+        assert!(out.contains("notes/Groceries  Groceries"), "the search: {out}");
+        assert!(out.contains(":apps\nnotes\n"), "the apps it learned: {out}");
+        assert!(out.contains("undone: step 1, pinned n3"), "undo: {out}");
         let log = installed.log();
         assert!(
             log.starts_with("args: --key-file /keys/ada.key --workspace Home mcp --as-me\n"),
@@ -190,6 +200,24 @@ tilo_test_env::scenario! {
             .find(|line| line.contains("notes.pin(n3)"))
             .unwrap();
         assert!(pinned.contains(r#""workspace":"5010""#), "{pinned}");
+    }
+
+    phase among_several_workspaces_the_person_picks_one;
+    {
+        let installed = Installed::new();
+        installed.put_tilo("bin");
+        let runtime = tempfile::tempdir().unwrap();
+        let (ok, out, err) =
+            installed.repl(&[], "2\nnotes.pin(n3)\n", "accounts", SYSTEM_PATH, runtime.path());
+        assert!(ok, "{err}");
+        assert!(out.contains("Which workspace?"), "{out}");
+        assert!(out.contains("in Band; apps: notes"), "{out}");
+        let log = installed.log();
+        let pinned = log
+            .lines()
+            .find(|line| line.contains("notes.pin(n3)"))
+            .unwrap();
+        assert!(pinned.contains(r#""workspace":"7020""#), "{pinned}");
     }
 }
 
