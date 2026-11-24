@@ -37,9 +37,6 @@ pub(crate) struct HostedWorkspaces(Arc<Inner>);
 
 struct Inner {
     engine: Arc<Engine>,
-    /// This session's own workspace service, whose member copies a host's session reads and
-    /// writes through.
-    service: tilo_workspace_service::service::ServiceSlot,
     /// Where the endpoint this device runs under its key lands once bound: every host is dialled
     /// from it. `None` for a session that binds none.
     endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
@@ -70,13 +67,11 @@ impl HostedWorkspaces {
     /// is built where the session starts, which is no task of any runtime's.
     pub(crate) fn service(
         engine: Option<&Arc<Engine>>,
-        service: tilo_workspace_service::service::ServiceSlot,
         endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
         runtime: tokio::runtime::Handle,
     ) -> Option<Self> {
         Some(Self(Arc::new(Inner {
             engine: Arc::clone(engine?),
-            service,
             endpoint,
             runtime,
             hosts: Mutex::default(),
@@ -130,7 +125,7 @@ impl HostedWorkspaces {
             &identity.device_cert.device_label,
             tilo_session_client::Lent {
                 keys: self.0.engine.keys().get(),
-                links: Arc::new(MemberLinks(self.0.service.clone())),
+                links: Arc::new(NoMemberCopies),
                 endpoint: self.0.endpoint.clone(),
                 own: false,
             },
@@ -387,11 +382,14 @@ mod tests {
     }
 }
 
-/// This session's member copies, as a host's session reads and writes them.
-struct MemberLinks(tilo_workspace_service::service::ServiceSlot);
+/// A session placed in a workspace's VM keeps no member copy of its own: the host keeps the
+/// workspace, so there is no copy to lend the host's session and none to take a workspace in as.
+struct NoMemberCopies;
 
-impl tilo_session_client::MemberLinks for MemberLinks {
-    fn link(&self, workspace: WorkspaceId) -> Option<tilo_peer_state::direct::DirectSync> {
-        self.0.service()?.workspaces().member_link(workspace)
+impl tilo_session_client::MemberLinks for NoMemberCopies {
+    fn link(&self, _workspace: WorkspaceId) -> Option<tilo_peer_state::direct::DirectSync> {
+        None
     }
+
+    fn take_in(&self, _workspace: WorkspaceId, _host: tilo_peer_state::join::TransportHint) {}
 }

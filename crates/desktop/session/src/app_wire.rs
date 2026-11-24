@@ -1050,7 +1050,6 @@ fn host_services_with_hosts(
         .and_then(|engine| {
             crate::hosted_workspaces::HostedWorkspaces::service(
                 Some(engine),
-                hosted.service.clone(),
                 hosted.endpoint.clone(),
                 runtime,
             )
