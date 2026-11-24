@@ -271,7 +271,8 @@ async fn post(
     .expect("the person posts");
 }
 
-/// The changes `person` made, as the record's history names them.
+/// The changes `person` made by actions of theirs, as the record's history names them: not what
+/// the platform wrote for them, such as the record's root.
 fn changes_of(versions: &[Value], person: &str) -> Vec<String> {
     let who = serde_json::to_value(tilo_workspace_service::tl_records::member(
         tilo_actions::MemberId::person(person.to_owned()),
@@ -280,8 +281,17 @@ fn changes_of(versions: &[Value], person: &str) -> Vec<String> {
     versions
         .iter()
         .filter(|version| version["who"] == who)
+        .filter(|version| {
+            !version["action"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with('$')
+        })
         .filter_map(|version| version["change"].as_str())
         .map(str::to_owned)
+        // A change that wrote several resources is a version of each, and one change.
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 

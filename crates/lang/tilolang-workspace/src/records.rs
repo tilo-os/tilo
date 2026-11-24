@@ -967,17 +967,25 @@ impl Records for crate::Service {
     }
 
     fn wrote(&self, version: &Json, who: &tilo_actions::MemberId) -> bool {
-        version
-            .get("who")
-            .and_then(|wrote| {
-                tilo_failure::ignored!(
-                    "a version whose who names nobody is no person's change",
-                    serde_json::from_value::<Option<Actor>>(wrote.clone()).ok()
-                )
-            })
-            .flatten()
-            .and_then(|wrote| wrote.member_id().cloned())
-            .is_some_and(|wrote| &wrote == who)
+        // What the platform wrote on the person's behalf (`$create`, the record's root made when
+        // they first used the app, and every other `$` write) is no action of theirs: taking it
+        // back would take the record from everyone.
+        let platforms = version
+            .get("action")
+            .and_then(Json::as_str)
+            .is_some_and(|action| action.starts_with('$'));
+        !platforms
+            && version
+                .get("who")
+                .and_then(|wrote| {
+                    tilo_failure::ignored!(
+                        "a version whose who names nobody is no person's change",
+                        serde_json::from_value::<Option<Actor>>(wrote.clone()).ok()
+                    )
+                })
+                .flatten()
+                .and_then(|wrote| wrote.member_id().cloned())
+                .is_some_and(|wrote| &wrote == who)
     }
 
     fn entries(
