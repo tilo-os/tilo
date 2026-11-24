@@ -32,7 +32,7 @@ def load(name: str, path: Path):
 # What a `[[cargo]]` family tests, as the nested-sandbox check reads it.
 families = load("nested_sandboxes_test", Path(__file__).with_name("test_nested_sandboxes.py"))
 
-COST_TABLE = REPO / "apps" / "tilolang" / "tests" / "hosted" / "cost.rs"
+COST_TABLE = REPO / "crates" / "lang" / "tilolang-process" / "tests" / "window" / "hosted" / "cost.rs"
 DUMP = "import json, os; print(json.dumps(dict(os.environ)))"
 # The test binary and module path the file is compiled into: the crate's tests are modules of one
 # `tests/it.rs`, so a test's name carries every module from there down.

@@ -79,7 +79,7 @@ filter = """\
 or (package(tilo-files) and test(=provisioning_flushes_every_barrier_and_keeps_what_a_failure_left)) \
 or (package(windows-vm) and test(=owner_status::tests::the_owner_status_summary_reads_state_and_runtime_status_safely)) \
 or (package(tilo-secrets) and test(=owner_migration::chromium::tests::owner_scope_refuses_files_and_elevation_without_contacting_a_keyring)) \
-or (package(runtime-portal) and test(=descriptors::tests::a_peer_that_cannot_be_traced_still_hands_over_its_descriptor)) \
+or (package(tilo-runtime-portal) and test(=descriptors::tests::a_peer_that_cannot_be_traced_still_hands_over_its_descriptor)) \
 or (package(linux-vm) and test(=hosted::jail::tests::only_a_root_owned_configuration_is_read)) \
 or (package(tilo-identity) and test(=person_files::tests::a_symlinked_or_foreign_identity_directory_is_refused))"""
 

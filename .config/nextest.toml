@@ -281,11 +281,6 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-pdf) or package(tilo-thumbnail)"
 setup = "pdf-sandbox"
 
-[[profile.ci.scripts]]
-platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-agent-session) and test(workspace_actions::throughput::)"
-setup = "throughput"
-
 # pam-tilo's tests load the module as libpam does: the cdylib, which no test binary links, so Cargo
 # builds none for them. The setup builds it and hands the tests its path. In every profile: a run
 # outside CI loads the module the same way.
@@ -328,53 +323,9 @@ success-output = "final"
 filter = 'package(tilo-session) and binary(it) and test(app_open_budget::)'
 success-output = "final"
 
-# A company's workspace at real size: a thousand notes and five hundred issues
-# written through the API one at a time, then every call an agent makes most
-# timed against what an empty workspace answers in. Writing them is the bulk of
-# the run and takes minutes on a busy machine; the bound only has to catch a run
-# that stopped. Printed on a pass too, so the timings show in every log.
-[[profile.default.overrides]]
-filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions::scale::)'
-success-output = "final"
-slow-timeout = { period = "60s", terminate-after = 30 }
-
-# How long a tracker's first listing after a restart takes, and how long another
-# workspace's request waits while it runs: the numbers are what the bounds are
-# about, so they show in every log, not only in one that failed.
-[[profile.default.overrides]]
-filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions::tracker_listing::)'
-success-output = "final"
-
-# How fast a workspace takes records and files at each size it is filled to:
-# seeding the larger sizes and timing every path takes minutes, so the bound
-# only has to catch a run that stopped. Printed on a pass too, so the table
-# shows in every log.
-[[profile.default.overrides]]
-filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions::throughput::)'
-success-output = "final"
-slow-timeout = { period = "60s", terminate-after = 60 }
-
-# What a device receives of an answer of four hundred words while its model writes it: how
-# many changes they come in, when the first and the last arrive, how many bytes a change adds
-# to what the device keeps. Printed on a pass too, so the numbers show in every log.
-[[profile.default.overrides]]
-filter = 'package(tilo-agent-session) and binary(it) and test(workspace_actions::hosted_agent_turns::asks::sub_agents::reply_times::)'
-success-output = "final"
-
 [[profile.default.overrides]]
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
-
-# The all-app coverage runs open every web app the workspace can hold and
-# drive each record or window in turn; beside a session held to fixed
-# deadlines they take the CPUs those deadlines need. They keep the two-wide
-# group. Every other test of the binary runs one scenario over one app and
-# has the pool: at a CI shard's 18 test threads the whole run took 203-212 s
-# in three runs, against 1613 s while the cap covered every test of the
-# package.
-[[profile.default.overrides]]
-filter = 'package(tilo-agent-session) and binary(it) and (test(app_coverage::) or test(empty_state_actions::every_apps_empty_state_action_is_a_button_in_the_tree) or test(workspace_actions::member_roles::carried_names::) or test(=replicas::only_the_creator_seeds_a_record))'
-test-group = "agent-sessions"
 
 # A thousand keystrokes, each a durable server commit (file and directory
 # fsyncs) before it fans out: the run time is the node's fsync latency a
@@ -397,11 +348,3 @@ threads-required = "num-cpus"
 [[profile.default.overrides]]
 filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or (binary(it) and test(collab_release_matrix::)))) or (package(tilo-media) and test(/::real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(it) and test(patch_log_memory::)) or (package(tilo-server) and (test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/)))'
 priority = 50
-
-# How fast a workspace takes actions and files, printed on a pass too, so a
-# drift shows in every log before it crosses a ceiling. Seeding a workspace
-# and timing each kind takes minutes on a busy machine.
-[[profile.default.overrides]]
-filter = 'package(tilo-agent-session) and binary(it) and test(=workspace_actions::throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full)'
-success-output = "final"
-slow-timeout = { period = "60s", terminate-after = 10 }
