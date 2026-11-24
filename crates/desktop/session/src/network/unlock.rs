@@ -371,7 +371,11 @@ impl Unlock {
         digest: &[u8; 32],
         approved: bool,
     ) -> Option<Decided> {
-        let pending = self.lock().pending(digest);
+        let pending = self
+            .lock()
+            .pending()
+            .find(|pending| pending.request_digest == *digest)
+            .cloned();
         let release = match pending {
             Some(pending) if approved => {
                 self.release(

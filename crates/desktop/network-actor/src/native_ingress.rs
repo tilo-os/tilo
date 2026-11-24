@@ -155,13 +155,69 @@ impl Holder for NativeHolder {
     }
 }
 
+/// What one link to a workspace's host has sent of this device's ownership of it: each frame
+/// leaves once per link, oldest first, and a new link starts with a new one.
+#[derive(Default)]
+struct Sending {
+    sent: std::collections::BTreeSet<[u8; 32]>,
+}
+
+impl Sending {
+    /// Send each frame of `workspace`'s this device wrote that this link has not sent, through
+    /// `deliver`; `took` is told of each the host keeps no answer for. Whether the link took
+    /// everything.
+    ///
+    /// # Errors
+    ///
+    /// The ownership record cannot be written after a frame went.
+    fn drive(
+        &mut self,
+        owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+        workspace: WorkspaceId,
+        mut took: impl FnMut(&[u8]) -> Result<(), String>,
+        mut deliver: impl FnMut(&[u8]) -> bool,
+    ) -> Result<bool, String> {
+        let frames = owner.frames(workspace);
+        let queued: std::collections::BTreeSet<[u8; 32]> = frames
+            .iter()
+            .map(|bytes| *blake3::hash(bytes).as_bytes())
+            .collect();
+        self.sent.retain(|id| queued.contains(id));
+        for bytes in &frames {
+            let Ok(message) = NeighbourMsg::decode(bytes) else {
+                continue;
+            };
+            // What no channel and retention name is not this device's to publish on the link.
+            if neighbour_wire::retention(&message, false).is_none() {
+                continue;
+            }
+            let id = *blake3::hash(bytes).as_bytes();
+            if !self.sent.insert(id) {
+                continue;
+            }
+            if !deliver(bytes) {
+                self.sent.remove(&id);
+                return Ok(false);
+            }
+            // A document write stays in ownership until its host answers it; anything else
+            // leaves the record once a link carried it.
+            if !matches!(message, NeighbourMsg::AppDocument { .. })
+                && let Err(error) = took(bytes)
+            {
+                return Err(error);
+            }
+        }
+        Ok(true)
+    }
+}
+
 /// A workspace's link as this actor keeps it: the device's end of the
 /// direct connection, the pin it was admitted under, and the task running it.
 pub(super) struct NativeLink {
     pub scope: Arc<Scope>,
     pub link: Arc<DirectSync>,
     /// What this link sent of the device's ownership of the workspace.
-    sending: tilo_session_client::membership_check::Sending,
+    sending: Sending,
     /// Held while the workspace's hold runs this link; let go with it.
     held: Option<tokio::sync::oneshot::Sender<()>>,
     pump: tokio::task::JoinHandle<()>,
@@ -402,8 +458,8 @@ impl ActorState {
                     &owner,
                     workspace,
                     |bytes| owner.sent(workspace, bytes),
-                    |write| {
-                        NeighbourMsg::decode(write.bytes)
+                    |bytes| {
+                        NeighbourMsg::decode(bytes)
                             .map_err(|error| error.to_string())
                             .and_then(|message| link.link.send(message))
                             .inspect_err(|error| tracing::debug!(%error, "native publication remains in durable ownership"))
@@ -656,7 +712,7 @@ impl ActorState {
             NativeLink {
                 scope,
                 link,
-                sending: tilo_session_client::membership_check::Sending::default(),
+                sending: Sending::default(),
                 held: Some(held),
                 pump,
             },

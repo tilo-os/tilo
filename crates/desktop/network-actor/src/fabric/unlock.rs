@@ -681,13 +681,6 @@ impl UnlockSibling {
     /// Apply the owner's decision. Returns the frame for the waiting boot and
     /// the answer to keep, or `None` when no such request is pending (already
     /// decided, withdrawn, or never made).
-    /// The request `request_digest` waits for, while it waits: what a release for it is sealed
-    /// to.
-    #[must_use]
-    pub fn pending(&self, request_digest: &[u8; 32]) -> Option<PendingUnlock> {
-        self.pending.get(request_digest).cloned()
-    }
-
     pub fn decide(
         &mut self,
         request_digest: &[u8; 32],
