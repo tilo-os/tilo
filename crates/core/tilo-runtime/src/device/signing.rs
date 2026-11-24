@@ -513,13 +513,21 @@ pub fn answer_sign_in(
 /// ([`tilo_identity::sources::DeviceTrust`]): the record's entries, each revocation verified against
 /// the root that signed it, and the keys an entry confines to one workspace alone, as the workspace
 /// service read them.
+///
+/// The daemon's own device is one of the person's by the certificate their root signed for the key
+/// this device serves as, whether or not the record has reached it yet: a server signed in by a
+/// ticket keeps the person's workspaces before a copy of their own one comes, and a host that
+/// could not answer for itself would refuse the apps it serves. A revocation of the device in the
+/// record still takes it back, at the next call, as it takes back any other device.
 pub(crate) fn devices_seen(workspaces: &ServiceWorkspaces) -> tilo_identity::sources::DevicesSeen {
     let copies = workspaces.copies();
-    let person = copies.device_cert().user_public_key;
+    let own = copies.device_cert();
     let keys = copies.blocked_keys();
     tilo_identity::sources::DevicesSeen::of_host(
-        person,
-        keys.certified_keys().copied(),
+        own.user_public_key,
+        keys.certified_keys()
+            .copied()
+            .chain(std::iter::once(own.device_public_key)),
         keys.revocations().iter().cloned(),
     )
     .confining(keys.confined_keys())

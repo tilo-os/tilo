@@ -2063,9 +2063,9 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
         let workspaces = Arc::clone(&workspaces);
         let device = cert.device_public_key;
         std::thread::spawn(move || {
-            super::signing::devices_seen(&workspaces)
-                .certified
-                .contains(&device)
+            // The record itself, not the trust that reads it: the daemon answers for its own
+            // device by its certificate whether or not the record has reached it.
+            workspaces.copies().blocked_keys().certified(&device)
         })
         .join()
         .unwrap()
