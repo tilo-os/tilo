@@ -41,7 +41,8 @@
         "files": null,
         "many": false,
         "kind": "",
-        "effect": null
+        "effect": null,
+        "form": []
       }
     },
     "code": "action_confirmation_required",
@@ -79,7 +80,8 @@
         "files": null,
         "many": false,
         "kind": "",
-        "effect": null
+        "effect": null,
+        "form": []
       }
     },
     "code": "action_confirmation_required",

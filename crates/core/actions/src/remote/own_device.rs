@@ -257,8 +257,9 @@ mod tests {
             assert_eq!(forwarded.target.address.action, "storage-summary");
             assert!(matches!(forwarded.argument, InvokeArgument::Json(_)));
             assert_eq!(
-                forwarded.confirmation, None,
-                "a token only this device can redeem is not sent"
+                forwarded.confirmation,
+                Some(Confirmation::Confirmed),
+                "the person's own word travels with their call"
             );
         }
     }

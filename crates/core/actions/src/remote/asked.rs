@@ -859,6 +859,7 @@ mod tests {
                 "many": false,
                 "kind": "",
                 "effect": null,
+                "form": [],
             })
         );
         assert_eq!(serde_json::from_value::<Asked>(json).unwrap(), row);
