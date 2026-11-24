@@ -759,3 +759,10 @@ d-eshxh4fk = Folienseite
     .w-slide = Folie
     .w-speaker-notes = Notizen für die Sprecherin
     .w-what-you-say-over-this-slide = Was du über dieser Folie sagst
+
+d-34l2smm3 = Textfeld-Seite
+    .w-slide = Folie
+    .w-the-box-s-words = Die Worte des Textfelds
+    .w-add-text = Text hinzufügen
+    .w-this-box-s-slide-is-gone = Die Folie dieses Textfelds ist nicht mehr da
+    .w-the-slide-it-stood-on-is = Die Folie, auf der es stand, ist nicht mehr in der Präsentation
