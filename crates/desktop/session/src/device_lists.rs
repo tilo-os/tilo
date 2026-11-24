@@ -51,33 +51,9 @@ pub(crate) const NOTICE_RESOURCE: &str = "session:notice";
 /// The windows as a view of another language reads them (`device.windows`).
 #[must_use]
 pub fn windows_surface() -> tilo_resource::surface::Surface {
-    tilo_resource::surface::reading_surface::<crate::windows::Windows, WindowsEffect>(
+    tilo_resource::surface::reading_surface::<crate::windows::Windows, tilo_resource::NoEffect>(
         "windows", "Windows",
     )
-}
-
-/// What the windows offer beside their reading: carrying one into a strip of its own, and taking a
-/// strip away while its windows go on in the next one.
-#[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "so.tilo.session.windows")]
-pub(crate) enum WindowsEffect {
-    /// Carry a window into a new strip below the workspace's last
-    #[effect(kind = "outside")]
-    #[effect(own_device, label = "session-windows-new-strip")]
-    MoveToNewStrip {
-        /// The window, by its tab
-        #[param(decimal, "The window, by its tab")]
-        tab: String,
-    },
-    /// Take a strip away, carrying its windows into the strip after it (or the one before, for the
-    /// last strip); the last strip a workspace holds stays.
-    #[effect(kind = "outside")]
-    #[effect(own_device, label = "session-windows-delete-strip")]
-    DeleteStrip {
-        /// The strip, by its id
-        #[param(decimal, "The strip, by its id")]
-        strip: String,
-    },
 }
 
 /// The tray as a view of another language reads it (`device.tray`).
@@ -283,6 +259,19 @@ fn kind_icon(kind: &str) -> String {
         other => ResourceKind::Custom(other.to_owned()),
     };
     icon_for_kind(&kind).name().to_owned()
+}
+
+/// One button a passing notice offers.
+#[derive(
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
 pub(crate) struct SaidAction {
     /// The action's id, as pressing it names it.
     pub id: String,
@@ -580,7 +569,7 @@ pub(crate) enum InviteEffect {
 /// The surfaces the shell shows over its windows: the shell's own views.
 /// What `show-surface` and `close-surface` open and close, whether the person asks on the
 /// shell's surface or on the chrome's above it, so both open the one surface.
-#[derive(Clone)]
+#[derive(Clone, Clone)]
 pub(crate) struct Surfaces {
     /// The stack the panel's own app is placed in, with the shell's surface up.
     pub(crate) overlays: Overlays,
@@ -601,9 +590,6 @@ pub(crate) struct Surfaces {
     pub(crate) emoji: Rc<std::cell::Cell<bool>>,
     /// Whether the About sheet stands over the windows, as the shell's own view draws it.
     pub(crate) about: Rc<std::cell::Cell<bool>>,
-    /// Whether the strips list stands: `show-strips` opens it and a strip chosen closes it, as the
-    /// strip switcher does, so a shell's own view of the strips opens by the same verb.
-    pub(crate) strips: Rc<std::cell::Cell<bool>>,
 }
 
 /// The name the shell's own view gives the emoji picker, in what stands over the windows.
@@ -615,9 +601,22 @@ pub(crate) const ABOUT: &str = "about";
 pub(crate) const PEEK: &str = tilo_session_core::shell::PEEK_SURFACE;
 
 impl Surfaces {
+    /// The strips list's name in the stack: `show-strips` opens it and choosing a strip closes it.
+    pub(crate) const STRIPS: &str = "strips";
+
     /// Show `surface` (`show-surface`): the one up closes, and any other opens.
     pub(crate) fn toggle(&self, surface: &str) {
         self.caught_up();
+        if surface == Self::STRIPS {
+            if self.overlays.is_open(Part::Strips) {
+                self.overlays.close(Part::Strips);
+            } else {
+                self.close_views();
+                self.overlays.open(Part::Strips, None);
+            }
+            self.settled();
+            return;
+        }
         if surface == EMOJI {
             let opening = !self.emoji.get();
             self.close_views();
@@ -664,6 +663,12 @@ impl Surfaces {
     /// Show the surface `name` names (`show-surface`), whether or not it is up.
     pub(crate) fn open(&self, name: &str) {
         self.caught_up();
+        if name == Self::STRIPS {
+            self.close_views();
+            self.overlays.open(Part::Strips, None);
+            self.settled();
+            return;
+        }
         if name == EMOJI {
             self.close_views();
             self.emoji.set(true);
@@ -747,6 +752,30 @@ impl Surfaces {
         self.about.get()
     }
 
+    /// Put away what the shell shows over its windows, topmost first: the emoji picker, the About
+    /// sheet, the strips list, or whichever surface the stack names. False when nothing stands over
+    /// the windows. Escape answers here, so a key and the person's own press close the same way.
+    pub(crate) fn close_top(&self) -> bool {
+        if self.emoji.get() {
+            self.emoji.set(false);
+            return true;
+        }
+        if self.about.get() {
+            self.about.set(false);
+            return true;
+        }
+        if self.overlays.is_open(Part::Strips) {
+            self.overlays.close(Part::Strips);
+            return true;
+        }
+        if self.overlays.here() != Overlay::Rest {
+            self.overlays.show(Overlay::Rest);
+            self.settled();
+            return true;
+        }
+        false
+    }
+
     /// Whether any of the shell's own popovers stands over the windows now.
     pub(crate) fn beside_up(&self) -> bool {
         Part::ALL
@@ -766,6 +795,11 @@ impl Surfaces {
     /// Close `surface` (`close-surface`), when it is the one up.
     pub(crate) fn close(&self, surface: &str) {
         self.caught_up();
+        if surface == Self::STRIPS {
+            self.overlays.close(Part::Strips);
+            self.settled();
+            return;
+        }
         if surface == EMOJI {
             self.emoji.set(false);
             return;
@@ -993,6 +1027,8 @@ impl DeviceLists {
             expecting: open && self.handle.search_expecting(),
             groups,
         }
+    }
+
     /// The passing notice the shell says over the windows now, as the reading spells it: empty
     /// while nothing just happened.
     fn said(&self) -> Said {
@@ -1017,130 +1053,6 @@ impl DeviceLists {
                     .collect(),
             })
             .unwrap_or_default()
-    }
-
-    /// Carry out what `effect` asks of the arrangement: a window into a strip of its own, or a
-    /// strip taken away with its windows carried into the next one.
-    fn arrange(&mut self, effect: WindowsEffect) -> Result<Started, ApiError> {
-        let refused = |reason: String| ApiError::Unavailable {
-            code: "arrange-refused".into(),
-            reason,
-        };
-        match effect {
-            WindowsEffect::MoveToNewStrip { tab } => {
-                let tab: u64 = tab
-                    .trim()
-                    .parse()
-                    .map_err(|_| refused("that is no window".into()))?;
-                let strips = self
-                    .handle
-                    .read(|tree| {
-                        tree.workspaces
-                            .iter()
-                            .find(|workspace| workspace.id() == tree.active)
-                            .filter(|workspace| {
-                                workspace
-                                    .strips
-                                    .iter()
-                                    .flat_map(|strip| &strip.window_groups)
-                                    .any(|group| group.tabs.iter().any(|held| held.id == tab))
-                            })
-                            .map(|workspace| {
-                                workspace
-                                    .strips
-                                    .iter()
-                                    .map(|strip| strip.id.0)
-                                    .collect::<Vec<u64>>()
-                            })
-                    })
-                    .ok_or_else(|| refused("the window is not in the workspace in front".into()))?;
-                self.handle
-                    .dispatch(ChromeEffect::NewStrip { name: None })
-                    .map_err(refused)?;
-                let made = self
-                    .handle
-                    .read(|tree| {
-                        tree.workspaces
-                            .iter()
-                            .find(|workspace| workspace.id() == tree.active)
-                            .and_then(|workspace| {
-                                workspace
-                                    .strips
-                                    .iter()
-                                    .map(|strip| strip.id.0)
-                                    .find(|id| !strips.contains(id))
-                            })
-                    })
-                    .ok_or_else(|| refused("no strip was made".into()))?;
-                self.handle
-                    .dispatch(ChromeEffect::MoveTab {
-                        tab: tab.to_string(),
-                        to: Destination {
-                            strip: Some(made.to_string()),
-                            ..Destination::default()
-                        },
-                    })
-                    .map_err(refused)?;
-            }
-            WindowsEffect::DeleteStrip { strip } => {
-                let strip: u64 = strip
-                    .trim()
-                    .parse()
-                    .map_err(|_| refused("that is no strip".into()))?;
-                let (target, tabs) = self
-                    .handle
-                    .read(|tree| {
-                        let workspace = tree
-                            .workspaces
-                            .iter()
-                            .find(|workspace| workspace.id() == tree.active)?;
-                        if workspace.strips.len() <= 1 {
-                            return None;
-                        }
-                        let at = workspace
-                            .strips
-                            .iter()
-                            .position(|held| held.id.0 == strip)?;
-                        let target = workspace
-                            .strips
-                            .get(at.saturating_add(1))
-                            .or_else(|| {
-                                at.checked_sub(1)
-                                    .and_then(|before| workspace.strips.get(before))
-                            })?
-                            .id
-                            .0;
-                        let tabs: Vec<u64> = workspace
-                            .strips
-                            .get(at)?
-                            .window_groups
-                            .iter()
-                            .filter_map(|group| group.tabs.first().map(|tab| tab.id))
-                            .collect();
-                        Some((target, tabs))
-                    })
-                    .ok_or_else(|| {
-                        refused(
-                            "that strip is not in the workspace in front, or is its last".into(),
-                        )
-                    })?;
-                for tab in tabs {
-                    self.handle
-                        .dispatch(ChromeEffect::MoveTab {
-                            tab: tab.to_string(),
-                            to: Destination {
-                                strip: Some(target.to_string()),
-                                ..Destination::default()
-                            },
-                        })
-                        .map_err(refused)?;
-                }
-                self.handle
-                    .apply_command(&DesktopCommand::RemoveStrip { strip })
-                    .map_err(refused)?;
-            }
-        }
-        Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }
 
     /// When the shell has something to draw that it has not drawn yet, without a frame in between:
@@ -1632,7 +1544,7 @@ impl DeviceLists {
 /// The session's own lists as it publishes them: what each is to search and read, under the
 /// session's kind.
 #[derive(tilo_resource::Row)]
-#[row(kind = "session", label = "Windows", effects = WindowsEffect)]
+#[row(kind = "session", label = "Windows")]
 pub(crate) struct WindowsList;
 
 #[derive(tilo_resource::Row)]
@@ -1668,13 +1580,11 @@ pub(crate) struct SaidRoot;
 impl Service for DeviceLists {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            offer::<WindowsEffect>(
-                tilo_resource::LiveRow::typed::<WindowsList>(
-                    WINDOWS_RESOURCE,
-                    crate::i18n::t("session-windows"),
-                )
-                .into_resource(),
-            ),
+            tilo_resource::LiveRow::typed::<WindowsList>(
+                WINDOWS_RESOURCE,
+                crate::i18n::t("session-windows"),
+            )
+            .into_resource(),
             offer::<TrayEffect>(
                 tilo_resource::LiveRow::typed::<TrayRoot>(
                     TRAY_RESOURCE,
@@ -1761,11 +1671,6 @@ impl Service for DeviceLists {
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
         match resource {
-            WINDOWS_RESOURCE => {
-                let effect =
-                    decode::<WindowsEffect>(&self.resources(), resource, action, arguments)?;
-                self.arrange(effect)
-            }
             TRAY_RESOURCE => {
                 let TrayEffect::OpenTrayItem { key } =
                     decode::<TrayEffect>(&self.resources(), resource, action, arguments)?;
