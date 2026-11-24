@@ -23,11 +23,16 @@
           "must": [
             "Bold",
             "Italic",
-            "Start writing"
+            "Untitled Document"
           ]
         },
         {
-          "click": "Start writing"
+          "click_any": [
+            {
+              "doing": "76ypz5mr"
+            },
+            "Untitled Document"
+          ]
         },
         {
           "focused": "word-processor"
@@ -43,6 +48,9 @@
       "id": "heading",
       "said": "Type a title and make it a heading",
       "ops": [
+        {
+          "key": "Enter"
+        },
         {
           "type": "Q3 Planning"
         },
