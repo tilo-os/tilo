@@ -11,8 +11,9 @@ COPY --from=compiled / /out/
 COPY os/scripts/pack-apps.sh os/scripts/stamp-runtime.sh os/scripts/check-shipped-runtimes.sh \
      os/scripts/install-env-runtime.sh /build/os/scripts/
 COPY tools/apps/stage_sdk_services.py /build/tools/apps/
-# The tilolang packages' packing steps, which the release's packing shares.
-COPY tools/apps/tilolang_packages.sh /build/tools/apps/
+# The tilolang packages' packing steps and the language runtimes' bundle
+# builder, which the release's packing shares.
+COPY tools/apps/tilolang_packages.sh tools/apps/runtime_packages.sh /build/tools/apps/
 COPY os/usr/share/tilo/system-interfaces.toml /build/os/usr/share/tilo/system-interfaces.toml
 COPY crates/core/tilo-app-package/max-app-bytes /build/crates/core/tilo-app-package/max-app-bytes
 ARG TILO_PREBUILT_APPS=0
@@ -138,6 +139,17 @@ RUN --mount=type=secret,id=publisher_identity \
                 /out/runtime-bundle-identity.json \
                 "/usr/lib/tilo-runtime/$tilolang_version" "$tilolang_version"; \
          fi \
+      && language_runtimes="$(python3 -I -c 'import json,sys; plan=json.load(open(sys.argv[1])); print(" ".join(sorted({r.split("/", 1)[0] for r in plan.get("runtimes", [])} - {"tilo-runtime", "tilolang"})))' /out/app-plan.json 2>/dev/null || true)" \
+      && for runtime in $language_runtimes; do \
+           . /build/tools/apps/runtime_packages.sh \
+           && PACK_RUNTIME_KEEP_FULL=1 runtime_package_build "$runtime" \
+                /out/tilo-runtime-bundle /out /out/runtime-bundle-identity.json \
+                /out/language-runtimes 0.1.0 >/dev/null \
+           && mkdir -p "/out/language-runtime-packages/$runtime" \
+           && cp "/out/language-runtimes/runtime-package/language/$runtime"/full-*.tapp \
+                 "/out/language-runtime-packages/$runtime/$runtime.tapp"; \
+         done \
+      && rm -rf /out/language-runtimes \
       && rm -f /out/runtime-bundle-identity.json; \
     fi
 
@@ -246,7 +258,8 @@ RUN --mount=type=secret,id=publisher_identity \
     RUNTIME_ID="tilo-runtime/$(cat /out/runtime-version)" \
     /build/os/scripts/pack-apps.sh \
     && python3 /usr/local/libexec/tilo-signed-records.py name-trees /usr/share/tilo-apps \
-    && TILO_APPS_DATA_DIR=/usr/share/tilo-apps /out/tilo-install verify
+    && TILO_APPS_DATA_DIR=/usr/share/tilo-apps /out/tilo-install verify \
+    && rm -rf /out/language-runtime-packages
 
 # Buildah leaves the env-runtime mount out of the layer cache key; this ARG keys it on ENV_RUNTIME_REF.
 ARG ENV_RUNTIME_REF
