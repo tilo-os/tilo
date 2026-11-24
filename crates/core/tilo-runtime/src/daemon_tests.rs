@@ -2188,3 +2188,87 @@ fn a_process_the_daemon_started_is_its_app_and_another_process_of_the_account_is
         "the account is still the device's own"
     );
 }
+
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it stands in for the kernel's answer, which can fail"
+)]
+fn root_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
+    Ok(crate::seats::Peer {
+        uid: tilo_api::daemon::admission::ROOT,
+        pid: None,
+    })
+}
+
+/// Root acts as the device only under the system unit, where it says who signed in. A person's
+/// own daemon that runs as root (a container's, a test sandbox's) is root's own: its connections
+/// reach the person's services once they run, as its account's do anywhere.
+#[test]
+fn root_reaches_the_person_in_their_own_daemon_and_the_device_under_the_system_unit() {
+    use io::{BufRead as _, Write as _};
+    use tilo_api::daemon::admission::{Admission, ROOT};
+
+    let served_as_root = |system: bool| -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = tilo_device_identity::IdentityPaths::under(dir.path().join("identity"));
+        keys.ensure_directories().unwrap();
+        let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+        let answers = crate::device::unclaimed::DeviceOnly::new(
+            key,
+            tilo_device_identity::login::Place::at(dir.path().join("login"), keys),
+        );
+        let admission: &'static Admission = Box::leak(Box::new(Admission::new(ROOT, system)));
+        let native = std::sync::Arc::new(super::Native::new(answers.clone(), root_peer, admission));
+        // The person's services run, answering as the workspace `home`.
+        let frames = crate::device::local::Frames::of_the_device(answers.clone());
+        native.serve_the_person(super::Endpoint {
+            session_factory: std::sync::Arc::new(move || {
+                Ok(tilo_mcp::McpServer::for_agent(
+                    answers.clone(),
+                    String::new(),
+                    "agent",
+                    "",
+                ))
+            }),
+            status: std::sync::Arc::new(|| super::Status {
+                version: 1,
+                pid: std::process::id(),
+                workspace: "home".into(),
+            }),
+            search: std::sync::Arc::new(std::sync::OnceLock::new()),
+            media: None,
+            other_devices: None,
+            agents: None,
+            frames,
+            to_agents: None,
+        });
+        let socket = dir.path().join("native.sock");
+        let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
+        {
+            let native = std::sync::Arc::clone(&native);
+            std::thread::spawn(move || native.accept(&listener));
+        }
+        let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        writeln!(&stream, "{}", serde_json::json!({"native": "status"})).unwrap();
+        let mut line = String::new();
+        io::BufReader::new(stream)
+            .read_line(&mut line)
+            .expect("the daemon answers");
+        let status: serde_json::Value = serde_json::from_str(&line).unwrap();
+        status["workspace"].as_str().unwrap_or_default().to_owned()
+    };
+
+    assert_eq!(
+        served_as_root(false),
+        "home",
+        "a person's own daemon running as root serves root the person's services"
+    );
+    assert_eq!(
+        served_as_root(true),
+        "",
+        "under the system unit root is answered as the device, never the person"
+    );
+}

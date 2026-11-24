@@ -913,9 +913,10 @@ impl Native {
         slot: ConnectionSlot,
         seated: Seated,
     ) -> io::Result<()> {
-        // Root acts as the device, saying who signed in and who left: answered at once, never
-        // held while the person's services start.
-        if !seated.seat.admitted.served() || seated.seat.uid == ROOT {
+        // Under the system unit root acts as the device, saying who signed in and who left:
+        // answered at once, never held while the person's services start. A person's own daemon
+        // that runs as root (a container's, a sandbox's) serves root as its own account.
+        if !seated.seat.admitted.served() || (seated.seat.uid == ROOT && self.seats.system()) {
             return self.device_only(stream, slot, seated);
         }
         // A process the daemon started is the app it runs, and reaches that app's own actions
