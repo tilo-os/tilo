@@ -878,7 +878,8 @@ tilo_test_env::scenario! {
 
         // The owner hands Bob the add-member action; Bob can then add
         // people up to his own role and no further.
-        for action in [governance::ADD_MEMBER] {
+        {
+            let action = governance::ADD_MEMBER;
             let delegated = Grant::new(
                 format!("bob-{action}"),
                 Grantee::person(BOB),
