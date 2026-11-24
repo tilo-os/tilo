@@ -256,19 +256,6 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         Some(bea_cert.user_public_key),
         "Scout acts for Bea, who made it"
     );
-    // Her device's policy carries the agent once her membership change merges there: answering
-    // for it is her own say about it, so it is hers to answer for first.
-    tilo_test_env::within("Bea's device holds her agent", async {
-        while !beas.policy_of(&workspace).await.is_some_and(|policy| {
-            policy
-                .agents
-                .get(SCOUT)
-                .is_some_and(|agent| agent.for_person == bea_person)
-        }) {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
     // Bea lets her agent read and write in Chat as she may: her answers for it, which the
     // workspace's policy decides its calls by, as any person answers for their own agent.
     for kind in [

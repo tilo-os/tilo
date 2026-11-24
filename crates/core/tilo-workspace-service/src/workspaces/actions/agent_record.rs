@@ -363,10 +363,6 @@ impl Workspaces {
         let invoke = declared(WorkspaceAgents::CREATE_AGENT.id)?.with_arguments(arguments);
         self.act_on_agents((workspace, acting, Some(request)), invoke)
             .await?;
-        // The agent is one of the workspace's members, acting for the person who keeps it: its
-        // person answers for what it may do, and the workspace's policy decides its calls.
-        #[cfg(feature = "agents")]
-        self.make_agent_a_member(workspace, acting, &id).await;
         // The agent's triggers are saved where it is made, once: whoever asks, and whichever
         // device of theirs it is, the person who keeps it has them from its first turn.
         // A service built without agents runs no triggers and saves none.
@@ -379,30 +375,6 @@ impl Workspaces {
             }
         }
         Ok(id)
-    }
-
-    /// Add `agent`, made in `workspace` by this device's own person, to the workspace's members
-    /// acting for them, as a sub-agent's own start does: the person's answers for it, and the
-    /// policy's grants on it, decide its calls.
-    #[cfg(feature = "agents")]
-    async fn make_agent_a_member(&self, workspace: &str, acting: &Acting, agent: &str) {
-        if !self.is_own_person(acting) {
-            return;
-        }
-        let Some(person) = acting.person_id() else {
-            return;
-        };
-        if let Err(error) = self
-            .add_agent(
-                workspace,
-                tilo_action_policy::MemberId::person(person),
-                agent,
-                person,
-            )
-            .await
-        {
-            tracing::warn!(%workspace, %agent, %error, "a new agent is not a member yet");
-        }
     }
 
     /// Save the triggers a new agent answers first (`triggered::triggers`) as `acting`'s person's,
