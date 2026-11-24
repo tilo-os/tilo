@@ -125,7 +125,7 @@ pub fn take_socket() -> Option<Descriptor> {
 /// The socket's error.
 pub fn send_attachment(socket: &Descriptor, connection: &Descriptor) -> io::Result<()> {
     Attach {
-        connection: connection.try_clone()?,
+        connection: crate::process_link::try_clone(connection)?,
         sign_ins: false,
     }
     .send(socket)
