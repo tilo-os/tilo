@@ -625,6 +625,44 @@ pub const KINDS: &[OriginKind] = &[
         ],
     },
     OriginKind {
+        name: "caldav.account",
+        doc: "One of the workspace's calendar accounts, and how its server answers: whether it \
+              is reached, what it said when it was not, and when its calendars last came.",
+        derived: false,
+        fields: &[
+            field(
+                "key",
+                "Text",
+                "The account's id, as the workspace settings name it.",
+            ),
+            field("address", "Text", "The name it signs in with."),
+            people("name", "Text", "What it is called."),
+            field("server", "Text", "The server address the person typed."),
+            field(
+                "read_only",
+                "Bool",
+                "Whether nothing is ever written to its server.",
+            ),
+            field(
+                "trouble",
+                "Text",
+                "What the server said when it could not be reached, in its words; empty while \
+                 it stands well.",
+            ),
+            field("online", "Bool", "Whether the server answers."),
+            field(
+                "checking",
+                "Bool",
+                "Whether the server is being asked now, so the window says what is under way.",
+            ),
+            field(
+                "fetched",
+                "Time",
+                "When the account's calendars were last taken in from its server.",
+            ),
+        ],
+    },
+    OriginKind {
         name: "caldav.event",
         doc: "One entry of a calendar, as its server holds it. The fields people change are \
               written to the server; the rest are the server's.",

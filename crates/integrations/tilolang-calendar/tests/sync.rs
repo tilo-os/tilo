@@ -12,7 +12,7 @@
 mod support;
 
 use support::fake_caldav::Server;
-use support::{Rig, at};
+use support::{NOW, Rig, at};
 use tilolang_tilo::origin::Origin as _;
 
 const ADA: &str = "ada@example.test";
@@ -41,6 +41,59 @@ fn rig(server: &Server) -> Rig {
     let mut rig = Rig::new(server, ADA, PASSWORD);
     rig.settle();
     rig
+}
+
+#[test]
+fn an_account_says_of_itself_what_its_server_answered() {
+    let server = Server::start(ADA, PASSWORD);
+    server.add_calendar("work", "Work");
+    let rig = rig(&server);
+    let account = rig.items("accounts").remove(0);
+    assert_eq!(rig.text("Account", &account, "key"), "caldav-account");
+    assert_eq!(rig.text("Account", &account, "name"), "Work");
+    assert!(
+        rig.flag("Account", &account, "online"),
+        "its server answered"
+    );
+    assert!(
+        !rig.flag("Account", &account, "checking"),
+        "nothing is asked any more"
+    );
+    assert_eq!(rig.text("Account", &account, "trouble"), "");
+    assert_eq!(
+        rig.text("Account", &account, "fetched"),
+        NOW,
+        "the moment its calendars were last taken in"
+    );
+}
+
+#[test]
+fn an_account_whose_server_cannot_be_reached_says_why() {
+    let server = Server::start(ADA, PASSWORD);
+    server.add_calendar("work", "Work");
+    let mut rig = Rig::with_accounts(vec![tilolang_calendar::engine::CalendarAccount {
+        id: "caldav-account".into(),
+        name: "Work".into(),
+        server: "http://127.0.0.1:1/".into(),
+        username: ADA.into(),
+        password: PASSWORD.into(),
+        refused: None,
+        read_only: false,
+    }]);
+    rig.settle();
+    let account = rig
+        .items("accounts")
+        .into_iter()
+        .next()
+        .expect("the account's own record");
+    assert!(
+        !rig.flag("Account", &account, "online"),
+        "the server could not be reached"
+    );
+    assert!(
+        !rig.text("Account", &account, "trouble").is_empty(),
+        "what went wrong is said in the account's words"
+    );
 }
 
 #[test]

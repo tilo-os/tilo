@@ -45,6 +45,9 @@ const PEOPLE: &[&str] = &[
     "notes",
     "categories",
     "recurrence",
+    "recurrence_every",
+    "recurrence_until",
+    "recurrence_count",
     "exdates",
     "calendar",
     "color",
@@ -59,9 +62,14 @@ struct Types {
     calendars_field: String,
     /// The root's collection of entries.
     events_field: String,
+    /// The root's collection of accounts, where the package publishes one.
+    accounts_field: Option<String>,
     calendar: OriginType,
     event: OriginType,
     attendee: OriginType,
+    /// The account type, where the package publishes one: what the account's own record says
+    /// of how its server answers.
+    account: Option<OriginType>,
 }
 
 #[derive(Clone)]
@@ -96,6 +104,8 @@ struct State {
     root: ResourceRef,
     /// Whether each account is connected for reading only.
     accounts: HashMap<String, bool>,
+    /// The record each account says its own state in, where the package publishes accounts.
+    account_records: HashMap<String, ResourceRef>,
     /// Each calendar of an account's server, by its record.
     calendars: HashMap<String, Cal>,
     /// The record of each calendar, by its account and the address its server keeps it at.
@@ -260,6 +270,8 @@ pub struct CalDavOrigin {
     due: Vec<String>,
     /// The accounts a sync was asked for, so one that fails is not asked again every poll.
     asked: HashSet<String>,
+    /// The accounts whose server is being asked right now, until it answers.
+    checking: HashSet<String>,
     /// The records moved to another account's calendar, written to it once the server took them
     /// out of the first.
     moving: Vec<String>,
@@ -288,6 +300,7 @@ impl CalDavOrigin {
             unwritten: Unwritten::new(),
             due: Vec::new(),
             asked: HashSet::new(),
+            checking: HashSet::new(),
             moving: Vec::new(),
             reconnected: Arc::default(),
         }
@@ -337,11 +350,13 @@ impl CalDavOrigin {
         for event in self.connector.events() {
             match event {
                 Event::Synced(sync) => {
+                    self.checking.remove(&sync.account);
                     self.fetched.insert(sync.account.clone(), now.to_owned());
                     self.trouble.remove(&sync.account);
                     polled.wrote |= self.take_sync(host, now, sync).wrote();
                 }
                 Event::Unreachable { account, reason } => {
+                    self.checking.remove(&account);
                     self.trouble.insert(account, reason);
                 }
                 Event::Accepted { request, href } => {
@@ -1150,22 +1165,142 @@ impl CalDavOrigin {
         known
     }
 
-    /// Each account of the connector's is asked what it holds.
-    fn follow_accounts(&mut self) -> bool {
+    /// Each account of the connector's is asked what it holds, and says of itself in a record of
+    /// its own where the package publishes accounts.
+    fn follow_accounts(&mut self, host: &Host, now: &str) -> bool {
+        let accounts = self.connector.accounts();
         let Some(state) = self.state.as_mut() else {
             return false;
         };
         let mut asked = false;
-        for account in self.connector.accounts() {
+        for account in &accounts {
             if state.accounts.contains_key(&account.id) {
                 continue;
             }
             state.accounts.insert(account.id.clone(), account.read_only);
             self.asked.remove(&account.id);
-            self.due.push(account.id);
+            self.due.push(account.id.clone());
             asked = true;
         }
+        let (Some(field), Some(ty)) = (
+            state.types.accounts_field.clone(),
+            state.types.account.clone(),
+        ) else {
+            return asked;
+        };
+        let root = state.root.clone();
+        let missing: Vec<super::connector::AccountRef> = accounts
+            .into_iter()
+            .filter(|account| !state.account_records.contains_key(&account.id))
+            .collect();
+        if missing.is_empty() {
+            return asked;
+        }
+        let writes: Vec<OriginWrite> = missing
+            .iter()
+            .map(|account| OriginWrite::Insert {
+                owner: root.clone(),
+                field: field.clone(),
+                ty: ty.ty.clone(),
+                fields: account_fields(&ty, account),
+            })
+            .collect();
+        let made = host
+            .runtime()
+            .write_origin("caldav", Some(now.to_owned()), |change| {
+                change.write(writes)
+            });
+        match made {
+            Ok(records) => {
+                for (account, record) in missing.into_iter().zip(records) {
+                    if let Some(record) = record {
+                        state.account_records.insert(account.id, record);
+                        asked = true;
+                    }
+                }
+            }
+            Err(error) => {
+                // The next poll makes the accounts again.
+                tracing::warn!(%error, "the calendar accounts could not be written");
+            }
+        }
         asked
+    }
+}
+
+/// What an account's own record says of it when it is first made: who it is, and that its
+/// server has not been heard from yet.
+fn account_fields(ty: &OriginType, account: &super::connector::AccountRef) -> Vec<(String, Value)> {
+    let mut fields = Vec::new();
+    put(ty, &mut fields, "key", text(&account.id));
+    put(ty, &mut fields, "address", text(&account.address));
+    put(ty, &mut fields, "name", text(&account.name));
+    put(ty, &mut fields, "server", text(&account.server));
+    put(ty, &mut fields, "read_only", Value::Bool(account.read_only));
+    put(ty, &mut fields, "online", Value::Bool(false));
+    fields
+}
+
+impl CalDavOrigin {
+    /// Each account says whether its server answers, what is wrong with it, whether it is being
+    /// asked now, and when its calendars were last taken in.
+    fn account_state(&self, host: &Host) -> Vec<OriginWrite> {
+        let Some(state) = self.state.as_ref() else {
+            return Vec::new();
+        };
+        let Some(ty) = state.types.account.as_ref() else {
+            return Vec::new();
+        };
+        let mut writes = Vec::new();
+        for (id, record) in &state.account_records {
+            let unreached = self.trouble.get(id).map_or("", String::as_str);
+            // A server not reached is said before calendars that could not be written, which
+            // the next poll writes again.
+            let trouble = if unreached.is_empty() {
+                self.unsaved.get(id).map_or("", String::as_str)
+            } else {
+                unreached
+            };
+            let online = unreached.is_empty();
+            let checking = self.checking.contains(id);
+            let fetched = self.fetched.get(id).map_or("", String::as_str);
+            if read_text(host, record, ty, "trouble") != trouble
+                || read_bool(host, record, ty, "online") != online
+                || read_bool(host, record, ty, "checking") != checking
+                || (!fetched.is_empty() && read_text(host, record, ty, "fetched") != fetched)
+            {
+                let mut fields = Vec::new();
+                put(ty, &mut fields, "trouble", text(trouble));
+                put(ty, &mut fields, "online", Value::Bool(online));
+                put(ty, &mut fields, "checking", Value::Bool(checking));
+                if !fetched.is_empty() {
+                    put(ty, &mut fields, "fetched", text(fetched));
+                }
+                writes.push(OriginWrite::Set {
+                    target: record.clone(),
+                    fields,
+                });
+            }
+        }
+        writes
+    }
+
+    /// What each account says of itself is written, once for all of them.
+    fn write_account_state(&self, host: &Host, now: &str) -> bool {
+        let states = self.account_state(host);
+        if states.is_empty() {
+            return false;
+        }
+        match host
+            .runtime()
+            .apply_origin("caldav", states, Some(now.to_owned()))
+        {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(%error, "what a calendar account says of itself was not written");
+                false
+            }
+        }
     }
 }
 
@@ -1742,6 +1877,11 @@ fn read_text(host: &Host, at: &ResourceRef, ty: &OriginType, name: &str) -> Stri
     try_read_text(host, at, ty, name).unwrap_or_default()
 }
 
+/// Whether the record says `name`, false where it says nothing of it.
+fn read_bool(host: &Host, at: &ResourceRef, ty: &OriginType, name: &str) -> bool {
+    try_read_bool(host, at, ty, name).unwrap_or(false)
+}
+
 fn try_read_text(
     host: &Host,
     at: &ResourceRef,
@@ -2016,6 +2156,7 @@ fn types_of(host: &Host, app: &str) -> Option<(Types, String)> {
     let calendar = kind("caldav.calendar")?;
     let event = kind("caldav.event")?;
     let attendee = kind("caldav.attendee")?;
+    let account = kind("caldav.account");
     let (_, root_ty) = package.main()?;
     let root = package.meta.types.iter().find(|t| t.id == root_ty)?;
     let name_of = |ty: &OriginType| {
@@ -2033,13 +2174,19 @@ fn types_of(host: &Host, app: &str) -> Option<(Types, String)> {
             .find(|f| f.ty == want)
             .map(|f| f.id.clone())
     };
+    // An account type with no collection to hold it is no account the package publishes, and
+    // the origin says nothing of an account there.
+    let accounts_field = account.as_ref().and_then(|ty| collection(ty));
+    let account = accounts_field.as_ref().and(account);
     Some((
         Types {
             calendars_field: collection(&calendar)?,
             events_field: collection(&event)?,
+            accounts_field,
             calendar,
             event,
             attendee,
+            account,
         },
         root_ty,
     ))
@@ -2064,6 +2211,7 @@ impl CalDavOrigin {
             types,
             root,
             accounts: HashMap::new(),
+            account_records: HashMap::new(),
             calendars: HashMap::new(),
             by_key: HashMap::new(),
             events: HashMap::new(),
@@ -2072,6 +2220,15 @@ impl CalDavOrigin {
             attendees: HashMap::new(),
         };
         let t = state.types.clone();
+        if let (Some(field), Some(ty)) = (&t.accounts_field, &t.account) {
+            for at in try_items(host, &state.root, field)? {
+                let key = try_read_text(host, &at, ty, "key")?;
+                if key.is_empty() {
+                    continue;
+                }
+                state.account_records.insert(key, at);
+            }
+        }
         for at in try_items(host, &state.root, &t.calendars_field)? {
             let key = try_read_text(host, &at, &t.calendar, "key")?;
             let account = try_read_text(host, &at, &t.calendar, "account")?;
@@ -2206,7 +2363,7 @@ impl Origin for CalDavOrigin {
             self.state = Some(state);
             self.reload = false;
         }
-        polled.wrote |= self.follow_accounts();
+        polled.wrote |= self.follow_accounts(cx.host, &cx.now);
         polled.wrote |= self.push(cx.host, &cx.now);
         polled.wrote |= self.take_again(cx.host, &cx.now);
         let events = self.take_events(cx.host, &cx.now);
@@ -2219,14 +2376,17 @@ impl Origin for CalDavOrigin {
         polled.settle |= self.reconnect(cx.host);
         for account in std::mem::take(&mut self.due) {
             let known = self.known_of(&account);
+            self.checking.insert(account.clone());
             if self.asked.insert(account.clone()) && self.connector.sync(&account, known).is_none()
             {
+                self.checking.remove(&account);
                 tracing::warn!(
                     account,
                     "the calendar connector took no request for the account"
                 );
             }
         }
+        polled.wrote |= self.write_account_state(cx.host, &cx.now);
         polled
     }
 

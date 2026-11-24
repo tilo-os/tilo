@@ -18,6 +18,19 @@ type Attendee (origin: caldav.attendee) {
     role: Text
 }
 
+/// An account whose server holds calendars, and what its server said of itself.
+type Account (origin: caldav.account) {
+    key: Text merge register
+    address: Text
+    name: Text
+    server: Text
+    read_only: Bool
+    trouble: Text
+    online: Bool
+    checking: Bool
+    fetched: Time
+}
+
 /// One entry of a calendar.
 type Event (origin: caldav.event, title: title) {
     key: Text merge register
@@ -52,6 +65,7 @@ type Event (origin: caldav.event, title: title) {
 type Calendars {
     calendars: Collection<Calendar>
     events: Collection<Event>
+    accounts: Collection<Account>
 }
 
 root Calendars
@@ -98,6 +112,7 @@ action set_notes(e: Event, notes: Text) {
 action recolor_event(e: Event, color: Text) {
     e.color = color
 }
+
 
 action rename_calendar(c: Calendar, name: Text) {
     c.name = name
