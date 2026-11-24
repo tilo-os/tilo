@@ -18,7 +18,7 @@ pub mod availability;
 pub mod cache_policy;
 #[cfg(feature = "filesystem")]
 pub mod caps_file;
-#[cfg(feature = "filesystem")]
+#[cfg(all(feature = "filesystem", not(target_os = "android")))]
 pub mod change_signal;
 #[cfg(feature = "filesystem")]
 pub mod clock;

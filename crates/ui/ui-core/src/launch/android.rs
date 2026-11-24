@@ -17,6 +17,27 @@ pub fn app() -> Option<&'static AndroidApp> {
     APP.get()
 }
 
+/// Copy the APK's asset `name` (`tilo/fonts/manifest.toml`) to `to`, making its directory: what
+/// an app copies out of its APK on first start, since Android hands assets out as streams only.
+///
+/// # Errors
+/// No activity runs yet, the APK has no such asset, or `to` cannot be written.
+pub fn copy_asset(name: &str, to: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let app = app().ok_or_else(|| std::io::Error::other("no Android activity"))?;
+    let c_name = CString::new(name).map_err(std::io::Error::other)?;
+    let mut asset = app
+        .asset_manager()
+        .open(&c_name)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "missing from the APK"))?;
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::File::create(to)?;
+    std::io::copy(&mut asset, &mut file)?;
+    file.flush()
+}
+
 /// Run the app's entry for the activity android-activity handed to `android_main`.
 #[doc(hidden)]
 pub fn run_main<T: std::process::Termination>(app: AndroidApp, main: fn() -> T) {

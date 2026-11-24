@@ -109,6 +109,7 @@ const RUNTIMES: &[&str] = &[
     "dotnet",
 ];
 
+#[cfg(target_os = "linux")]
 const SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh"];
 
 fn is_runtime(exe: &Path) -> bool {

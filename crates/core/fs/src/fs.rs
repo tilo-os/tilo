@@ -586,6 +586,7 @@ pub struct QuickFS {
 
     /// Tells inotify of the changes the kernel did not make; `None` leaves watchers to
     /// poll.
+    #[cfg(not(target_os = "android"))]
     change_signal: Option<Arc<crate::change_signal::ChangeSignal>>,
     /// The requests the mount is answering, for a process ending to wait for.
     activity: Arc<activity::Activity>,
@@ -640,6 +641,7 @@ impl QuickFS {
             changeset_open: AtomicBool::new(false),
             announce_held: AtomicBool::new(false),
 
+            #[cfg(not(target_os = "android"))]
             change_signal: None,
             activity: Arc::default(),
             #[cfg(test)]
@@ -1894,6 +1896,7 @@ impl QuickFS {
     /// lists; its worker raises the signals once the mount is up
     /// ([`crate::change_signal`]).
     #[must_use]
+    #[cfg(not(target_os = "android"))]
     pub fn with_change_signal(mut self, signal: Arc<crate::change_signal::ChangeSignal>) -> Self {
         self.change_signal = Some(signal);
         self

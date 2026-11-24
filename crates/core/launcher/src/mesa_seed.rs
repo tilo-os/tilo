@@ -7,6 +7,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "linux")]
 pub(crate) const CONSUME_ENV: &str = "TILO_MESA_SEED_CONSUME";
 
 const MAX_BYTES: u64 = 32 * 1024 * 1024;

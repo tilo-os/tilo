@@ -69,6 +69,7 @@ members = [
     "crates/lang/tilolang",
     "crates/lang/tilolang-lex",
     "crates/lang/tilolang-cli",
+    "apps/phone",
     "apps/poker",
     "apps/poker-model",
     "apps/poker-model-wasm",

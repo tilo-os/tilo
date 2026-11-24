@@ -4,17 +4,24 @@
 //! where it is loaded, else one of this login's). Every client that finds no daemon answering
 //! calls [`start`]; none starts a daemon of its own.
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::path::PathBuf;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::{Command, Stdio};
 
-use super::{STOP_TIMEOUT, runtime_program, system_daemon};
+#[cfg(any(target_os = "linux", test))]
+use super::STOP_TIMEOUT;
+use super::{runtime_program, system_daemon};
 
 /// What a client that could not reach the daemon tells the person.
 pub const LOOK: &str = "run `tilo status` to see how it stands";
 
 /// The unit's name, and the launchd agent's label.
 const UNIT: &str = "tilo-peer.service";
+#[cfg(any(target_os = "macos", test))]
 const LABEL: &str = "so.tilo.peer";
 /// Tilo.app's own launchd agent, which runs this computer's daemon where the app is installed.
 #[cfg(target_os = "macos")]
@@ -22,6 +29,7 @@ const APP_LABEL: &str = "so.tilo.runtime";
 
 /// The environment the service carries over from the login that installed it: where the device
 /// is kept, and what a test's HTTPS trusts.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const CARRIED: &[&str] = &[
     "TILO_IDENTITY_ROOT",
     "TILO_TEST_CA_FILE",
@@ -59,6 +67,7 @@ pub fn stop() {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn carried() -> Vec<(&'static str, String)> {
     CARRIED
         .iter()
@@ -67,7 +76,7 @@ fn carried() -> Vec<(&'static str, String)> {
 }
 
 /// The systemd user unit that runs `exe` as the daemon.
-#[cfg_attr(target_os = "macos", allow(dead_code, reason = "Linux's service"))]
+#[cfg(any(target_os = "linux", test))]
 fn unit(exe: &Path, environment: &[(&str, String)]) -> String {
     let mut unit = format!(
         "[Unit]\nDescription=Tilo: your workspaces' files at ~/Tilo, kept in sync\n\
@@ -88,7 +97,7 @@ fn unit(exe: &Path, environment: &[(&str, String)]) -> String {
 }
 
 /// The launchd agent that runs `exe` as the daemon.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "macOS's service"))]
+#[cfg(any(target_os = "macos", test))]
 fn agent(exe: &Path, environment: &[(&str, String)]) -> String {
     let escape = |text: &str| {
         text.replace('&', "&amp;")
@@ -117,6 +126,7 @@ fn agent(exe: &Path, environment: &[(&str, String)]) -> String {
     )
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn quiet(command: &mut Command) -> Result<(), String> {
     let status = command
         .stdin(Stdio::null())

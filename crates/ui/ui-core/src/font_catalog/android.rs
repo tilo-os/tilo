@@ -1,8 +1,6 @@
 //! The font catalog on Android. `tilo-app build --platform android` packs the catalog into the APK's
 //! `assets/tilo/fonts`.
 
-use std::ffi::CString;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -43,11 +41,9 @@ fn installed_catalog() -> Result<PathBuf, FontCatalogError> {
     if root.join("manifest.toml").is_file() {
         return Ok(root);
     }
-    let app = crate::launch::android::app()
-        .ok_or_else(|| FontCatalogError::at(&root, "no Android activity"))?;
     let staging = versions.join(".staging");
     let _ = std::fs::remove_dir_all(&staging);
-    extract(&app.asset_manager(), &staging)?;
+    extract(&staging)?;
     if let Ok(entries) = std::fs::read_dir(&versions) {
         for entry in entries.flatten() {
             if entry.path() != staging {
@@ -59,28 +55,15 @@ fn installed_catalog() -> Result<PathBuf, FontCatalogError> {
     Ok(root)
 }
 
-fn extract(assets: &ndk::asset::AssetManager, into: &Path) -> Result<(), FontCatalogError> {
+fn extract(into: &Path) -> Result<(), FontCatalogError> {
     let manifest = tilo_font_catalog::manifest()?;
     for asset in manifest.font.iter().filter(|a| a.scope == Scope::Product) {
-        copy_asset(assets, &asset.file, &asset.path_in(into)?)?;
+        copy_asset(&asset.file, &asset.path_in(into)?)?;
     }
-    copy_asset(assets, "manifest.toml", &into.join("manifest.toml"))
+    copy_asset("manifest.toml", &into.join("manifest.toml"))
 }
 
-fn copy_asset(
-    assets: &ndk::asset::AssetManager,
-    name: &str,
-    to: &Path,
-) -> Result<(), FontCatalogError> {
+fn copy_asset(name: &str, to: &Path) -> Result<(), FontCatalogError> {
     let source = format!("{ASSET_ROOT}/{name}");
-    let c_source = CString::new(source.as_str()).map_err(|e| FontCatalogError::at(&source, e))?;
-    let mut asset = assets
-        .open(&c_source)
-        .ok_or_else(|| FontCatalogError::at(&source, "missing from the APK"))?;
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| FontCatalogError::at(parent, e))?;
-    }
-    let mut file = std::fs::File::create(to).map_err(|e| FontCatalogError::at(to, e))?;
-    std::io::copy(&mut asset, &mut file).map_err(|e| FontCatalogError::at(to, e))?;
-    file.flush().map_err(|e| FontCatalogError::at(to, e))
+    crate::launch::android::copy_asset(&source, to).map_err(|e| FontCatalogError::at(&source, e))
 }

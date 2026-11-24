@@ -1,0 +1,43 @@
+[package]
+id = "so.tilo"
+name = "Tilo"
+category = "System"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+# What the app's code uses (tilo-app check holds the code to this list): the device daemon's
+# threads, and the app's own data area, where the apps it opens keep their documents.
+[capabilities]
+optional = ["app-files", "files.paths", "threads"]
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+# The device daemon reaches the person's other devices and workspace hosts wherever they are.
+mode = "host"
+
+[sandbox.portals]
+
+[sandbox.services]
+
+[entrypoint]
+bin = "bin/tilo-phone"
+type = "gui"
+splash-budget = 500
+
+[providers]
+mime = []
+ext = []
+

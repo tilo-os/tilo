@@ -35,7 +35,7 @@ pub mod events;
 #[cfg(unix)]
 pub mod service;
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(unix, windows))]
 mod images;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod native;

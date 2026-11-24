@@ -903,6 +903,20 @@ requires = ["arch=x86_64"]
 on = ["dispatch", "idle"]
 heavy = true
 
+# The Tilo app's APK, built as a developer builds one: `tilo-app setup android` installs the SDK's
+# build tools and platform from Google's repository, and `tilo-app build` compiles the phone's
+# library and its tilolang apps and links them. The JDK the SDK's tools run on, and zip, come from
+# Fedora's release repository in the setup, which never changes (updates go to another), so the
+# setup is pinned and served from t's cache; the builder image carries the NDK only.
+[[check]]
+name = "android-apk"
+egress = { to = ["0.0.0.0/0", "::/0"] }
+setup = { run = "dnf install -y --setopt=install_weak_deps=False --repo=fedora --setopt=fedora.metalink= '--setopt=fedora.baseurl=https://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' java-21-openjdk-devel zip unzip && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
+run = "export ANDROID_HOME=\"$TMPDIR/android-sdk\"\nmkdir -p \"$ANDROID_HOME\"\ncargo run --locked -p tilo-app-cli --bin tilo-app -- setup android --accept-licenses\ncargo run --locked -p tilo-app-cli --bin tilo-app -- build --platform android --arch x86_64 apps/phone\n"
+requires = ["arch=x86_64"]
+on = ["dispatch", "idle"]
+heavy = true
+
 [[check]]
 name = "wasm"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -3246,10 +3260,11 @@ default = false
 # (`--input app=apps/tl/tasks`), `press` presses a control by its words before each window is read
 # (`--input press="Mark Buy oat milk and eggs done"`), `dump=true` prints every frame laid out
 # rather than only those a finding came from, and `shot_height=2200` takes the shots in a window
-# that tall, so the lower part of a long page shows, and `hover=640,980` rests the pointer there
-# for the shots (a chart's readout). Strict's whole-tree verdict (an allow-list line that
-# no longer shows, a view no scenario reaches) is the run that names no app and no press; a
-# narrowed run still fails on a finding the allow-list does not name.
+# that tall, so the lower part of a long page shows, `hover=640,980` rests the pointer there
+# for the shots (a chart's readout), and `state=picked=studio` stages a view state's value before
+# anyone picks, so a screen behind a pick is the one shot. Strict's whole-tree verdict (an
+# allow-list line that no longer shows, a view no scenario reaches) is the run that names no app
+# and no press; a narrowed run still fails on a finding the allow-list does not name.
 [[check]]
 name = "layout-check/{size}"
 # Heavy: every app of apps/tl laid out at this size, strict, about 1.4 core-hours a size, which
@@ -3263,7 +3278,7 @@ env = { TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 outputs = ["/target/layout-check/{size}/**"]
 timeout_secs = 1800
-dispatch_inputs = { app = "", press = "", dump = "false", shot_height = "", hover = "" }
+dispatch_inputs = { app = "", press = "", dump = "false", shot_height = "", hover = "", state = "" }
 [check.matrix]
 size = ["320x568", "390x844", "1280x800"]
 

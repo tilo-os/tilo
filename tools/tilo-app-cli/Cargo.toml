@@ -29,6 +29,8 @@ rustix = { workspace = true, features = ["process"] }
 image = { workspace = true, features = ["png"] }
 tilo-app-id.workspace = true
 tilo-app-package = { path = "../../crates/core/tilo-app-package" }
+# The Android APK packs the app's tilolang packages, compiled by the tilolang tool.
+tilolang-cli = { path = "../../crates/lang/tilolang-cli" }
 # Inside a Tilo session, `dev` hands the app the shell's file chooser the
 # way the launcher does.
 launcher = { path = "../../crates/core/launcher" }
@@ -69,6 +71,8 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 serde_yaml = "0.9"
 tempfile.workspace = true
+# The bundle format a packed app is written in, which the tests read back.
+tilolang-tilo = { path = "../../crates/lang/tilolang-tilo" }
 tilo-test-env = { path = "../test-env" }
 # The journey's checkout-external directory is held under an advisory lock.
 tilo-advisory-lock = { path = "../../crates/platform/advisory-lock" }

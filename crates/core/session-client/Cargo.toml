@@ -155,6 +155,10 @@ test-server = { path = "../../../tools/test-server" }
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 uuid.workspace = true
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
+# The phone's own device, which joins the person's workspace in the laptop-phone-server flow, and
+# the laptop that prints its ticket.
+tilo-phone = { path = "../../../apps/phone" }
+tilo-api = { path = "../tilo-api", features = ["test-support"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 iroh.workspace = true

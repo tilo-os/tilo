@@ -18,8 +18,12 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
+use sha2::{Digest as _, Sha256};
 
 use crate::{PackageArch, PackageOutcome, PackagePlatform, PackageRequest};
+
+/// The index of the apps packed under `assets/tilo/apps` (see [`write_apps_index`]).
+pub const APPS_INDEX: &str = "files.txt";
 
 /// The build-tools `aapt2`, `d8`, `zipalign` and `apksigner` come from.
 pub const BUILD_TOOLS_VERSION: &str = "36.1.0";
@@ -1606,6 +1610,9 @@ fn stage_apk(
     std::fs::create_dir_all(&fonts)?;
     copy_standalone_fonts(&checkout.fonts, &fonts)
         .with_context(|| format!("copying the font catalog {}", checkout.fonts.display()))?;
+    let packages = tilolang_apps(app_dir)?;
+    pack_tilolang_apps(&packages, &assets.join("tilo").join("apps"))
+        .with_context(|| format!("packing the tilolang apps of {}", app_dir.display()))?;
     let icon = compile_icon(tools, app_dir, metadata, stage)?;
     let debuggable = matches!(request.signing, Signing::Debug);
     let manifest_path = stage.join("AndroidManifest.xml");
@@ -1669,6 +1676,101 @@ fn copy_standalone_fonts(source: &Path, destination: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The directories `[package.metadata.tilo-app]` names in `tilolang`, resolved against `app_dir`:
+/// the packages the APK carries. None declared, nothing is packed.
+fn tilolang_apps(app_dir: &Path) -> Result<Vec<PathBuf>> {
+    let manifest_path = app_dir.join("Cargo.toml");
+    let manifest: toml::Table = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?
+        .parse()
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let Some(declared) = manifest
+        .get("package")
+        .and_then(|package| package.get("metadata"))
+        .and_then(|metadata| metadata.get("tilo-app"))
+        .and_then(|app| app.get("tilolang"))
+    else {
+        return Ok(Vec::new());
+    };
+    declared
+        .as_array()
+        .context("`package.metadata.tilo-app.tilolang` is not a list of directories")?
+        .iter()
+        .map(|dir| {
+            dir.as_str()
+                .map(|path| app_dir.join(path))
+                .context("`package.metadata.tilo-app.tilolang` names no directory")
+        })
+        .collect()
+}
+
+/// Compile each tilolang package in `dirs` and write its bundle under `destination/<app>`;
+/// nothing when `dirs` is empty. Then the index naming what was written.
+fn pack_tilolang_apps(dirs: &[PathBuf], destination: &Path) -> Result<()> {
+    if dirs.is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(destination)?;
+    for dir in dirs {
+        // The last package compiled is the directory's own; the earlier ones are those it uses.
+        let bundles = tilolang_cli::package::bundles(dir, &[])
+            .map_err(|error| anyhow::anyhow!("{}: {error}", dir.display()))?;
+        let bundle = bundles
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("{}: nothing was compiled", dir.display()))?;
+        bundle
+            .write(&destination.join(&bundle.meta.app))
+            .with_context(|| format!("writing the bundle of {}", bundle.meta.app))?;
+    }
+    write_apps_index(destination)
+}
+
+/// Write `files.txt` into `root`: a `version <digest>` line, then each packed file's path relative
+/// to `root`, '/'-separated and sorted. Android's `AssetManager` lists no directory, so this index
+/// is how the app knows what to copy out on the first start of a version.
+///
+/// The digest is the SHA-256, hex, of each listed file's path followed by its bytes, the files in
+/// sorted order, so a build that changed nothing keeps the version and the app copies it once.
+fn write_apps_index(root: &Path) -> Result<()> {
+    let mut files = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("listing {}", dir.display()))?
+        {
+            let entry = entry.with_context(|| format!("listing {}", dir.display()))?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .with_context(|| format!("{} is not under {}", path.display(), root.display()))?;
+            files.push(
+                relative
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+            );
+        }
+    }
+    files.sort();
+    let mut hasher = Sha256::new();
+    for name in &files {
+        hasher.update(name.as_bytes());
+        hasher.update(std::fs::read(root.join(name)).with_context(|| format!("reading {name}"))?);
+    }
+    let mut index = format!("version {}\n", hex::encode(hasher.finalize()));
+    for name in &files {
+        index.push_str(name);
+        index.push('\n');
+    }
+    let path = root.join(APPS_INDEX);
+    std::fs::write(&path, index).with_context(|| format!("writing {}", path.display()))
 }
 
 /// Link, align and sign the staged APK into `apk`.
@@ -2567,6 +2669,25 @@ mod tests {
             std::fs::read(fonts.join("manifest.toml")).unwrap(),
             std::fs::read(checkout.join("manifest.toml")).unwrap()
         );
+    }
+
+    #[test]
+    fn the_android_assets_index_names_each_packed_app() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let apps = tempfile::tempdir().unwrap();
+        pack_tilolang_apps(&[root.join("apps/tl/notes")], apps.path()).unwrap();
+        let index = std::fs::read_to_string(apps.path().join(APPS_INDEX)).unwrap();
+        let mut lines = index.lines();
+        let version = lines.next().unwrap();
+        assert!(
+            version
+                .strip_prefix("version ")
+                .is_some_and(|digest| digest.len() == 64)
+        );
+        let listed: Vec<_> = lines.collect();
+        assert!(listed.contains(&"so.tilo.notes/app.wasm"));
+        assert!(listed.windows(2).all(|pair| pair[0] < pair[1]));
+        tilolang_tilo::bundle::Bundle::read(&apps.path().join("so.tilo.notes")).unwrap();
     }
 
     fn manifest(net: &str, portals: &str) -> tilo_app_package::Manifest {

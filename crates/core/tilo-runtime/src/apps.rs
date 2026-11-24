@@ -754,6 +754,15 @@ pub struct Launch {
 impl Launch {
     /// Let a launcher held at its launch hold go on. Call once the
     /// launch is recorded for attestation.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            clippy::unused_self,
+            clippy::unnecessary_wraps,
+            clippy::needless_pass_by_ref_mut,
+            reason = "with no app sandbox here, no launcher is held back to release"
+        )
+    )]
     fn release_registration(&mut self) -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
         if let Some(hold) = self.registration.take() {
@@ -763,6 +772,13 @@ impl Launch {
     }
 
     /// Wait for the process to exit; its exit code, when it exited normally.
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            clippy::unused_self,
+            reason = "with no app sandbox here, no launched process waits"
+        )
+    )]
     pub fn wait(self) -> Option<i32> {
         #[cfg(target_os = "linux")]
         let status = {
@@ -779,6 +795,13 @@ impl Launch {
         status.and_then(|status| status.code())
     }
 
+    #[cfg_attr(
+        not(any(target_os = "linux", target_os = "macos")),
+        expect(
+            clippy::unused_self,
+            reason = "with no app sandbox here, no launched process is killed"
+        )
+    )]
     fn kill(self) {
         #[cfg(target_os = "linux")]
         {

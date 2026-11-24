@@ -478,8 +478,6 @@ workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 winit = { workspace = true, features = ["android-native-activity"] }
-# The APK's asset manager, which holds the font catalog (`font_catalog::android`).
-ndk = { version = "0.9.0", default-features = false }
 # Soft-keyboard input reaches the runner through the activity's
 # `TiloTextInput` view (`app/android_text_input`).
 jni = { version = "0.21.1", optional = true }

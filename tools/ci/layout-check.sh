@@ -16,6 +16,8 @@
 #           of a long page shows (default: the size's own height)
 #   hover   `X,Y`: the pointer rests there once the press is made, so the shots show what
 #           pointing there shows, a chart's readout (default: nowhere)
+#   state   a view state's value before anyone picks, as the app writes it
+#           (`picked=studio`), so a screen behind a pick is the one shot (default: the view's own)
 #
 #   t test layout-check/390x844 --input app=apps/tl/tasks \
 #       --input press="Mark Buy oat milk and eggs done" --input dump=true
@@ -51,6 +53,7 @@ press=${T_INPUT_PRESS:-}
 dump=${T_INPUT_DUMP:-false}
 shot_height=${T_INPUT_SHOT_HEIGHT:-}
 hover=${T_INPUT_HOVER:-}
+state=${T_INPUT_STATE:-}
 case $dump in true|false) ;; *) echo "dump must be true or false, not $dump" >&2; exit 2 ;; esac
 
 # Every app in `apps/tl`: a package directory with an `app.tl`, as the library's own tests find
@@ -75,6 +78,8 @@ tall=()
 [[ -z $shot_height ]] || tall=(--shot-height "$shot_height")
 pointing=()
 [[ -z $hover ]] || pointing=(--hover "$hover")
+states=()
+[[ -z $state ]] || states=(--state "$state")
 # A narrowing input reads its own layouts: `dump` prints every frame laid out, where the whole
 # tree's run prints the frames its findings came from.
 read_frames=(--dump-findings "$size")

@@ -31,6 +31,13 @@ use tilo_session_client::Link;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use crate::support::flow;
+// The phone's calls block, as they do on the phone's own worker thread.
+use tokio::task::block_in_place;
+
+/// The phone's own part, as the phone's tests drive it: its home and the laptop that prints its
+/// ticket.
+#[path = "../../../../apps/phone/tests/support/mod.rs"]
+mod phone;
 use crate::support::{
     Device, HostSettings, TestHost, enrol, entry_grant, record_of, redeem, start_host_serving,
     start_peer,
@@ -295,34 +302,102 @@ async fn flow_server_serves_its_web_ui_by_default_and_a_setting_turns_it_off() {
     );
 }
 
-/// The phone joins like any other device, through the invitation a link brings it, and reads
-/// what the laptop wrote.
+/// The phone joins like any other device: the person's laptop prints a ticket, and the phone's
+/// own device (the daemon the Android app runs in its process, driven by the app's code) redeems
+/// it, enters the person's workspace on their server, lists it, and reads what the laptop wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_phone_joins_like_any_other_device() {
+    // The phone's daemon reads its places from the process's environment: set before it starts.
+    let home = phone::Home::new();
     let f = rig().await;
-    // A device of the person's that has never been here joins their workspace like any other
-    // of their devices; the Android app's own part is the phones lane's.
-    let phone = enrol(&f.root, "pixel", DeviceCapabilities::member());
-    let session = flow::session(&f.host, &phone, &f.server_device.cert);
-    flow::join(&session, &f.work, "Work").await;
+    let entry = tilo_device_identity::login::Entry {
+        workspace: f.work.clone(),
+        workspace_name: Some("Work".into()),
+        server_cert: f.server_device.cert.clone(),
+        server: tilo_api::daemon::enter::reached_of(&f.host.server.node_addr()),
+        site: f.host.web.origin.clone(),
+        host_origin: f.host.web.origin.clone(),
+    };
+    let runtime = tokio::runtime::Handle::current();
+    let laptop = block_in_place(|| phone::Issuing::start(&runtime, &f.root, entry));
+    let mut device = block_in_place(|| tilo_phone::core::Device::start(&home.profile()))
+        .expect("the phone's daemon starts");
+    let before = block_in_place(|| phone::shown(&device));
+    assert!(
+        !before.signed_in,
+        "a phone nobody signed in to shows where a ticket goes: {before:?}"
+    );
+    block_in_place(|| device.log_in(&laptop.ticket(), "Pixel"))
+        .expect("the phone redeems the ticket the person's laptop printed");
+    let devices = block_in_place(|| {
+        phone::until("the phone lists the person's workspace", || {
+            let devices = device.devices().map_err(|error| format!("{error:#}"))?;
+            if devices
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.key == f.work)
+            {
+                Ok(devices)
+            } else {
+                Err(format!("{devices:?}"))
+            }
+        })
+    });
+    assert!(
+        devices.signed_in,
+        "the ticket signed the phone in: {devices:?}"
+    );
+    assert!(
+        devices
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.key == f.work && workspace.name == "Work"),
+        "the phone names the workspace as the person does: {devices:?}"
+    );
 
     // A file the laptop writes into the workspace's folder reaches the phone: a real entry of
-    // the workspace's file tree, written as a computer's folder writes it.
+    // the workspace's file tree, written as a computer's folder writes it, listed by the phone's
+    // daemon as `tilo ls files` lists the workspace's folder.
     let put = flow::put_file(&f.laptop_session, &f.work, "notes.txt", b"from the laptop").await;
     assert!(
         put.is_ok(),
-        "the laptop's file is one of the person's workspace's folder, read by the phone: {put:?}"
+        "the laptop's file is one of the person's workspace's folder: {put:?}"
     );
-    flow::folder_index(&session, &f.work, "the folder's index at the phone").await;
-    let files = crate::support::wait_for("the folder's file at the phone", || async {
-        let count = flow::file_count(&session, &f.work);
-        (count > 0).then_some(count)
-    })
-    .await;
+    let calls = tilo_api::calls::Calls::open(tilo_api::calls::Reach::default())
+        .await
+        .expect("the phone's daemon is this process's computer");
+    let the_file = |row: &serde_json::Value| row["id"] == "file:notes.txt";
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let listed = loop {
+        let answer = calls
+            .list(Some(&f.work), Some("files"), None)
+            .await
+            .map_err(|error| format!("{error:#}"));
+        let has_it = answer.as_ref().is_ok_and(|listed| {
+            listed["rows"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(the_file))
+        });
+        match answer {
+            Ok(listed) if has_it => break listed,
+            last if std::time::Instant::now() > deadline => {
+                panic!("the phone lists the laptop's file in the workspace's folder: {last:?}")
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(200)).await,
+        }
+    };
     assert_eq!(
-        files, 1,
-        "the phone reads the one file the laptop put in the workspace's folder"
+        listed["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| the_file(row))
+            .count(),
+        1,
+        "the phone lists the one file the laptop put in the workspace's folder: {listed}"
     );
+    block_in_place(|| device.stop()).expect("the phone's daemon stops");
+    drop(laptop);
 }
 
 /// The laptop's person picks the 2D canvas as their shell, and it is their layout: the phone

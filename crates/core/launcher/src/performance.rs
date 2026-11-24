@@ -1,9 +1,13 @@
 //! Bounded process-tree performance hints shared by native and compatibility game
 //! launch paths.
 
+#[cfg(target_os = "linux")]
 const SCHED_FLAG_UTIL_CLAMP_MIN: u64 = 0x20;
+#[cfg(target_os = "linux")]
 const IOPRIO_WHO_PROCESS: libc::c_int = 1;
+#[cfg(target_os = "linux")]
 const IOPRIO_CLASS_SHIFT: libc::c_int = 13;
+#[cfg(target_os = "linux")]
 const IOPRIO_CLASS_BEST_EFFORT: libc::c_int = 2;
 /// 25% of the kernel's 0..=1024 utilization scale.
 pub const GAME_UTIL_MIN: u32 = 256;
@@ -12,6 +16,7 @@ pub const GAME_TIMER_SLACK_NS: libc::c_ulong = 1_000;
 /// Priority 2 within the ordinary best-effort I/O class.
 pub const GAME_IO_PRIORITY: libc::c_int = 2;
 
+#[cfg(target_os = "linux")]
 #[repr(C)]
 struct SchedAttr {
     size: u32,
@@ -27,6 +32,7 @@ struct SchedAttr {
 }
 
 /// Apply a best-effort utilization floor to the current process.
+#[cfg(target_os = "linux")]
 fn game_sched_attr() -> SchedAttr {
     SchedAttr {
         size: u32::try_from(std::mem::size_of::<SchedAttr>()).unwrap_or(0),
@@ -73,6 +79,7 @@ fn apply_game_timer_slack() -> libc::c_int {
     unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, GAME_TIMER_SLACK_NS, 0, 0, 0) }
 }
 
+#[cfg(target_os = "linux")]
 fn game_ioprio() -> libc::c_int {
     (IOPRIO_CLASS_BEST_EFFORT << IOPRIO_CLASS_SHIFT) | GAME_IO_PRIORITY
 }

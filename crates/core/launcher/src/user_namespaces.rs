@@ -9,6 +9,7 @@ pub const EXIT_NO_USER_NAMESPACES: i32 = 71;
 
 /// A kernel setting that turns user namespaces off: where it is read, the value that turns them
 /// off, and the value that turns them on again.
+#[cfg(target_os = "linux")]
 struct Setting {
     name: &'static str,
     off: &'static str,
@@ -18,6 +19,7 @@ struct Setting {
 /// The settings that turn user namespaces off, each distribution's own: Debian's switch, the limit
 /// every kernel has, and Ubuntu's `AppArmor` restriction, which lets the namespace be made and then
 /// takes away what a sandbox needs in it.
+#[cfg(target_os = "linux")]
 const SETTINGS: [Setting; 3] = [
     Setting {
         name: "kernel.unprivileged_userns_clone",
@@ -72,6 +74,7 @@ impl std::fmt::Display for Refusal {
 }
 
 /// The first of [`SETTINGS`] that `read` finds turning user namespaces off.
+#[cfg(target_os = "linux")]
 fn setting_off(read: impl Fn(&str) -> Option<String>) -> Option<Refusal> {
     SETTINGS.iter().find_map(|setting| {
         (read(setting.name)?.trim() == setting.off).then_some(Refusal::Setting {
@@ -122,7 +125,7 @@ pub fn refusal() -> std::io::Result<Option<Refusal>> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{Refusal, setting_off};
 

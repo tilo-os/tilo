@@ -16805,6 +16805,8 @@ dependencies = [
  "tilo-paths",
  "tilo-test-env",
  "tilo-ui-graph",
+ "tilolang-cli",
+ "tilolang-tilo",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
@@ -20001,6 +20003,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-phone"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "iroh",
+ "package-store",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-api",
+ "tilo-app",
+ "tilo-app-package",
+ "tilo-app-window",
+ "tilo-automerge-isolate",
+ "tilo-clock",
+ "tilo-device-identity",
+ "tilo-paths",
+ "tilo-peer-state",
+ "tilo-render-protocol",
+ "tilo-runtime",
+ "tilo-server-protocol",
+ "tilo-user-identity",
+ "tilo-workspace-service",
+ "tilolang-cli",
+ "tilolang-process",
+ "tilolang-tilo",
+ "tilolang-web",
+ "tokio",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-platform-caps"
 version = "0.1.0"
 dependencies = [
@@ -21180,6 +21219,7 @@ dependencies = [
  "test-server",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-api",
  "tilo-app",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -21197,6 +21237,7 @@ dependencies = [
  "tilo-net",
  "tilo-paths",
  "tilo-peer-state",
+ "tilo-phone",
  "tilo-secrets",
  "tilo-server",
  "tilo-server-client",
@@ -21748,7 +21789,6 @@ dependencies = [
  "jni 0.21.1",
  "libc",
  "naga",
- "ndk",
  "ndk-context",
  "objc2 0.6.3",
  "objc2-app-kit 0.3.2",

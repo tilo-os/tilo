@@ -1,0 +1,68 @@
+[package]
+name = "tilo-phone"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Tilo app on a phone: the device daemon in the app's own process, and the tilolang shell's phone form drawn natively over it."
+
+[lib]
+name = "tilo_phone"
+path = "src/lib.rs"
+
+# The tilolang apps the APK carries: `tilo-app build --platform android` compiles each and packs
+# its bundle into `assets/tilo/apps`.
+[package.metadata.tilo-app]
+tilolang = ["../tl/notes", "../tl/chat"]
+
+[features]
+# A thin build links the toolkit dynamically, so `tilo-app dev` reloads the app in place.
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The device daemon, started on the app's own threads: Android runs no daemon process of its own.
+tilo-runtime = { path = "../../crates/core/tilo-runtime" }
+# The daemon's API as `tilo login` and `tilo ls` call it: the same client and routes.
+tilo-api = { path = "../../crates/core/tilo-api" }
+tilo-device-identity = { path = "../../crates/core/tilo-device-identity" }
+# The shell, compiled from its sources as every host compiles it, and the platform's packages.
+tilolang-tilo = { path = "../../crates/lang/tilolang-tilo" }
+tilo-app-window = { path = "../../crates/sdk/tilo-app-window" }
+tilo-render-protocol = { path = "../../crates/ui/tilo-render-protocol" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# The platform a window with no session stands on: the packages it loads, its words and clock.
+tilolang-web = { path = "../../crates/lang/tilolang-web" }
+# An app the person opens runs in tilolang-process's in-process window.
+tilolang-process = { path = "../../crates/lang/tilolang-process", features = ["app-launch"] }
+anyhow.workspace = true
+serde.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+# The person's laptop that prints the phone's ticket, and the server it enters.
+tilo-api = { path = "../../crates/core/tilo-api", features = ["test-support"] }
+tilo-workspace-service = { path = "../../crates/core/tilo-workspace-service" }
+tilo-server-protocol = { path = "../../crates/core/tilo-server-protocol" }
+tilo-user-identity = { path = "../../crates/core/tilo-user-identity" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
+ed25519-dalek.workspace = true
+iroh.workspace = true
+# Notes, built from the tree and installed into the phone's app store.
+tilolang-cli = { path = "../../crates/lang/tilolang-cli" }
+package-store = { path = "../../crates/core/package-store", features = ["store"] }
+# A workspace that runs Notes: its package, as the workspace's governance installs it.
+tilo-app-package = { path = "../../crates/core/tilo-app-package" }
+tilo-peer-state = { path = "../../crates/core/tilo-peer-state" }
+hex.workspace = true
+# The server's Automerge workers are this test binary, started again.
+tilo-automerge-isolate.workspace = true
+
+[lints]
+workspace = true

@@ -20,7 +20,9 @@
         reason = "a page runs its workspaces' groups with its own host"
     )
 )]
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_clock::time::UNIX_EPOCH;
@@ -222,6 +224,7 @@ impl KeyLink {
     }
 
     /// Whether the peer network this device says its workspaces' rosters on is running.
+    #[cfg(target_os = "linux")]
     fn attached(&self) -> bool {
         self.outgoing.lock_recover().is_some()
     }
@@ -384,6 +387,7 @@ impl KeyLink {
 
     /// Read `workspace` again on a later pass, without waking the pump to it: a roster that was not
     /// told stays untold until it is.
+    #[cfg(target_os = "linux")]
     fn changed_again(&self, workspace: ModelWorkspaceId) {
         self.changed.lock_recover().insert(workspace);
     }
@@ -491,6 +495,7 @@ impl KeyLink {
 
     /// Tell the peer network which devices workspace `ws` admits; `false` when the peer network is gone, and the
     /// roster is told again when a later pass finds it changed.
+    #[cfg(target_os = "linux")]
     fn tell_roster(&self, ws: Topic, devices: Roster) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
         outgoing.is_some_and(|outgoing| outgoing.send(Cmd::Roster { ws, devices }).is_ok())

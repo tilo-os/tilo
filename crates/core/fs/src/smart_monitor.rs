@@ -76,9 +76,9 @@ fn storage_allows(path: &Path) -> bool {
     }
     // SAFETY: the successful call above initialized the complete structure.
     let stats = unsafe { stats.assume_init() };
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     let (blocks, available) = (stats.f_blocks, stats.f_bavail);
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let (blocks, available) = (u64::from(stats.f_blocks), u64::from(stats.f_bavail));
     storage_values_allow(blocks, available, stats.f_frsize)
 }

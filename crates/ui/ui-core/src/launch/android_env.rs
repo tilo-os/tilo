@@ -3,7 +3,10 @@
 use std::path::{Path, PathBuf};
 
 /// The base directories for an app whose `getFilesDir()` is `files`.
-pub(super) fn directories(files: &Path) -> [(&'static str, PathBuf); 7] {
+///
+/// The device's identity (its key and certificates) is the app's own, under its data: every
+/// Tilo program in the process, the device daemon included, reads it from `TILO_IDENTITY_ROOT`.
+pub(super) fn directories(files: &Path) -> [(&'static str, PathBuf); 8] {
     let root = files.parent().unwrap_or(files);
     let cache = root.join("cache");
     [
@@ -14,6 +17,7 @@ pub(super) fn directories(files: &Path) -> [(&'static str, PathBuf); 7] {
         ("XDG_CACHE_HOME", cache.clone()),
         ("XDG_RUNTIME_DIR", cache.join("run")),
         ("TMPDIR", cache.join("tmp")),
+        ("TILO_IDENTITY_ROOT", files.join("data/tilo")),
     ]
 }
 
@@ -41,6 +45,7 @@ mod tests {
         assert_eq!(get("XDG_CACHE_HOME").as_deref(), Some(cache));
         assert_eq!(get("XDG_RUNTIME_DIR"), Some(cache.join("run")));
         assert_eq!(get("TMPDIR"), Some(cache.join("tmp")));
+        assert_eq!(get("TILO_IDENTITY_ROOT"), Some(files.join("data/tilo")));
         assert!(
             vars.iter()
                 .all(|(_, dir)| dir.starts_with("/data/user/0/so.tilo.calculator"))
