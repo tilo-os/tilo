@@ -25,9 +25,31 @@ pub fn current(workspace: &str) -> io::Result<(SigningKey, DeviceCert)> {
     of_profile(&profile)
 }
 
+/// This machine's device key and the certificate its person's root signed for it, before any
+/// host has listed the device: what the daemon that keeps the person's devices record starts as,
+/// since it lists this device itself once it holds the record. A revoked device still gets
+/// nothing; every other caller asks [`current`].
+///
+/// # Errors
+/// As [`current`], except that the device need not be listed yet.
+pub fn unlisted(workspace: &str) -> io::Result<(SigningKey, DeviceCert)> {
+    let profile = crate::store::identity_for_workspace(workspace)?
+        .ok_or_else(|| io::Error::other("this device has no identity to sign in with"))?;
+    checked(&profile, false)
+}
+
 /// As [`current`], for the identity `profile` names.
 pub(crate) fn of_profile(
     profile: &crate::store::IdentityProfile,
+) -> io::Result<(SigningKey, DeviceCert)> {
+    checked(profile, true)
+}
+
+/// The device key and certificate for `profile`, refused when revoked, and when not `listed`
+/// where the person's devices record must already hold it.
+fn checked(
+    profile: &crate::store::IdentityProfile,
+    listed: bool,
 ) -> io::Result<(SigningKey, DeviceCert)> {
     let paths = crate::provisioning::collaboration_identity_paths();
     let device = tilo_device_identity::persist::load_device_key(&paths)
@@ -52,7 +74,7 @@ pub(crate) fn of_profile(
             "this device has been revoked for the selected identity",
         ));
     }
-    if !crate::certificates::enrolled(&profile.user_public_key, &cert) {
+    if listed && !crate::certificates::enrolled(&profile.user_public_key, &cert) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "this device is not enrolled for the selected identity",

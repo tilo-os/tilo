@@ -174,7 +174,9 @@ impl Identity {
     fn here() -> io::Result<Self> {
         let place = tilo_device_identity::login::Place::here(tilo_api::calls::device_keys())
             .map_err(io::Error::other)?;
-        let (key, cert) = tilo_identity::trusted_device::current("").map_err(|error| {
+        // This daemon lists its own device with the person's once it holds their record, so it
+        // starts from its certificate before any host lists it.
+        let (key, cert) = tilo_identity::trusted_device::unlisted("").map_err(|error| {
             io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
         })?;
         Ok(Self { key, cert, place })
