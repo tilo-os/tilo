@@ -323,6 +323,51 @@ async fn only_a_members_turn_reaches_the_workspaces_mail() {
     server.shutdown().await;
 }
 
+/// What a turn reaches of the workspace's mail is decided at Mail, for the member who asked:
+/// an owner's grant keeping Bo out of Mail keeps every turn he asks out of its accounts,
+/// though the action is the accounts provider's, and he is offered nothing of it. Ada, whom no
+/// grant keeps out, asks the same agent and reads. No mail server is asked for Bo.
+#[tokio::test]
+async fn a_member_kept_out_of_mail_keeps_the_turns_he_asks_out_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_server(dir.path(), &key, &owner).await;
+    let mail = Mail::on(server.workspaces(), &owner).await;
+    let bo = admit(&mail.workspaces, &mail.workspace, &owner, 2).await;
+    let kept_out = tilo_action_policy::Grant::new(
+        "test:bo-kept-out-of-mail",
+        tilo_action_policy::Grantee::person(hex::encode(bo.user_public_key)),
+        TreePath::workspace(&mail.workspace).app("so.tilo.mail"),
+        KindSet::ALL,
+        Answer::Deny,
+        tilo_action_policy::Grantee::person(hex::encode(owner.user_public_key)),
+    );
+    mail.workspaces
+        .put_workspace_grants(&mail.workspace, &owner, [63; 32], vec![kept_out])
+        .await
+        .unwrap();
+
+    let bos = on_turn(&bo, &mail.workspace, SCOUT);
+    let his = mail.turn(&bos, None);
+    let reads = mail.asks(&his, person_accounts::READ, reading()).await;
+    assert_eq!(
+        reads,
+        Err(ActionCallError::UnknownAction),
+        "Bo's turn reads nothing"
+    );
+    assert!(
+        mail.offered(&his).await.is_empty(),
+        "and is offered nothing"
+    );
+    assert!(mail.servers.asked().is_empty(), "no mail server was asked");
+
+    let adas = on_turn(&mail.ada, &mail.workspace, SCOUT);
+    let hers = mail.turn(&adas, None);
+    let message: FetchedMessage = done(mail.asks(&hers, person_accounts::READ, reading()).await);
+    assert_eq!(message.uid, 4, "the same agent asked by Ada reads");
+    server.shutdown().await;
+}
+
 /// An agent its entry narrows reaches a mail action only where a rule of its
 /// bound names exactly that action: no rule, a rule for the whole provider,
 /// a rule for another action and a rule that denies it all refuse, and it is
