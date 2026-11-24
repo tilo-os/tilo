@@ -37,6 +37,7 @@ use serde::Deserialize;
 use tilo_image_codec::{DecodedImage, Encoding};
 
 use tilolang_tilo::instance::Platform;
+use tilolang_tilo::runtime::host_work::{Frame as LiveFrame, Push};
 
 /// The one app this device answers camera work for.
 pub const APP: &str = "so.tilo.camera";
@@ -67,6 +68,7 @@ pub fn call(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Result
         "frame" => frame(platform, input),
         "still" => still(platform, input),
         "codes" => codes(platform, input),
+        "codes-live" => codes_live(input),
         "ocr" => ocr(platform, input),
         "pages_pdf" => pages_pdf(platform, input),
         "stop-record" => stop_record(input),
@@ -88,6 +90,62 @@ pub fn start(platform: &dyn Platform, app: &str, op: &str, input: &str) -> Resul
         "record" => record(input),
         other => Err(format!("`{other}` is no op this device runs for {app}")),
     }
+}
+
+/// One `engine.stream`: a moving picture whose frames the device hands over as they arrive.
+///
+/// # Errors
+///
+/// Not this device's app, an op that is no stream, or a camera that cannot be opened.
+pub fn stream(app: &str, op: &str, input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+    if app != APP {
+        return Err(format!("`{op}` is no stream this device runs for {app}"));
+    }
+    match op {
+        "preview" => preview(input, push),
+        other => Err(format!("`{other}` is no stream this device runs for {app}")),
+    }
+}
+
+/// The camera's picture, frame after frame, handed to the window that shows it.
+fn preview(input: &str, push: Arc<dyn Push>) -> Result<String, String> {
+    let ask: PictureAsk = reads(input)?;
+    let id = next_job_id();
+    let state = Arc::new(Job::new(false));
+    jobs()
+        .lock()
+        .map_err(|_| "the job table is unreadable".to_owned())?
+        .insert(id.clone(), Arc::clone(&state));
+    let slot = id.clone();
+    let worker = Arc::clone(&state);
+    std::thread::Builder::new()
+        .name("camera-preview".to_owned())
+        .spawn(move || {
+            let Ok(mut capture) = tilo_capture::VideoCapture::open_camera(&ask.request()) else {
+                worker.finished.store(true, Ordering::Relaxed);
+                return;
+            };
+            let mut generation = 0_u64;
+            loop {
+                if worker.stopped.load(Ordering::Relaxed) {
+                    break;
+                }
+                if let Some(frame) = capture.take_latest() {
+                    generation = generation.wrapping_add(1);
+                    push.frame(LiveFrame {
+                        slot: slot.clone(),
+                        generation,
+                        width: frame.width,
+                        height: frame.height,
+                        pixels: Arc::new(frame.rgba),
+                    });
+                }
+                std::thread::sleep(POLL);
+            }
+            worker.finished.store(true, Ordering::Relaxed);
+        })
+        .map_err(|error| format!("could not start the preview: {error}"))?;
+    Ok(serde_json::json!({ "job": id }).to_string())
 }
 
 /// How far a job has got, as JSON: its state, and what it made or why it failed.
@@ -441,7 +499,21 @@ fn codes(platform: &dyn Platform, input: &str) -> Result<String, String> {
         height: decoded.height,
         rgba: decoded.rgba,
     };
-    let luma = tilo_capture::codes::grey(&frame);
+    Ok(codes_of(&frame))
+}
+
+/// The codes the newest frame the camera shows holds, without keeping the frame: what a scanner
+/// asks for again and again while it looks.
+fn codes_live(input: &str) -> Result<String, String> {
+    let ask: PictureAsk = reads(input)?;
+    let frame = ask_frame(&ask)?;
+    Ok(codes_of(&frame))
+}
+
+/// The codes a frame holds, as the app reads them: the text, and the box each covers as the
+/// fraction of the picture the view draws over.
+fn codes_of(frame: &tilo_capture::Frame) -> String {
+    let luma = tilo_capture::codes::grey(frame);
     let found = tilo_capture::codes::decode(
         &luma,
         usize::try_from(frame.width).unwrap_or(0),
@@ -472,7 +544,7 @@ fn codes(platform: &dyn Platform, input: &str) -> Result<String, String> {
             })
         })
         .collect::<Vec<_>>();
-    Ok(serde_json::json!({ "codes": found }).to_string())
+    serde_json::json!({ "codes": found }).to_string()
 }
 
 fn default_code_width() -> u32 {

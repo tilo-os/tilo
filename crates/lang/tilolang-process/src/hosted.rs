@@ -794,6 +794,9 @@ impl Platform for HostPlatform {
             push,
             wake: self.waker(),
         });
+        if app == crate::camera_engine::APP {
+            return crate::camera_engine::stream(app, op, input, frames);
+        }
         tilolang_tilo::engine::stream(app, op, input, frames)
     }
 
