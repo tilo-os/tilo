@@ -352,7 +352,9 @@ A view is published at an address and takes a resource. Any view can show
 any other by naming it and giving it a resource: a task list in a chat
 message, a calendar week in a note. The shown view runs with its own app's
 code and the viewer's permissions, and edits inside it are calls to its
-app's actions. The shell is a view. A person, or an agent in a chat, writes a
+app's actions. The shell is a view. The desktop styles and their presets are a
+resource of the workspace that every view of the desktop reads, its page included;
+picking or changing one is that resource's action. A person, or an agent in a chat, writes a
 new view in tilolang from existing views and actions, without a build. One
 view output is drawn as native widgets and as semantic HTML on the web page.
 
