@@ -238,10 +238,10 @@ export class Voice {
     };
   }
 
-  #reopen() {
+  #reopen(resume = true) {
     if (this.closed) return;
     this.attempt += 1;
-    setTimeout(() => this.#open(true), Math.min(5_000, 250 * 2 ** this.attempt));
+    setTimeout(() => this.#open(resume), Math.min(5_000, 250 * 2 ** this.attempt));
   }
 
   #closed(code, reason) {
@@ -251,7 +251,21 @@ export class Voice {
       this.#ended(meaning.end);
       return;
     }
-    this.#reopen();
+    const resume = meaning.again === "resume";
+    if (!resume) {
+      // The session is gone: nothing of it is resumed, and the call joins again whole.
+      this.joined = false;
+      this.users.clear();
+      this.sequenceAck = -1;
+      try {
+        this.udp?.close();
+      } catch {}
+      this.udp = null;
+      this.cipher = null;
+      this.sender = null;
+      this.queue.length = 0;
+    }
+    this.#reopen(resume);
   }
 
   #ended(reason) {

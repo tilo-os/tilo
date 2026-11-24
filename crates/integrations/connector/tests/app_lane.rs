@@ -166,8 +166,9 @@ impl App {
 }
 
 /// Serve one app connection over `stream` with a lane and a plain action provider beside it.
-fn serve(stream: UnixStream, lane: Arc<AppLane>) {
-    let output = Shared(Arc::new(Mutex::new(stream.try_clone().unwrap())));
+/// `written` is the same socket the app's pushes go to, so one lock orders whole lines either way.
+fn serve(stream: UnixStream, lane: Arc<AppLane>, written: Arc<Mutex<UnixStream>>) {
+    let output = Shared(written);
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -275,18 +276,40 @@ impl Member {
         }
     }
 
+    /// Say one 20 ms frame of `opus` in the call. The bridge asks for this device's voice a
+    /// moment after its own session joins the call, so a first attempt nobody asks for is not a
+    /// failure: it is the call still settling.
     fn speak(&mut self, opus: &[u8]) {
-        let object = VoiceObject {
-            sequence: u64::from(self.sequence),
-            timestamp: u64::from(self.sequence) * u64::from(FRAME_SAMPLES),
-            duration: FRAME_SAMPLES,
-            speaker: None,
-            payload: opus.to_vec(),
-        };
-        self.live
-            .publish(Track::Audio, self.sequence, &object.encode().unwrap())
-            .unwrap();
-        self.sequence = self.sequence.wrapping_add(1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let object = VoiceObject {
+                sequence: u64::from(self.sequence),
+                timestamp: u64::from(self.sequence) * u64::from(FRAME_SAMPLES),
+                duration: FRAME_SAMPLES,
+                speaker: None,
+                payload: opus.to_vec(),
+            };
+            match self
+                .live
+                .publish(Track::Audio, self.sequence, &object.encode().unwrap())
+            {
+                Ok(()) => {
+                    self.sequence = self.sequence.wrapping_add(1);
+                    return;
+                }
+                Err(tilo_live::live_session::LiveError::Unwanted) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the call never asked for this device's voice (wanted: {}, callers: {:?})",
+                        self.live.voice_wanted(),
+                        self.callers()
+                    );
+                    self.pump();
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(other) => panic!("publishing a voice object failed: {other}"),
+            }
+        }
     }
 
     fn callers(&self) -> Vec<tilo_live::presence::LiveCaller> {
@@ -344,7 +367,7 @@ fn an_apps_connection_carries_an_outside_speaker_into_the_call_and_back() {
     };
     let lane = AppLane::new(Ok(setup(relay.clone(), keys.clone())), out);
     assert!(lane.granted().is_ok());
-    serve(server, lane);
+    serve(server, lane, written);
 
     let app = App::of(client);
     let mut grace = Member::new(&relay, &keys, &roster);
@@ -458,7 +481,8 @@ fn an_app_without_the_grant_is_refused_its_call() {
         lane.granted(),
         Err("this workspace grants the bridge no call".to_owned())
     );
-    serve(server, lane);
+    let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
+    serve(server, lane, written);
     let app = App::of(client);
     let answer = app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
         correlation,
@@ -499,7 +523,8 @@ fn a_pair_for_another_call_than_the_one_admitted_is_refused() {
     let keys = keys();
     let (server, client) = UnixStream::pair().unwrap();
     let lane = AppLane::new(Ok(setup(relay, keys)), Arc::new(|_| {}));
-    serve(server, lane);
+    let written = Arc::new(Mutex::new(server.try_clone().unwrap()));
+    serve(server, lane, written);
     let app = App::of(client);
     let answer = app.ask(|correlation| RemoteActionMessage::CallCarryRequest {
         correlation,
