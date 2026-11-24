@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_actions::remote::InvokeRequest;
-use tilo_agent_session::AppCatalogue;
 use tilo_agent_session::model::PlanTurns;
 use tilo_model_gateway::host_backend::protocol::{
     Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason,
@@ -30,8 +29,8 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 
 use super::agent_keys::AgentKeys;
-use super::workspaces::fixtures::TestHost;
 use super::{Model, ServerAgents};
+use crate::workspaces::fixtures::TestHost;
 
 const CHAT: &str = "so.tilo.chat";
 const SCOUT: &str = "scout";
@@ -40,7 +39,6 @@ const SCOUT: &str = "scout";
 /// tests below answer a turn in.
 async fn scout_on_a_device(scratch: &std::path::Path) -> (TestHost, String, String) {
     let (key, cert) = crate::workspaces::fixtures::governor();
-    let catalogue = AppCatalogue::native();
     // The native apps name their surfaces as the host first runs them.
     crate::surfaces::decide_receipt(&scratch.join("surfaces"));
     let server = crate::workspaces::fixtures::test_host(scratch, &key, &cert).await;
@@ -48,12 +46,7 @@ async fn scout_on_a_device(scratch: &std::path::Path) -> (TestHost, String, Stri
     let workspace = workspaces.create("Launch").await.unwrap().workspace;
     let person = hex::encode(cert.user_public_key);
 
-    // The workspace's chat, and its record of the agents it keeps.
-    let chat_record = crate::agents::workspace_resource(&catalogue, CHAT);
-    workspaces
-        .prepare_application(&workspace, &cert, &catalogue, CHAT, &chat_record)
-        .await
-        .unwrap();
+    // The workspace's record of the agents it keeps.
     workspaces
         .author_agents(&workspace, |doc| {
             let mut made = tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
@@ -393,12 +386,14 @@ async fn a_stopped_reply_keeps_what_came_and_says_it_was_stopped() {
     )
     .scripted(model);
     let invocation = tilo_actions::InvocationId::new();
+    let wrote = message_written(&workspace, &person, "plan the launch");
     let started = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         agents.triggered(
             &workspace,
             SCOUT,
-            message_written(&workspace, &person, "plan the launch"),
+            super::triggered::Where::of(&wrote).expect("a message is a change an agent answers"),
+            wrote,
             person.clone(),
             (invocation, stop),
         ),
@@ -433,12 +428,14 @@ async fn a_reply_that_breaks_off_keeps_what_came_and_says_why() {
     )
     .scripted(model);
     let invocation = tilo_actions::InvocationId::new();
+    let wrote = message_written(&workspace, &person, "plan the launch");
     let started = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         agents.triggered(
             &workspace,
             SCOUT,
-            message_written(&workspace, &person, "plan the launch"),
+            super::triggered::Where::of(&wrote).expect("a message is a change an agent answers"),
+            wrote,
             person.clone(),
             (invocation, Arc::default()),
         ),
