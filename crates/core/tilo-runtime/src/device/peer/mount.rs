@@ -126,12 +126,13 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
     Ok(fs)
 }
 
-/// Run `step`, which blocks its thread, where blocking is allowed: a task's thread is the
-/// runtime's, not the step's, so the step runs on a thread of its own and the task waits. A
-/// founding call starts the person's workspace, and mounts its files, from a task of the app's
-/// current-thread runtime, whose one thread its store's blocking bridge cannot take.
+/// Run `step`, which blocks its thread, where blocking is allowed: a thread inside a runtime is
+/// that runtime's, not the step's, so the step runs on a thread of its own and the caller waits.
+/// A founding call starts the person's workspace, and mounts its files, from a task of the app's
+/// current-thread runtime, or from a plain thread that drives that runtime's `block_on` (host
+/// search reaching the person's workspace first): its store's blocking bridge can take neither.
 fn off_the_worker<T: Send>(step: impl FnOnce() -> T + Send) -> T {
-    if tokio::task::try_id().is_none() {
+    if tokio::runtime::Handle::try_current().is_err() {
         return step();
     }
     std::thread::scope(|scope| {
@@ -247,5 +248,35 @@ mod tests {
         heard
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the task that mounted the files was answered");
+
+        // Host search reaches the person's workspace first from a thread of its own, which waits
+        // for the founding on the app runtime's `block_on`: inside that runtime, but no task of it.
+        let state = dir.path().join("evictions-again.json");
+        let store = Arc::new(
+            tilo_rt::app()
+                .block_on(tilo_fs::ContentStore::open(
+                    dir.path().join("content-again"),
+                ))
+                .unwrap()
+                .unwrap(),
+        );
+        let (told, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            tilo_rt::app().handle().block_on(async move {
+                let hydrator = Arc::new(Hydrator::new(store));
+                let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+                let namespace = Arc::new(std::sync::Mutex::new(
+                    tilo_fs::namespace::Namespace::new("test").unwrap(),
+                ));
+                let queue = tilo_fs::eviction::EvictionQueue::open(state).unwrap();
+                let fs = QuickFS::new(namespace, hydrator, heuristics)
+                    .with_eviction_queue(Arc::new(tokio::sync::Mutex::new(queue)));
+                off_the_worker(move || fs.resume_pending_evictions());
+            });
+            let _ = told.send(());
+        });
+        heard
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the thread that waited on the app runtime for the mount was answered");
     }
 }
