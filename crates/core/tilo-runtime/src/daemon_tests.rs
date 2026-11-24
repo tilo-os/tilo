@@ -2567,3 +2567,101 @@ fn a_long_profile_path_keeps_its_sockets_where_every_client_finds_them() {
         "the daemon and every client name one directory"
     );
 }
+
+/// A person's own daemon that started again, as a phone's does, answers the person's own account
+/// as their device, and not as a question for another device of theirs to allow: the list of
+/// their workspaces comes back from that daemon. A call that arrives before the person's part
+/// runs waits for that part and is answered by the same daemon; it is never kept as an asked
+/// record waiting on a device that keeps their root.
+#[test]
+fn a_restarted_daemons_own_account_lists_its_workspaces_without_asking() {
+    use std::os::unix::fs::DirBuilderExt as _;
+    use std::time::Instant;
+
+    // The daemon's own account of what it did, when a failing run needs it.
+    if let Ok(directives) = std::env::var("TILO_TEST_LOG") {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(directives))
+            .with_test_writer()
+            .try_init();
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let private = |path: &std::path::Path| {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .unwrap();
+    };
+    let (home, files, run) = (
+        dir.path().join("home"),
+        dir.path().join("files"),
+        dir.path().join("run"),
+    );
+    for path in [
+        home.clone(),
+        files.join("data"),
+        files.join("config"),
+        files.join("state"),
+        files.join("cache"),
+        run.clone(),
+    ] {
+        private(&path);
+    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", &home)
+        .set("XDG_DATA_HOME", files.join("data"))
+        .set("XDG_CONFIG_HOME", files.join("config"))
+        .set("XDG_STATE_HOME", files.join("state"))
+        .set("XDG_CACHE_HOME", files.join("cache"))
+        .set("XDG_RUNTIME_DIR", &run)
+        .set("TILO_IDENTITY_ROOT", files.join("data/tilo"))
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1")
+        .remove("TILO_RUNTIME_PROFILE")
+        .remove("CREDENTIALS_DIRECTORY");
+    let profile = super::default_profile().unwrap();
+    private(&profile);
+
+    // The device starts its person, and the daemon starts again to serve them, as the phone's
+    // does after its own `found`.
+    let mut device = crate::in_process::Device::start(&profile).unwrap();
+    device.found().expect("the device starts its person");
+
+    // Right away: the phone's view asks the daemon that just started again for the person's
+    // workspaces, before the person's part has run. A call that comes before it waits for it;
+    // what comes back must never be the wait for another device's approval.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let listed = loop {
+        match device.devices() {
+            Ok(devices) if !devices.workspaces.is_empty() => break devices,
+            Ok(devices) => assert!(
+                Instant::now() < deadline,
+                "the person's own workspace is never listed: {devices:?}"
+            ),
+            Err(error) => {
+                let said = format!("{error:#}");
+                let awaiting = tilo_api::calls::Refusal::of(&error)
+                    .is_some_and(|refusal| {
+                        refusal.code() == tilo_actions::remote::AWAITING_APPROVAL
+                    })
+                    || said.contains("Waiting for your approval");
+                assert!(
+                    !awaiting,
+                    "the person's own account asked their own daemon and was told it waits for an \
+                     approval: {said}"
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "the person's own account is never answered: {said}"
+                );
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        listed.signed_in,
+        "the phone is its new person's: {listed:?}"
+    );
+    device.stop().expect("the phone's daemon stops");
+}

@@ -1062,7 +1062,7 @@ impl Account {
         let Some(key) = grant.key() else {
             return Some(refused(&ServerError::NoAccountHere));
         };
-        Some(self.serve_here(here, host, key, grant, op, args).await)
+        Some(self.serve_here(here, host.as_ref(), key, grant, op, args).await)
     }
 
     /// Admit `op` with `args` for `key`, a device's own account served by its daemon.

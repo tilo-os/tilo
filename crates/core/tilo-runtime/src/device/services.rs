@@ -3263,6 +3263,16 @@ impl tilo_api::session::Here for DaemonHere {
     fn invocations(&self) -> Option<Arc<Invocations>> {
         tilo_api::session::Here::invocations(&*self.daemon().ok()?)
     }
+
+    /// The account this device serves for its person, when it keeps their workspaces itself: the
+    /// daemon that founded their workspace answers their list, never a read of the copy a
+    /// restarted daemon is still taking in.
+    fn account_here(&self) -> Option<Arc<dyn tilo_api::session::AccountHere>> {
+        let daemon: Arc<Daemon> = self.daemon().ok()?;
+        daemon
+            .keeps_its_own_account()
+            .then(|| daemon as Arc<dyn tilo_api::session::AccountHere>)
+    }
 }
 
 impl tilo_api::session::Here for Daemon {
@@ -3415,14 +3425,14 @@ impl tilo_api::session::Here for Daemon {
             Ok(imported)
         })
     }
+}
 
-    fn account_here(&self) -> Option<&dyn tilo_api::session::AccountHere> {
-        // A computer that logged in reaches the account through the server that keeps its
-        // workspaces; one that founded its person here keeps them itself, and answers for them.
-        if !self.first.founds() {
-            return None;
-        }
-        Some(self as &dyn tilo_api::session::AccountHere)
+impl Daemon {
+    /// Whether this computer keeps its person's account itself: a computer that logged in
+    /// reaches the account through the server that keeps its workspaces, and one that founded
+    /// its person here keeps them itself, and answers for them.
+    pub(crate) fn keeps_its_own_account(&self) -> bool {
+        self.first.founds()
     }
 }
 
