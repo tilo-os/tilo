@@ -606,6 +606,13 @@ mod imp {
     }
 }
 
+// The page's lint pass bans std's clocks (tools/ci/wasm_clippy_conf.py), and this crate is the
+// one place a build that is not the page reads them: in a page, `Instant` and `SystemTime` are
+// `web_time`'s.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "off the page this crate is where std's monotonic clock is read"
+)]
 #[must_use]
 #[inline]
 pub fn now() -> Instant {
@@ -904,6 +911,10 @@ const fn followed_ms() -> u64 {
     0
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "off the page this crate is where std's wall clock is read"
+)]
 #[must_use]
 #[inline]
 pub fn wall() -> SystemTime {
@@ -1225,6 +1236,10 @@ impl Clock for SystemClock {
 pub struct MonotonicClock;
 
 impl Clock for MonotonicClock {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "off the page this crate is where std's monotonic clock is read"
+    )]
     fn now_ms(&self) -> u64 {
         static START: OnceLock<Instant> = OnceLock::new();
         saturating_u64(START.get_or_init(now).elapsed().as_millis())
