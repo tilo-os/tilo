@@ -419,6 +419,42 @@ class NamingAControl(unittest.TestCase):
         self.assertEqual(found["name"], "note-7f3a")
 
 
+class AWindowThatShowsNothing(unittest.TestCase):
+    """A step leaves the app's window open: it has to show the app. A window that draws only
+    its bar is a blank window, which no wait on a word of the app catches where the step's
+    own state still draws the words it waited for."""
+
+    class Session:
+        def __init__(self, windows, targets):
+            self.found = targets
+            self.listed = windows
+
+        def windows(self):
+            return self.listed
+
+        def targets(self):
+            return self.found
+
+    def walked(self, targets):
+        session = self.Session(
+            [{"app_id": "so.tilo.weather", "rect": [0, 64, 640, 500], "frames": 3}],
+            targets)
+        return walk.Walk({"tl": {"id": "so.tilo.weather"}, "steps": []}, "tl",
+                         Path("/nonexistent"), Path("/nonexistent"), session=session)
+
+    def test_a_window_showing_only_its_bar_is_a_blank_window(self):
+        with self.assertRaisesRegex(walk.Failed, "blank window"):
+            self.walked([{"name": "Close", "rect": [608, 64, 28, 28]}]).require_shown()
+
+    def test_a_window_that_draws_the_app_is_not_blank(self):
+        self.walked([{"name": "Add place", "rect": [16, 140, 90, 32]}]).require_shown()
+
+    def test_a_window_that_is_not_open_is_nothing_to_check(self):
+        walked = self.walked([])
+        walked.session.listed = []
+        walked.require_shown()
+
+
 class CountingNotes(unittest.TestCase):
     def test_a_tilolang_read_counts_with_the_count_it_gives(self):
         read = {"fields": {"notes": {"count": 2, "items": [

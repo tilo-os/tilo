@@ -24,7 +24,9 @@ each with its snapshot, how long the app took to answer, how many notes it
 held afterwards, and — where a step expected a control — what the app offered
 instead. A step that cannot be walked in a version is recorded as such (the
 control is missing, the note never appeared, the file chooser asks something
-else) and the walk goes on: what a person finds missing is the finding.
+else) and the walk goes on: what a person finds missing is the finding. A step
+that leaves the app's window drawing nothing of the app under its bar is one
+too, whatever its waits found: a blank window is a finding in its own right.
 
 The Rust version is the session build's own app (`TILO_NESTED_APPS`,
 dist/dev/nested-session-build.sh); the tilolang one is `tilolang build` of the
@@ -1175,6 +1177,32 @@ class Walk:
         path = self.shots / f"{name}.png"
         self.session.snapshot(path)
         return str(path)
+
+    def require_shown(self) -> None:
+        """The app's window shows the app: under the window's own bar it draws at least one
+        named control. A window with only its bar is what a person meets when the app's view
+        failed — a blank window — and no step waiting on this or that control catches it when
+        the step's state is one the app still renders something of. Every step the walk leaves
+        a window open in reads this, so a blank window fails wherever it appears, in an app the
+        walk had a step for and in one it did not."""
+        window = self.window_of()
+        if window is None or window.get("rect") is None:
+            return
+        x, y, w, h = window["rect"]
+        for target in self.session.targets():
+            name = (target.get("name") or "").strip()
+            if not name or not drawn(target):
+                continue
+            tx, ty, tw, th = target["rect"]
+            # The window's own bar, and the shell's chrome about the window, are not the
+            # app's: what it draws stands under them, inside its frame.
+            if ty < y + 40:
+                continue
+            if tx >= x and ty >= y and tx + tw <= x + w and ty + th <= y + h:
+                return
+        raise Failed(
+            f"the window of {self.v.get('id')} draws nothing of the app under its bar: "
+            "a blank window")
 
     def window_of(self) -> dict | None:
         """The window of the app this walk opens, as the shell holds it."""
@@ -2762,6 +2790,10 @@ class Walk:
         try:
             for op in ops:
                 record["ops"].append({**op, "found": self.op(op)})
+            # Whatever this step waited for, the window it leaves open says the app: a window
+            # that drew nothing of the app is a blank window, and no wait on a word catches one
+            # whose words the shell draws itself.
+            self.require_shown()
             if self.catalogued is not None:
                 record["catalogue"] = self.catalogued
             if step.get("shot", True):
