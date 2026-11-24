@@ -1194,6 +1194,12 @@ pub enum ActivityAction {
         /// The record's own id.
         #[param("The record's own id")]
         id: String,
+        /// The one change inside that record to take back, as the record's own history names
+        /// it; absent takes back the session's whole share of the record.
+        #[param(
+            "The one change inside that record to take back, as the record's own history names it"
+        )]
+        step: Option<String>,
     },
     /// Open what a change touched in its app.
     #[effect(kind = "undoable")]

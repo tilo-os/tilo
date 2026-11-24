@@ -1441,7 +1441,7 @@
       "types": [
         {
           "name": "Detail",
-          "doc": "What a range of changes did, as a view of that one range reads it: the reading a view names as `resource(\"workspace.activity/range/<from>-<to>\", of: activity.Detail)`.",
+          "doc": "What a range of changes did, as a view of that one range reads it: the reading a view names as `resource(\"workspace.activity/range~<from>~<to>\", of: activity.RangeDetail)`.",
           "fields": [
             {
               "name": "title",
@@ -1848,7 +1848,7 @@
           "stored": "value",
           "type": {
             "option": {
-              "named": "OutputReading"
+              "named": "SessionOutput"
             }
           },
           "readonly": true
@@ -1881,7 +1881,7 @@
         },
         {
           "name": "OutputReading",
-          "doc": "A command's whole output as its own reading: at most the lines its shell kept, or why this device holds none.",
+          "doc": "Everything a command printed, as this device keeps it.",
           "fields": [
             {
               "name": "output",
