@@ -222,6 +222,7 @@ d-xqxtrmmb = Textbausteinseite
     .w-what-it-is-for = Wofür er gedacht ist
     .w-fill-in-and-copy = Ausfüllen und kopieren
     .w-copy = Kopieren
+    .w-it-looks-like-a-credential-so = Es sieht wie ein Zugangsdatum aus, daher verlässt die Kopie die Zwischenablage in unter einer Minute
 
 d-lqt75wck = Füllblatt
     .w-fill-in-and-copy = Ausfüllen und kopieren
@@ -241,3 +242,8 @@ d-aaruymww = Textbausteinfenster
     .w-new-snippet = Neuer Textbaustein
     .w-no-snippets-yet = Noch keine Textbausteine
     .w-choose-a-snippet = Wähle einen Textbaustein
+
+d-3afzc6hv = Text kopieren
+    .doc = Legt `text` in die Zwischenablage: als Geheimnis, das keine Verläufe behalten und das die Zwischenablage nach einer Weile verlässt, wenn es wie ein Zugangsdatum aussieht, damit ein API-Schlüssel nicht für das nächste Einfügen dort bleibt.
+
+d-3afzc6hv-text = Text

@@ -571,3 +571,5 @@ d-zmnwlend = Lesemenü
     .w-light-paper = Helles Papier
     .w-sepia-paper = Sepiapapier
     .w-dark-paper = Dunkles Papier
+
+d-wjiyczto-only = Nur

@@ -565,8 +565,10 @@ d-kqcbbx2v = Server
 d-66ixtrna = Failure
 
 d-sqfl7jdi = Progress
+    .doc = Die Arbeit, die der Server gerade tut (`Indexing 42%`), wenn er welche tut.
 
 d-s4bc4e6s = Diagnostics
+    .doc = Die Probleme jeder Datei, nach dem Pfad, unter dem sie steht.
 
 d-h4pgltlo = Answer
 
@@ -1158,6 +1160,9 @@ d-744hb56m = Projekt
     .w-suggestions = Vorschlagenions
     .w-definitions = Definitions
     .w-choose-a-file-to-read-it = Choose a file to read it
+    .w-go-to-line = Zu Zeile springen
+    .w-hide-panel = Panel ausblenden
+    .w-line-2 = Zeile { $value }
 
 d-6jwzz6bh = Explorer footer
     .w-a-project-in-the-workspace-alone = A project in the workspace alone
@@ -1196,3 +1201,64 @@ d-erf5uzfi = Commands
 d-ynyb6yyr = Command view
     .w-ran-in = Ran in
     .w-state = State
+
+d-zu6g3bmd = Zeile anzeigen
+    .doc = Die Zeile und Spalte, die jemand sehen wollte, ab 0 gezählt, und wie oft sie danach fragte: der Editor zeigt diese Stelle und fragt dieselbe Stelle erneut, wenn der Zähler sich ändert.
+
+d-k4etx7ch = Spalte anzeigen
+
+d-wtzldj2n = Anzeigeanfrage
+
+d-m2evo7on-filter-reveal_line = Zeile anzeigen
+
+d-m2evo7on-filter-reveal_column = Spalte anzeigen
+
+d-m2evo7on-filter-reveal_ask = Anzeigeanfrage
+
+d-llbxpk2e = Serverfortschritt
+    .doc = Die Arbeit, die der Server gerade tut, so wie die Engine sie meldet (`Indexing`, 42).
+    .noun = { $count ->
+        [one] Serverfortschritt
+       *[other] Serverfortschritte
+    }
+
+d-b22hm43k = Titel
+
+d-33vetzuz = Detail
+
+d-xvz6ifep = Prozent
+
+d-llbxpk2e-filter-percent = Prozent
+
+d-uaoqlskg-filter-progress = Fortschritt
+
+d-albctzgc = Zum Symbol springen
+    .doc = Die Deklarationen, die der Text einer Datei schreibt (`fn`, `struct`, `enum`, `trait`, `class`, `def`, `interface`, `type`, `const`), jede mit Zeile und Spalte, an der sie steht: was die Symbole des Projekts sind und was „Zum Symbol springen“ anbietet.
+
+d-vmmfvt6f-answer = Antwort
+
+d-mqipns37-path = Pfad
+
+d-mqipns37-line = Zeile
+
+d-373nszrk = Zu Zeile springen
+    .doc = Zeigt `line` von `entry`, ab 0 gezählt: der Editor scrollt sie ins Bild, mit dem Cursor darauf.
+
+d-373nszrk-line = Zeile
+
+d-373nszrk-column = Spalte
+
+d-ube34ufe = Zu Zeile springen
+    .doc = Zeigt `line` der Datei unter `path`, ab 0 gezählt.
+
+d-ube34ufe-path = Pfad
+
+d-ube34ufe-line = Zeile
+
+d-ivfwweyt-path = Pfad
+
+d-ivfwweyt-line = Zeile
+
+d-pnged4ux-label = Beschriftung
+
+d-pnged4ux-insert = Einfügen

@@ -291,6 +291,13 @@ d-enkgjyn7 = Thread
     .w-save = Speichern
     .w-reply = Antworten
     .w-edit = Bearbeiten
+    .w-the-host-didn-t-keep-it = Der Host behielt { $name } nicht: es ist größer als die { $mib }, die er von einer Datei behält.
+    .w-the-host-didn-t-keep-this = Der Host behielt { $name } nicht: die Dateien dieser Person brauchen mehr als ihre { $mib }.
+    .w-the-host-didn-t-keep-this-2 = Der Host behielt { $name } nicht: diese Person hat in dieser Stunde mehr als { $mib } eingestellt.
+    .w-the-host-didn-t-keep-the = Der Host behielt { $name } nicht: der Arbeitsbereich braucht mehr als { $mib } auf ihm.
+    .w-the-host-didn-t-keep-it-2 = Der Host behielt { $name } nicht: es ist mehr als die { $mib }, die dieser Host behält.
+    .w-the-host-s-person-can-raise = Die Person des Hosts kann es in den Einstellungen des Servers erhöhen.
+    .w-the-workspace-s-owners-can-raise = Die Eigentümer des Arbeitsbereichs können es in den Einstellungen unter Inhaltsgrenzen erhöhen.
 
 d-rydgecpc = Hier wird geschrieben
     .w-is-typing = { $who } schreibt …

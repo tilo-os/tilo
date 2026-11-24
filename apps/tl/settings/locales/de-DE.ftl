@@ -183,6 +183,8 @@ d-i67tvpqg = Settings window
     .w-storage = Speicher
     .w-updates = Aktualisierungen
     .w-about = Über
+    .w-workspace = Arbeitsbereich
+    .w-content-limits = Inhaltsgrenzen
 
 d-azovfqdu = Appearance pane
     .w-look = Erscheinungsbild
