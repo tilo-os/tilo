@@ -3,9 +3,10 @@
 //! An app names each service in its manifest's `[sandbox.services]` as `required@N` or `optional@N`,
 //! `N` being the version it was built against. Most services belong to the runtime interface; the
 //! image serves a range of it, from the oldest version whose wire it still reads to the current one,
-//! so an app built against either version runs (docs/architecture/compatibility.md). `shell-ui` and
-//! `system` are interfaces of their own and the image serves one version of each. A device can tell
-//! before installing and before running whether a build fits, and which side is behind.
+//! so an app built against a version in that range runs (docs/architecture/compatibility.md).
+//! `shell-ui` and `system` are interfaces of their own and the image serves one version of each. A
+//! device can tell before installing and before running whether a build fits, and which side is
+//! behind.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -112,12 +113,15 @@ pub struct ProvidedInterfaces {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RuntimeServices {
     #[serde(default)]
     pub services: BTreeSet<String>,
     /// The oldest runtime interface version still served: an app built against any version from it
     /// to the runtime interface's current one runs. `None` when only the current one is.
+    ///
+    /// This table takes keys it does not name, because a build made before the range reads a
+    /// declaration that carries it: it judges every app at the current version rather than
+    /// failing to read the declaration at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oldest: Option<u32>,
 }

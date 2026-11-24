@@ -171,10 +171,9 @@ because it boots the staged deployment that holds them.
   (`[sandbox.services]`, `required@N` or `optional@N`); it runs where every one
   is served, a runtime service at any version from the oldest to the current
   one, every other interface exactly, optional ones included. A version bump
-  keeps the window while the build reads the previous version's wire of its
-  main flows; a change it cannot read raises the oldest to the current version,
-  and the compile-time assert beside the constant fails a bump that leaves it
-  behind.
+  leaves the oldest where it is, so an app built against it keeps running; it
+  moves by hand only when the change is breaking, to the version before the
+  change, once this build no longer reads or writes that version's wire.
 - `interface.toml` is written from the code, the way `tilo-app surface` writes
   an app's `surface.toml`: every type the interface carries, read from its
   sources with the serde attributes that shape the wire.

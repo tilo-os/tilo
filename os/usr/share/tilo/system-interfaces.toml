@@ -53,7 +53,6 @@ services = [
     "ush",
 ]
 # The oldest runtime interface version still served
-# (runtime_portal::OLDEST_RUNTIME_INTERFACE_VERSION): the previous version's
-# wire of the main flows, until a change the previous version cannot read
-# raises it to the current one.
-oldest = 39
+# (runtime_portal::OLDEST_RUNTIME_INTERFACE_VERSION), set by hand only when a
+# change stops this build reading the wire of the version before it.
+oldest = 40

@@ -955,6 +955,81 @@ mod tests {
         }
     }
 
+    /// A run's claims do not cross runtime version 40 in either direction: the
+    /// `call` field was appended to each run, and postcard writes a struct's
+    /// fields in order with no names or count, so a build made at 39 and a
+    /// build made at 40 cannot read each other's runs. The runtime interface's
+    /// oldest served version is 40 for that reason, and this test guards it.
+    #[test]
+    fn claims_wire_does_not_cross_runtime_version_40() {
+        use crate::claim::{ChangeClaim, ClaimedAction, UnitPath};
+        use tilo_actions::PathStep;
+
+        // A run as version 39 wrote it: the 40 run's fields without the call.
+        #[derive(serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Run39 {
+            changes: Vec<[u8; 32]>,
+            action: ClaimedAction,
+            units: Vec<UnitPath>,
+            #[serde(with = "crate::claim::invoker_text")]
+            invoker: Option<crate::claim::Invoker>,
+        }
+        // The claims a 40 build writes and reads: the real adapter either way.
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct ClaimsAt40 {
+            #[serde(with = "super::claims_wire")]
+            claims: Vec<ChangeClaim>,
+        }
+
+        let action = || ClaimedAction::Edit {
+            kind: "Document".into(),
+            path: vec![PathStep::Field("body".into())],
+        };
+        let units = || vec![vec![PathStep::Field("body".into())]];
+        let claim = |call| ChangeClaim {
+            change: [1; 32],
+            action: action(),
+            units: units(),
+            invoker: None,
+            call,
+        };
+
+        let at_39 = postcard::to_stdvec(&vec![Run39 {
+            changes: vec![[1; 32]],
+            action: action(),
+            units: units(),
+            invoker: None,
+        }])
+        .unwrap();
+        assert!(
+            postcard::from_bytes::<ClaimsAt40>(&at_39).is_err(),
+            "a run's frame written at 39 is read by 40 as a run with a missing call"
+        );
+
+        let statement = tilo_actions::remote::signed_invocation::InvocationStatement {
+            workspace: "w1".into(),
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
+                "w1",
+                "member.invite",
+            ),
+            arguments: [0; 32],
+            on_behalf_of: None,
+            issued_at_ns: 1,
+            signer: [0; 32],
+        };
+        let signed = tilo_actions::remote::SignedInvocation::new(statement, [0; 64], vec![1]);
+        let at_40 = postcard::to_stdvec(&ClaimsAt40 {
+            claims: vec![claim(Some(Box::new(signed)))],
+        })
+        .unwrap();
+        assert!(
+            postcard::from_bytes::<Vec<Run39>>(&at_40).is_err(),
+            "a 40 run with a call is read as more than the run a 39 build knows"
+        );
+    }
+
     tilo_test_env::scenario! {
         /// The first phase pins the field layout of the wire bytes by their digest.
         fn signed_op_wire_and_signing_bytes_cover_exactly_the_signed_fields;
