@@ -144,7 +144,11 @@ fn applied(
         founded.doc_mut().set_actor(automerge::ActorId::random());
         founded
     };
-    let mut record = record.as_acting(acting.clone());
+    // The change is the workspace's own app's action: the record is the one it keeps for the
+    // whole workspace, and every device decides the change against that app's surface. A
+    // change naming no app would have one guessed from the kind's id, and the record's app
+    // publishes no action of a guessed name.
+    let mut record = record.as_acting(acting.clone()).in_app(OWNER, "Workspace");
     if let Some((invocation, signed)) = served {
         record = record.serving(invocation, signed);
     }
