@@ -70,6 +70,11 @@ type Entry (untitled: "untitled") {
     /// The checker that answered: the server's name, or `lint` while only the editor's own
     /// checks have run; empty before the file was checked.
     source: Text = ""
+    /// The line and column a person asked to see, counted from 0, and how often they asked:
+    /// the editor shows that place, and asks the same place again when the count changes.
+    reveal_line: Int = 0
+    reveal_column: Int = 0
+    reveal_ask: Int merge counter = 0
 }
 
 /// One problem a checker found in a file: where it stands and what it says.
@@ -328,10 +333,6 @@ type Project (title: folder, untitled: "Untitled project") {
     answer_text: Text = ""
     answer_line: Int = 0
     answer_column: Int = 0
-    /// The place a search result, a problem or a symbol opened: what the page shows, apart from
-    /// where code help was asked.
-    reveal_line: Int = 0
-    reveal_column: Int = 0
     answer_items: List<Completion>
     answer_locations: List<Location>
     /// The project search the person started, as it stands.
@@ -1604,10 +1605,10 @@ action reveal_item(p: Project, path: Text, line: Int = 0) uses files (
     let at = canonical(path)
     if let known = file_at(p, at) {
         p.trouble = ""
-        seen_line(p, line)
+        reveal_line(known, line, 0)
     } else if let found = find_file_named(p, path) {
         p.trouble = ""
-        seen_line(p, line)
+        reveal_line(found, line, 0)
     } else {
         p.trouble = "{at} is not a file of this project"
     }
@@ -1623,9 +1624,23 @@ fn find_file_named(p: Project, path: Text) -> Option<Entry> {
     )
 }
 
-action seen_line(p: Project, line: Int) {
-    p.reveal_line = line
-    p.reveal_column = 0
+/// Shows `line` of `entry`, counted from 0: the editor scrolls it into view with the caret on it.
+action reveal_line(entry: Entry, line: Int = 0, column: Int = 0) (
+    icon: .locate_fixed,
+    label: "Go to line",
+) {
+    entry.reveal_line = line
+    entry.reveal_column = column
+    entry.reveal_ask += 1
+}
+
+/// Shows `line` of the file at `path`, counted from 0.
+action go_to_line(p: Project, path: Text, line: Int = 0) {
+    if let file = file_at(p, path) {
+        reveal_line(file, line, 0)
+    } else {
+        p.trouble = "{path} is not a file of this project"
+    }
 }
 
 /// Searches every file of the project for `needle`, the case of its letters aside unless
@@ -1682,7 +1697,7 @@ action open_hit(p: Project, path: Text, line: Int = 0) uses files (
 ) {
     if let known = file_at(p, path) {
         p.trouble = ""
-        seen_line(p, line)
+        reveal_line(known, line, 0)
     } else {
         match engine.call("load", json.encode(DiskAsk(path: path))) {
             .ok(answer) => match json.decode<Loaded>(answer) {
@@ -1699,8 +1714,7 @@ action open_hit(p: Project, path: Text, line: Int = 0) uses files (
                             stamp_len: loaded.len,
                         ),
                     )
-                    made
-                    seen_line(p, line)
+                    reveal_line(made, line, 0)
                     p.trouble = ""
                 }
                 .err(why) => {
@@ -2098,6 +2112,8 @@ view project(p: Project) {
     state panel: Text = "problems"
     // The words the page's find row holds.
     state finding: Text = ""
+    // The line the page's go-to row holds, counted from 1 as the status line shows it.
+    state goto: Text = ""
     // What the find row last found.
     state found: List<Found> = []
     std.tree(
@@ -2122,7 +2138,7 @@ view project(p: Project) {
         }
         doc: {
             if let e = opened {
-                file_page(p, e, panel, finding, found)
+                file_page(p, e, panel, finding, found, goto)
             } else {
                 ui.EmptyState("Choose a file to read it", icon: .file_text)
             }
@@ -2151,14 +2167,17 @@ template view file_page(
     panel: State<Text>,
     finding: State<Text>,
     found: State<List<Found>>,
+    goto: State<Text>,
 ) {
     stack(gap: .related) {
-        file_head(p, e, panel, finding, found)
+        file_head(p, e, panel, finding, found, goto)
         file_code(e)
         if finding != "" {
             found_list(p, e, finding)
         }
-        file_panel(p, e, panel)
+        if panel != "" {
+            file_panel(p, e, panel)
+        }
         status_line(p, e)
     }
 }
@@ -2168,6 +2187,7 @@ template view file_page(
 template view file_code(e: Entry) {
     ui.CodeEditor(
         bind: e.text,
+        reveal: "{e.reveal_line + 1}:{e.reveal_column + 1}:{e.reveal_ask}",
         language: if e.language == "Rust" {
             .rust
         } else if e.language == "TOML" {
@@ -2212,6 +2232,7 @@ template view file_head(
     panel: State<Text>,
     finding: State<Text>,
     found: State<List<Found>>,
+    goto: State<Text>,
 ) {
     let dirty = e.text != e.saved
     row(gap: .related, align: .center, fill: 0.0, wrap: true) {
@@ -2259,7 +2280,7 @@ template view file_head(
             }
             for place in symbols_in(e) {
                 ui.MenuItem(place.words, icon: .code) {
-                    on choose: seen_line(p, place.line)
+                    on choose: reveal_line(e, place.line, 0)
                 }
             }
         }
@@ -2272,6 +2293,10 @@ template view file_head(
         ui.Button("Replace all", icon: .pencil) {
             on press: replace_in_file(e, finding, "")
         }
+        ui.TextInput(bind: goto, placeholder: "Line", min: 6rem)
+        ui.Button("Go to line", icon: .arrow_right) {
+            on press: reveal_line(e, (goto.to_int() ?? 1) - 1, 0)
+        }
         ui.MenuButton("Panel", icon: .panel_bottom, icon_only: true) {
             ui.MenuItem("Problems", icon: .triangle_alert, checked: panel == "problems") {
                 on choose: set(panel, "problems")
@@ -2281,6 +2306,11 @@ template view file_head(
             }
             ui.MenuItem("Search results", icon: .search, checked: panel == "search") {
                 on choose: set(panel, "search")
+            }
+            if panel != "" {
+                ui.MenuItem("Hide panel", icon: .panel_bottom) {
+                    on choose: set(panel, "")
+                }
             }
         }
     }

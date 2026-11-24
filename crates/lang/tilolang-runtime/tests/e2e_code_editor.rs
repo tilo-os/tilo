@@ -923,6 +923,43 @@ mod cases {
     }
 
     #[test]
+    fn a_line_asked_for_is_the_one_the_editor_shows() {
+        let editor = Editor::new();
+        let main = editor.file("main.rs", None);
+        editor.call(
+            "replace_text",
+            vec![Value::resource(&main), Value::text("one\ntwo\nthree")],
+        );
+        editor.call(
+            "reveal_line",
+            vec![Value::resource(&main), Value::Int(2), Value::Int(0)],
+        );
+        assert_eq!(editor.number(&main, "reveal_line"), 2);
+        assert_eq!(editor.number(&main, "reveal_ask"), 1);
+        let window = editor.window();
+        let node = of_kind(window.tree(), "ui.CodeEditor")
+            .into_iter()
+            .next()
+            .expect("the code beside the tree");
+        let reveal = match node.props.get("reveal") {
+            Some(Value::Text(place)) => place.clone(),
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Text(place) => place.clone(),
+                other => panic!("reveal reads {other:?}"),
+            },
+            other => panic!("reveal reads {other:?}"),
+        };
+        assert_eq!(reveal, "3:1:1", "the third line, shown once");
+
+        // Asking again at the same place is a second ask, not the one already answered.
+        editor.call(
+            "reveal_line",
+            vec![Value::resource(&main), Value::Int(2), Value::Int(0)],
+        );
+        assert_eq!(editor.number(&main, "reveal_ask"), 2);
+    }
+
+    #[test]
     fn a_file_that_does_not_read_says_why() {
         let editor = Editor::new();
         let file = editor.file("handed.rs", None);

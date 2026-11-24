@@ -619,11 +619,6 @@ d-5vjxpshd = Answer line
 
 d-w3z62her = Answer column
 
-d-uix4xjnx = Reveal line
-    .doc = The place a search result, a problem or a symbol opened: what the page shows, apart from where code help was asked.
-
-d-bi7d7kdu = Reveal column
-
 d-p4n4bpno = Answer items
 
 d-thlj3m5d = Answer locations
@@ -660,10 +655,6 @@ d-a34gxw47-filter-format_on_save = Formatieren on save
 d-a34gxw47-filter-answer_line = Answer line
 
 d-a34gxw47-filter-answer_column = Answer column
-
-d-a34gxw47-filter-reveal_line = Reveal line
-
-d-a34gxw47-filter-reveal_column = Reveal column
 
 d-a34gxw47-filter-search_case = Suchen case
 
@@ -982,10 +973,6 @@ d-7weouyp2 = Poll
 d-mqipns37 = Go to it
     .doc = Brings the caret to the place an item of a command's output names: the file is read if the project does not hold it yet, and the page shows it.
     .w-that-line-names-no-file = That line names no file
-
-d-7ecrxle7 = Seen line
-
-d-7ecrxle7-line = Zeile
 
 d-a7tfyjpe = Suchen the project
     .doc = Suchenes every file of the project for `needle`, the case of its letters aside unless `case` says otherwise.

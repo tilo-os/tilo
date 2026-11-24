@@ -50,6 +50,13 @@ d-jwc6eef6 = Checked
 d-jwkhracm = Source
     .doc = The checker that answered: the server's name, or `lint` while only the editor's own checks have run; empty before the file was checked.
 
+d-zu6g3bmd = Reveal line
+    .doc = The line and column a person asked to see, counted from 0, and how often they asked: the editor shows that place, and asks the same place again when the count changes.
+
+d-k4etx7ch = Reveal column
+
+d-wtzldj2n = Reveal ask
+
 d-m2evo7on-filter-kind = Kind
 
 d-m2evo7on-filter-parent = Parent
@@ -59,6 +66,12 @@ d-m2evo7on-filter-stamp = Stamp
 d-m2evo7on-filter-stamp_len = Stamp len
 
 d-m2evo7on-filter-stale = Stale
+
+d-m2evo7on-filter-reveal_line = Reveal line
+
+d-m2evo7on-filter-reveal_column = Reveal column
+
+d-m2evo7on-filter-reveal_ask = Reveal ask
 
 d-vxqkc2n7 = Problem
     .doc = One problem a checker found in a file: where it stands and what it says.
@@ -621,11 +634,6 @@ d-5vjxpshd = Answer line
 
 d-w3z62her = Answer column
 
-d-uix4xjnx = Reveal line
-    .doc = The place a search result, a problem or a symbol opened: what the page shows, apart from where code help was asked.
-
-d-bi7d7kdu = Reveal column
-
 d-p4n4bpno = Answer items
 
 d-thlj3m5d = Answer locations
@@ -662,10 +670,6 @@ d-a34gxw47-filter-format_on_save = Format on save
 d-a34gxw47-filter-answer_line = Answer line
 
 d-a34gxw47-filter-answer_column = Answer column
-
-d-a34gxw47-filter-reveal_line = Reveal line
-
-d-a34gxw47-filter-reveal_column = Reveal column
 
 d-a34gxw47-filter-search_case = Search case
 
@@ -994,9 +998,19 @@ d-mqipns37-path = Path
 
 d-mqipns37-line = Line
 
-d-7ecrxle7 = Seen line
+d-373nszrk = Go to line
+    .doc = Shows `line` of `entry`, counted from 0: the editor scrolls it into view with the caret on it.
 
-d-7ecrxle7-line = Line
+d-373nszrk-line = Line
+
+d-373nszrk-column = Column
+
+d-ube34ufe = Go to line
+    .doc = Shows `line` of the file at `path`, counted from 0.
+
+d-ube34ufe-path = Path
+
+d-ube34ufe-line = Line
 
 d-a7tfyjpe = Search the project
     .doc = Searches every file of the project for `needle`, the case of its letters aside unless `case` says otherwise.
@@ -1174,14 +1188,17 @@ d-744hb56m = Project
     .w-find-in-the-file = Find in the file
     .w-find = Find
     .w-replace-all = Replace all
+    .w-line = Line
+    .w-go-to-line = Go to line
     .w-panel = Panel
     .w-problems = Problems
     .w-terminal = Terminal
     .w-search-results = Search results
+    .w-hide-panel = Hide panel
     .w-write-the-file = Write the file
     .w-found = Found
     .w-nothing-in-this-file-holds = Nothing in this file holds “{ $finding }”
-    .w-line = line { $value }
+    .w-line-2 = line { $value }
     .w-unsaved-changes = Unsaved changes
     .w-1-problem = 1 problem
     .w-problems-2 = { $len } problems
