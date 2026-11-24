@@ -2399,38 +2399,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "code-editor"
-version = "0.1.0"
-dependencies = [
- "bounded-command",
- "code-editor",
- "hex",
- "iai-callgrind",
- "lsp-types",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-model",
- "sha2 0.11.0",
- "tempfile",
- "terminal",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-files",
- "tilo-process",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "url",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "code-engine"
 version = "0.1.0"
 dependencies = [
@@ -27048,7 +27016,6 @@ dependencies = [
  "cmov",
  "cms",
  "cobs",
- "code-editor",
  "codespan-reporting",
  "codex",
  "collab-types",
