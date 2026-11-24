@@ -19053,6 +19053,7 @@ dependencies = [
  "iroh",
  "jni 0.21.1",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "tempfile",
  "test-server",

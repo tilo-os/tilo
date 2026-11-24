@@ -45,6 +45,7 @@ tilolang-process = { path = "../../../crates/lang/tilolang-process", features = 
 tilo-app-package = { path = "../../../crates/core/tilo-app-package" }
 anyhow.workspace = true
 uuid.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }

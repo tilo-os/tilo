@@ -147,8 +147,8 @@ pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeRoots(
     _class: JClass<'_>,
 ) -> jni::sys::jobjectArray {
     let roots = match ask(|device| workspace_files::roots(device)) {
-        Ok(roots) => roots,
-        Err(why) => {
+        Ok(Ok(roots)) => roots,
+        Ok(Err(why)) | Err(why) => {
             tracing::warn!(%why, "the person's workspaces are not read for the file provider");
             return std::ptr::null_mut();
         }
@@ -242,7 +242,7 @@ pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeChildren(
         let (workspace, folder) = workspace_files::split_document_id(&id)?;
         let entries = {
             let (workspace, folder) = (workspace.clone(), folder.clone());
-            ask(move |device| workspace_files::list(device, &workspace, &folder))?
+            ask(move |device| workspace_files::list(device, &workspace, &folder))??
         };
         entries
             .iter()
@@ -329,7 +329,7 @@ pub extern "system" fn Java_so_tilo_android_TiloWorkspaceFiles_nativeCreate(
             let (workspace, folder, name) = (workspace.clone(), folder.clone(), name.clone());
             ask(move |device| {
                 workspace_files::create(device, &workspace, &folder, &name, directory != 0)
-            })?
+            })??
         };
         Ok(workspace_files::document_id(&workspace, &made.path))
     })();
