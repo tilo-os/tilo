@@ -745,19 +745,29 @@ impl Use {
         (workspace, root): (&str, &Path),
         (by, acting, item): (&str, &tilo_action_policy::Acting, ItemId),
         caller_app: Option<&str>,
-        purpose: UsedFor<'_>,
+        (purpose, asked): (UsedFor<'_>, &InvokeRequest),
     ) -> Result<Value, String> {
         match self {
             Self::Mail(adding) => {
                 let kept = workspaces
-                    .mail_with_item((workspace, root), adding, (by, acting), purpose)
+                    .mail_with_item(
+                        (workspace, root),
+                        adding,
+                        (by, acting, Some(asked)),
+                        purpose,
+                    )
                     .await?;
                 workspaces.person_settings_changed();
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
             Self::Key(setting) => {
                 let kept = workspaces
-                    .key_from_item((workspace, root), &setting, (by, acting), purpose)
+                    .key_from_item(
+                        (workspace, root),
+                        &setting,
+                        (by, acting, Some(asked)),
+                        purpose,
+                    )
                     .await?;
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
@@ -766,7 +776,7 @@ impl Use {
                     workspaces,
                     workspace,
                     call,
-                    (by, acting),
+                    (by, acting, asked),
                     caller_app,
                     purpose,
                 )
@@ -778,7 +788,7 @@ impl Use {
                     workspace,
                     &signing,
                     &item,
-                    (by, acting),
+                    (by, acting, asked),
                     purpose,
                 )
                 .await
@@ -837,10 +847,10 @@ async fn page_text(
     workspace: &str,
     (item, kind): (&ItemId, vault_items::ItemKind),
     site: &Place,
-    (by, asker): (&str, &tilo_action_policy::Acting),
+    (by, asker, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
 ) -> Result<PageText, String> {
     workspaces
-        .changing_vault(workspace, Some(asker), |items| match kind {
+        .changing_vault(workspace, (Some(asker), Some(asked)), |items| match kind {
             vault_items::ItemKind::CodeGenerator => {
                 items.code_at(item, site, by).map(PageText::Code)
             }
@@ -1274,7 +1284,7 @@ impl Workspaces {
                 (&using.workspace, &root),
                 (&using.name, &using.acting(), item),
                 caller_app.as_deref(),
-                purpose,
+                (purpose, request),
             )
             .await
             .map_err(ActionCallError::refused)
@@ -1338,7 +1348,7 @@ impl Workspaces {
             self,
             workspace,
             call,
-            (app, caller.acting()),
+            (app, caller.acting(), request),
             Some(app),
             purpose,
         )
@@ -1629,7 +1639,7 @@ impl Workspaces {
             &using.workspace,
             (&item, kind),
             &site,
-            (&using.name, &using.acting()),
+            (&using.name, &using.acting(), request),
         )
         .await
         .map_err(ActionCallError::refused)

@@ -152,32 +152,39 @@ pub(super) async fn listed(
     agent: &str,
     bound: &[Rule],
 ) {
-    use tilo_resource::{Id, NonBlank, Replica};
-    use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
-    workspaces
-        .author_agents(workspace, |doc| {
-            let mut agents = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                .as_author(person)
-                .in_app(tilo_workspace_agent::OWNER, "Chat");
-            let kept = agents.state().map_err(|error| error.to_string())?;
-            if kept.agents.find(&Id::from_raw(agent)).is_none() {
-                agents
-                    .apply(
-                        WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                            avatar: None,
-                            name: NonBlank::parse("Scout").unwrap(),
-                            id: Some(agent.into()),
-                            model: None,
-                            mcp_client: None,
-                        }),
-                    )
-                    .map_err(|error| error.to_string())?;
-            }
-            std::mem::swap(doc, agents.doc_mut());
-            Ok(())
-        })
+    use tilo_resource::{Id, Replica};
+    use tilo_workspace_agent::WorkspaceAgents;
+    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let kept = workspaces
+        .resource_document(workspace, tilo_workspace_agent::OWNER, &record)
         .await
-        .unwrap();
+        .unwrap()
+        .is_some_and(|bytes| {
+            Replica::<WorkspaceAgents>::load(&bytes)
+                .and_then(|record| record.state())
+                .unwrap()
+                .agents
+                .find(&Id::from_raw(agent))
+                .is_some()
+        });
+    if !kept {
+        // The person makes the agent as anyone does, by the workspace's action, signed on a
+        // device of theirs; the host's own person asks on the host's own device.
+        let device = super::super::tests::admitted_device_of(person)
+            .map_or_else(|| workspaces.device_cert().clone(), |(device, _)| device);
+        let asking = super::super::tests::caller(&device);
+        let mut creating = super::super::tests::request(
+            workspace,
+            tilo_actions::remote::WORKSPACE_AGENT_CREATE,
+            serde_json::json!({"name": "Scout", "id": agent}),
+        );
+        creating = super::super::tests::signed_from(&creating, workspace, (&device, &asking));
+        let workspace_id = collab_types::WorkspaceId::parse(workspace).unwrap();
+        workspaces
+            .agents_invoke(workspace_id, &asking, &creating)
+            .await
+            .expect("the person makes their agent");
+    }
     let grants: Vec<_> = bound
         .iter()
         .enumerate()

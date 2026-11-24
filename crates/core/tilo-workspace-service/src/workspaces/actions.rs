@@ -1199,6 +1199,7 @@ impl Verb {
                 input: InputSpec::None,
                 params,
                 view: None,
+                effects: Vec::new(),
             }),
             has_children: false,
             visibility: None,
@@ -1642,8 +1643,22 @@ struct Offer {
 impl Offer {
     /// Offer `rows`, which `publisher` publishes on `workspace`; a provider
     /// offering nothing is not named.
-    fn add(&mut self, publisher: Publisher, workspace: &str, rows: Vec<CatalogueRow>) {
+    /// Each action is offered with what it declares it writes besides its own resource
+    /// ([`tilo_actions::remote::declared_effects`]), so whoever lists it reads that.
+    fn add(&mut self, publisher: Publisher, workspace: &str, mut rows: Vec<CatalogueRow>) {
         if !rows.is_empty() {
+            for row in &mut rows {
+                if let Some(action) = row.action.as_mut()
+                    && action.effects.is_empty()
+                {
+                    action.effects = tilo_actions::remote::declared_effects(
+                        &tilo_actions::remote::RemoteActionTarget {
+                            provider: row.provider.clone(),
+                            address: action.address.clone(),
+                        },
+                    );
+                }
+            }
             self.providers.push(publisher.entry(workspace));
             self.rows.extend(rows);
         }

@@ -391,7 +391,7 @@ impl Workspaces {
             }
             other => return Err(format!("`{other}` is no action of the vault")),
         };
-        self.write_vault(&opened, vec![change], None).await
+        self.write_vault(&opened, vec![change], None, None).await
     }
 }
 

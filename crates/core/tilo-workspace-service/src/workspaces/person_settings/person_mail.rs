@@ -174,6 +174,7 @@ impl Workspaces {
         acting: &tilo_action_policy::Acting,
         account: &str,
     ) -> Result<(), String> {
+        let call = signing.vault.call();
         let (kept, secret) = super::account_with_secret(signing, account).await?;
         let tester = self.account_tester();
         let checking = kept.clone();
@@ -199,8 +200,14 @@ impl Workspaces {
                     .collect(),
             ),
         };
-        self.report_account_sync((workspace, acting), account, health, signed_in, &words)
-            .await?;
+        self.report_account_sync(
+            (workspace, acting, call),
+            account,
+            health,
+            signed_in,
+            &words,
+        )
+        .await?;
         tested.map(|_| ()).map_err(|reason| {
             let name = kept.display_name.trim();
             if name.is_empty() {
@@ -268,11 +275,7 @@ impl Workspaces {
     /// Ask `account`'s calendar server for the calendars it holds (`DISCOVER_CALENDARS`) and keep
     /// them on the account: the ones it held before keep the choice its person made for them, and
     /// a calendar the server holds now shows.
-    async fn discover_calendars(
-        &self,
-        signing: Signing<'_>,
-        account: &str,
-    ) -> Result<(), String> {
+    async fn discover_calendars(&self, signing: Signing<'_>, account: &str) -> Result<(), String> {
         let held = signing.vault.accounts().await?;
         let kept = held
             .account(account)
@@ -292,9 +295,10 @@ impl Workspaces {
         let tester = self.account_tester();
         let asking = kept.clone();
         let secret = accounts::Secret::password(released.secret.to_string());
-        let found = tokio::task::spawn_blocking(move || tester.discover_calendars(&asking, &secret))
-            .await
-            .map_err(|_| "the calendar server check did not finish".to_owned())??;
+        let found =
+            tokio::task::spawn_blocking(move || tester.discover_calendars(&asking, &secret))
+                .await
+                .map_err(|_| "the calendar server check did not finish".to_owned())??;
         let mut kept = kept;
         let before: Vec<accounts::calendar::RemoteCalendar> = kept
             .config
@@ -368,11 +372,7 @@ impl Workspaces {
                 let Some(object) = calendar.as_object_mut() else {
                     continue;
                 };
-                let Some(id) = object
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                else {
+                let Some(id) = object.get("id").and_then(Value::as_str).map(str::to_owned) else {
                     continue;
                 };
                 object.insert("visible".into(), Value::Bool(on_show.contains(id.as_str())));
@@ -584,7 +584,8 @@ impl Workspaces {
                 answer(&found)
             }
             person_accounts::SET_CALENDARS => {
-                let choosing: SetCalendars = argument(request, "a calendar account and its calendars")?;
+                let choosing: SetCalendars =
+                    argument(request, "a calendar account and its calendars")?;
                 let kept = Box::pin(self.set_calendars(signing, choosing)).await;
                 if kept.is_ok() {
                     self.person_settings_changed();

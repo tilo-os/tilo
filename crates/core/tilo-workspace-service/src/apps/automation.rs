@@ -314,6 +314,7 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         input: InputSpec::None,
         params,
         view: None,
+        effects: Vec::new(),
     })
 }
 
@@ -349,6 +350,7 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         // The inputs are the parameters; what the run answers is `output`.
         params: shortcut.inputs.clone(),
         view: None,
+        effects: Vec::new(),
     }
 }
 
@@ -917,7 +919,8 @@ pub fn plan_library(
         }
         LibraryOperation::Inspect(draft) => {
             let draft = *draft;
-            let permissions = tilo_automation::grant::least_privilege(&draft.steps, context.catalog);
+            let permissions =
+                tilo_automation::grant::least_privilege(&draft.steps, context.catalog);
             let grant = tilo_automation::grant::rules(&permissions);
             let candidate = Shortcut { grant, ..draft };
             let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
@@ -1684,6 +1687,7 @@ mod tests {
                 input: InputSpec::None,
                 params,
                 view: None,
+                effects: Vec::new(),
             }),
             has_children: false,
             visibility: None,

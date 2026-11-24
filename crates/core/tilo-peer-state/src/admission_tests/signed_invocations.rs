@@ -13,6 +13,17 @@ const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 const KIND: &str = "test";
+/// The app that keeps the workspace's record of its agents, which its host writes for the
+/// person who asks.
+const AGENTS_APP: &str = tilo_actions::remote::WORKSPACE_AGENTS_APP;
+
+/// The workspace's record of its agents: its (app, record).
+fn agents() -> (&'static str, String) {
+    (
+        AGENTS_APP,
+        collab_types::workspace_document_id(tilo_actions::remote::WORKSPACE_AGENTS_KIND),
+    )
+}
 
 fn now_ns(now: SystemTime) -> u64 {
     u64::try_from(
@@ -35,6 +46,12 @@ type Seeded = (
 );
 
 fn seeded_with(revocations: RevocationList) -> Seeded {
+    seeded_holding(revocations, false)
+}
+
+/// [`seeded_with`], the workspace's record of its agents seeded beside the record when
+/// `with_agents`.
+fn seeded_holding(revocations: RevocationList, with_agents: bool) -> Seeded {
     let (a, ac, b, bc, now) = fixtures();
     let mut peer = StatePeer::new(
         WORKSPACE,
@@ -50,12 +67,23 @@ fn seeded_with(revocations: RevocationList) -> Seeded {
     peer.install_seed(
         SeedState {
             workspace_changes: seed_workspace(WORKSPACE, &ac, &[ac.clone(), bc.clone()]).unwrap(),
-            documents: vec![SeedDocument {
-                app_id: APP.into(),
-                document_id: RECORD.into(),
-                kind: KIND.into(),
-                bytes: doc.save(),
-            }],
+            documents: [
+                Some(SeedDocument {
+                    app_id: APP.into(),
+                    document_id: RECORD.into(),
+                    kind: KIND.into(),
+                    bytes: doc.save(),
+                }),
+                with_agents.then(|| SeedDocument {
+                    app_id: AGENTS_APP.into(),
+                    document_id: agents().1,
+                    kind: tilo_actions::remote::WORKSPACE_AGENTS_KIND.into(),
+                    bytes: doc.save(),
+                }),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
         },
         &a,
         now,
@@ -116,6 +144,57 @@ fn caller_context(
     }
 }
 
+/// The step `verb` a host takes in the workspace's record of its agents for the
+/// `workspace/agents#create` that `cert`'s person signed on their device: the history entry it
+/// writes there.
+fn agents_step(cert: &DeviceCert, key: &SigningKey, verb: &str, now: SystemTime) -> ActionContext {
+    let kind = tilo_actions::remote::WORKSPACE_AGENTS_KIND;
+    let invocation = InvocationId::new();
+    let mut request = InvokeRequest {
+        invocation,
+        target: RemoteActionTarget::workspace_governance(
+            WORKSPACE,
+            tilo_actions::remote::WORKSPACE_AGENT_CREATE,
+        ),
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    request.signed = Some(Box::new(
+        sign_invocation_now(WORKSPACE, &request, cert, key, now_ns(now)).unwrap(),
+    ));
+    ActionContext {
+        what: Some(Did::Verb(tilo_actions::VerbCall::new(
+            tilo_actions::ActionKey::new(AGENTS_APP, kind, verb),
+            [],
+        ))),
+        invoker: Some(caller_invoker(cert)),
+        source_invocation: Some(invocation),
+        signed: SignedCall::of(&request).map(Box::new),
+        ..ActionContext::for_resource(agents().1, kind, "Agents")
+    }
+}
+
+/// The write of `context` to the workspace's record of its agents by `signer`'s device, as a
+/// peer sends it.
+fn agents_written(
+    copy: &StatePeer,
+    signer: &SigningKey,
+    context: &ActionContext,
+    now: SystemTime,
+) -> NeighbourMsg {
+    let message = context.change_message().unwrap();
+    let (app, record) = agents();
+    let mut envelope = unsigned_commit_at(copy, (app, &record), signer, &message, "made", now);
+    collab_types::sign_op(&mut envelope, signer).unwrap();
+    document_message_at((app, &record), envelope)
+}
+
 /// The write of `context` by `signer`'s device, as a peer sends it.
 fn written(
     copy: &StatePeer,
@@ -165,7 +244,19 @@ fn unsigned_commit(
     value: &str,
     now: SystemTime,
 ) -> collab_types::SignedOp {
-    let mut doc = AutoCommit::load(&copy.document(APP, RECORD).unwrap()).unwrap();
+    unsigned_commit_at(copy, (APP, RECORD), signer, message, value, now)
+}
+
+/// The unsigned write of the change `message` to `record` of `app` by `signer`'s device.
+fn unsigned_commit_at(
+    copy: &StatePeer,
+    (app, record): (&str, &str),
+    signer: &SigningKey,
+    message: &str,
+    value: &str,
+    now: SystemTime,
+) -> collab_types::SignedOp {
+    let mut doc = AutoCommit::load(&copy.document(app, record).unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(
         signer.verifying_key().to_bytes().to_vec(),
     ));
@@ -177,9 +268,9 @@ fn unsigned_commit(
         collab_types::DocumentMutation::Incremental(doc.save_after(&heads))
             .encode()
             .unwrap(),
-        collab_types::document_artifact_id(APP, WORKSPACE, RECORD),
+        collab_types::document_artifact_id(app, WORKSPACE, record),
         author,
-        collab_types::document_attestation_id(APP, WORKSPACE, RECORD),
+        collab_types::document_attestation_id(app, WORKSPACE, record),
         collab_types::OpKind::Change,
         now,
         1,
@@ -188,11 +279,19 @@ fn unsigned_commit(
 
 /// `envelope` as the document frame a peer sends.
 fn document_message(envelope: collab_types::SignedOp) -> NeighbourMsg {
+    document_message_at((APP, RECORD), envelope)
+}
+
+/// `envelope`, a write of `record` of `app`, as the document frame a peer sends.
+fn document_message_at(
+    (app, record): (&str, &str),
+    envelope: collab_types::SignedOp,
+) -> NeighbourMsg {
     NeighbourMsg::AppDocument {
         peer: crate::peer_handle(envelope.author.as_bytes()),
-        app_id: APP.into(),
+        app_id: app.into(),
         cluster_id: WORKSPACE.into(),
-        document_id: RECORD.into(),
+        document_id: record.into(),
         envelope: Box::new(envelope),
         readers: None,
     }
@@ -436,6 +535,26 @@ tilo_test_env::scenario! {
         let refused = take(&mut receiver, message, now).unwrap_err();
         assert!(refused.reason.contains("another action"), "{}", refused.reason);
         assert!(value(&receiver).contains("seed"), "never applied: {}", value(&receiver));
+    }
+
+    phase a_declared_step_counts_only_from_the_device_that_keeps_the_record;
+    {
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_holding(RevocationList::new(), true);
+        let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        // A member asked the workspace to make an agent, and the step `create` declares is
+        // written in the workspace's record of its agents. Sent by a device that does not keep
+        // the workspace's records, the same carried call is refused: a member's device takes no
+        // step for a call but the call's own.
+        let making = agents_step(&cert, &key, "create-agent", now);
+        let message = agents_written(&receiver, &key, &making, now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("another action"), "{}", refused.reason);
+        // From a device of the owner's, which keeps them, a step `create` does not declare is
+        // refused too.
+        let retiring = agents_step(&cert, &key, "retire-agent", now);
+        let message = agents_written(&receiver, &b, &retiring, now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("another action"), "{}", refused.reason);
     }
 
     phase an_agent_its_device_runs_is_admitted;

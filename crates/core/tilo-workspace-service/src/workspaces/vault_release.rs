@@ -333,7 +333,7 @@ impl Workspaces {
             secret: secret.to_string(),
         };
         let acting = tilo_action_policy::Acting::person(person);
-        self.changing_vault(workspace, Some(&acting), |items| {
+        self.changing_vault(workspace, (Some(&acting), None), |items| {
             super::person_vault::add(items, adding)
         })
         .await
@@ -388,7 +388,7 @@ impl Workspaces {
         }
         let what = format!("{app}'s connection");
         let released = self
-            .changing_vault(workspace, Some(caller.acting()), |items| {
+            .changing_vault(workspace, (Some(caller.acting()), None), |items| {
                 items.use_as_kept(
                     &id,
                     &facts.places,

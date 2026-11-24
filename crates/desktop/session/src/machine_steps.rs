@@ -116,6 +116,7 @@ fn descriptor(step: &str) -> ActionDescriptor {
         input: InputSpec::None,
         params: machines::params(step),
         view: None,
+        effects: Vec::new(),
     }
 }
 

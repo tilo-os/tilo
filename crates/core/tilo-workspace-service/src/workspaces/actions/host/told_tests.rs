@@ -109,7 +109,7 @@ async fn ask_told(
     action: &str,
     argument: Value,
 ) -> Result<Value, ActionCallError> {
-    let page = setup.host.in_workspace_as(workspace, device);
+    let page = setup.host.device_page(workspace, device);
     let mut request = super::accounts_tests::asking(action, argument);
     request.target = person_telling::target(person_telling::TOLD, action);
     let receipt = settled(page.invoke(caller, request)).await?;

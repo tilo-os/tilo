@@ -37,7 +37,7 @@ async fn a_mail_server_whose_name_answers_inside_is_refused_and_connected_to_by_
     let workspaces = server.workspaces().clone();
     let (workspace, workspace_id, actions) = governed(&workspaces).await;
     let device = admit(&workspaces, &workspace, &owner, 1).await;
-    let page = actions.in_workspace_as(workspace_id, &device);
+    let page = actions.device_page(workspace_id, &device);
     let caller = caller(&device);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a port here");
     listener

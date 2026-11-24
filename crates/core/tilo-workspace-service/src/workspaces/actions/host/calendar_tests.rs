@@ -149,8 +149,7 @@ impl Ada {
     }
 
     fn page(&self) -> impl ActionService + Clone + Send + 'static {
-        self.actions
-            .in_workspace_as(self.workspace_id, &self.device)
+        self.actions.device_page(self.workspace_id, &self.device)
     }
 
     fn herself(&self) -> Caller {
@@ -210,8 +209,13 @@ impl Ada {
             Some(Answer::Decline) => Offer::Decline,
             Some(Answer::Approve) => Offer::Approve,
         };
-        super::waiting::answered_by(&self.page(), &self.herself(), (caller, &request), resolution)
-            .await
+        super::waiting::answered_by(
+            &self.page(),
+            &self.herself(),
+            (caller, &request),
+            resolution,
+        )
+        .await
     }
 
     /// What `device` is answered when it asks `action` of the calendars, as its page asks it.
@@ -225,7 +229,7 @@ impl Ada {
             provider: person_accounts::PROVIDER.to_owned(),
             address: ActionAddress::new(held::RESOURCE, action),
         };
-        let page = self.actions.in_workspace_as(self.workspace_id, device);
+        let page = self.actions.device_page(self.workspace_id, device);
         answered(&page, &caller(device), &calling(target, argument)).await
     }
 
@@ -242,7 +246,7 @@ impl Ada {
             provider: person_accounts::PROVIDER.to_owned(),
             address: ActionAddress::new(person_accounts::RESOURCE, action),
         };
-        let page = self.actions.in_workspace_as(self.workspace_id, device);
+        let page = self.actions.device_page(self.workspace_id, device);
         answered(&page, &caller(device), &calling(target, argument)).await
     }
 
@@ -724,7 +728,7 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
         ["Review 2026-11-17T10:00:00+01:00"]
     );
     let bo = admit(&ada.workspaces, &ada.workspace, &ada.owner, 2).await;
-    let bos_page = ada.actions.in_workspace_as(ada.workspace_id, &bo);
+    let bos_page = ada.actions.device_page(ada.workspace_id, &bo);
     let target = RemoteActionTarget {
         provider: person_accounts::PROVIDER.to_owned(),
         address: ActionAddress::new(held::RESOURCE, held::LIST),
@@ -788,7 +792,7 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
     // Nobody outside the workspace is anybody to its calendars, by any road.
     let (elsewhere, elsewhere_id, _) = governed(&ada.workspaces).await;
     let cy = admit(&ada.workspaces, &elsewhere, &ada.owner, 3).await;
-    let cys_page = ada.actions.in_workspace_as(ada.workspace_id, &cy);
+    let cys_page = ada.actions.device_page(ada.workspace_id, &cy);
     let target = RemoteActionTarget {
         provider: person_accounts::PROVIDER.to_owned(),
         address: ActionAddress::new(held::RESOURCE, held::LIST),
@@ -806,7 +810,7 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
         .await,
     );
     let stranger = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
-    let strangers_page = ada.actions.in_workspace_as(ada.workspace_id, &stranger);
+    let strangers_page = ada.actions.device_page(ada.workspace_id, &stranger);
     nobody(
         "a person who is no member",
         asked(
@@ -824,7 +828,7 @@ async fn every_member_reaches_the_workspaces_calendars_and_an_agents_change_asks
         asked(&ada.page(), &app, target.clone(), json!({})).await,
     );
     // What the workspace in which Cy is a member keeps is none of this one's.
-    let elsewhere_page = ada.actions.in_workspace_as(elsewhere_id, &cy);
+    let elsewhere_page = ada.actions.device_page(elsewhere_id, &cy);
     let theirs = asked(&elsewhere_page, &caller(&cy), target, json!({}))
         .await
         .expect("his own workspace's list");
@@ -1516,7 +1520,7 @@ async fn the_catalogue_offers_the_workspaces_calendars_to_its_members_agents_alo
         "an agent's page offers what it may do with the workspace's calendars"
     );
     let bo = admit(&ada.workspaces, &ada.workspace, &ada.owner, 2).await;
-    let bos_page = ada.actions.in_workspace_as(ada.workspace_id, &bo);
+    let bos_page = ada.actions.device_page(ada.workspace_id, &bo);
     assert_eq!(
         calendar_rows(offered(&bos_page, &caller(&bo).delegated_to("assistant")).await),
         rows,
@@ -1527,7 +1531,7 @@ async fn the_catalogue_offers_the_workspaces_calendars_to_its_members_agents_alo
         "her own page asks directly and is offered no row"
     );
     let stranger = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
-    let strangers_page = ada.actions.in_workspace_as(ada.workspace_id, &stranger);
+    let strangers_page = ada.actions.device_page(ada.workspace_id, &stranger);
     assert!(
         offered(
             &strangers_page,
@@ -1539,7 +1543,7 @@ async fn the_catalogue_offers_the_workspaces_calendars_to_its_members_agents_alo
     );
     let (elsewhere, _, _) = governed(&ada.workspaces).await;
     let cy = admit(&ada.workspaces, &elsewhere, &ada.owner, 3).await;
-    let cys_page = ada.actions.in_workspace_as(ada.workspace_id, &cy);
+    let cys_page = ada.actions.device_page(ada.workspace_id, &cy);
     assert!(
         offered(&cys_page, &caller(&cy).delegated_to("assistant"))
             .await
@@ -1997,12 +2001,7 @@ async fn a_calendar_her_person_hides_leaves_the_calendar_and_the_chosen_one_stay
     ada.server.put(
         "home",
         "dinner.ics",
-        &meeting(
-            "dinner-review@example.org",
-            "Dinner",
-            "20261020T190000",
-            "",
-        ),
+        &meeting("dinner-review@example.org", "Dinner", "20261020T190000", ""),
     );
     ada.add().await;
     let person = ada.device.user_public_key;

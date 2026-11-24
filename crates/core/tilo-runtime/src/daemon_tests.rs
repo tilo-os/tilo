@@ -546,6 +546,7 @@ impl tilo_actions::remote::ActionProvider for PageHost {
                     input: tilo_actions::InputSpec::None,
                     params: Vec::new(),
                     view: None,
+                    effects: Vec::new(),
                 }),
                 has_children: false,
                 visibility: None,

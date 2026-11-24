@@ -21,6 +21,7 @@ fn descriptor(action_label: &str, params: Vec<ActionParam>) -> ActionDescriptor 
         input: InputSpec::None,
         params,
         view: None,
+        effects: Vec::new(),
     }
 }
 

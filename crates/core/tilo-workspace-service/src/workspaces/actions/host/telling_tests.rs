@@ -76,7 +76,7 @@ impl Setup {
         workspace: WorkspaceId,
         device: &DeviceCert,
     ) -> impl ActionProvider + Clone + Send + 'static {
-        self.host.in_workspace_as(workspace, device)
+        self.host.device_page(workspace, device)
     }
 
     /// What `caller` is answered over the page `device` holds in
@@ -130,7 +130,7 @@ impl Setup {
             max_results: 100,
             ..CatalogueQuery::default()
         };
-        let page = self.host.in_workspace_as(workspace, &self.ada);
+        let page = self.host.device_page(workspace, &self.ada);
         settled(page.query(caller, query))
             .await
             .map(|page| {

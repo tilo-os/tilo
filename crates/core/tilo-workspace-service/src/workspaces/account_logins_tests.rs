@@ -118,12 +118,28 @@ struct Members {
     owner_key: SigningKey,
     member: Workspaces,
     member_cert: DeviceCert,
+    member_key: SigningKey,
     _hosts: (TestHost, TestHost),
     _keys: (KeyService, KeyService),
     _dirs: (tempfile::TempDir, tempfile::TempDir),
 }
 
 impl Members {
+    /// `request` as the member's device sends it: signed with its key.
+    fn signed(&self, mut request: InvokeRequest) -> InvokeRequest {
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                &self.workspace,
+                &request,
+                &self.member_cert,
+                &self.member_key,
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("the member's device signs its call"),
+        ));
+        request
+    }
+
     async fn new() -> Self {
         Self::with_member(DeviceCapabilities::member()).await
     }
@@ -156,7 +172,7 @@ impl Members {
         let member = joined.workspaces().clone();
         member.set_member_device(Arc::new(MemberDevice {
             cert: cert.clone(),
-            signer: Arc::new(key),
+            signer: Arc::new(key.clone()),
         }));
         member.join_member(&invitation).await.unwrap();
         Self {
@@ -166,6 +182,7 @@ impl Members {
             owner_key,
             member,
             member_cert: cert,
+            member_key: key,
             _hosts: (serving, joined),
             _keys: (owner_keys, member_keys),
             _dirs: (owner_dir, member_dir),
@@ -259,7 +276,7 @@ impl Members {
             .owner
             .keep_account_password(
                 &self.workspace,
-                &self.owner_caller(),
+                (&self.owner_caller(), None),
                 None,
                 server.login(),
                 Zeroizing::new(PASSWORD.into()),
@@ -396,7 +413,7 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
         .member
         .keep_account_password(
             &workspace,
-            &members.member_caller(),
+            (&members.member_caller(), None),
             Some(&item),
             server.login(),
             Zeroizing::new(PASSWORD.into()),
@@ -469,11 +486,16 @@ async fn a_change_a_device_makes_for_another_member_names_the_member_who_asked()
         last_invoker(&bytes.expect("the accounts are made"))
     };
 
+    // Each of Bo's asks reaches Ada's device as the call Bo's device signed.
+    let mut keeping = asking(person_accounts::LIST, &serde_json::json!({}));
+    keeping.target =
+        tilo_actions::remote::person_vault::target(tilo_actions::remote::person_vault::ADD);
+    let keeping = members.signed(keeping);
     let item = members
         .owner
         .keep_account_password(
             &workspace,
-            &members.member_caller(),
+            (&members.member_caller(), Some(&keeping)),
             None,
             server.login(),
             Zeroizing::new(PASSWORD.into()),
@@ -497,10 +519,18 @@ async fn a_change_a_device_makes_for_another_member_names_the_member_who_asked()
         "what Ada's device writes on its own is Ada's"
     );
 
+    let signing_out = members.signed(asking(
+        person_accounts::REMOVE,
+        &serde_json::json!({"account": ADDRESS}),
+    ));
     assert!(
         members
             .owner
-            .forget_workspace_account(&workspace, &members.member_caller(), ADDRESS)
+            .forget_workspace_account(
+                &workspace,
+                (&members.member_caller(), Some(&signing_out)),
+                ADDRESS,
+            )
             .await
             .unwrap(),
         "the account was there to sign out of"
@@ -566,7 +596,7 @@ async fn a_calendar_account_added_in_settings_signs_in_with_the_workspaces_vault
         .owner
         .keep_account_password(
             &workspace,
-            &members.owner_caller(),
+            (&members.owner_caller(), None),
             None,
             AccountLogin {
                 title: "Mine".into(),
@@ -664,7 +694,7 @@ async fn a_member_whose_role_leaves_passwords_out_is_not_released_the_password()
             .member
             .keep_account_password(
                 &workspace,
-                &by,
+                (&by, None),
                 Some(&named),
                 server.login(),
                 Zeroizing::new("another made-up password".into()),
@@ -751,7 +781,7 @@ async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_n
             in_workspace,
             &by,
             certified,
-            &asking(person_accounts::FETCH, &inbox),
+            &members.signed(asking(person_accounts::FETCH, &inbox)),
         )
         .await
         .expect("the editor reads the account's inbox");
@@ -815,7 +845,7 @@ async fn a_file_accounts_password_signs_in_by_its_entry_on_a_members_device() {
         .owner
         .keep_account_password(
             &workspace,
-            &members.owner_caller(),
+            (&members.owner_caller(), None),
             None,
             AccountLogin {
                 title: "Team files".into(),
@@ -920,7 +950,7 @@ async fn an_account_a_providers_page_signed_in_is_released_its_access_token_alon
         .owner
         .keep_account_password(
             &workspace,
-            &members.owner_caller(),
+            (&members.owner_caller(), None),
             None,
             server.login(),
             Zeroizing::new(grant),
@@ -1038,7 +1068,7 @@ async fn a_member_refused_passwords_opens_nothing_the_vault_keeps_after() {
         std::time::Duration::from_secs(60),
         members.owner.keep_account_password(
             &workspace,
-            &members.owner_caller(),
+            (&members.owner_caller(), None),
             None,
             server.login(),
             Zeroizing::new("a password kept after".into()),
@@ -1102,7 +1132,7 @@ async fn a_branch_opens_the_passwords_its_source_kept() {
     let item = workspaces
         .keep_account_password(
             &source,
-            &by,
+            (&by, None),
             None,
             server.login(),
             Zeroizing::new(PASSWORD.into()),
@@ -1151,7 +1181,7 @@ async fn the_hugging_face_account_is_released_its_access_token_alone() {
         .owner
         .keep_account_password(
             &workspace,
-            &members.owner_caller(),
+            (&members.owner_caller(), None),
             None,
             AccountLogin {
                 title: HUB.into(),
@@ -1206,7 +1236,7 @@ async fn the_hugging_face_account_is_released_its_access_token_alone() {
     assert!(
         members
             .owner
-            .forget_workspace_account(&workspace, &members.owner_caller(), HUB)
+            .forget_workspace_account(&workspace, (&members.owner_caller(), None), HUB)
             .await
             .unwrap()
     );
@@ -1305,4 +1335,48 @@ async fn a_device_that_may_not_read_the_vault_releases_its_connection_nothing() 
     })
     .await;
     assert!(refused.contains(MAY_NOT_USE_PASSWORDS));
+}
+
+/// Every step the account and calendar actions declare they take in the accounts record is
+/// one of that record's own actions, in Settings' record of that kind.
+#[test]
+fn the_account_actions_declare_steps_the_accounts_record_takes() {
+    use tilo_actions::remote::person_accounts::{self, calendars};
+    use tilo_resource::Resource as _;
+    let verbs: Vec<_> = AccountList::declarations()
+        .into_iter()
+        .map(|declared| declared.id)
+        .collect();
+    let mut declared = 0;
+    for (resource, action) in [
+        (person_accounts::RESOURCE, person_accounts::ADD_MAIL),
+        (
+            person_accounts::RESOURCE,
+            person_accounts::ADD_MAIL_WITH_ITEM,
+        ),
+        (person_accounts::RESOURCE, person_accounts::BEGIN_SIGN_IN),
+        (person_accounts::RESOURCE, person_accounts::RECONNECT),
+        (person_accounts::RESOURCE, person_accounts::REMOVE),
+        (person_accounts::RESOURCE, person_accounts::SET_SERVICES),
+        (calendars::RESOURCE, calendars::ADD),
+        (calendars::RESOURCE, calendars::ADD_WITH_ITEM),
+        (calendars::RESOURCE, calendars::REMOVE),
+    ] {
+        for effect in person_accounts::effects(resource, action)
+            .into_iter()
+            .filter(|effect| effect.kind == AccountList::KIND)
+        {
+            assert_eq!(effect.app, accounts::person::ACCOUNTS_OWNER, "{action}");
+            assert!(verbs.contains(&effect.verb.as_str()), "{action}: {effect}");
+            declared += 1;
+        }
+    }
+    assert_eq!(
+        declared, 9,
+        "every account action that writes the record declares its step"
+    );
+    assert!(
+        person_accounts::effects(person_accounts::RESOURCE, person_accounts::LIST).is_empty(),
+        "a read writes nothing"
+    );
 }

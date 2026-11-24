@@ -347,7 +347,7 @@ pub use action::{
 };
 pub use agent_disclosure::hidden_from_agents;
 pub use api::{
-    ActionAddress, ActionDescriptor, ApiError, InputSpec, NOT_THE_ASKED_PERSON,
+    ActionAddress, ActionDescriptor, ActionEffect, ApiError, InputSpec, NOT_THE_ASKED_PERSON,
     ResourceViewDescriptor,
 };
 pub use appearance::{Appearance, AppearanceError, Persona};

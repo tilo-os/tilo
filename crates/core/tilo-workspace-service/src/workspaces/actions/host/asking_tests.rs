@@ -71,7 +71,7 @@ async fn invoked(
 ) -> Result<InvocationReceipt, ActionCallError> {
     settled(
         service
-            .in_workspace_as(workspace_id, device)
+            .device_page(workspace_id, device)
             .invoke(caller, request),
     )
     .await
@@ -129,7 +129,7 @@ async fn ended(
     (device, caller): (&DeviceCert, &Caller),
     invocation: InvocationId,
 ) -> InvocationUpdate {
-    let here = service.in_workspace_as(workspace_id, device);
+    let here = service.device_page(workspace_id, device);
     tilo_test_env::within("the approved call's end", async {
         loop {
             match here.observe(caller, &invocation).map(|state| state.update) {

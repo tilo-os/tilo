@@ -49,6 +49,7 @@ use std::time::Duration;
 
 use accounts::vault_items::{self, ItemId, KeyIn, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
+use tilo_actions::remote::InvokeRequest;
 use tilo_net::{HeaderMap, HeaderName, HeaderValue, Method, Url};
 
 use tilo_actions::remote::person_vault::ContentRef;
@@ -548,7 +549,7 @@ pub(super) async fn send(
     workspaces: &super::Workspaces,
     workspace: &str,
     call: WebCall,
-    (by, asker): (&str, &tilo_action_policy::Acting),
+    (by, asker, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
     caller_app: Option<&str>,
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
@@ -558,7 +559,7 @@ pub(super) async fn send(
     let content = |app: &str, hash: &str| workspaces.kept_record_bytes(workspace, app, hash);
     let ready = ready(reach, &mut items, call, by, caller_app, purpose, &content)?;
     workspaces
-        .write_vault(&opened, items.take_changes(), Some(asker))
+        .write_vault(&opened, items.take_changes(), Some(asker), Some(asked))
         .await?;
     deliver(reach, system_lookup(), ready).await
 }

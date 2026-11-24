@@ -13,8 +13,8 @@
 
 use accounts::person::AccountList;
 use accounts::vault_items::{ItemId, ItemKind, NewItem, Place, Released, UsedFor};
-use tilo_actions::remote::Caller;
 use tilo_actions::remote::person_vault::ItemRef;
+use tilo_actions::remote::{Caller, InvokeRequest};
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_resource::{Replica, Resource as _};
 use zeroize::Zeroizing;
@@ -165,9 +165,10 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Keep `password` as `login` in `workspace`'s vault, for `by`: in the entry `item` names
-    /// where the vault keeps it (a password typed anew), in a new entry otherwise. Answers the
-    /// entry's reference, which the account names.
+    /// Keep `password` as `login` in `workspace`'s vault, for `by`, keeping `call`, the call
+    /// it serves, when one is named: in the entry `item` names where the vault keeps it (a
+    /// password typed anew), in a new entry otherwise. Answers the entry's reference, which the
+    /// account names.
     ///
     /// # Errors
     /// `by` may not use the vault, the login is not one to keep, or the vault does not open or
@@ -175,7 +176,7 @@ impl Workspaces {
     pub async fn keep_account_password(
         &self,
         workspace: &str,
-        by: &Caller,
+        (by, call): (&Caller, Option<&InvokeRequest>),
         item: Option<&ItemRef>,
         login: AccountLogin,
         password: Zeroizing<String>,
@@ -189,7 +190,7 @@ impl Workspaces {
             places,
         } = login;
         let kept = self
-            .changing_vault(workspace, Some(by.acting()), |items| {
+            .changing_vault(workspace, (Some(by.acting()), call), |items| {
                 items.keep(
                     id.as_ref(),
                     NewItem {
@@ -247,7 +248,7 @@ impl Workspaces {
         let what = format!("{app} signed in to {name}");
         let mut refusal = None;
         let released = self
-            .changing_vault(workspace, Some(by.acting()), |items| {
+            .changing_vault(workspace, (Some(by.acting()), None), |items| {
                 items
                     .use_as_kept(
                         &id,
@@ -370,7 +371,7 @@ impl Workspaces {
         account: &str,
         item: &ItemRef,
     ) -> Result<(), String> {
-        self.change_workspace_accounts((workspace, &self.acting_or_own(None)), |held| {
+        self.change_workspace_accounts((workspace, &self.acting_or_own(None), None), |held| {
             let mut kept = held
                 .account(account)
                 .ok_or("the workspace's accounts hold no such account")?;
@@ -394,10 +395,10 @@ impl Workspaces {
     /// The record does not take the write on this device.
     pub async fn keep_workspace_account(
         &self,
-        (workspace, by): (&str, &tilo_action_policy::Acting),
+        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
         account: &accounts::Account,
     ) -> Result<(), String> {
-        self.change_workspace_accounts((workspace, by), |held| {
+        self.change_workspace_accounts((workspace, by, call), |held| {
             let edit = (held.account(account.id.as_str()).as_ref() != Some(account))
                 .then(|| AccountList::saving(account));
             Ok((edit.into_iter().collect(), ()))
@@ -413,11 +414,11 @@ impl Workspaces {
     /// The record does not take the write on this device.
     pub async fn keep_workspace_accounts(
         &self,
-        (workspace, by): (&str, &tilo_action_policy::Acting),
+        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
         keep: &[accounts::Account],
         remove: &[&str],
     ) -> Result<(), String> {
-        self.change_workspace_accounts((workspace, by), |held| {
+        self.change_workspace_accounts((workspace, by, call), |held| {
             let mut edits: Vec<tilo_resource::Invoke<AccountList>> = Vec::new();
             for id in remove {
                 if held.account(id).is_some() {
@@ -445,14 +446,14 @@ impl Workspaces {
     /// The workspace has no such account, or the record does not take the write on this device.
     pub async fn report_account_sync(
         &self,
-        (workspace, by): (&str, &tilo_action_policy::Acting),
+        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
         id: &str,
         health: accounts::SyncHealth,
         signed_in: bool,
         message: &str,
     ) -> Result<(), String> {
         let device = hex::encode(self.signing_device().device());
-        self.change_workspace_accounts((workspace, by), |held| {
+        self.change_workspace_accounts((workspace, by, call), |held| {
             let edit = held
                 .reporting(
                     id,
@@ -475,10 +476,10 @@ impl Workspaces {
     /// The record does not take the write on this device.
     pub async fn remove_workspace_account(
         &self,
-        (workspace, by): (&str, &tilo_action_policy::Acting),
+        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
         id: &str,
     ) -> Result<bool, String> {
-        self.change_workspace_accounts((workspace, by), |held| {
+        self.change_workspace_accounts((workspace, by, call), |held| {
             let kept = held.account(id).is_some();
             let edit = kept.then(|| {
                 AccountList::REMOVE_ACCOUNT.with(tilo_resource::Id::from_raw(id.to_owned()))
@@ -488,7 +489,8 @@ impl Workspaces {
         .await
     }
 
-    /// Remove the account `id` from `workspace`'s accounts, for `by`, and forget the entry of
+    /// Remove the account `id` from `workspace`'s accounts, for `by` (keeping `call`, the call it
+    /// serves, when one is named), and forget the entry of
     /// the vault it names as its sign-in, unless another of the workspace's accounts names that
     /// entry too: signing out takes the sign-in with it. Whether the account was there.
     ///
@@ -498,7 +500,7 @@ impl Workspaces {
     pub async fn forget_workspace_account(
         &self,
         workspace: &str,
-        by: &Caller,
+        (by, call): (&Caller, Option<&InvokeRequest>),
         id: &str,
     ) -> Result<bool, String> {
         self.using_vault(workspace, by, None, true).await?;
@@ -513,11 +515,11 @@ impl Workspaces {
             })
         });
         let removed = self
-            .remove_workspace_account((workspace, by.acting()), id)
+            .remove_workspace_account((workspace, by.acting(), call), id)
             .await?;
         if let Some(sign_in) = &sign_in {
             let entry = kept_sign_ins::id_of(sign_in)?;
-            self.changing_vault(workspace, Some(by.acting()), |items| {
+            self.changing_vault(workspace, (Some(by.acting()), call), |items| {
                 Ok(items.remove(&entry))
             })
             .await?;
@@ -535,7 +537,7 @@ impl Workspaces {
     /// device.
     pub(crate) async fn change_workspace_accounts<T>(
         &self,
-        (workspace, by): (&str, &tilo_action_policy::Acting),
+        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
         change: impl FnOnce(
             &AccountList,
         ) -> Result<(Vec<tilo_resource::Invoke<AccountList>>, T), String>,
@@ -543,14 +545,21 @@ impl Workspaces {
         let bytes = self.accounts_document(workspace).await?;
         let founding = bytes.is_none();
         let (changes, answer) = {
-            let mut replica = match &bytes {
+            let replica = match &bytes {
                 Some(bytes) => {
                     Replica::<AccountList>::load(bytes).map_err(|error| error.to_string())?
                 }
                 None => Replica::from_doc(founding_accounts(workspace)?),
             }
-            .in_app(accounts::person::ACCOUNTS_OWNER, "Settings")
-            .as_invoker_acting(self.acting_or_own(Some(by)));
+            .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
+            // A write for a member's call keeps the call it serves, which names who asked;
+            // any other names the caller as the device's own writes do.
+            let mut replica = match call.and_then(super::vault::served_call) {
+                Some((invocation, signed)) => replica
+                    .as_invoker_acting(by.clone())
+                    .serving(invocation, signed),
+                None => replica.as_invoker_acting(self.acting_or_own(Some(by))),
+            };
             let state = replica.state().map_err(|error| error.to_string())?;
             let (edits, answer) = change(&state)?;
             if edits.is_empty() {

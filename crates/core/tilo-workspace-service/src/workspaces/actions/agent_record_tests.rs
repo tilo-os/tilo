@@ -459,3 +459,51 @@ async fn an_agent_installs_with_its_triggers_pauses_resumes_and_leaves_with_them
     );
     server.shutdown().await;
 }
+
+/// The steps the agents' actions declare are the record's own actions, of its kind in the
+/// workspace's own app: making and retiring one, and every change but where an agent waits or
+/// runs, which the device that runs it writes.
+#[test]
+fn the_agents_actions_declare_the_records_own_steps() {
+    use tilo_actions::remote::{
+        WORKSPACE_AGENT_CHANGES, WORKSPACE_AGENT_CREATE, WORKSPACE_AGENT_DELETE,
+        WORKSPACE_AGENT_UPDATE, WORKSPACE_AGENTS_KIND, workspace_agent_effects,
+    };
+    use tilo_resource::Resource as _;
+    assert_eq!(WORKSPACE_AGENTS_KIND, tilo_workspace_agent::KIND);
+    let verbs: Vec<_> = WorkspaceAgents::declarations()
+        .into_iter()
+        .map(|declared| declared.id)
+        .collect();
+    let mut declared = Vec::new();
+    for operation in [
+        WORKSPACE_AGENT_CREATE,
+        WORKSPACE_AGENT_UPDATE,
+        WORKSPACE_AGENT_DELETE,
+    ] {
+        for effect in workspace_agent_effects(operation) {
+            assert_eq!(
+                (effect.app.as_str(), effect.kind.as_str()),
+                (OWNER, WORKSPACE_AGENTS_KIND)
+            );
+            assert!(
+                verbs.contains(&effect.verb.as_str()),
+                "{operation}: {effect}"
+            );
+            declared.push(effect.verb);
+        }
+    }
+    assert_eq!(declared.len(), WORKSPACE_AGENT_CHANGES.len() + 2);
+    let undeclared: Vec<_> = verbs
+        .iter()
+        .filter(|verb| !declared.iter().any(|declared| declared == *verb))
+        .collect();
+    assert_eq!(
+        undeclared,
+        [
+            &WorkspaceAgents::WAIT_TO_RUN_AGENT.id,
+            &WorkspaceAgents::RUN_AGENT_ON.id
+        ],
+        "only where an agent waits or runs is left to the device that runs it"
+    );
+}

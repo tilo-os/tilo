@@ -12,8 +12,9 @@
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Acting, Answer, MemberAccess, TreePath};
 use tilo_actions::remote::{
-    ActionCallError, Caller, CatalogueRow, InvokeArgument, InvokeRequest, WORKSPACE_AGENT_CREATE,
-    WORKSPACE_AGENT_DELETE, WORKSPACE_AGENT_UPDATE, workspace_governance_operation,
+    ActionCallError, Caller, CatalogueRow, InvokeArgument, InvokeRequest, WORKSPACE_AGENT_CHANGES,
+    WORKSPACE_AGENT_CREATE, WORKSPACE_AGENT_DELETE, WORKSPACE_AGENT_UPDATE,
+    workspace_agent_effects, workspace_governance_operation,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_resource::{ActionDecl, Invoke, Replica, Resource as _};
@@ -129,7 +130,10 @@ fn declared(id: &str) -> Result<ActionDecl<WorkspaceAgents>, ActionCallError> {
 fn applied(
     workspace: &str,
     stored: Option<&[u8]>,
-    acting: &Acting,
+    (acting, served): (
+        &Acting,
+        Option<(tilo_actions::InvocationId, tilo_actions::remote::SignedCall)>,
+    ),
     invoke: Invoke<WorkspaceAgents>,
 ) -> Result<Vec<u8>, ActionCallError> {
     let record = if let Some(bytes) = stored {
@@ -141,6 +145,9 @@ fn applied(
         founded
     };
     let mut record = record.as_acting(acting.clone());
+    if let Some((invocation, signed)) = served {
+        record = record.serving(invocation, signed);
+    }
     let before = record.heads();
     record
         .apply(invoke)
@@ -223,7 +230,11 @@ impl Workspaces {
                 .await
                 .unwrap_or(false)
             {
-                rows.push(verb.governance_row(workspace, name));
+                let mut row = verb.governance_row(workspace, name);
+                if let Some(descriptor) = row.action.as_mut() {
+                    descriptor.effects = workspace_agent_effects(verb.id);
+                }
+                rows.push(row);
             }
         }
         rows
@@ -247,7 +258,7 @@ impl Workspaces {
         let mut arguments = object(&request.argument)?;
         match operation {
             WORKSPACE_AGENT_CREATE => self
-                .create_agent(workspace, acting, arguments)
+                .create_agent((workspace, acting, request), arguments)
                 .await
                 .map(|agent| json!({ "agent": agent })),
             WORKSPACE_AGENT_UPDATE => {
@@ -256,17 +267,10 @@ impl Workspaces {
                         reason: "a change of an agent names the record's action".to_owned(),
                     });
                 };
-                // Where an agent waits or runs is written by the device that runs it, from the
-                // ticket it serves and the certificate a redeemed ticket gave it: no change of an
-                // agent says it.
-                if [
-                    WorkspaceAgents::CREATE_AGENT.id,
-                    WorkspaceAgents::RETIRE_AGENT.id,
-                    WorkspaceAgents::WAIT_TO_RUN_AGENT.id,
-                    WorkspaceAgents::RUN_AGENT_ON.id,
-                ]
-                .contains(&action.as_str())
-                {
+                // A change of an agent is one of the steps the action declares. Where an agent
+                // waits or runs is written by the device that runs it, from the ticket it serves
+                // and the certificate a redeemed ticket gave it: no change of an agent says it.
+                if !WORKSPACE_AGENT_CHANGES.contains(&action.as_str()) {
                     return Err(ActionCallError::InvalidRequest {
                         reason: format!("{action} is not a change of an agent"),
                     });
@@ -281,7 +285,7 @@ impl Workspaces {
                     }
                 };
                 let invoke = declared(&action)?.with_arguments(changed);
-                self.act_on_agents(workspace, acting, invoke)
+                self.act_on_agents((workspace, acting, Some(request)), invoke)
                     .await
                     .map(|()| Value::Null)
             }
@@ -299,7 +303,8 @@ impl Workspaces {
                 let invoke = declared(WorkspaceAgents::RETIRE_AGENT.id)?.with_arguments(
                     Map::from_iter([("agent".to_owned(), Value::String(agent.clone()))]),
                 );
-                self.act_on_agents(workspace, acting, invoke).await?;
+                self.act_on_agents((workspace, acting, Some(request)), invoke)
+                    .await?;
                 // Retiring an agent takes the triggers its keeper saved for it with it, so a
                 // shortcut that still names a retired agent starts nothing.
                 #[cfg(feature = "agents")]
@@ -315,8 +320,7 @@ impl Workspaces {
     /// asker named one and the record's next free id for its name otherwise.
     async fn create_agent(
         &self,
-        workspace: &str,
-        acting: &Acting,
+        (workspace, acting, request): (&str, &Acting, &InvokeRequest),
         mut arguments: Map<String, Value>,
     ) -> Result<String, ActionCallError> {
         let named = match arguments.get("id") {
@@ -357,7 +361,8 @@ impl Workspaces {
             id
         };
         let invoke = declared(WorkspaceAgents::CREATE_AGENT.id)?.with_arguments(arguments);
-        self.act_on_agents(workspace, acting, invoke).await?;
+        self.act_on_agents((workspace, acting, Some(request)), invoke)
+            .await?;
         // The agent's triggers are saved where it is made, once: whoever asks, and whichever
         // device of theirs it is, the person who keeps it has them from its first turn.
         // A service built without agents runs no triggers and saves none.
@@ -522,7 +527,7 @@ impl Workspaces {
             ("device".to_owned(), Value::String(hex::encode(device))),
             (name.to_owned(), Value::String(value)),
         ]));
-        self.act_on_agents(workspace, &acting, invoke).await
+        self.act_on_agents((workspace, &acting, None), invoke).await
     }
 
     /// The workspace's record of its agents as `caller` reads it: the agents, each with its name,
@@ -560,7 +565,8 @@ impl Workspaces {
         arguments: Map<String, Value>,
     ) -> Result<(), ActionCallError> {
         let invoke = declared(action)?.with_arguments(arguments);
-        self.act_on_agents(workspace, caller.acting(), invoke).await
+        self.act_on_agents((workspace, caller.acting(), None), invoke)
+            .await
     }
 
     /// What `caller` may change of the workspace's agents: whether the record's grants let it
@@ -593,11 +599,13 @@ impl Workspaces {
     }
 
     /// Apply `invoke` to `workspace`'s record of its agents as `acting`, once the workspace's
-    /// grants let them on the record's node, and write it as this device's own.
+    /// grants let them on the record's node, and write it as this device's own. Where this
+    /// device keeps the workspace's own copy, the change keeps `call`, the request it answers, as
+    /// its caller signed it: every device reading it sees that they asked, and decides the step the action
+    /// declares as theirs.
     async fn act_on_agents(
         &self,
-        workspace: &str,
-        acting: &Acting,
+        (workspace, acting, call): (&str, &Acting, Option<&InvokeRequest>),
         invoke: Invoke<WorkspaceAgents>,
     ) -> Result<(), ActionCallError> {
         if !self
@@ -608,7 +616,13 @@ impl Workspaces {
         }
         let stored = self.agents_record(workspace).await?;
         let founding = stored.is_none();
-        let changes = applied(workspace, stored.as_deref(), acting, invoke)?;
+        let served = match call {
+            Some(call) if self.holds_own_copy(workspace).await => {
+                tilo_actions::remote::SignedCall::of(call).map(|signed| (call.invocation, signed))
+            }
+            _ => None,
+        };
+        let changes = applied(workspace, stored.as_deref(), (acting, served), invoke)?;
         if changes.is_empty() {
             return Ok(());
         }

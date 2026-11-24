@@ -148,6 +148,7 @@ pub fn descriptor() -> ActionDescriptor {
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
+        effects: Vec::new(),
     }
 }
 

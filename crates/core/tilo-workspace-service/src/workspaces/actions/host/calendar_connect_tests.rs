@@ -246,7 +246,7 @@ async fn what_they_tell_is_asked_for_and_their_typing_connects_it_for_reading_on
     assert_eq!(read["entries"][0]["title"], "Review", "{read}");
 
     // Nothing is written to it, also when she asks herself.
-    let page = hers.service.in_workspace_as(hers.workspace_id, &hers.ada);
+    let page = hers.service.device_page(hers.workspace_id, &hers.ada);
     let lunch = carried(
         "REQUEST",
         &inviting(

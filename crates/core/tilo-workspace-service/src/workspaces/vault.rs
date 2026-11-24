@@ -23,6 +23,7 @@ use accounts::vault_items::{UseRecord, VaultChange, VaultItems};
 use accounts::{SecretId, SecretItem};
 use tilo_action_policy::Acting;
 use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
+use tilo_actions::remote::InvokeRequest;
 use tilo_resource::{Id, Replica};
 use zeroize::Zeroizing;
 
@@ -239,7 +240,7 @@ impl Workspaces {
         let mut changes = changes.into_iter().peekable();
         while changes.peek().is_some() {
             let batch: Vec<VaultChange> = changes.by_ref().take(CARRIED_PER_WRITE).collect();
-            self.write_vault(&opened, batch, None).await?;
+            self.write_vault(&opened, batch, None, None).await?;
             opened = self.read_vault(&workspace, opened.keys).await?;
         }
         kept.forget().map_err(|error| error.to_string())?;
@@ -290,6 +291,11 @@ impl Workspaces {
     /// under its keys: the entries kept, forgotten and used. A vault nobody has made yet is
     /// made with them, as Passwords makes it.
     ///
+    /// `call` is the request the write answers, when a caller asked for it: the host that keeps
+    /// the workspace's own copy writes it for them, keeping the call as they signed it, so every
+    /// device reading it sees that they asked and decides the step their action declares
+    /// ([`tilo_actions::remote::person_vault::effects`]) as theirs.
+    ///
     /// # Errors
     /// An entry does not seal, the document cannot be made here, or the workspace refused the
     /// write.
@@ -298,14 +304,21 @@ impl Workspaces {
         opened: &OpenVault,
         changes: Vec<VaultChange>,
         acting: Option<&Acting>,
+        call: Option<&InvokeRequest>,
     ) -> Result<(), String> {
         if changes.is_empty() {
             return Ok(());
         }
-        let acting = self.acting_or_own(acting);
         if self.holds_own_copy(&opened.workspace).await {
             // The workspace's own copy is this service's: it writes the document as its
             // governor, onto the copy it holds now, as every other document it authors.
+            let served = call.and_then(served_call);
+            // A caller whose call the write keeps is named as they asked; without it, the
+            // write names whom this device may write for.
+            let acting = match (&served, acting) {
+                (Some(_), Some(acting)) => acting.clone(),
+                _ => self.acting_or_own(acting),
+            };
             let cert = self.inner.host.cert.clone();
             let start = match opened.document {
                 Some(_) => None,
@@ -319,6 +332,9 @@ impl Workspaces {
                 |doc| {
                     let mut replica = in_passwords(Replica::from_doc(std::mem::take(doc)))
                         .as_invoker_acting(acting.clone());
+                    if let Some((invocation, signed)) = served.clone() {
+                        replica = replica.serving(invocation, signed);
+                    }
                     replica
                         .doc_mut()
                         .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
@@ -334,6 +350,9 @@ impl Workspaces {
             })
             .map_err(|error| error.to_string());
         }
+        // A member's device writes its own person's change: it keeps no record for anyone else,
+        // so no call it was asked by goes with it.
+        let acting = self.acting_or_own(acting);
         let founding = opened.document.is_none();
         let keys = &opened.keys;
         let changes = vault_changes(opened, &self.signing_device().device(), changes, &acting)?;
@@ -409,7 +428,7 @@ impl Workspaces {
     }
 
     /// Whether this service holds `workspace`'s own copy, governing it, rather than a member's.
-    async fn holds_own_copy(&self, workspace: &str) -> bool {
+    pub(crate) async fn holds_own_copy(&self, workspace: &str) -> bool {
         match collab_types::WorkspaceId::parse(workspace) {
             Some(id) => self.governed_copy(id).await.is_some(),
             None => false,
@@ -443,13 +462,13 @@ impl Workspaces {
     pub(crate) async fn changing_vault<T>(
         &self,
         workspace: &str,
-        acting: Option<&Acting>,
+        (acting, call): (Option<&Acting>, Option<&InvokeRequest>),
         change: impl FnOnce(&mut VaultItems) -> Result<T, accounts::vault_items::ItemError>,
     ) -> Result<T, String> {
         let opened = self.open_vault(workspace).await?;
         let mut items = opened.items();
         let answer = change(&mut items).map_err(|error| error.to_string())?;
-        self.write_vault(&opened, items.take_changes(), acting)
+        self.write_vault(&opened, items.take_changes(), acting, call)
             .await?;
         Ok(answer)
     }
@@ -483,8 +502,14 @@ impl Workspaces {
 #[derive(Clone, Copy)]
 pub(crate) enum VaultAt<'a> {
     /// `workspace`'s vault on this device, its writes made as the acting that asked for them
-    /// when one is named ([`Workspaces::vault_for`]).
-    Workspace(&'a Workspaces, &'a str, Option<&'a Acting>),
+    /// when one is named ([`Workspaces::vault_for`]), each keeping the call it serves when one
+    /// is named ([`VaultAt::serving`]).
+    Workspace(
+        &'a Workspaces,
+        &'a str,
+        Option<&'a Acting>,
+        Option<&'a InvokeRequest>,
+    ),
     #[cfg(test)]
     Held(&'static TestStores),
 }
@@ -540,7 +565,7 @@ impl std::ops::Deref for TestStores {
 #[cfg(feature = "agents")]
 #[derive(Clone)]
 pub(crate) enum VaultOf {
-    Workspace(Workspaces, String, Option<Acting>),
+    Workspace(Workspaces, String, Option<Acting>, Option<InvokeRequest>),
     #[cfg(test)]
     Held(&'static TestStores),
 }
@@ -550,8 +575,8 @@ impl VaultOf {
     /// The vault this names, to change.
     pub(crate) fn at(&self) -> VaultAt<'_> {
         match self {
-            Self::Workspace(workspaces, workspace, acting) => {
-                VaultAt::Workspace(workspaces, workspace, acting.as_ref())
+            Self::Workspace(workspaces, workspace, acting, call) => {
+                VaultAt::Workspace(workspaces, workspace, acting.as_ref(), call.as_ref())
             }
             #[cfg(test)]
             Self::Held(items) => VaultAt::Held(items),
@@ -562,7 +587,7 @@ impl VaultOf {
 impl std::fmt::Debug for VaultAt<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Workspace(_, workspace, _) => {
+            Self::Workspace(_, workspace, ..) => {
                 formatter.debug_tuple("Workspace").field(workspace).finish()
             }
             #[cfg(test)]
@@ -571,14 +596,40 @@ impl std::fmt::Debug for VaultAt<'_> {
     }
 }
 
-impl VaultAt<'_> {
+impl<'a> VaultAt<'a> {
+    /// The same vault, each write it makes keeping `call`, the call it is made for: the person
+    /// whose device signed it is the one the write names, and the step it takes is one the
+    /// called action declares ([`tilo_actions::ActionDescriptor::effects`]).
+    #[must_use]
+    pub(crate) fn serving(self, call: &'a InvokeRequest) -> Self {
+        match self {
+            Self::Workspace(workspaces, workspace, acting, _) => {
+                Self::Workspace(workspaces, workspace, acting, Some(call))
+            }
+            #[cfg(test)]
+            held @ Self::Held(_) => held,
+        }
+    }
+
+    /// The call each write of this vault keeps, when it serves one ([`Self::serving`]).
+    pub(crate) const fn call(&self) -> Option<&'a InvokeRequest> {
+        match *self {
+            Self::Workspace(_, _, _, call) => call,
+            #[cfg(test)]
+            Self::Held(_) => None,
+        }
+    }
+
     /// The same vault, for work that runs where nothing it borrowed reaches.
     #[cfg(feature = "agents")]
     pub(crate) fn owned(&self) -> VaultOf {
         match *self {
-            Self::Workspace(workspaces, workspace, acting) => {
-                VaultOf::Workspace(workspaces.clone(), workspace.to_owned(), acting.cloned())
-            }
+            Self::Workspace(workspaces, workspace, acting, call) => VaultOf::Workspace(
+                workspaces.clone(),
+                workspace.to_owned(),
+                acting.cloned(),
+                call.cloned(),
+            ),
             #[cfg(test)]
             Self::Held(items) => VaultOf::Held(items),
         }
@@ -594,8 +645,10 @@ impl VaultAt<'_> {
         change: impl FnOnce(&mut VaultItems) -> Result<T, accounts::vault_items::ItemError>,
     ) -> Result<T, String> {
         match self {
-            Self::Workspace(workspaces, workspace, acting) => {
-                workspaces.changing_vault(workspace, *acting, change).await
+            Self::Workspace(workspaces, workspace, acting, call) => {
+                workspaces
+                    .changing_vault(workspace, (*acting, *call), change)
+                    .await
             }
             #[cfg(test)]
             Self::Held(items) => {
@@ -614,7 +667,7 @@ impl VaultAt<'_> {
     /// As [`Workspaces::workspace_accounts`].
     pub(crate) async fn accounts(&self) -> Result<accounts::person::AccountList, String> {
         match self {
-            Self::Workspace(workspaces, workspace, _) => {
+            Self::Workspace(workspaces, workspace, ..) => {
                 workspaces.workspace_accounts(workspace).await
             }
             #[cfg(test)]
@@ -632,10 +685,10 @@ impl VaultAt<'_> {
     /// As [`Workspaces::keep_workspace_account`].
     pub(crate) async fn keep_account(&self, account: &accounts::Account) -> Result<(), String> {
         match self {
-            Self::Workspace(workspaces, workspace, acting) => {
+            Self::Workspace(workspaces, workspace, acting, call) => {
                 let by = workspaces.acting_or_own(*acting);
                 workspaces
-                    .keep_workspace_account((workspace, &by), account)
+                    .keep_workspace_account((workspace, &by, *call), account)
                     .await
             }
             #[cfg(test)]
@@ -659,10 +712,10 @@ impl VaultAt<'_> {
         remove: &[&str],
     ) -> Result<(), String> {
         match self {
-            Self::Workspace(workspaces, workspace, acting) => {
+            Self::Workspace(workspaces, workspace, acting, call) => {
                 let by = workspaces.acting_or_own(*acting);
                 workspaces
-                    .keep_workspace_accounts((workspace, &by), keep, remove)
+                    .keep_workspace_accounts((workspace, &by, *call), keep, remove)
                     .await
             }
             #[cfg(test)]
@@ -689,13 +742,23 @@ impl VaultAt<'_> {
 impl Workspaces {
     /// `workspace`'s vault, for code that carries it beside what else it reaches.
     pub(crate) fn vault_at<'a>(&'a self, workspace: &'a str) -> VaultAt<'a> {
-        VaultAt::Workspace(self, workspace, None)
+        VaultAt::Workspace(self, workspace, None, None)
     }
 
     /// `workspace`'s vault whose writes are made as `acting`: the person that asked, or the
     /// agent acting for one, so every holder decides each write as that invoker.
     pub(crate) fn vault_for<'a>(&'a self, workspace: &'a str, acting: &'a Acting) -> VaultAt<'a> {
-        VaultAt::Workspace(self, workspace, Some(acting))
+        VaultAt::Workspace(self, workspace, Some(acting), None)
+    }
+
+    /// [`Self::vault_for`], each write keeping `call` when one is named ([`VaultAt::serving`]).
+    pub(crate) fn vault_serving<'a>(
+        &'a self,
+        workspace: &'a str,
+        acting: &'a Acting,
+        call: Option<&'a InvokeRequest>,
+    ) -> VaultAt<'a> {
+        VaultAt::Workspace(self, workspace, Some(acting), call)
     }
 }
 
@@ -755,6 +818,18 @@ fn vault_changes(
     } else {
         replica.doc_mut().save_after(&heads)
     })
+}
+
+/// What a vault write keeps of `request`, the call it answers: the invocation and the call as
+/// its caller signed it; `None` for a call nobody signed. What the call was asked with is left
+/// out: an item's secret travels in with it, and the vault keeps a secret sealed or not at all.
+/// The signature covers the argument's hash, so the call still says what was asked.
+pub(super) fn served_call(
+    request: &InvokeRequest,
+) -> Option<(tilo_actions::InvocationId, tilo_actions::remote::SignedCall)> {
+    let mut signed = tilo_actions::remote::SignedCall::of(request)?;
+    signed.argument = None;
+    Some((request.invocation, signed))
 }
 
 /// `replica` writing as Passwords does: each change claims Passwords' verb, which every member
@@ -911,6 +986,7 @@ mod tests {
                     VaultChange::Uses(entry.id.clone(), vec![use_record.clone()]),
                 ],
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -920,7 +996,12 @@ mod tests {
         assert_eq!(again.entries()[0].1, vec![use_record]);
 
         workspaces
-            .write_vault(&again, vec![VaultChange::Forget(entry.id.clone())], None)
+            .write_vault(
+                &again,
+                vec![VaultChange::Forget(entry.id.clone())],
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert!(

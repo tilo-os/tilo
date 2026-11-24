@@ -85,29 +85,10 @@ pub(in crate::workspaces) mod turn;
 /// A calendar connected by a turn's telling: asked for, and carried out.
 pub(in crate::workspaces) mod connect;
 
-/// The resource of [`tilo_actions::remote::person_accounts::PROVIDER`] a
-/// person's calendars are asked under.
-pub const RESOURCE: &str = "calendars";
-/// The calendar accounts the person keeps here, without their sign-ins.
-pub const LIST: &str = "list";
-/// Add an account with the password its person types. Theirs alone.
-pub const ADD: &str = "add";
-/// Add an account with the password a vault item keeps.
-pub const ADD_WITH_ITEM: &str = "add-with-item";
-/// Remove an account, its sign-in and what was kept of it. Theirs alone.
-pub const REMOVE: &str = "remove";
-/// Ask the servers now.
-pub const SYNC: &str = "sync";
-/// Every occurrence between two times.
-pub const ENTRIES: &str = "entries";
-/// The free time between two times.
-pub const FREE: &str = "free";
-/// Put the event an invitation describes into a calendar, once.
-pub const ADD_INVITATION: &str = "add-invitation";
-/// File an entry under categories, in its server's own field.
-pub const SET_CATEGORIES: &str = "set-categories";
-/// Connect an account by a turn's telling, for reading only ([`connect`]).
-pub const CONNECT: &str = "connect";
+pub use tilo_actions::remote::person_accounts::calendars::{
+    ADD, ADD_INVITATION, ADD_WITH_ITEM, CONNECT, ENTRIES, FREE, LIST, REMOVE, RESOURCE,
+    SET_CATEGORIES, SYNC,
+};
 
 /// How old a copy may be before a read asks the server again.
 const FRESH_MS: i64 = 60_000;
@@ -886,7 +867,7 @@ impl Workspaces {
         &self,
         (workspace, root): (&str, &Path),
         adding: AddWithItem,
-        (by, asker): (&str, &tilo_action_policy::Acting),
+        (by, asker, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
     ) -> Result<AccountView, String> {
         let place = sign_in_place(&adding)?;
         let sign_in = self
@@ -897,13 +878,13 @@ impl Workspaces {
                     accounts::vault_items::ItemKind::Login,
                     std::slice::from_ref(&place),
                 ),
-                (by, asker),
+                (by, asker, call),
                 accounts::vault_items::UsedFor::default(),
             )
             .await?;
         let root = root.to_path_buf();
         let reach = Asking::of(
-            self.vault_for(workspace, asker),
+            self.vault_serving(workspace, asker, call),
             by,
             self.inner.models.mail_reach(),
         );
@@ -1828,7 +1809,7 @@ impl Workspaces {
             .calendar_with_item(
                 (&reach.workspace.to_string(), &root),
                 adding,
-                (&by, &reach.acting),
+                (&by, &reach.acting, Some(request)),
             )
             .await;
         if kept.is_ok() {
@@ -1877,7 +1858,7 @@ impl Workspaces {
                 .map_err(|reason| ActionError::Refused { reason })?,
         );
         let asking = Asking::of(
-            self.vault_for(&workspace, &reach.acting),
+            self.vault_for(&workspace, &reach.acting).serving(request),
             &reach.by(),
             self.inner.models.mail_reach(),
         );
@@ -2150,7 +2131,7 @@ impl Workspaces {
             }],
             "collapsed": false,
         });
-        self.keep_workspace_account((workspace, &self.acting_or_own(None)), &stored)
+        self.keep_workspace_account((workspace, &self.acting_or_own(None), None), &stored)
             .await?;
         let mut kept = Kept {
             synced_at_ms: now_ms(),

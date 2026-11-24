@@ -526,7 +526,7 @@ async fn keep(
     let opened = workspaces.open_vault(&workspace).await?;
     // The person's own Servers workspace, kept by their device for them.
     workspaces
-        .write_vault(&opened, vec![VaultChange::Keep(entry)], None)
+        .write_vault(&opened, vec![VaultChange::Keep(entry)], None, None)
         .await
         .map_err(|error| format!("the planned machine's ticket was not kept: {error}"))
 }
@@ -563,5 +563,5 @@ async fn forget(workspaces: &Workspaces, plans: &[String]) -> Result<(), String>
         .collect::<Result<Vec<_>, _>>()?;
     let workspace = person_workspace::workspace_id(workspaces);
     let opened = workspaces.open_vault(&workspace).await?;
-    workspaces.write_vault(&opened, changes, None).await
+    workspaces.write_vault(&opened, changes, None, None).await
 }

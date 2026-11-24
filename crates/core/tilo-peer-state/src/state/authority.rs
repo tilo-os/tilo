@@ -1469,7 +1469,7 @@ impl StatePeer {
             };
             let certificate = tilo_server_protocol::invocation::verify_carried(
                 call,
-                &self.core.workspace,
+                (&self.core.workspace, self.signed_by_governor(source)),
                 &document,
                 claim,
                 &self.core.revocations,
@@ -1565,6 +1565,10 @@ impl StatePeer {
             app: app_id.into(),
             record: record.into(),
         };
+        // A step a called action declares it takes in another record counts only when the
+        // device that wrote it keeps the workspace's records: its host. Any other device writes
+        // nothing for a call but the call's own.
+        let keeper = self.signed_by_governor(source).then_some(app_id);
         let mut caller: Option<CallerAccess> = None;
         'changes: for change in changes {
             let certificate = 'named: {
@@ -1597,7 +1601,7 @@ impl StatePeer {
                 // it names a caller elsewhere.
                 let certificate = tilo_server_protocol::invocation::verify_recorded(
                     &context,
-                    &self.core.workspace,
+                    (&self.core.workspace, keeper),
                     &self.core.revocations,
                     crate::state::now_ns(authorization_time),
                 )

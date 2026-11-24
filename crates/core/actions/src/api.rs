@@ -121,6 +121,17 @@ pub enum InputSpec {
 }
 
 impl ActionDescriptor {
+    /// What the action writes besides its own resource, as a reader is told it: `None` for an
+    /// action that declares nothing else ([`Self::effects`]).
+    #[must_use]
+    pub fn writes(&self) -> Option<String> {
+        if self.effects.is_empty() {
+            return None;
+        }
+        let steps: Vec<String> = self.effects.iter().map(ToString::to_string).collect();
+        Some(format!("Writes: {}.", steps.join(", ")))
+    }
+
     /// Whether this action changes only a document: a document operation, or
     /// one carried out on another document than the one its resource is kept
     /// in ([`crate::ROUTED_CHANGE_TAG`]). Such an action reads none of the
@@ -273,6 +284,39 @@ pub struct ActionDescriptor {
     /// unrelated local view operations carry `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<ResourceViewDescriptor>,
+    /// The records this action writes beside its own resource, each as the app, kind and verb
+    /// of the step it takes there ([`ActionEffect`]). What a caller reads to know what the action
+    /// changes, and what a device reading such a record checks to admit a step the call itself
+    /// does not name: never from the call, always from this declaration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<ActionEffect>,
+}
+
+/// One step an action takes on a record other than the resource it is declared on: the app
+/// whose record it writes, the record's kind, and the verb it runs there.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ActionEffect {
+    pub app: String,
+    pub kind: String,
+    pub verb: String,
+}
+
+impl ActionEffect {
+    /// The step `verb` on records of `kind` that `app` keeps.
+    #[must_use]
+    pub fn new(app: impl Into<String>, kind: impl Into<String>, verb: impl Into<String>) -> Self {
+        Self {
+            app: app.into(),
+            kind: kind.into(),
+            verb: verb.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ActionEffect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} {}#{}", self.app, self.kind, self.verb)
+    }
 }
 
 /// Serializable data describing one explicitly declared resource view.
@@ -634,6 +678,7 @@ fn describe(resource: &ResourceSpec, action: &ActionSpec) -> ActionDescriptor {
         input: InputSpec::of(action.input()),
         params: action.params().to_vec(),
         view,
+        effects: Vec::new(),
     }
 }
 

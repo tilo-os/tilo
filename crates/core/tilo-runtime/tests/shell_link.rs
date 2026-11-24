@@ -47,6 +47,7 @@ fn offered(provider: &str, app: &str, resource: &str, action: &str) -> Catalogue
                 "What the provider answers",
             )],
             view: None,
+            effects: Vec::new(),
         },
     );
     CataloguePage::from_rows(
@@ -130,7 +131,10 @@ fn a_dispatch_taken_outside_any_runtime_reaches_the_daemon() {
             .join()
             .expect("a dispatch is taken on a thread outside the runtime");
         let answered = dispatch
-            .settled(Some(workspace), request(PROBE, "probe", "ping", "from the frame loop"))
+            .settled(
+                Some(workspace),
+                request(PROBE, "probe", "ping", "from the frame loop"),
+            )
             .await;
         assert_eq!(answered, Ok(json!("from the frame loop")));
     });
@@ -216,22 +220,14 @@ fn the_shell_and_the_daemon_call_each_other_through_the_one_dispatch() {
 
         // Another provider by the same name is refused; so is one that is not the shell's own.
         let taken = shell
-            .provide(
-                ASKS,
-                &CataloguePage::default(),
-                Arc::clone(&asks) as _,
-            )
+            .provide(ASKS, &CataloguePage::default(), Arc::clone(&asks) as _)
             .await;
         assert!(
             taken.is_err(),
             "a provider served already is not taken over"
         );
         let foreign = shell
-            .provide(
-                PROBE,
-                &CataloguePage::default(),
-                Arc::clone(&asks) as _,
-            )
+            .provide(PROBE, &CataloguePage::default(), Arc::clone(&asks) as _)
             .await;
         assert!(foreign.is_err(), "the shell serves its own providers alone");
     });
@@ -370,7 +366,10 @@ fn the_sessions_own_actions_are_answered_through_the_daemons_dispatch() {
             .invoke(&host.caller(), later.clone())
             .await
             .unwrap();
-        assert!(unknown.is_err(), "a step the session does not offer is refused");
+        assert!(
+            unknown.is_err(),
+            "a step the session does not offer is refused"
+        );
         let mut both = offered(SESSION, SESSION, "shell:layout", "place");
         both.rows
             .extend(offered(SESSION, SESSION, "shell:notices", "dismiss").rows);
@@ -418,6 +417,9 @@ fn a_shell_session_starts_the_persons_shell_on_its_link_and_stops_with_it() {
             "the daemon's endpoint answers while the session runs"
         );
         session.stop().unwrap();
-        assert!(!socket.exists(), "the endpoint is gone once the session stopped");
+        assert!(
+            !socket.exists(),
+            "the endpoint is gone once the session stopped"
+        );
     });
 }

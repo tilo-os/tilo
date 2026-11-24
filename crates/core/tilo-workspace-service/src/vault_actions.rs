@@ -13,16 +13,16 @@
 
 use std::sync::Arc;
 
+use crate::apps::services::{
+    Caller as PublishedCaller, PublishedResources, Reading, ResourceWatch,
+};
+use crate::workspaces::Workspaces;
+use crate::workspaces::providers::Reach;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, pending,
 };
-use crate::apps::services::{
-    Caller as PublishedCaller, PublishedResources, Reading, ResourceWatch,
-};
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate, ResourceSpec};
-use crate::workspaces::Workspaces;
-use crate::workspaces::providers::Reach;
 
 /// The provider the vault's own actions are registered under on the device.
 pub const PROVIDER: &str = "so.tilo.vault";
@@ -164,13 +164,11 @@ impl ActionProvider for VaultActions {
         let (complete, answer) = pending();
         self.runtime.spawn(async move {
             let outcome = match action.as_str() {
-                KEEP => workspaces
-                    .vault_keep(
-                        (&workspace, &by),
-                        item.as_deref(),
-                        &arguments,
-                    )
-                    .await,
+                KEEP => {
+                    workspaces
+                        .vault_keep((&workspace, &by), item.as_deref(), &arguments)
+                        .await
+                }
                 FORGET => match item {
                     Some(item) => workspaces
                         .vault_forget((&workspace, &by), &item)
@@ -264,7 +262,7 @@ impl Workspaces {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(accounts::vault_items::CODE_SECS);
         let facts = self
-            .changing_vault(workspace, Some(by), |items| {
+            .changing_vault(workspace, (Some(by), None), |items| {
                 let code = accounts::vault_items::CodeParams::checked(
                     if algorithm.is_empty() {
                         "SHA1"
@@ -308,7 +306,7 @@ impl Workspaces {
         item: &str,
     ) -> Result<(), ActionCallError> {
         let id = item_id(item)?;
-        self.changing_vault(workspace, Some(by), |items| {
+        self.changing_vault(workspace, (Some(by), None), |items| {
             if items.remove(&id) {
                 Ok(())
             } else {
@@ -499,23 +497,18 @@ mod tests {
     fn the_committed_package_is_what_the_device_registers() {
         let registered = tilo_actions::remote::ProvidedPackage::of(&super::resources())
             .expect("the vault publishes a package");
-        let manifest: toml::Table = toml::from_str(include_str!(
-            "../../../../apps/tl/vault/tilo-app.toml"
-        ))
-        .expect("the manifest reads");
-        assert_eq!(
-            manifest["package"]["id"].as_str(),
-            Some(super::PACKAGE)
-        );
+        let manifest: toml::Table =
+            toml::from_str(include_str!("../../../../apps/tl/vault/tilo-app.toml"))
+                .expect("the manifest reads");
+        assert_eq!(manifest["package"]["id"].as_str(), Some(super::PACKAGE));
         assert_eq!(registered.app, super::PACKAGE);
         assert_eq!(
             manifest["package"]["name"].as_str(),
             Some(registered.title.as_str())
         );
-        let committed: toml::Table = toml::from_str(include_str!(
-            "../../../../apps/tl/vault/surface.toml"
-        ))
-        .expect("the description reads");
+        let committed: toml::Table =
+            toml::from_str(include_str!("../../../../apps/tl/vault/surface.toml"))
+                .expect("the description reads");
         let committed: Vec<tilo_actions::surface::Surface> =
             serde_json::from_value(serde_json::to_value(&committed["resources"]).expect("as JSON"))
                 .expect("the description is surfaces");

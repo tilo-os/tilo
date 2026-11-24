@@ -214,6 +214,7 @@ fn line_descriptor() -> ActionDescriptor {
         input: tilo_actions::InputSpec::None,
         params: LINE_PARAMS.to_vec(),
         view: None,
+        effects: Vec::new(),
     }
 }
 

@@ -781,6 +781,7 @@ mod tests {
                             "The invocation whose changes are taken back.",
                         )],
                         view: None,
+                        effects: Vec::new(),
                     },
                 ));
             }

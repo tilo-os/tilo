@@ -152,6 +152,7 @@ pub(crate) fn row(provider: &str, resource: &str, label: &str, action: &str) -> 
             input: InputSpec::None,
             params: Vec::new(),
             view: None,
+            effects: Vec::new(),
         }),
         has_children: false,
         visibility: None,

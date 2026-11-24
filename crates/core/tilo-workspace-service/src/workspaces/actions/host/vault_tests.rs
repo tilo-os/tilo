@@ -21,7 +21,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 use super::super::ServiceWorkspaceActions;
-use super::super::tests::{admit, caller, governed, settled};
+use super::super::tests::{admit, caller, governed, settled, signed_from};
 use super::turn_use_tests::asks;
 use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::{test_host, test_host_holding};
@@ -32,6 +32,41 @@ const NAME: &str = "ada@example.test";
 /// What no site shows as a setup key: it holds digits a seed never does.
 const NOT_A_SEED: &str = "correct horse battery staple 0189";
 const KEY: &str = "sk-live-ada-own-key";
+
+/// Who each change of `workspace_id`'s vault names as made for, in order: the people its
+/// history entry names, and whether it keeps the call they signed.
+async fn vault_history(
+    workspaces: &Workspaces,
+    workspace_id: WorkspaceId,
+) -> Vec<(Vec<String>, bool)> {
+    let bytes = workspaces
+        .resource_document(
+            &workspace_id.to_string(),
+            tilo_app_id::apps::PASSWORDS,
+            tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+        )
+        .await
+        .unwrap()
+        .expect("the workspace keeps its vault");
+    let doc = automerge::Automerge::load(&bytes).unwrap();
+    doc.get_changes(&[])
+        .into_iter()
+        .filter_map(|change| {
+            let context = change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message)?;
+            let people = context.invoker.as_ref().map_or_else(Vec::new, |invoker| {
+                invoker
+                    .acting
+                    .people()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect()
+            });
+            Some((people, context.signed.is_some()))
+        })
+        .collect()
+}
 
 /// `target` asked by `caller`, on the device `device` certifies, in the
 /// workspace `workspace_id` carries.
@@ -80,9 +115,10 @@ async fn asked(
     (device, caller): (&DeviceCert, &Caller),
     request: &InvokeRequest,
 ) -> Result<Value, ActionCallError> {
+    let request = &signed_from(request, &workspace_id.to_string(), (device, caller));
     let receipt = settled(
         service
-            .in_workspace_as(workspace_id, device)
+            .device_page(workspace_id, device)
             .invoke(caller, request.clone()),
     )
     .await?;
@@ -118,7 +154,7 @@ async fn allowed_at(
     let request = request_of(target, argument);
     asks(asked(service, workspace_id, (device, caller), &request).await);
     super::waiting::answered_by(
-        &service.in_workspace_as(workspace_id, device),
+        &service.device_page(workspace_id, device),
         &super::super::tests::caller(device),
         (caller, &request),
         tilo_actions::remote::asked::Offer::Approve,
@@ -315,6 +351,23 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
     .await
     .expect("Bo takes it back");
     assert_eq!(remaining["items"], json!([]));
+
+    // The vault's history says who did what: Ada kept the item and Bo took it back, each by
+    // the call they signed, which the host that keeps the vault wrote down for them.
+    let (ada_key, bo_key) = (
+        hex::encode(ada.user_public_key),
+        hex::encode(bo.user_public_key),
+    );
+    let made_for: Vec<_> = vault_history(workspaces, workspace_id)
+        .await
+        .into_iter()
+        .filter(|(people, _)| people.contains(&ada_key) || people.contains(&bo_key))
+        .collect();
+    assert_eq!(
+        made_for,
+        [(vec![ada_key], true), (vec![bo_key], true)],
+        "the vault's history names Ada's keeping and Bo's taking back"
+    );
     server.shutdown().await;
 }
 
@@ -512,7 +565,10 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
     let entry_item = format!("vault.item:{}", entry["id"].as_str().unwrap());
     let items = listed["items"].as_array().cloned().unwrap_or_default();
     assert_eq!(items.len(), 2, "{listed}");
-    assert!(items.contains(&kept), "{listed}");
+    assert!(
+        items.iter().any(|item| item["reference"] == reference),
+        "{listed}"
+    );
     assert!(
         items
             .iter()
@@ -1486,7 +1542,11 @@ async fn what_a_host_kept_of_a_vault_before_is_carried_into_the_vault_document()
     vault.try_save().unwrap();
     workspaces
         .keep_workspace_account(
-            (&workspace_id.to_string(), &workspaces.acting_or_own(None)),
+            (
+                &workspace_id.to_string(),
+                &workspaces.acting_or_own(None),
+                None,
+            ),
             &mail_account("ada@example.test", "example.test"),
         )
         .await
@@ -1591,7 +1651,7 @@ async fn the_sign_ins_a_host_kept_are_the_vaults_once_it_starts() {
     );
     for account in [&mail, &google] {
         workspaces
-            .keep_workspace_account((&workspace, &workspaces.acting_or_own(None)), account)
+            .keep_workspace_account((&workspace, &workspaces.acting_or_own(None), None), account)
             .await
             .unwrap();
     }

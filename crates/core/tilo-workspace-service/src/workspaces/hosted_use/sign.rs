@@ -40,6 +40,7 @@ use serde_json::{Value, json};
 pub(super) use tilo_actions::remote::person_vault::Sign;
 
 use super::Workspaces;
+use tilo_actions::remote::InvokeRequest;
 
 /// The most one signature signs, decoded.
 const MAX_DATA_BYTES: usize = 1024 * 1024;
@@ -237,7 +238,7 @@ pub(super) fn sendable(sign: &Sign) -> Result<(), String> {
     read(sign).map(drop)
 }
 
-/// Sign what `sign` names for `by` with the ssh key `item` of `workspace`'s vault keeps for
+/// Sign what `sign` names for `by`, serving the call `asked`, with the ssh key `item` of `workspace`'s vault keeps for
 /// the server `sign` names. `purpose` is what the use is written down with; the use is written to the vault
 /// before the signature is made, and nothing is written for a signature refused.
 pub(super) async fn sign(
@@ -245,7 +246,7 @@ pub(super) async fn sign(
     workspace: &str,
     sign: &Sign,
     item: &ItemId,
-    (by, asker): (&str, &tilo_action_policy::Acting),
+    (by, asker, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
     let signed = read(sign)?;
@@ -271,7 +272,7 @@ pub(super) async fn sign(
     }
     signed.fits(key.public_key())?;
     workspaces
-        .write_vault(&opened, items.take_changes(), Some(asker))
+        .write_vault(&opened, items.take_changes(), Some(asker), Some(asked))
         .await?;
     signed.made_with(&key)
 }

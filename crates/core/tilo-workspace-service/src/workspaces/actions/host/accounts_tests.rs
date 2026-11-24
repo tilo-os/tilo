@@ -47,7 +47,7 @@ async fn keep(workspaces: &crate::workspaces::Workspaces, workspace: &str, addre
         "smtp_port": 465,
     });
     workspaces
-        .keep_workspace_account((workspace, &workspaces.acting_or_own(None)), &account)
+        .keep_workspace_account((workspace, &workspaces.acting_or_own(None), None), &account)
         .await
         .expect("the account is kept");
 }
@@ -82,9 +82,9 @@ async fn a_window_following_the_accounts_is_sent_them_again_when_they_change() {
     let keeping = workspace_id.to_string();
     keep(&workspaces, &keeping, "ada@example.test").await;
     keep(&workspaces, &keeping, "bob@example.test").await;
-    let hers = host.in_workspace_as(workspace_id, &ada);
+    let hers = host.device_page(workspace_id, &ada);
     let ada = caller(&ada);
-    let bos_page = host.in_workspace_as(workspace_id, &bo);
+    let bos_page = host.device_page(workspace_id, &bo);
     let bo = caller(&bo);
 
     // Her window follows them: the host reads them as they are.
@@ -156,7 +156,7 @@ async fn a_member_asks_what_arrived_and_the_host_watches_from_then_on() {
         "adas-password",
     )
     .await;
-    let page = host.in_workspace_as(workspace_id, &ada);
+    let page = host.device_page(workspace_id, &ada);
     let ada = caller(&ada);
     assert!(servers.running().is_empty(), "nobody asked yet");
 
@@ -207,7 +207,7 @@ async fn a_member_asks_what_arrived_and_the_host_watches_from_then_on() {
     // A member of another workspace reads their own log, never this one.
     let (elsewhere, elsewhere_id, _) = governed(&workspaces).await;
     let bo = admit(&workspaces, &elsewhere, &owner, 2).await;
-    let elsewhere_page = host.in_workspace_as(elsewhere_id, &bo);
+    let elsewhere_page = host.device_page(elsewhere_id, &bo);
     let theirs = arrived(
         settled(elsewhere_page.invoke(&caller(&bo), asking(person_accounts::ARRIVED, json!({}))))
             .await

@@ -103,7 +103,7 @@ impl Hers {
 
     /// What Ada is answered on her own device.
     async fn herself(&self, target: RemoteActionTarget, argument: Value) -> Value {
-        let page = self.service.in_workspace_as(self.workspace_id, &self.ada);
+        let page = self.service.device_page(self.workspace_id, &self.ada);
         asked(&page, &caller(&self.ada), target, argument)
             .await
             .expect("her own asking, on her own device")

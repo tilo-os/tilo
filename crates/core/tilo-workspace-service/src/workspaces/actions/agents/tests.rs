@@ -303,7 +303,7 @@ async fn what_its_person_allows_under_agents_runs_unasked_within_their_account()
         };
         asked
     };
-    let in_workspace = actions.in_workspace_as(workspace_id, &owner);
+    let in_workspace = actions.device_page(workspace_id, &owner);
 
     // By default it asks its person first, who says no here.
     assert!(demote(&actions, here, &agent, &ada).await.is_err());

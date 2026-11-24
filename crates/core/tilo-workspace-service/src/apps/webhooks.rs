@@ -230,6 +230,7 @@ fn row() -> CatalogueRow {
                 ),
             ],
             view: None,
+            effects: Vec::new(),
         },
     )
 }

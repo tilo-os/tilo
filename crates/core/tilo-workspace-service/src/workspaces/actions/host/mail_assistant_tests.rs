@@ -92,7 +92,7 @@ impl Setup {
 
     /// Ada's page: what a device of hers asks the host through.
     fn page(&self) -> impl ActionProvider + Clone + Send + 'static {
-        self.host.in_workspace_as(self.workspace_id, &self.device)
+        self.host.device_page(self.workspace_id, &self.device)
     }
 
     /// Ada, on her device.
@@ -275,7 +275,7 @@ async fn reads_the_account_kept(page: &(impl ActionProvider + Sync), caller: &Ca
 async fn two_members_read_the_one_account_the_workspace_keeps() {
     let setup = Setup::new().await;
     let bo = admit(&setup.workspaces, &setup.workspace, &setup.owner, 2).await;
-    let bos_page = setup.host.in_workspace_as(setup.workspace_id, &bo);
+    let bos_page = setup.host.device_page(setup.workspace_id, &bo);
     reads_the_account_kept(&setup.page(), &setup.ada(), "Ada").await;
     reads_the_account_kept(&bos_page, &caller(&bo), "Bo").await;
     assert_eq!(
@@ -435,7 +435,7 @@ async fn nobody_outside_the_workspace_reads_its_mail() {
     let setup = Setup::new().await;
     let (elsewhere, elsewhere_id, _) = governed(&setup.workspaces).await;
     let bo = admit(&setup.workspaces, &elsewhere, &setup.owner, 2).await;
-    let bos_page = setup.host.in_workspace_as(setup.workspace_id, &bo);
+    let bos_page = setup.host.device_page(setup.workspace_id, &bo);
     let bos_agent = caller(&bo).delegated_to(ASSISTANT);
     let bos_turn = Caller::delegated_agent(ASSISTANT, bo.user_public_key, bo.device_public_key)
         .in_workspace(setup.workspace_id.to_string())
@@ -468,7 +468,7 @@ async fn nobody_outside_the_workspace_reads_its_mail() {
     assert!(offered(&bos_page, &bos_agent).await.is_empty());
 
     // In the workspace Bo is a member of, this account is none it keeps.
-    let his_page = setup.host.in_workspace_as(elsewhere_id, &bo);
+    let his_page = setup.host.device_page(elsewhere_id, &bo);
     let his: MailAccounts =
         read(asked_of(&his_page, &caller(&bo), person_accounts::LIST, json!({})).await);
     assert!(his.accounts.is_empty(), "{his:?}");

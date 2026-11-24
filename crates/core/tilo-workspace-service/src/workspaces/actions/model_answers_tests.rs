@@ -151,7 +151,7 @@ async fn ask_at(
     let person = Caller::authenticated(device.user_public_key, device.device_public_key);
     let receipt = settled(
         service
-            .in_workspace_as(workspace_id, device)
+            .device_page(workspace_id, device)
             .invoke(&person, asking),
     )
     .await?;
@@ -248,7 +248,7 @@ async fn ask_as(
 ) -> Result<Value, ActionCallError> {
     let mut request = request("", "", argument);
     request.target = model_providers::target(verb);
-    let provider = host.in_workspace_as(workspace_id, device);
+    let provider = host.device_page(workspace_id, device);
     let invocation = request.invocation;
     let first = settled(provider.invoke(caller, request.clone())).await;
     let workspaces = host.shared.workspaces.get().unwrap();
@@ -745,7 +745,7 @@ async fn a_pages_ask_is_answered_as_the_model_writes_it() {
     .await
     .unwrap();
 
-    let actions = actions_here.in_workspace_as(workspace_id, &ada);
+    let actions = actions_here.device_page(workspace_id, &ada);
     let her = super::tests::caller(&ada);
     let mut request = super::tests::request(
         "",
@@ -1385,7 +1385,7 @@ async fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
         (Arc::new(Nothing), her.clone()),
     );
 
-    let actions = actions_here.in_workspace_as(workspace_id, &ada);
+    let actions = actions_here.device_page(workspace_id, &ada);
     let receipt = super::tests::settled(actions.invoke(&her, request))
         .await
         .unwrap();

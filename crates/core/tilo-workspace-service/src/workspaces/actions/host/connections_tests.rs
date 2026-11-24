@@ -79,7 +79,7 @@ impl<'a> Asking<'a> {
         let request = calling(action, argument);
         asks(self.asked(&request).await);
         super::waiting::answered_by(
-            &self.actions.in_workspace_as(self.workspace_id, self.device),
+            &self.actions.device_page(self.workspace_id, self.device),
             &caller(self.device),
             (self.caller, &request),
             tilo_actions::remote::asked::Offer::Approve,
@@ -92,7 +92,7 @@ impl<'a> Asking<'a> {
     async fn asked(self, request: &InvokeRequest) -> Result<Value, Refused> {
         let receipt = settled(
             self.actions
-                .in_workspace_as(self.workspace_id, self.device)
+                .device_page(self.workspace_id, self.device)
                 .invoke(self.caller, request.clone()),
         )
         .await?;
@@ -113,7 +113,7 @@ impl<'a> Asking<'a> {
         };
         let page = settled(
             self.actions
-                .in_workspace_as(self.workspace_id, self.device)
+                .device_page(self.workspace_id, self.device)
                 .query(self.caller, query),
         )
         .await

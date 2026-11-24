@@ -127,7 +127,7 @@ async fn a_sign_in_asked_by(
     let mut asking = request("", "", json!({"signIn": "any"}));
     asking.target = model_providers::target(verb);
     let first = settled(tilo_actions::remote::ActionProvider::invoke(
-        &actions.in_workspace_as(workspace_id, member),
+        &actions.device_page(workspace_id, member),
         caller,
         asking.clone(),
     ))
@@ -345,7 +345,7 @@ async fn settled_own(
     let mut asking = request("", "", argument);
     asking.target = model_providers::target(verb);
     let receipt = settled(tilo_actions::remote::ActionProvider::invoke(
-        &actions.in_workspace_as(workspace_id, person),
+        &actions.device_page(workspace_id, person),
         &super::tests::caller(person),
         asking,
     ))

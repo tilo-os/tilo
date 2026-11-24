@@ -10,6 +10,9 @@ use crate::{
 
 /// The workspace vault's document id within Passwords.
 pub const WORKSPACE_VAULT_DOCUMENT: &str = "uuid:56daeee1-adbe-4b63-b0cc-5fd549e93077";
+/// The resource kind of [`WORKSPACE_VAULT_DOCUMENT`], which always uses independent document
+/// keys ([`protected_resource_kind`]).
+pub const WORKSPACE_VAULT_KIND: &str = "passwords.workspace-vault";
 /// The Mail workspace's shared sender trust.
 pub const WORKSPACE_MAIL_TRUST_DOCUMENT: &str = "uuid:9523105b-4fbb-4129-90b2-0d40b9f3758b";
 /// The Mail workspace's retained server messages.
@@ -219,7 +222,7 @@ pub fn protected_kinds_of(app: &str) -> Vec<&'static str> {
 pub fn protected_resource_kind(app: &str, document: &str) -> Option<&'static str> {
     match (app, document) {
         (tilo_app_id::apps::PASSWORDS | "dev.tilo.passwords", WORKSPACE_VAULT_DOCUMENT) => {
-            Some("passwords.workspace-vault")
+            Some(WORKSPACE_VAULT_KIND)
         }
         (tilo_app_id::apps::CHAT | "dev.tilo.chat", WORKSPACE_CHAT_DRAFTS_DOCUMENT) => {
             Some("chat.drafts")

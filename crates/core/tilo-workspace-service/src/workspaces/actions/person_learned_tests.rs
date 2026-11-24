@@ -50,7 +50,7 @@ impl Asking<'_> {
         request.target = person_learned::target(action);
         let first = settled(
             self.server
-                .in_workspace_as(self.workspace, device)
+                .device_page(self.workspace, device)
                 .invoke(caller, request.clone()),
         )
         .await;
