@@ -121,7 +121,7 @@ fn connection_row(
         .secondary(&row.address)
         .meta(&row.meta)
         .selected(row.selected)
-        .on_click(queue(requests, Action::RequestConnect(row.id)));
+        .on_activate(queue(requests, Action::RequestConnect(row.id)));
     if let Some(actions) = actions {
         if let Some(edit) = actions.effect(&RemoteEffect::EditConnection { connection: row.id }) {
             list_row = list_row.action_binding(Icon::Pencil, "Edit connection", edit);
@@ -428,11 +428,12 @@ fn sign_in_fields(
             .map(|a| Segment::new(CATALOG.t(a.label_message())))
             .collect();
         let queue_to = Rc::clone(requests);
-        let auth = ToggleGroup::new(segments, selected).on_choose("remote.form.auth", move |index| {
-            if let Some(method) = methods.get(index) {
-                queue_to.borrow_mut().push(Action::SetAuth(*method));
-            }
-        });
+        let auth =
+            ToggleGroup::new(segments, selected).on_choose("remote.form.auth", move |index| {
+                if let Some(method) = methods.get(index) {
+                    queue_to.borrow_mut().push(Action::SetAuth(*method));
+                }
+            });
         section = section.field(Field::new("Sign in with", auth).with_trailing_control());
     }
     let (label, placeholder) = match model.auth {

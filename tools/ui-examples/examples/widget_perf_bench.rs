@@ -218,7 +218,13 @@ impl Bench {
 
         let t_draw = tilo_ui::time::now();
         scene.reset();
-        root.draw_child(scene, Affine::IDENTITY, text_renderer, theme, presence);
+        root.draw_child(
+            scene,
+            Affine::IDENTITY,
+            text_renderer,
+            theme,
+            &presence.draw_env(),
+        );
         times.draw_us = t_draw.elapsed().as_micros();
 
         let t_render = tilo_ui::time::now();

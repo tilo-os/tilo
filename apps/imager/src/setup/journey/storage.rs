@@ -89,7 +89,10 @@ impl Storage {
             plan::target_bounds(basis, requirements(0))
                 .ok()
                 .and_then(|bounds| {
-                    let min = bounds.min_bytes.max(staging::MIN_TARGET_BYTES).div_ceil(1 << 30);
+                    let min = bounds
+                        .min_bytes
+                        .max(staging::MIN_TARGET_BYTES)
+                        .div_ceil(1 << 30);
                     let max = bounds.max_bytes >> 30;
                     (min <= max).then_some((min, max))
                 })

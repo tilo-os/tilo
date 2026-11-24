@@ -1,11 +1,12 @@
 use super::*;
 // The presence a drawing of this window is made under (a change on main this app has not caught
 // up with yet).
-use ui::presence::PresenceCtx;
 use crate::presentation::MAX_KEYBOARD_CONTENT_WIDTH;
 use automerge::AutoCommit;
 use std::cell::RefCell;
 use std::rc::Rc;
+use ui::presence::PresenceCtx;
+use ui::presence::PresenceCtx;
 use ui::widget::DrawChild;
 
 tilo_test_env::scenario! {
@@ -982,7 +983,13 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
+        osk.draw_child(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence.draw_env(),
+        );
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("osk_dialpad.png");
@@ -1010,7 +1017,13 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
+        osk.draw_child(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence.draw_env(),
+        );
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("osk_suggestion_bar.png");
@@ -1841,7 +1854,13 @@ fn every_panel_face_paints() {
     open_panel(&mut osk);
     let mut paint = |osk: &mut OskWidget| {
         let mut scene = Scene::new();
-        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme,&presence.draw_env());
+        osk.draw_child(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence.draw_env(),
+        );
         assert!(!scene.encoding().is_empty());
     };
     paint(&mut osk);

@@ -23,8 +23,11 @@ use taffy::style_helpers::{length, percent};
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
 };
+#[cfg(test)]
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+#[cfg(test)]
+use vello::kurbo::Affine;
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
@@ -35,7 +38,9 @@ use ui::app::UserEvent;
 use ui::caps_lock::CapsLockEstimate;
 use ui::icons::Icon;
 
-use ui::text_render::{NumericStyle, OpenTypeTag, TextRenderer, TextWeight};
+#[cfg(test)]
+use ui::text_render::TextRenderer;
+use ui::text_render::{NumericStyle, OpenTypeTag, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::DrawChild;
@@ -308,10 +313,14 @@ impl Widget for Stack {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in &mut self.children {
-            child.draw_child(scene, transform, text_renderer, theme,&env);
+            child.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 
@@ -2438,7 +2447,11 @@ impl Widget for GreeterApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // The backdrop holds one composition. A login screen mostly waits,
         // and a moving full-screen backdrop re-rasterized the whole display
@@ -2457,7 +2470,7 @@ impl Widget for GreeterApp {
             ui::auth_backdrop::draw(scene, theme, transform, output, BACKDROP_PHASE_SECONDS);
         }
         if let Some(c) = self.composed.element_mut() {
-            c.draw_child(scene, transform, text_renderer, theme,&env);
+            c.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 

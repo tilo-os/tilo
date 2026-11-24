@@ -70,13 +70,17 @@ pub enum InstallerPreviewEffect {
     /// Choose an option on this page.
     #[effect(kind = "outside", returns)]
     ChoosePreview {
-        #[param("Choice: computer, another, desktop; os, server; purpose-computer, purpose-server")]
+        #[param(
+            "Choice: computer, another, desktop; os, server; purpose-computer, purpose-server"
+        )]
         choice: String,
     },
     /// Choose an option on this page and continue to the next page.
     #[effect(kind = "outside", returns)]
     ChooseAndContinuePreview {
-        #[param("Choice: computer, another, desktop; os, server; purpose-computer, purpose-server")]
+        #[param(
+            "Choice: computer, another, desktop; os, server; purpose-computer, purpose-server"
+        )]
         choice: String,
     },
     /// Name one identifying field of the other computer.
@@ -822,7 +826,8 @@ impl InstallerPreview {
                     if !self.usb_backend_available() {
                         return Err("installer-preview-storage-unavailable");
                     }
-                    if self.journey.destination == Some(Destination::Another) && !self.make_plan()?
+                    if self.journey.destination == Some(Destination::Another)
+                        && !self.make_plan()?
                     {
                         return Ok(());
                     }
@@ -1054,7 +1059,7 @@ impl InstallerPreview {
             .secondary(secondary)
             .two_line_secondary()
             .disclosure()
-            .on_click(move || {
+            .on_activate(move || {
                 commands
                     .borrow_mut()
                     .push(InstallerPreviewEffect::EditPreview {
@@ -1744,7 +1749,11 @@ impl Widget for InstallerPreview {
         }
     }
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let now = ui::motion::frame_now();
         if theme.reduce_motion || self.capture {
@@ -1775,7 +1784,7 @@ impl Widget for InstallerPreview {
         }
         let mut current = Scene::new();
         if let Some(child) = &mut self.composed {
-            child.draw_child(&mut current, Affine::IDENTITY, text, theme,&env);
+            child.draw_child(&mut current, Affine::IDENTITY, text, theme, &env);
         }
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -1869,9 +1878,9 @@ impl Widget for InstallerPreview {
     }
 }
 
-#[cfg(test)]
-mod structure_tests;
 #[cfg(all(test, unix))]
 mod desktop_model_tests;
 #[cfg(all(test, unix))]
 mod purpose_tests;
+#[cfg(test)]
+mod structure_tests;

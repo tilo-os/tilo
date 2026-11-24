@@ -986,10 +986,7 @@ impl InstallerApp {
         app.hostname.set(DEFAULT_HOSTNAME.to_string());
         app.timezone.set(DEFAULT_TIMEZONE.to_string());
         app.keymap.set(DEFAULT_KEYMAP_NAME.to_string());
-        if !matches!(
-            step,
-            Step::Network | Step::Keyboard | Step::Disk
-        ) {
+        if !matches!(step, Step::Network | Step::Keyboard | Step::Disk) {
             app.selected_disk = Some(0);
         }
         app.selected_fs = 0;
@@ -1508,11 +1505,8 @@ impl InstallerApp {
                             completion.timezone = FieldCompletion::Complete;
                             completion.filesystem = FieldCompletion::Complete;
                         }
-                        Step::Network
-                        | Step::Disk
-                        | Step::Media
-                        | Step::Review
-                        | Step::Install => {}
+                        Step::Network | Step::Disk | Step::Media | Step::Review | Step::Install => {
+                        }
                     }
                 }
                 if let Some(n) = self.next_setup_step() {
@@ -2081,7 +2075,7 @@ impl InstallerApp {
                     .selected(selected)
                     .checked(selected)
                     .with_enabled(!self.network.is_busy())
-                    .on_click(move || fire.fire());
+                    .on_activate(move || fire.fire());
                 children.push(Box::new(
                     Bound::new(Box::new(row), [(id, &control)]).activated_by_keys(&control),
                 ));
@@ -3582,10 +3576,14 @@ impl Widget for InstallerApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(c) = self.composed.element_mut() {
-            c.draw_child(scene, transform, text_renderer, theme,&env);
+            c.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 

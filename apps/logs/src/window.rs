@@ -10,8 +10,7 @@ use ui::widget::{AppModel, ModelPath};
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::Key;
 
@@ -22,7 +21,6 @@ use ui::framework::{
 use ui::icons::Icon;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Spacing;
 use ui::widget::{Element, InspectorPlacement, NavShell, TaffyTreeExt, Widget};
@@ -926,9 +924,13 @@ impl Widget for LogsWindow {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        self.shell.draw_child(scene, transform, tr, theme,&env);
+        self.shell.draw_child(scene, transform, tr, theme, &env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

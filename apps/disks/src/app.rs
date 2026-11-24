@@ -10,10 +10,8 @@ use std::sync::mpsc;
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, Live, LiveRow, RunMode};
 use ui::portal::LaunchOutcome;
 
-use ui::text_render::TextRenderer;
+#[cfg(test)]
 use ui::theme::Theme;
-use ui::vello::Scene;
-use ui::vello::kurbo::Affine;
 use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
 use ui::winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -1091,10 +1089,19 @@ impl ui::widget::Decorator for DisksApp {
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.shell
-            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.shell.draw_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn needs_animation_frame(&self) -> bool {

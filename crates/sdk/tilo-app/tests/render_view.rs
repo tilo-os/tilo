@@ -4,7 +4,7 @@
 use std::rc::Rc;
 
 use serde_json::json;
-use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
+use tilo_app::advanced::{NodeId, TaffyTree};
 use tilo_app::prelude::*;
 use tilo_app::vello::kurbo::{BezPath, Stroke};
 use tilo_app::vello::peniko::Color;
@@ -75,7 +75,11 @@ impl Widget for Hatching {
     }
 
     fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, _, _, mut env) = ctx.parts();
         let pen = Stroke::new(0.6);
         for row in 0..400_u32 {

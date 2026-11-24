@@ -420,7 +420,7 @@ fn number(value: f64) -> String {
 mod tests {
     use crate::actions::{Draw, NewMark};
     use crate::model::{Artwork, Shape};
-    use serde_json::{Value, json};
+    use serde_json::Value;
     use tilo_resource::Replica;
 
     fn rect_of(art: &Artwork, id: &str) -> [f64; 4] {

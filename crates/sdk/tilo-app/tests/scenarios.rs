@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
+use tilo_app::advanced::{NodeId, TaffyTree, WindowEvent};
 use tilo_app::headless::FrameHarness;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::ElementState;
@@ -227,10 +227,13 @@ impl Widget for Staged {
     }
 
     fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.inner
-            .draw_child(scene, transform, text, theme,&env);
+        self.inner.draw_child(scene, transform, text, theme, &env);
     }
 
     fn name(&self) -> &'static str {

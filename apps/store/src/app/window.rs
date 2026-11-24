@@ -6,12 +6,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
+use ui::Theme;
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::framework::{Live, Publishes, RunMode, ViewCx};
 use ui::widget::{AppModel, Element, ModelPath, Widget};
-use ui::{Theme, text_render::TextRenderer};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use super::{Shared, StoreState, parent_node, view};
 use crate::reports::Reports as Store;
@@ -264,18 +263,32 @@ impl Widget for StoreApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(root) = self.root.as_mut() {
-            root.draw_child(scene, transform, text_renderer, theme,&env);
+            root.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(root) = self.root.as_mut() {
-            root.draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            root.draw_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
     }
 

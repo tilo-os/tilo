@@ -92,7 +92,13 @@ pub fn run(_args: &[String]) {
 
         let t = tilo_ui::time::now();
         scene.reset();
-        root.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        root.draw_child(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &presence.draw_env(),
+        );
         prof.record(Pass::Draw, t.elapsed());
 
         prof.commit_frame_summed();

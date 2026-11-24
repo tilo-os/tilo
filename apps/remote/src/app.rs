@@ -11,8 +11,11 @@ use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 
 use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
+#[cfg(test)]
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+#[cfg(test)]
+use vello::kurbo::Affine;
+use vello::kurbo::{Point, Rect};
 use vello::peniko::{Blob, ImageData as PenikoImage};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
@@ -21,6 +24,7 @@ use ui::LocalState;
 use ui::framework::{EffectStatus, Live, Publishes, ViewCx};
 use ui::icons::Icon;
 
+#[cfg(test)]
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::Invoke;
@@ -1797,21 +1801,40 @@ impl Widget for RemoteApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.state().pump_session();
         self.check_views();
         self.body_mut()
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.body_mut()
-            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.body_mut().draw_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
         if let Some(dialog) = self.dialog.as_mut() {
-            dialog.draw_overlay(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+            dialog.draw_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         }
     }
 

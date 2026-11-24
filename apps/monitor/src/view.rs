@@ -9,8 +9,7 @@ use std::rc::Rc;
 
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::charts::{BarGauge, Chart, ChartStyle, Series, nice_step};
@@ -18,7 +17,7 @@ use ui::fact::{Measure, Measured};
 use ui::format::memory as format_bytes;
 use ui::i18n::ArgValue;
 
-use ui::text_render::{TextKind, TextRenderer};
+use ui::text_render::TextKind;
 use ui::theme::Theme;
 use ui::widget::card::{CardGrid, CardWidth};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
@@ -874,13 +873,17 @@ impl Widget for ProcessesPane {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(summary) = &mut self.summary {
-            summary.draw_child(scene, transform, text_renderer, theme,&env);
+            summary.draw_child(scene, transform, text_renderer, theme, &env);
         }
         self.body_mut()
-            .draw_child(scene, transform, text_renderer, theme,&env);
+            .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1411,10 +1414,14 @@ impl Widget for ResourcesPane {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(page) = &mut self.page {
-            page.draw_child(scene, transform, text_renderer, theme,&env);
+            page.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 

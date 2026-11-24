@@ -17,8 +17,6 @@ use ui::framework::{EffectStatus, Live, Publishes, RunMode, ViewCx};
 use ui::icons::Icon;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     AppModel, Banner, Button, ButtonRole, Column, Density, Element, Form, FormSection, ListRow,
@@ -26,8 +24,7 @@ use ui::widget::{
     SectionHeader, Text, ToggleGroup, Widget,
 };
 use ui::{TextKind, TextRole};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -1899,7 +1896,7 @@ impl WindowsApp {
                 .icon(icon)
                 .secondary(strings::t(detail))
                 .disclosure()
-                .on_click(intents.sender(intent))
+                .on_activate(intents.sender(intent))
         };
         let mut capsule = destination(
             "windows-confirm-capsule-install",
@@ -2379,12 +2376,27 @@ impl ui::widget::Decorator for WindowsWindow {
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.shell
-            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.shell.draw_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
         if let Some(dialog) = self.dialog.as_mut() {
-            dialog.draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            dialog.draw_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
     }
 

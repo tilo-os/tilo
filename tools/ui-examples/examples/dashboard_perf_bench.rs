@@ -942,12 +942,14 @@ impl PeerBench {
                 tilo_ui::scene_parts::PartKey::new("bench.remote-presence", ()),
                 |layer| {
                     tilo_ui::presence::draw_remote_presence(
-                        layer,
-                        Affine::IDENTITY,
                         viewport,
-                        text_renderer,
-                        theme,
-                        presence,
+                        &mut tilo_ui::DrawCtx::new(
+                            layer,
+                            Affine::IDENTITY,
+                            text_renderer,
+                            theme,
+                            presence.draw_env(),
+                        ),
                     )
                 },
             );
@@ -1038,7 +1040,7 @@ fn full_draw(
             Affine::IDENTITY,
             state.text_renderer,
             state.theme,
-            state.presence,
+            &state.presence.draw_env(),
         );
         state.presence.pop_viewport(prev_vp);
         state

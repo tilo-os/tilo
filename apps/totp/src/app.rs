@@ -2017,16 +2017,4 @@ pub(crate) mod tests {
         }
         img.save(path).unwrap();
     }
-
-    fn rows_of<'a>(
-        node: &'a ui::composition::Composed,
-        out: &mut Vec<&'a ui::composition::Composed>,
-    ) {
-        if node.widget == "TotpRow" {
-            out.push(node);
-        }
-        for child in &node.children {
-            rows_of(child, out);
-        }
-    }
 }

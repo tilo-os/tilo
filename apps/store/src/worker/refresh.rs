@@ -9,7 +9,7 @@ use ui::time::Instant;
 use crate::device::{self, FlatpakStatus};
 
 use super::{
-    Done, Duration, LocaleContext, RegistryConfig, State, StoreItem, StoreSource, refresh_flatpak,
+    Done, Duration, LocaleContext, RegistryConfig, State, StoreItem, StoreSource,
     sync_authoritative_catalogue,
 };
 use crate::catalogue::flathub::FlathubFeed;

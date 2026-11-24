@@ -84,14 +84,18 @@ use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+#[cfg(test)]
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+#[cfg(test)]
+use vello::kurbo::Affine;
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent};
 
 use crate::actions::SetPreference;
 use crate::learned::{Learned, Lesson};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 
+#[cfg(test)]
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -941,7 +945,8 @@ impl OskWidget {
     fn adopt_learned(&mut self) {
         let learned = std::rc::Rc::clone(&self.learned);
         if let Some(transitions) = learned.transitions.get(self.language.code()) {
-            self.predictor.adopt_learned(crate::learned::counts(transitions));
+            self.predictor
+                .adopt_learned(crate::learned::counts(transitions));
         }
         self.touch_model.adopt(&learned.touch_offsets());
         if let Some(ac) = &mut self.autocorrect {
@@ -2671,7 +2676,11 @@ impl Widget for OskWidget {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if !self.visible {
             return;
@@ -2728,8 +2737,13 @@ impl Widget for OskWidget {
         .draw(scene, transform, text_renderer, theme);
 
         // Last, so the skin-tone row floats over the keys.
-        self.emoji_panel
-            .draw(&mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()));
+        self.emoji_panel.draw(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

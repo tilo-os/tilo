@@ -729,7 +729,7 @@ impl ImagerApp {
                             .meta(fmt_size(source.size))
                             .selected(self.recent_selected(index))
                             .checked(self.recent_selected(index))
-                            .on_click(move || sink.borrow_mut().push(Command::Recent(index))),
+                            .on_activate(move || sink.borrow_mut().push(Command::Recent(index))),
                     ) as Box<dyn Widget>)
                 })
                 .collect();
@@ -800,7 +800,7 @@ impl ImagerApp {
             self.bind_effect(row, &ImagerEffect::CancelDownload)
         } else {
             let sink = Rc::clone(&self.commands);
-            row.on_click(move || sink.borrow_mut().push(Command::Release(index)))
+            row.on_activate(move || sink.borrow_mut().push(Command::Release(index)))
         };
         if downloading
             && let Some(cancel) = self
@@ -2339,14 +2339,18 @@ impl Widget for ImagerApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.export_dialog.is_open() {
             self.export_dialog
                 .layout_in(self.composed.rect(), theme, text_renderer);
         }
         if let Some(composed) = self.composed.element_mut() {
-            composed.draw_child(scene, transform, text_renderer, theme,&env);
+            composed.draw_child(scene, transform, text_renderer, theme, &env);
         }
     }
 
@@ -2392,11 +2396,20 @@ impl Widget for ImagerApp {
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.export_dialog.is_open() {
-            self.export_dialog
-                .draw_detached(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            self.export_dialog.draw_detached(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
     }
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {

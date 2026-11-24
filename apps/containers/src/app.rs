@@ -18,7 +18,6 @@ use ui::framework::{
     Dispatcher, EffectStatus, Effected, Live, LiveRow, Publishes, RunMode, ViewCx,
 };
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::tokens::TextRole;
@@ -28,8 +27,7 @@ use ui::widget::{
     AppModel, Column, Element, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text,
     TextInput, Widget,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -1892,17 +1890,30 @@ impl Widget for ContainersApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        self.window
-            .draw_child(scene, transform, tr, theme,&env);
+        self.window.draw_child(scene, transform, tr, theme, &env);
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(&mut ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+            child.draw_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                tr,
+                theme,
+                env.clone(),
+            ));
         }
     }
 

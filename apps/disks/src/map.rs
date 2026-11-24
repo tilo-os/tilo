@@ -14,8 +14,7 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::colors::Colors;
-use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect};
+use ui::vello::kurbo::{Point, Rect};
 use ui::vello::peniko::Color;
 use ui::widget::{ChipFace, ChipLead, EventCtx, ModelPath, TaffyTreeExt, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
@@ -330,7 +329,11 @@ impl Widget for PartitionMap {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let geometry = self.lay_out(self.rect.width(), text_renderer, theme);
         self.geometry = geometry.clone();

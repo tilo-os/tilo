@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree};
+use tilo_app::advanced::{NodeId, TaffyTree};
 use tilo_app::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
 };
@@ -88,10 +88,13 @@ impl Widget for OpenBook {
     }
 
     fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.inner
-            .draw_child(scene, transform, text, theme,&env);
+        self.inner.draw_child(scene, transform, text, theme, &env);
     }
 
     fn name(&self) -> &'static str {

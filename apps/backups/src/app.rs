@@ -25,12 +25,10 @@ use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Live, Publishes, Setting, ViewCx,
 };
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, Column, Element, ModalDialog, ModelPath, NavShell, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 use winit::event::WindowEvent;
 type Picked = ui::portal::PortalOutcome;
 #[derive(Clone, Copy)]
@@ -1626,12 +1624,27 @@ impl ui::widget::Decorator for BackupsWindow {
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.shell
-            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.shell.draw_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
         if let Some(dialog) = &mut self.restore {
-            dialog.draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+            dialog.draw_overlay(&mut ui::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
         }
     }
 

@@ -28,8 +28,11 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::AutoCommit;
 use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
+#[cfg(test)]
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+#[cfg(test)]
+use vello::kurbo::Affine;
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -39,6 +42,7 @@ use ui::framework::{
 };
 use ui::paint::PaintCtx;
 
+#[cfg(test)]
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::ActionOutput;
@@ -664,18 +668,35 @@ impl Widget for GitClientApp {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        let fallback_presence = Default::default();
-        let presence = env.presence.unwrap_or(&fallback_presence);
-        self.state().draw(&mut ui::DrawCtx::new(scene, transform, tr, theme, env.clone()));
+        self.state().draw(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            tr,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.state()
-            .draw_overlay(&mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()));
+        self.state().draw_overlay(&mut ui::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -819,8 +840,14 @@ impl GitClientState {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
+        let fallback_presence = ui::presence::PresenceCtx::default();
+        let presence = env.presence.unwrap_or(&fallback_presence);
         // A key (1, 2, 3, d) changes what the bar shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
@@ -828,7 +855,11 @@ impl GitClientState {
     }
 
     fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let Some(confirm) = &self.confirm else {
             self.confirm_sheet.reset();

@@ -96,7 +96,8 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 &mut scene,
                 Affine::IDENTITY,
                 &mut ui::TextRenderer::new(),
-                theme,&PresenceCtx::default().draw_env(),
+                theme,
+                &PresenceCtx::default().draw_env(),
             );
             let runs = &scene.encoding().resources.glyph_runs;
             assert!(!runs.is_empty(), "the heading must paint real glyphs");
@@ -289,10 +290,7 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
             "installer-destination",
             &["installer.choice.computer", "installer.choice.another"],
         ),
-        (
-            "installer-migrate",
-            &["installer.ticket", "installer.next"],
-        ),
+        ("installer-migrate", &["installer.ticket", "installer.next"]),
         (
             "installer-password",
             &[

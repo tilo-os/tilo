@@ -20,11 +20,9 @@ use taffy::{NodeId, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{FieldRole, SecretPrompt, TaffyTreeExt as _, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use zeroize::Zeroizing;
 
@@ -281,7 +279,11 @@ impl Widget for TouchKeyboard {
     }
 
     fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.shared.keyboard.get().paint(
             scene,
