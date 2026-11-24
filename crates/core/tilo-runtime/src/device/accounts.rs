@@ -28,7 +28,8 @@ pub fn published(workspaces: &Arc<crate::device::workspaces::ServiceWorkspaces>)
     });
     let (moved, changes) = tokio::sync::watch::channel(0_u64);
     let watching = Arc::clone(workspaces);
-    tokio::spawn(async move {
+    // On the process's runtime: the daemon publishes this before any task of its own runs.
+    tilo_rt::app().spawn(async move {
         let mut writes = watching.copies().document_writes();
         loop {
             match writes.recv().await {
