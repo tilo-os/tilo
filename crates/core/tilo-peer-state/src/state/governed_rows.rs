@@ -96,16 +96,22 @@ impl GovernedIdentity {
         let stored: StoredIdentity = match postcard::from_bytes(bytes) {
             Ok(stored) => stored,
             Err(postcard::Error::DeserializeUnexpectedEnd) => {
-                let (device_cert, revocations, admission, admissions, delegate, workspace_delegations) =
-                    postcard::from_bytes::<(
-                        DeviceCert,
-                        Vec<tilo_user_identity::RevocationEntry>,
-                        Option<RedemptionReceipt>,
-                        Vec<RedemptionReceipt>,
-                        Option<Vec<u8>>,
-                        Vec<WorkspaceDelegation>,
-                    )>(bytes)
-                    .map_err(RowError::Postcard)?;
+                let (
+                    device_cert,
+                    revocations,
+                    admission,
+                    admissions,
+                    delegate,
+                    workspace_delegations,
+                ) = postcard::from_bytes::<(
+                    DeviceCert,
+                    Vec<tilo_user_identity::RevocationEntry>,
+                    Option<RedemptionReceipt>,
+                    Vec<RedemptionReceipt>,
+                    Option<Vec<u8>>,
+                    Vec<WorkspaceDelegation>,
+                )>(bytes)
+                .map_err(RowError::Postcard)?;
                 StoredIdentity {
                     device_cert,
                     revocations,

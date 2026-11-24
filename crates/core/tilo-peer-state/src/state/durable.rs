@@ -146,13 +146,12 @@ fn before_call(bytes: &[u8]) -> Result<Durable<'_>, postcard::Error> {
         documents.push(document);
         rest = after;
     }
-    let ((receipts, certificates, revocations, held), mut rest) =
-        postcard::take_from_bytes::<(
-            BTreeMap<String, Vec<u8>>,
-            Vec<DeviceCert>,
-            Vec<tilo_user_identity::RevocationEntry>,
-            usize,
-        )>(rest)?;
+    let ((receipts, certificates, revocations, held), mut rest) = postcard::take_from_bytes::<(
+        BTreeMap<String, Vec<u8>>,
+        Vec<DeviceCert>,
+        Vec<tilo_user_identity::RevocationEntry>,
+        usize,
+    )>(rest)?;
     // The held writes are read only to find where they end: their signed bytes are dropped.
     for _ in 0..held {
         let (_, after) = postcard::take_from_bytes::<[u8; 32]>(rest)?;

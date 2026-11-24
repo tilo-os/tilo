@@ -436,9 +436,7 @@ fn written_at_13(write: &[u8], op: &OpAt13) -> Vec<u8> {
     for document in &held.documents {
         bytes.extend(postcard::to_stdvec(document).unwrap());
     }
-    bytes.extend(
-        postcard::to_stdvec(&(&receipts, &certificates, &revocations, 1_usize)).unwrap(),
-    );
+    bytes.extend(postcard::to_stdvec(&(&receipts, &certificates, &revocations, 1_usize)).unwrap());
     bytes.extend_from_slice(&[7; 32]);
     bytes.extend_from_slice(write);
     bytes.push(1);

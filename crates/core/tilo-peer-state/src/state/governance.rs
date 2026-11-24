@@ -297,10 +297,7 @@ impl PeerGovernance<'_> {
         let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
             return false;
         };
-        match doc
-            .identities()
-            .get(&hex::encode(device.device_public_key))
-        {
+        match doc.identities().get(&hex::encode(device.device_public_key)) {
             Some(Ok(row)) => return row.removed,
             Some(Err(_)) => return false,
             None => {}

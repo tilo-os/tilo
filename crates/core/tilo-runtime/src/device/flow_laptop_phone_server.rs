@@ -1483,11 +1483,20 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
     let now = std::time::SystemTime::now;
     // The machine comes in through an invitation, so its row carries the admission the removal
     // must keep.
-    admit_by_invitation(&hosted, &studio, &server_cert, (&laptop_key, &laptop_cert), 21).await;
+    admit_by_invitation(
+        &hosted,
+        &studio,
+        &server_cert,
+        (&laptop_key, &laptop_cert),
+        21,
+    )
+    .await;
     hosted
         .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
         .await
-        .expect("the server hands the studio to the laptop, which keeps the row it was admitted by");
+        .expect(
+            "the server hands the studio to the laptop, which keeps the row it was admitted by",
+        );
     let mut away = laptop
         .own
         .peer(tilo_desktop_model::WorkspaceId::parse(&studio).expect("the studio's id"))
@@ -1626,7 +1635,14 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
         .await
         .expect("the server stops serving the studio");
     assert!(removed, "the laptop said it let the studio go");
-    admit_by_invitation(&hosted, &studio, &server_cert, (&laptop_key, &laptop_cert), 22).await;
+    admit_by_invitation(
+        &hosted,
+        &studio,
+        &server_cert,
+        (&laptop_key, &laptop_cert),
+        22,
+    )
+    .await;
     assert!(
         hosted
             .state(&studio)
@@ -1642,4 +1658,3 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
     laptop.entered.close();
     server.shutdown().await;
 }
-

@@ -29,7 +29,9 @@ impl Admit for Workspaces {
             } = entry;
             let device = cert.device_public_key;
             if self.removed_before_entry(cert, &entering).await {
-                return Entered::Refused(refused(tilo_peer_state::REMOVED_DEVICE_REFUSED.to_owned()));
+                return Entered::Refused(refused(
+                    tilo_peer_state::REMOVED_DEVICE_REFUSED.to_owned(),
+                ));
             }
             // A device asking again under an entry the workspace already
             // admitted (its answer was lost with its connection) is in.
