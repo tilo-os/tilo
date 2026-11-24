@@ -130,7 +130,7 @@ mod cases {
         assert_eq!(title(plain.tree()), "Today", "the declaration's default");
         assert_eq!(entry_placeholder(plain.tree()), "New task for today");
 
-        w.stage("place", "Task.inbox");
+        w.stage("chosen", "inbox");
         let inbox = w.window("home", &root);
         assert_eq!(
             title(inbox.tree()),
@@ -144,7 +144,7 @@ mod cases {
             "what typing in the window does follows the place it stands on"
         );
 
-        w.stage("place", "Task.done");
+        w.stage("chosen", "done");
         let done = w.window("home", &root);
         assert_eq!(
             title(done.tree()),
@@ -162,7 +162,39 @@ mod cases {
     /// queries, a case of the enum it holds, or a literal, and nothing else.
     #[test]
     fn staging_names_a_value_the_app_declares() {
-        let w = tasks();
+        const FILTERED: &str = r#"
+app so.tilo.test.filtered "Filtered"
+type Task {
+    done: Bool = false
+
+    search {
+        filter "Open" = not done
+        filter "Done" = done
+    }
+}
+type Proj {
+    name: Text
+}
+type Board {
+    tasks: Collection<Task>
+}
+root Board
+default view home for Board
+view home(b: Board) {
+    state place: Filter<Task> = Task.open
+    stack {
+        for t in b.tasks.matching(place) {
+            text("{t.done}")
+        }
+    }
+}
+"#;
+        let w = install(FILTERED);
+        assert_eq!(
+            w.rt.stage_view_state(&w.app.meta().app, "place", "Task.done"),
+            Ok(()),
+            "a filter the type declares"
+        );
         let error = |state: &str, text: &str| {
             w.rt.stage_view_state(&w.app.meta().app, state, text)
                 .unwrap_err()
@@ -178,12 +210,12 @@ mod cases {
             error("place", "Proj.done")
         );
         assert!(
-            error("nowhere", "Task.today").contains(&format!(
+            error("nowhere", "Task.done").contains(&format!(
                 "no view of `{}` declares the state",
                 w.app.meta().app
             )),
             "{}",
-            error("nowhere", "Task.today")
+            error("nowhere", "Task.done")
         );
     }
 

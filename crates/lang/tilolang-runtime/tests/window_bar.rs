@@ -188,7 +188,7 @@ mod cases {
         let w = tasks();
         let root = w.root("Tasks");
         w.task(&root, "milk");
-        let window = w.window_at("home", &root, "is:inbox");
+        let window = w.window_at("home", &root, "inbox");
         let tree = window.tree();
         one_bar(tree);
         let new_task = nodes_with(tree, "ui.Button", "label", "New task");
@@ -255,7 +255,7 @@ mod cases {
         let root = w.root("Tasks");
         w.task(&root, "milk");
         w.task(&root, "bread");
-        let window = w.window_at("home", &root, "is:inbox");
+        let window = w.window_at("home", &root, "inbox");
         let tree = window.tree();
         let rows = of_kind(tree, "ui.ListItem");
         let first: Vec<String> = part(rows[0], "menu")
@@ -411,7 +411,7 @@ mod cases {
         let w = tasks();
         let root = w.root("Tasks");
         w.task(&root, "milk");
-        let window = w.window_at("home", &root, "is:inbox");
+        let window = w.window_at("home", &root, "inbox");
         let tree = window.tree();
         assert_eq!(
             nodes_with(tree, "ui.Button", "label", "Delete finished tasks").len(),
@@ -765,7 +765,7 @@ view shelf(s: Shelf) {
             .collect();
         assert_eq!(
             labels,
-            ["List", "Board"],
+            ["List", "Board", "Page"],
             "each view says what it adds to the type's name"
         );
         assert_eq!(

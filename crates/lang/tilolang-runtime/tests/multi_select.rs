@@ -175,7 +175,7 @@ mod cases {
         let mut window = w.window("home", &root);
         // The window opens on today, and these tasks are undated: the person picks the inbox,
         // where what waits to be sorted stands.
-        pick(&mut window, "is:inbox");
+        pick(&mut window, "inbox");
         let chosen: Vec<&ResourceRef> = six.iter().collect();
         choose(&mut window, &chosen);
         let tree = window.tree();
@@ -240,7 +240,7 @@ mod cases {
             .collect();
         w.call("check", vec![Value::resource(&six[3])]);
         let mut window = w.window("home", &root);
-        pick(&mut window, "is:inbox");
+        pick(&mut window, "inbox");
         let chosen: Vec<&ResourceRef> = six.iter().collect();
         choose(&mut window, &chosen);
         let offered = offered(window.tree());

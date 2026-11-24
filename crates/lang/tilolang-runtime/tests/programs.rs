@@ -29,7 +29,7 @@ mod cases {
         let todo = App::compile(TODO, &imports.metas());
         todo.load(&rt);
         let notes_app = imports.app("so.tilo.notes");
-        let list = rt.create("Tasks").unwrap();
+        let list = rt.create_root("Tasks").unwrap();
         let nb = rt.create("Notebook").unwrap();
         let mut notes = Vec::new();
         let mut titled = Vec::new();

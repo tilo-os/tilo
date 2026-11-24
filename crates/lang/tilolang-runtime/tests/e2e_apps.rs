@@ -159,8 +159,18 @@ mod cases {
     }
 
     impl World {
+        /// Run `action` with `args` as its first parameters and the rest at their defaults, as
+        /// a caller that leaves them out does.
         fn call(&self, app: &App, action: &str, args: Vec<Value>) -> InvokeOutcome {
             let id = app.action(action);
+            let params = app.meta().action_named(action).unwrap().params.len();
+            assert!(args.len() <= params, "{action} takes {params} arguments");
+            let mut given: Vec<Option<Value>> = args.into_iter().map(Some).collect();
+            given.resize(params, None);
+            let args = self
+                .rt
+                .complete_args(&id, given)
+                .unwrap_or_else(|e| panic!("{action}: {e}"));
             self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap()
         }
 
@@ -620,7 +630,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let list = w.create("Tasks");
+        let list = w.rt.create_root("Tasks").unwrap();
         let project = returned_ref(w.call(&apps.todo, "new_project", vec![res(&list)]));
         w.call(
             &apps.todo,
@@ -831,7 +841,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let list = w.create("Tasks");
+        let list = w.rt.create_root("Tasks").unwrap();
         let first = returned_ref(w.call(
             &apps.todo,
             "new_task",
@@ -860,8 +870,7 @@ mod cases {
         ));
         let remove = |item: &ResourceRef| {
             format!(
-                "button(\"Remove\", on: tasks.remove(@tasks.Tasks:{}, @tasks.Task:{}))",
-                list.id_string(),
+                "button(\"Remove\", on: tasks.remove(@tasks.Task:{}))",
                 item.id_string()
             )
         };
@@ -887,7 +896,7 @@ mod cases {
 
         // The same action from the todo app's own surface (a row's menu, which the platform
         // applies as the person) runs without asking.
-        let out = w.call(&apps.todo, "remove", vec![res(&list), res(&first)]);
+        let out = w.call(&apps.todo, "remove", vec![res(&first)]);
         assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
         assert_eq!(items(&w, &list, "items"), vec![second.clone()]);
 
@@ -932,7 +941,7 @@ mod cases {
         let (mut a, mut b) = (AmStore::new(), AmStore::new());
         let (wa, wb) = (world(&apps, &a), world(&apps, &b));
         let (_, conv) = start_chat(&wa, &apps);
-        let list = wa.create("Tasks");
+        let list = wa.rt.create_root("Tasks").unwrap();
         wa.auth.trust_actor(&agent("helper"));
         let src = format!(
             "tasks.new_task(@tasks.Tasks:{}, title: \"bread\")",
@@ -982,7 +991,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let list = w.create("Tasks");
+        let list = w.rt.create_root("Tasks").unwrap();
         w.auth.trust_actor(&agent("helper"));
         let src = format!(
             "tasks.new_task(@tasks.Tasks:{}, title: \"spam\")",
@@ -1291,7 +1300,7 @@ mod cases {
         {
             let apps = apps();
             let w = world(&apps, &AmStore::new());
-            let list = w.create("Tasks");
+            let list = w.rt.create_root("Tasks").unwrap();
             for (t, done) in [("milk", true), ("eggs", false)] {
                 let item = returned_ref(w.call(
                     &apps.todo,
@@ -1314,17 +1323,17 @@ mod cases {
             // The window opens on today, and neither task has a day: the person picks the inbox,
             // where what is unsorted and open stands, and the task done with is in Done alone.
             assert!(row_titles(v.tree()).is_empty(), "nothing is due today");
-            choose(&v, "is:inbox");
+            choose(&v, "inbox");
             v.poll_patches().unwrap();
             assert_eq!(row_titles(v.tree()), ["eggs"]);
             let before = w.rt.history(&list.doc).unwrap().len();
-            choose(&v, "is:done");
+            choose(&v, "done");
             v.poll_patches().unwrap();
             assert_eq!(row_titles(v.tree()), ["milk"]);
             let tree = v.tree();
             assert_eq!(
                 text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
-                "is:done"
+                "done"
             );
             let count = |key: &str| {
                 node_with(tree, "ui.NavItem", "key", key)
@@ -1334,13 +1343,13 @@ mod cases {
             };
             // What each counted place holds: the task done with is open in neither of them, and
             // Done says nothing about a count.
-            assert_eq!(count("is:inbox"), Some(Value::Int(1)), "the unsorted task");
+            assert_eq!(count("inbox"), Some(Value::Int(1)), "the unsorted task");
             assert_eq!(
-                count("is:today"),
+                count("today"),
                 None,
                 "nothing is due today, so its badge says nothing"
             );
-            assert_eq!(count("is:done"), None, "Done shows no count");
+            assert_eq!(count("done"), None, "Done shows no count");
 
             assert_eq!(
                 w.rt.history(&list.doc).unwrap().len(),
@@ -1848,7 +1857,7 @@ mod cases {
         m.w.call(
             &apps.todo,
             "add_subtask",
-            vec![res(&m.list), res(&parent), Value::text("c.1")],
+            vec![res(&parent), Value::text("c.1")],
         );
         assert_eq!(
             m.w.rt.read(&parent, "done").unwrap(),
@@ -1935,7 +1944,7 @@ mod cases {
     fn todo_is_one_row_per_item_at_every_width() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("Tasks");
+        let list = w.rt.create_root("Tasks").unwrap();
         for t in ["a", "b"] {
             w.call(
                 &apps.todo,
@@ -1954,7 +1963,7 @@ mod cases {
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         // The window opens on today, and neither task has a day: the person picks the inbox,
         // where both wait to be sorted.
-        choose(&v, "is:inbox");
+        choose(&v, "inbox");
         v.poll_patches().unwrap();
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
@@ -2000,7 +2009,7 @@ mod cases {
             ],
             None,
         );
-        let list = w.create("Tasks");
+        let list = w.rt.create_root("Tasks").unwrap();
         let project = returned_ref(w.call(&apps.todo, "new_project", vec![res(&list)]));
         w.call(
             &apps.todo,
@@ -2011,7 +2020,7 @@ mod cases {
         // The window opens on today, whose entry makes a task that names no day today's: the
         // person picks the inbox, whose entry reads a day, a moment, who the task is for and
         // the project it is of, and leaves the day to the words.
-        choose(&v, "is:inbox");
+        choose(&v, "inbox");
         v.poll_patches().unwrap();
         let entry = of_kind(v.tree(), "ui.TextInput")
             .into_iter()
@@ -2113,11 +2122,11 @@ mod cases {
             ],
             None,
         );
-        let list = w.create("Tasks");
+        let list = w.rt.create_root("Tasks").unwrap();
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         // The person picks the inbox, where an entry that would only name a day, a moment and
         // who the task is for names nothing: no words of its own, no task.
-        choose(&v, "is:inbox");
+        choose(&v, "inbox");
         v.poll_patches().unwrap();
         let entry = of_kind(v.tree(), "ui.TextInput")
             .into_iter()
@@ -2172,7 +2181,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
-        let list = w.create("Tasks");
+        let list = w.rt.create_root("Tasks").unwrap();
         let made = returned_ref(w.call(
             &apps.todo,
             "new_task",
@@ -2239,7 +2248,7 @@ mod cases {
     fn the_new_task_button_is_the_bar_s_primary_and_the_entry_declares_its_key() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("Tasks");
+        let list = w.rt.create_root("Tasks").unwrap();
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         assert_eq!(
             text_prop(of_kind(v.tree(), "ui.EmptyState")[0], "title"),
@@ -2402,7 +2411,7 @@ mod cases {
         w.call(
             &apps.todo,
             "add_subtask",
-            vec![res(&list), res(&item), Value::text("milk the cow")],
+            vec![res(&item), Value::text("milk the cow")],
         );
         v.poll_patches().unwrap();
         assert!(
@@ -2448,7 +2457,7 @@ mod cases {
     fn clearing_done_removes_only_the_finished_items() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("Tasks");
+        let list = w.rt.create_root("Tasks").unwrap();
         for (t, done) in [("milk", true), ("eggs", false), ("rice", true)] {
             let item = returned_ref(w.call(
                 &apps.todo,
