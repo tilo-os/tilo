@@ -1018,9 +1018,12 @@ impl Tickets {
                         .contains(&request.target.address.action.as_str())))
     }
 
-    /// Whether `request` only reads what the device is ([`INFO`]), and lets nobody in.
+    /// Whether `request` only reads what the device is ([`INFO`]) or which identities it keeps,
+    /// without their secrets ([`IDENTITIES`]), and lets nobody in: what an agent the person runs
+    /// here, a plain connection of their account among them, reads as they do.
     pub(crate) fn only_reads(request: &InvokeRequest) -> bool {
-        Self::answers(request) && request.target.address.action == INFO
+        Self::answers(request)
+            && matches!(request.target.address.action.as_str(), INFO | IDENTITIES)
     }
 
     /// Take `request`, one of [`Self::answers`]' actions, from `caller`: its receipt.
