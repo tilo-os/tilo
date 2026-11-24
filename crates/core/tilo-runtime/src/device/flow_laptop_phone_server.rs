@@ -1562,6 +1562,7 @@ async fn a_removed_invited_server_writes_nothing_and_re_enters_by_a_deliberate_a
                 workspace_id: WorkspaceId::parse(&studio).expect("the studio's id"),
                 device_cert: laptop_cert.clone(),
                 request_id: fresh_id(),
+                delegation: None,
             }),
         )
         .await;
