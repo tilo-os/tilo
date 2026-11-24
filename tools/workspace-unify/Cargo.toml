@@ -177,9 +177,6 @@ doc = false
 "clap_complete-4_6_9" = { package = "clap_complete", version = "^4.6.9", default-features = false, features = ["default"] }
 "clap_lex-1_0_0" = { package = "clap_lex", version = "^1.0.0", default-features = false, features = [] }
 "cli-shim" = { path = "../../crates/core/cli-shim", default-features = false, features = [] }
-"clocks" = { path = "../../apps/clocks", default-features = false, features = [] }
-"clocks-model" = { path = "../../apps/clocks-model", default-features = false, features = [] }
-"clocks-model-wasm" = { path = "../../apps/clocks-model-wasm", default-features = false, features = [] }
 "cloud-source" = { path = "../../crates/integrations/cloud-source", default-features = false, features = ["client", "conformance"] }
 "cloud-source-dav" = { path = "../../crates/integrations/cloud-source-dav", default-features = false, features = ["fake-server"] }
 "cloud-source-dropbox" = { path = "../../crates/integrations/cloud-source-dropbox", default-features = false, features = ["fake-server"] }
@@ -2796,9 +2793,6 @@ doc = false
 "clap_complete-4_6_9" = { package = "clap_complete", version = "^4.6.9", default-features = false, features = ["default"] }
 "clap_lex-1_0_0" = { package = "clap_lex", version = "^1.0.0", default-features = false, features = [] }
 "cli-shim" = { path = "../../crates/core/cli-shim", default-features = false, features = [] }
-"clocks" = { path = "../../apps/clocks", default-features = false, features = [] }
-"clocks-model" = { path = "../../apps/clocks-model", default-features = false, features = [] }
-"clocks-model-wasm" = { path = "../../apps/clocks-model-wasm", default-features = false, features = [] }
 "cloud-source" = { path = "../../crates/integrations/cloud-source", default-features = false, features = ["client", "conformance"] }
 "cloud-source-dav" = { path = "../../crates/integrations/cloud-source-dav", default-features = false, features = ["fake-server"] }
 "cloud-source-dropbox" = { path = "../../crates/integrations/cloud-source-dropbox", default-features = false, features = ["fake-server"] }

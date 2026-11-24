@@ -2241,49 +2241,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clocks"
-version = "0.1.0"
-dependencies = [
- "clocks-model",
- "jiff",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-model",
- "tilo-app",
- "tilo-clock",
- "tilo-history",
- "tilo-recurrence",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-timezone-engine",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "clocks-model"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "serde",
- "serde_json",
- "tilo-recurrence",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "clocks-model-wasm"
-version = "0.1.0"
-dependencies = [
- "clocks-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "cloud-source"
 version = "0.1.0"
 dependencies = [
@@ -16636,7 +16593,6 @@ dependencies = [
  "bytes",
  "camera",
  "chip-design",
- "clocks",
  "collab-types",
  "diffmerge",
  "discord",
@@ -19411,7 +19367,6 @@ dependencies = [
  "assistant-model-wasm",
  "backups-model-wasm",
  "camera-model-wasm",
- "clocks-model-wasm",
  "console-model-wasm",
  "containers-model-wasm",
  "db-client-model-wasm",
@@ -22562,9 +22517,9 @@ dependencies = [
  "app-fleet",
  "blake3",
  "bytes",
- "clocks-model",
  "collab-types",
  "collaboration",
+ "db-client-model",
  "ed25519-dalek 3.0.0",
  "fake-model-providers",
  "feed-rs",
@@ -27065,9 +27020,6 @@ dependencies = [
  "clap_derive",
  "clap_lex",
  "cli-shim",
- "clocks",
- "clocks-model",
- "clocks-model-wasm",
  "cloud-source",
  "cloud-source-dav",
  "cloud-source-dropbox",

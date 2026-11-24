@@ -4,7 +4,7 @@
  * `tilo sdk gen --lang ts` writes this file from the app's `surface.toml`; write
  * it again rather than editing it.
  *
- * `Collection` is a `Resource` of the app's `clocks.collection`, made by its factory with the
+ * `WorldClock` is a `Resource` of the app's `tl.so.tilo.clocks.WorldClock`, made by its factory with the
  * resource's path (`clocks/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
@@ -22,108 +22,74 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.clocks@43e52d1090e872f9";
+export const SURFACE = "so.tilo.clocks@a69d95ef3e243c15";
 
-export interface Alarm {
-  label: string;
-  hour: number;
-  minute: number;
-  repeat: number;
-  enabled: boolean;
-  enabled_at_ms: number;
-}
+/** A day of the week an alarm repeats on, Monday first. One of "mon", "tue", "wed", "thu", "fri", "sat", "sun". */
+export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 
-export interface Stopwatch {
-  accumulated_ms: number;
-  started_at_ms: number | null;
-  laps_ms: number[];
-}
-
-export interface Timer {
-  label: string;
-  duration_ms: number;
-  ends_at_ms: number | null;
-  paused_remaining_ms: number | null;
-}
-
-/** One of "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun". */
-export type WeekdayKey = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
-
-export interface WorldClock {
-  city: string;
-  timezone: string;
-}
-
-/** The arguments of `add-world-clock`. */
-export interface AddWorldClockArgs {
-  city: string;
-  timezone: string;
-}
-
-/** The arguments of `remove-world-clock`. */
-export interface RemoveWorldClockArgs {
-  world_clock: string;
-}
-
-/** The arguments of `add-alarm`. */
-export interface AddAlarmArgs {
-  label: string;
-  hour: number;
-  minute: number;
-  weekdays: WeekdayKey[];
-}
-
-/** The arguments of `set-alarm-enabled`. */
-export interface SetAlarmEnabledArgs {
-  alarm: string;
-  enabled: boolean;
-}
-
-/** The arguments of `edit-alarm`. */
+/** The arguments of `edit_alarm`. */
 export interface EditAlarmArgs {
-  alarm: string;
   label: string;
   hour: number;
   minute: number;
-  weekdays: WeekdayKey[];
+  days?: Weekday[];
 }
 
-/** The arguments of `remove-alarm`. */
-export interface RemoveAlarmArgs {
-  alarm: string;
+/** The arguments of `set_alarm_enabled`. */
+export interface SetAlarmEnabledArgs {
+  enabled?: boolean;
 }
 
-/** The arguments of `add-timer`. */
-export interface AddTimerArgs {
-  label: string;
-  seconds: number;
+/** The arguments of `set_alarm_device`. */
+export interface SetAlarmDeviceArgs {
+  rings_on: string;
 }
 
-/** The arguments of `pause-timer`. */
+/** The arguments of `toggle_day`. */
+export interface ToggleDayArgs {
+  d: Weekday;
+}
+
+/** The arguments of `snooze_alarm`. */
+export interface SnoozeAlarmArgs {
+}
+
+/** The arguments of `ring_alarm`. */
+export interface RingAlarmArgs {
+}
+
+/** The arguments of `pause_timer`. */
 export interface PauseTimerArgs {
-  timer: string;
 }
 
-/** The arguments of `resume-timer`. */
+/** The arguments of `resume_timer`. */
 export interface ResumeTimerArgs {
-  timer: string;
 }
 
-/** The arguments of `add-minute`. */
+/** The arguments of `add_minute`. */
 export interface AddMinuteArgs {
-  timer: string;
 }
 
-/** The arguments of `remove-timer`. */
+/** The arguments of `remove_world_clock`. */
+export interface RemoveWorldClockArgs {
+  w: WorldClock;
+}
+
+/** The arguments of `remove_alarm`. */
+export interface RemoveAlarmArgs {
+  a: Alarm;
+}
+
+/** The arguments of `remove_timer`. */
 export interface RemoveTimerArgs {
-  timer: string;
+  t: Timer;
 }
 
-/** The arguments of `start-stopwatch`. */
+/** The arguments of `start_stopwatch`. */
 export interface StartStopwatchArgs {
 }
 
-/** The arguments of `pause-stopwatch`. */
+/** The arguments of `pause_stopwatch`. */
 export interface PauseStopwatchArgs {
 }
 
@@ -131,107 +97,221 @@ export interface PauseStopwatchArgs {
 export interface LapArgs {
 }
 
-/** The arguments of `reset-stopwatch`. */
+/** The arguments of `reset_stopwatch`. */
 export interface ResetStopwatchArgs {
 }
 
-/** Clocks — `clocks.collection`. */
-export interface Collection extends tilo.Resource {
-  world_clocks: Array<tilo.Entry<WorldClock>>;
-  alarms: Array<tilo.Entry<Alarm>>;
-  timers: Array<tilo.Entry<Timer>>;
-  readonly stopwatch: Stopwatch;
-  addWorldClock(args: {
+/** WorldClock — `tl.so.tilo.clocks.WorldClock`. */
+export interface WorldClock extends tilo.Resource {
+  kbeao6ct: string;  // city
+  g5vsvo2p: string;  // zone
+}
+
+/** The actions `WorldClock` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORLDCLOCK_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.clocks.WorldClock` kind at `path`. */
+export function worldClock(ws: tilo.Workspace, path: string): WorldClock {
+  return resourceProxy(ws, path, SURFACE, WORLDCLOCK_ACTIONS) as unknown as WorldClock;
+}
+
+/** Alarm — `tl.so.tilo.clocks.Alarm`. */
+export interface Alarm extends tilo.Resource {
+  e6jhyy6h: string;  // label
+  cb6boqqg: number;  // hour
+  bvmw7lxl: number;  // minute
+  s4ppnbtv: Weekday[];  // days
+  adpv3jco: boolean;  // enabled
+  fbxt6ruu: string | null;  // at
+  "3bdkffqt": string;  // rings_on
+  uizteftt: boolean;  // snoozed
+  /** Changes an alarm's words, time and days. Its on/off state stays as it was, and one that is on rings next at the time it now names. */
+  edit_alarm(args: {
+    label: string;
+    hour: number;
+    minute: number;
+    days?: Weekday[];
+  }): Promise<void>;
+  /** Runs `edit_alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  edit_alarmMany(items: EditAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Turns an alarm on or off: off, it does not ring; on, it rings next at its time. */
+  set_alarm_enabled(args?: {
+    enabled?: boolean;
+  }): Promise<void>;
+  /** Runs `set_alarm_enabled` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_alarm_enabledMany(items: SetAlarmEnabledArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Names the device an alarm rings on: one device's id, or none for every device of the person's. */
+  set_alarm_device(args: {
+    rings_on: string;
+  }): Promise<void>;
+  /** Runs `set_alarm_device` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  set_alarm_deviceMany(items: SetAlarmDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Repeats an alarm on `d`, or stops repeating on it: a day it names rings, a day it does not skips. Its next ring moves to the next day it names. */
+  toggle_day(args: {
+    d: Weekday;
+  }): Promise<void>;
+  /** Runs `toggle_day` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  toggle_dayMany(items: ToggleDayArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Snoozes the alarm ringing now: it rings again in five minutes. */
+  snooze_alarm(): Promise<void>;
+  /** Runs `snooze_alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  snooze_alarmMany(items: SnoozeAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Rings an alarm when its moment comes, on the device it names, window or no window. A repeating alarm rings again the next day it names; one that rings once turns itself off. */
+  ring_alarm(): Promise<void>;
+  /** Runs `ring_alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  ring_alarmMany(items: RingAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `Alarm` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ALARM_ACTIONS = ["edit_alarm", "edit_alarmMany", "set_alarm_enabled", "set_alarm_enabledMany", "set_alarm_device", "set_alarm_deviceMany", "toggle_day", "toggle_dayMany", "snooze_alarm", "snooze_alarmMany", "ring_alarm", "ring_alarmMany"] as const;
+
+/** The `tl.so.tilo.clocks.Alarm` kind at `path`. */
+export function alarm(ws: tilo.Workspace, path: string): Alarm {
+  return resourceProxy(ws, path, SURFACE, ALARM_ACTIONS) as unknown as Alarm;
+}
+
+/** Timer — `tl.so.tilo.clocks.Timer`. */
+export interface Timer extends tilo.Resource {
+  nhqnhguz: string;  // label
+  "5b7nw57j": number;  // seconds
+  "6anly4z4": string | null;  // ends_at
+  ufpse6mi: number | null;  // left
+  /** Pauses a running timer where it stands. */
+  pause_timer(): Promise<void>;
+  /** Runs `pause_timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pause_timerMany(items: PauseTimerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Resumes a paused timer, or starts a finished one over. */
+  resume_timer(): Promise<void>;
+  /** Runs `resume_timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  resume_timerMany(items: ResumeTimerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Adds a minute to a timer, running or paused. */
+  add_minute(): Promise<void>;
+  /** Runs `add_minute` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  add_minuteMany(items: AddMinuteArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Rings a timer when it finishes, on every device of the person's, window or no window. */
+  ring_timer(): Promise<void>;
+}
+
+/** The actions `Timer` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TIMER_ACTIONS = ["pause_timer", "pause_timerMany", "resume_timer", "resume_timerMany", "add_minute", "add_minuteMany", "ring_timer"] as const;
+
+/** The `tl.so.tilo.clocks.Timer` kind at `path`. */
+export function timer(ws: tilo.Workspace, path: string): Timer {
+  return resourceProxy(ws, path, SURFACE, TIMER_ACTIONS) as unknown as Timer;
+}
+
+/** Lap — `tl.so.tilo.clocks.Lap`. */
+export interface Lap extends tilo.Resource {
+  mq5diuqb: number;  // at
+}
+
+/** The actions `Lap` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LAP_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.clocks.Lap` kind at `path`. */
+export function lap(ws: tilo.Workspace, path: string): Lap {
+  return resourceProxy(ws, path, SURFACE, LAP_ACTIONS) as unknown as Lap;
+}
+
+/** Stopwatch — `tl.so.tilo.clocks.Stopwatch`. */
+export interface Stopwatch extends tilo.Resource {
+  yhijhjuh: number;  // elapsed
+  fg2gmze6: string | null;  // since
+  ngcmcd7g: Array<tilo.Entry<Lap>>;  // laps
+}
+
+/** The actions `Stopwatch` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const STOPWATCH_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.clocks.Stopwatch` kind at `path`. */
+export function stopwatch(ws: tilo.Workspace, path: string): Stopwatch {
+  return resourceProxy(ws, path, SURFACE, STOPWATCH_ACTIONS) as unknown as Stopwatch;
+}
+
+/** Clocks — `tl.so.tilo.clocks.Clocks`. */
+export interface Clocks extends tilo.Resource {
+  r2amisi7: Array<tilo.Entry<WorldClock>>;  // world_clocks
+  gneumngu: Array<tilo.Entry<Alarm>>;  // alarms
+  kahapraa: Array<tilo.Entry<Timer>>;  // timers
+  rjh2x76r: Stopwatch;  // stopwatch
+  /** Adds a city's clock to the workspace. */
+  add_world_clock(args: {
     city: string;
-    timezone: string;
+    zone: string;
+  }): Promise<WorldClock>;
+  /** Removes a city's clock. */
+  remove_world_clock(args: {
+    w: WorldClock;
   }): Promise<void>;
-  /** Runs `add-world-clock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  addWorldClockMany(items: AddWorldClockArgs[]): Promise<tilo.ActionAnswer[]>;
-  removeWorldClock(args: {
-    world_clock: string;
-  }): Promise<void>;
-  /** Runs `remove-world-clock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  removeWorldClockMany(items: RemoveWorldClockArgs[]): Promise<tilo.ActionAnswer[]>;
-  addAlarm(args: {
+  /** Runs `remove_world_clock` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remove_world_clockMany(items: RemoveWorldClockArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Sets an alarm: at the time of day `when` names, on the days it repeats on, ringing on `rings_on`, every device of the person's when it names none. It rings first at the next such time. */
+  add_alarm(args: {
     label: string;
     hour: number;
     minute: number;
-    weekdays: WeekdayKey[];
+    days?: Weekday[];
+    rings_on?: string;
+  }): Promise<Alarm>;
+  /** Removes an alarm. */
+  remove_alarm(args: {
+    a: Alarm;
   }): Promise<void>;
-  /** Runs `add-alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  addAlarmMany(items: AddAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
-  setAlarmEnabled(args: {
-    alarm: string;
-    enabled: boolean;
-  }): Promise<void>;
-  /** Runs `set-alarm-enabled` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setAlarmEnabledMany(items: SetAlarmEnabledArgs[]): Promise<tilo.ActionAnswer[]>;
-  editAlarm(args: {
-    alarm: string;
-    label: string;
-    hour: number;
-    minute: number;
-    weekdays: WeekdayKey[];
-  }): Promise<void>;
-  /** Runs `edit-alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  editAlarmMany(items: EditAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
-  removeAlarm(args: {
-    alarm: string;
-  }): Promise<void>;
-  /** Runs `remove-alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  removeAlarmMany(items: RemoveAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
-  addTimer(args: {
+  /** Runs `remove_alarm` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remove_alarmMany(items: RemoveAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Starts a timer of `seconds`. */
+  add_timer(args: {
     label: string;
     seconds: number;
+  }): Promise<Timer>;
+  /** Removes a timer. */
+  remove_timer(args: {
+    t: Timer;
   }): Promise<void>;
-  /** Runs `add-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  addTimerMany(items: AddTimerArgs[]): Promise<tilo.ActionAnswer[]>;
-  pauseTimer(args: {
-    timer: string;
-  }): Promise<void>;
-  /** Runs `pause-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  pauseTimerMany(items: PauseTimerArgs[]): Promise<tilo.ActionAnswer[]>;
-  resumeTimer(args: {
-    timer: string;
-  }): Promise<void>;
-  /** Runs `resume-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  resumeTimerMany(items: ResumeTimerArgs[]): Promise<tilo.ActionAnswer[]>;
-  addMinute(args: {
-    timer: string;
-  }): Promise<void>;
-  /** Runs `add-minute` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  addMinuteMany(items: AddMinuteArgs[]): Promise<tilo.ActionAnswer[]>;
-  removeTimer(args: {
-    timer: string;
-  }): Promise<void>;
-  /** Runs `remove-timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  removeTimerMany(items: RemoveTimerArgs[]): Promise<tilo.ActionAnswer[]>;
-  startStopwatch(): Promise<void>;
-  /** Runs `start-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  startStopwatchMany(items: StartStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
-  pauseStopwatch(): Promise<void>;
-  /** Runs `pause-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  pauseStopwatchMany(items: PauseStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `remove_timer` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  remove_timerMany(items: RemoveTimerArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Starts the stopwatch. */
+  start_stopwatch(): Promise<void>;
+  /** Runs `start_stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  start_stopwatchMany(items: StartStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Pauses the stopwatch where it stands. */
+  pause_stopwatch(): Promise<void>;
+  /** Runs `pause_stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  pause_stopwatchMany(items: PauseStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Keeps a lap: the time the stopwatch stands at. */
   lap(): Promise<void>;
   /** Runs `lap` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   lapMany(items: LapArgs[]): Promise<tilo.ActionAnswer[]>;
-  resetStopwatch(): Promise<void>;
-  /** Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  resetStopwatchMany(items: ResetStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
-  show(args: {
-    section: string;
-  }): Promise<void>;
-  dismissNotice(): Promise<void>;
-  floatStopwatch(): Promise<void>;
-  unfloatStopwatch(): Promise<void>;
+  /** Resets the stopwatch: it is at zero and stopped, with no laps. */
+  reset_stopwatch(): Promise<void>;
+  /** Runs `reset_stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  reset_stopwatchMany(items: ResetStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
-/** The actions `Collection` reaches before it is read: `ws` calls them without a
+/** The actions `Clocks` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const COLLECTION_ACTIONS = ["addWorldClock", "addWorldClockMany", "removeWorldClock", "removeWorldClockMany", "addAlarm", "addAlarmMany", "setAlarmEnabled", "setAlarmEnabledMany", "editAlarm", "editAlarmMany", "removeAlarm", "removeAlarmMany", "addTimer", "addTimerMany", "pauseTimer", "pauseTimerMany", "resumeTimer", "resumeTimerMany", "addMinute", "addMinuteMany", "removeTimer", "removeTimerMany", "startStopwatch", "startStopwatchMany", "pauseStopwatch", "pauseStopwatchMany", "lap", "lapMany", "resetStopwatch", "resetStopwatchMany", "show", "dismissNotice", "floatStopwatch", "unfloatStopwatch"] as const;
+export const CLOCKS_ACTIONS = ["add_world_clock", "remove_world_clock", "remove_world_clockMany", "add_alarm", "remove_alarm", "remove_alarmMany", "add_timer", "remove_timer", "remove_timerMany", "start_stopwatch", "start_stopwatchMany", "pause_stopwatch", "pause_stopwatchMany", "lap", "lapMany", "reset_stopwatch", "reset_stopwatchMany"] as const;
 
-/** The `clocks.collection` kind at `path`. */
-export function collection(ws: tilo.Workspace, path: string): Collection {
-  return resourceProxy(ws, path, SURFACE, COLLECTION_ACTIONS) as unknown as Collection;
+/** The `tl.so.tilo.clocks.Clocks` kind at `path`. */
+export function clocks(ws: tilo.Workspace, path: string): Clocks {
+  return resourceProxy(ws, path, SURFACE, CLOCKS_ACTIONS) as unknown as Clocks;
+}
+
+/** Clocks — `tl.so.tilo.clocks`. */
+export interface TiloClocks extends tilo.Resource {
+}
+
+/** The actions `TiloClocks` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TILOCLOCKS_ACTIONS = [] as const;
+
+/** The `tl.so.tilo.clocks` kind at `path`. */
+export function tiloClocks(ws: tilo.Workspace, path: string): TiloClocks {
+  return resourceProxy(ws, path, SURFACE, TILOCLOCKS_ACTIONS) as unknown as TiloClocks;
 }
 

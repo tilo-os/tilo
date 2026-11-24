@@ -23,8 +23,6 @@ description = "Draw and paint with vector marks and real wet media that stay edi
 description = "A focused space for conversations, calls, and shared work."
 [apps.chip-design]
 description = "Review chip verification reports, design evidence, and implementation readiness together."
-[apps.clocks]
-description = "Keep an eye on time zones, timers, and alarms."
 [apps.code-editor]
 description = "A native editor for writing, reading, and changing code."
 [apps.console]

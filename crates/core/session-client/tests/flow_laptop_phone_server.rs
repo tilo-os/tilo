@@ -411,8 +411,6 @@ async fn flow_chat_turn_writes_a_view_backed_by_a_dataset() {
 }
 
 /// An alarm the person sets on the laptop through their agent rings on the phone.
-///
-/// The Clocks port has no published action yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_alarm_set_on_laptop_through_the_agent_rings_on_the_phone() {
     let f = rig().await;
@@ -422,8 +420,8 @@ async fn flow_alarm_set_on_laptop_through_the_agent_rings_on_the_phone() {
         f.work_id(),
         "so.tilo.clocks",
         "clocks",
-        "set-alarm",
-        json!({"at": "07:00", "label": "Standup", "ring": "every-device"}),
+        "add-alarm",
+        json!({"label": "Standup", "hour": 7, "minute": 0}),
     )
     .await;
     let set = rung.unwrap_or_else(|error| {

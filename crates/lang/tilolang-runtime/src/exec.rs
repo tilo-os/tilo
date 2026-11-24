@@ -2913,10 +2913,44 @@ impl Core {
     /// record written in this action's own change ([`crate::notify`]), so every device of theirs
     /// reads it. The run's journal answers a run that replays, so it tells them no more than the
     /// first run did.
-    fn notify_import(&self, to: i32, title: i32, body: i32, opens: i32) -> HResult<Option<Wasm>> {
+    fn notify_import(
+        &self,
+        to: i32,
+        title: i32,
+        body: i32,
+        opens: i32,
+        device: i32,
+        actions: i32,
+    ) -> HResult<Option<Wasm>> {
         let to = self.actor_arg(to)?;
         let title = self.text(title)?;
         let body = self.text(body)?;
+        let device = self.text(device)?;
+        // The actions it offers, by name, as the list they were given.
+        let actions: Vec<String> = match self.val(actions)? {
+            Value::List(items) => {
+                let mut names = Vec::with_capacity(items.len());
+                for item in &items {
+                    match item {
+                        Value::Text(name) => names.push(name.to_string()),
+                        other => {
+                            return trap(format!(
+                                "notify: `on:` names actions, and this is a {}",
+                                other.kind_name()
+                            ));
+                        }
+                    }
+                }
+                names
+            }
+            Value::Missing => Vec::new(),
+            other => {
+                return trap(format!(
+                    "notify: `on:` is a list of action names, and this is a {}",
+                    other.kind_name()
+                ));
+            }
+        };
         let opens = match self.val(opens)? {
             Value::Ref(r) => ResourceRef::clone(&r.target),
             other => {
@@ -2931,6 +2965,8 @@ impl Core {
             title,
             body,
             opens,
+            device,
+            actions,
         };
         let (txn, id) = {
             let mut frames = self.frames.borrow_mut();
@@ -2977,7 +3013,10 @@ impl Core {
         id: &str,
         notice: &crate::notify::Notice,
     ) -> HResult<()> {
-        use tilolang::{NOTICE_BODY, NOTICE_OPENS, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE};
+        use tilolang::{
+            NOTICE_ACTIONS, NOTICE_BODY, NOTICE_DEVICE, NOTICE_OPENS, NOTICE_TITLE, NOTICE_TO,
+            NOTICE_TYPE,
+        };
 
         let record = self
             .registry
@@ -3028,6 +3067,26 @@ impl Core {
                     )?,
                 },
             ),
+            (
+                NOTICE_DEVICE.to_owned(),
+                crate::store::Mutation::SetText {
+                    field: NOTICE_DEVICE.to_owned(),
+                    text: notice.device.clone(),
+                },
+            ),
+            (
+                NOTICE_ACTIONS.to_owned(),
+                crate::store::Mutation::SetRegister {
+                    field: NOTICE_ACTIONS.to_owned(),
+                    value: crate::store::Scalar::Json(serde_json::Value::Array(
+                        notice
+                            .actions
+                            .iter()
+                            .map(|name| serde_json::Value::String(name.clone()))
+                            .collect(),
+                    )),
+                },
+            ),
         ];
         for (field, write) in writes {
             store
@@ -3056,7 +3115,7 @@ impl Core {
             Imp::OutsideAt => self.outside_at(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::Withdraw => self.withdraw(a.h(0)?, a.h(1)?),
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
-            Imp::Notify => self.notify_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?),
+            Imp::Notify => self.notify_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?, a.h(4)?, a.h(5)?),
             Imp::Invoker => {
                 let frames = self.frames.borrow();
                 let who = match &frames.top()?.kind {

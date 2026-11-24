@@ -1462,7 +1462,7 @@ impl Session {
             .iter()
             .any(|service| service.keeps_session_document())
         {
-            match crate::seeded_apps::session_document(&options.person) {
+            match crate::seeded_apps::session_document(&options.person, own.device.as_deref()) {
                 Ok(document) => started.push(Box::new(document) as Box<dyn Service>),
                 Err(error) => {
                     tracing::error!(%error, "the session's own document does not open");

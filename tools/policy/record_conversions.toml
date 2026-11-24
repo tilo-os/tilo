@@ -71,12 +71,6 @@ change = "removed"
 lost = "What a person told the native Chat's agents to remember about them. Only the session's agent turns for the native Chat read it, and those are gone with it; the tilolang Chat keeps no learned facts, so they are not carried."
 
 [[change]]
-kind = "clocks.on-devices"
-app = "clocks"
-change = "removed"
-conversion = "apps/clocks/src/schedule.rs:new"
-
-[[change]]
 kind = "disk-usage.recent-folders"
 app = "disk-usage"
 change = "removed"

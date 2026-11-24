@@ -587,7 +587,9 @@ impl Core {
             IdentPart => self.ret_h(self.ident_part(a.h(0)?, a.h(1)?)?),
             Today | TimeDay | TimeDayIn | TimeFromWall | TimeWall | TimeOfDay | TimeClock
             | TimeSpan | DayShift | DayPart | DayWeekday | DayStartOfWeek | DayParse
-            | TimeParse | WallClock | DateShow | Occurrences => self.time_import(imp, a),
+            | TimeParse | WallClock | DateShow | Occurrences | crate::abi::Imp::Zones => {
+                self.time_import(imp, a)
+            }
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }

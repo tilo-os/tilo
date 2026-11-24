@@ -1,0 +1,234 @@
+{
+  "app": "clocks",
+  "said": "Clocks",
+  "live": "rust",
+  "rust": {
+    "id": "so.tilo.clocks",
+    "native": "clocks"
+  },
+  "tl": {
+    "id": "so.tilo.clocks",
+    "package": "clocks"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Clocks",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "window"
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "timer",
+      "said": "Start a five-minute tea timer from the quick starts",
+      "ops": [
+        {
+          "press": "Timers"
+        },
+        {
+          "press": {
+            "prefix": "Tea"
+          }
+        },
+        {
+          "must": {
+            "see": [
+              "Pause"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "pause",
+      "said": "Pause the timer and resume it",
+      "ops": [
+        {
+          "press": "Pause"
+        },
+        {
+          "must": {
+            "see": [
+              "Resume"
+            ]
+          }
+        },
+        {
+          "press": "Resume"
+        },
+        {
+          "must": {
+            "see": [
+              "Pause"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000
+    },
+    {
+      "id": "alarm",
+      "said": "Set an alarm for the morning",
+      "ops": [
+        {
+          "press": "Alarms"
+        },
+        {
+          "click": {
+            "prefix": "What is this alarm for?"
+          }
+        },
+        {
+          "type": "Wake up"
+        },
+        {
+          "press": "Add alarm"
+        },
+        {
+          "must": {
+            "see": [
+              "Edit"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 20000
+    },
+    {
+      "id": "repeat",
+      "said": "Repeat the alarm on Mondays",
+      "ops": {
+        "rust": [
+          {
+            "press": "Mon"
+          },
+          {
+            "must": {
+              "see": [
+                "Mon"
+              ]
+            }
+          }
+        ],
+        "tl": [
+          {
+            "press": "Repeat on Mon"
+          },
+          {
+            "must": {
+              "see": [
+                "Repeat on Mon"
+              ]
+            }
+          }
+        ]
+      },
+      "budget_ms": 15000,
+      "dark": true
+    },
+    {
+      "id": "world",
+      "said": "Add Tokyo to the world clocks",
+      "ops": {
+        "rust": [
+          {
+            "press": "World"
+          },
+          {
+            "press": {
+              "prefix": "Tokyo"
+            }
+          },
+          {
+            "must": {
+              "see": [
+                {
+                  "prefix": "Remove"
+                }
+              ]
+            }
+          }
+        ],
+        "tl": [
+          {
+            "press": "World"
+          },
+          {
+            "click": {
+              "prefix": "Search a city or a zone"
+            }
+          },
+          {
+            "type": "Tokyo"
+          },
+          {
+            "must": {
+              "see": [
+                "Add"
+              ]
+            }
+          },
+          {
+            "press": "Add"
+          },
+          {
+            "must": {
+              "see": [
+                "Remove world clock"
+              ]
+            }
+          }
+        ]
+      },
+      "budget_ms": 20000
+    },
+    {
+      "id": "stopwatch",
+      "said": "Run the stopwatch and keep a lap",
+      "ops": [
+        {
+          "press": "Stopwatch"
+        },
+        {
+          "press": "Start"
+        },
+        {
+          "must": {
+            "see": [
+              "Pause"
+            ]
+          }
+        },
+        {
+          "press": "Lap"
+        },
+        {
+          "must": {
+            "see": [
+              "Reset"
+            ]
+          }
+        }
+      ],
+      "budget_ms": 15000,
+      "dark": true
+    }
+  ]
+}

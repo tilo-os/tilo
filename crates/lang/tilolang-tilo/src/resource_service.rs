@@ -1116,6 +1116,12 @@ impl ResourceService {
         self.tell = Some(Box::new(tell));
     }
 
+    /// The device these notices are shown on: one named by a notice other than this shows
+    /// nothing of it, so an alarm meant for the phone does not ring on the laptop.
+    pub fn set_device(&mut self, device: impl Into<String>) {
+        self.notices.set_device(device);
+    }
+
     /// What this device's person has told, to keep across restarts: the notices it shows no
     /// more ([`crate::notices::Notices::kept`]).
     #[must_use]
@@ -1154,6 +1160,55 @@ impl ResourceService {
         for id in ids {
             self.notice_seen(&id);
         }
+    }
+
+    /// Run the actions the person chose on the notices this device showed: each is one of the
+    /// app's actions on what the notice opens, run as the person, and choosing it is seeing the
+    /// notice, so every device of theirs takes it back.
+    fn chosen(&mut self) {
+        let chosen = match &self.tell {
+            Some(tell) => tell.take_chosen_actions(),
+            None => return,
+        };
+        for (tag, action) in chosen {
+            let Some(id) = self.notices.shown_as(&tag).map(str::to_owned) else {
+                continue;
+            };
+            if let Err(error) = self.run_notice_action(&id, &action) {
+                tracing::warn!(%error, %id, %action, "a notice's action did not run");
+            }
+            self.notice_seen(&id);
+        }
+    }
+
+    /// Run `action`, one of the app's actions by name, on what the notice `id` opens, as the
+    /// person at this device.
+    fn run_notice_action(&self, id: &str, action: &str) -> Result<(), String> {
+        let notice = ResourceRef::root(id.to_owned(), tilolang::NOTICE_TYPE.to_owned());
+        let opens = match self.host.runtime().read(&notice, tilolang::NOTICE_OPENS) {
+            Ok(Value::Ref(reference)) => ResourceRef::clone(&reference.target),
+            other => return Err(format!("the notice opens nothing it can run: {other:?}")),
+        };
+        let schema = crate::schema::lookup(&opens.ty)
+            .ok_or_else(|| format!("no app keeps `{}`", opens.ty))?;
+        let package = self
+            .host
+            .package(&schema.app)
+            .ok_or_else(|| format!("{} is not loaded", schema.app))?;
+        let named = package
+            .meta
+            .actions
+            .iter()
+            .find(|declared| declared.name == action)
+            .ok_or_else(|| format!("{} declares no action `{action}`", schema.app))?;
+        let by = crate::runtime::Actor::Member(crate::runtime::ids::MemberId::person(
+            self.person.as_str(),
+        ));
+        self.host
+            .runtime()
+            .invoke_action(&by, (named.id.as_str(), vec![Value::resource(&opens)]))
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
 
     /// Show the notices this device's person has not seen, and take back the ones they have
@@ -1343,8 +1398,10 @@ impl Service for ResourceService {
     fn poll(&mut self) -> bool {
         let touched = self.publications.update(&self.host, &self.planner);
         let ran = self.trigger();
-        // What the person dismissed here is their answer to a notice, as their change.
+        // What the person dismissed here is their answer to a notice, as their change, and so is
+        // the action they chose on one.
         self.dismissed();
+        self.chosen();
         // What the workspace holds for this device's person, as the store reached it since the
         // last look.
         self.told();

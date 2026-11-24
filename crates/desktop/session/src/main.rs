@@ -713,9 +713,8 @@ fn start(
         options.config.idle = tilo_compositor::IdleConfig::never();
     }
     if seed_apps {
-        match tilo_session::seeded_apps::seeded_from_env(&tilo_session::identity::own_person(
-            &options,
-        )) {
+        let (person, device) = tilo_session::identity::own_ids(&options);
+        match tilo_session::seeded_apps::seeded_from_env(&person, device.as_deref()) {
             Ok(apps) => options.services.extend(
                 apps.into_iter()
                     .map(|app| Box::new(app) as Box<dyn tilo_service::Service>),

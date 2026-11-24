@@ -15,6 +15,8 @@ pub const NOTICE_TITLE: &str = "notice-title";
 pub const NOTICE_BODY: &str = "notice-body";
 pub const NOTICE_OPENS: &str = "notice-opens";
 pub const NOTICE_SEEN: &str = "notice-seen";
+pub const NOTICE_DEVICE: &str = "notice-device";
+pub const NOTICE_ACTIONS: &str = "notice-actions";
 pub const LINK_HOW_TYPE: &str = "host-link-how";
 /// The action a person answers an asked invocation with.
 pub const RESOLVE_ACTION: &str = "resolve";
@@ -1006,6 +1008,8 @@ pub fn host_meta() -> PackageMeta {
                 notice_field(NOTICE_BODY, "body", "Text", MergeKind::Text, "What it shows below that line, empty for nothing."),
                 notice_field(NOTICE_OPENS, "opens", "Resource", MergeKind::Register, "The resource choosing the notification opens."),
                 notice_field(NOTICE_SEEN, "seen", "Bool", MergeKind::Register, "Whether the person has opened or dismissed it."),
+                notice_field(NOTICE_DEVICE, "device", "Text", MergeKind::Text, "The device it is for: one device's id, or empty for every device of the person's. A device that is not the one named shows nothing of it."),
+                notice_field(NOTICE_ACTIONS, "actions", "List<Text>", MergeKind::Register, "The actions it offers, by name: each one of the app's actions, run on what it opens when the person chooses it."),
             ],
             ..TypeMeta::default()
         }))

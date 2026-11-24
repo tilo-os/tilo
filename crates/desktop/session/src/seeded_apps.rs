@@ -54,6 +54,7 @@ pub const APPS: [&str; 5] = [
 /// scenario does not run.
 pub fn seeded(
     person: &str,
+    device: Option<&str>,
     catalog: &package_store::Catalog,
 ) -> Result<Vec<ResourceService>, String> {
     // The sample answers of the services the apps' origins stand for, which each seed takes in
@@ -61,9 +62,9 @@ pub fn seeded(
     tilolang_mail::sample::register();
     tilolang_youtube::sample::register();
     let installed = installed_apps(catalog)?;
-    let mut services = vec![session_document(person)?];
+    let mut services = vec![session_document(person, device)?];
     for app in &installed {
-        services.push(told(seeded_app(person, app)?));
+        services.push(told(seeded_app(person, app)?, device));
     }
     Ok(services)
 }
@@ -73,9 +74,9 @@ pub fn seeded(
 ///
 /// # Errors
 /// The store cannot be located, or [`seeded`] fails.
-pub fn seeded_from_env(person: &str) -> Result<Vec<ResourceService>, String> {
+pub fn seeded_from_env(person: &str, device: Option<&str>) -> Result<Vec<ResourceService>, String> {
     let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
-    seeded(person, &catalog)
+    seeded(person, device, &catalog)
 }
 
 /// The session's own document, which keeps the records of the packages the session runs itself
@@ -86,7 +87,7 @@ pub fn seeded_from_env(person: &str) -> Result<Vec<ResourceService>, String> {
 ///
 /// # Errors
 /// The document's host does not open.
-pub fn session_document(person: &str) -> Result<ResourceService, String> {
+pub fn session_document(person: &str, device: Option<&str>) -> Result<ResourceService, String> {
     let host = Host::open(
         tilolang_tilo::resources::ResourceStore::in_memory(),
         tilo_actions::Actor::from(tilo_actions::MemberId::person(person)),
@@ -96,7 +97,7 @@ pub fn session_document(person: &str) -> Result<ResourceService, String> {
     .map_err(|e| e.to_string())?;
     let mut service = ResourceService::session_document(host, person);
     service.set_words(std::rc::Rc::new(crate::i18n::SeededWords));
-    Ok(told(service))
+    Ok(told(service, device))
 }
 
 /// The record of the installed app `app`: its root made and filled by its first scenario as
@@ -170,12 +171,17 @@ fn seed_items() -> Option<usize> {
 }
 
 /// `service`, what its apps tell reaching the person through the platform's notifier this
-/// session serves, as any app's notification does, and its records published.
-fn told(mut service: ResourceService) -> ResourceService {
+/// session serves, as any app's notification does, and its records published. `device` is this
+/// device's id on the person's other devices: a notice addressed to another one shows nothing
+/// here.
+fn told(mut service: ResourceService, device: Option<&str>) -> ResourceService {
     service.set_tell(Toolkit::new(
         ui::notify::system(Some("so.tilo.session")),
         NOTICE_TAGS,
     ));
+    if let Some(device) = device {
+        service.set_device(device);
+    }
     tilo_service::Service::settle(&mut service);
     service
 }

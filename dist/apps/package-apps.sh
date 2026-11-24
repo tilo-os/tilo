@@ -282,8 +282,8 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     if [[ -f $surface ]]; then
         install -pm 0644 "$surface" "$payload/surface.toml"
     fi
-    # An app declares a model by keeping a guest crate beside it (apps/clocks ->
-    # apps/clocks-model-wasm). The module the app-models check built for it ships
+    # An app declares a model by keeping a guest crate beside it (apps/db-client ->
+    # apps/db-client-model-wasm). The module the app-models check built for it ships
     # at the payload root, where every device holding the workspace's keys reads
     # it and `tilo-app package` stages it. A declared model with no module built
     # fails the pack here: the app would ship unable to apply its own actions.

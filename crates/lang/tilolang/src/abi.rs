@@ -195,6 +195,7 @@ imports! {
     ActorId = "actor_id" ([H] -> [H]);
     Now = "now" ([] -> [H]);
     PageCall = "page_call" ([H] -> [H]);
+    Zones = "zones" ([] -> [H]);
     WebGet = "web_get" ([H, H, H] -> [H]);
     WebPost = "web_post" ([H, H, H] -> [H]);
     WebOk = "web_ok" ([H] -> [I32]);
@@ -240,7 +241,7 @@ imports! {
     OutsideAt = "outside_at" ([H, H, H] -> [H]);
     Withdraw = "withdraw" ([H, H] -> [H]);
     ModelCall = "model_call" ([H, H] -> [H]);
-    Notify = "notify" ([H, H, H, H] -> []);
+    Notify = "notify" ([H, H, H, H, H, H] -> []);
     QueueBlock = "queue_block" ([H, H, H] -> []);
     Print = "print" ([H, H] -> []);
     Find = "find" ([H, H] -> [H]);

@@ -117,6 +117,11 @@ pub(crate) struct Own {
     /// governance derives to tell which device a window of the workspace runs on. `None` on a
     /// computer that has no identity yet.
     pub(crate) salt: Option<u16>,
+    /// This device on the person's other devices ([`DeviceId`]), from its own key as the fabric
+    /// names it: the id a notice addresses it by, so an alarm set for the phone rings there and
+    /// not on the laptop. `None` on a computer that has no identity yet, and then every notice of
+    /// the person's is shown here.
+    pub(crate) device: Option<String>,
 }
 
 /// Who runs here, read from this device's own identity as the session starts,
@@ -132,13 +137,19 @@ pub(crate) fn own(options: &crate::Options) -> Own {
         .into_iter()
         .filter(|id| !id.is_empty() && *id != person)
         .collect();
-    let salt = identity.map(|identity| {
+    let salt = identity.as_ref().map(|identity| {
         tilo_desktop_model::ids::device_salt_of_key(&identity.device_cert.device_public_key)
+    });
+    let device = identity.as_ref().and_then(|identity| {
+        crate::platform::fabric::DeviceId::new(hex::encode(identity.device_cert.device_public_key))
+            .ok()
+            .map(|device| device.as_str().to_owned())
     });
     Own {
         person,
         earlier,
         salt,
+        device,
     }
 }
 
@@ -147,6 +158,14 @@ pub(crate) fn own(options: &crate::Options) -> Own {
 #[must_use]
 pub fn own_person(options: &crate::Options) -> String {
     own(options).person
+}
+
+/// The ids a session started with `options` runs as: the person of [`own`]'s, and this device's
+/// id on their other devices when the computer has an identity.
+#[must_use]
+pub fn own_ids(options: &crate::Options) -> (String, Option<String>) {
+    let own = own(options);
+    (own.person, own.device)
 }
 
 /// Read who sits here at startup, and keep it current from then on. A value that cannot be watched

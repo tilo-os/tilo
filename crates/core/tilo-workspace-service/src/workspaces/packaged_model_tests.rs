@@ -10,18 +10,18 @@ use tilo_model_engine::Model;
 use tilo_resource::Resource as _;
 
 /// The app the test installs, which the server does not have compiled in.
-pub(super) const CLOCKS: &str = "so.tilo.clocks";
+pub(super) const APP: &str = "so.tilo.db-client";
 
 /// The resource kind the app keeps its collection under, which its module
 /// routes requests to.
-pub(super) const COLLECTION: &str = "clocks.collection";
+pub(super) const COLLECTION: &str = "db-client.workspace";
 
 /// The invocation's origin clock, milliseconds since the Unix epoch.
 pub(super) const NOW_MS: i64 = 1_760_000_000_000;
 
-/// The Clocks app's signed surface, which its package ships and its changes
+/// The app's signed surface, which its package ships and its changes
 /// are decided against.
-const CLOCKS_SURFACE: &[u8] = include_bytes!("../../../../../apps/clocks/surface.toml");
+const APP_SURFACE: &[u8] = include_bytes!("../../../../../apps/db-client/surface.toml");
 
 /// The app's model module the `app-models` check built (tools/ci/app-models.sh)
 /// from the guest crate beside the app (`apps/<app>-model-wasm`): the app's own
@@ -78,7 +78,7 @@ fn packaged_model(package: &[u8]) -> Vec<u8> {
 }
 
 /// The package the server installs: the image's own pack path built it when the
-/// check names one (`TILO_APP_PACKAGE`, from `tools/ci/pack-clocks-tapp.sh`, so
+/// check names one (`TILO_APP_PACKAGE`, from `tools/ci/pack-model-tapp.sh`, so
 /// what applies the action is a package an image would install), else the
 /// fixture below, which stages the same payload a test can make itself.
 #[expect(
@@ -87,7 +87,7 @@ fn packaged_model(package: &[u8]) -> Vec<u8> {
 )]
 fn installed_package() -> Vec<u8> {
     std::env::var_os("TILO_APP_PACKAGE").map_or_else(
-        || package(CLOCKS, Some(&model_module("clocks"))),
+        || package(APP, Some(&model_module("db-client"))),
         |path| {
             let path = PathBuf::from(path);
             let asked = format!(
@@ -116,8 +116,8 @@ pub(super) fn package_on(app: &str, model: Option<&[u8]>, runtime: Option<&str>)
     let scratch = tempfile::tempdir().unwrap();
     let payload = scratch.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::write(payload.join("bin/clocks"), b"the app's window").unwrap();
-    std::fs::write(payload.join("surface.toml"), CLOCKS_SURFACE).unwrap();
+    std::fs::write(payload.join("bin/db-client"), b"the app's window").unwrap();
+    std::fs::write(payload.join("surface.toml"), APP_SURFACE).unwrap();
     if let Some(model) = model {
         std::fs::write(payload.join(tilo_app_package::MODEL_MODULE), model).unwrap();
     }
@@ -143,7 +143,7 @@ landlock = "strict"
 mode = "off"
 
 [entrypoint]
-bin = "bin/clocks"
+bin = "bin/db-client"
 type = "gui"
 "#,
         hex::encode(identity.public_key_bytes()),
@@ -157,11 +157,11 @@ type = "gui"
     tapp::to_bytes(&packed.meta, Some(source)).unwrap()
 }
 
-/// A world clock for `city` as the action API binds it.
-pub(super) fn add_clock(city: &str) -> serde_json::Map<String, serde_json::Value> {
+/// A saved connection named `name` as the action API binds it.
+pub(super) fn add_connection(name: &str) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();
-    arguments.insert("city".into(), serde_json::Value::String(city.into()));
-    arguments.insert("timezone".into(), serde_json::Value::String("UTC".into()));
+    arguments.insert("name".into(), serde_json::Value::String(name.into()));
+    arguments.insert("engine".into(), serde_json::Value::String("sqlite".into()));
     arguments
 }
 
@@ -187,13 +187,13 @@ fn failed(error: impl std::fmt::Debug) -> String {
 /// and the person. Answers the document and the change's head.
 fn what_the_action_wrote(after: &[u8]) -> Checked<(automerge::AutoCommit, automerge::ChangeHash)> {
     let document = automerge::AutoCommit::load(after).map_err(failed)?;
-    let clocks = clocks_model::Clocks::read(&document).map_err(failed)?;
+    let workspace = db_client_model::Workspace::read(&document).map_err(failed)?;
     check(
-        clocks
-            .world_clocks
+        workspace
+            .connections
             .values()
-            .any(|clock| clock.city.as_str() == "Ship it"),
-        "the collection holds the city the action made",
+            .any(|connection| connection.name.as_str() == "Ship it"),
+        "the collection holds the connection the action made",
     )?;
     let mut written = automerge::AutoCommit::load(after).map_err(failed)?;
     let head = *written
@@ -208,11 +208,11 @@ fn what_the_action_wrote(after: &[u8]) -> Checked<(automerge::AutoCommit, autome
         "the recorded action is the tracker's",
     )?;
     check(
-        String::from_utf8_lossy(&recorded.payload).contains("\"add-world-clock\""),
+        String::from_utf8_lossy(&recorded.payload).contains("\"add-connection\""),
         "the recorded action is the verb applied",
     )?;
     check(
-        entry.app.as_ref().map(|app| app.id.as_str()) == Some(CLOCKS),
+        entry.app.as_ref().map(|app| app.id.as_str()) == Some(APP),
         "the entry names the app the package is",
     )?;
     check(entry.invoker.is_some(), "the entry names who acted")?;
@@ -260,18 +260,18 @@ async fn a_wrong_argument_writes_nothing(
     after: &[u8],
 ) -> Checked<()> {
     let mut wrong = serde_json::Map::new();
-    wrong.insert("city".into(), serde_json::Value::from(5));
+    wrong.insert("name".into(), serde_json::Value::from(5));
     let member = tilo_actions::MemberId::person(hex::encode(cert.user_public_key));
     let refused = workspaces
         .apply_packaged_action(
             workspace,
             cert,
             PackagedAction {
-                app: CLOCKS,
+                app: APP,
                 kind: COLLECTION,
                 document: "",
                 package,
-                action: "add-world-clock",
+                action: "add-connection",
                 arguments: wrong,
                 member: member.clone(),
                 acting: tilo_actions::Acting::member(member),
@@ -281,7 +281,7 @@ async fn a_wrong_argument_writes_nothing(
         .await;
     check(refused.is_err(), "the device refuses a wrong argument")?;
     let document = workspaces
-        .resource_document(workspace, CLOCKS, "")
+        .resource_document(workspace, APP, "")
         .await
         .map_err(failed)?
         .ok_or("the document still exists")?;
@@ -301,12 +301,12 @@ fn the_revert_takes_it_back(
     check(outcome.wrote, "the revert writes the step's inverse")?;
     written.commit();
     check(
-        !clocks_model::Clocks::read(written)
+        !db_client_model::Workspace::read(written)
             .map_err(failed)?
-            .world_clocks
+            .connections
             .values()
-            .any(|clock| clock.city.as_str() == "Ship it"),
-        "the reverted step's city is gone",
+            .any(|connection| connection.name.as_str() == "Ship it"),
+        "the reverted step's connection is gone",
     )?;
     Ok(())
 }
@@ -325,7 +325,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
             .prepare_packaged_application(
                 &created.workspace,
                 &cert,
-                CLOCKS,
+                APP,
                 COLLECTION,
                 "",
                 &package
@@ -335,7 +335,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
         "the server makes the app's resource from its package"
     );
     let base = workspaces
-        .resource_document(&created.workspace, CLOCKS, "")
+        .resource_document(&created.workspace, APP, "")
         .await
         .unwrap()
         .expect("the workspace holds the resource the module made");
@@ -344,12 +344,12 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
             &created.workspace,
             &cert,
             PackagedAction {
-                app: CLOCKS,
+                app: APP,
                 kind: COLLECTION,
                 document: "",
                 package: &package,
-                action: "add-world-clock",
-                arguments: add_clock("Ship it"),
+                action: "add-connection",
+                arguments: add_connection("Ship it"),
                 member: tilo_actions::MemberId::person(hex::encode(cert.user_public_key)),
                 acting: tilo_actions::Acting::member(tilo_actions::MemberId::person(hex::encode(
                     cert.user_public_key,
@@ -364,7 +364,7 @@ async fn a_server_applies_an_installed_apps_action_from_its_package() {
         "the model makes the invocation a peer replays"
     );
     let after = workspaces
-        .resource_document(&created.workspace, CLOCKS, "")
+        .resource_document(&created.workspace, APP, "")
         .await
         .unwrap()
         .expect("the document still exists");
@@ -384,9 +384,9 @@ async fn a_package_without_a_model_applies_nothing() {
     let server = test_host(scratch.path(), &key, &cert).await;
     let workspaces = server.workspaces();
     let created = workspaces.create("No model").await.unwrap();
-    let package = package(CLOCKS, None);
+    let package = package(APP, None);
     let refused = workspaces
-        .prepare_packaged_application(&created.workspace, &cert, CLOCKS, COLLECTION, "", &package)
+        .prepare_packaged_application(&created.workspace, &cert, APP, COLLECTION, "", &package)
         .await;
     assert!(
         refused.is_err(),

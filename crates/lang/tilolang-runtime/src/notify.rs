@@ -45,4 +45,10 @@ pub struct Notice {
     pub body: String,
     /// The resource choosing the notification opens: where the person lands.
     pub opens: ResourceRef,
+    /// The device it is for: a device's id, or empty for every device of the person's. A device
+    /// that is not the one named shows nothing of it.
+    pub device: String,
+    /// The actions the notification offers, by name: each is one of the package's actions, run on
+    /// `opens` when the person chooses it.
+    pub actions: Vec<String>,
 }

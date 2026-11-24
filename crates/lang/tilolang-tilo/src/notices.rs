@@ -13,7 +13,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tilo_service::notice::{Notice, Place};
-use tilolang::{NOTICE_BODY, NOTICE_OPENS, NOTICE_SEEN, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE};
+use tilolang::{
+    NOTICE_ACTIONS, NOTICE_BODY, NOTICE_DEVICE, NOTICE_OPENS, NOTICE_SEEN, NOTICE_TITLE, NOTICE_TO,
+    NOTICE_TYPE,
+};
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 
@@ -39,6 +42,9 @@ pub struct Notices {
     /// The instant of the newest notice of theirs the document held when the device first looked:
     /// an older one is not news, whatever else it is.
     from: Option<i64>,
+    /// This device's id: a notice naming another device is not shown here. Empty when the host
+    /// names no device, and then every notice is.
+    device: String,
 }
 
 impl Notices {
@@ -51,7 +57,13 @@ impl Notices {
             told: BTreeSet::new(),
             showing: BTreeMap::new(),
             from: None,
+            device: String::new(),
         }
+    }
+
+    /// The device these notices are shown on: a notice naming another device is not shown here.
+    pub fn set_device(&mut self, device: impl Into<String>) {
+        self.device = device.into();
     }
 
     /// Take up what this device told before it restarted, as it kept it ([`Self::kept`]): none
@@ -76,6 +88,12 @@ impl Notices {
                 continue;
             };
             if !notice.to.eq_ignore_ascii_case(&self.person) {
+                continue;
+            }
+            if !notice.device.is_empty()
+                && !self.device.is_empty()
+                && !notice.device.eq_ignore_ascii_case(&self.device)
+            {
                 continue;
             }
             held.push(notice);
@@ -157,6 +175,10 @@ struct Held {
     seen: bool,
     /// When it was written.
     at: i64,
+    /// The device it is for; empty for every device of the person's.
+    device: String,
+    /// The actions it offers, by the name of each in its app.
+    actions: Vec<String>,
 }
 
 impl Held {
@@ -179,10 +201,32 @@ impl Held {
             anchor: resource.clone(),
             resource,
         };
-        Some(
-            Notice::opens(app, self.title.clone(), self.body.clone(), place)
-                .tagged(format!("{NOTICE_TAGS}{}/{person}", self.id)),
-        )
+        let mut notice = Notice::opens(app, self.title.clone(), self.body.clone(), place)
+            .tagged(format!("{NOTICE_TAGS}{}/{person}", self.id));
+        // The actions it offers, named as its app names them: one the app does not declare is
+        // offered nowhere.
+        let offered: Vec<(String, String)> = package.as_ref().map_or_else(Vec::new, |package| {
+            self.actions
+                .iter()
+                .filter_map(|name| {
+                    let action = package
+                        .meta
+                        .actions
+                        .iter()
+                        .find(|action| action.name == *name)?;
+                    let label = if action.label.is_empty() {
+                        action.name.clone()
+                    } else {
+                        action.label.clone()
+                    };
+                    Some((name.clone(), label))
+                })
+                .collect()
+        });
+        if !offered.is_empty() {
+            notice = notice.choosing(offered);
+        }
+        Some(notice)
     }
 }
 
@@ -204,6 +248,17 @@ fn held_notice(host: &Host, id: &str) -> Option<Held> {
         _ => return None,
     };
     let seen = matches!(runtime.read(&at, NOTICE_SEEN), Ok(Value::Bool(true)));
+    let device = text(NOTICE_DEVICE).unwrap_or_default();
+    let actions = match runtime.read(&at, NOTICE_ACTIONS) {
+        Ok(Value::List(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::Text(name) => Some(name.to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     let at_instant = host
         .store()
         .version_end(&at, false)
@@ -218,5 +273,7 @@ fn held_notice(host: &Host, id: &str) -> Option<Held> {
         opens,
         seen,
         at: at_instant,
+        device,
+        actions,
     })
 }

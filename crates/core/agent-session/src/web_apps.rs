@@ -15,7 +15,6 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         assistant::definition(),
         camera::definition(),
         chip_design::definition(),
-        clocks::definition(),
         tilo_console::definition(),
         diffmerge::definition(),
         feeds::definition(),

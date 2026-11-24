@@ -1337,3 +1337,26 @@ picture-not-kept = The picture was not added: { $reason }
 file-too-large = That file is too large to add
 file-no-store = This device keeps no files
 file-not-kept = The file was not added: { $reason }
+
+# Clocks (ui::widget::clock): a wall clock in another zone.
+clock-today = today
+clock-tomorrow = tomorrow
+clock-same-time = Same time as here
+clock-hours-ahead = { $count ->
+        [one] { $count } hour ahead
+       *[other] { $count } hours ahead
+    }
+clock-hours-behind = { $count ->
+        [one] { $count } hour behind
+       *[other] { $count } hours behind
+    }
+clock-minutes-ahead = { $count ->
+        [one] { $count } minute ahead
+       *[other] { $count } minutes ahead
+    }
+clock-minutes-behind = { $count ->
+        [one] { $count } minute behind
+       *[other] { $count } minutes behind
+    }
+clock-hours-minutes-ahead = { $hours } h { $minutes } min ahead
+clock-hours-minutes-behind = { $hours } h { $minutes } min behind

@@ -251,6 +251,7 @@ impl Checker<'_> {
             "open" => return self.builtin_open(args, span),
             "notify" => return self.builtin_notify(args, span),
             "resource" => return self.builtin_resource(args, span),
+            "zones" => return self.builtin_zones(args, span),
             "person" => return self.builtin_person(args, span),
             "agent" => return self.builtin_agent(args, span),
             "actions" => return self.builtin_actions(args, span),
@@ -1143,6 +1144,26 @@ impl Checker<'_> {
         Ex::host(Imp::StageReading, vec![target, reading], Ty::Unit)
     }
 
+    /// `zones()`: every time zone the device's database knows, by its IANA name, as a person
+    /// picks a city's clock by. The same names on every device.
+    fn builtin_zones(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if !args.is_empty() {
+            self.err(
+                "E022",
+                span,
+                "`zones()` takes nothing: it answers every time zone this device knows",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+        }
+        Ex::host(
+            crate::abi::Imp::Zones,
+            Vec::new(),
+            Ty::List(Box::new(Ty::Text)),
+        )
+    }
+
     fn builtin_person(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.written != Written::Scenario {
             self.err("E094", span, "`person(name)` makes a sample person for a scenario; elsewhere an actor comes only from `invoker` or a stored field");
@@ -1643,19 +1664,22 @@ impl Checker<'_> {
         }
     }
 
-    /// `notify(to: who, title: text, body: text, opens: r)`: tell the person `to` something on
-    /// their device, and open `r` when they choose it. The invocation records it.
+    /// `notify(to: who, title: text, body: text, opens: r, device:, on:)`: tell the person `to`
+    /// something on their devices — one named device, or all of them — open `r` when they choose
+    /// it, and offer it the actions `on` names. The invocation records it.
     fn builtin_notify(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let mut to = None;
         let mut title = None;
         let mut body = None;
         let mut opens = None;
+        let mut device = None;
+        let mut actions = None;
         for arg in args {
             let Some(named) = &arg.name else {
                 self.err(
                     "E022",
                     arg.value.span,
-                    "`notify` takes what it says by name: `notify(to:, title:, body:, opens:)`",
+                    "`notify` takes what it says by name: `notify(to:, title:, body:, opens:, device:, on:)`",
                 );
                 let _ = self.expr(&arg.value, None);
                 continue;
@@ -1690,12 +1714,20 @@ impl Checker<'_> {
                         }
                     }
                 }
+                // The device it rings on: one device's id, or empty for every device of the
+                // person's.
+                "device" => device = Some(self.expr_as(&arg.value, &Ty::Text)),
+                // The actions it offers: the app's own, by name, each run on what it opens.
+                "on" => {
+                    let list = self.expr_as(&arg.value, &Ty::List(Box::new(Ty::Text)));
+                    actions = Some(list);
+                }
                 other => {
                     self.err(
                         "E022",
                         arg.value.span,
                         format!(
-                            "`notify` says `to:`, `title:`, `body:` and `opens:`; not `{other}:`"
+                            "`notify` says `to:`, `title:`, `body:`, `opens:`, `device:` and `on:`; not `{other}:`"
                         ),
                     );
                     let _ = self.expr(&arg.value, None);
@@ -1724,6 +1756,9 @@ impl Checker<'_> {
             );
         }
         self.reads(crate::effects::Effect::Notify, span, "`notify`");
+        let device = device.unwrap_or_else(|| Ex::str(""));
+        let actions = actions
+            .unwrap_or_else(|| Ex::host(Imp::MissingV, Vec::new(), Ty::List(Box::new(Ty::Text))));
         Ex::host(
             Imp::Notify,
             vec![
@@ -1731,6 +1766,8 @@ impl Checker<'_> {
                 title.unwrap_or_else(Ex::error),
                 body.unwrap_or_else(Ex::error),
                 opens.unwrap_or_else(Ex::error),
+                device,
+                actions,
             ],
             Ty::Unit,
         )

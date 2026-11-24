@@ -1304,3 +1304,26 @@ picture-not-kept = Das Bild wurde nicht hinzugefügt: { $reason }
 file-too-large = Diese Datei ist zu groß, um sie hinzuzufügen
 file-no-store = Dieses Gerät speichert keine Dateien
 file-not-kept = Die Datei wurde nicht hinzugefügt: { $reason }
+
+# Clocks (ui::widget::clock): eine Uhr in einer anderen Zeitzone.
+clock-today = heute
+clock-tomorrow = morgen
+clock-same-time = Gleiche Zeit wie hier
+clock-hours-ahead = { $count ->
+        [one] { $count } Stunde voraus
+       *[other] { $count } Stunden voraus
+    }
+clock-hours-behind = { $count ->
+        [one] { $count } Stunde zurück
+       *[other] { $count } Stunden zurück
+    }
+clock-minutes-ahead = { $count ->
+        [one] { $count } Minute voraus
+       *[other] { $count } Minuten voraus
+    }
+clock-minutes-behind = { $count ->
+        [one] { $count } Minute zurück
+       *[other] { $count } Minuten zurück
+    }
+clock-hours-minutes-ahead = { $hours } Std. { $minutes } Min. voraus
+clock-hours-minutes-behind = { $hours } Std. { $minutes } Min. zurück

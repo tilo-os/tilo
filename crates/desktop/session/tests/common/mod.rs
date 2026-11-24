@@ -898,7 +898,7 @@ pub fn seeded_apps() -> Vec<Box<dyn tilo_service::Service>> {
 /// The apps do not load.
 pub fn seeded_apps_in(store: &Path) -> Vec<Box<dyn tilo_service::Service>> {
     let catalog = package_store::Catalog::at(store, None);
-    tilo_session::seeded_apps::seeded(PERSON, &catalog)
+    tilo_session::seeded_apps::seeded(PERSON, None, &catalog)
         .expect("the seeded apps")
         .into_iter()
         .map(|app| Box::new(app) as Box<dyn tilo_service::Service>)

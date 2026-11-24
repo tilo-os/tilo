@@ -21,6 +21,45 @@ const TASKS: (&str, &str) = (
     include_str!("../../../../apps/tl/tasks/app.ids"),
 );
 const TASKS_APP: &str = "so.tilo.tasks";
+const CLOCKS: (&str, &str) = (
+    include_str!("../../../../apps/tl/clocks/app.tl"),
+    include_str!("../../../../apps/tl/clocks/app.ids"),
+);
+const CLOCKS_APP: &str = "so.tilo.clocks";
+
+/// An app that tells a person about a note and then asks who seals it: the notice is written
+/// before the ask, as something that goes out before one is.
+const TELLER: (&str, &str) = (
+    r#"app so.tilo.test.teller "Teller"
+
+type Note {
+    sealed: Bool
+}
+
+/// Tells the person about the note, then asks who seals it.
+action tell_and_seal(n: Note) uses notify {
+    notify(to: invoker, title: "A note of yours", body: "", opens: n)
+    seal(n)
+}
+
+/// Seals the note: it reaches outside, so a person decides it before it happens.
+action seal(n: Note) {
+    outside("smtp.send", (n.sealed,))
+    n.sealed = true
+}
+
+root Note
+
+default view note for Note
+
+view note(n: Note) {
+    ui.Text("a note")
+}
+"#,
+    "",
+);
+const TELLER_APP: &str = "so.tilo.test.teller";
+const WORKSPACE: &str = "workspace";
 
 /// What one device showed and took back, and what its platform said of the notifications it
 /// closed, as the notifications service would.
@@ -102,6 +141,19 @@ fn service(name: &str, person: &str, base: &Workspace) -> (Device, Recorder) {
     let (replica, _) = Replica::new(name, base.fork(), &[DISCUSSION, TASKS]);
     let (mut service, doc) = replica.into_service_with_workspace(person);
     service.set_clock(|| "2026-10-27T09:00:00Z".to_owned());
+    let recorder = Recorder::default();
+    service.set_tell(recorder.clone());
+    (Device { service, doc }, recorder)
+}
+
+/// One of `person`'s devices over a copy of `base`, running Clocks: the service a session starts
+/// for the app, its device set from the device's own identity as the session sets it — the id a
+/// notice addresses it by.
+fn clocks_service(person: &str, device: &str, base: &Workspace) -> (Device, Recorder) {
+    let (replica, _) = Replica::new(person, base.fork(), &[CLOCKS]);
+    let (mut service, doc) = replica.into_service_with_workspace(person);
+    service.set_clock(|| "2026-10-27T06:59:00Z".to_owned());
+    service.set_device(device);
     let recorder = Recorder::default();
     service.set_tell(recorder.clone());
     (Device { service, doc }, recorder)
@@ -326,6 +378,81 @@ fn a_notice_reaches_the_devices_of_the_person_it_names_and_no_one_else() {
 
     // The device that ran the trigger is the one that told them once, not each of the three.
     assert_eq!(notices(ada.host()).len(), 1, "written once");
+}
+
+#[test]
+fn an_alarm_rings_only_on_the_device_it_names_and_on_every_device_when_it_names_none() {
+    let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T06:59:00Z".to_owned()));
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &[CLOCKS]);
+    ada.host.set_clock({
+        let clock = std::rc::Rc::clone(&clock);
+        move || clock.borrow().clone()
+    });
+    let meta = packages.last().unwrap().meta.clone();
+    let clocks = ada.host.root_of(CLOCKS_APP).unwrap();
+    ada.commit();
+
+    // Two alarms at seven: one set to ring on the phone, one on every device of ada's.
+    for (label, rings_on) in [("Standup", "phone"), ("Coffee", "")] {
+        invoke(
+            &ada,
+            &meta,
+            "add_alarm",
+            vec![
+                Value::resource(&clocks),
+                Value::text(label),
+                Value::Int(7),
+                Value::Int(0),
+                Value::List(Vec::new()),
+                Value::text(rings_on),
+            ],
+        );
+    }
+
+    // Ada's laptop and phone are both there before seven, having looked: nothing yet.
+    let before = ada.doc.fork();
+    let (mut laptop, laptop_notices) = clocks_service("ada", "laptop", &before);
+    let (mut phone, phone_notices) = clocks_service("ada", "phone", &before);
+    laptop.poll();
+    phone.poll();
+
+    // Seven comes, on the workspace's device: both alarms ring, and both notices are the
+    // workspace's like any other resource.
+    "2026-10-27T07:00:00Z".clone_into(&mut clock.borrow_mut());
+    let seven = tilolang::calendar::instant("2026-10-27T07:00:00Z").unwrap();
+    assert_eq!(ada.host.run_triggers(seven), 2, "both alarms' moments come");
+    ada.commit();
+    assert_eq!(
+        notices(&ada.host).len(),
+        2,
+        "both notices are the workspace's"
+    );
+
+    // Each device takes in what it wrote. The phone is the one the Standup alarm names, and
+    // the Coffee alarm names no device, so both of them ring there — while the laptop shows
+    // only the alarm for every device.
+    laptop.take_in(&ada.doc.fork());
+    phone.take_in(&ada.doc.fork());
+    let titles = |recorder: &Recorder| {
+        let mut titles: Vec<String> = recorder
+            .shown
+            .borrow()
+            .iter()
+            .map(|notice| notice.title.clone())
+            .collect();
+        titles.sort();
+        titles
+    };
+    assert_eq!(
+        titles(&phone_notices),
+        ["Coffee".to_owned(), "Standup".to_owned()],
+        "the alarm set for the phone rings on it, and so does the one for every device"
+    );
+    assert_eq!(
+        titles(&laptop_notices),
+        ["Coffee".to_owned()],
+        "the alarm set for the phone does not ring on the laptop"
+    );
 }
 
 #[test]

@@ -36,6 +36,14 @@ impl Core {
 
     pub(crate) fn time_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
+            // Every time zone the device's database knows, by its IANA name: what a person picks
+            // a city's clock from. The same names on every device, since Tilo ships the database.
+            Imp::Zones => {
+                let zones = tilo_recurrence::zone::available()
+                    .map(|name| Value::text(name.to_owned()))
+                    .collect();
+                self.ret_h(Value::List(zones))
+            }
             Imp::Today => {
                 let now = self.now_text()?;
                 let Some(at) = tilolang::calendar::instant(&now) else {

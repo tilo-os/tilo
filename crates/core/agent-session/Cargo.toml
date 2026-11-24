@@ -43,7 +43,6 @@ api-tester = { path = "../../../apps/api-tester" }
 assistant = { path = "../../../apps/assistant" }
 camera = { path = "../../../apps/camera", default-features = false, features = ["live-capture"] }
 chip-design = { path = "../../../apps/chip-design" }
-clocks = { path = "../../../apps/clocks" }
 tilo-console = { path = "../../../apps/console" }
 diffmerge = { path = "../../../apps/diffmerge" }
 feeds = { path = "../../../apps/feeds" }

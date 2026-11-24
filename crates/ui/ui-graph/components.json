@@ -1344,6 +1344,54 @@
       }
     },
     {
+      "name": "Clock",
+      "doc": "A wall clock, live: the time of day in `zone` (the person's when it names none), the day there, and how far its clock stands from here.",
+      "props": [
+        {
+          "name": "zone",
+          "doc": "The IANA zone (`Asia/Tokyo`) to read the clock in; the person's own when it names none.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "facts",
+          "doc": "Show the day there and how far its clock stands from here, under the time.",
+          "type": "bool"
+        },
+        {
+          "name": "role",
+          "doc": "What the time is, which sets its size and weight: `body` unless said.",
+          "type": {
+            "choice": {
+              "name": "TextRole",
+              "cases": [
+                "display",
+                "large_title",
+                "title",
+                "heading",
+                "subheading",
+                "body",
+                "label",
+                "caption",
+                "reading",
+                "code"
+              ]
+            }
+          }
+        },
+        {
+          "name": "secondary",
+          "doc": "In secondary ink, beside the content it is about.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Label",
+        "label": "zone"
+      }
+    },
+    {
       "name": "CodeEditor",
       "doc": "Code to read or write, with line numbers and its language's colouring.",
       "props": [
@@ -1643,6 +1691,53 @@
       "semantics": {
         "role": "List",
         "label": "name"
+      }
+    },
+    {
+      "name": "Countdown",
+      "doc": "A countdown, live: the time left until `at` — or, once it has come, the time since it — and, with `total`, a ring of how much of it is left.",
+      "props": [
+        {
+          "name": "at",
+          "doc": "The moment it counts to: the time left until it, or the time since it once it has come.",
+          "type": "time",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "total",
+          "doc": "How long the whole is, in seconds: a ring drains as it goes. Without it the readout stands alone, as a stopwatch's does.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "label",
+          "doc": "What the ring measures, under its readout.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "size",
+          "doc": "How large the readout is: `regular` unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ProgressRingSize",
+                "cases": [
+                  "small",
+                  "regular",
+                  "large"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Timer",
+        "label": "label"
       }
     },
     {

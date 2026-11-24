@@ -638,7 +638,7 @@ default = false
 # here, where the module is in place. `workspace-unify` comes beside the
 # package so its features resolve as the test family's build gives them.
 # The server's test is handed a package the image's pack path built
-# (tools/ci/pack-clocks-tapp.sh), so what it applies an action from is a package
+# (tools/ci/pack-model-tapp.sh), so what it applies an action from is a package
 # an image would install, not one the test staged. The command names
 # workspace-unify beside the package so its units are the `test` and `test-x86_64`
 # families' units and the compiler cache serves them: a narrowed `-p` selection
@@ -646,7 +646,7 @@ default = false
 [[check]]
 name = "test-packaged-model"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -euo pipefail\nexport TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\"\nbash tools/ci/pack-clocks-tapp.sh /target/packaged-model\nTILO_APP_PACKAGE=/target/packaged-model/so.tilo.clocks.tapp cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\n"
+run = "set -euo pipefail\nexport TILO_APP_MODELS=\"$CARGO_TARGET_DIR/app-models\"\nbash tools/ci/pack-model-tapp.sh /target/packaged-model db-client\nTILO_APP_PACKAGE=/target/packaged-model/so.tilo.db-client.tapp cargo test --locked -p tilo-workspace-service -p workspace-unify --lib packaged_model -- --ignored\n"
 needs = ["app-models"]
 
 [[check]]
@@ -7096,7 +7096,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "devices", "displays-across-devices", "file-explorer", "music", "notes", "settings", "shell", "tube", "video-player"]
+app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "clocks", "devices", "displays-across-devices", "file-explorer", "music", "notes", "settings", "shell", "tube", "video-player"]
 
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the
 # frame that shows its window: the cold open and each open after a quit, as the walks of the apps
