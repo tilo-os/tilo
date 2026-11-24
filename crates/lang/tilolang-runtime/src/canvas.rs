@@ -222,40 +222,67 @@ impl Core {
     /// `canvas.*`: the device's drawing engine answers from the text and bytes the call names.
     pub(crate) fn canvas_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
+            Imp::CanvasLook | Imp::CanvasExport | Imp::CanvasGrade | Imp::CanvasCompare
+            | Imp::CanvasSave => self.canvas_picture(imp, a),
+            Imp::CanvasWand | Imp::CanvasFind | Imp::CanvasCombine | Imp::CanvasMeasure
+            | Imp::CanvasSvg | Imp::CanvasSvgImport => self.canvas_text(imp, a),
+            Imp::CanvasOpen => self.canvas_open(a),
+            _ => trap("not a canvas import"),
+        }
+    }
+
+    /// The calls that answer with a picture this device keeps as a file: the artwork drawn,
+    /// exported, graded or compared, and the page saved.
+    fn canvas_picture(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             Imp::CanvasLook | Imp::CanvasExport => {
                 let artwork = self.text(a.h(0)?)?;
                 let request = self.text(a.h(1)?)?;
                 let pictures = self.file_pairs(a.h(2)?)?;
-                let host = self.canvas.borrow();
                 let answer = if imp == Imp::CanvasLook {
-                    host.look(&artwork, &request, &pictures)
+                    self.canvas.borrow().look(&artwork, &request, &pictures)
                 } else {
-                    host.export(&artwork, &request, &pictures)
+                    self.canvas.borrow().export(&artwork, &request, &pictures)
                 };
-                drop(host);
-                match answer {
-                    Ok((bytes, info)) => {
-                        let (name, mime) = named(&info, "png");
-                        let file = self.keep_bytes(&name, mime, &bytes).or_else(trap)?;
-                        self.result(Ok(Value::file(file)))
-                    }
-                    Err(why) => self.result(Err(why)),
-                }
+                self.canvas_made(answer)
             }
             Imp::CanvasGrade => {
                 let picture = self.canvas_bytes(a.h(0)?)?;
                 let adjust = self.text(a.h(1)?)?;
                 let answer = self.canvas.borrow().grade(&picture, &adjust);
                 match answer {
-                    Ok(bytes) => {
-                        let file = self
-                            .keep_bytes("graded.png", "image/png", &bytes)
-                            .or_else(trap)?;
-                        self.result(Ok(Value::file(file)))
-                    }
+                    Ok(bytes) => self.canvas_file(&bytes, "graded.png", "image/png"),
                     Err(why) => self.result(Err(why)),
                 }
             }
+            Imp::CanvasCompare => {
+                let artwork = self.text(a.h(0)?)?;
+                let request = self.text(a.h(1)?)?;
+                let pictures = self.file_pairs(a.h(2)?)?;
+                let answer = self.canvas.borrow().compare(&artwork, &request, &pictures);
+                self.canvas_made(answer)
+            }
+            Imp::CanvasSave => {
+                let artwork = self.text(a.h(0)?)?;
+                let pictures = self.file_pairs(a.h(1)?)?;
+                let answer = self.canvas.borrow().save(&artwork, &pictures);
+                match answer {
+                    Ok(bytes) => self.canvas_file(
+                        &bytes,
+                        "Artwork.artwork",
+                        "application/vnd.tilo.artwork+zip",
+                    ),
+                    Err(why) => self.result(Err(why)),
+                }
+            }
+            _ => trap("not a canvas import"),
+        }
+    }
+
+    /// The calls that answer with text: the color a place picks, the region of a find or a
+    /// measure, and the document written as SVG.
+    fn canvas_text(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             Imp::CanvasWand => {
                 let picture = self.picture_bytes(a.h(0)?)?;
                 let request = self.text(a.h(1)?)?;
@@ -282,20 +309,6 @@ impl Core {
                 let answer = self.canvas.borrow().measure(&artwork, &request, &pictures);
                 self.result(answer.map(Value::text))
             }
-            Imp::CanvasCompare => {
-                let artwork = self.text(a.h(0)?)?;
-                let request = self.text(a.h(1)?)?;
-                let pictures = self.file_pairs(a.h(2)?)?;
-                let answer = self.canvas.borrow().compare(&artwork, &request, &pictures);
-                match answer {
-                    Ok((bytes, info)) => {
-                        let (name, mime) = named(&info, "png");
-                        let file = self.keep_bytes(&name, mime, &bytes).or_else(trap)?;
-                        self.result(Ok(Value::file(file)))
-                    }
-                    Err(why) => self.result(Err(why)),
-                }
-            }
             Imp::CanvasSvg => {
                 let artwork = self.text(a.h(0)?)?;
                 let request = self.text(a.h(1)?)?;
@@ -308,40 +321,42 @@ impl Core {
                 let answer = self.canvas.borrow().svg_import(&markup, &request);
                 self.result(answer.map(Value::text))
             }
-            Imp::CanvasSave => {
-                let artwork = self.text(a.h(0)?)?;
-                let pictures = self.file_pairs(a.h(1)?)?;
-                let answer = self.canvas.borrow().save(&artwork, &pictures);
-                match answer {
-                    Ok(bytes) => {
-                        let file = self
-                            .keep_bytes(
-                                "Artwork.artwork",
-                                "application/vnd.tilo.artwork+zip",
-                                &bytes,
-                            )
-                            .or_else(trap)?;
-                        self.result(Ok(Value::file(file)))
-                    }
-                    Err(why) => self.result(Err(why)),
-                }
-            }
-            Imp::CanvasOpen => {
-                let archive = self.canvas_bytes(a.h(0)?)?;
-                let answer = self.canvas.borrow().open(&archive);
-                let (artwork, pictures) = match answer {
-                    Ok(opened) => opened,
-                    Err(why) => return self.result(Err(why)),
-                };
-                // The pictures the package carried are kept by their address, so the marks that
-                // name them find them on this device as on the one that saved it.
-                for (_, bytes) in &pictures {
-                    let _ = self.keep_bytes("picture.png", "image/png", bytes);
-                }
-                self.result(Ok(Value::text(artwork)))
-            }
             _ => trap("not a canvas import"),
         }
+    }
+
+    /// `canvas.open(archive)`: the artwork the archive holds, with its pictures kept by their
+    /// address, so the marks that name them find them on this device as on the one that saved
+    /// it.
+    fn canvas_open(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let archive = self.canvas_bytes(a.h(0)?)?;
+        let answer = self.canvas.borrow().open(&archive);
+        let (artwork, pictures) = match answer {
+            Ok(opened) => opened,
+            Err(why) => return self.result(Err(why)),
+        };
+        for (_, bytes) in &pictures {
+            let _ = self.keep_bytes("picture.png", "image/png", bytes);
+        }
+        self.result(Ok(Value::text(artwork)))
+    }
+
+    /// The file the picture an engine made reads as: its bytes under the name and type its
+    /// `info` gives, or `png` when it names no type.
+    fn canvas_made(&self, answer: Result<(Vec<u8>, String), String>) -> HResult<Option<Wasm>> {
+        match answer {
+            Ok((bytes, info)) => {
+                let (name, mime) = named(&info, "png");
+                self.canvas_file(&bytes, &name, mime)
+            }
+            Err(why) => self.result(Err(why)),
+        }
+    }
+
+    /// `bytes` kept as a file called `name` of type `mime`, as the run's value.
+    fn canvas_file(&self, bytes: &[u8], name: &str, mime: &str) -> HResult<Option<Wasm>> {
+        let file = self.keep_bytes(name, mime, bytes).or_else(trap)?;
+        self.result(Ok(Value::file(file)))
     }
 
     /// The pictures behind `h`, as `(address, bytes)`: each address the artwork's marks name,

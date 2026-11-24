@@ -211,6 +211,13 @@ impl SessionPower {
     /// The history as it reads now, re-read when the last read is a minute
     /// old.
     fn history_reading(&self) -> Value {
+        let history = self.history_now();
+        serde_json::to_value(&history).unwrap_or(Value::Null)
+    }
+
+    /// The history as it reads now, read again when the kept read is a minute
+    /// old. The lock is released before the caller serialises it.
+    fn history_now(&self) -> crate::History {
         let mut kept = self.history.lock_recover();
         if kept
             .as_ref()
@@ -221,10 +228,7 @@ impl SessionPower {
                 tilo_power_mgmt::load_battery_history().into(),
             ));
         }
-        let history = kept
-            .as_ref()
-            .map_or_else(crate::History::default, |(_, history)| history.clone());
-        serde_json::to_value(&history).unwrap_or(Value::Null)
+        kept.as_ref().map_or_else(crate::History::default, |(_, history)| history.clone())
     }
 
     /// Whether the history is old enough to read again.

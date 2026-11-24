@@ -592,7 +592,6 @@ impl Core {
 
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
-        use Imp::Delivery;
         match imp {
             StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | StrToFloat
             | FloatToStr | StrCmp | StrFind | StrSlice | StrReplace | StrUrlEncode | StrTrim
@@ -634,6 +633,18 @@ impl Core {
             }
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
+            // Everything that reaches past the values in hand: the workspace's resources, the
+            // run's own effects, the web, and this device.
+            other => self.dispatch_host(other, a),
+        }
+    }
+
+    /// The imports that read or change what lies beyond the call's own values: the workspace's
+    /// resources, the run's effects, the web, this device's files and engines, and the
+    /// platform's resources.
+    fn dispatch_host(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        use Imp::Delivery;
+        match imp {
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollInsertAs | CollInsertKeyed | CollRemove | CollMove
             | CollMoveTo | CollMoveAmong | CollPlace | SetAdd | SetRemove | MapPut | MapRemove
@@ -695,6 +706,7 @@ impl Core {
             Print | Find | ReadText | OfType | Keep | Grep | Describe | DescribeRef | ReadWith
             | PrintRows | CountBy | GroupBy | Take | Single | Me | ForeignRef | MatchGroup
             | Abort => self.program_import(imp, a),
+            _ => trap("not an import"),
         }
     }
 

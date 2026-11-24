@@ -12,74 +12,9 @@ impl Core {
     /// `web.get`, `web.post` and what a reply is asked: its status, headers and body.
     pub(crate) fn web_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
-            Imp::WebGet => {
-                let url = self.text(a.h(0)?)?;
-                let headers = self.web_headers(a.h(1)?)?;
-                let if_none_match = match self.val(a.h(2)?)? {
-                    Value::Opt(Some(tag)) => Some(match *tag {
-                        Value::Text(tag) => tag,
-                        other => {
-                            return trap(format!(
-                                "if_none_match takes text, got {}",
-                                other.kind_name()
-                            ));
-                        }
-                    }),
-                    Value::Opt(None) => None,
-                    other => {
-                        return trap(format!(
-                            "if_none_match takes text, got {}",
-                            other.kind_name()
-                        ));
-                    }
-                };
-                let request = crate::run::WebRequest {
-                    method: "GET".to_owned(),
-                    url,
-                    headers,
-                    body: None,
-                    bytes: None,
-                    if_none_match,
-                };
-                let response = self.web(request)?;
-                self.ret_h(Value::Response(Rc::new(response)))
-            }
-            Imp::WebPostBytes => {
-                let url = self.text(a.h(0)?)?;
-                let count = a.long(1)?;
-                let bytes = match u64::try_from(count) {
-                    Ok(bytes) => bytes,
-                    Err(_) => {
-                        return trap(format!("bytes takes a whole count of bytes, got {count}"));
-                    }
-                };
-                let headers = self.web_headers(a.h(2)?)?;
-                let request = crate::run::WebRequest {
-                    method: "POST".to_owned(),
-                    url,
-                    headers,
-                    body: None,
-                    bytes: Some(bytes),
-                    if_none_match: None,
-                };
-                let response = self.web(request)?;
-                self.ret_h(Value::Response(Rc::new(response)))
-            }
-            Imp::WebPost => {
-                let url = self.text(a.h(0)?)?;
-                let body = self.text(a.h(1)?)?;
-                let headers = self.web_headers(a.h(2)?)?;
-                let request = crate::run::WebRequest {
-                    method: "POST".to_owned(),
-                    url,
-                    headers,
-                    body: Some(body),
-                    bytes: None,
-                    if_none_match: None,
-                };
-                let response = self.web(request)?;
-                self.ret_h(Value::Response(Rc::new(response)))
-            }
+            Imp::WebGet => self.web_get(a),
+            Imp::WebPost => self.web_post(a),
+            Imp::WebPostBytes => self.web_post_bytes(a),
             Imp::WebOk => {
                 let response = self.response_arg(a.h(0)?)?;
                 ret_i32(i32::from(response.ok()))
@@ -94,7 +29,9 @@ impl Core {
             }
             Imp::WebDurationMs => {
                 let response = self.response_arg(a.h(0)?)?;
-                crate::core::ret_i64(i64::try_from(response.duration_ms).unwrap_or(i64::MAX))
+                crate::core::ret_i64(
+                    i64::try_from(response.duration_ms.unwrap_or(0)).unwrap_or(i64::MAX),
+                )
             }
             Imp::WebHeaders => {
                 let response = self.response_arg(a.h(0)?)?;
@@ -133,6 +70,73 @@ impl Core {
                 crate::core::ret_i64(i64::try_from(n).unwrap_or(i64::MAX))
             }
             _ => trap("not a web import"),
+        }
+    }
+
+    /// `web.get(url, headers, if_none_match)`: the reply, which a cache answers by its tag
+    /// when it still holds the bytes.
+    fn web_get(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let url = self.text(a.h(0)?)?;
+        let headers = self.web_headers(a.h(1)?)?;
+        let if_none_match = self.if_none_match(a.h(2)?)?;
+        self.send(crate::run::WebRequest {
+            method: "GET".to_owned(),
+            url,
+            headers,
+            body: None,
+            bytes: None,
+            if_none_match,
+        })
+    }
+
+    /// `web.post(url, body, headers)`: the text body.
+    fn web_post(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let url = self.text(a.h(0)?)?;
+        let body = self.text(a.h(1)?)?;
+        let headers = self.web_headers(a.h(2)?)?;
+        self.send(crate::run::WebRequest {
+            method: "POST".to_owned(),
+            url,
+            headers,
+            body: Some(body),
+            bytes: None,
+            if_none_match: None,
+        })
+    }
+
+    /// `web.post_bytes(url, count, headers)`: the body is the `count` bytes the call holds.
+    fn web_post_bytes(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let url = self.text(a.h(0)?)?;
+        let count = a.long(1)?;
+        let Ok(bytes) = u64::try_from(count) else {
+            return trap(format!("bytes takes a whole count of bytes, got {count}"));
+        };
+        let headers = self.web_headers(a.h(2)?)?;
+        self.send(crate::run::WebRequest {
+            method: "POST".to_owned(),
+            url,
+            headers,
+            body: None,
+            bytes: Some(bytes),
+            if_none_match: None,
+        })
+    }
+
+    /// `request` made once for the run, as the reply's value.
+    fn send(&self, request: crate::run::WebRequest) -> HResult<Option<Wasm>> {
+        let response = self.web(request)?;
+        self.ret_h(Value::Response(Rc::new(response)))
+    }
+
+    /// The reply tag at `h` that `if_none_match` takes, or none.
+    fn if_none_match(&self, h: i32) -> HResult<Option<String>> {
+        match self.val(h)? {
+            Value::Opt(Some(tag)) => match *tag {
+                Value::Text(tag) => Ok(Some(tag)),
+                other => trap(format!("if_none_match takes text, got {}", other.kind_name())),
+            },
+            Value::Opt(None) => Ok(None),
+            other => trap(format!("if_none_match takes text, got {}", other.kind_name())),
         }
     }
 

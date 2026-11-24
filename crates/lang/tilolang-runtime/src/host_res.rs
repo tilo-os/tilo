@@ -1124,12 +1124,12 @@ impl Core {
                 return trap(format!("`{}` has no field `{fid}`", ty.name));
             };
             if let (FieldKind::Register, Value::Rec(inner)) = (f.kind, v)
-                && crate::held::holds(&f)
+                && crate::held::holds(f)
             {
-                let Some(inner_ty) = self.held_type(&f) else {
+                let Some(inner_ty) = self.held_type(f) else {
                     return trap("the record's type is not loaded");
                 };
-                let Some(Value::Ref(held)) = self.held_ref(target, &f) else {
+                let Some(Value::Ref(held)) = self.held_ref(target, f) else {
                     return trap("the field holds no record of its own");
                 };
                 let child = Rc::unwrap_or_clone(held.target);

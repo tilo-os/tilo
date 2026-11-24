@@ -122,6 +122,9 @@ impl WebResponse {
             headers,
             body,
         } = reply;
+        // A time of none measures no request: the same answer as a refused host's, and the one
+        // a journal leaves out.
+        let duration_ms = (duration_ms > 0).then_some(duration_ms);
         let body = if body.len() > MAX_BODY {
             return Self {
                 status: 0,
@@ -185,7 +188,7 @@ mod tests {
                 },
                 12,
             );
-            assert_eq!(response.duration_ms, 12, "the request's own time travels");
+            assert_eq!(response.duration_ms, Some(12), "the request's own time travels");
             assert_eq!(response.bytes(), vec![0xff, 0xfe]);
             let text = WebResponse::of(
                 WebReply {

@@ -384,7 +384,7 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
             let [JournalEntry::Web { response, .. }] = recorded.as_slice() else {
                 panic!("the answer is recorded");
             };
-            assert_eq!(response.duration_ms, took, "the journal keeps the time it took");
+            assert_eq!(response.duration_ms, Some(took), "the journal keeps the time it took");
         }
     }
 }

@@ -183,14 +183,10 @@ pub struct WebResponse {
     /// The body: a JSON string when it read as text, `{"base64": "..."}` when it did not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<serde_json::Value>,
-    /// How long the request took, in milliseconds; 0 when none was made (a refused host, no
-    /// network) and for a journal that names no time.
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub duration_ms: u64,
-}
-
-fn is_zero(n: &u64) -> bool {
-    *n == 0
+    /// How long the request took, in milliseconds; `None` when none was made (a refused host,
+    /// no network) and for a journal that names no time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 impl WebResponse {
