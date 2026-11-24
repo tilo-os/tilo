@@ -293,6 +293,7 @@ impl Described for TextInput {
         self.set_selection_event(select);
         self.set_cancel_event(cancel);
         self.set_begin_event(begin);
+        self.set_changed_event(changed);
         self.set_blur_event(blur);
         true
     }
