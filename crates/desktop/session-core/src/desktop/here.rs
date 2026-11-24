@@ -1080,7 +1080,7 @@ pub fn mark_followers(tree: &mut Layout, followers: &[String]) {
 }
 
 /// The workspace's members, each in the colour it wears everywhere: its people with their roles,
-/// the agents admitted in it, its bots and anyone here its policy does not list yet. A person here
+/// the agents admitted in it and anyone here its policy does not list yet. A person here
 /// now wears the colour they show by here; everyone else the one who they are gives them.
 fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member> {
     let here = |id: &MemberId| people.iter().find(|person| member_id_of(person) == *id);
@@ -1121,16 +1121,6 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
             row.name.clone_from(&person.label);
             row.colour = hue_of(person.rgb);
         }
-        rows.push(row);
-    }
-    for bot in &workspace.bots {
-        let id = MemberId::bot(
-            bot.installation
-                .clone()
-                .unwrap_or_else(|| bot.name.to_lowercase()),
-        );
-        let mut row = Member::of_software(id, bot.name.clone());
-        row.name.clone_from(&bot.name);
         rows.push(row);
     }
     // Anyone here whom the workspace's policy does not list yet is still someone here.

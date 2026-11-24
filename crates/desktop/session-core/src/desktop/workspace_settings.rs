@@ -716,29 +716,6 @@ fn grantee_is_person(grantee: &Grantee, user: &str) -> bool {
     }
 }
 
-/// Turn the moderation agent on the workspace's server on or off, as `actor`: give it the grant it
-/// moderates Chat by ([`tilo_action_policy::bot::moderation_grant`]), or take that grant back.
-///
-/// # Errors
-/// The workspace refused the change, saying why.
-pub fn set_moderation(ws: &mut Workspace, actor: &str, on: bool) -> Result<PolicyEdit, Refusal> {
-    use tilo_action_policy::bot::{MODERATION_GRANT, moderation_grant};
-    let change = if on {
-        tilo_action_policy::Change::Grant(moderation_grant(&ws.policy.workspace, actor))
-    } else {
-        tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(MODERATION_GRANT))
-    };
-    ws.policy
-        .change_all_as_at(actor, vec![change], tilo_clock::unix_now())
-}
-
-/// Whether the moderation agent on the workspace's server is on: the workspace holds its grant.
-#[must_use]
-pub fn moderates(ws: &Workspace) -> bool {
-    let id = tilo_action_policy::GrantId::new(tilo_action_policy::bot::MODERATION_GRANT);
-    ws.policy.grants.iter().any(|grant| grant.id == id)
-}
-
 /// Revoke every grant naming `agent` , as `actor` .
 pub fn remove_agent(ws: &mut Workspace, actor: &str, agent: &str) -> PolicyEdit {
     let subject = tilo_action_policy::Grantee::agent(agent);
@@ -762,7 +739,7 @@ fn member_name_or_short_id(ws: &Workspace, id: &MemberId) -> String {
 }
 
 /// The member `id` names, when the workspace's roster holds one: a person by their root key, an
-/// agent or a bot by its key.
+/// agent by its key.
 fn member_named<'a>(ws: &'a Workspace, id: &MemberId) -> Option<&'a Member> {
     ws.members
         .iter()
@@ -803,23 +780,6 @@ fn person_name(ws: &Workspace, local_user: &str, id: &MemberId) -> String {
 /// of them.
 pub fn members_authority_note(governs: bool) -> Option<String> {
     (!governs).then(|| t("workspace-settings-owner-only"))
-}
-
-/// What a bot says under its name: whether it runs yet, and from which version. One fact per line,
-/// never joined.
-pub fn bot_detail(bot: &tilo_desktop_model::WorkspaceBot) -> String {
-    if bot.installation.is_none() {
-        t("workspace-settings-bot-starting")
-    } else if bot.paused {
-        t("workspace-settings-bot-paused")
-    } else if let Some(version) = &bot.version {
-        t_args(
-            "workspace-settings-bot-version",
-            &[("version", version.as_str().into())],
-        )
-    } else {
-        t("workspace-settings-bot-running")
-    }
 }
 
 /// One entry the Permissions tab lists: a sandbox capability an app holds,
@@ -2020,43 +1980,6 @@ mod permissions_tests {
 }
 
 #[cfg(test)]
-mod bot_detail_tests {
-    use super::*;
-    use tilo_desktop_model::WorkspaceBot;
-
-    fn bot(version: Option<&str>) -> WorkspaceBot {
-        WorkspaceBot {
-            name: "Standup".into(),
-            installation: Some("standup-installation".into()),
-            device: Some("cd".repeat(32)),
-            entry: Some("so.tilo.bots.standup".into()),
-            version: version.map(str::to_owned),
-            added_by: "owner-user".into(),
-            requested: true,
-            paused: false,
-        }
-    }
-
-    #[test]
-    fn a_bot_says_whether_it_runs_and_from_which_version() {
-        assert_eq!(
-            bot_detail(&bot(Some("1.2.0"))),
-            t_args(
-                "workspace-settings-bot-version",
-                &[("version", "1.2.0".into())]
-            )
-        );
-        let mut starting = bot(Some("1.2.0"));
-        starting.installation = None;
-        assert_eq!(bot_detail(&starting), t("workspace-settings-bot-starting"));
-        let mut paused = bot(Some("1.2.0"));
-        paused.paused = true;
-        assert_eq!(bot_detail(&paused), t("workspace-settings-bot-paused"));
-        assert_eq!(bot_detail(&bot(None)), t("workspace-settings-bot-running"));
-    }
-}
-
-#[cfg(test)]
 mod default_app_authority_tests {
     use super::*;
     use crate::desktop::authority::WorkspaceAuthority as _;
@@ -2133,72 +2056,5 @@ mod default_app_authority_tests {
                 desktop_policy::UserWorkspaceChoice::PersonalDefault
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod moderation_tests {
-    //! Turning the moderation agent on the workspace's server on and off: its grant, written and
-    //! taken back through the workspace's governance as the person who turns it.
-
-    use super::*;
-    use tilo_action_policy::{ActionKind, Answer, Grantee};
-    use tilo_desktop_model::WorkspaceId;
-
-    const OWNER: &str = "owner-user";
-    const MEMBER: &str = "member-user";
-
-    fn bot_answer(ws: &Workspace, app: &str) -> Answer {
-        ws.policy
-            .party_of(Grantee::bot(tilo_action_policy::bot::MODERATION))
-            .decide(
-                &ws.policy.node().app(app),
-                ActionKind::Undoable,
-                &tilo_action_policy::Context::at_secs(tilo_clock::unix_now()),
-            )
-            .answer
-    }
-
-    #[test]
-    fn turning_moderation_on_grants_it_chat_only_and_off_takes_it_back() {
-        let mut ws = Workspace::new(WorkspaceId::from_u128(23), "moderation-test");
-        ws.set_owner(OWNER);
-        assert!(!moderates(&ws));
-        assert_eq!(bot_answer(&ws, tilo_app_id::apps::CHAT), Answer::Deny);
-
-        let edit = set_moderation(&mut ws, &OWNER.to_owned(), true).expect("the owner grants");
-        assert!(!edit.is_empty(), "the grant is a governance change");
-        assert!(moderates(&ws));
-        let id = tilo_action_policy::GrantId::new(tilo_action_policy::bot::MODERATION_GRANT);
-        let held = ws.policy.grants.iter().find(|grant| grant.id == id);
-        assert_eq!(
-            held,
-            Some(&tilo_action_policy::bot::moderation_grant(
-                &ws.policy.workspace,
-                OWNER
-            )),
-            "the grant names the person who turned it on"
-        );
-        assert_eq!(bot_answer(&ws, tilo_app_id::apps::CHAT), Answer::Allow);
-        assert_eq!(bot_answer(&ws, "so.tilo.notes"), Answer::Deny);
-
-        set_moderation(&mut ws, &OWNER.to_owned(), false).expect("the owner revokes");
-        assert!(!moderates(&ws));
-        assert_eq!(bot_answer(&ws, tilo_app_id::apps::CHAT), Answer::Deny);
-    }
-
-    #[test]
-    fn someone_who_may_not_grant_cannot_turn_moderation_on() {
-        let mut ws = Workspace::new(WorkspaceId::from_u128(24), "moderation-test");
-        ws.set_owner(OWNER);
-        set_member_role(
-            &mut ws,
-            &OWNER.to_owned(),
-            &MEMBER.to_owned(),
-            CapRole::Editor,
-        )
-        .expect("the owner adds an editor");
-        assert!(set_moderation(&mut ws, &MEMBER.to_owned(), true).is_err());
-        assert!(!moderates(&ws));
     }
 }

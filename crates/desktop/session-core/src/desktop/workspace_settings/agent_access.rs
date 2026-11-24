@@ -202,7 +202,7 @@ const ACCOUNT: [(&str, &str, &str); 2] = [
         "workspace-settings-agent-access-workspaces-effects",
     ),
     (
-        agent_answers::WORKSPACE_GOVERNANCE_APP,
+        agent_answers::WORKSPACE_APP,
         "workspace-settings-agent-access-members",
         "workspace-settings-agent-access-members-effects",
     ),
@@ -458,7 +458,7 @@ mod tests {
                 Some("Creating, branching, entering and deleting your workspaces."),
                 "its row says what reaching outside it is"
             );
-            assert_eq!(rows[2].app, agent_answers::WORKSPACE_GOVERNANCE_APP);
+            assert_eq!(rows[2].app, agent_answers::WORKSPACE_APP);
             assert_eq!(outside(&rows[2]), [0, 1, 2]);
             assert!(
                 rows[2]

@@ -118,6 +118,7 @@ pub fn desktop() -> (RemoteActions, Openings, RecordAnswers, Arc<AtomicBool>) {
 
 pub fn record_of(app: &str) -> ResourceReadRequest {
     ResourceReadRequest {
+        workspace: WORKSPACE.into(),
         app: app.into(),
         record: String::new(),
         joined: false,
@@ -285,6 +286,7 @@ pub fn a_reader_that_takes_records_itself_is_refused_not_left_waiting() {
         &Caller::local_person("ada").in_workspace(WORKSPACE),
         &[ResourceAsk {
             address: ResourceAddress {
+                workspace: WORKSPACE.into(),
                 app: TASKS.into(),
                 record: String::new(),
             },

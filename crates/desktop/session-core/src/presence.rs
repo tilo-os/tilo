@@ -315,14 +315,14 @@ mod tests {
             "device".to_owned(),
             ("Bo".to_owned(), (0x38, 0xb8, 0xf6)),
         )]);
-        let drawn = pointers(&mut ui::DrawCtx::new(std::slice::from_ref(&member), &faces, &tiles, &mut CursorChats::default(), PresenceCtx::empty().draw_env()), Instant::now(), 1_000.0, EffectiveMotion::default())
+        let drawn = pointers(std::slice::from_ref(&member), &faces, &tiles, &mut CursorChats::default(), &PresenceCtx::empty(), Instant::now(), 1_000.0, EffectiveMotion::default())
         .drawn;
         assert_eq!(drawn[0].label, "Bo");
         assert_eq!(
             drawn[0].color,
             ui::vello::peniko::Color::from_rgb8(0x38, 0xb8, 0xf6)
         );
-        let unnamed = pointers(&mut ui::DrawCtx::new(&[member], &std::collections::HashMap::new(), &tiles, &mut CursorChats::default(), PresenceCtx::empty().draw_env()), Instant::now(), 1_000.0, EffectiveMotion::default())
+        let unnamed = pointers(&[member], &std::collections::HashMap::new(), &tiles, &mut CursorChats::default(), &PresenceCtx::empty(), Instant::now(), 1_000.0, EffectiveMotion::default())
         .drawn;
         assert_eq!(unnamed[0].label, ui::presence::unnamed_person_label());
     }
@@ -344,8 +344,8 @@ mod tests {
         let now = Instant::now();
         let mut chats = CursorChats::default();
         // What they say is heard on one pass and drawn on the next, once it has come in.
-        let _ = pointers(&mut ui::DrawCtx::new(&[member.clone()], &std::collections::HashMap::new(), &tiles, &mut chats, PresenceCtx::empty().draw_env()), now, 1_000.0, EffectiveMotion::default());
-        let pointers = pointers(&mut ui::DrawCtx::new(&[member], &std::collections::HashMap::new(), &tiles, &mut chats, PresenceCtx::empty().draw_env()), now + std::time::Duration::from_millis(200), 1_200.0, EffectiveMotion::default());
+        let _ = pointers(&[member.clone()], &std::collections::HashMap::new(), &tiles, &mut chats, &PresenceCtx::empty(), now, 1_000.0, EffectiveMotion::default());
+        let pointers = pointers(&[member], &std::collections::HashMap::new(), &tiles, &mut chats, &PresenceCtx::empty(), now + std::time::Duration::from_millis(200), 1_200.0, EffectiveMotion::default());
         assert_eq!(pointers.tabs, vec![1]);
         let [cursor] = pointers.drawn.as_slice() else {
             panic!("one pointer");
@@ -383,10 +383,10 @@ mod tests {
     fn a_silent_pointer_leaves_and_one_over_no_tile_is_not_drawn() {
         let tiles = [Tile::new(1, 0.0, 0.0, 100.0, 100.0)];
         let mut chats = CursorChats::default();
-        let quiet = pointers(&mut ui::DrawCtx::new(&[pointing("ada", "Ada", 1, POINTER_STALE_MS + 1.0)], &std::collections::HashMap::new(), &tiles, &mut chats, PresenceCtx::empty().draw_env()), Instant::now(), 5_000.0, EffectiveMotion::default());
+        let quiet = pointers(&[pointing("ada", "Ada", 1, POINTER_STALE_MS + 1.0)], &std::collections::HashMap::new(), &tiles, &mut chats, &PresenceCtx::empty(), Instant::now(), 5_000.0, EffectiveMotion::default());
         assert!(quiet.drawn.is_empty());
         assert_eq!(quiet.leaving, None, "it already left");
-        let elsewhere = pointers(&mut ui::DrawCtx::new(&[pointing("cy", "Cy", 9, 0.0)], &std::collections::HashMap::new(), &tiles, &mut chats, PresenceCtx::empty().draw_env()), Instant::now(), 5_000.0, EffectiveMotion::default());
+        let elsewhere = pointers(&[pointing("cy", "Cy", 9, 0.0)], &std::collections::HashMap::new(), &tiles, &mut chats, &PresenceCtx::empty(), Instant::now(), 5_000.0, EffectiveMotion::default());
         assert!(elsewhere.drawn.is_empty(), "the shell does not show tab 9");
     }
 

@@ -197,6 +197,7 @@ pub fn proof(held: &dyn HeldRecords, ask: &RecordAsk) -> (u64, String) {
 pub fn asks_of(ask: &RecordAsk) -> [ResourceAsk; 1] {
     [ResourceAsk {
         address: ResourceAddress {
+            workspace: ask.read.workspace.clone(),
             app: ask.read.app.clone(),
             record: ask.read.record.clone(),
         },
