@@ -89,7 +89,6 @@ d-byhoiade = Fenster
     .w-memory-in-use = Speicher in Verwendung
     .w-network = Netzwerk
     .w-disk = Platte
-    .w-filter-processes = Prozesse filtern
     .w-processes-2 = { $len } Prozesse
     .w-no-processes-match-the-search = Kein Prozess passt zur Suche
     .w-no-process-selected = Kein Prozess ausgewählt

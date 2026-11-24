@@ -1039,7 +1039,6 @@ d-uh2bcexu = Bibliothekskopf
 d-ibtlwzis = Betrachter
     .w-this-pdf-cannot-be-opened = Dieses PDF kann nicht geöffnet werden
     .w-laying-out-the-pages = Die Seiten werden angeordnet
-    .w-find-in-this-pdf = In diesem PDF suchen
     .w-previous = Zurück
     .w-next = Weiter
     .w-pages = Seiten

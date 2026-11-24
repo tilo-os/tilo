@@ -224,6 +224,8 @@ view window(m: Monitor) {
     let now = device.processes
     let machine = now.machine
     ui.NavShell(content_kind: .page, title: "System Monitor") {
+        // The window's search narrows the processes to those whose name or command holds it.
+        on search(words: Text): set(filter, words)
         actions: {
             ui.MenuButton("Sort by", icon: .arrow_up_down) {
                 ui.MenuItem("Processor", checked: sort == "cpu") {
@@ -313,7 +315,8 @@ view engine_missing(now: device.Processes) {
     }
 }
 
-/// The process list: the four summary tiles, the filter, and the rows beside the inspector.
+/// The process list: the four summary tiles, and the rows the window's search narrows beside the
+/// inspector.
 view processes_pane(
     now: device.Processes,
     chosen: State<Int>,
@@ -351,10 +354,7 @@ view processes_pane(
     }
     split(side: .trailing, collapse: .stack) {
         primary(min: 24rem) {
-            row(gap: .tight, align: .center) {
-                ui.TextInput(bind: filter, placeholder: "Filter processes", fill)
-                ui.Text("{now.processes.len()} processes", role: .caption, secondary: true)
-            }
+            ui.Text("{now.processes.len()} processes", role: .caption, secondary: true)
             let rows = if tree {
                 tree_rows(
                     now.processes,

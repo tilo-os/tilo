@@ -134,7 +134,9 @@ impl Installed {
         let metas = tilolang_tilo::platform_apps::named_platform_packages(SOURCE)
             .expect("the platform's packages read");
         for meta in &metas {
-            host.runtime().load_foreign(meta.clone()).expect("the device is loaded");
+            host.runtime()
+                .load_foreign(meta.clone())
+                .expect("the device is loaded");
         }
         let compiled = tilolang::compile_package(SOURCE, &IdsLock::new(), &metas)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
@@ -155,8 +157,13 @@ impl Installed {
             .collect();
         let sent = Sent::default();
         host.runtime().set_foreign_invoker(sent.clone());
-        host.runtime().set_reading(&reading(), reading_json).expect("the reading is set");
-        let root = host.runtime().create_root("Monitor").expect("the app's root");
+        host.runtime()
+            .set_reading(&reading(), reading_json)
+            .expect("the reading is set");
+        let root = host
+            .runtime()
+            .create_root("Monitor")
+            .expect("the app's root");
         Self {
             host,
             root,
@@ -232,12 +239,21 @@ fn the_process_list_shows_the_processes_and_what_the_machine_uses() {
     let window = app.window();
     let words = shown(&window);
     for wanted in ["systemd", "sshd", "bash"] {
-        assert!(words.iter().any(|text| text.ends_with(wanted)), "{wanted} shows: {words:?}");
+        assert!(
+            words.iter().any(|text| text.ends_with(wanted)),
+            "{wanted} shows: {words:?}"
+        );
     }
     for wanted in ["CPU", "Memory in use", "Network", "Disk"] {
-        assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
     }
-    assert!(!contains(&window, "kworker/0:1"), "kernel threads are hidden by default");
+    assert!(
+        !contains(&window, "kworker/0:1"),
+        "kernel threads are hidden by default"
+    );
 }
 
 #[test]
@@ -258,7 +274,10 @@ fn the_tree_indents_children_under_their_parent_and_the_flat_list_does_not() {
     pick(&mut window, "tree", Value::Bool(false));
     let words = shown(&window);
     assert!(words.iter().any(|text| text.ends_with("sshd")), "{words:?}");
-    assert!(!words.iter().any(|text| text.starts_with("  ")), "no indentation flat: {words:?}");
+    assert!(
+        !words.iter().any(|text| text.starts_with("  ")),
+        "no indentation flat: {words:?}"
+    );
 }
 
 #[test]
@@ -269,14 +288,29 @@ fn kernel_threads_show_when_they_are_asked_for() {
     assert!(contains(&window, "kworker/0:1"), "{:?}", shown(&window));
 }
 
+/// The window's search narrows the list: what the person searches for in the window's bar, with no
+/// filter field of the app's own.
 #[test]
 fn the_filter_narrows_the_list() {
+    fn shell(node: &UiNode) -> Option<String> {
+        if node.kind == "ui.NavShell" {
+            return Some(node.key.clone());
+        }
+        node.children.iter().find_map(shell)
+    }
     let app = Installed::new(READING);
     let mut window = app.window();
-    pick(&mut window, "filter", Value::text("sshd"));
+    let shell = shell(window.tree()).expect("the window is a shell");
+    window
+        .fire_with(&shell, "search", Some(&Value::text("sshd")))
+        .expect("the window's search reaches the app");
+    window.poll_patches().expect("the window runs again");
     let words = shown(&window);
     assert!(words.iter().any(|text| text.ends_with("sshd")), "{words:?}");
-    assert!(!words.iter().any(|text| text.ends_with("systemd")), "{words:?}");
+    assert!(
+        !words.iter().any(|text| text.ends_with("systemd")),
+        "{words:?}"
+    );
 }
 
 #[test]
@@ -287,7 +321,10 @@ fn sorting_by_name_orders_the_list_rising() {
     pick(&mut window, "descending", Value::Bool(false));
     pick(&mut window, "tree", Value::Bool(false));
     let words = shown(&window);
-    let bash = words.iter().position(|text| text.ends_with("bash")).expect("bash");
+    let bash = words
+        .iter()
+        .position(|text| text.ends_with("bash"))
+        .expect("bash");
     let systemd = words
         .iter()
         .position(|text| text.ends_with("systemd"))
@@ -301,8 +338,20 @@ fn a_chosen_process_shows_its_facts_and_the_verbs_that_end_it() {
     let mut window = app.window();
     pick(&mut window, "chosen", Value::Int(11));
     let words = shown(&window);
-    for wanted in ["PID", "User", "Status", "Threads", "Virtual memory", "Running for", "End process", "Kill process"] {
-        assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
+    for wanted in [
+        "PID",
+        "User",
+        "Status",
+        "Threads",
+        "Virtual memory",
+        "Running for",
+        "End process",
+        "Kill process",
+    ] {
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
     }
 }
 
@@ -332,10 +381,24 @@ fn the_resources_tab_shows_the_machine_readings() {
     pick(&mut window, "tab", Value::text("resources"));
     let words = shown(&window);
     for wanted in [
-        "Processor", "Processor use", "Memory", "RAM", "Network", "Network throughput", "Disk",
-        "Disk throughput", "Battery", "Temperature", "This computer", "ada-laptop", "1d 2h 3m",
+        "Processor",
+        "Processor use",
+        "Memory",
+        "RAM",
+        "Network",
+        "Network throughput",
+        "Disk",
+        "Disk throughput",
+        "Battery",
+        "Temperature",
+        "This computer",
+        "ada-laptop",
+        "1d 2h 3m",
     ] {
-        assert!(words.iter().any(|text| text == wanted), "{wanted} shows: {words:?}");
+        assert!(
+            words.iter().any(|text| text == wanted),
+            "{wanted} shows: {words:?}"
+        );
     }
 }
 
@@ -344,6 +407,9 @@ fn a_computer_with_no_system_information_service_says_so_and_offers_to_try_again
     let app = Installed::new(MISSING);
     let window = app.window();
     let words = shown(&window);
-    assert!(words.iter().any(|text| text == "Processes unavailable"), "{words:?}");
+    assert!(
+        words.iter().any(|text| text == "Processes unavailable"),
+        "{words:?}"
+    );
     assert!(words.iter().any(|text| text == "Try again"), "{words:?}");
 }

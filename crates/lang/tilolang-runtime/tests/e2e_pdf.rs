@@ -413,6 +413,43 @@ mod cases {
         assert_eq!(pages[0], Value::text("Page 1: 1"));
     }
 
+    /// The window's search is the find in a PDF: the words the person searches for in the
+    /// window's bar are counted above the pages, with the pages they stand on, and the reader
+    /// draws no search field of its own.
+    #[test]
+    fn the_windows_search_finds_in_the_pdf() {
+        let reader = Reader::new();
+        let doc = reader.open();
+        for at in 0..2 {
+            let page = reader.page(&doc, at);
+            reader.call(
+                "read_page",
+                vec![Value::resource(&doc), Value::resource(&page)],
+            );
+        }
+        let mut window = reader.window("reader", vec![Value::resource(&doc)]);
+        assert!(
+            of_kind(window.tree(), "ui.TextInput")
+                .iter()
+                .all(|field| !matches!(
+                    field.props.get("placeholder"),
+                    Some(Value::Text(placeholder)) if placeholder.starts_with("Find")
+                )),
+            "the reader draws no search field of its own:\n{}",
+            dump(window.tree())
+        );
+        let shell = of_kind(window.tree(), "ui.NavShell")[0].key.clone();
+        window
+            .fire_with(&shell, "search", Some(&Value::text("world")))
+            .unwrap();
+        window.poll_patches().unwrap();
+        let text = reader_text(&window);
+        assert!(
+            text.contains("1 found in 1 pages") && text.contains("Page 1 (1)"),
+            "what the window searched for is counted, with the page it stands on:\n{text}"
+        );
+    }
+
     #[test]
     fn duplicate_and_delete_change_the_pages_the_saved_copy_holds() {
         let reader = Reader::new();

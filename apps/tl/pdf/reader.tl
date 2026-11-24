@@ -75,59 +75,76 @@ view reader(d: Document) {
     state stroke: List<Float> = []
     state finding: Bool = false
     state query: Text = ""
-    std.page(d, canvas: true, fill: true) {
-        header: {
-            reader_head(d, page_at, zoom, rail, review, tool, colour)
+    ui.NavShell(content_kind: .page, title: meta(d).title) {
+        // The window's search is the find in this PDF: what the person searches for is marked
+        // on the pages, counted above them and stepped through there.
+        on search(words: Text): set(query, words).then(set(finding, words.trim() != ""))
+        actions: {
+            std.header {
+                reader_head(d, page_at, zoom, rail, review, tool, colour)
+            }
         }
-        if d.trouble != "" {
-            ui.EmptyState(
-                "This PDF cannot be opened",
-                message: d.trouble,
-                icon: .triangle_alert,
-                error: true,
-            )
-        } else if d.pages.is_empty() {
-            ui.EmptyState("Laying out the pages", icon: .file)
-        } else {
-            if finding {
-                find_bar(d, query, page_at)
-            }
-            if note != "" {
-                ui.Banner(note, kind: .info) {
-                    on act: set(note, "")
-                }
-            }
-            row(gap: .none, fill) {
-                if rail {
-                    rail_view(d, page_at, zoom, note)
-                }
-                // The pages, each built as it scrolls into view: turning to one, in the rail or
-                // with the window's keys, scrolls the list to its row.
-                ui.VirtualList(fill, page_column: true, reveal: at_page_row(d, page_at)) {
-                    on select(p: Page): set(page_at, d.pages.index_of(p) ?? 0)
-                    for p in d.pages {
-                        ui.ListItem(item: p) {
-                            page_sheet(
-                                d,
-                                p,
-                                zoom,
-                                tool,
-                                colour,
-                                from,
-                                to,
-                                note,
-                                sel_from,
-                                sel_to,
-                                page_at,
-                                query,
-                                finding,
-                                stroke,
+        content: {
+            ui.Scroll {
+                page(full, fill: true) {
+                    stack(gap: .group, fill: true) {
+                        if d.trouble != "" {
+                            ui.EmptyState(
+                                "This PDF cannot be opened",
+                                message: d.trouble,
+                                icon: .triangle_alert,
+                                error: true,
                             )
+                        } else if d.pages.is_empty() {
+                            ui.EmptyState("Laying out the pages", icon: .file)
+                        } else {
+                            if finding {
+                                find_bar(d, query, page_at)
+                            }
+                            if note != "" {
+                                ui.Banner(note, kind: .info) {
+                                    on act: set(note, "")
+                                }
+                            }
+                            row(gap: .none, fill) {
+                                if rail {
+                                    rail_view(d, page_at, zoom, note)
+                                }
+                                // The pages, each built as it scrolls into view: turning to one, in the rail or
+                                // with the window's keys, scrolls the list to its row.
+                                ui.VirtualList(
+                                    fill,
+                                    page_column: true,
+                                    reveal: at_page_row(d, page_at),
+                                ) {
+                                    on select(p: Page): set(page_at, d.pages.index_of(p) ?? 0)
+                                    for p in d.pages {
+                                        ui.ListItem(item: p) {
+                                            page_sheet(
+                                                d,
+                                                p,
+                                                zoom,
+                                                tool,
+                                                colour,
+                                                from,
+                                                to,
+                                                note,
+                                                sel_from,
+                                                sel_to,
+                                                page_at,
+                                                query,
+                                                finding,
+                                                stroke,
+                                            )
+                                        }
+                                    }
+                                }
+                                if review {
+                                    review_panel(d, tab)
+                                }
+                            }
                         }
                     }
-                }
-                if review {
-                    review_panel(d, tab)
                 }
             }
         }
@@ -1048,14 +1065,11 @@ view signing_panel(d: Document) {
     }
 }
 
-/// The find bar: what to look for, how often it stands in the document, and the pages it stands
-/// on, each a press away.
+/// The find bar under the window's search: how often what the person searched for stands in the
+/// document, and the pages it stands on, each a press away.
 view find_bar(d: Document, query: State<Text>, page_at: State<Int>) {
     stack(gap: .tight) {
         row(gap: .related, align: .center) {
-            ui.TextInput(text: query, placeholder: "Find in this PDF") {
-                on submit(word: Text): set(query, word)
-            }
             ui.Text(
                 "{matches(d, query)} found in {pages_with(d, query)} pages",
                 role: .caption,

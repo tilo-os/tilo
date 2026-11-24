@@ -170,7 +170,6 @@ d-yij3luub = Fenster
     .w-severity = Schweregrad
     .w-unit = Unit
     .w-boot = Start
-    .w-search-the-journal = Das Journal durchsuchen
     .w-clear-filters = Filter zurücksetzen
     .w-following-the-journal = Dem Journal wird gefolgt
     .w-reading-the-journal = Das Journal wird gelesen…

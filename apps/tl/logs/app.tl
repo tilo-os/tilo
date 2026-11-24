@@ -257,6 +257,9 @@ view window(l: Logs) {
     let now = device.journal
     let entries = filtered(l, now.entries)
     ui.NavShell(content_kind: .page, title: "Logs", sidebar_title: "Logs") {
+        // The window's search narrows the records to those holding the words, with the filters
+        // beside it.
+        on search(words: Text): set_search(l, words)
         sidebar: {
             stack(gap: .group) {
                 ui.Section("Filter") {
@@ -276,7 +279,6 @@ view window(l: Logs) {
                     )
                     ui.Dropdown(bind: l.unit, options: unit_options(now.entries), caption: "Unit")
                     ui.Dropdown(bind: l.boot, options: boot_options(now.entries), caption: "Boot")
-                    ui.TextInput(bind: l.search, placeholder: "Search the journal")
                     ui.Button("Clear filters", icon: .x) {
                         on press: clear_filters(l)
                     }
