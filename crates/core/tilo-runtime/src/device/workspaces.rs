@@ -1350,4 +1350,9 @@ impl tilo_session_client::MemberLinks for MemberLinks {
     fn link(&self, workspace: WorkspaceId) -> Option<tilo_peer_state::direct::DirectSync> {
         self.0.workspaces().member_link(workspace)
     }
+
+    fn take_in(&self, workspace: WorkspaceId, host: tilo_peer_state::join::TransportHint) {
+        let copies = self.0.workspaces().clone();
+        tokio::spawn(async move { copies.hold_as_members([(workspace, host)]).await });
+    }
 }

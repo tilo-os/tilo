@@ -280,6 +280,10 @@ pub(crate) struct LentParts {
 pub trait MemberLinks: collab_types::signer::MaybeSendSync {
     /// The member copy's link of `workspace`, while it is up.
     fn link(&self, workspace: WorkspaceId) -> Option<DirectSync>;
+    /// Take `workspace` in as a member copy, synced with the device `host` signed it is served
+    /// at: what a host answered as it let this device in. The session's join waits for that
+    /// copy's link, so the service takes it in now rather than once the join returned.
+    fn take_in(&self, workspace: WorkspaceId, host: tilo_peer_state::join::TransportHint);
 }
 
 /// [`start_session`] for a session of a device that lends it what its own session runs

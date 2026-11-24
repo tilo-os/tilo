@@ -62,6 +62,9 @@ pub struct Device {
             std::collections::BTreeMap<WorkspaceId, tilo_peer_state::join::TransportHint>,
         >,
     >,
+    /// The member copies the device's own service lent this session, which take in each
+    /// workspace its host lets this device into.
+    links: Option<Arc<dyn crate::MemberLinks>>,
 }
 
 impl std::fmt::Debug for Device {
@@ -115,12 +118,16 @@ impl Device {
         lent: crate::Lent,
     ) -> Self {
         let store = Arc::new(MemoryPeerStore::for_session()) as Arc<dyn PeerStore>;
-        Self::of(
-            crate::session::start_session_lent(config.clone(), signer, store, lent),
-            config.cert,
-            config.server_cert,
-            label,
-        )
+        let links = Arc::clone(&lent.links);
+        Self {
+            links: Some(links),
+            ..Self::of(
+                crate::session::start_session_lent(config.clone(), signer, store, lent),
+                config.cert,
+                config.server_cert,
+                label,
+            )
+        }
     }
 
     /// The device whose session `peer` already is: a page's, which started its session itself.
@@ -134,6 +141,7 @@ impl Device {
             workspace_id: WorkspaceId::from_u128(0),
             label: label.to_owned(),
             hosts: Arc::default(),
+            links: None,
         }
     }
 
@@ -380,6 +388,9 @@ impl Device {
         };
         match postcard::from_bytes::<tilo_peer_state::join::TransportHint>(host) {
             Ok(hint) => {
+                if let Some(links) = &self.links {
+                    links.take_in(admission.workspace_id, hint.clone());
+                }
                 self.hosts
                     .lock_recover()
                     .insert(admission.workspace_id, hint);
