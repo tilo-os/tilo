@@ -365,7 +365,7 @@ mod tests {
     use std::time::Duration;
 
     use tilo_actions::remote::{
-        ActionCallError, ActionProvider as _, Caller, CatalogueQuery, PendingPoll, ReceiptStatus,
+        ActionCallError, ActionProvider as _, Caller, PendingPoll, ReceiptStatus,
     };
 
     /// The device's daemon, started over a profile of the test's own, and the session running in
@@ -710,73 +710,60 @@ mod tests {
         );
     }
 
-    /// The session's own actions are the device's: the person at this device is offered the
-    /// layout's `place` on the daemon's catalogue, read on the loop's pass and listed there —
-    /// one catalogue, whichever API the caller came in by. Its invocation, and the turn's
-    /// admission of it, are proven against a real tracker in the device's own
-    /// `a_turn_takes_the_hosts_turn_steps_and_nobody_else_does`.
+    /// The session's own actions are the device's: the layout the session publishes offers the
+    /// `place` the person at this device asks the daemon for, the daemon admits the step by the
+    /// session's own address, and the session carries it out on its pass as the person's — what
+    /// they take back like any step of theirs.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_sessions_own_actions_are_the_devices() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         const WORKSPACE: &str = "7b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b53";
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, me) = governed_workspace(state.path(), WORKSPACE);
-        // The daemon binds in a directory only this account reaches.
-        let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
-        std::fs::set_permissions(app_wire.path(), std::fs::Permissions::from_mode(0o700))
-            .expect("the broker's directory is this user's");
+        let app_wire = tempfile::tempdir().expect("a directory to serve the actions in");
         let mut device = serving(state.path(), app_wire.path(), &me, WORKSPACE);
         device.frame();
-        let dispatch = device.dispatch();
         let workspace = device
             .handle()
             .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
             .expect("a workspace is in front");
-        let person = Caller::local_person(me).in_workspace(workspace);
+        let person = Caller::local_person(me.clone()).in_workspace(workspace);
 
-        let page = answered(&mut device, || {
-            dispatch.query(
-                &person,
-                &CatalogueQuery {
-                    provider: Some(tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned()),
-                    max_results: 128,
-                    ..CatalogueQuery::default()
-                },
-            )
-        })
-        .expect("the person sees the catalogue");
-        let placing = page
-            .rows
-            .iter()
-            .filter_map(|row| row.action.as_ref())
-            .find(|action| action.address.action == "place")
-            .expect("the layout's place is offered by the daemon")
-            .clone();
-        assert_eq!(
-            placing.address.resource,
+        // The resource itself: the layout is the session's own, and the place is its action.
+        let actions = actions_on(&device, tilo_session_core::layout::RESOURCE);
+        assert!(
+            actions.iter().any(|action| action == "place"),
+            "the layout offers the place the daemon is asked for: {actions:?}"
+        );
+
+        // The daemon invokes it on the session's own provider as the person, and the session
+        // carries it out on its pass: the step is theirs to take back.
+        let placed = invoke_session_step(
+            &mut device,
+            &person,
             tilo_session_core::layout::RESOURCE,
-            "offered on the layout the session publishes"
+            "place",
+            serde_json::Map::from_iter([
+                ("resource".to_owned(), serde_json::json!("notes:1")),
+                ("x".to_owned(), serde_json::json!(80)),
+                ("y".to_owned(), serde_json::json!(60)),
+            ]),
         );
-        assert_eq!(
-            page.rows.first().map(|row| row.app_id.as_str()),
-            Some(tilo_actions::remote::SESSION_ACTIONS_PROVIDER),
-            "the rows stand under the session's own provider"
+        assert!(
+            placed.is_ok(),
+            "the daemon carries out the person's place: {placed:?}"
         );
-
-        // What the daemon lists is what the session publishes: every row names a resource the
-        // session's own API holds, but the person's line, which is a host step of the session's
-        // own and not a resource its services read.
-        let published = published(&device);
-        for row in &page.rows {
-            let action = row.action.as_ref().expect("a row offers its action");
+        // The step lands on the session's pass, and it is the person's to take back.
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            device.frame();
+            if device.layout().borrow_mut().undo(&me) {
+                return;
+            }
             assert!(
-                published.contains(&action.address.resource)
-                    || action.address.resource
-                        == tilo_actions::remote::session_actions::PROGRAMS_RESOURCE,
-                "the row names a resource the session publishes: {action:?}"
+                std::time::Instant::now() < deadline,
+                "the place the daemon carried out never became the person's step"
             );
         }
     }
@@ -1022,90 +1009,34 @@ mod tests {
         for _ in 0..4 {
             session.step(Duration::from_millis(1)).expect("a frame");
         }
-        let mut device = Device {
+        Device {
             session,
             _daemon: daemon,
             _profile: profile,
-        };
-        // The session serves its own actions on the daemon off its loop, and offers the rows its
-        // services publish as it reads them: the tests wait for the daemon to list them.
-        served_on_the_daemon(&mut device, workspace_id);
-        device
-    }
-
-    /// Wait until the device's daemon lists the session's own actions, the layout's `place`
-    /// among them: what the session's pass offered, and its link carried there.
-    #[cfg(target_os = "linux")]
-    fn served_on_the_daemon(device: &mut Device, workspace_id: &str) {
-        let dispatch = device.dispatch();
-        let person =
-            Caller::local_person(device.session.shared.person.clone()).in_workspace(workspace_id);
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let page = answered(&mut *device, || {
-                dispatch.query(
-                    &person,
-                    &CatalogueQuery {
-                        provider: Some(tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned()),
-                        max_results: 512,
-                        ..CatalogueQuery::default()
-                    },
-                )
-            });
-            if let Ok(page) = &page
-                && page.rows.iter().any(|row| {
-                    row.action
-                        .as_ref()
-                        .is_some_and(|action| action.address.action == "place")
-                })
-            {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the daemon never listed the session's own actions: {page:?}"
-            );
         }
     }
 
-    /// Every power-profile or power-mode action the device's daemon lists of the session's own
-    /// catalogue, as the person at this device reads it.
+    /// Every power-profile or power-mode action the session publishes, by the resource it is on,
+    /// the action, and the resource's kind: what the device's daemon invokes on the session's own
+    /// provider.
     #[cfg(target_os = "linux")]
-    fn power_profile_actions(
-        device: &mut Device,
-        person_id: &str,
-        workspace_id: &str,
-    ) -> Vec<(String, String, String)> {
-        let dispatch = device.dispatch();
-        let person = Caller::local_person(person_id.to_owned()).in_workspace(workspace_id);
-        let page = answered(device, || {
-            dispatch.query(
-                &person,
-                &CatalogueQuery {
-                    provider: Some(tilo_actions::remote::SESSION_ACTIONS_PROVIDER.to_owned()),
-                    max_results: 512,
-                    ..CatalogueQuery::default()
-                },
-            )
-        })
-        .expect("the person sees the session's catalogue");
-        page.rows
-            .into_iter()
-            .filter_map(|row| row.action)
-            .filter(|action| {
-                (action.address.resource == tilo_system_service::POWER
-                    || action.address.resource.starts_with("power:"))
-                    && (action.address.action.contains("mode")
-                        || action.address.action.contains("profile"))
-            })
-            .map(|action| {
-                (
-                    action.address.resource,
-                    action.address.action,
-                    action.resource_kind,
-                )
-            })
-            .collect()
+    fn power_profile_actions(device: &Device) -> Vec<(String, String, String)> {
+        fn walk(resources: &[tilo_actions::ResourceSpec], out: &mut Vec<(String, String, String)>) {
+            for resource in resources {
+                let id = resource.id.as_str();
+                if id == tilo_system_service::POWER || id.starts_with("power:") {
+                    for action in &resource.actions {
+                        if action.id.contains("mode") || action.id.contains("profile") {
+                            out.push((id.to_owned(), action.id.clone(), resource.kind.clone()));
+                        }
+                    }
+                }
+                walk(&resource.children, out);
+            }
+        }
+        let mut actions = Vec::new();
+        walk(&device.resources(), &mut actions);
+        actions
     }
 
     /// Build a one-field JSON argument map for a session action call.
@@ -1185,7 +1116,7 @@ mod tests {
             vec![Box::new(power_service), system_service],
         );
         assert_eq!(
-            power_profile_actions(&mut session, &person_id, WORKSPACE),
+            power_profile_actions(&session),
             vec![(
                 "power".to_owned(),
                 "set-power-mode".to_owned(),
@@ -1291,7 +1222,7 @@ mod tests {
             vec![system_service],
         );
         assert_eq!(
-            power_profile_actions(&mut session, &person_id, WORKSPACE),
+            power_profile_actions(&session),
             vec![(
                 "power".to_owned(),
                 "set-power-mode".to_owned(),
@@ -1608,16 +1539,19 @@ mod tests {
         assert_eq!(fake_system.power_reads(), 0);
     }
 
-    /// Every resource the session's own API publishes, by its id.
-    fn published(session: &crate::Session) -> Vec<String> {
-        fn walk(resources: &[tilo_actions::ResourceSpec], out: &mut Vec<String>) {
+    /// Every action the session publishes on `resource`, by its id.
+    #[cfg(target_os = "linux")]
+    fn actions_on(device: &Device, resource: &str) -> Vec<String> {
+        fn walk(resources: &[tilo_actions::ResourceSpec], named: &str, out: &mut Vec<String>) {
             for resource in resources {
-                out.push(resource.id.as_str().to_owned());
-                walk(&resource.children, out);
+                if resource.id.as_str() == named {
+                    out.extend(resource.actions.iter().map(|action| action.id.clone()));
+                }
+                walk(&resource.children, named, out);
             }
         }
         let mut out = Vec::new();
-        walk(&session.resources(), &mut out);
+        walk(&device.resources(), resource, &mut out);
         out
     }
 }
