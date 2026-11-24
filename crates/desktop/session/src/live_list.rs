@@ -262,10 +262,9 @@ pub(crate) enum LiveEffect {
     MoveLive {
         /// The row's key, as the reading lists it.
         key: String,
-        /// Its left edge, in pixels from the display's.
-        x: Option<i64>,
-        /// Its top edge, in pixels from the display's.
-        y: Option<i64>,
+        /// Its top-leading corner `[x, y]`, in pixels from the display's: where a dragged card
+        /// was let go.
+        at: Option<Vec<i64>>,
     },
 }
 
@@ -556,10 +555,10 @@ impl Sources {
                 cards.loose.remove(key);
                 cards.folded.insert(key.to_owned());
             }),
-            LiveEffect::MoveLive { key, x, y } => self.arrange(&key, |cards, key| {
-                match x.zip(y) {
-                    Some(at) => cards.loose.insert(key.to_owned(), at),
-                    None => cards.loose.remove(key),
+            LiveEffect::MoveLive { key, at } => self.arrange(&key, |cards, key| {
+                match at.as_deref() {
+                    Some(&[x, y]) => cards.loose.insert(key.to_owned(), (x, y)),
+                    _ => cards.loose.remove(key),
                 };
                 cards.touch(key);
             }),
@@ -1082,16 +1081,14 @@ mod tests {
         // A moved card keeps its place; docked again, it has none.
         live.act(LiveEffect::MoveLive {
             key: key("Tea"),
-            x: Some(40),
-            y: Some(120),
+            at: Some(vec![40, 120]),
         })
         .expect("moved");
         let tea = live.read().rows.into_iter().find(|row| row.title == "Tea");
         assert_eq!(tea.map(|row| (row.x, row.y)), Some((Some(40), Some(120))));
         live.act(LiveEffect::MoveLive {
             key: key("Tea"),
-            x: None,
-            y: None,
+            at: None,
         })
         .expect("docked");
         let tea = live.read().rows.into_iter().find(|row| row.title == "Tea");

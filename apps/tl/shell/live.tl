@@ -253,7 +253,7 @@ view live_card(r: device.LiveItem) {
         x: if not space.compact { r.x?.to_float() },
         y: if not space.compact { r.y?.to_float() },
     ) {
-        on moved(at): device.move_live(device.live, key: r.key, x: at.first(), y: at.last())
+        on moved(at): device.move_live(device.live, r.key, at)
         header: {
             row(gap: .related, align: .center) {
                 ui.Icon(

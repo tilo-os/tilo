@@ -9063,31 +9063,22 @@
               "type": "text"
             },
             {
-              "name": "x",
+              "name": "at",
               "required": false,
               "schema": {
                 "type": [
-                  "integer",
+                  "array",
                   "null"
                 ],
-                "format": "int64"
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
               },
               "type": {
-                "option": "int"
-              }
-            },
-            {
-              "name": "y",
-              "required": false,
-              "schema": {
-                "type": [
-                  "integer",
-                  "null"
-                ],
-                "format": "int64"
-              },
-              "type": {
-                "option": "int"
+                "option": {
+                  "list": "int"
+                }
               }
             }
           ]
