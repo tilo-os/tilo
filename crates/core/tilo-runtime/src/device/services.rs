@@ -2265,11 +2265,6 @@ fn broker_services(
         workspace_grants: Some(Arc::new(MemberListGrants {
             workspaces: Arc::clone(parts.workspaces),
         })),
-        // The agents each workspace's own list names: an agent of the person's is admitted, and
-        // owns what it starts, only while that list names it.
-        agents: Some(Arc::new(super::workspaces::RecordedAgents {
-            workspaces: Arc::downgrade(parts.workspaces),
-        })),
         // Who is in each workspace this host holds, for the apps it serves: their names and the
         // picture each person set in the profile kept here.
         workspace_memberships: Some(tilo_workspace_service::workspaces::ProfileMemberships::new(
