@@ -1080,9 +1080,9 @@ async fn an_agent_keeps_a_providers_key_by_naming_the_vault_item() {
         ("key", "https://models.example/v1/chat"),
     )
     .await;
-    let helper = Caller::delegated_agent("assistant", ada.user_public_key, ada.device_public_key)
-        .in_workspace(workspace_id.to_string())
-        .named("Helper");
+    // The agent her own device hands its session to: a certificate delegates to no agent it
+    // does not hand a session or bind to a roster.
+    let helper = as_ada.clone().delegated_to("assistant").named("Helper");
 
     // A change the agent makes is put to its person first: with nobody to
     // ask, nothing is kept.
