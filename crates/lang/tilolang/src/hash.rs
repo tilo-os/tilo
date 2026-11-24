@@ -1,4 +1,4 @@
-//! SHA-256, for the content hash of a module.
+//! SHA-256: the content hash of a module, and what `std.sha256` answers.
 
 use std::fmt::Write;
 

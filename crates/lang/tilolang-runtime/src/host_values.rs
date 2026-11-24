@@ -102,6 +102,18 @@ impl Core {
                 ret_i32(i32::from(yes))
             }
             Imp::StrMisspelled | Imp::StrSuggestions => self.spelling_import(imp, a),
+            // A digest of the text, in lowercase hex: a program keeps it in a record and
+            // compares what it is handed later without ever keeping the text itself.
+            Imp::Sha256 => {
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Text(tilolang::sha256_hex(text.as_bytes())))
+            }
+            Imp::Blake3 => {
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Text(
+                    blake3::hash(text.as_bytes()).to_hex().to_string(),
+                ))
+            }
             Imp::StrSplit => {
                 let text = self.text(a.h(0)?)?;
                 let sep = self.text(a.h(1)?)?;

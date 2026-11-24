@@ -62,6 +62,10 @@ imports! {
     // what a word is most likely meant to be (`Text.suggestions`).
     StrMisspelled = "str_misspelled" ([H] -> [H]);
     StrSuggestions = "str_suggestions" ([H, H] -> [H]);
+    // A text's digest, in lowercase hex: what a program keeps to compare text it must not
+    // keep itself.
+    Sha256 = "sha256" ([H] -> [H]);
+    Blake3 = "blake3" ([H] -> [H]);
 
     IntMin = "int_min" ([I64, I64] -> [I64]);
     IntMax = "int_max" ([I64, I64] -> [I64]);

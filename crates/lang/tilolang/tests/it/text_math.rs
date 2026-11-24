@@ -211,4 +211,28 @@ fn has_note(s: S, n: Int) -> Bool { return s.notes.contains(n) }",
         // A number's surface is not offered where a text's is.
         assert!(!text.message.contains("clamp"), "{}", text.message);
     }
+
+    phase a_digest_takes_one_text_and_answers_text;
+    {
+        compile_body(
+            "fn hashed(t: Text) -> Text { return std.sha256(t) }\n\
+fn fingerprinted(t: Text) -> Text { return std.blake3(t) }",
+        );
+        assert_eq!(
+            codes("fn f(t: Text) -> Text {\n    return std.sha256()\n}"),
+            vec!["E022"]
+        );
+        assert_eq!(
+            codes("fn f(t: Text) -> Text {\n    return std.sha256(t, t)\n}"),
+            vec!["E022"]
+        );
+        assert_eq!(
+            codes("fn f(t: Text) -> Text {\n    return std.sha256(text: t)\n}"),
+            vec!["E022"]
+        );
+        assert_eq!(
+            codes("fn f(n: Int) -> Text {\n    return std.sha256(n)\n}"),
+            vec!["E020"]
+        );
+    }
 }

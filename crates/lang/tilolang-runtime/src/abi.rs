@@ -50,6 +50,8 @@ imports! {
     (StrMatches, "str_matches", "ii", "i"),
     (StrMisspelled, "str_misspelled", "i", "i"),
     (StrSuggestions, "str_suggestions", "ii", "i"),
+    (Sha256, "sha256", "i", "i"),
+    (Blake3, "blake3", "i", "i"),
 
     (IntMin, "int_min", "ll", "l"),
     (IntMax, "int_max", "ll", "l"),

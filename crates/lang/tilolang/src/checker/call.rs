@@ -92,6 +92,11 @@ impl Checker<'_> {
                     if name.name == "occurrences" {
                         return self.builtin_occurrences(args, span);
                     }
+                    // `std.sha256(text)` and `std.blake3(text)`: their digest in lowercase hex,
+                    // for comparing text a record must not keep.
+                    if name.name == "sha256" || name.name == "blake3" {
+                        return self.builtin_digest(&name.name, args, span);
+                    }
                 }
                 if matches!(&base.kind, ExprKind::Ident(ns) if ns == RANDOM)
                     && self.lookup(RANDOM).is_none()
@@ -2632,6 +2637,29 @@ impl Checker<'_> {
         }
         let text = self.expr_as(&args[0].value, &Ty::Text);
         Some(text)
+    }
+
+    /// `std.sha256(text)` or `std.blake3(text)`: one text, answered as its digest in lowercase
+    /// hex. No effect: it reaches no service and reads no clock.
+    fn builtin_digest(&mut self, which: &str, args: &[ast::Arg], span: Span) -> Ex {
+        let imp = if which == "sha256" {
+            Imp::Sha256
+        } else {
+            Imp::Blake3
+        };
+        if args.len() != 1 || args.first().is_some_and(|a| a.name.is_some()) {
+            self.err(
+                "E022",
+                span,
+                format!("`std.{which}` takes one text: `std.{which}(text)`"),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let text = self.expr_as(&args[0].value, &Ty::Text);
+        Ex::host(imp, vec![text], Ty::Text)
     }
 
     /// A method that stands on a type instead of a value: `Date.parse` and `Time.parse` (the day or

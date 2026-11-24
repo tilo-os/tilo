@@ -22,9 +22,9 @@ use crate::value::Value;
 use Imp::{
     Abort, ActCall, ActChoose, ActChooseFolder, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine,
     ActSave, ActSet, ActThen, ActUndo, Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName,
-    ActorRole, AgentNamed, ArgAt, Base64Decode, BytesLength, CallFn, CallMembers, CanvasCombine,
-    CanvasCompare, CanvasExport, CanvasFind, CanvasGrade, CanvasLook, CanvasMeasure, CanvasOpen,
-    CanvasSave, CanvasSvg, CanvasSvgImport, CanvasWand, ChangeView, ClipboardCopyImage,
+    ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength, CallFn, CallMembers,
+    CanvasCombine, CanvasCompare, CanvasExport, CanvasFind, CanvasGrade, CanvasLook, CanvasMeasure,
+    CanvasOpen, CanvasSave, CanvasSvg, CanvasSvgImport, CanvasWand, ChangeView, ClipboardCopyImage,
     ClipboardCopySecret, ClipboardCopyText, ClipboardPasteImage, ClipboardPasteText, CollCount,
     CollCounted, CollEmpty, CollInsert, CollInsertAs, CollInsertKeyed, CollMove, CollMoveAmong,
     CollMoveTo, CollOrdered, CollPlace, CollRelatives, CollRemove, CollWhere, CollWhereWith,
@@ -56,7 +56,7 @@ use Imp::{
     ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
     RichAppended, RichEmbed, RichEmpty, RichFromHtml, RichFromMarkdown, RichMarkdown, RichMarked,
     RichNew, RichPart, RichRelinked, RichTime, RowKey, RowOpen, RunChanges, SeenBy, SetAdd,
-    SetRemove, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges,
+    SetRemove, Sha256, SheetEdit, SheetEntry, SheetFile, SheetNumbers, SheetOfFile, SheetRanges,
     SheetRecords, SheetValues, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers,
     StageReading, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq,
     StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrMisspelled, StrReplace, StrSlice,
@@ -601,9 +601,8 @@ impl Core {
             StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | StrToFloat
             | FloatToStr | StrCmp | StrFind | StrSlice | StrReplace | StrUrlEncode | StrTrim
             | StrLower | StrUpper | StrStartsWith | StrEndsWith | StrContains | StrSplit
-            | StrJoin | StrMatches | StrMisspelled | StrSuggestions | DurationText => {
-                self.text_import(imp, mem, a)
-            }
+            | StrJoin | StrMatches | StrMisspelled | StrSuggestions | DurationText | Sha256
+            | Blake3 => self.text_import(imp, mem, a),
             IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
             | FloatRound | FloatRoundTo | FloatFloor | FloatFloorTo | FloatCeil | FloatCeilTo
             | FloatSqrt | FloatCbrt | FloatPow | FloatExp | FloatLn | FloatLog10 | FloatLog2

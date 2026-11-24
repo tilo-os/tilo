@@ -22,6 +22,8 @@ mod calendar;
 mod clipboard;
 #[path = "counter.rs"]
 mod counter;
+#[path = "digest.rs"]
+mod digest;
 #[path = "e2e_abi.rs"]
 mod e2e_abi;
 #[path = "e2e_api_tester.rs"]
