@@ -194,7 +194,7 @@ fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
             &workspaces,
             &workspace,
             &tasks,
-            (person.clone(), &host.person()),
+            (person.clone(), host.person()),
             move |opened| {
                 opened.open_root()?;
                 let made = opened.invoke(
@@ -237,7 +237,7 @@ fn a_task_no_window_wrote_is_found_from_the_store_and_lost_once_deleted() {
             &workspaces,
             &workspace,
             &tasks,
-            (person, &host.person()),
+            (person, host.person()),
             move |opened| {
                 let task = ResourceRef::parse_id(&id, ty).ok_or("the task's id parses")?;
                 opened
@@ -364,7 +364,7 @@ fn a_conversation_sealed_to_its_people_is_found_by_them_alone() {
             &workspaces,
             &workspace,
             &chat,
-            (person, &host.person()),
+            (person, host.person()),
             move |opened| {
                 let all = Value::resource(&opened.open_root()?);
                 let rich = |text: &str| Value::Rich(RichValue::from_text(text));
