@@ -438,6 +438,23 @@ impl Workspaces {
             .map(|permissions| (*permissions.policy).clone())
     }
 
+    /// `workspace`'s policy where it answers something for `agent` now: `None` while its
+    /// person gave no answer for that agent, so nothing narrows it.
+    pub async fn agent_policy(
+        &self,
+        workspace: &str,
+        agent: &str,
+    ) -> Option<tilo_action_policy::WorkspacePolicy> {
+        let policy = self.policy_of(workspace).await?;
+        let named = tilo_action_policy::Grantee::agent(agent.to_owned());
+        let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
+        policy
+            .grants
+            .iter()
+            .any(|grant| grant.grantee == named && grant.is_live(&now))
+            .then_some(policy)
+    }
+
     /// The sandbox capabilities `workspace`'s governance grants its apps: the
     /// folders they reach in the Files mounts, as every other reader of them
     /// takes them. Empty for a workspace this service does not hold.

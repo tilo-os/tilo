@@ -47,7 +47,7 @@ use super::turn_provider::{Ending, Rows};
 use super::windows::{PAGE_RESOURCE, Windows, page_action};
 use super::{Reply, Turn, TurnProvider, WorkspaceId};
 use crate::workspaces::Workspaces;
-use crate::workspaces::hosted_use::agent_policy_allows;
+use crate::workspaces::hosted_use::{agent_policy_allows, agent_policy_grants};
 use tilo_action_policy::WorkspacePolicy;
 use tilo_app_id::apps::BROWSER as APP;
 
@@ -153,12 +153,13 @@ pub(super) struct TurnPages {
     /// The workspace the turn works in: its window is reached, and no other.
     workspace: String,
     workspace_id: WorkspaceId,
-    /// The workspace's policy, whose answers on the turn's agent decide what it may take here.
+    /// The workspace's policy where its answers name the turn's agent, which decide what it
+    /// may take here; `None` where its person gave it no answer, so nothing narrows it.
     policy: Option<WorkspacePolicy>,
     /// The agent the turn works as.
     agent: String,
-    /// Whether this turn is offered the window's page at all: one this server carries out turn, of an
-    /// agent its rules do not keep from Browser.
+    /// Whether this turn is offered the window's page at all: one this server carries out
+    /// turn, of an agent its person's answers do not keep from Browser.
     offered: bool,
 }
 
@@ -172,8 +173,8 @@ impl TurnPages {
         reply: &Reply,
     ) -> Arc<Self> {
         let workspace_id = reply.provider.workspace;
-        let policy = workspaces.policy_of(&reply.workspace).await;
         let agent = turn.agent.id.0.clone();
+        let policy = workspaces.agent_policy(&reply.workspace, &agent).await;
         let offered = browsers.is_some()
             && agent_policy_allows(
                 policy.as_ref(),
@@ -197,10 +198,10 @@ impl TurnPages {
     }
 
     /// Whether the workspace allows this turn's agent the page operation `action`: an answer of
-    /// the workspace's names that very action. Page operations, which change what a page said,
-    /// take such an answer.
+    /// the workspace's names that very action with an Allow. Page operations, which change what
+    /// a page said, take such an answer, and nothing less.
     fn granted(&self, action: &str) -> bool {
-        agent_policy_allows(
+        agent_policy_grants(
             self.policy.as_ref(),
             Some(&self.agent),
             &self.workspace,

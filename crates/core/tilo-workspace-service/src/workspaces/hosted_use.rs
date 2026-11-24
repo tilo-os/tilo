@@ -31,10 +31,11 @@
 //! ([`Workspaces::turn_reaches`]): the same decision every record of the
 //! workspace takes, so the agent's own grants, and an owner's word on them,
 //! hold whoever asked. The person who asked is who the turn's History names
-//! and who a question about a use goes to. Here, an agent that anything
-//! narrows (what its entry bounds it to; a sub-agent) must hold a rule that
-//! names exactly this use ([`HostedTurn::may_take`]), and nothing is used
-//! unasked.
+//! and who a question about a use goes to. An agent the workspace's answers
+//! on it narrow (its person answered something for it) takes only what those
+//! answers name and do not deny ([`HostedTurn::may_take`]); one they name
+//! with an Allow is used unasked, and every other use waits for the person's
+//! yes.
 //!
 //! A turn the server carries out is unattended. So a use is made unasked
 //! only where workspace policy keeps a grant for this agent, this use and
@@ -121,9 +122,9 @@ pub(crate) struct HostedTurn<'a> {
 }
 
 impl HostedTurn<'_> {
-    /// Whether the workspace's answer for the turn's agent lets it take `target` in
-    /// `workspace`: one nothing narrows may, and a narrowed one only where the workspace's
-    /// grants on the agent allow this very action.
+    /// Whether the workspace's answers for the turn's agent let it take `target` in
+    /// `workspace`: one nothing narrows may, and one its person answered something for takes
+    /// only what an answer names and none denies.
     #[must_use]
     pub(crate) fn may_take(&self, workspace: &str, target: &RemoteActionTarget) -> bool {
         agent_may_take(self.policy, self.caller, workspace, target)
@@ -131,7 +132,7 @@ impl HostedTurn<'_> {
 }
 
 /// Whether the workspace's policy lets the agent `caller` acts as take `target` in `workspace`:
-/// an Allow of the workspace's on that very action, and nothing where no policy narrows it.
+/// what [`agent_policy_allows`] says of the agent its certificate names.
 #[must_use]
 pub fn agent_may_take(
     policy: Option<&WorkspacePolicy>,
@@ -142,8 +143,34 @@ pub fn agent_may_take(
     agent_policy_allows(policy, caller.acting().agent_id(), workspace, target)
 }
 
-/// Whether the workspace's policy lets `agent` take `target` in `workspace`: an Allow of the
-/// workspace's on that very action, and nothing where it keeps no policy.
+/// The action `target` of `workspace` as the policy's tree holds it.
+fn target_node(workspace: &str, target: &RemoteActionTarget) -> TreePath {
+    TreePath::workspace(workspace)
+        .app(target.provider.clone())
+        .kind(target.address.resource.clone())
+        .resource(target.address.resource.clone())
+        .action(target.address.action.clone())
+}
+
+/// The workspace's answers on `agent` deciding it taking `node`: the answer its most specific
+/// grant gives, an ask where no answer covers the action.
+#[must_use]
+pub(crate) fn agent_decision<'p>(
+    policy: &'p WorkspacePolicy,
+    agent: &str,
+    node: &TreePath,
+) -> tilo_action_policy::Decision<'p> {
+    Party::new(vec![Grantee::agent(agent.to_owned())], &policy.grants).decide(
+        node,
+        ActionKind::Outside,
+        &Context::at_time(tilo_clock::wall()),
+    )
+}
+
+/// Whether the workspace's policy lets `agent` take `target` in `workspace`: its person's
+/// answers, where they name this agent at all, let it take only an action one covers and none
+/// denies. `None` is a workspace whose policy answers nothing for the agent, so nothing
+/// narrows it.
 #[must_use]
 pub fn agent_policy_allows(
     policy: Option<&WorkspacePolicy>,
@@ -151,25 +178,28 @@ pub fn agent_policy_allows(
     workspace: &str,
     target: &RemoteActionTarget,
 ) -> bool {
-    let Some(policy) = policy else {
-        return true;
+    let (Some(policy), Some(agent)) = (policy, agent) else {
+        return policy.is_none();
     };
-    let Some(agent) = agent else {
+    let decision = agent_decision(policy, agent, &target_node(workspace, target));
+    decision.grant().is_some() && decision.answer != Answer::Deny
+}
+
+/// Whether the workspace's policy allows `agent` `target` in `workspace` for sure: an answer
+/// naming that very action with an Allow. A page operation, which changes what a page said, is
+/// carried only where its person allowed it, and nothing less stands for that.
+#[must_use]
+pub fn agent_policy_grants(
+    policy: Option<&WorkspacePolicy>,
+    agent: Option<&str>,
+    workspace: &str,
+    target: &RemoteActionTarget,
+) -> bool {
+    let (Some(policy), Some(agent)) = (policy, agent) else {
         return false;
     };
-    let node = TreePath::workspace(workspace)
-        .app(target.provider.clone())
-        .kind(target.address.resource.clone())
-        .resource(target.address.resource.clone())
-        .action(target.address.action.clone());
-    Party::new(vec![Grantee::agent(agent.to_owned())], &policy.grants)
-        .decide(
-            &node,
-            ActionKind::Outside,
-            &Context::at_time(tilo_clock::wall()),
-        )
-        .answer
-        == Answer::Allow
+    let decision = agent_decision(policy, agent, &target_node(workspace, target));
+    decision.answer == Answer::Allow && decision.grant().is_some()
 }
 
 /// What an agent's turn asks of what its workspace keeps for the person who asked it, as the
@@ -265,10 +295,10 @@ fn on_turn(caller: &Caller) -> bool {
 }
 
 /// The turn an agent works as the workspace's list of its agents keeps it: the workspace and
-/// its policy, which the agent's own answers decide with.
+/// its policy, which the agent's own answers decide with, or none where nothing narrows it.
 struct KeptTurn {
     workspace: WorkspaceId,
-    policy: WorkspacePolicy,
+    policy: Option<WorkspacePolicy>,
 }
 
 impl KeptTurn {
@@ -277,7 +307,7 @@ impl KeptTurn {
         HostedTurn {
             workspace: self.workspace,
             caller,
-            policy: Some(&self.policy),
+            policy: self.policy.as_ref(),
         }
     }
 }
@@ -289,10 +319,11 @@ impl Workspaces {
         let workspace = caller.workspace().and_then(WorkspaceId::parse)?;
         let agent = caller.acting().agent_id()?;
         let named = workspace.to_string();
-        let policy = self.policy_of(&named).await?;
+        self.policy_of(&named).await?;
         if !self.agent_is_active(&named, agent).await {
             return None;
         }
+        let policy = self.agent_policy(&named, agent).await;
         Some(KeptTurn { workspace, policy })
     }
 
@@ -702,7 +733,9 @@ impl Use {
                     .await?;
                 serde_json::to_value(kept).map_err(|error| error.to_string())
             }
-            Self::Call(call) => web_call::send(workspaces, workspace, call, (by, acting), purpose).await,
+            Self::Call(call) => {
+                web_call::send(workspaces, workspace, call, (by, acting), purpose).await
+            }
             Self::Code(_) => {
                 // Read where the vault is, as the turn's person: nothing is written, so no use
                 // stands in the item's history.
@@ -782,7 +815,10 @@ fn shown_site(target: &RemoteActionTarget, arguments: &Map<String, Value>) -> Op
 }
 
 /// The id the address's resource names, after `kind`: `vault.item:<id>` names `<id>`.
-fn target_resource<'a>(target: &'a tilo_actions::remote::RemoteActionTarget, kind: &str) -> Option<&'a str> {
+fn target_resource<'a>(
+    target: &'a tilo_actions::remote::RemoteActionTarget,
+    kind: &str,
+) -> Option<&'a str> {
     target
         .address
         .resource
@@ -1112,7 +1148,9 @@ impl Workspaces {
         let arguments = arguments_of(request);
         let wanted = Use::read(&request.target, &arguments)?;
         let root = self.workspace_root(&using.workspace);
-        let (item, kind, places) = wanted.wanted(&root, &request.target).map_err(ActionCallError::refused)?;
+        let (item, kind, places) = wanted
+            .wanted(&root, &request.target)
+            .map_err(ActionCallError::refused)?;
         let word = person_vault::use_word(&request.target);
         let items = self
             .open_vault(&using.workspace)

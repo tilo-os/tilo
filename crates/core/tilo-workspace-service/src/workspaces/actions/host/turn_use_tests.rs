@@ -55,9 +55,9 @@ pub(super) fn turn() -> tilo_action_policy::turn::Turn {
 
 /// `request`, asked by `turn`'s caller of the device's dispatch, as a turn's tools ask it: what
 /// it answered, or its refusal. An agent on a turn in the turn's workspace is listed there
-/// first, narrowed to `turn`'s bound, as the workspace's list of its agents keeps every agent a
-/// turn works. The test's device lets in no agent another of the person's devices hands its
-/// session to, as a device's settings start.
+/// first, and where the turn names a policy, its person's answers in it replace whatever the
+/// workspace held for the agent, as setting them anew does. The test's device lets in no agent
+/// another of the person's devices hands its session to, as a device's settings start.
 pub(super) async fn dispatched(
     workspaces: &Workspaces,
     turn: &HostedTurn<'_>,
@@ -70,6 +70,34 @@ pub(super) async fn dispatched(
         && let (Some(agent), Some(person)) = (caller.acting().agent_id(), caller.turn_person())
     {
         listed(workspaces, &workspace, &hex::encode(person), agent, &[]).await;
+        // A turn given no policy leaves the workspace's grants as the test set them.
+        if let Some(policy) = turn.policy {
+            let named = tilo_action_policy::Grantee::agent(agent.to_owned());
+            let answers: Vec<_> = policy
+                .grants
+                .iter()
+                .filter(|grant| grant.grantee == named)
+                .cloned()
+                .collect();
+            // The turn's answers are the agent's: whatever the workspace held for it before is
+            // taken back first, as a person setting them anew replaces them.
+            if let Some(held) = workspaces.policy_of(&workspace).await {
+                let stale: Vec<_> = held
+                    .grants
+                    .iter()
+                    .filter(|grant| grant.grantee == named)
+                    .filter(|grant| !answers.iter().any(|answer| answer.id == grant.id))
+                    .map(|grant| grant.id.clone())
+                    .collect();
+                if !stale.is_empty() {
+                    crate::workspaces::fixtures::revoke_grants(workspaces, &workspace, &stale)
+                        .await;
+                }
+            }
+            if !answers.is_empty() {
+                crate::workspaces::fixtures::record_grants(workspaces, &workspace, &answers).await;
+            }
+        }
     }
     let receipt = workspaces
         .device_actions()
