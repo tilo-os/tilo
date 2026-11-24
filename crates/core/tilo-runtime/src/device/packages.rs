@@ -902,8 +902,7 @@ impl PackageCache {
                         registry.name, release.version
                     ));
                 }
-                let staged = tempfile::NamedTempFile::new_in(self.writer.content.dir())
-                    .map_err(|error| error.to_string())?;
+                let staged = self.staging()?;
                 let rows = &self.writer.rows;
                 app_cli::install::fetch_verified(&offer, staged.path(), &mut |progress| {
                     rows.fetching(release, progress.received, progress.total);
@@ -926,6 +925,15 @@ impl PackageCache {
                 tracing::warn!(app = %release.app, %error, "the version a workspace runs is not here");
             }
         }
+    }
+
+    /// A file to download a package into, beside the content it is kept with once it checks: the
+    /// directory is made on a device's first fetch.
+    fn staging(&self) -> Result<tempfile::NamedTempFile, String> {
+        let dir = self.writer.content.dir();
+        std::fs::create_dir_all(dir)
+            .and_then(|()| tempfile::NamedTempFile::new_in(dir))
+            .map_err(|error| format!("{}: {error}", dir.display()))
     }
 
     /// Whether the cache has the package `package` (its root, hex).
@@ -1013,8 +1021,7 @@ impl PackageCache {
                 app_cli::runtime_offer_from_enabled(&runtime)
             })?
             .ok_or_else(|| format!("no repository offers the runtime {runtime}"))?;
-            let staged = tempfile::NamedTempFile::new_in(self.writer.content.dir())
-                .map_err(|error| error.to_string())?;
+            let staged = self.staging()?;
             let rows = &self.writer.rows;
             app_cli::install::fetch_verified(&offer, staged.path(), &mut |progress| {
                 rows.fetching(release, progress.received, progress.total);
