@@ -800,9 +800,18 @@ fn is_file_account(account: &accounts::Account) -> bool {
 }
 
 pub(super) fn services_of(account: &accounts::Account, provider: Provider) -> Services {
-    // A file account says what it feeds in the words the cloud service reads
-    // (`use_files`, `use_calendar`), so its choice stays where its mount does.
+    // A file account's choice is written in the words the cloud service
+    // reads (`use_files`, `use_calendar`) as well as its own (`services`): the
+    // words the cloud service reads stand where no choice was ever written,
+    // so a mount keeps following them.
     if is_file_account(account) {
+        if let Some(services) = account
+            .config
+            .get("services")
+            .and_then(|value| serde_json::from_value::<Services>(value.clone()).ok())
+        {
+            return services;
+        }
         let flag = |key: &str, usual: bool| {
             account
                 .config
