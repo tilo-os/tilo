@@ -1147,7 +1147,10 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   action runs as a child call under the caller's grants, starting the app without
   a window if it isn't running. Cancelling the call cancels its jobs. A press in a
   window is a call like any other, admitted as the person who pressed, with its
-  own invocation record. Work with no end, such as a language server or a
+  own invocation record. The compositor, which saw the input, attests it: it
+  issues the window a one-use input serial and tells the daemon, and only a call
+  naming a fresh serial issued to that window counts as pressed; the page host
+  does the same in the browser. Work with no end, such as a language server or a
   gateway, is the app's held connection, never a job. `work::takes_turn` only places
   work that leaves the starting device. A call that leaves its device carries its caller's
   signature: a person's device signs for its person, an agent with its own
