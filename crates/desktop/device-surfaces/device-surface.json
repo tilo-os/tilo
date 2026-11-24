@@ -1498,6 +1498,40 @@
           ]
         },
         {
+          "name": "NetworkWake",
+          "doc": "Whether a saved network wakes this device from sleep, as the device reports it.",
+          "fields": [
+            {
+              "name": "on",
+              "type": "bool"
+            },
+            {
+              "name": "interface",
+              "type": {
+                "option": "text"
+              }
+            },
+            {
+              "name": "supported",
+              "type": {
+                "option": "bool"
+              }
+            },
+            {
+              "name": "applied",
+              "type": {
+                "option": "bool"
+              }
+            },
+            {
+              "name": "problem",
+              "type": {
+                "option": "text"
+              }
+            }
+          ]
+        },
+        {
           "name": "SavedIpv4",
           "doc": "How a saved network's addresses are set.",
           "fields": [
@@ -1610,6 +1644,14 @@
               "type": {
                 "option": {
                   "named": "SavedIpv4"
+                }
+              }
+            },
+            {
+              "name": "wake",
+              "type": {
+                "option": {
+                  "named": "NetworkWake"
                 }
               }
             }
@@ -1781,6 +1823,29 @@
               }
             }
           ]
+        },
+        {
+          "id": "set-wake",
+          "label": "Wake this device over the network",
+          "description": "Wake this device from sleep when a wake packet arrives over the network, or stop.",
+          "kind": "outside",
+          "params": [
+            {
+              "name": "on",
+              "required": true,
+              "schema": {
+                "type": "boolean"
+              },
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "id": "share-with-devices",
+          "label": "Share with your devices",
+          "description": "Share the Wi-Fi network's password with your other devices, so they join it too.",
+          "kind": "outside",
+          "params": []
         }
       ],
       "fields": []
@@ -13344,6 +13409,13 @@
           "id": "found",
           "label": "Start a new person on this device",
           "description": "Start a new person on this device, when no person's certificate names it yet",
+          "kind": "outside",
+          "params": []
+        },
+        {
+          "id": "back-up-identity",
+          "label": "Back up this computer's identity",
+          "description": "Write a backup of this computer's identity, to carry it to another computer: the person seals it with a passphrase they choose, and the file goes where they choose",
           "kind": "outside",
           "params": []
         }

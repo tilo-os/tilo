@@ -64,6 +64,11 @@ pub(crate) enum Ask {
         workspace: String,
         reply: SyncSender<Option<Launch>>,
     },
+    /// Put the identity backup up, where the person writes a backup of this computer's identity:
+    /// the layer only a pass of the loop can raise. The answer says why it could not.
+    IdentityBackup {
+        reply: SyncSender<Result<(), String>>,
+    },
 }
 
 /// What the session's loop and the broker reach of the service.
@@ -93,7 +98,28 @@ pub(crate) struct Tools {
     handle: Handle,
 }
 
+impl Inner {
+    /// Put the identity backup up and wait for the pass that raises it, answering the asker with
+    /// what it said: the backup is the loop's, which alone puts a layer over the desktop.
+    fn identity_backup(&self) -> Result<(), String> {
+        let (reply, answered) = std::sync::mpsc::sync_channel(1);
+        self.asks.lock_recover().push(Ask::IdentityBackup { reply });
+        (self.wake)();
+        match answered.recv_timeout(ANSWER_WAIT) {
+            Ok(answered) => answered,
+            Err(_) => Err("this session did not put the identity backup up".to_owned()),
+        }
+    }
+}
+
 impl Handle {
+    /// Ask the session's loop to put the identity backup up, as the resource's own
+    /// `back-up-identity` verb does: the person writes a backup of this computer's identity to a
+    /// file they choose, sealed with a passphrase. What it answers is that ask's answer.
+    pub(crate) fn identity_backup(&self) -> Result<(), String> {
+        self.inner.identity_backup()
+    }
+
     /// A handle whose lists the loop keeps: nothing is served until [`Tools::serve`] binds the
     /// socket.
     pub(crate) fn new(launches: Arc<Launches>, wake: Wake) -> Self {
@@ -399,10 +425,10 @@ fn answer(inner: &Inner, caller: Option<&Caller>, request: &ToolRequest) -> Tool
         ToolIntent::OpenApplication { app } => open_application(inner, caller, app),
         ToolIntent::UninstallApplication { app } => uninstall(inner, caller, app),
         ToolIntent::WorkspaceSettings { route } => workspace_settings(inner, caller, *route),
-        ToolIntent::IdentityBackup => refused(
-            "a portable identity backup is written by setup, on the screens that ask for \
-             one; a shell that is already open offers none",
-        ),
+        ToolIntent::IdentityBackup => match inner.identity_backup() {
+            Ok(()) => accepted("opened"),
+            Err(why) => refused(&why),
+        },
         // Every other intent opens a package at the typed context it carries.
         _ => open_tool(inner, caller, request),
     }

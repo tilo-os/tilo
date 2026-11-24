@@ -1548,6 +1548,10 @@ d-fkn7ssf4 = Worte des Grundes
     .w-the-system-restarted-itself-at-once = Das System startete sich sofort neu
 
 d-juhocpyw = About pane
+    .w-your-identity = Deine Identität
+    .w-back-up-your-identity = Deine Identität sichern
+    .w-carry-it-to-another-computer-sealed = Nimm sie mit auf einen anderen Rechner, versiegelt mit einer Passphrase deiner Wahl
+    .w-back-up = Sichern
     .w-tilo = Tilo
     .w-tilo-is-your-workspace-one-set = Tilo ist dein Arbeitsbereich: eine Menge Dinge, geteilt von den Personen und Agenten, mit denen du arbeitest, auf den Geräten, an denen du angemeldet bist.
     .w-every-change-is-kept-and-can = Jede Änderung wird behalten und lässt sich zurücknehmen; was andere ändern, zeigt sich hier, sobald es geschieht.

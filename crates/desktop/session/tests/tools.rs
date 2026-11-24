@@ -145,6 +145,9 @@ fn session(
         // Files and what search lists is that same list.
         lists: Lists::fixed(AppLists::read()),
         drives,
+        // The identity backup is a layer over the desktop, which a test stands in for: what a
+        // pass raises is asserted, not the ceremony's own pages.
+        identity_backup: |_| Ok(tilo_onboarding_session::view::OnboardingView::new_tour()),
         wake: tilo_service::LoopWake::default(),
         ..Options::default()
     });
@@ -541,6 +544,31 @@ tilo_test_env::scenario! {
         assert!(
             args.contains(&format!("--workspace-id {workspace}")),
             "the app starts in the workspace the caller works in: {args}"
+        );
+    }
+
+    phase an_identity_backup_open_raises_setup_over_the_desktop;
+    {
+        let _settled = ui::motion::testing::settled();
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let records = home.home().join("starts");
+        let launcher = launcher(&home, &records);
+        let (mut session, opened) = session(&home, &launcher, None);
+        session.step(Duration::from_millis(1)).unwrap();
+        let workspace = front(&session).id().to_string();
+        launch_as(&opened, FILES, &workspace);
+        assert!(
+            !session.setup_up(),
+            "a desktop that is used has nothing over it"
+        );
+
+        // The backup is a layer only a pass of the loop raises, so it is asked from the app's own
+        // thread while the session's loop runs.
+        let reply = ask_while_stepping(&mut session, &home, workspace, ToolIntent::IdentityBackup);
+        assert!(reply.accepted, "{}", reply.message);
+        assert!(
+            session.setup_up(),
+            "the backup stands over the desktop, taking the keyboard until the person is done"
         );
     }
 

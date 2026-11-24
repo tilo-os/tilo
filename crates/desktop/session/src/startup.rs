@@ -299,6 +299,24 @@ pub(crate) fn setup_due_now(host_desktop: bool) -> Option<OnboardingView> {
     })
 }
 
+/// The identity backup a desktop already in use opens: the export, the file it is written to and
+/// the proof it opens that first use offers, over the desktop rather than in front of it.
+///
+/// # Errors
+/// This computer keeps no identity of its own to back up, or it cannot say whether it does.
+pub fn portable_backup(host_desktop: bool) -> Result<OnboardingView, String> {
+    let record = tilo_identity::store::active_identity_path().map_err(|error| error.to_string())?;
+    let identity_dir = record
+        .parent()
+        .ok_or_else(|| "the identity record has no directory".to_owned())?
+        .to_path_buf();
+    if host_desktop {
+        OnboardingView::portable_backup_for_host_desktop(identity_dir)
+    } else {
+        OnboardingView::portable_backup(identity_dir)
+    }
+}
+
 /// How startup handles a verification that did not pass.
 /// The clock's reading is asked first because a refusal for it alone is reported as
 /// [`std::io::ErrorKind::InvalidData`] too, and it is the one failure that leaves the identity

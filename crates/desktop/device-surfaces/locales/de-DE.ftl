@@ -33,6 +33,7 @@ so-tilo-session-clipboard-paste = Eine Kopie einfügen
 so-tilo-session-clipboard-paste-files = Dateien einfügen
 so-tilo-session-clipboard-pin = Die Kopie anheften
 so-tilo-session-clipboard-remove = Eine Kopie aus dem Verlauf entfernen
+so-tilo-session-devices-back-up-identity = Die Identität dieses Rechners sichern
 so-tilo-session-devices-found = Auf diesem Gerät neu beginnen
 so-tilo-session-devices-hand-off = Zubehör weitergeben
 so-tilo-session-devices-log-in = Mit einem Ticket anmelden

@@ -274,6 +274,9 @@ pub(crate) struct Served {
     /// Why the last login from here failed, as the daemon said it: written by the login's own
     /// thread, read on every pass.
     refused: Arc<Mutex<String>>,
+    /// Where a backup of this computer's identity is asked for: the layer that writes it is the
+    /// loop's, reached the same way an app's typed open reaches it.
+    tools: crate::tools::Handle,
     /// The reading last reported, so a pass that changed nothing is no revision.
     published: RefCell<Option<DevicesReading>>,
 }
@@ -294,7 +297,8 @@ pub(crate) struct HandOff {
 
 impl Served {
     /// The service publishing what `fabric` , `handle` , `readings` , `chosen` and `handoff` read,
-    /// whose presses `pressed` carries to the loop.
+    /// whose presses `pressed` carries to the loop, and whose identity backup `tools` asks the
+    /// loop to raise.
     pub(crate) fn new(
         fabric: SharedLink,
         record: Option<FollowedResource<DevicesRecord>>,
@@ -305,6 +309,7 @@ impl Served {
         pressed: Rc<RefCell<Vec<Press>>>,
         handed: Rc<RefCell<Vec<HandOff>>>,
         refused: Arc<Mutex<String>>,
+        tools: crate::tools::Handle,
     ) -> Self {
         Self {
             fabric,
@@ -316,6 +321,7 @@ impl Served {
             pressed,
             handed,
             refused,
+            tools,
             published: RefCell::new(None),
         }
     }
@@ -424,6 +430,17 @@ impl Service for Served {
                     Arc::clone(&self.refused),
                 )));
             }
+            // Writing a backup of this computer's identity is the person's, in the layer setup
+            // shows: the loop raises it, and the answer says why it could not when it could not.
+            DevicesAction::BackUpIdentity => match self.tools.identity_backup() {
+                Ok(()) => {}
+                Err(reason) => {
+                    return Err(ApiError::Refused {
+                        code: "identity-backup".to_owned(),
+                        reason,
+                    });
+                }
+            },
         }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
     }

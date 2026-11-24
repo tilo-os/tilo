@@ -1237,6 +1237,9 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
             options.wake.handle(),
         );
+        // The identity backup a person asks for from Settings reaches the loop through the same
+        // ask an app's typed open does, so both arrive at one layer.
+        let backup_tools = tools.clone();
         // What a tilolang app's `File.open` asks: the app's process is handed a connection to this
         // service made for that app, which is how it opens a file in the app that opens its kind.
         if let Some(apps) = &options.launch {
@@ -2024,6 +2027,7 @@ impl Session {
                     Rc::clone(&shared.devices.pressed),
                     Rc::clone(&shared.devices.handed),
                     std::sync::Arc::new(std::sync::Mutex::default()),
+                    backup_tools.clone(),
                 )));
         }
         // What the portal brings comes from any thread, and wakes the loop
@@ -2081,6 +2085,9 @@ impl Session {
             shared,
             input: options.config.input,
             setup,
+            identity_backup: options.identity_backup,
+            host_desktop: options.host_desktop,
+            scale: options.scale,
             comforts,
             unlocking: Unlocking {
                 user: options.user,
@@ -2788,6 +2795,24 @@ impl Session {
         self.setup.as_ref().is_some_and(|setup| setup.borrow().up())
     }
 
+    /// Raise the identity backup over the desktop: the same export, file picker and verification
+    /// setup shows when a computer is first used, which leaves the desktop as it found it. What
+    /// the person's Settings asks, and the typed open an app asks, both arrive here.
+    ///
+    /// # Errors
+    /// This computer keeps no identity of its own to back up, which is what the person is told.
+    pub(crate) fn back_up_identity(&mut self) -> Result<(), String> {
+        let view = (self.identity_backup)(self.host_desktop)?;
+        self.setup = crate::shell::mount::mount_setup(
+            &mut self.compositor,
+            &mut self.shared.published,
+            Some(BeforeShell::Ceremony(Box::new(view))),
+            &self.shared.person,
+            self.scale,
+        );
+        Ok(())
+    }
+
     /// Whether quick settings is open: the shell's surface over the windows.
     #[must_use]
     pub fn quick_settings_open(&self) -> bool {
@@ -2824,7 +2849,9 @@ impl Session {
             }
             // What the tools service has to know of this pass — the media
             // attached and the person's apps — and the sheets it left for the
-            // loop, which only a pass can put up.
+            // loop, which only a pass can put up. A backup of this computer's
+            // identity is a layer over the desktop, raised here and answered.
+            let mut backups = Vec::new();
             if let Some(tools) = self.shared.table.tools() {
                 let media = self
                     .shared
@@ -2832,7 +2859,10 @@ impl Session {
                     .as_ref()
                     .map(|drives| drives.live())
                     .unwrap_or_default();
-                self.shared.follow_tools(tools, media);
+                backups = self.shared.follow_tools(tools, media);
+            }
+            for reply in backups {
+                let _ = reply.send(self.back_up_identity());
             }
             // The links and files the apps asked to open, opened where the shell's own search
             // opens one.

@@ -655,12 +655,15 @@ impl Shared {
     }
 
     /// Keep the tools service's lists current with this pass, and put up the sheets it left for the
-    /// loop: workspace settings on a route's tab, and an app the person asked to uninstall.
+    /// loop: workspace settings on a route's tab, and an app the person asked to uninstall. The
+    /// identity backup is a layer over the desktop, which only the session raises: its asks come
+    /// back for the pass to answer.
     pub(crate) fn follow_tools(
         &self,
         tools: &crate::tools::Handle,
         media: Vec<crate::drives::Medium>,
-    ) {
+    ) -> Vec<std::sync::mpsc::SyncSender<Result<(), String>>> {
+        let mut backups = Vec::new();
         tools.saw_apps(&crate::app_icons::app_lists().unwrap_or_default().tools);
         tools.saw_media(media);
         for ask in tools.take_asks() {
@@ -712,8 +715,10 @@ impl Shared {
                     };
                     let _ = reply.send(answered);
                 }
+                crate::tools::Ask::IdentityBackup { reply } => backups.push(reply),
             }
         }
+        backups
     }
 
     /// What workspace settings feeds its panes from.

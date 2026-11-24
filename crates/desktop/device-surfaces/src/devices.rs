@@ -71,6 +71,11 @@ pub enum DevicesAction {
     #[effect(kind = "outside")]
     #[effect(own_device)]
     Found,
+    /// Write a backup of this computer's identity, to carry it to another computer: the person
+    /// seals it with a passphrase they choose, and the file goes where they choose
+    #[effect(kind = "outside")]
+    #[effect(own_device)]
+    BackUpIdentity,
 }
 
 /// The Devices section as a view of another language reads it (`device.devices`): the person's

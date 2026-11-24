@@ -33,6 +33,7 @@ so-tilo-session-clipboard-paste = Paste a copy
 so-tilo-session-clipboard-paste-files = Paste files
 so-tilo-session-clipboard-pin = Pin the copy
 so-tilo-session-clipboard-remove = Remove a copy from the history
+so-tilo-session-devices-back-up-identity = Back up this computer's identity
 so-tilo-session-devices-found = Start a new person on this device
 so-tilo-session-devices-hand-off = Hand off an accessory
 so-tilo-session-devices-log-in = Log in with a ticket
