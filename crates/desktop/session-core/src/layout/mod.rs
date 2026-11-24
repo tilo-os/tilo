@@ -821,7 +821,7 @@ impl Layouts for LayoutDocument {
         self.resource_action(
             tree,
             ui::time::unix_now_i64(),
-            &crate::layout::step_context(asked, action),
+            &crate::layout::step_context(asked, action, self.person()),
             shows,
         );
     }
@@ -1877,10 +1877,19 @@ impl Layout {
 }
 
 /// What `action`, asked for by `asked`, is: who asked and what they did, as the change of the layout
-/// it makes names it.
-pub fn step_context(asked: &Actor, action: &LayoutAction) -> tilo_actions::ActionContext {
+/// it makes names it. The layout is `person`'s, so an actor that is not them acts for them: an agent
+/// arranging their layout works for them, and their undo takes its step back.
+pub fn step_context(
+    asked: &Actor,
+    action: &LayoutAction,
+    person: &str,
+) -> tilo_actions::ActionContext {
+    let mut acting: tilo_actions::Acting = asked.clone().into();
+    if !acting.is_person() {
+        acting = acting.acting_for(tilo_actions::Acting::person(person));
+    }
     tilo_actions::ActionContext {
-        invoker: Some(tilo_actions::ActionInvoker::admitted(&asked.clone().into())),
+        invoker: Some(tilo_actions::ActionInvoker::admitted(&acting)),
         what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
             tilo_actions::ActionKey::new("so.tilo.session", "layout", verb(action)),
             std::iter::empty(),

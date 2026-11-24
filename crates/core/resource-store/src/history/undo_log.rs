@@ -198,6 +198,21 @@ struct Placement {
     metadata: Option<String>,
 }
 
+/// Whether the change `version` was made by an actor working for `author`: an agent their device
+/// ran for them, or a bot or app they set on it
+/// ([`tilo_actions::Acting::acting_for`]). That step is theirs as their own is, and their undo
+/// takes it back with it.
+fn acted_for(version: &Version, author: &MemberId) -> bool {
+    let Some(person) = author.person_id() else {
+        return false;
+    };
+    version
+        .context
+        .as_ref()
+        .and_then(|context| context.invoker.as_ref())
+        .is_some_and(|invoker| invoker.acting.acted_for_person() == Some(person))
+}
+
 /// Whether an entry is an undo or redo through history.
 fn moves_history(context: &ActionContext) -> Option<&HistoryOp> {
     match &context.what {
@@ -364,7 +379,7 @@ impl UndoLog {
         let by = match author {
             None => presented.is_some(),
             Some(author) => match self.author_of(version) {
-                Some(by) => by == *author,
+                Some(by) => by == *author || acted_for(version, author),
                 None => presented.is_some(),
             },
         };

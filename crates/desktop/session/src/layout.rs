@@ -2107,7 +2107,7 @@ impl Layouts {
         {
             self.remember(&(id, Route::layout()), earlier, None, &person);
         }
-        let message = tilo_session_core::layout::step_context(asked, action)
+        let message = tilo_session_core::layout::step_context(asked, action, &person)
             .change_message()
             .unwrap_or_else(|| {
                 shared_resource::change_message(
