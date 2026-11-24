@@ -1141,7 +1141,14 @@ impl Core {
         aref: &ActionRef,
         gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_as_in(None, (invoker, None), aref, aref.from.as_ref(), gesture, false)
+        self.invoke_direct_as_in(
+            None,
+            (invoker, None),
+            aref,
+            aref.from.as_ref(),
+            gesture,
+            false,
+        )
     }
 
     /// [`Core::invoke_direct`] as the run `identity` when every replica can name it the same
@@ -2687,14 +2694,16 @@ impl Core {
                                 || crate::platform::chooser_fills(&pkg.meta, &p.ty)
                         })
                         .count();
-                    (a.params.len(), defaulted)
+                    (a.params.len(), defaulted, a.name.clone())
                 })
             });
         match arity {
             None => return trap(format!("unknown action `{action}`")),
-            Some((n, defaulted)) if args.len() > n || args.len() < n.saturating_sub(defaulted) => {
+            Some((n, defaulted, name))
+                if args.len() > n || args.len() < n.saturating_sub(defaulted) =>
+            {
                 return trap(format!(
-                    "action `{action}` takes {n} arguments, got {}",
+                    "action `{name}` ({action}) takes {n} arguments, got {}",
                     args.len()
                 ));
             }

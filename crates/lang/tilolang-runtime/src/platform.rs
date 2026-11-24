@@ -203,11 +203,15 @@ pub fn form_asks(meta: &Meta, ty: &str) -> bool {
         .is_ok_and(|parsed| parsed.asked_by_form() && plain(meta, &parsed))
 }
 
-/// Whether `ty`, as metadata writes it, is a `File`: the parameter a person's own chooser fills
-/// (`file.choose(a)`), which no form asks for and no call gets from anywhere else.
+/// Whether `ty`, as metadata writes it, is what a person's own chooser fills: the one `File`
+/// an action takes, or every file of a folder as a `List<File>` (`file.choose(a)`, or
+/// `file.choose_folder(a)`), which no form asks for and no call gets from anywhere else.
 #[must_use]
 pub fn chooser_fills(meta: &Meta, ty: &str) -> bool {
-    crate::meta::parse_ty(ty.trim(), &meta.app).is_ok_and(|ty| ty == crate::meta::Ty::File)
+    crate::meta::parse_ty(ty.trim(), &meta.app).is_ok_and(|ty| {
+        ty == crate::meta::Ty::File
+            || matches!(&ty, crate::meta::Ty::List(inner) if **inner == crate::meta::Ty::File)
+    })
 }
 
 /// The state key `delivery(r)` reads for the resource `id`.
@@ -3109,7 +3113,7 @@ fn said_value(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::form_asks;
+    use super::{chooser_fills, form_asks};
 
     fn meta() -> crate::meta::Meta {
         tilolang::compile_package(
@@ -3122,6 +3126,23 @@ mod tests {
         )
         .expect("the package compiles")
         .meta
+    }
+
+    /// A chooser fills the one file an action takes, or every file of a folder it takes as a
+    /// `List<File>`, and nothing else: a `choice` of one such parameter is a call a view may
+    /// leave that argument to the person.
+    #[test]
+    fn a_chooser_fills_one_file_or_the_files_of_a_folder() {
+        let meta = meta();
+        for ty in ["File", "List<File>"] {
+            assert!(chooser_fills(&meta, ty), "{ty} is what a chooser fills");
+        }
+        for ty in ["Text", "Option<File>", "List<Text>", "Collection<File>"] {
+            assert!(
+                !chooser_fills(&meta, ty),
+                "{ty} is not what a chooser fills"
+            );
+        }
     }
 
     /// A form asks for each type that has a control, and for none of the types only an
