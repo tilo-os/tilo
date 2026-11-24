@@ -792,7 +792,8 @@ pub fn device_state() -> std::path::PathBuf {
 /// # Panics
 /// The identity or its directories cannot be made.
 pub fn device_in(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
-    let identity = home.config().join("tilo/identity");
+    tilo_identity::sources::test_trust::install();
+    let identity = tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let root = home.root().join("system");
     home.env().set("TILO_IDENTITY_ROOT", &root);

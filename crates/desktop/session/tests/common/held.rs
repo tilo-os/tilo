@@ -83,7 +83,8 @@ pub fn fixture() -> Fixture {
     env.set("XDG_CONFIG_HOME", &xdg)
         .set("TILO_IDENTITY_ROOT", &system)
         .set(FILE_SECRETS_ENV, "1");
-    let personal = xdg.join("tilo/identity");
+    tilo_identity::sources::test_trust::install();
+    let personal = tilo_identity::store::account_identity_dir(&xdg.join("tilo/identity"));
     let paths = IdentityPaths::under(&system);
     tilo_identity::provisioning::ensure_collaboration_identity(
         &personal,
@@ -280,7 +281,9 @@ pub fn this_computer_with_an_identity(
     // directory: the session's renewal resolves them from the environment,
     // and nothing may delete them while it runs.
     let root = home.root().join("system");
-    let identity_dir = home.config().join("tilo").join("identity");
+    tilo_identity::sources::test_trust::install();
+    let identity_dir =
+        tilo_identity::store::account_identity_dir(&home.config().join("tilo").join("identity"));
     tilo_identity::provisioning::ensure_collaboration_identity(
         &identity_dir,
         &tilo_device_identity::IdentityPaths::under(&root),

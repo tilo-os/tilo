@@ -894,22 +894,32 @@ pub struct Person {
 impl Person {
     /// The person `name` , provisioned as a computer's first use provisions them.
     ///
-    /// Provisioned by its roots, never by this process's environment: the site's threads and
-    /// every other person's live in this process, and the identity they look up is the one the
-    /// environment names.
+    /// Provisioned by its roots: the site's threads and every other person's live in this process,
+    /// and the identity they look up is the one the environment names. Only the account store's
+    /// seal reads this computer's device key from the environment, so its identity root is named
+    /// there while the person is made and their root read, and the environment is as it was after.
     pub fn new(name: &str) -> Self {
         let identity = tempfile::tempdir().expect("a directory for the person's identity");
         let config = identity.path().join("config");
-        let identity_dir = config.join("tilo/identity");
+        // The person's devices, as a host holding their record lists them: what a device's
+        // certificate is checked against before anything signs with it.
+        tilo_identity::sources::test_trust::install();
+        // The account's own store below the identity directory, where every reader looks.
+        let identity_dir =
+            tilo_identity::store::account_identity_dir(&config.join("tilo/identity"));
+        let system = identity.path().join("system");
+        let mut sealing = tilo_test_env::ScopedEnv::new();
+        sealing.set("TILO_IDENTITY_ROOT", &system);
         tilo_identity::provisioning::ensure_collaboration_identity(
             &identity_dir,
-            &IdentityPaths::under(identity.path().join("system")),
+            &IdentityPaths::under(&system),
             IdentityStorage::Files,
         )
         .expect("this person's identity");
         let record = tilo_identity::store::resolve_active_identity(&identity_dir)
             .expect("the identity this machine provisioned for the person");
         let root = tilo_identity::store::load_from_path(record).expect("the person's root key");
+        drop(sealing);
         Self {
             name: name.to_owned(),
             public: root.group_public_key(),
@@ -1012,8 +1022,10 @@ impl Person {
             .first_device
             .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
-            tilo_identity::provisioning::clear_founding_mark(&root.join("config/tilo/identity"))
-                .expect("a later device of the person's founds nothing");
+            tilo_identity::provisioning::clear_founding_mark(
+                &tilo_identity::store::account_identity_dir(&root.join("config/tilo/identity")),
+            )
+            .expect("a later device of the person's founds nothing");
         }
         let paths = IdentityPaths::under(root.join("identity"));
         let cert = self.certify(&paths, label);
