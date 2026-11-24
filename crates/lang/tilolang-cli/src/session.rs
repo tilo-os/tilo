@@ -51,7 +51,7 @@ pub(crate) fn checkout(explicit: Option<&Path>, dir: &Path) -> Result<Option<Pat
 }
 
 /// The checkout a nested session is started from or attached in ([`checkout`]), or what to do
-/// without one: `command` (`tilolang run`) needs it, and `tilolang dev` does not.
+/// without one: every command that runs an app (`tilolang run`, `tilolang dev`) needs it.
 pub(crate) fn repo_root(
     explicit: Option<&Path>,
     dir: &Path,
@@ -61,8 +61,7 @@ pub(crate) fn repo_root(
         format!(
             "`{command}` runs the app in a nested Tilo session, which is built and started from a \
              Tilo checkout ({SESSION_SCRIPT}), and there is none here: run it in a checkout of \
-             https://code.tilo.so/tilo/tilo, or name one with --repo DIR or $TILO_REPO. \
-             `tilolang dev DIR` runs the app as a window on this desktop without one"
+             https://code.tilo.so/tilo/tilo, or name one with --repo DIR or $TILO_REPO"
         )
     })
 }

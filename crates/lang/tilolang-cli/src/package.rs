@@ -1446,32 +1446,6 @@ pub fn deliver_compiled(
         .ok_or_else(|| format!("{}: nothing was delivered", meta.app))
 }
 
-/// A build of one app as the directory a running desktop app follows it takes it: the bundle
-/// itself, and what decides whether the running build takes it in place.
-pub struct Published {
-    pub app: String,
-    pub title: String,
-    pub meta: PackageMeta,
-    pub digest: String,
-    pub bundle: Bundle,
-}
-
-/// Compile the package in `options.dir` and those it uses into the bundles a desktop app reads from
-/// its generations, with nothing staged, packed or signed: a local run signs nothing. # Errors A
-/// package does not compile (the message lists the errors by file).
-pub fn published(options: &BuildOptions) -> Result<Vec<Published>, String> {
-    Ok(assembled(options, None)?
-        .into_iter()
-        .map(|app| Published {
-            app: app.app,
-            title: app.title,
-            meta: app.meta,
-            digest: app.digest,
-            bundle: app.bundle,
-        })
-        .collect())
-}
-
 /// A build staged for the device running it to install as its development build of the app: the
 /// app's manifest and the files of its payload, unsigned, where the cache's `install-dev` action
 /// reads them. The device marks it, packs it and signs it with its own key, under the id its

@@ -13,9 +13,6 @@ Before the first run a note is created and opened, so the detail, the list's sel
 window's state are there to keep; after each run the app must have taken the build in place
 (`runs the new build, with its state`) and the note must still be open.
 
-The runtime loop belongs to the desktop only: a session runs the tilolang runtime it baked when
-it started, and `tilolang dev --build-runtime` is a window on this desktop.
-
 The session is headless and renders with lavapipe only (`--software`); its state lives in
 OUT/state and the session is stopped at the end. Prints the medians of the runs and writes every
 sample to OUT/loops.json.
@@ -23,23 +20,8 @@ sample to OUT/loops.json.
 With `--session READY` it attaches to a session that is already running (its `--ready` file)
 instead of starting one, and leaves it running.
 
-The desktop loop: `--desktop` times `tilolang dev DIR --search DIR`, which runs the app as an
-ordinary window with no session. Its first save (cold) and the warm saves are measured from the
-save to two points too:
-
-  app         the app's own first frame of the new build, as above
-  presented   the app's first frame of the new build the compositor presented: the app logs
-              `tilo-display-frame` rows with `TILO_PROFILE_PRESENTATION=1`, and the first row
-              after the draw is that frame
-
-The app still renders on the session's headless compositor (`--software`), as a plain client,
-so the numbers include the compositor's presentation. It runs the checkout's `fast` profile
-`target/fast/tilolang-process`, the binary the loop's own runtime build makes, and `--tool` and
-`--runtime` pick another. `--busy N` keeps N CPU-bound processes running for the measurement, so
-the medians also show the loop under load; the load average is printed with every sample.
-
   scripts/headless-examples/tilolang-dev-loops.py [--runs 5] [--session READY]
-      [--no-build] [--desktop] [--busy N]
+      [--no-build] [--busy N]
 """
 
 import argparse
@@ -61,7 +43,7 @@ SESSION = REPO / "dist/dev/nested-session.sh"
 BIN = REPO / "target/nested-session/bin"
 APP = "so.tilo.notes"
 # The string each package under test shows, so a save paints something new: Notes' body
-# placeholder in a session, Tasks' new-task placeholder on the desktop.
+# placeholder in a session.
 PLACEHOLDER = {"notes": r'placeholder: "Write[^"]*"',
                "tasks": r'placeholder: "New task(, [^"]*)?"'}
 # The app's own line when it draws a new build, and the row it logs when the compositor presents
@@ -69,8 +51,6 @@ PLACEHOLDER = {"notes": r'placeholder: "Write[^"]*"',
 DRAW = re.compile(r"tilolang: (\S+) draws build (\d+) at (\d+) ms, (\d+) ms after it arrived")
 PRESENTED = re.compile(r"tilo-display-frame \{.*\}")
 BUILT = re.compile(r"built in (\d+) ms, (\w+) in (\d+) ms")
-# The line of the runtime's source each runtime run edits: a comment, so the build is a real
-# incremental rebuild of the crate with nothing else changed.
 
 
 class Failed(Exception):
@@ -289,96 +269,6 @@ def unattach(state: Path):
     shutil.rmtree(runtime, ignore_errors=True)
 
 
-# The desktop loop's compositor is the session's headless one on lavapipe: the app is a plain
-# Wayland client of it, as it would be of this machine's desktop.
-LAVAPIPE = "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
-
-
-def desktop_env(session: Session, out: Path) -> dict:
-    """The tool's own desktop: its state, and the session's compositor instead of the host's."""
-    home = out / "desktop"
-    env = dict(os.environ)
-    for key, value in (
-        ("XDG_CONFIG_HOME", home / "config"),
-        ("XDG_DATA_HOME", home / "data"),
-        ("XDG_STATE_HOME", home / "state"),
-        ("XDG_CACHE_HOME", home / "cache"),
-    ):
-        Path(value).mkdir(parents=True, exist_ok=True)
-        env[key] = str(value)
-    env.update(
-        XDG_RUNTIME_DIR=session.runtime,
-        WAYLAND_DISPLAY="wayland-1",
-        TILO_PROFILE_PRESENTATION="1",
-        VK_DRIVER_FILES=LAVAPIPE,
-        VK_ICD_FILENAMES=LAVAPIPE,
-        WGPU_ADAPTER_NAME="llvmpipe",
-        TILO_DMABUF_DEVICE="",
-    )
-    for name in ("TILO_TEST_CONTROL", "TILO_IDENTITY_ROOT", "TILO_APPS_DATA_DIR",
-                 "TILO_RUNTIME_BUNDLE_DIR", "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE"):
-        env.pop(name, None)
-    return env
-
-
-def desktop_save(tail: Tail, source: Path, text: str, timeout: float = 60.0) -> dict:
-    """One save, timed to the app's first frame of the build it makes and to its presentation."""
-    saved = time.time()
-    edit_placeholder(source, text, "tasks")
-    sample, seen = wait_for_build(tail.lines, saved, timeout)
-    said = "\n".join(seen)
-    if "starts over" in said or "last good build" in said:
-        raise Failed(f"the build was not taken in place: {said[-1000:]}")
-    built = BUILT.search(said)
-    return {
-        **sample,
-        "tool_ms": int(built.group(1)) if built else None,
-        "tool_build_ms": int(built.group(3)) if built else None,
-        "load": round(os.getloadavg()[0], 1),
-    }
-
-
-def desktop_loops(session: Session, out: Path, source: Path, runs: int, tool: Path,
-                  runtime: Path, busy: list) -> dict:
-    dev_log_path = out / "dev.log"
-    dev = subprocess.Popen([str(tool), "dev", out / "src/tasks", "--search", out / "src",
-                            "--runtime", str(runtime), "--repo", REPO],
-                           env=desktop_env(session, out),
-                           stdout=subprocess.DEVNULL, stderr=open(dev_log_path, "w"),
-                           start_new_session=True)
-    try:
-        tail = Tail(dev_log_path)
-        opened = []
-
-        def open_app():
-            if dev.poll() is not None:
-                raise Failed(f"tilolang dev ended: {dev_log_path.read_text()[-2000:]}")
-            opened.extend(tail.lines())
-            return any("is open;" in line for line in opened)
-
-        until("`tilolang dev` to open the app", open_app, 1800, 0.05)
-
-        def shown():
-            return any(PRESENTED.search(line) for line in tail.lines())
-
-        until("the app's first frame", shown, 120, 0.05)
-        result = {"busy": len(busy), "warm": []}
-        print("==> first save", file=sys.stderr)
-        result["first"] = desktop_save(tail, source, "New task, first")
-        print(f"    first save: draws {result['first']['draw_ms']:.0f} ms, "
-              f"presented {result['first']['presented_ms']:.0f} ms", file=sys.stderr)
-        for index in range(runs):
-            result["warm"].append(desktop_save(tail, source, f"New task, save {index + 1}"))
-            sample = result["warm"][-1]
-            print(f"    save {index + 1}: draws {sample['draw_ms']:.0f} ms, "
-                  f"presented {sample['presented_ms']:.0f} ms (load {sample['load']})",
-                  file=sys.stderr)
-            time.sleep(0.5)
-        return result
-    finally:
-        stop(dev)
-
-
 def start_busy(count: int) -> list:
     return [subprocess.Popen(["yes"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             for _ in range(count)]
@@ -400,37 +290,21 @@ def main() -> int:
     parser.add_argument("--session", type=Path)
     parser.add_argument("--out", type=Path, default=REPO / "target/tilolang-dev-loops")
     parser.add_argument("--no-build", action="store_true")
-    parser.add_argument("--desktop", action="store_true")
     parser.add_argument("--busy", type=int, default=0)
     parser.add_argument("--tool", type=Path)
-    parser.add_argument("--runtime", type=Path)
     args = parser.parse_args()
     out = args.out.resolve()
     shutil.rmtree(out / "src", ignore_errors=True)
     out.mkdir(parents=True, exist_ok=True)
     state = out / "state"
-    if args.desktop:
-        unattach(state)
-        tool = (args.tool or REPO / "target/fast/tilolang").resolve()
-        runtime = (args.runtime or REPO / "target/fast/tilolang-process").resolve()
-        if not args.no_build:
-            run(["cargo", "build", "--profile", "fast", "--locked",
-                 "-p", "tilolang-cli", "--bin", "tilolang"], cwd=REPO)
-            run(["cargo", "build", "--profile", "fast", "--locked",
-                 "-p", "tilolang-process", "--bin", "tilolang-process",
-                 "--features", "app-launch"], cwd=REPO)
-        for binary in (tool, runtime):
-            if not binary.is_file():
-                raise Failed(f"no {binary} (build tilolang-cli and tilolang-process with --profile fast)")
-    else:
-        tool = (args.tool or REPO / "target/nested/tilolang").resolve()
-        if not args.no_build:
-            # The tool of this checkout: one built before would time the loops of older code.
-            run(["cargo", "build", *PROFILE_ARGS, "-p", "tilolang-cli", "--bin", "tilolang"], cwd=REPO)
-        if not tool.is_file():
-            raise Failed(f"no {tool} (cargo build {' '.join(PROFILE_ARGS)} -p tilolang-cli)")
+    tool = (args.tool or REPO / "target/nested/tilolang").resolve()
+    if not args.no_build:
+        # The tool of this checkout: one built before would time the loops of older code.
+        run(["cargo", "build", *PROFILE_ARGS, "-p", "tilolang-cli", "--bin", "tilolang"], cwd=REPO)
+    if not tool.is_file():
+        raise Failed(f"no {tool} (cargo build {' '.join(PROFILE_ARGS)} -p tilolang-cli)")
     # A copy of the package to edit: the repository's sources stay as they are.
-    package = "tasks" if args.desktop else "notes"
+    package = "notes"
     shutil.copytree(REPO / "apps/tl" / package, out / "src" / package,
                     ignore=shutil.ignore_patterns("target"))
     source = out / "src" / package / "app.tl"
@@ -447,48 +321,35 @@ def main() -> int:
         else:
             run([SESSION, "--no-build", "--prepare-only", "--apps", "", "--state", state])
             session_proc, session, ready = start_session(state, out)
-        if args.desktop:
-            print("==> desktop loop", file=sys.stderr)
-            result["desktop"] = desktop_loops(session, out, source, args.runs, tool, runtime, busy)
-        else:
-            shell_log = Log(state / "logs/session.log")
-            dev_log_path = out / "dev.log"
-            dev_argv = [tool, "dev", out / "src/notes", "--session", ready, "--repo", REPO]
-            dev = subprocess.Popen([str(a) for a in dev_argv], stdout=subprocess.DEVNULL,
-                                   stderr=open(dev_log_path, "w"), start_new_session=True)
-            dev_log = Log(dev_log_path)
-            dev_log.offset = 0
-            def opened():
-                if dev.poll() is not None:
-                    raise Failed(f"tilolang dev ended: {dev_log_path.read_text()[-2000:]}")
-                return "is open;" in dev_log_path.read_text()
-            until("`tilolang dev` to open the app", opened, 1800, 0.25)
-            shell_log.new()
-            until("the app's window",
-                  lambda: any(PRESENTED.search(line) for line in shell_log.new().splitlines()), 120, 0.25)
-            new_note = until("Notes' New note", lambda: next((a for a in session.actions("New note")
-                                                              if (a.get("action") or {}).get("action_label") == "New note"),
-                                                             None), 30, 0.25)
-            session.invoke(new_note)
-            time.sleep(1.0)
-            dev_log.new()
-            shell_log.new()
-            print("==> app loop", file=sys.stderr)
-            result["app"] = app_loop(dev_log, shell_log, source, args.runs)
+        shell_log = Log(state / "logs/session.log")
+        dev_log_path = out / "dev.log"
+        dev_argv = [tool, "dev", out / "src/notes", "--session", ready, "--repo", REPO]
+        dev = subprocess.Popen([str(a) for a in dev_argv], stdout=subprocess.DEVNULL,
+                               stderr=open(dev_log_path, "w"), start_new_session=True)
+        dev_log = Log(dev_log_path)
+        dev_log.offset = 0
+        def opened():
+            if dev.poll() is not None:
+                raise Failed(f"tilolang dev ended: {dev_log_path.read_text()[-2000:]}")
+            return "is open;" in dev_log_path.read_text()
+        until("`tilolang dev` to open the app", opened, 1800, 0.25)
+        shell_log.new()
+        until("the app's window",
+              lambda: any(PRESENTED.search(line) for line in shell_log.new().splitlines()), 120, 0.25)
+        new_note = until("Notes' New note", lambda: next((a for a in session.actions("New note")
+                                                          if (a.get("action") or {}).get("action_label") == "New note"),
+                                                         None), 30, 0.25)
+        session.invoke(new_note)
+        time.sleep(1.0)
+        dev_log.new()
+        shell_log.new()
+        print("==> app loop", file=sys.stderr)
+        result["app"] = app_loop(dev_log, shell_log, source, args.runs)
     finally:
         stop(dev)
         stop(session_proc)
         stop_all(busy)
         (out / "loops.json").write_text(json.dumps(result, indent=2))
-    desktop = result.get("desktop")
-    if desktop:
-        first = desktop["first"]
-        warm = desktop["warm"]
-        print(f"desktop loop, load {first['load']} (busy {desktop['busy']}): "
-              f"first save (cold) draws {first['draw_ms']:.0f} ms, presented {first['presented_ms']:.0f} ms; "
-              f"median of {len(warm)} warm saves draws "
-              f"{statistics.median(s['draw_ms'] for s in warm):.0f} ms, presented "
-              f"{statistics.median(s['presented_ms'] for s in warm):.0f} ms")
     app = result.get("app", [])
     if app:
         print(f"app loop, median of {len(app)}: draws {statistics.median(s['draw_ms'] for s in app):.0f} ms, "

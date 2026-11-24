@@ -806,25 +806,27 @@ view value(v: Value) {
             .unwrap()
             .pop()
             .expect("the app is staged");
-        // The Tilo runtime the app names, as a session bakes it: the cache refuses an app whose
+        // The runtimes the app names, as a session bakes them: the cache refuses an app whose
         // runtime this computer does not have.
         let display = root.join("wayland-0");
         std::fs::write(&display, b"").unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("WAYLAND_DISPLAY", &display);
         let runtimes = root.join("runtimes");
-        let tilo_runtime = tilolang_cli::package::DEFAULT_TILO_RUNTIME
-            .split_once('/')
-            .unwrap()
-            .1;
-        std::fs::create_dir_all(runtimes.join(tilo_runtime)).unwrap();
-        std::fs::write(
-            runtimes
-                .join(tilo_runtime)
-                .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),
-            "",
-        )
-        .unwrap();
+        for package in [
+            tilolang_cli::package::DEFAULT_TILO_RUNTIME,
+            tilolang_cli::package::DEFAULT_TILOLANG_RUNTIME,
+        ] {
+            let version = package.split_once('/').unwrap().1;
+            std::fs::create_dir_all(runtimes.join(version)).unwrap();
+            std::fs::write(
+                runtimes
+                    .join(version)
+                    .join(runtime_bundle::BUNDLE_MANIFEST_FILENAME),
+                "",
+            )
+            .unwrap();
+        }
         environment.set(runtime_bundle::RUNTIME_DIR_ENV, &runtimes);
         assert_eq!(staged.app, of);
         let unsigned =
@@ -868,13 +870,13 @@ view value(v: Value) {
             "the device answers the id it installed: {:?}",
             report.lines
         );
-        let installed = store
+        let dev_package = store
             .catalog()
             .find(&id)
             .unwrap()
             .expect("installed under the device's dev id");
         let manifest = tilo_app_package::Manifest::from_toml_str(
-            &std::fs::read_to_string(&installed.manifest_path).unwrap(),
+            &std::fs::read_to_string(&dev_package.manifest_path).unwrap(),
         )
         .unwrap();
         assert_eq!(

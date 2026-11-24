@@ -133,7 +133,7 @@ fn wait_for_file(
     sender: &mpsc::Sender<Wake>,
 ) -> Result<(), String> {
     let dir = path.parent().ok_or("a ready file has a directory")?;
-    let _watch = watch_into(Watcher::entries(dir).presence(), sender.clone(), None)
+    let _watch = watch_into(Watcher::entries(dir).presence(), sender.clone())
         .map_err(|error| format!("{}: {error}", dir.display()))?;
     loop {
         if path.exists() {
@@ -152,7 +152,12 @@ fn wait_for_file(
 }
 
 pub fn run(options: &RunOptions) -> Result<(), String> {
-    let repo = session::repo_root(options.repo.as_deref(), &options.dir, "tilolang run")?;
+    run_named(options, "tilolang run")
+}
+
+/// [`run`], as the command `command` named it: a tool that starts a session for `dev` says so.
+pub(crate) fn run_named(options: &RunOptions, command: &str) -> Result<(), String> {
+    let repo = session::repo_root(options.repo.as_deref(), &options.dir, command)?;
     let build_dir = session::build_dir(&repo);
     if !build_dir.join(session::RUNTIME_BINARY).is_file() {
         return Err(format!(
@@ -179,7 +184,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         version: "0.1.0".to_owned(),
         locked: false,
     };
-    let mut dev = Dev::in_session(build, peers, build_dir.join("bin"), Some(&repo));
+    let mut dev = Dev::new(build, peers, build_dir.join("bin"), Some(&repo));
     // The session's daemon runs after it starts, so its builds are staged here and installed
     // once it answers: the daemon signs each as this device's development build.
     let staged = dev.stage_for_start()?;
