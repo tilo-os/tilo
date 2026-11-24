@@ -1818,6 +1818,9 @@ pub struct ShellClient {
     /// The descriptors the daemon hands the shell on its link: the open objects a call of the
     /// seat names (what Files selected for the clipboard), each by its number on the link.
     handed: runtime_portal::descriptors::ReceivedDescriptors,
+    /// The runtime the link's frames are carried on, which its dispatch's waits run on too:
+    /// whoever holds the client reaches the daemon from any thread, in a runtime or not.
+    runtime: tokio::runtime::Handle,
 }
 
 /// The most descriptors the daemon hands the shell that no call took yet: one clipboard command's
@@ -1847,6 +1850,7 @@ impl ShellClient {
             Self {
                 client: client.with_descriptors(descriptors),
                 handed,
+                runtime: tokio::runtime::Handle::current(),
             },
             end,
         )
@@ -1857,6 +1861,12 @@ impl ShellClient {
     #[must_use]
     pub const fn handed(&self) -> &runtime_portal::descriptors::ReceivedDescriptors {
         &self.handed
+    }
+
+    /// The runtime this link's frames are carried on.
+    #[must_use]
+    pub const fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.runtime
     }
 
     /// Hand the daemon `connection`, made on this shell's app socket, to serve: as the app `app`

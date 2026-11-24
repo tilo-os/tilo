@@ -349,17 +349,12 @@ pub(crate) fn start_app_wire(
                 shell.clone(),
             )?;
             let terminals = view.clone().zip(engine.as_ref()).map(|(view, engine)| {
-                let runtime = tilo_rt::app().handle().clone();
-                let dispatch = {
-                    let _inside = runtime.enter();
-                    shell.dispatch()
-                };
                 crate::workspace_terminals::Terminals {
                     view,
-                    dispatch,
+                    dispatch: shell.dispatch(),
                     endpoint: sync.map(|sync| sync.endpoint_handle()),
                     device: engine.identity().device_cert.device_public_key,
-                    runtime,
+                    runtime: tilo_rt::app().handle().clone(),
                 }
             });
             (None, Some(socket), terminals)

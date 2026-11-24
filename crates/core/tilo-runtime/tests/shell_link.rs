@@ -115,6 +115,27 @@ async fn ended(host: &host::Host, id: tilo_actions::InvocationId) -> InvocationU
     .await
 }
 
+/// The session takes its dispatch on its own threads (its frame loop, its compositor's start),
+/// outside any runtime: the dispatch carries its calls on the runtime the link runs on, and the
+/// call is answered as one taken inside it.
+#[test]
+fn a_dispatch_taken_outside_any_runtime_reaches_the_daemon() {
+    host::run(|host| async move {
+        let workspace = host.workspace().to_owned();
+        let probe = echoing(offered(PROBE, PROBE, "probe", "ping"));
+        host.daemon().provide(PROBE, Arc::clone(&probe) as _);
+        let shell = shell_of(&host);
+
+        let dispatch = std::thread::spawn(move || shell.dispatch())
+            .join()
+            .expect("a dispatch is taken on a thread outside the runtime");
+        let answered = dispatch
+            .settled(Some(workspace), request(PROBE, "probe", "ping", "from the frame loop"))
+            .await;
+        assert_eq!(answered, Ok(json!("from the frame loop")));
+    });
+}
+
 /// The shell's own call is answered by the daemon's dispatch, as the person; a call the dispatch
 /// makes of a provider the shell serves reaches it over the link and is answered, its approval
 /// on the same frame.

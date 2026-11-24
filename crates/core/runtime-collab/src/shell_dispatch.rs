@@ -45,8 +45,8 @@ struct Inner {
 impl ShellDispatch {
     pub(crate) fn new(shell: ShellClient) -> Self {
         Self(Arc::new(Inner {
+            runtime: shell.runtime().clone(),
             shell,
-            runtime: tokio::runtime::Handle::current(),
             fresh: Mutex::default(),
             next_correlation: AtomicU64::new(1),
         }))

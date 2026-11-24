@@ -407,7 +407,6 @@ mod tests {
                 .daemon
                 .link()
                 .expect("the session runs on the daemon's link");
-            let _entered = tilo_rt::app().handle().enter();
             link.dispatch()
         }
 

@@ -1385,7 +1385,6 @@ impl Session {
                 revocations,
                 // Every shortcut a trigger here fires runs through the device's one dispatch.
                 dispatch: daemon_link.clone().ok().map(|daemon| {
-                    let _entered = tilo_rt::app().handle().enter();
                     let dispatch: std::sync::Arc<
                         dyn tilo_actions::remote::ActionProvider + Send + Sync,
                     > = std::sync::Arc::new(daemon.dispatch());
