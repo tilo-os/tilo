@@ -3,7 +3,6 @@
 use tilo_actions::ResourceSpec;
 use ui::search::system::ResourceKind;
 
-use super::offered;
 use crate::model::{ActionTarget, Hit, Source, Target};
 use crate::rank;
 
