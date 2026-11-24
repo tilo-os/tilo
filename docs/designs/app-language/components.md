@@ -437,7 +437,9 @@ view usage_ring(used: Float, caption: Text) {
   `flat_map` give their lambda the item's place as a second name, so a bar stands where its
   reading does: `xs.map((x, i) -> ui.Shape.rect(x: i.to_float() * w, y: 1.0 - x, w: w, h: x))`.
 - **Looks come from the theme only.** A fill or stroke is an ink, `ui.Ink`: a role of the
-  theme (`.accent`, `.ink`, `.muted`, `.track`, `.success`, `.warning`, `.danger`, `.info`).
+  theme (`.accent`, `.ink`, `.muted`, `.track`, `.success`, `.warning`, `.danger`, `.info`,
+  and the theme's own ground `.base`, `.surface` and `.sidebar`, so a drawing shows a theme's
+  desktop, its windows and their sidebars).
   `wash` fades a path's fill out downward. A stroke's `weight` is a token (`.hairline`,
   `.regular`, `.strong`) multiplied from the theme's border width, and strokes end round. A text
   is set in one of the theme's type roles (`.title`, `.caption`, ...), `strong` heavier than its
@@ -446,6 +448,9 @@ view usage_ring(used: Float, caption: Text) {
 - **What it means is required:** `meaning: .progress | .chart | .picture | .decoration`, with
   `label` and, for progress, `value`. Screen readers and agents read that, not the shapes; a
   decoration is not in the accessibility tree.
+- **It draws in the running theme, or in one it names:** `theme:` takes a shipped theme's id or
+  name, so a view can show a theme the person is not using, as Settings' previews do; nothing,
+  or a name no shipped theme has, draws the running theme.
 - **Motion:** when a shape's numbers change between two readings (an arc's end, a bar's height,
   a path's points), the widget moves them from where they are drawn to the new reading on the
   platform's `Reading` motion, in Rust, at native refresh: a reading taken mid-flight goes on from

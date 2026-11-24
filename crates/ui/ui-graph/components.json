@@ -2626,6 +2626,13 @@
           }
         },
         {
+          "name": "theme",
+          "doc": "The theme its shapes are drawn in, by a shipped theme's id or name (`light`, `paper-dark`, `Tilo light`), so a preview draws a theme other than the running one. Nothing, or a name no shipped theme has, draws them in the running theme.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "enabled",
           "doc": "Whether a press on it runs now.",
           "type": "bool"
@@ -11490,7 +11497,10 @@
                 "success",
                 "warning",
                 "danger",
-                "info"
+                "info",
+                "base",
+                "surface",
+                "sidebar"
               ]
             }
           }
@@ -11582,7 +11592,10 @@
                 "success",
                 "warning",
                 "danger",
-                "info"
+                "info",
+                "base",
+                "surface",
+                "sidebar"
               ]
             }
           }
@@ -12034,7 +12047,10 @@
                       "success",
                       "warning",
                       "danger",
-                      "info"
+                      "info",
+                      "base",
+                      "surface",
+                      "sidebar"
                     ]
                   }
                 }
@@ -12055,7 +12071,10 @@
                       "success",
                       "warning",
                       "danger",
-                      "info"
+                      "info",
+                      "base",
+                      "surface",
+                      "sidebar"
                     ]
                   }
                 }
@@ -12115,7 +12134,10 @@
                       "success",
                       "warning",
                       "danger",
-                      "info"
+                      "info",
+                      "base",
+                      "surface",
+                      "sidebar"
                     ]
                   }
                 }
@@ -12136,7 +12158,10 @@
                       "success",
                       "warning",
                       "danger",
-                      "info"
+                      "info",
+                      "base",
+                      "surface",
+                      "sidebar"
                     ]
                   }
                 }
@@ -12199,7 +12224,10 @@
                     "success",
                     "warning",
                     "danger",
-                    "info"
+                    "info",
+                    "base",
+                    "surface",
+                    "sidebar"
                   ]
                 }
               }
@@ -12256,7 +12284,10 @@
                     "success",
                     "warning",
                     "danger",
-                    "info"
+                    "info",
+                    "base",
+                    "surface",
+                    "sidebar"
                   ]
                 }
               }
@@ -12320,7 +12351,10 @@
                       "success",
                       "warning",
                       "danger",
-                      "info"
+                      "info",
+                      "base",
+                      "surface",
+                      "sidebar"
                     ]
                   }
                 }
@@ -12341,7 +12375,10 @@
                       "success",
                       "warning",
                       "danger",
-                      "info"
+                      "info",
+                      "base",
+                      "surface",
+                      "sidebar"
                     ]
                   }
                 }
@@ -12436,7 +12473,10 @@
                     "success",
                     "warning",
                     "danger",
-                    "info"
+                    "info",
+                    "base",
+                    "surface",
+                    "sidebar"
                   ]
                 }
               },
@@ -12724,7 +12764,10 @@
                     "success",
                     "warning",
                     "danger",
-                    "info"
+                    "info",
+                    "base",
+                    "surface",
+                    "sidebar"
                   ]
                 }
               },

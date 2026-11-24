@@ -28,6 +28,10 @@ pub struct DrawingProps {
     /// How its shapes move to a new reading: at the theme's pace unless said, never for someone
     /// who asked for reduced motion.
     pub motion: crate::motion::Feel,
+    /// The theme its shapes are drawn in, by a shipped theme's id or name (`light`,
+    /// `paper-dark`, `Tilo light`), so a preview draws a theme other than the running one.
+    /// Nothing, or a name no shipped theme has, draws them in the running theme.
+    pub theme: Option<String>,
     /// The person pressed a shape: carries its index in `shapes`.
     #[component(event(value = i64))]
     pub press: Event,
@@ -83,6 +87,7 @@ impl Default for DrawingProps {
             width: None,
             height: None,
             motion: crate::motion::Feel::default(),
+            theme: None,
             press: Event::None,
             hover: Event::None,
             pointer: Event::None,
@@ -121,6 +126,7 @@ impl Described for Drawing {
             self.layout_dirty = true;
         }
         self.feel = props.motion;
+        self.theme = props.theme.as_deref().and_then(crate::theme::Theme::named);
         self.set_shapes(props.shapes);
         self.meaning = props.meaning;
         self.label = props.label;

@@ -34,6 +34,12 @@ pub enum Ink {
     Warning,
     Danger,
     Info,
+    /// The desktop's own surface, under the windows.
+    Base,
+    /// A window's content surface.
+    Surface,
+    /// A window's sidebar surface.
+    Sidebar,
 }
 
 impl Ink {
@@ -50,6 +56,9 @@ impl Ink {
             Self::Warning => Tone::Warning.colour(theme),
             Self::Danger => Tone::Danger.colour(theme),
             Self::Info => Tone::Info.colour(theme),
+            Self::Base => colors.surfaces.base,
+            Self::Surface => colors.surfaces.content,
+            Self::Sidebar => colors.surfaces.sidebar,
         }
     }
 }
@@ -57,6 +66,7 @@ impl Ink {
 crate::component::choice!(Ink, "Ink", {
     Accent => "accent", Ink => "ink", Muted => "muted", Track => "track",
     Success => "success", Warning => "warning", Danger => "danger", Info => "info",
+    Base => "base", Surface => "surface", Sidebar => "sidebar",
 });
 
 /// How heavy a stroke is: a token of the design system, never pixels.
@@ -497,6 +507,9 @@ pub struct Drawing {
     pub(crate) height: f32,
     /// How emphatic its motion is, over the theme's.
     pub(crate) feel: Feel,
+    /// The theme its shapes are drawn in, when it names one the toolkit ships: a preview of a
+    /// theme other than the running one. `None` draws them in the running theme.
+    pub(crate) theme: Option<Theme>,
     rect: Rect,
     last_cursor: Point,
     /// Each number of [`Self::shapes`] on its way from the reading before, while one moves: empty
@@ -539,6 +552,13 @@ pub struct Drawing {
 const WHEEL_LINE: f64 = 40.0;
 
 impl Drawing {
+    /// The theme its shapes are drawn in: the one it names, or `running` when it names none the
+    /// toolkit ships.
+    #[must_use]
+    pub fn drawn_theme<'a>(&'a self, running: &'a Theme) -> &'a Theme {
+        self.theme.as_ref().unwrap_or(running)
+    }
+
     /// The index of the topmost shape at `point`: inside an area or a text, or within reach of an
     /// outline's line.
     #[must_use]
@@ -965,15 +985,18 @@ impl Widget for Drawing {
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
-        let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
+        let (scene, transform, text_renderer, running, mut env) = ctx.parts();
         let now = crate::motion::frame_now();
-        self.motion = Some(theme.motion());
         let moved = self.shapes_at(now);
         if moved.is_none() {
             self.moving.clear();
         }
+        let theme = self.drawn_theme(running);
+        let motion = theme.motion();
         let shapes = moved.as_deref().unwrap_or(&self.shapes);
-        self.text_boxes = Self::paint(scene, transform, self.rect, shapes, theme, text_renderer);
+        let text_boxes = Self::paint(scene, transform, self.rect, shapes, theme, text_renderer);
+        self.motion = Some(motion);
+        self.text_boxes = text_boxes;
     }
 
     fn needs_redraw(&self) -> bool {
