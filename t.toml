@@ -1702,6 +1702,28 @@ run = "cargo test --release --locked -p tilo-peer-state --features test-support 
 on = ["dispatch", "idle"]
 requires = ["arch=x86_64"]
 
+# A workspace taking records and files at the same speed however full, as one nextest run of
+# `tilo-runtime`'s `it` binary with `--run-ignored only`: the same binary, the same units and
+# the same nextest path as `test-x86_64`'s build of that package, so the compiler cache serves its
+# compiles instead of resolving a `cargo nextest -p` command's own graph and compiling them again.
+# It is a family of its own because its tests are `#[ignore]`d, which the plain `test-x86_64` run
+# leaves out: they are timed, the workspace's speed however full and an import's floors beside a
+# person's calls. Main runs them on its newest head alone (`idle`), a few times a day rather than on
+# every change that reaches the package, and `t test throughput` runs them when asked; `unify` makes
+# the units the family build's.
+[[cargo]]
+name = "throughput"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+tool = "nextest"
+on = ["dispatch", "idle"]
+requires = ["arch=x86_64"]
+wrapper = ["bash", "tools/ci/nextest.sh"]
+args = ["--locked", "--profile", "ci", "--tests", "--run-ignored", "only", "-E", "test(=throughput::a_workspace_takes_records_and_files_at_the_same_speed_however_full) | test(=import_rate::an_import_lands_at_its_floor_while_the_person_works_beside_it) | test(=api_beside_import::an_import_into_another_app_never_slows_a_keys_listings)", "--test-threads", "1"]
+unify = "workspace-unify"
+packages = ["tilo-runtime"]
+# The sizes it runs at are the ci profile's `throughput` setup step, not this family's environment:
+# there they would key every build script's and proc macro's cache entry by them.
+
 [[check]]
 name = "security-isolation-{part}"
 egress = { to = ["code.tilo.so:443"], pinned = true }

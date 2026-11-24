@@ -334,7 +334,9 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  "package(tilo-auth) or package(tilo-rollback) or "
                                  "package(tilo-test-env)": "swtpm",
                                  "package(tilo-pdf) or "
-                                 "package(tilo-thumbnail)": "pdf-sandbox"})
+                                 "package(tilo-thumbnail)": "pdf-sandbox",
+                                 "package(tilo-runtime) and binary(it) and "
+                                 "test(throughput::)": "throughput"}
 
     def test_the_deep_profile_gives_its_tests_more_property_cases(self) -> None:
         # t.toml's `test-deep` tests its packages with more proptest cases, through a profile of

@@ -229,7 +229,16 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
     let log = root.path().join("out");
     let status = std::process::Command::new(std::env::current_exe().unwrap())
         .envs(installed)
-        .args(["--exact", test, "--nocapture", "--test-threads", "1"])
+        // The test is named exactly: run it even where `#[ignore]` keeps it out of an
+        // ordinary run, as the check that names it runs it here.
+        .args([
+            "--exact",
+            test,
+            "--include-ignored",
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
         .env(OWN, test)
         .env(PROFILE, profile)
         .env("HOME", place("h"))

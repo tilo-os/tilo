@@ -83,6 +83,12 @@ command = ["bash", "tools/test-env-setup.sh", "pam-module"]
 [scripts.setup.property-cases]
 command = ["bash", "tools/test-env-setup.sh", "property-cases"]
 
+# The sizes the device's ignored throughput test runs at (tools/test-env-setup.sh,
+# `throughput`). A family's `env` would carry them into the build of every unit, so another
+# family's run of the same package would share no build with this one.
+[scripts.setup.throughput]
+command = ["bash", "tools/test-env-setup.sh", "throughput"]
+
 [[profile.deep.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "all()"
@@ -251,6 +257,13 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-runtime) and binary(it) and (test(app_views::) or test(keeping_pages::))"
 setup = "view-siblings"
 
+# The sizes the throughput test fills workspaces to, for that test alone: the same values the
+# family's run would give the job, kept out of the job's environment so they key no build.
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-runtime) and binary(it) and test(throughput::)"
+setup = "throughput"
+
 # The native NTFS images the helper's integration tests read are generated once
 # and handed to the tests as TILO_NTFS_FIXTURES; Cargo builds none, and a test
 # that starts without them fails saying so. Its library's tests read none: a run
@@ -316,6 +329,15 @@ success-output = "final"
 [[profile.default.overrides]]
 filter = 'package(tilo-session) and binary(it) and test(app_open_budget::)'
 success-output = "final"
+
+# How fast a workspace takes records and files at each size it is filled to:
+# seeding the larger sizes and timing every path takes minutes, so the bound
+# only has to catch a run that stopped. Printed on a pass too, so the table
+# shows in every log.
+[[profile.default.overrides]]
+filter = 'package(tilo-runtime) and binary(it) and test(throughput::)'
+success-output = "final"
+slow-timeout = { period = "60s", terminate-after = 60 }
 
 [[profile.default.overrides]]
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
