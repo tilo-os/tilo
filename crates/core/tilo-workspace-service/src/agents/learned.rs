@@ -31,11 +31,12 @@
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
+use tilo_model_gateway::host_backend::protocol::ToolDefinition;
 use tilo_resource::{Id, NonBlank, Replica};
 use tilo_workspace_agent::Agent;
 use tilo_workspace_agent::learned::{Fact, Learned, MAX_SOURCE, learned};
 
-use super::{Ask, ToolDefinition, Turn};
+use super::{Ask, Turn};
 use crate::workspaces::Workspaces;
 
 /// The tool that keeps a fact.

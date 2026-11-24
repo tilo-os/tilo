@@ -32,10 +32,12 @@ use tilo_actions::api::ActionAddress;
 use tilo_actions::contract::ActionContract;
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionParam, ParamType};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery, InvocationId,
+    ActionCallError, ActionProvider, Admitted, Caller, CataloguePage, CatalogueQuery,
     InvocationReceipt, InvocationState, InvokeRequest, Outcome, Pending, pending,
 };
-use tilo_actions::{ActionKey, ActionOutput, ExecutionLocus, InputSpec, OperationKind};
+use tilo_actions::{
+    ActionKey, ActionOutput, ExecutionLocus, InputSpec, InvocationId, OperationKind,
+};
 use tilo_automation::dispatch::DocumentEvent;
 use tilo_automation::shortcut::Test;
 use tilo_automation::{
@@ -243,6 +245,7 @@ fn answering(agent: &str, id: String, name: String, triggers: Vec<TriggerSpec>) 
         triggers,
         saved_by: None,
         saved_proof: None,
+        paused: false,
     }
 }
 
@@ -718,7 +721,8 @@ impl Answers {
             .to_owned();
         let workspace = caller
             .workspace()
-            .ok_or("the answer was asked in no workspace of this device")?;
+            .ok_or("the answer was asked in no workspace of this device")?
+            .to_owned();
         let invocation = request.invocation;
         let stop = Arc::new(AtomicBool::new(false));
         self.going
@@ -748,7 +752,7 @@ impl Answers {
             }
             engine
                 .answer(
-                    workspace.to_owned(),
+                    workspace,
                     agent,
                     place,
                     event,

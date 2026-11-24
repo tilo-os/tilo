@@ -1389,7 +1389,9 @@ pub fn readable_folder(
     };
     let Some(saver) = saver
         .person_id()
-        .filter(|saver| workspace.role_of(saver).is_some() && !workspace.is_blocked(saver))
+        .filter(|saver| {
+            workspace.policy.role_of(saver).is_some() && !workspace.policy.is_blocked(saver)
+        })
     else {
         return Err("the saver is not a member of the workspace".into());
     };

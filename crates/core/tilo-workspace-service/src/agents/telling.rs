@@ -14,9 +14,7 @@
 //!
 //! This is also where a judgement made for a person finds whose day it is
 //! counted on: the assistant that person keeps in the workspace
-//! ([`count_judgements`]), and where a question that waits for a person in
-//! a conversation joins their log by itself ([`Feeder`]), as does how a
-//! turn that a cause started for them ended.
+//! ([`count_judgements`]).
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -30,8 +28,6 @@ use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
 use crate::workspaces::person_model::Spender;
 use crate::workspaces::{Spenders, WeakWorkspaces, Workspaces};
-
-pub use questions::Feeder;
 
 /// The longest the teller sleeps when nothing is due: what it would miss is
 /// only a log it was not told had moved.
@@ -404,13 +400,9 @@ pub fn count_judgements(workspaces: &Workspaces) {
 }
 
 /// Start what a host does for what its people are told, beside telling
-/// them outside Tilo: count their judgements on their assistants' days, and
-/// follow the conversations for questions that wait for them.
+/// them outside Tilo: count their judgements on their assistants' days.
 pub fn start(workspaces: &Workspaces) {
     count_judgements(workspaces);
-    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        runtime.spawn(Feeder::new(workspaces.clone()).run());
-    }
 }
 
 #[cfg(test)]

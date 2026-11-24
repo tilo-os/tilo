@@ -91,6 +91,7 @@ fn event_checked(event: SetUp) -> Result<SetUp, String> {
         instruction: event.instruction.clone(),
         told_as: told_as_of(event.told_as.as_deref().unwrap_or_default())?,
         set_up_at_ms: 0,
+        looks: false,
     }
     .checked()?;
     Ok(SetUp {

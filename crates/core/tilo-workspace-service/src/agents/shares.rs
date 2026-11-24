@@ -20,9 +20,10 @@
 
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
+use tilo_model_gateway::host_backend::protocol::ToolDefinition;
 use tilo_reference::Embed as Reference;
 
-use super::{Reply, ToolDefinition, Turn, WorkspaceActionProvider};
+use super::{Reply, Turn, WorkspaceActionProvider};
 
 /// The tool a turn answers through with the thing it worked on.
 pub(super) const ANSWER_WITH_DOCUMENT: &str = "answer_with_document";

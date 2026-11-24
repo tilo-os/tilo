@@ -42,7 +42,7 @@ use tilo_actions::remote::workspace_initiative::{
     State, TurnOn,
 };
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Admitted, Caller, InvokeRequest, Outcome, Pending, pending,
+    ActionCallError, Admitted, Caller, InvokeRequest, Outcome, Pending, pending,
 };
 use tilo_actions::{ActionFailure, ActionOutput, ExecutionLocus, OperationKind};
 use tilo_automation::{Schedule, TriggerSpec};

@@ -226,6 +226,23 @@ impl Caller {
         )
     }
 
+    /// An agent acting inside a turn: `person`'s message in `turn`'s conversation caused it, and
+    /// the agent takes part there. It may do exactly what that person may, held to the bound its
+    /// own record carries, and its reads are decided inside the turn, so a conversation's own
+    /// rules apply to them. Set only by the host that admitted the turn.
+    #[must_use]
+    pub fn agent_turn(
+        agent_id: impl Into<String>,
+        person: impl Into<tilo_action_policy::PersonId>,
+        turn: tilo_action_policy::turn::Turn,
+    ) -> Self {
+        let acting = Acting::agent(agent_id.into()).acting_for(Acting::person(person.into()));
+        Self {
+            turn: Some(turn),
+            ..Self::admitted(acting, None)
+        }
+    }
+
     /// A bot device whose certificate chains to `user_public_key` (its
     /// installer) and whose root-signed delegation names it installation
     /// `installation`. It acts for its installer and is never that person.

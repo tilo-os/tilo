@@ -461,7 +461,7 @@ async fn governs(workspaces: &Workspaces, caller: &Caller) -> Result<String, Act
     }
     // Its deliveries are the workspace's person's: a member reaches no URL through it.
     let person = workspaces.serving_certificate().user_public_key;
-    let own = caller.user_public_key() == Some(person)
+    let own = caller.user_public_key() == Some(&person)
         || caller.acting().person_id() == Some(hex::encode(person).as_str());
     if !own {
         return Err(ActionCallError::NotPermitted);

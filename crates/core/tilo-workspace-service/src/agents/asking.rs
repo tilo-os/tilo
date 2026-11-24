@@ -26,9 +26,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use tilo_model_gateway::host_backend::protocol::Content;
+
 use super::{
-    Content, Message, ModelAnswered, ModelError, ModelRequest, ModelResponse, PlanTurns,
-    StreamEvent,
+    Message, ModelAnswered, ModelError, ModelRequest, ModelResponse, PlanTurns, StreamEvent,
 };
 use crate::workspaces::person_model::protocol::Recovery;
 

@@ -43,11 +43,11 @@ impl Grants for Workspace {
         kinds: KindSet,
         answer: Answer,
     ) -> GrantId {
-        let owner = self.owner().cloned().unwrap_or_default();
-        self.grant(tilo_action_policy::Grant::new(
+        let owner = self.policy.owner().unwrap_or_default().to_owned();
+        self.policy.grant(tilo_action_policy::Grant::new(
             format!("fixture:{}", uuid::Uuid::new_v4()),
             subject,
-            self.node().join(relative),
+            self.policy.node().join(relative),
             kinds,
             answer,
             Grantee::person(owner),
@@ -55,8 +55,8 @@ impl Grants for Workspace {
     }
 
     fn allow_in_workspace(&mut self, subject: Grantee, workspace: &str, kinds: KindSet) -> GrantId {
-        let owner = self.owner().cloned().unwrap_or_default();
-        self.grant(tilo_action_policy::Grant::new(
+        let owner = self.policy.owner().unwrap_or_default().to_owned();
+        self.policy.grant(tilo_action_policy::Grant::new(
             format!("fixture:{}", uuid::Uuid::new_v4()),
             subject,
             TreePath::workspace(workspace),
@@ -189,7 +189,7 @@ impl crate::apps::services::AgentRoster for TreeAgents {
     fn lists(&self, workspace: &str, agent: &str) -> bool {
         let tree = self.0.read();
         crate::apps::services::workspace_in(&tree.desktop, workspace).is_some_and(|held| {
-            let node = held.node();
+            let node = held.policy.node();
             held.policy.grants.iter().any(|grant| {
                 grant.node == node
                     && grant.answer == Answer::Allow

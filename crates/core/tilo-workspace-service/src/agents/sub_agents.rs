@@ -120,6 +120,15 @@ pub(super) fn payer(turn: &Turn) -> &Agent {
     turn.line.as_ref().map_or(&turn.agent, |line| &line.root)
 }
 
+/// `text` cut to `most` bytes at a character.
+fn cut(text: &str, most: usize) -> &str {
+    let mut end = text.len().min(most);
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    text.get(..end).unwrap_or_default()
+}
+
 /// The kind of work `agent`'s model is chosen by: a sub-agent's own, and for an agent a
 /// person made the work an agent does for them.
 pub(super) fn kind_of(agent: &Agent) -> Interaction {

@@ -257,6 +257,11 @@ use web_time::SystemTime;
 
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 pub(crate) use actions::ADD_MEMBER as ADD_MEMBER_ACTION;
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+pub(crate) use actions::{
+    ADD_ATTESTOR, ADD_REGISTRY, DISABLE_REGISTRY, ENABLE_REGISTRY, REGISTRY_CHANNEL,
+    REMOVE_ATTESTOR, REMOVE_REGISTRY, REVOKE_PUBLISHER,
+};
 pub(crate) use actions::{GovernedServer, ServiceWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};

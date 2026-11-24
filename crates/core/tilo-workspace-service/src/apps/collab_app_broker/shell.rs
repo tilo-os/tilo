@@ -245,7 +245,7 @@ async fn dispatch(
     services: &ShellServices,
     caller: &ShellCaller,
     workspace: Option<String>,
-    named: Option<tilo_actions::remote::KeptCaller>,
+    named: Option<Box<tilo_actions::remote::KeptCaller>>,
     frame: &[u8],
 ) -> Result<Vec<u8>, String> {
     use tilo_actions::remote::RemoteActionFrame;
@@ -258,7 +258,7 @@ async fn dispatch(
         return Err("this device acts for its own person only".to_owned());
     }
     let named = named
-        .map(|named| named_caller(named, &device))
+        .map(|named| named_caller(*named, &device))
         .transpose()?;
     let person = named
         .clone()

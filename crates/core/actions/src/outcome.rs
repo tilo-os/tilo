@@ -45,6 +45,13 @@ impl InvocationId {
     }
 }
 
+/// An invocation id as a caller writes it: the uuid it is, which [`std::str::FromStr`] reads back.
+impl std::fmt::Display for InvocationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Read an invocation id a caller keeps in its own words (a page's dialog, a script's file) so
 /// its next ask is the same invocation: the server answers it with what the first did.
 impl std::str::FromStr for InvocationId {

@@ -36,8 +36,6 @@
 //! same account told twice adds nothing: connected already, it is refused in
 //! words.
 
-use std::path::Path;
-
 use accounts::vault_items::Place;
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::asked::{AskedFacts, Fact};

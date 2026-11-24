@@ -80,7 +80,9 @@ pub fn certified_person_fixture_for_seeds(
         tilo_desktop_model::WorkspaceId::parse(&workspace_id.to_string()).unwrap(),
         "Synthetic own workspace",
     );
-    workspace.set_owner(hex::encode(certificate.user_public_key));
+    workspace
+        .policy
+        .set_owner(hex::encode(certificate.user_public_key));
     let mut tree = crate::apps::test_support::WorkspaceTree::default();
     tree.workspaces.push(workspace);
     tree.persist_path = Some(evidence_home.root().join("workspace.json"));

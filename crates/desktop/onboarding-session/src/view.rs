@@ -768,6 +768,9 @@ impl OnboardingView {
     /// From the page's title on: each control's name, then what it adds
     /// (a banner's message, a progress bar's percentage).
     pub fn codec_page_lines(&mut self) -> Vec<String> {
+        use vello::Scene;
+        use vello::kurbo::Affine;
+
         fn names(widget: &dyn Widget, out: &mut Vec<String>) {
             if let Some(node) = widget.accessibility() {
                 out.extend(node.name);

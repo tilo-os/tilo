@@ -57,7 +57,7 @@
 use std::path::Path;
 
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{ActionKind, Answer, Rule, TreePath};
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, UnknownAction};

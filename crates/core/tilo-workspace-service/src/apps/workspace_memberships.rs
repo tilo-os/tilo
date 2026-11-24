@@ -70,6 +70,60 @@ impl AppBrokerState {
                 "rename",
                 Some(encoded(&serde_json::json!({ "name": name }))?),
             ),
+            WorkspaceMembershipCommand::AddAttestor(attestor) => (
+                governance_resource(workspace),
+                crate::workspaces::ADD_ATTESTOR,
+                Some(encoded(&serde_json::json!({
+                    "id": attestor.id,
+                    "pubkey": attestor.pubkey_hex,
+                    "scope": attestor.scope,
+                }))?),
+            ),
+            WorkspaceMembershipCommand::RemoveAttestor { id } => (
+                governance_resource(workspace),
+                crate::workspaces::REMOVE_ATTESTOR,
+                Some(encoded(&serde_json::json!({ "id": id }))?),
+            ),
+            WorkspaceMembershipCommand::RevokePublisher { pubkey, reason } => (
+                governance_resource(workspace),
+                crate::workspaces::REVOKE_PUBLISHER,
+                Some(encoded(&serde_json::json!({
+                    "pubkey": pubkey,
+                    "reason": reason,
+                }))?),
+            ),
+            WorkspaceMembershipCommand::AddRegistry(registry) => (
+                governance_resource(workspace),
+                crate::workspaces::ADD_REGISTRY,
+                Some(encoded(&serde_json::json!({
+                    "name": registry.name,
+                    "url": registry.base_url,
+                    "owner_key": registry.owner_pubkey_hex,
+                    "channel": registry.channel,
+                }))?),
+            ),
+            WorkspaceMembershipCommand::RemoveRegistry { name } => (
+                governance_resource(workspace),
+                crate::workspaces::REMOVE_REGISTRY,
+                Some(encoded(&serde_json::json!({ "name": name }))?),
+            ),
+            WorkspaceMembershipCommand::SetRegistryEnabled { name, enabled } => (
+                governance_resource(workspace),
+                if *enabled {
+                    crate::workspaces::ENABLE_REGISTRY
+                } else {
+                    crate::workspaces::DISABLE_REGISTRY
+                },
+                Some(encoded(&serde_json::json!({ "name": name }))?),
+            ),
+            WorkspaceMembershipCommand::SetRegistryChannel { name, channel } => (
+                governance_resource(workspace),
+                crate::workspaces::REGISTRY_CHANNEL,
+                Some(encoded(&serde_json::json!({
+                    "name": name,
+                    "channel": channel,
+                }))?),
+            ),
             WorkspaceMembershipCommand::Settings(_) => {
                 return Err(
                     "a workspace's saved grant sets and app permissions change where its person changes them"
@@ -198,6 +252,7 @@ impl AppBrokerState {
                 time,
             }),
         )
+        .map_err(|refusal| refusal.to_string())
     }
 
     /// Start one change to a workspace's people, addressed under the provider
