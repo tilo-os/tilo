@@ -217,7 +217,6 @@ fn mapped(snapshot: Snapshot, interval_ms: u32) -> Processes {
         || Machine::default(),
         |system| machine_of_with(system, &mut rings),
     );
-    let system = snapshot.system.clone().unwrap_or_default();
     let mut processes: Vec<Process> = snapshot
         .processes
         .iter()
@@ -290,9 +289,9 @@ fn memory_share(system: &SystemStats) -> f64 {
     if system.memory.total == 0 {
         0.0
     } else {
-        ((system.memory.total.saturating_sub(system.memory.available) as f64
+        (system.memory.total.saturating_sub(system.memory.available) as f64
             / system.memory.total as f64)
-            * 100.0)
+            * 100.0
     }
 }
 
