@@ -84,6 +84,22 @@ impl Device for SharingDevice {
             _ => self.device.change(change),
         }
     }
+
+    fn scan_operators(&self, modem: &str) -> Result<Vec<os_actions::Operator>, String> {
+        self.device.scan_operators(modem)
+    }
+
+    fn send_code(&self, modem: &str, command: &str) -> Result<os_actions::CodeAnswer, String> {
+        self.device.send_code(modem, command)
+    }
+
+    fn answer_code(&self, modem: &str, response: &str) -> Result<os_actions::CodeAnswer, String> {
+        self.device.answer_code(modem, response)
+    }
+
+    fn cancel_code(&self, modem: &str) -> Result<(), String> {
+        self.device.cancel_code(modem)
+    }
 }
 
 impl SharingDevice {
@@ -223,6 +239,30 @@ mod tests {
                 Change::Join { password: None, .. } => Err("the network needs a password".into()),
                 _ => Ok(()),
             }
+        }
+
+        fn scan_operators(&self, _modem: &str) -> Result<Vec<os_actions::Operator>, String> {
+            Err("this radio has no modem".into())
+        }
+
+        fn send_code(
+            &self,
+            _modem: &str,
+            _command: &str,
+        ) -> Result<os_actions::CodeAnswer, String> {
+            Err("this radio has no modem".into())
+        }
+
+        fn answer_code(
+            &self,
+            _modem: &str,
+            _response: &str,
+        ) -> Result<os_actions::CodeAnswer, String> {
+            Err("this radio has no modem".into())
+        }
+
+        fn cancel_code(&self, _modem: &str) -> Result<(), String> {
+            Err("this radio has no modem".into())
         }
     }
 
