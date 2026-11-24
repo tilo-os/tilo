@@ -204,6 +204,11 @@ type Session (readers: author) {
     page_rows: Collection<Row>
     /// What this window ran, so it is one press away again.
     history: Collection<Run>
+    /// Whether a transaction is open on the connection: what runs until the person commits or
+    /// rolls it back.
+    transaction: Bool = false
+    /// The statement the job in flight runs, so its answer can be read as what it is.
+    started_sql: Text = ""
     /// What this window keeps of the connections' passwords.
     secrets: Collection<Secret>
     /// The words the window says while a job runs.
@@ -412,6 +417,11 @@ fn session_is_busy(d: Database) -> Bool {
     if let s = d.sessions.first() { s.busy != "" } else { false }
 }
 
+/// Whether this person's window has a transaction open.
+fn in_transaction(d: Database) -> Bool {
+    if let s = d.sessions.first() { s.transaction } else { false }
+}
+
 /// The row the window shows first.
 fn session_offset(d: Database) -> Int {
     if let s = d.sessions.first() { s.offset } else { 0 }
@@ -486,6 +496,8 @@ action disconnect(d: Database) {
     }
     s.handle = 0
     s.connected = false
+    s.transaction = false
+    s.started_sql = ""
     s.schemas = []
     s.selected_schema = ""
     s.selected_table = ""
@@ -592,6 +604,34 @@ action show_tab(d: Database, tab: Tab) {
     s.tab = tab
 }
 
+/// Starts a transaction on the open connection: what runs until the person commits is one
+/// change, and rolling it back takes all of it back.
+action begin_transaction(d: Database) (icon: .circle_play, label: "Begin transaction") {
+    require session_is_connected(d) "Open a connection before starting a transaction"
+    require not session_is_busy(d) "A query is already running"
+    require not in_transaction(d) "A transaction is already open"
+    start_statement(d, "BEGIN")
+}
+
+/// Commits the open transaction: what it changed is the database's from now on.
+action commit_transaction(d: Database) (icon: .check, label: "Commit transaction") {
+    require session_is_connected(d) "Open a connection before committing"
+    require not session_is_busy(d) "A query is already running"
+    require in_transaction(d) "No transaction is open"
+    start_statement(d, "COMMIT")
+}
+
+/// Rolls the open transaction back: every change it made is taken back.
+destructive action rollback_transaction(d: Database) (
+    icon: .undo_2,
+    label: "Roll back transaction",
+) {
+    require session_is_connected(d) "Open a connection before rolling back"
+    require not session_is_busy(d) "A query is already running"
+    require in_transaction(d) "No transaction is open"
+    start_statement(d, "ROLLBACK")
+}
+
 /// Runs the statement in the editor, asking first when it changes data.
 action run(d: Database) {
     require session_is_connected(d) "Open a connection before running SQL"
@@ -652,6 +692,7 @@ action start_statement(d: Database, sql: Text) {
             .ok(started) => {
                 s.busy = started.job
                 s.job_kind = "query"
+                s.started_sql = sql
                 s.working = "Running…"
                 s.notice = ""
             }
@@ -1022,6 +1063,7 @@ action check(d: Database) {
                     s.working = ""
                     if progress.state == "cancelled" {
                         s.status = "Query cancelled"
+                        s.started_sql = ""
                     } else if progress.state == "failed" {
                         s.notice = progress.error
                         if kind == "open" {
@@ -1042,6 +1084,7 @@ action check(d: Database) {
 action failed_job(s: Session, why: Text) {
     s.busy = ""
     s.job_kind = ""
+    s.started_sql = ""
     s.working = ""
     s.notice = why
 }
@@ -1095,6 +1138,20 @@ action queried(d: Database, answer: Text) {
             if s.history.len() > 20 {
                 if let oldest = s.history.first() { s.history.remove(oldest) }
             }
+            // A statement that begins, commits or rolls back a transaction opens or closes it;
+            // any other statement leaves it as it was.
+            let verb = first_word(s.started_sql)
+            if verb == "BEGIN" {
+                s.transaction = true
+                s.status = "Transaction open"
+            } else if verb == "COMMIT" {
+                s.transaction = false
+                s.status = "Transaction committed"
+            } else if verb == "ROLLBACK" {
+                s.transaction = false
+                s.status = "Transaction rolled back"
+            }
+            s.started_sql = ""
             if not result.is_select { refresh_catalog(d) }
         }
         .err(why) => {
@@ -1334,6 +1391,9 @@ view query_tab(d: Database, s: Session) {
         row(gap: .related, align: .center) {
             starter_queries(d)
             spacer
+            if s.transaction {
+                ui.Badge("Transaction open", tone: .warning)
+            }
             if s.busy != "" {
                 ui.Spinner(label: if s.working == "" { "Running…" } else { s.working })
                 ui.Button("Cancel query", icon: .x) {
@@ -1342,6 +1402,18 @@ view query_tab(d: Database, s: Session) {
             } else {
                 ui.Button("Run query", icon: .play, role: .primary) {
                     on press: run(d)
+                }
+                if s.transaction {
+                    ui.Button("Commit transaction", icon: .check) {
+                        on press: commit_transaction(d)
+                    }
+                    ui.Button("Roll back transaction", icon: .undo_2, role: .destructive) {
+                        on press: rollback_transaction(d)
+                    }
+                } else if s.connected {
+                    ui.Button("Begin transaction", icon: .circle_play) {
+                        on press: begin_transaction(d)
+                    }
                 }
             }
             result_menu(d, s)

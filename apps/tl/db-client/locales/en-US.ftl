@@ -337,6 +337,12 @@ d-iimyuzxn = Page rows
 d-g6cz4ye2 = History
     .doc = What this window ran, so it is one press away again.
 
+d-yxlfv3op = Transaction
+    .doc = Whether a transaction is open on the connection: what runs until the person commits or rolls it back.
+
+d-ergnzsjf = Started sql
+    .doc = The statement the job in flight runs, so its answer can be read as what it is.
+
 d-qcislb6v = Secrets
     .doc = What this window keeps of the connections' passwords.
 
@@ -354,6 +360,8 @@ d-brwj3gzi-filter-offset = Offset
 d-brwj3gzi-filter-page = Page
 
 d-brwj3gzi-filter-confirming = Confirming
+
+d-brwj3gzi-filter-transaction = Transaction
 
 d-57pbpjie = Open ask
     .noun = { $count ->
@@ -539,6 +547,24 @@ d-bnqqidok = Show tab
 
 d-bnqqidok-tab = Tab
 
+d-2av3h6dl = Begin transaction
+    .doc = Starts a transaction on the open connection: what runs until the person commits is one change, and rolling it back takes all of it back.
+    .w-open-a-connection-before-starting-a = Open a connection before starting a transaction
+    .w-a-query-is-already-running = A query is already running
+    .w-a-transaction-is-already-open = A transaction is already open
+
+d-ppv6vxzh = Commit transaction
+    .doc = Commits the open transaction: what it changed is the database's from now on.
+    .w-open-a-connection-before-committing = Open a connection before committing
+    .w-a-query-is-already-running = A query is already running
+    .w-no-transaction-is-open = No transaction is open
+
+d-z7sf5fnv = Roll back transaction
+    .doc = Rolls the open transaction back: every change it made is taken back.
+    .w-open-a-connection-before-rolling-back = Open a connection before rolling back
+    .w-a-query-is-already-running = A query is already running
+    .w-no-transaction-is-open = No transaction is open
+
 d-mbv7nbbz = Run
     .doc = Runs the statement in the editor, asking first when it changes data.
     .w-open-a-connection-before-running-sql = Open a connection before running SQL
@@ -645,6 +671,12 @@ d-77ih35sb-answer = Answer
 
 d-v5uqe3yc = Save query~present
 
+d-5wp2oobz = Begin transaction~present
+
+d-5bmmtram = Commit transaction~present
+
+d-y5zij3ku = Rollback transaction~present
+
 d-esekmuai = Run~present
 
 d-2uzibyq5 = Next page~present
@@ -693,9 +725,13 @@ d-5vali6eo = Navigator
     .w-run-in-this-window = Run in this window
 
 d-e5r6st7e = Query tab
+    .w-transaction-open = Transaction open
     .w-running = Running…
     .w-cancel-query = Cancel query
     .w-run-query = Run query
+    .w-commit-transaction = Commit transaction
+    .w-roll-back-transaction = Roll back transaction
+    .w-begin-transaction = Begin transaction
     .w-write-a-sql-query = Write a SQL query
     .w-write-a-statement-and-run-it = Write a statement and run it
 

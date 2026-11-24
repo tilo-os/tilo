@@ -237,7 +237,9 @@ mod cases {
                         == Some("Write a SQL query")
                 })
                 .cloned()
-                .unwrap_or_else(|| panic!("the SQL editor is in the window:\n{}", dump(window.tree())))
+                .unwrap_or_else(|| {
+                    panic!("the SQL editor is in the window:\n{}", dump(window.tree()))
+                })
         }
 
         /// Types `sql` into the shared editor, as a person does.
@@ -274,7 +276,10 @@ mod cases {
                     self.flag(s, "connected"),
                 ) + &format!(" working={:?}", self.text(s, "working"))
             });
-            panic!("the job never settled: {} sessions; {seen:?}", sessions.len());
+            panic!(
+                "the job never settled: {} sessions; {seen:?}",
+                sessions.len()
+            );
         }
 
         /// Saves a connection to the test's database file and opens it.
@@ -329,7 +334,11 @@ mod cases {
 
         /// The rows of a result.
         fn rows(&self, held: &str) -> Vec<ResourceRef> {
-            let field = if held == "queries" { "result_rows" } else { "page_rows" };
+            let field = if held == "queries" {
+                "result_rows"
+            } else {
+                "page_rows"
+            };
             let s = self.session();
             match self.rt.read(&s, field).unwrap() {
                 Value::List(rows) => rows
@@ -365,7 +374,11 @@ mod cases {
                     .filter_map(|item| match item {
                         Value::Ref(r) => {
                             let t = Rc::unwrap_or_clone(r.target);
-                            Some(format!("{}.{}", self.text(&t, "schema"), self.text(&t, "name")))
+                            Some(format!(
+                                "{}.{}",
+                                self.text(&t, "schema"),
+                                self.text(&t, "name")
+                            ))
                         }
                         _ => None,
                     })
@@ -403,7 +416,10 @@ mod cases {
                     .unwrap_or_else(|| panic!("{name} is in the catalog")),
                 other => panic!("tables read {other:?}"),
             };
-            self.with("browse", &[("d", self.root_arg()), ("t", Value::resource(&found))]);
+            self.with(
+                "browse",
+                &[("d", self.root_arg()), ("t", Value::resource(&found))],
+            );
         }
     }
 
@@ -530,6 +546,44 @@ mod cases {
             c.with("cancel", &[("d", c.root_arg())]);
             c.settle();
             assert_eq!(c.status(), "Query cancelled");
+        }
+
+        phase a_transaction_holds_its_changes_until_it_is_committed_or_rolled_back;
+        {
+            let c = Client::new();
+            c.connected();
+            c.run("CREATE TABLE ledger (id INTEGER PRIMARY KEY, amount INTEGER NOT NULL)");
+            c.with("begin_transaction", &[("d", c.root_arg())]);
+            c.settle();
+            assert!(c.flag(&c.session(), "transaction"), "the transaction is open");
+            assert_eq!(c.status(), "Transaction open");
+            c.run("INSERT INTO ledger (amount) VALUES (10)");
+            let window = c.window();
+            let words = dump(window.tree());
+            assert!(words.contains("Commit transaction"), "the window offers Commit: {words}");
+            assert!(words.contains("Roll back transaction"), "{words}");
+            c.with("rollback_transaction", &[("d", c.root_arg())]);
+            c.settle();
+            assert!(!c.flag(&c.session(), "transaction"), "the rollback closed it");
+            assert_eq!(c.status(), "Transaction rolled back");
+            c.run("SELECT COUNT(*) AS rows FROM ledger");
+            assert_eq!(c.cell("queries", 0, 0), "0", "the insert was taken back");
+
+            c.with("begin_transaction", &[("d", c.root_arg())]);
+            c.settle();
+            assert!(c.flag(&c.session(), "transaction"));
+            c.run("INSERT INTO ledger (amount) VALUES (20)");
+            c.with("commit_transaction", &[("d", c.root_arg())]);
+            c.settle();
+            assert!(!c.flag(&c.session(), "transaction"), "the commit closed it");
+            assert_eq!(c.status(), "Transaction committed");
+            c.run("SELECT COUNT(*) AS rows FROM ledger");
+            assert_eq!(c.cell("queries", 0, 0), "1", "the insert was kept");
+            // Without a transaction open, committing or rolling back is refused.
+            assert!(c.rt.invoke_action(
+                &me(),
+                (c.app.action("commit_transaction").as_str(), vec![c.root_arg()]),
+            ).is_err(), "a commit with nothing open is refused");
         }
 
         phase browsing_pages_a_table_and_reads_its_structure;

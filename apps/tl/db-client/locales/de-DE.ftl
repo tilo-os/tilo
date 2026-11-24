@@ -692,9 +692,13 @@ d-5vali6eo = Navigator
     .w-run-in-this-window = In diesem Fenster ausführen
 
 d-e5r6st7e = Abfrageansicht
+    .w-transaction-open = Transaktion offen
     .w-running = Läuft…
     .w-cancel-query = Abfrage abbrechen
     .w-run-query = Abfrage ausführen
+    .w-commit-transaction = Transaktion festschreiben
+    .w-roll-back-transaction = Transaktion zurückrollen
+    .w-begin-transaction = Transaktion beginnen
     .w-write-a-sql-query = Schreib eine SQL-Abfrage
     .w-write-a-statement-and-run-it = Schreib eine Anweisung und führe sie aus
 
@@ -761,3 +765,35 @@ d-txz5zpn7 = Bestätigungsdialog
     .w-run-statement = Anweisung ausführen
     .w-cancel = Abbrechen
     .w-the-database-client-cannot-undo-this = Der Datenbank-Client kann das nicht rückgängig machen.
+
+d-yxlfv3op = Transaktion
+    .doc = Ob auf der Verbindung eine Transaktion offen ist: was läuft, bis die Person sie festschreibt oder zurückrollt.
+
+d-ergnzsjf = Gestartetes SQL
+    .doc = Die Anweisung, die der laufende Auftrag ausführt, damit seine Antwort als das gelesen werden kann, was sie ist.
+
+d-brwj3gzi-filter-transaction = Transaktion
+
+d-2av3h6dl = Transaktion beginnen
+    .doc = Beginnt eine Transaktion auf der offenen Verbindung: was bis zum Festschreiben läuft, ist eine Änderung, und ein Zurückrollen nimmt alles davon zurück.
+    .w-open-a-connection-before-starting-a = Öffne eine Verbindung, bevor du eine Transaktion beginnst
+    .w-a-query-is-already-running = Eine Abfrage läuft bereits
+    .w-a-transaction-is-already-open = Eine Transaktion ist bereits offen
+
+d-ppv6vxzh = Transaktion festschreiben
+    .doc = Schreibt die offene Transaktion fest: was sie geändert hat, gehört ab jetzt der Datenbank.
+    .w-open-a-connection-before-committing = Öffne eine Verbindung, bevor du festschreibst
+    .w-a-query-is-already-running = Eine Abfrage läuft bereits
+    .w-no-transaction-is-open = Es ist keine Transaktion offen
+
+d-z7sf5fnv = Transaktion zurückrollen
+    .doc = Rollt die offene Transaktion zurück: jede Änderung, die sie gemacht hat, wird zurückgenommen.
+    .w-open-a-connection-before-rolling-back = Öffne eine Verbindung, bevor du zurückrollst
+    .w-a-query-is-already-running = Eine Abfrage läuft bereits
+    .w-no-transaction-is-open = Es ist keine Transaktion offen
+
+d-5wp2oobz = Transaktion beginnen~present
+
+d-5bmmtram = Transaktion festschreiben~present
+
+d-y5zij3ku = Transaktion zurückrollen~present
