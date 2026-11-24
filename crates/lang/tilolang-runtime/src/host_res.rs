@@ -1096,7 +1096,7 @@ impl Core {
                     return trap("the field holds no record of its own");
                 };
                 let child = Rc::unwrap_or_clone(held.target);
-                self.init_record(ctx, &inner_ty, &child, inner, depth + 1)?;
+                self.init_record(ctx, &inner_ty, &child, inner, depth.saturating_add(1))?;
                 self.touched(child.id_string());
                 let m = Mutation::SetRegister {
                     field: f.id.clone(),
