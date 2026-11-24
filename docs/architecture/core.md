@@ -369,8 +369,14 @@ fields of its own records.
 The secret lives in that process's memory alone, never in a record, an argument,
 a log or history.
 Every other use stays a call the vault makes itself, such as a web call with the
-secret added or a signature made with a signing key, where the vault is; a grant
+secret added, a signature made with a signing key, or the current one-time code
+from a TOTP seed (`vault.item:<id>#code`), where the vault is; a grant
 to use the item lets people, agents and CI call it without ever holding it.
+Such a use that changes nothing is a read: it records no change, and what it
+returns is shown, never stored, not even as window state.
+A view that shows a secret or a code declares `protect capture`. Wherever it is
+shown (its window, another view, a shared screen, the web page, a capture an
+agent takes) it is left out of captures and streams.
 
 ### Views
 
