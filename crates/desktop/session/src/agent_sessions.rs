@@ -12,6 +12,8 @@ use tilo_mcp::session_api::Consent;
 /// The agent sessions served here, from the moment a client connects until its connection ends.
 pub(crate) struct AgentSessions {
     inner: std::sync::Mutex<Inner>,
+    /// Woken on every change: what the device's daemon follows the sessions by.
+    changed: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -52,6 +54,7 @@ impl AgentSessions {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: std::sync::Mutex::new(Inner::default()),
+            changed: tokio::sync::Notify::new(),
         })
     }
 
@@ -98,6 +101,7 @@ impl AgentSessions {
         workspace.clone_into(&mut connection.workspace);
         workspace_name.clone_into(&mut connection.workspace_name);
         inner.revision = inner.revision.wrapping_add(1);
+        self.changed.notify_waiters();
     }
 
     /// `session` takes the step `doing`. Whether that is news.
@@ -112,6 +116,7 @@ impl AgentSessions {
         }
         connection.doing = doing;
         inner.revision = inner.revision.wrapping_add(1);
+        self.changed.notify_waiters();
         true
     }
 
@@ -219,6 +224,7 @@ impl AgentSessions {
             return;
         }
         inner.revision = inner.revision.wrapping_add(1);
+        self.changed.notify_waiters();
     }
 
     /// End `session`, as the person's Stop does. Whether it was served here.
@@ -260,6 +266,7 @@ impl AgentSessions {
                 .filter_map(|id| inner.sessions.remove(id))
                 .collect();
             inner.revision = inner.revision.wrapping_add(1);
+            self.changed.notify_waiters();
             ended
         };
         for connection in ended {
@@ -295,6 +302,32 @@ impl AgentSessions {
             .collect()
     }
 
+    /// Every admitted session while it goes, with what its person allowed it, as the device's
+    /// daemon is handed them.
+    pub(crate) fn seat_sessions(
+        &self,
+    ) -> Vec<tilo_workspace_service::apps::seat::SeatAgentSession> {
+        self.inner
+            .lock_recover()
+            .sessions
+            .iter()
+            .filter(|(_, connection)| !connection.agent.is_empty())
+            .map(
+                |(session, connection)| tilo_workspace_service::apps::seat::SeatAgentSession {
+                    session: session.0.clone(),
+                    workspace: connection.workspace.clone(),
+                    agent: connection.agent.clone(),
+                    answers: connection.answers.clone(),
+                },
+            )
+            .collect()
+    }
+
+    /// Once a session was admitted, acted, left or kept an answer.
+    pub(crate) fn moved(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
+    }
+
     /// Changes only when a session was admitted, acted or left.
     pub(crate) fn revision(&self) -> u64 {
         self.inner.lock_recover().revision
@@ -327,6 +360,7 @@ impl tilo_broker_core::services::AgentSessions for AgentSessions {
         connection.answers.retain(|kept| kept.id != grant.id);
         connection.answers.push(grant);
         drop(inner);
+        self.changed.notify_waiters();
     }
 }
 

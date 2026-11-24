@@ -84,9 +84,11 @@ impl TestDaemon {
                 actions,
                 standing: Arc::new(NoStanding),
                 published: None,
-                workspaces,
+                workspaces: workspaces.clone(),
                 identity: None,
             })),
+            // The providers registered on the device, the seat a shell serves among them.
+            providers: Some(workspaces.providers()),
             ..ProcessServices::default()
         };
         let dispatch = runtime
@@ -182,6 +184,19 @@ impl TestDaemon {
     /// The session's writes of those documents, on its link: the daemon signs and seals them.
     pub(crate) fn writes(&self) -> Arc<dyn DeviceWrites> {
         Arc::clone(&self.writes)
+    }
+
+    /// A shell link of the daemon's person, opened: what a session serves its seat on.
+    pub(crate) fn shell_client(&self) -> runtime_collab::ShellClient {
+        link(&self.socket, &self.links, &self.cert)
+    }
+
+    /// The seat as the daemon's broker reaches it, while a shell serves it.
+    pub(crate) fn seat(&self) -> tilo_workspace_service::apps::seat::Seat {
+        tilo_workspace_service::apps::seat::Seat::new(
+            self.workspaces().providers(),
+            tilo_rt::app().handle().clone(),
+        )
     }
 
     /// The session's link to the daemon: where its reads are followed and its actions run.

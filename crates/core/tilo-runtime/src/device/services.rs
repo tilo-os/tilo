@@ -2209,6 +2209,15 @@ fn broker_services(
         keyboard_shortcuts: Some(forwarded.keyboard_shortcuts),
         browser_service_sessions: Some(forwarded.browser_service_sessions),
         file_clipboard: Some(forwarded.file_clipboard),
+        // The workspaces' agents and the agent sessions the person admitted are the desktop
+        // session's: it reads the agents' records every pass, and the daemon hands it each agent's
+        // connection.
+        agents: Some(
+            Arc::clone(&forwarded.agents) as Arc<dyn tilo_broker_core::services::AgentRoster>
+        ),
+        agent_sessions: Some(
+            forwarded.agents as Arc<dyn tilo_broker_core::services::AgentSessions>,
+        ),
         // The records of the workspaces this device keeps, read for the apps, agents and programs
         // it serves: each capture opens the record's document here, and counts it.
         committed_documents: Some(Arc::new(

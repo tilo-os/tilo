@@ -42,6 +42,8 @@ pub(crate) struct Roster {
     /// What each agent may spend today and has, by workspace and agent: what a run of its is
     /// admitted with.
     spend: Mutex<BTreeMap<(String, String), runtime_collab::AgentSpend>>,
+    /// Woken whenever the listing was read again: what the device's daemon follows it by.
+    changed: tokio::sync::Notify,
 }
 
 impl tilo_broker_core::services::AgentRoster for Roster {
@@ -66,7 +68,7 @@ impl Roster {
     /// List `agent` in `workspace` for the broker, as the workspace's record names it: the member
     /// the MCP server just answered for, which the broker reads before the pass that reads the
     /// record again.
-    fn list(&self, workspace: &str, agent: tilo_broker_core::services::ListedAgent) {
+    pub(crate) fn list(&self, workspace: &str, agent: tilo_broker_core::services::ListedAgent) {
         if let Ok(mut held) = self.listed.lock() {
             let listed = held.entry(workspace.to_owned()).or_default();
             match listed.iter_mut().find(|kept| kept.id == agent.id) {
@@ -74,6 +76,44 @@ impl Roster {
                 None => listed.push(agent),
             }
         }
+        self.changed.notify_waiters();
+    }
+
+    /// Every agent listed, with what it may spend, as the device's daemon is handed them.
+    pub(crate) fn seat_agents(&self) -> Vec<tilo_workspace_service::apps::seat::SeatAgent> {
+        let listed = self
+            .listed
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_default();
+        let spend = self
+            .spend
+            .lock()
+            .map(|held| held.clone())
+            .unwrap_or_default();
+        listed
+            .into_iter()
+            .flat_map(|(workspace, agents)| {
+                agents
+                    .into_iter()
+                    .map(move |agent| (workspace.clone(), agent))
+            })
+            .map(
+                |(workspace, agent)| tilo_workspace_service::apps::seat::SeatAgent {
+                    spend: spend.get(&(workspace.clone(), agent.id.clone())).cloned(),
+                    workspace,
+                    id: agent.id,
+                    name: agent.name,
+                    avatar: agent.avatar,
+                    acts_for: agent.acts_for,
+                },
+            )
+            .collect()
+    }
+
+    /// Once the listing is read again.
+    pub(crate) fn moved(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
     }
 }
 
@@ -214,6 +254,7 @@ impl Agents {
         if let Ok(mut held) = self.roster.spend.lock() {
             *held = spend;
         }
+        self.roster.changed.notify_waiters();
         (kept, every)
     }
 

@@ -209,9 +209,8 @@ fn acting_fabric(
 /// app wire takes from the session besides its broker: who keeps its agents, the sessions they work
 /// in, and the tools service apps reach their lists' changes through.
 pub(crate) struct Knitted {
-    pub(crate) agents: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentRoster>>,
-    pub(crate) agent_sessions:
-        Option<std::sync::Arc<dyn tilo_broker_core::services::AgentSessions>>,
+    pub(crate) agents: Option<std::sync::Arc<crate::agents::Roster>>,
+    pub(crate) agent_sessions: Option<std::sync::Arc<crate::agent_sessions::AgentSessions>>,
     pub(crate) tools: Option<crate::tools::Handle>,
 }
 
@@ -329,6 +328,14 @@ pub(crate) fn start_app_wire(
                     shell,
                     file_clipboard: &file_clipboard,
                     item_lending: &item_lending,
+                    agents: services
+                        .agents
+                        .clone()
+                        .zip(services.agent_sessions.clone())
+                        .map(|(roster, sessions)| crate::seat_services::SeatAgents {
+                            roster,
+                            sessions,
+                        }),
                 }),
             );
             // The session's own actions, as the daemon's endpoint and its agents ask them of the
@@ -371,8 +378,8 @@ pub(crate) fn start_app_wire(
                     records,
                     layout: std::sync::Arc::clone(&layout),
                     activity: activity_wire,
-                    agents: services.agents,
-                    agent_sessions: services.agent_sessions,
+                    agents: services.agents.map(|roster| roster as _),
+                    agent_sessions: services.agent_sessions.map(|sessions| sessions as _),
                     sealed,
                     own_device,
                     action_offload,
@@ -438,6 +445,7 @@ struct SeatInputs<'a> {
     shell: &'a runtime_collab::ShellClient,
     file_clipboard: &'a std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
     item_lending: &'a std::sync::Arc<crate::item_lending::ItemLending>,
+    agents: Option<crate::seat_services::SeatAgents>,
 }
 
 /// What only this seat answers for the apps the device's daemon serves: the screen, the sound,
@@ -458,6 +466,7 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         shell,
         file_clipboard,
         item_lending,
+        agents,
     } = inputs;
     // This person's settings on this device: each app reaches its own entries and the shared
     // sections, and a display change is written here too.
@@ -519,6 +528,7 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
                 >
         }),
         file_clipboard: Some(std::sync::Arc::clone(file_clipboard)),
+        agents,
     }
 }
 

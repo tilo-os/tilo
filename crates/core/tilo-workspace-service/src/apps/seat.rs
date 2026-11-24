@@ -75,6 +75,7 @@ pub mod calls {
     pub const BROWSER_SERVICE_SESSIONS: &str = "browser_service_sessions";
     pub const FILE_CLIPBOARD: &str = "file_clipboard";
     pub const WIFI_CONTINUITY: &str = "wifi_continuity";
+    pub const AGENTS: &str = "agents";
 
     pub const COMMAND: &str = "command";
     pub const DISCONNECT: &str = "disconnect";
@@ -92,6 +93,7 @@ pub mod calls {
     pub const LAUNCH: &str = "launch";
     pub const ITEM_USE: &str = "item_use";
     pub const ANSWERED_LATER: &str = "answered_later";
+    pub const KEEP_ANSWER: &str = "keep_answer";
 }
 
 /// The broker's way to the seat: the registry the shell serves it in, and the runtime its calls
@@ -235,7 +237,7 @@ impl Seat {
         let (service, call) = (service.to_owned(), call.to_owned());
         self.runtime.spawn(async move {
             if let Err(error) = asked.await {
-                tracing::debug!(%service, %call, %error, "the seat did not take what it was told");
+                tracing::warn!(%service, %call, %error, "the seat did not take what it was told");
             }
         });
     }
@@ -261,7 +263,9 @@ impl Seat {
                     // The seat held the wait as long as it holds one: ask again.
                     Ok(_) => {}
                     Err(error) => {
-                        tracing::debug!(service, %error, "the seat's change could not be waited for");
+                        if seat.served() {
+                            tracing::warn!(service, %error, "the seat's change could not be waited for");
+                        }
                         tokio::time::sleep(ASK_AGAIN).await;
                     }
                 }
@@ -617,7 +621,9 @@ impl PublishedResources for SeatPublished {
                 let reading = match asked {
                     Ok(reading) => reading,
                     Err(error) => {
-                        tracing::debug!(%resource, %error, "a published resource could not be followed");
+                        if seat.served() {
+                            tracing::warn!(%resource, %error, "a published resource could not be followed");
+                        }
                         tokio::time::sleep(ASK_AGAIN).await;
                         continue;
                     }
@@ -655,20 +661,28 @@ impl PublishedResources for SeatPublished {
         action: &str,
         arguments: Vec<u8>,
     ) -> oneshot::Receiver<Receipt> {
-        let arguments = serde_json::from_slice::<Value>(&arguments).unwrap_or(Value::Null);
-        let asked = self.seat.call(
-            calls::PUBLISHED,
-            calls::INVOKE,
-            json!({
-                "caller": caller_json(caller),
-                "resource": resource,
-                "action": action,
-                "arguments": arguments,
-            }),
-        );
+        // The broker hands the arguments as the app sent them: what is not JSON is refused here,
+        // never handed to the seat as nothing.
+        let asked = serde_json::from_slice::<Value>(&arguments)
+            .map_err(|error| format!("the call's arguments are not JSON: {error}"))
+            .map(|arguments| {
+                self.seat.call(
+                    calls::PUBLISHED,
+                    calls::INVOKE,
+                    json!({
+                        "caller": caller_json(caller),
+                        "resource": resource,
+                        "action": action,
+                        "arguments": arguments,
+                    }),
+                )
+            });
         self.seat.answered(async move {
+            let asked = match asked {
+                Ok(asked) => asked.await,
+                Err(why) => Err(why),
+            };
             asked
-                .await
                 .and_then(read::<Receipt>)
                 .unwrap_or_else(|message| Receipt::Refused {
                     code: "unavailable".to_owned(),
@@ -807,7 +821,10 @@ impl SeatSettings {
                 Ok(view) if view.revision != after => return view.wire(),
                 Ok(_) => {}
                 Err(error) if !self.seat.served() => {
-                    tracing::debug!(app = %self.app_id, %error, "settings wait for a seat");
+                    tilo_failure::ignored!(
+                        "no desktop session serves the seat now: it is asked again once one does",
+                        drop(error)
+                    );
                     tokio::time::sleep(ASK_AGAIN).await;
                 }
                 Err(error) => return Err(error),
@@ -917,7 +934,10 @@ impl SeatLiveActivity {
                     return Ok((serial, bytes));
                 }
                 Err(error) if !self.seat.served() => {
-                    tracing::debug!(app = %self.app_id, %error, "a live activity waits for a seat");
+                    tilo_failure::ignored!(
+                        "no desktop session serves the seat now: it is asked again once one does",
+                        drop(error)
+                    );
                     tokio::time::sleep(ASK_AGAIN).await;
                 }
                 Err(error) => return Err(error),
@@ -1177,11 +1197,12 @@ impl SeatKeyboardShortcuts {
                     // The session held the wait as long as it holds one: ask again.
                     Ok(_) => {}
                     Err(error) => {
-                        if !seat.served() {
+                        if seat.served() {
+                            tracing::warn!(%error, "the seat's keyboard shortcuts could not be read");
+                        } else {
                             after = 0;
                             *table.lock_recover() = None;
                         }
-                        tracing::debug!(%error, "the seat's keyboard shortcuts could not be read");
                         tokio::time::sleep(ASK_AGAIN).await;
                     }
                 }
@@ -1580,6 +1601,183 @@ impl WifiContinuityServices for SeatWifiContinuity {
     }
 }
 
+/// One agent a workspace's record names active, as the session that reads the record lists it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SeatAgent {
+    pub workspace: String,
+    pub id: String,
+    pub name: String,
+    pub avatar: Option<String>,
+    /// The person the agent acts for.
+    pub acts_for: String,
+    /// What it may spend today and has, as the record keeps it.
+    pub spend: Option<runtime_collab::AgentSpend>,
+}
+
+/// One agent session the person admitted at the session's MCP server, while it goes.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SeatAgentSession {
+    pub session: String,
+    pub workspace: String,
+    pub agent: String,
+    /// What the person allowed it for every later step like the one it asked about.
+    pub answers: Vec<tilo_action_policy::Grant>,
+}
+
+/// The workspaces' agents and the agent sessions the desktop session signed in here holds: the
+/// records it reads every pass, and the MCP connections the daemon hands it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AgentTable {
+    /// Changes exactly when the table does; 0 only for the table of no session.
+    pub revision: u64,
+    pub agents: Vec<SeatAgent>,
+    pub sessions: Vec<SeatAgentSession>,
+}
+
+impl AgentTable {
+    /// The table of `agents` and `sessions`, with the revision that names exactly it.
+    #[must_use]
+    pub fn of(agents: Vec<SeatAgent>, sessions: Vec<SeatAgentSession>) -> Self {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut table = Self {
+            revision: 0,
+            agents,
+            sessions,
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(&table)
+            .unwrap_or_default()
+            .hash(&mut hasher);
+        table.revision = hasher.finish().max(1);
+        table
+    }
+}
+
+/// The workspaces' agents and the agent sessions, as the desktop session signed in here holds
+/// them: whom the broker admits to a channel as an agent, and whether the turn an agent's step
+/// runs in still goes.
+///
+/// The broker asks on its own thread, the one that carries the call to the session, so it is
+/// never kept waiting on the session: this answers from the session's latest table, which it
+/// follows for as long as it lives. With no session serving the seat there is no table: no agent
+/// is listed and no session goes.
+pub struct SeatAgents {
+    seat: Seat,
+    table: Arc<Mutex<Arc<AgentTable>>>,
+}
+
+impl SeatAgents {
+    /// The agents of the session that serves `seat`, followed from now on.
+    #[must_use]
+    pub fn follow(seat: Seat) -> Arc<Self> {
+        let table = Arc::new(Mutex::new(Arc::new(AgentTable::default())));
+        let kept = Arc::downgrade(&table);
+        let follower = seat.clone();
+        seat.runtime.spawn(async move {
+            let mut after = 0_u64;
+            loop {
+                let asked = follower
+                    .call(calls::AGENTS, calls::READ, json!({"after": after}))
+                    .await
+                    .and_then(read::<AgentTable>);
+                let Some(table) = kept.upgrade() else {
+                    return;
+                };
+                match asked {
+                    Ok(read) if read.revision != after => {
+                        after = read.revision;
+                        *table.lock_recover() = Arc::new(read);
+                    }
+                    // The session held the wait as long as it holds one: ask again.
+                    Ok(_) => {}
+                    Err(error) => {
+                        if follower.served() {
+                            tracing::warn!(%error, "the seat's agents could not be read");
+                        } else {
+                            after = 0;
+                            *table.lock_recover() = Arc::default();
+                        }
+                        tokio::time::sleep(ASK_AGAIN).await;
+                    }
+                }
+            }
+        });
+        Arc::new(Self { seat, table })
+    }
+
+    fn table(&self) -> Arc<AgentTable> {
+        Arc::clone(&self.table.lock_recover())
+    }
+}
+
+impl tilo_broker_core::services::AgentRoster for SeatAgents {
+    fn listed(&self, workspace: &str) -> Vec<tilo_broker_core::services::ListedAgent> {
+        self.table()
+            .agents
+            .iter()
+            .filter(|agent| agent.workspace == workspace)
+            .map(|agent| tilo_broker_core::services::ListedAgent {
+                id: agent.id.clone(),
+                name: agent.name.clone(),
+                avatar: agent.avatar.clone(),
+                acts_for: agent.acts_for.clone(),
+            })
+            .collect()
+    }
+
+    fn spend(&self, workspace: &str, agent: &str) -> Option<runtime_collab::AgentSpend> {
+        self.table()
+            .agents
+            .iter()
+            .find(|listed| listed.workspace == workspace && listed.id == agent)?
+            .spend
+            .clone()
+    }
+}
+
+impl tilo_broker_core::services::AgentSessions for SeatAgents {
+    fn going(
+        &self,
+        workspace: &str,
+        agent: &str,
+        session: &str,
+    ) -> Option<tilo_broker_core::services::GoingSession> {
+        self.table()
+            .sessions
+            .iter()
+            .find(|going| {
+                going.session == session && going.workspace == workspace && going.agent == agent
+            })
+            .map(|going| tilo_broker_core::services::GoingSession {
+                origin: None,
+                answers: going.answers.clone(),
+            })
+    }
+
+    fn keep_answer(&self, session: &str, grant: tilo_action_policy::Grant) {
+        // Kept here at once as well, so the session's next step is admitted on it before the
+        // session's table says so.
+        {
+            let mut table = self.table.lock_recover();
+            let mut kept = AgentTable::clone(&table);
+            if let Some(going) = kept
+                .sessions
+                .iter_mut()
+                .find(|going| going.session == session)
+            {
+                going.answers.retain(|held| held.id != grant.id);
+                going.answers.push(grant.clone());
+                *table = Arc::new(kept);
+            }
+        }
+        self.seat.tell(
+            calls::AGENTS,
+            calls::KEEP_ANSWER,
+            json!({"session": session, "grant": grant}),
+        );
+    }
+}
+
 /// The seat's services, each a forwarder to it, for a broker's [`crate::apps::services::ProcessServices`].
 pub struct Forwarders {
     pub audio_output: Arc<dyn AudioOutputServices>,
@@ -1596,6 +1794,8 @@ pub struct Forwarders {
     pub file_clipboard: Arc<dyn FileClipboardServices>,
     /// What this computer's networks wake and saved: see [`SeatWifiContinuity`].
     pub wifi_continuity: Arc<dyn WifiContinuityServices>,
+    /// The workspaces' agents and the agent sessions: see [`SeatAgents`].
+    pub agents: Arc<SeatAgents>,
 }
 
 impl Seat {
@@ -1616,6 +1816,7 @@ impl Seat {
             browser_service_sessions: Arc::new(SeatBrowserServiceSessions(self.clone())),
             file_clipboard: Arc::new(SeatFileClipboard(self.clone())),
             wifi_continuity: Arc::new(SeatWifiContinuity(self.clone())),
+            agents: SeatAgents::follow(self.clone()),
         }
     }
 }

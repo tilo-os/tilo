@@ -72,6 +72,44 @@ pub(crate) struct SeatParts {
     /// `crate::wifi_continuity::WifiContinuity::new(fabric)`, `None` without a fabric. The
     /// seat's only until the device's daemon reaches the radios itself.
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
+    /// The workspaces' agents as the records this session reads name them, and the agent
+    /// sessions it serves: whom the daemon's broker admits as an agent, and whether a turn's
+    /// session goes.
+    pub agents: Option<SeatAgents>,
+}
+
+/// What [`SeatParts::agents`] holds.
+pub(crate) struct SeatAgents {
+    pub roster: Arc<crate::agents::Roster>,
+    pub sessions: Arc<crate::agent_sessions::AgentSessions>,
+}
+
+impl SeatAgents {
+    fn table(&self) -> seat::AgentTable {
+        seat::AgentTable::of(self.roster.seat_agents(), self.sessions.seat_sessions())
+    }
+
+    /// The table once its revision differs from `after`, or as it stands after [`HELD`].
+    async fn read(&self, after: u64) -> seat::AgentTable {
+        let waited = tokio::time::timeout(HELD, async {
+            loop {
+                let (listed, going) = (self.roster.moved(), self.sessions.moved());
+                tokio::pin!(listed, going);
+                listed.as_mut().enable();
+                going.as_mut().enable();
+                let table = self.table();
+                if table.revision != after {
+                    return table;
+                }
+                tokio::select! {
+                    () = listed => {}
+                    () = going => {}
+                }
+            }
+        })
+        .await;
+        waited.unwrap_or_else(|_| self.table())
+    }
 }
 
 /// Serve the seat on the device's daemon over `shell`, its shell link, for as long as the link
@@ -551,6 +589,33 @@ impl SeatProvider {
                 }
                 Box::pin(std::future::ready(Ok(Value::Null)))
             }
+            (calls::AGENTS, call) => {
+                let Some(agents) = parts.agents.as_ref() else {
+                    return unserved("agents");
+                };
+                match call {
+                    calls::READ => Box::pin(async move {
+                        let after = field::<u64>(&arguments, "after")?;
+                        let agents = parts
+                            .agents
+                            .as_ref()
+                            .ok_or("this session serves no agents")?;
+                        answered(agents.read(after).await)
+                    }),
+                    calls::KEEP_ANSWER => {
+                        let kept = field::<String>(&arguments, "session").and_then(|session| {
+                            tilo_broker_core::services::AgentSessions::keep_answer(
+                                agents.sessions.as_ref(),
+                                &session,
+                                field(&arguments, "grant")?,
+                            );
+                            Ok(Value::Null)
+                        });
+                        Box::pin(std::future::ready(kept))
+                    }
+                    other => failed(format!("agents take no {other}")),
+                }
+            }
             (calls::WIFI_CONTINUITY, calls::COMMAND) => {
                 let Some(wifi) = parts.wifi_continuity.clone() else {
                     return unserved("Wi-Fi continuity");
@@ -757,5 +822,132 @@ impl ActionProvider for SeatProvider {
         _id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
         None
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use tilo_broker_core::services::{AgentRoster as _, AgentSessions as _, ListedAgent};
+    use tilo_mcp::session_api::Consent;
+
+    use super::*;
+
+    /// The seat of a session holding `agents` and nothing else it could serve.
+    fn holding(agents: SeatAgents) -> SeatParts {
+        SeatParts {
+            audio_output: None,
+            native_media: None,
+            continuations: crate::launches::Launches::default().notes(),
+            records: None,
+            tools: None,
+            fabric: None,
+            published: crate::app_wire::Link::new(tilo_service::LoopWake::default().handle()),
+            workspace_nodes: None,
+            settings: None,
+            display_control: None,
+            live_activities: Arc::new(runtime_collab::LiveActivities::default()),
+            launches: None,
+            keyboard_shortcuts: crate::keyboard_shortcuts::servable(),
+            service_sessions: None,
+            file_clipboard: None,
+            wifi_continuity: None,
+            agents: Some(agents),
+        }
+    }
+
+    /// The daemon admits an agent and the turn it works in on what the person's session
+    /// holds, over the shell link: the agents the workspace's record names as the session read it,
+    /// and the sessions the person admitted at its MCP server. The person's "allow" for the rest
+    /// of a session reaches the session, and a session that ended goes at the daemon too.
+    #[test]
+    fn the_daemon_admits_agents_on_what_the_session_holds_over_its_link() {
+        const WORKSPACE: &str = "5c07c075-0000-4000-8000-0000000000a1";
+        let daemon = crate::daemon_fixture::TestDaemon::start();
+        let roster = Arc::new(crate::agents::Roster::default());
+        let sessions = crate::agent_sessions::AgentSessions::new();
+        // The session's link stays open while it serves the seat, as a running session holds it.
+        let shell = daemon.shell_client();
+        serve_on(
+            shell.clone(),
+            holding(SeatAgents {
+                roster: Arc::clone(&roster),
+                sessions: Arc::clone(&sessions),
+            }),
+        );
+        let agents = {
+            let _inside = tilo_rt::app().handle().enter();
+            tilo_workspace_service::apps::seat::SeatAgents::follow(daemon.seat())
+        };
+
+        roster.list(
+            WORKSPACE,
+            ListedAgent {
+                id: "scribe".to_owned(),
+                name: "Scribe".to_owned(),
+                avatar: None,
+                acts_for: "ada".to_owned(),
+            },
+        );
+        let session = sessions.joining(None);
+        sessions.admit(
+            &session,
+            &Consent::Admit {
+                workspace: WORKSPACE.to_owned(),
+                agent: "scribe".to_owned(),
+                person: "ada".to_owned(),
+                name: "Claude Code".to_owned(),
+            },
+            "claude-code",
+            "Studio",
+        );
+        tilo_test_env::wait_for("the daemon to read the session's agents", || {
+            (agents.acts_for(WORKSPACE, "scribe").as_deref() == Some("ada")
+                && agents
+                    .going(WORKSPACE, "scribe", session.as_str())
+                    .is_some())
+            .then_some(())
+        });
+        assert!(
+            agents
+                .listed("5c07c075-0000-4000-8000-0000000000a2")
+                .is_empty()
+        );
+        assert!(
+            agents
+                .going(WORKSPACE, "another", session.as_str())
+                .is_none(),
+            "a session is its own agent's only"
+        );
+
+        let node = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
+            "Studio",
+        )
+        .policy
+        .node();
+        let allowed = tilo_action_policy::Grant::new(
+            "session-answer:scribe",
+            tilo_action_policy::Grantee::agent("scribe"),
+            node,
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person("ada".to_owned()),
+        );
+        agents.keep_answer(session.as_str(), allowed.clone());
+        tilo_test_env::wait_for("the person's answer to reach the session", || {
+            sessions
+                .going(WORKSPACE, "scribe", session.as_str())
+                .filter(|going| going.answers == vec![allowed.clone()])
+                .map(drop)
+        });
+
+        sessions.left(&session);
+        tilo_test_env::wait_for("the ended session to go at the daemon", || {
+            agents
+                .going(WORKSPACE, "scribe", session.as_str())
+                .is_none()
+                .then_some(())
+        });
+        drop(shell);
     }
 }

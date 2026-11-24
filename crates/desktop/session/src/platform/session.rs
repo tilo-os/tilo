@@ -1197,7 +1197,7 @@ impl Session {
             &activity,
             crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),
-                agent_sessions: Some(std::sync::Arc::clone(&agent_sessions) as _),
+                agent_sessions: Some(std::sync::Arc::clone(&agent_sessions)),
                 tools: Some(tools.clone()),
             },
             crate::services::app_wire::Collaboration {
