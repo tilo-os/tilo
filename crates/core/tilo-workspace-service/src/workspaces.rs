@@ -1657,6 +1657,15 @@ impl Workspaces {
         }
         let _ = admitting.set(this.downgrade());
         this.inner.jobs.claim_in(this.downgrade());
+        if let Some(sink) = this
+            .inner
+            .host
+            .channels
+            .as_ref()
+            .and_then(|channels| channels.sink.as_ref())
+        {
+            sink.attach(&this);
+        }
         let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
         let kept = this.served_kept().await;

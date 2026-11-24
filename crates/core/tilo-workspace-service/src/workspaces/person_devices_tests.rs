@@ -460,3 +460,57 @@ async fn an_accessory_moves_to_another_device_through_the_record() {
     );
     drop(desk);
 }
+
+/// A computer seals the records of the person's own workspace with its own key service from the
+/// moment its service is built, and again once it starts over: nobody hands the service to the
+/// keys, so what the service writes while it starts finds who reads the workspace.
+#[cfg(feature = "device-keys")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_computer_seals_its_person_s_records_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let own = {
+        let (computer, _keys) =
+            super::super::fixtures::test_host_keyed(dir.path(), &key, &cert).await;
+        let own = person_workspace::found(computer.workspaces())
+            .await
+            .expect("the computer founds the person's own workspace");
+        apply_on(
+            computer.workspaces(),
+            &own,
+            DEVICES,
+            Devices::keeping(&cert).unwrap(),
+        )
+        .await
+        .expect("the computer keeps itself among the person's devices");
+        own
+    };
+    let (computer, _keys) = super::super::fixtures::test_host_keyed(dir.path(), &key, &cert).await;
+    let sealed = computer
+        .workspaces()
+        .read_now(&own, |state| {
+            state.publication().is_sealed_document(DEVICES.0, DEVICES.1)
+        })
+        .map(|(_, sealed)| sealed);
+    assert_eq!(sealed, Some(true), "the record is sealed");
+    let (_, laptop) = device_cert(
+        &ed25519_dalek::SigningKey::from_bytes(&[2; 32]),
+        "laptop",
+        DeviceCapabilities::member(),
+    );
+    apply_on(
+        computer.workspaces(),
+        &own,
+        DEVICES,
+        Devices::keeping(&laptop).unwrap(),
+    )
+    .await
+    .expect("the computer writes the sealed record again once it started over");
+    let devices = read_on::<Devices>(computer.workspaces(), &own, DEVICES)
+        .await
+        .expect("the computer opens its own record");
+    for kept in [&cert, &laptop] {
+        let id = Id::from_raw(hex::encode(kept.device_public_key));
+        assert!(devices.devices.get(&id).is_some(), "both writes read back");
+    }
+}

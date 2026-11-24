@@ -8,7 +8,6 @@
 )]
 
 #[cfg(target_os = "linux")]
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -1206,7 +1205,8 @@ pub async fn own_service(
     tilo_server::service::WorkspaceService,
     tilo_workspace_service::own_device::KeyService,
 ) {
-    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> = std::sync::Arc::new(laptop.sk.clone());
+    let signer: std::sync::Arc<dyn collab_types::signer::DeviceSigner> =
+        std::sync::Arc::new(laptop.sk.clone());
     let keys = tilo_workspace_service::own_device::KeyService::open(
         "laptop-groups",
         &state.join("groups"),
@@ -1228,6 +1228,5 @@ pub async fn own_service(
     )
     .await
     .expect("the laptop's own service opens");
-    keys.attach(service.workspaces());
     (service, keys)
 }
