@@ -978,6 +978,26 @@ impl ViewInstance {
         gesture: Option<&str>,
     ) -> Result<InvokeOutcome, RuntimeError> {
         match aref.action.as_str() {
+            // Many of the window's own steps (`set_call_volume` for each person of a call) are
+            // the window's to take, one after another: only a package's actions are one change
+            // of the store.
+            crate::exec::MANY_ACTION if window_steps(aref) => {
+                let [Value::List(steps)] = aref.args.as_slice() else {
+                    return Err(RuntimeError::BadArgs(
+                        "`many` takes a list of actions".into(),
+                    ));
+                };
+                for step in steps {
+                    let Value::Action(step) = step else {
+                        return Err(RuntimeError::BadArgs("`many` takes actions".into()));
+                    };
+                    match self.run_in(step, gesture)? {
+                        InvokeOutcome::Done(_) => {}
+                        other => return Ok(other),
+                    }
+                }
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
             SET_ACTION => self.platform_set(aref),
             KEEP_ACTION => self.platform_keep(aref),
             OPEN_ACTION => self.platform_open(aref),
@@ -2005,6 +2025,21 @@ fn field_mutation(
             )));
         }
     })
+}
+
+/// Whether `aref` is `many` over steps the window takes itself (the platform's, `$`-named), none
+/// of them another `many`: those run one by one where the window is, not as a change of the store.
+fn window_steps(aref: &ActionRef) -> bool {
+    match aref.args.as_slice() {
+        [Value::List(steps)] => {
+            !steps.is_empty()
+                && steps.iter().all(|step| {
+                    matches!(step, Value::Action(step)
+                        if step.action.starts_with('$') && step.action != crate::exec::MANY_ACTION)
+                })
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

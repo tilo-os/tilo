@@ -892,9 +892,22 @@ impl FieldKey {
     }
 }
 
-/// The document of a resource written as [`ResourceRef::id_string`].
+/// The document of a resource written as [`ResourceRef::id_string`]: its first step, or every
+/// step up to its item for a document kept under a device (`devices/<device>/<app>/root-…`).
 pub fn doc_of(resource: &str) -> &str {
+    if resource.starts_with("devices/") {
+        return crate::value::split_id(resource).map_or(resource, |(doc, _)| doc);
+    }
     resource.split_once('/').map_or(resource, |(doc, _)| doc)
+}
+
+/// The item of a resource written as [`ResourceRef::id_string`]: what follows its document
+/// ([`doc_of`]), or the whole of it for a document.
+pub fn item_of(resource: &str) -> &str {
+    resource
+        .strip_prefix(doc_of(resource))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(resource)
 }
 
 /// The items of a collection, in order: what [`Store::listing`] hands out, shared, so a view

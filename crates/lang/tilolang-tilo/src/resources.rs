@@ -534,9 +534,10 @@ fn id_of(at: &ResourceRef) -> String {
     at.id_string()
 }
 
-/// The item id of the store's resource `id`, which is in the document `doc`.
+/// The item id of the store's resource `id`: what follows its document, which for a document a
+/// device keeps its own is several steps long.
 fn item_of(id: &str) -> ItemId {
-    id.split_once('/').map_or(id, |(_, item)| item).to_owned()
+    tilolang_runtime::store::item_of(id).to_owned()
 }
 
 /// The invocations `command` writes under, in order.
