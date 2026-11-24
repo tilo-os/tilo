@@ -1026,6 +1026,7 @@ session-owner-deleted-workspace = { $name } wurde von seinem Besitzer gelöscht
 session-owner-deleted-workspace-body = Er ist von diesem Rechner verschwunden, und nichts darin lässt sich mehr öffnen.
 session-joined-workspace = Du bist { $name } beigetreten
 session-workspace-list-refused = Deine Arbeitsbereiche konnten nicht geändert werden
+session-workspace-list-refused-moved = Seine Fenster sind jetzt in { $workspace }.
 session-join-failed-title = Arbeitsbereich konnte nicht beigetreten werden
 session-awaiting-admission = Dieses Gerät ist noch nicht in { $name }
 session-awaiting-admission-body = { $host } stellt { $name } bereit und muss dieses Gerät zuerst aufnehmen. Seine Apps warten hier, bis dieses Gerät { $host } einmal erreicht.

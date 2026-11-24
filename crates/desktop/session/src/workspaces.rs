@@ -100,9 +100,18 @@ pub(crate) struct Adoption {
     pub(crate) enter: Vec<ToEnter>,
     /// Workspaces to take off this session: taken off the list, or no longer shown on this one.
     pub(crate) release: Vec<WorkspaceId>,
-    /// Why the daemon refused what the person changed here: the shell shows the list as the
+    /// What the daemon refused of what the person changed here: the shell shows the list as the
     /// daemon holds it again, and the person hears why.
-    pub(crate) refused: Option<String>,
+    pub(crate) refused: Option<Refused>,
+}
+
+/// A change to the person's list the daemon refused.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Refused {
+    /// Why, in the daemon's words.
+    pub(crate) why: String,
+    /// The workspace the windows of one that came off the shell moved into.
+    pub(crate) moved_to: Option<String>,
 }
 
 /// How a pass's writes of the person's list stand.
@@ -175,9 +184,6 @@ pub(crate) struct Personal {
     >,
     /// Where a workspace shows, as the person chose it, on its way to the list.
     choosing: RefCell<Vec<Sending>>,
-    /// Workspaces made here that the list refused to name: they stay on this device alone, and
-    /// are not offered to it again.
-    kept_here: BTreeSet<WorkspaceId>,
     /// The workspaces placed on a host whose roster, as the device's daemon reads it, named this
     /// device: one whose roster names it no more is one the person left, or was taken out of.
     in_hosted: BTreeSet<WorkspaceId>,
@@ -288,7 +294,6 @@ impl Personal {
             seed: None,
             writing: RefCell::default(),
             choosing: RefCell::default(),
-            kept_here: BTreeSet::new(),
             in_hosted: BTreeSet::new(),
         }
     }
@@ -401,33 +406,79 @@ impl Personal {
     }
 
     /// Take back onto `handle`'s shell what the daemon refused to write of it: each listed
-    /// workspace is called what `list` calls it, and one made here that the list does not name
-    /// stays on this device alone, never offered to the list again. The order comes back with
-    /// the adoption after.
-    fn take_back(&mut self, handle: &DesktopHandle, list: &WorkspaceList) {
+    /// workspace is called what `list` calls it again, and one made here that the list does not
+    /// name comes off the shell, as every workspace the list does not carry does. Its windows move
+    /// into the first workspace the list names, so nothing the person had open is lost. The
+    /// workspaces to take off, and where their windows went; the order comes back with the
+    /// adoption after.
+    fn take_back(
+        &mut self,
+        handle: &DesktopHandle,
+        list: &WorkspaceList,
+    ) -> (Vec<WorkspaceId>, Option<String>) {
         let mut tree = handle.read(Clone::clone);
-        let mut renamed = false;
+        let mut changed = false;
+        let mut refused = Vec::new();
         for workspace in &mut tree.workspaces {
             let id = workspace.id();
             match list.get(id) {
                 Some(listed) => {
                     if !listed.name.trim().is_empty() && listed.name != workspace.name {
                         workspace.name.clone_from(&listed.name);
-                        renamed = true;
+                        changed = true;
                     }
                 }
                 None => {
-                    if !id.is_nil() && !self.borrowed.contains(&id) && self.seed != Some(id) {
-                        self.kept_here.insert(id);
+                    if !id.is_nil()
+                        && !self.borrowed.contains(&id)
+                        && self.seed != Some(id)
+                        && !self.is_own(id)
+                        && !list.went(id)
+                    {
+                        refused.push(id);
                     }
                 }
             }
         }
-        if renamed {
+        let keeper = tree
+            .workspaces
+            .iter()
+            .position(|workspace| list.get(workspace.id()).is_some());
+        let mut moved_to = None;
+        match keeper {
+            Some(keeper) => {
+                for id in &refused {
+                    let Some(at) = tree.workspaces.iter().position(|held| held.id() == *id) else {
+                        continue;
+                    };
+                    let strips = std::mem::take(&mut tree.workspaces[at].strips);
+                    if !strips.is_empty() {
+                        tree.workspaces[keeper].strips.extend(strips);
+                        moved_to = Some(tree.workspaces[keeper].name.clone());
+                        changed = true;
+                    }
+                }
+            }
+            // The shell keeps the person one workspace: the only one it has waits, as the one a
+            // fresh device starts with does, until the person's workspaces are known.
+            None => {
+                if let [only] = refused.as_slice() {
+                    self.hold_seed(*only);
+                }
+                refused.clear();
+            }
+        }
+        if changed {
             handle.replace_tree(tree);
         }
         // What the shell shows now is what the person did since: nothing, as the daemon says.
-        self.passed = Some(shown(handle));
+        self.passed = Some(
+            shown(handle)
+                .into_iter()
+                .filter(|(workspace, _)| !refused.contains(workspace))
+                .collect(),
+        );
+        (refused, moved_to)
     }
 
     /// Wait until the writes this session sent went: what a test takes its next step after.
@@ -565,7 +616,6 @@ impl Personal {
             let id = *workspace;
             if id.is_nil()
                 || self.borrowed.contains(&id)
-                || self.kept_here.contains(&id)
                 || self.seed == Some(id)
                 || self.is_own(id)
             {
@@ -769,12 +819,15 @@ impl Personal {
         } else {
             self.read().unwrap_or(list)
         };
-        if refused.is_some() {
-            self.take_back(handle, &list);
-        }
+        let (taken_back, moved_to) = if refused.is_some() {
+            self.take_back(handle, &list)
+        } else {
+            (Vec::new(), None)
+        };
         self.ask_again_due();
         let mut adoption = self.adopt_into(handle, &list, unknown_here);
-        adoption.refused = refused;
+        adoption.release.extend(taken_back);
+        adoption.refused = refused.map(|why| Refused { why, moved_to });
         Some((list, adoption))
     }
 
@@ -1570,8 +1623,15 @@ impl crate::Shared {
             else {
                 return;
             };
-            for why in adoption.refused.iter().chain(&personal.refused_choices()) {
-                crate::directory::list_refused_notice(&*self.telling(), why);
+            if let Some(refused) = &adoption.refused {
+                crate::directory::list_refused_notice(
+                    &*self.telling(),
+                    &refused.why,
+                    refused.moved_to.as_deref(),
+                );
+            }
+            for why in personal.refused_choices() {
+                crate::directory::list_refused_notice(&*self.telling(), &why, None);
             }
             let mut enter = adoption.enter;
             // A workspace on this session the person's list does not carry (one
@@ -2173,8 +2233,9 @@ mod tests {
     }
 
     /// What the daemon refuses to write of the shell comes back off it: a renamed workspace shows
-    /// the name the list holds again, one made here that the list refused stays on this device
-    /// alone, the person hears why, and nothing is sent again.
+    /// the name the list holds again, one made here that the list refused comes off the shell with
+    /// its windows moved where the person finds them, the person hears why, and nothing is sent
+    /// again.
     #[test]
     fn a_change_the_daemon_refuses_comes_back_as_the_list_holds_it() {
         let person = Person::start();
@@ -2196,8 +2257,8 @@ mod tests {
         assert!(
             adoption
                 .refused
-                .as_deref()
-                .is_some_and(|why| why.contains("control characters")),
+                .as_ref()
+                .is_some_and(|refused| refused.why.contains("control characters")),
             "the person hears why: {adoption:?}"
         );
         assert_eq!(
@@ -2212,12 +2273,38 @@ mod tests {
 
         let second = WorkspaceId::new();
         open_here(&laptop_shell, second, "Tab\u{9}");
+        let mut tree = laptop_shell.read(Clone::clone);
+        tree.workspaces[1]
+            .strips
+            .push(tilo_desktop_model::Strip::new(
+                tilo_desktop_model::StripId(9_999),
+                "",
+            ));
+        let windows = tree
+            .workspaces
+            .iter()
+            .map(|held| held.strips.len())
+            .sum::<usize>();
+        laptop_shell.replace_tree(tree);
         let adoption = pass(&mut laptop, &laptop_shell);
-        assert!(adoption.refused.is_some(), "{adoption:?}");
+        assert_eq!(
+            adoption
+                .refused
+                .and_then(|refused| refused.moved_to)
+                .as_deref(),
+            Some("Session"),
+            "the person hears where its windows went"
+        );
         assert!(!names(&laptop, second), "the list does not name it");
-        assert!(
-            on_shell(&laptop_shell).contains(&second),
-            "it stays on this device"
+        assert_eq!(
+            on_shell(&laptop_shell),
+            [first],
+            "it comes off the shell, as the list holds it"
+        );
+        assert_eq!(
+            laptop_shell.read(|tree| tree.workspaces[0].strips.len()),
+            windows,
+            "and what it held stays where the person finds it"
         );
         let list = laptop.read().expect("the list reads");
         assert!(

@@ -268,14 +268,25 @@ pub(crate) fn awaiting_notice(notices: &dyn Notices, name: &str, host: &str) {
 }
 
 /// Say the daemon refused a change the person made to their workspaces here, and why: the shell
-/// shows them as their list holds them again.
-pub(crate) fn list_refused_notice(notices: &dyn Notices, why: &str) {
+/// shows them as their list holds them again, and the windows of one that came off it went into
+/// `moved_to`.
+pub(crate) fn list_refused_notice(notices: &dyn Notices, why: &str, moved_to: Option<&str>) {
+    let body = match moved_to {
+        Some(workspace) => format!(
+            "{why} {}",
+            tilo_session_core::desktop::i18n::t_args(
+                "session-workspace-list-refused-moved",
+                &[("workspace", workspace.into())],
+            )
+        ),
+        None => why.to_owned(),
+    };
     notices.show(
         &Notice::new(
             String::new(),
             2,
             tilo_session_core::desktop::i18n::t("session-workspace-list-refused"),
-            why,
+            body,
         )
         .about(NotificationIconKind::Workspace),
     );
