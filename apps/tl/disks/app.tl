@@ -7,6 +7,7 @@ app so.tilo.disks "Disks" (
 )
 
 use so.tilo.device as device
+use so.tilo.session as session
 
 /// The names a person gives their drives, by serial number: the workspace's, so a name follows
 /// the drive to every device it is plugged into.
@@ -81,6 +82,7 @@ view window(d: Disks) {
     state tab: Text = "overview"
     state formatting: Text = ""
     state filesystem: Text = "ext4"
+    state chosen_part: Text = ""
     let disks = device.disks
     let drive = disks.drives.find(item -> item.name == chosen)
     ui.NavShell(content_kind: .page, title: "Disks", sidebar_title: "Drives") {
@@ -105,7 +107,7 @@ view window(d: Disks) {
             }
         }
         if let drive = drive {
-            drive_detail(d, disks, drive, tab, formatting)
+            drive_detail(d, disks, drive, tab, formatting, chosen_part)
         } else {
             ui.EmptyState(
                 "Choose a drive",
@@ -171,6 +173,7 @@ view drive_detail(
     drive: device.Drive,
     tab: State<Text>,
     formatting: State<Text>,
+    chosen_part: State<Text>,
 ) {
     ui.ObjectHeader(
         drive_name(d, drive),
@@ -188,7 +191,7 @@ view drive_detail(
     } else if tab == "partitions" {
         partitions_pane(d, drive, formatting)
     } else {
-        overview_pane(d, disks, drive, formatting)
+        overview_pane(d, disks, drive, formatting, chosen_part)
     }
 }
 
@@ -201,20 +204,42 @@ fn tab_key(index: Int) -> Text {
 }
 
 /// The drive as one bar: its partitions by size, then the space no partition uses.
-view overview_pane(d: Disks, disks: device.Disks, drive: device.Drive, formatting: State<Text>) {
+view overview_pane(
+    d: Disks,
+    disks: device.Disks,
+    drive: device.Drive,
+    formatting: State<Text>,
+    chosen_part: State<Text>,
+) {
     let free = drive.size_bytes - allocated(drive, 0)
     ui.Section("How it is divided") {
         if drive.size_bytes > 0 {
             row(gap: .none) {
                 for partition in drive.partitions {
-                    shape(
+                    partition_block(
+                        partition,
                         partition.size_bytes * 1000 / drive.size_bytes,
-                        partition.mountpoint != .none,
+                        chosen_part,
                     )
                 }
                 if free > 0 {
-                    shape(free * 1000 / drive.size_bytes, false)
+                    free_block(free * 1000 / drive.size_bytes)
                 }
+            }
+            // The legend names each piece of the bar; choosing one shows what it is.
+            row(gap: .tight, wrap: true) {
+                for partition in drive.partitions {
+                    ui.Chip(
+                        "{partition.name} · {size_words(partition.size_bytes)}",
+                        selected: chosen_part == partition.name,
+                    ) {
+                        on press: set(chosen_part, partition.name)
+                    }
+                }
+                ui.Chip("Unallocated · {size_words(free)}")
+            }
+            if let part = drive.partitions.find(item -> item.name == chosen_part) {
+                ui.Text(partition_words(part), role: .caption, secondary: true)
             }
         }
         ui.PropertyList {
@@ -244,12 +269,14 @@ view overview_pane(d: Disks, disks: device.Disks, drive: device.Drive, formattin
                     on press: device.unmount(device.disks, device: part.name)
                 }
                 ui.Text("Open at {mounted}", role: .caption, secondary: true)
+                ways_on(d, mounted)
             }
         } else if let mounted = drive.mountpoint {
             ui.Button("Close", icon: .log_out) {
                 on press: device.unmount(device.disks, device: drive.name)
             }
             ui.Text("Open at {mounted}", role: .caption, secondary: true)
+            ways_on(d, mounted)
         } else if not drive.partitions.is_empty() {
             ui.Button("Open the first partition", icon: .folder_open, role: .primary) {
                 on press: mount_first(drive)
@@ -281,9 +308,10 @@ action mount_first(drive: device.Drive) {
     }
 }
 
-/// A piece of the drive's bar: its share of a thousand, filled while it is open.
-view shape(share: Int, mounted: Bool) {
-    let text = if mounted { "open" } else { "" }
+/// One partition's piece of the drive's bar. It is a control: pressing it shows what the
+/// partition is, and assistive technology reads the partition's name and facts.
+view partition_block(partition: device.Partition, share: Int, chosen_part: State<Text>) {
+    let open = partition.mountpoint != .none
     ui.Drawing(
         [
             ui.Shape.rect(
@@ -291,15 +319,49 @@ view shape(share: Int, mounted: Bool) {
                 y: 0.0,
                 w: 1.0,
                 h: 1.0,
-                fill: .some(if mounted { .accent } else { .track }),
+                fill: .some(if open { .accent } else { .track }),
             ),
         ],
+        meaning: .picture,
+        label: "{partition.name}: {partition_words(partition)}",
+        width: share.to_float(),
+        height: 12.0,
+        fill,
+    ) {
+        on press: set(chosen_part, partition.name)
+    }
+}
+
+/// The share of the bar no partition uses.
+view free_block(share: Int) {
+    ui.Drawing(
+        [ui.Shape.rect(x: 0.0, y: 0.0, w: 1.0, h: 1.0, fill: .some(.track))],
         meaning: .decoration,
-        label: text,
+        label: "",
         width: share.to_float(),
         height: 12.0,
         fill,
     )
+}
+
+/// The two ways on into a mounted folder: Files opens it, Disk Usage measures it.
+view ways_on(d: Disks, path: Text) {
+    ui.Button("Open in Files", icon: .folder_open) {
+        on press: open_in_files(d, path)
+    }
+    ui.Button("Disk Usage", icon: .gauge) {
+        on press: open_usage(d)
+    }
+}
+
+/// Opens a mounted folder in Files.
+action open_in_files(d: Disks, path: Text) uses files (icon: .folder_open, label: "Open in Files") {
+    File.open(path)
+}
+
+/// Opens Disk Usage, where a folder's use is measured.
+action open_usage(d: Disks) (icon: .gauge, label: "Open Disk Usage") {
+    session.open_app(app: "so.tilo.disk-usage")
 }
 
 /// The drive's own account of its health.
@@ -363,21 +425,32 @@ view partitions_pane(d: Disks, drive: device.Drive, formatting: State<Text>) {
     }
     stack(gap: .none) {
         for partition in drive.partitions {
+            let locked = locked_partition(partition)
             ui.ListRow(
                 partition.name,
                 secondary: partition_words(partition),
-                value: if partition.mountpoint != .none {
+                value: if locked {
+                    std.say("Locked")
+                } else if partition.mountpoint != .none {
                     std.say("Open")
                 } else { std.say("Closed") },
-                icon: if partition.mountpoint != .none { .folder_open } else { .hard_drive },
+                icon: if locked {
+                    .lock
+                } else if partition.mountpoint != .none { .folder_open } else { .hard_drive },
             ) {
                 trailing: {
-                    row(gap: .tight) {
+                    row(gap: .tight, wrap: true) {
                         if let mount = partition.mountpoint {
                             ui.Text(mount, role: .caption, secondary: true)
                             ui.Button("Close", size: .small) {
                                 on press: device.unmount(device.disks, device: partition.name)
                             }
+                            ways_on(d, mount)
+                        } else if locked {
+                            if let scheme = encryption_words(partition) {
+                                ui.Badge(scheme, tone: .warning)
+                            }
+                            ui.Text("Locked; unlock it first", role: .caption, secondary: true)
                         } else {
                             ui.Button("Open", size: .small, role: .primary) {
                                 on press: device.mount(device.disks, device: partition.name)
@@ -412,16 +485,33 @@ fn label_of(partition: device.Partition) -> Text {
 }
 
 fn partition_words(partition: device.Partition) -> Text {
-    let kind = if let fstype = partition.fstype { fstype } else { std.say("no filesystem") }
+    let kind = if locked_partition(partition) {
+        std.say("nothing inside")
+    } else if let fstype = partition.fstype { fstype } else { std.say("no filesystem") }
     let label = if let label = partition.label { label } else { "" }
     let type_name = if let type_name = partition.part_type_name { type_name } else { "" }
-    if label != "" {
-        "{size_words(partition.size_bytes)}, {kind}, {label}"
-    } else if type_name != "" {
-        "{size_words(partition.size_bytes)}, {kind}, {type_name}"
-    } else {
-        "{size_words(partition.size_bytes)}, {kind}"
-    }
+    let scheme = if let encryption = encryption_words(partition) {
+        std.say(", {encryption}")
+    } else { "" }
+    let held = if label != "" {
+        "{kind}, {label}"
+    } else if type_name != "" { "{kind}, {type_name}" } else { kind }
+    "{size_words(partition.size_bytes)}, {held}{scheme}"
+}
+
+/// How a partition is encrypted: its scheme, and whether it is open.
+fn encryption_words(partition: device.Partition) -> Option<Text> {
+    if let encryption = partition.encryption {
+        if encryption.unlocked_as == .none {
+            .some(std.say("{encryption.scheme}, locked"))
+        } else { .some(encryption.scheme) }
+    } else { .none }
+}
+
+/// Whether the partition is encrypted and not unlocked: its filesystem is inside the mapping,
+/// which this device has not opened.
+fn locked_partition(partition: device.Partition) -> Bool {
+    if let encryption = partition.encryption { encryption.unlocked_as == .none } else { false }
 }
 
 /// Erases the device the confirmation named, and writes the chosen filesystem.
