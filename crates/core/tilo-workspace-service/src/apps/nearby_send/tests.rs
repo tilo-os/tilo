@@ -632,7 +632,8 @@ mod a_receiver_that_is_not_one_of_yours {
                         Ok((socket, _)) => {
                             let index =
                                 connections.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                            let config = Arc::clone(&configs[usize::from(index != 0)]);
+                            let served = usize::from(rotate && index != 0);
+                            let config = Arc::clone(&configs[served]);
                             receive(
                                 socket, &config, &state.0, &state.1, &state.2, answer, stall_ask,
                             );
