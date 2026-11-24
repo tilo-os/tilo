@@ -3411,6 +3411,7 @@ impl ResourceStore {
             }
         }
         let who = stamp.invoked_by();
+        let acted_for = stamp.acted_for.clone();
         // A step that took changes back is History's, not an action's.
         let action = if stamp.undoes.is_some() {
             tilolang_runtime::store::STEP_ACTION.to_owned()
@@ -3440,6 +3441,7 @@ impl ResourceStore {
             count: 1,
             gesture: Some(stamp.invocation.clone()),
             invocation: Some(stamp.invocation),
+            acted_for,
         }
     }
 
@@ -3621,6 +3623,7 @@ impl ResourceStore {
                 }
             }
             into.from = into.from.take().or(version.from);
+            into.acted_for = into.acted_for.take().or(version.acted_for);
             into.left = into.left.take().or(version.left);
             for placed in version.placed {
                 if !into.placed.contains(&placed) {

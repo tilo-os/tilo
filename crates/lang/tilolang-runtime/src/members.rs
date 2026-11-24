@@ -353,14 +353,14 @@ impl Core {
                     }
                 }
                 let created = self.store.borrow().version_end(at, false).ok().flatten()?;
-                Some(vec![self.made_by(&created, at)])
+                Some(vec![self.whose(&created, at)])
             }
             // `(readers: author and moderator)`: whoever made the record, and every member whose
             // role includes the one named, as the workspace has them now; the store seals it to
             // that role's group, which follows the same roles.
             ReaderRule::AuthorAnd { role } => {
                 let created = self.store.borrow().version_end(at, false).ok().flatten()?;
-                let mut readers = vec![self.made_by(&created, at)];
+                let mut readers = vec![self.whose(&created, at)];
                 for member in self.read_members() {
                     let who = member.who();
                     if member.role.is_some_and(|held| held.includes(role))

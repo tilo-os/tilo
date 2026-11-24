@@ -286,6 +286,23 @@ fn a_record_an_agent_makes_is_the_person_it_acts_for() {
         panic!("the action made one draft: {made:?}");
     };
     ada.commit();
+    // The runtime answers what the store does: the draft is Ada's, though her agent wrote it,
+    // and history still names the agent as who wrote it.
+    ada.host.runtime().set_members(
+        vec![
+            tilolang_runtime::members::Member::person("ada", tilo_actions::policy::Role::Owner),
+            tilolang_runtime::members::Member::person("ben", tilo_actions::policy::Role::Editor),
+        ],
+        None,
+    );
+    assert!(ada.host.runtime().may_read(&person("ada"), draft));
+    assert!(!ada.host.runtime().may_read(&person("ben"), draft));
+    let versions = ada.host.runtime().versions(draft).unwrap();
+    assert_eq!(
+        versions.first().and_then(|made| made.who.clone()),
+        Some(Actor::from(MemberId::agent("helper"))),
+        "who made it is the agent"
+    );
     for other in [&laptop, &ben] {
         ada.send_to(other);
     }

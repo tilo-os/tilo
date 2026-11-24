@@ -13,7 +13,10 @@
 //! for Ada, and two messages she sent, one waiting in the outbox and one that went.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{ResourceRef, Value};
+use tilo_actions::policy::Role;
+use tilolang_runtime::members::Member;
+use tilolang_runtime::{Actor, ResourceRef, Value};
+use tilolang_tilo::runtime::ids::MemberId;
 
 use crate::fixtures::{MAIL_SET, Replica, Workspace, target};
 
@@ -62,6 +65,32 @@ fn rows(r: &Replica, mail: &ResourceRef) -> Vec<Row> {
         })
         .collect();
     out.sort_by(|a, b| a[5].cmp(&b[5]));
+    out
+}
+
+/// Who of the workspace's members reads each draft of the mailbox, as the runtime answers it
+/// (`std.may_read`), by subject.
+fn who_reads(r: &Replica, mail: &ResourceRef) -> Vec<(String, Vec<String>)> {
+    let Value::List(items) = r.host.runtime().read(mail, "drafts").unwrap() else {
+        panic!("the drafts read as a list");
+    };
+    let mut out: Vec<(String, Vec<String>)> = items
+        .iter()
+        .map(|item| {
+            let draft = target(item);
+            let readers = ["u_ada", "u_leo"]
+                .into_iter()
+                .filter(|who| {
+                    r.host
+                        .runtime()
+                        .may_read(&Actor::from(MemberId::person(*who)), &draft)
+                })
+                .map(str::to_owned)
+                .collect();
+            (text(r, &draft, "subject"), readers)
+        })
+        .collect();
+    out.sort();
     out
 }
 
@@ -189,6 +218,26 @@ fn a_native_mailbox_is_carried_over_once_each_draft_its_authors() {
     );
     assert_eq!(ada.host.migrate(), 0, "it runs once");
     assert_eq!(ada.commit(), 0);
+
+    // Where they were carried, each draft is read by whoever wrote it and no one else.
+    ada.host.runtime().set_members(
+        vec![
+            Member::person("u_ada", Role::Owner),
+            Member::person("u_leo", Role::Editor),
+        ],
+        None,
+    );
+    assert_eq!(
+        who_reads(&ada, &mail),
+        [
+            ("Offsite", "u_ada"),
+            ("Quarterly numbers", "u_ada"),
+            ("Re: Lunch", "u_ada"),
+            ("Rota", "u_leo"),
+            ("Your launch numbers", "u_ada"),
+        ]
+        .map(|(subject, reader)| (subject.to_owned(), vec![reader.to_owned()]))
+    );
 
     // Ada's other device, opening the same mailbox and the same native documents later, finds
     // it done and holds her drafts alone; Leo's holds his own and none of hers.

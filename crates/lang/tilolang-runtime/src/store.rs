@@ -499,9 +499,30 @@ pub struct Version {
     /// ([`crate::run::Journal::invocation`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation: Option<String>,
+    /// The person the change was made for, when whoever made it ([`Version::who`]) acted for
+    /// someone: an agent's draft for the person it works for, a migration's record for whoever
+    /// wrote the item it carries. What the change made is theirs ([`Version::whose`]), while
+    /// history still says who did it. `None` where no one acted for anyone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acted_for: Option<String>,
 }
 
 impl Version {
+    /// Whose what this version made is: whoever made it when that is a person, else the person
+    /// they acted for, as the store places a record its type says its author reads. `None` when
+    /// it is no person's (an app's own change, an agent acting for no one).
+    #[must_use]
+    pub fn whose(&self) -> Option<Actor> {
+        self.who
+            .clone()
+            .filter(|who| who.member_id().is_some_and(crate::ids::MemberId::is_person))
+            .or_else(|| {
+                self.acted_for
+                    .as_deref()
+                    .map(|person| Actor::from(crate::ids::MemberId::person(person)))
+            })
+    }
+
     /// What orders two versions, the same on every replica: when it happened, then the
     /// change's causal place for the versions one second holds, then the change itself for two
     /// that are neither before the other.
@@ -757,6 +778,7 @@ pub fn versions_in<'c>(
                 count: note.count.max(1),
                 gesture: None,
                 invocation: note.invocation,
+                acted_for: None,
             }
         })
         .collect();

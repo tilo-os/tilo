@@ -869,6 +869,13 @@ impl Core {
         self.actor(who, mine)
     }
 
+    /// Whose what the version `v` of `of` made is ([`crate::store::Version::whose`]): the
+    /// person a record its type says its author reads is read by. Whoever made it where it is no
+    /// person's, as [`Core::made_by`] names them.
+    pub(crate) fn whose(&self, v: &crate::store::Version, of: &ResourceRef) -> Actor {
+        v.whose().unwrap_or_else(|| self.made_by(v, of))
+    }
+
     /// Who made the version `v` of `of`: its actor, or for a change the platform made that
     /// names no one, the app whose resource it is.
     pub(crate) fn made_by(&self, v: &crate::store::Version, of: &ResourceRef) -> Actor {
