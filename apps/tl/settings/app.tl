@@ -31,7 +31,12 @@ default view settings_window for Settings
 
 /// The window: the panes down the side under what they are for, the chosen one beside them.
 view settings_window(s: Settings) {
-    ui.NavShell(content_kind: .page, title: pane_title(s.pane), sidebar_title: "Settings") {
+    ui.NavShell(
+        content_kind: .page,
+        title: pane_title(s.pane),
+        content_key: s.pane,
+        sidebar_title: "Settings",
+    ) {
         sidebar: {
             ui.NavList(selected: s.pane) {
                 ui.NavSection("Connectivity") {

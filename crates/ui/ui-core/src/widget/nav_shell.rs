@@ -721,6 +721,11 @@ pub struct NavShell {
     switch_fade: crate::motion::Presence,
     /// Which columns ([`Column::index`]) the layout switch fades in.
     switch_columns: [bool; 4],
+    /// What the content shows, as its owner names it (`NavShellProps::content_key`): when it
+    /// changes, the new content is faded in where the old one stood.
+    content_key: Option<String>,
+    /// The fade of the content a change of [`Self::content_key`] brings.
+    content_fade: crate::motion::Presence,
     /// A slide, push or fade is moving, or its last pose has yet to be laid
     /// out: the host owes the shell a frame.
     animating: bool,
@@ -864,6 +869,8 @@ impl NavShell {
             fade: crate::motion::Presence::opened(),
             switch_fade: crate::motion::Presence::opened(),
             switch_columns: [false; 4],
+            content_key: None,
+            content_fade: crate::motion::Presence::opened(),
             animating: false,
             settling: false,
             built: false,
@@ -1882,6 +1889,7 @@ impl NavShell {
         }
         self.fade = crate::motion::Presence::opened();
         self.switch_fade = crate::motion::Presence::opened();
+        self.content_fade = crate::motion::Presence::opened();
         self.switch_columns = [false; 4];
         self.animating = false;
         self.settling = false;
@@ -2209,6 +2217,10 @@ impl NavShell {
             self.paint_dirty = true;
             moving = true;
         }
+        if self.content_fade.is_moving(now) {
+            self.paint_dirty = true;
+            moving = true;
+        }
         self.settling = false;
         if moving || advanced {
             self.invalidate();
@@ -2219,6 +2231,39 @@ impl NavShell {
             self.animating = false;
             self.settling = true;
         }
+    }
+
+    /// What the content shows changed (`NavShellProps::content_key`): what it shows now fades in
+    /// where the one before it stood, on the theme's cross-fade, and lands at once for a person
+    /// who asked for less motion. The layout is the new content's from this frame, so a page never
+    /// waits for an old one to leave.
+    pub(super) fn content_replaced(&mut self, key: Option<String>) {
+        let changed = key != self.content_key;
+        self.content_key = key;
+        if !changed {
+            return;
+        }
+        let now = crate::motion::frame_now();
+        let source =
+            crate::motion::recent_input(now).unwrap_or(crate::tokens::MotionSource::Action);
+        // The content it shows now is what the window shows: on a narrow window, where the list
+        // stands in front, it comes forward as a place chosen from that list does.
+        if self.has_content() {
+            self.show_from(NavPane::Content, source);
+        }
+        self.content_fade.snap(false);
+        self.content_fade.show(
+            true,
+            crate::motion::CROSS_FADE,
+            self.layout_theme.motion(),
+            source,
+            now,
+        );
+        if let Some(until) = self.content_fade.settles_at() {
+            crate::motion::want_frames_until(until);
+        }
+        self.paint_dirty = true;
+        self.invalidate();
     }
 
     fn fading_in(motion: crate::tokens::EffectiveMotion) -> crate::motion::Presence {
@@ -2451,6 +2496,7 @@ impl NavShell {
     fn paint(&mut self, f: &mut Frame<'_>) {
         let g = self.geometry.clone();
         let fade = unit_f32(self.fade.progress(crate::motion::frame_now()));
+        let content = unit_f32(self.content_fade.progress(crate::motion::frame_now()));
 
         let inspector_region =
             g.inspector == InspectorPlacement::Docked && g.inspector_column.width() > 0.0;
@@ -2500,7 +2546,23 @@ impl NavShell {
                     f.theme,
                 );
             }
+            // What the content shows changed: the content it shows now arrives in place of the
+            // one before it, fading in where that one stood.
+            let arriving = column == Column::Content && content < 1.0;
+            if arriving {
+                let rect = g.column(Column::Content);
+                f.scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    content,
+                    f.transform,
+                    &rect,
+                );
+            }
             self.paint_column(f, column);
+            if arriving {
+                f.scene.pop_layer();
+            }
             if faded {
                 f.scene.pop_layer();
             }

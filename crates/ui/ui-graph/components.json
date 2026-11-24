@@ -4777,6 +4777,13 @@
           }
         },
         {
+          "name": "content_key",
+          "doc": "What the content shows, as the app names it (the pane in front, the place opened): when it changes, what the content shows fades in where the one before it stood, on the theme's cross-fade. Nothing when the content is not a thing that changes.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "count",
           "doc": "How many things the content lists, beside its title.",
           "type": {
