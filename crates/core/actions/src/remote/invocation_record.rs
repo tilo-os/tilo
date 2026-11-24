@@ -46,15 +46,7 @@ fn given(mut state: InvocationState) -> InvocationState {
 /// ([`super::person_vault::SEALED_ARGUMENTS`] of the vault's add), which reach the provider in
 /// the call alone. Run again from its record, such a call is refused for want of its secret.
 fn journaled(request: &InvokeRequest) -> InvokeRequest {
-    let mut kept = request.clone();
-    if super::person_vault::seals_arguments(&request.target)
-        && let InvokeArgument::Json(arguments) = &mut kept.argument
-    {
-        for sealed in super::person_vault::SEALED_ARGUMENTS {
-            arguments.remove(sealed);
-        }
-    }
-    kept
+    super::person_vault::without_sealed(request).0
 }
 
 /// Where an invocation runs: the provider, and the caller it runs as there.

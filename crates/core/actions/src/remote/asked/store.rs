@@ -45,6 +45,10 @@ pub const NOTHING_ASKED: &str = "Nothing waits for an answer under that record";
 /// What an answer from another device to a question answered only where it was asked (what
 /// the person types in secret, the files they pick) is refused with.
 pub const ANSWERED_THERE: &str = "This question is answered on the device that asked it";
+/// What an approve of a call whose secret this device no longer holds is refused with: it was
+/// asked before the device started again, and its record never kept the secret.
+pub const SECRET_GONE: &str = "This was asked before the device restarted, so its secret is no \
+                               longer here: ask again";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Status {
@@ -77,6 +81,52 @@ struct Record {
     /// The window a person's press asked it in ([`AskedDispatch::pressed`]): where its question
     /// stands.
     pressed: Option<super::Pressed>,
+    /// The arguments the call carried that its record keeps none of, by name
+    /// ([`KeptAsk::sealed`]): [`Self::request`] is the call without them.
+    sealed: Vec<String>,
+    /// Their values, while this device holds them: from the call until it is answered.
+    held: Option<Held>,
+    /// A digest of them, from the call on ([`digest_of`]).
+    digest: Option<[u8; 32]>,
+}
+
+/// The values of a call's sealed arguments, held in this device's memory alone while its record
+/// waits, and wiped once it is answered.
+struct Held {
+    /// The arguments, as JSON.
+    values: Zeroizing<Vec<u8>>,
+}
+
+impl Held {
+    /// The sealed arguments `sealed` of a call, held: none where it carried none.
+    fn of(sealed: &serde_json::Map<String, serde_json::Value>) -> Option<Self> {
+        if sealed.is_empty() {
+            return None;
+        }
+        Some(Self {
+            values: encoded(sealed),
+        })
+    }
+
+    /// The held arguments, as the call carried them.
+    fn arguments(&self) -> Option<serde_json::Map<String, serde_json::Value>> {
+        serde_json::from_slice(&self.values).ok()
+    }
+}
+
+/// `sealed` as JSON, wiped once it is dropped.
+fn encoded(sealed: &serde_json::Map<String, serde_json::Value>) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(
+        serde_json::Value::Object(sealed.clone())
+            .to_string()
+            .into_bytes(),
+    )
+}
+
+/// A digest of the sealed arguments `sealed`, to tell a frame that carries the call again that
+/// it carries the same ones: none where it carried none.
+fn digest_of(sealed: &serde_json::Map<String, serde_json::Value>) -> Option<[u8; 32]> {
+    (!sealed.is_empty()).then(|| *blake3::hash(&encoded(sealed)).as_bytes())
 }
 
 /// The arguments `answer` changes `record`'s call to, through the form its ask offers
@@ -119,6 +169,7 @@ impl Record {
             outcome: None,
             edited: self.edited.clone(),
             pressed: self.pressed.clone(),
+            sealed: self.sealed.clone(),
         }
     }
 }
@@ -258,6 +309,9 @@ impl AskedStore {
                 context: ask.context,
                 edited: None,
                 pressed: ask.pressed,
+                sealed: ask.sealed,
+                held: None,
+                digest: None,
             });
         }
         kept.moved();
@@ -326,6 +380,8 @@ impl AskedStore {
         (name, dispatch): (&str, &Weak<dyn AskedDispatch>),
     ) -> Result<RecordRef, String> {
         let person = asked_person(caller).ok_or("the call acts for no person to ask")?;
+        // The secret a call carries is held here alone, never kept with its record.
+        let (request, sealed) = &super::super::person_vault::without_sealed(request);
         let at = RecordRef {
             workspace: workspace.to_owned(),
             // The invocation's own id: what the workspace's invocations publish it under.
@@ -375,6 +431,9 @@ impl AskedStore {
             context,
             edited: None,
             pressed,
+            sealed: sealed.keys().cloned().collect(),
+            held: Held::of(sealed),
+            digest: digest_of(sealed),
         };
         self.keep(&record.kept());
         kept.records.push(record);
@@ -398,11 +457,13 @@ impl AskedStore {
         };
         // The arguments its person changed, if they did, are the ones the approve carries.
         let as_changed = approval.arguments.as_deref() == record.edited.as_ref();
+        let (call, sealed) = super::super::person_vault::without_sealed(request);
         let admitted = record.status == Status::Running
             && !record.relayed
             && record.invocation == request.invocation
             && as_changed
-            && super::same_call(&record.request, request);
+            && digest_of(&sealed) == record.digest
+            && super::same_call(&record.request, &call);
         if admitted {
             record.relayed = true;
         }
@@ -434,6 +495,15 @@ impl AskedStore {
         }
         match admitted {
             Err(error) => Pending::ready(Err(error)),
+            Ok(Admitted::Gone(caller, invocation, dispatch)) => {
+                if at_root {
+                    // The device that asked reads that it ended.
+                    self.settle_for(invocation, secret_gone(invocation));
+                } else if let Some(dispatch) = self.dispatch(&dispatch).upgrade() {
+                    dispatch.withdrawn(&caller, invocation, SECRET_GONE);
+                }
+                Pending::ready(Err(refused(SECRET_GONE)))
+            }
             Ok(Admitted::Declined(caller, invocation, dispatch)) => {
                 Pending::ready(match self.dispatch(&dispatch).upgrade() {
                     Some(dispatch) => dispatch.declined(&caller, invocation),
@@ -455,10 +525,13 @@ impl AskedStore {
                 let written = grants.grant(&at.workspace, &person, grant);
                 let (done, answer) = pending();
                 let (store, at) = (Arc::clone(self), at.clone());
-                let reopen = move || store.reopen(&at);
                 written.then(move |written| {
+                    let reopen = || store.reopen(&at);
                     let result = match written {
-                        Some(Ok(())) => readmit(&dispatch, &caller, *request, &context),
+                        Some(Ok(())) => {
+                            store.release_held(&at);
+                            readmit(&dispatch, &caller, *request, &context)
+                        }
                         Some(Err(why)) => {
                             reopen();
                             Err(refused(&format!("The grant was not written: {why}")))
@@ -537,9 +610,16 @@ impl AskedStore {
         let caller = record.caller.clone();
         let dispatch = record.dispatch.clone();
         let context = record.context.clone();
+        let held = record.held.as_ref().and_then(Held::arguments);
         let admitted = if answer.resolution == Offer::Decline {
             record.status = Status::Declined;
+            record.held = None;
             Admitted::Declined(caller, record.invocation, dispatch)
+        } else if !record.sealed.is_empty() && held.is_none() {
+            // Asked before this device started again: what it was asked with is gone, and it
+            // never runs without it.
+            record.status = Status::Withdrawn;
+            Admitted::Gone(caller, record.invocation, dispatch)
         } else {
             record.status = Status::Running;
             record.edited.clone_from(&edited);
@@ -548,6 +628,16 @@ impl AskedStore {
             // them as a fresh call with them would be, so the action's contract checks them.
             if let Some(arguments) = &edited {
                 request.argument = super::super::InvokeArgument::Json(arguments.clone());
+            }
+            if let Some(held) = held {
+                match &mut request.argument {
+                    super::super::InvokeArgument::Json(arguments) => arguments.extend(held),
+                    argument => *argument = super::super::InvokeArgument::Json(held),
+                }
+            }
+            // Held until the call is handed back, or its grant written.
+            if grant.is_none() {
+                record.held = None;
             }
             request.confirmation = Some(super::super::Confirmation::Asked(Approval {
                 chosen: answer.chosen.clone(),
@@ -586,6 +676,7 @@ impl AskedStore {
             return;
         };
         record.status = Status::Withdrawn;
+        record.held = None;
         let (caller, invocation, dispatch) = (
             record.caller.clone(),
             record.invocation,
@@ -634,6 +725,9 @@ impl AskedStore {
     pub fn take_in(&self, asks: Vec<KeptAsk>) {
         let here = self.here.get().cloned();
         let mut resumed = Vec::new();
+        // Answered calls whose secret went with this device's memory: they end, never run
+        // without it.
+        let mut gone = Vec::new();
         let mut kept = self.kept.lock_recover();
         let before = kept.records.len();
         for ask in asks {
@@ -650,7 +744,9 @@ impl AskedStore {
                 Some(_) => continue,
             };
             let caller = ask.caller.restored();
-            if status == Status::Running {
+            if status == Status::Running && !ask.sealed.is_empty() {
+                gone.push(ask.request.invocation);
+            } else if status == Status::Running {
                 // As its person answered it: with the arguments they changed, where they did.
                 let mut request = ask.request.clone();
                 if let Some(arguments) = &ask.edited {
@@ -672,12 +768,18 @@ impl AskedStore {
                 context: ask.context,
                 edited: ask.edited,
                 pressed: ask.pressed,
+                sealed: ask.sealed,
+                held: None,
+                digest: None,
             });
         }
         if kept.records.len() != before {
             kept.moved();
         }
         drop(kept);
+        for invocation in gone {
+            self.settle_for(invocation, secret_gone(invocation));
+        }
         let dispatch = self.dispatch(super::AT_ROOT);
         for (caller, request, context) in resumed {
             let invocation = request.invocation;
@@ -754,6 +856,13 @@ impl AskedStore {
         self.forget(at);
     }
 
+    /// Wipe the sealed arguments held for the record `at`: its call was handed back with them.
+    fn release_held(&self, at: &RecordRef) {
+        if let Some(record) = self.kept.lock_recover().find(at) {
+            record.held = None;
+        }
+    }
+
     /// Put the record `at` back to asked where its answer could not go on (its grant was not
     /// written): nothing of it ran.
     fn reopen(&self, at: &RecordRef) {
@@ -777,6 +886,8 @@ type KeptBy = (String, serde_json::Value);
 
 enum Admitted {
     Declined(Caller, InvocationId, String),
+    /// Its sealed arguments are no longer held here ([`SECRET_GONE`]).
+    Gone(Caller, InvocationId, String),
     Approved(Caller, Box<InvokeRequest>, KeptBy),
     Granting(
         Caller,
@@ -846,6 +957,19 @@ fn admits_what_it_takes(facts: &AskedFacts, answer: &Resolve) -> Result<(), Acti
         }
     }
     Ok(())
+}
+
+/// How a call ends whose secret this device no longer holds ([`SECRET_GONE`]).
+fn secret_gone(invocation: InvocationId) -> crate::InvocationUpdate {
+    crate::InvocationUpdate::Failed {
+        invocation,
+        error: crate::ActionFailure {
+            code: "not_resumed".into(),
+            message: SECRET_GONE.to_owned(),
+            details: None,
+            retryable: false,
+        },
+    }
 }
 
 fn refused(reason: &str) -> ActionCallError {

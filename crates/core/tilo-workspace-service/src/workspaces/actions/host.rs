@@ -1721,6 +1721,8 @@ mod tests;
 mod told_tests;
 #[cfg(test)]
 mod turn_use_tests;
+#[cfg(all(test, feature = "agents"))]
+mod vault_asked_tests;
 #[cfg(test)]
 mod vault_tests;
 #[cfg(test)]

@@ -27,7 +27,7 @@ use super::RemoteActionTarget;
 mod store;
 pub use store::{
     ANSWERED, ANSWERED_THERE, AskedStore, MOST_WAITING, NOT_YOURS, NOTHING_ASKED, ON_YOUR_DEVICE,
-    TOO_MANY_WAIT, Waiting,
+    SECRET_GONE, TOO_MANY_WAIT, Waiting,
 };
 
 /// What a frame carrying an approve no resolve handed back is refused with
@@ -608,20 +608,24 @@ pub fn answering_person(caller: &super::Caller) -> Option<&str> {
     acting.person_id().filter(|person| !person.is_empty())
 }
 
-/// Whether `call` is the call `kept`: the same target and the same arguments, byte for byte as
-/// they travel. Where `call` carries a person's approve that changed the arguments
-/// ([`Approval::arguments`]), it is the kept call with those in place of its own.
+/// Whether `call` is the call `kept`: the same target and the same arguments, as they travel.
+/// Where `call` carries a person's approve that changed the arguments ([`Approval::arguments`]),
+/// it is the kept call with those in place of its own, and with the arguments no record keeps
+/// ([`super::person_vault::SEALED_ARGUMENTS`]) as `kept` carries them.
 #[must_use]
 pub fn same_call(kept: &super::InvokeRequest, call: &super::InvokeRequest) -> bool {
-    let bytes = |target: &super::RemoteActionTarget, argument: &super::InvokeArgument| {
-        serde_json::to_vec(&(target, argument)).ok()
+    let value = |target: &super::RemoteActionTarget, argument: &super::InvokeArgument| {
+        serde_json::to_value((target, argument)).ok()
     };
     let edited = call
         .approval()
         .and_then(|approval| approval.arguments.as_deref().cloned())
-        .map(super::InvokeArgument::Json);
-    let kept = bytes(&kept.target, edited.as_ref().unwrap_or(&kept.argument));
-    matches!((kept, bytes(&call.target, &call.argument)), (Some(a), Some(b)) if a == b)
+        .map(|mut edited| {
+            edited.extend(super::person_vault::without_sealed(kept).1);
+            super::InvokeArgument::Json(edited)
+        });
+    let kept = value(&kept.target, edited.as_ref().unwrap_or(&kept.argument));
+    matches!((kept, value(&call.target, &call.argument)), (Some(a), Some(b)) if a == b)
 }
 
 /// The dispatch that keeps a call waiting in its asked record, as the person's answer reaches
@@ -725,6 +729,11 @@ pub struct KeptAsk {
     /// stands over that window also after a restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pressed: Option<Pressed>,
+    /// The arguments [`Self::request`] carried that the record keeps none of
+    /// ([`super::person_vault::SEALED_ARGUMENTS`]), by name: their values are held in the memory
+    /// of the device that asked alone, and a call kept from before it started again cannot run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sealed: Vec<String>,
 }
 
 /// Where a host keeps the asked records that wait, across its restarts: each kept once it is
