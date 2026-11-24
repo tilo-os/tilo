@@ -256,7 +256,7 @@ impl FirstWorkspace {
             .filter(|(workspace, _, _)| workspaces.contains(workspace))
             .map(|(workspace, name, _)| (workspace, name))
             .collect();
-        std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("tilo-files-show".into())
             .spawn(move || {
                 for (workspace, name) in held {
@@ -264,15 +264,16 @@ impl FirstWorkspace {
                 }
                 let _ = shown.send(());
             })
-            .expect("a thread to show a workspace's files starts");
+        {
+            tracing::warn!(%error, "a thread to show a workspace's files did not start");
+        }
         answer
     }
 }
 
 /// `person`'s own workspace, at the id their key names.
 pub(super) fn own_workspace(person: &[u8; 32]) -> WorkspaceId {
-    WorkspaceId::parse(&tilo_server_protocol::servers::person_workspace_id(person))
-        .expect("a person's workspace id is a workspace id")
+    WorkspaceId::from(collab_types::person_workspace(person))
 }
 
 /// What the daemon's start does for a person whose workspace it holds, done where their workspace

@@ -115,6 +115,7 @@ pub(crate) fn verify_package(
 /// # Errors
 ///
 /// Names the first check that failed; the launch is refused.
+#[cfg(target_os = "macos")]
 pub(super) fn verify_installed(
     catalog: &package_store::Catalog,
     app: &app_catalogue::apps::InstalledApp,
@@ -131,6 +132,7 @@ pub(super) fn verify_installed(
 
 /// Where the GStreamer a runtime package carries finds its plugins and its scanner: only in the
 /// runtime, which the app's sandbox lets it read and nothing write, never in the computer's own.
+#[cfg(any(target_os = "macos", windows))]
 pub(super) fn gstreamer_env(
     plugins: std::path::PathBuf,
     scanner: std::path::PathBuf,

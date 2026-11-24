@@ -38,15 +38,14 @@ async fn reading(
         record: record.to_owned(),
     };
     let caller = caller.clone();
-    let read = tokio::task::spawn_blocking(move || reads.read(&caller, &address))
+    tokio::task::spawn_blocking(move || reads.read(&caller, &address))
         .await
         .expect("the read ends")
         .map(|copy| match copy {
             ResourceCopy::Reading { value, .. } => value,
             ResourceCopy::Absent => Value::Null,
             other => panic!("the invocations are a reading, not {other:?}"),
-        });
-    read
+        })
 }
 
 /// Every invocation the reading of the workspace's record names, newest first.
@@ -195,7 +194,7 @@ fn a_reading_states_what_was_called_by_whom_and_how_it_stands() {
         assert_eq!(listed.len(), 1, "{listed:?}");
         let item = &listed[0];
         assert_eq!(item.id.as_deref(), Some(invocation.as_str()));
-        assert_eq!(item.calls, [invocation.clone()]);
+        assert_eq!(item.calls, std::slice::from_ref(&invocation));
         assert_eq!(item.status, InvocationStatus::Ended, "{item:?}");
         assert_eq!(item.by.kind, "agent", "a key's call is the key's: {item:?}");
         assert_eq!(item.by.name, "Visa backend", "{item:?}");
@@ -464,7 +463,9 @@ fn a_caller_who_may_write_the_origin_may_run_an_invocation_again_and_stop_it() {
 fn the_person_an_agent_works_for_may_run_its_invocation_again() {
     host::run(|host| async move {
         let agent = host.agent();
-        let answered = agent.tool("tilo_do", &json!({"path": "devices#info"})).await;
+        let answered = agent
+            .tool("tilo_do", &json!({"path": "devices#info"}))
+            .await;
         assert!(
             !answered["isError"].as_bool().unwrap_or(false),
             "{answered}"

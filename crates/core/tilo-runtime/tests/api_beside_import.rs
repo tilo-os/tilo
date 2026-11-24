@@ -142,10 +142,7 @@ async fn open_app(host: &host::Host, app: &str) {
 fn made_address(answer: &Value, app: &str) -> String {
     for field in ["resources", "made"] {
         if let Some(entry) = answer[field].as_array().and_then(|made| made.first()) {
-            if let Some(address) = entry["address"]
-                .as_str()
-                .or_else(|| entry["path"].as_str())
-            {
+            if let Some(address) = entry["address"].as_str().or_else(|| entry["path"].as_str()) {
                 return address.to_owned();
             }
             if let Some(id) = entry.as_str().or_else(|| entry["id"].as_str()) {
@@ -213,13 +210,19 @@ async fn beside_an_import(host: &host::Host) {
     let base = format!("/v1/workspaces/{workspace}/resources");
 
     // Her computer keeps the workspace's apps, her tasks, her devices and her folder.
-    open_app(&host, TASKS_APP).await;
-    open_app(&host, CHAT).await;
+    open_app(host, TASKS_APP).await;
+    open_app(host, CHAT).await;
     // The device's own agent, what the import writes through, and the channel it writes into,
     // made once as a person makes one.
     let agent = host.agent();
     let channel = {
-        let made = act(&agent, "so.tilo.chat", "new_channel", &json!({"name": "import"})).await;
+        let made = act(
+            &agent,
+            "so.tilo.chat",
+            "new_channel",
+            &json!({"name": "import"}),
+        )
+        .await;
         made_address(&made, CHAT_APP)
     };
     for index in 0..FILES {
@@ -276,7 +279,7 @@ async fn beside_an_import(host: &host::Host) {
         let channel = channel.as_str();
         async move {
             while !stop.load(Ordering::Relaxed) {
-                act(&agent, channel, "send", &json!({"body": "an imported line"})).await;
+                act(agent, channel, "send", &json!({"body": "an imported line"})).await;
                 written.fetch_add(1, Ordering::Relaxed);
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }

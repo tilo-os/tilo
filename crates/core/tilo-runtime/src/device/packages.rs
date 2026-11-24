@@ -793,7 +793,9 @@ pub fn carry_runtimes(manifest: &tilo_app_package::Manifest) -> Result<(), Strin
         .as_deref()
         .filter(|runtime| !runtime.is_empty())
     {
-        let version = runtime.split_once('/').map_or(runtime, |(_, version)| version);
+        let version = runtime
+            .split_once('/')
+            .map_or(runtime, |(_, version)| version);
         if runtime_bundle::split_abi_version(version).is_none() {
             return Err(format!(
                 "the app's manifest names {runtime}, and a host must declare the exact Tilo runtime \
@@ -1461,9 +1463,9 @@ mod tests {
     #[test]
     fn a_version_the_cache_has_is_run_without_fetching_it() {
         let store = tempfile::tempdir().unwrap();
-        let mut _env = tilo_test_env::ScopedEnv::new();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // The store is this test's whole answer: the image's own is not read over it.
-        _env.remove("TILO_APPS_SYSTEM_DIR")
+        env.remove("TILO_APPS_SYSTEM_DIR")
             .set("TILO_APPS_DATA_DIR", store.path());
         let installed = [9; 32];
         let cache = cache_with_installed(installed, store.path());

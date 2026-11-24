@@ -198,7 +198,8 @@ impl PublishedResources for Served {
     }
 
     fn unwatch(&self, watch: ResourceWatch) {
-        if let Some(task) = self.watches.lock_recover().remove(&watch.id()) {
+        let task = self.watches.lock_recover().remove(&watch.id());
+        if let Some(task) = task {
             task.abort();
         }
     }
@@ -251,8 +252,8 @@ mod tests {
                 }) as BoxFuture<'static, Value>
             })
         };
-        let changes: Arc<Changes> = Arc::new(move || source.clone());
-        let served = Served::later("server", read, changes);
+        let change_source: Arc<Changes> = Arc::new(move || source.clone());
+        let served = Served::later("server", read, change_source);
 
         let (revision, reading) = served.snapshot(&caller(), "server").await.unwrap().unwrap();
         assert_eq!(revision, 1);

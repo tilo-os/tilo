@@ -63,7 +63,8 @@ impl ActionProvider for Workspace {
             return Pending::ready(Err(ActionCallError::NotPermitted));
         }
         if request.approval().is_none() {
-            if let Some(asks) = self.asks.lock().unwrap().clone() {
+            let asks = self.asks.lock().unwrap().clone();
+            if let Some(asks) = asks {
                 return Pending::ready(Err(ActionCallError::asks(asks)));
             }
             return Pending::ready(Err(ActionCallError::asks(
@@ -518,6 +519,10 @@ fn a_waiting_question_reads_in_the_workspaces_invocations() {
 /// with her approve, and is never written to the record, the device's keeping of it or its
 /// reading; the same answer from her other device is refused.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one secret, from the ask to the approve and what is kept of it, read top to bottom"
+)]
 fn a_secret_is_answered_only_where_it_was_asked_and_never_kept() {
     use tilo_actions::remote::asked::{AskedBy, Take};
 

@@ -35,7 +35,7 @@ async fn ask(
     argument: Value,
 ) -> Result<Value, String> {
     let Value::Object(argument) = argument else {
-        unreachable!("an argument is an object")
+        return Err("an argument is an object".to_owned());
     };
     link.ask(
         Arc::new(key.clone()),
@@ -90,6 +90,10 @@ async fn followed(
 /// the certificate the server built and approves. The tab is a device of the person's, kept by
 /// the server, and the ticket is spent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one pairing link, from its ticket to the certificate the page approves, read top to bottom"
+)]
 async fn a_link_logs_a_tab_in_that_the_page_showing_it_approves() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let state = tempfile::tempdir().unwrap();
@@ -383,6 +387,10 @@ async fn the_root_page_lists_and_approves_the_sign_ins_waiting_for_its_person() 
 /// `devices#approve` with the certificate the root signed). The agent hears its certificate at
 /// once, with no restart of anything.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one agent's ticket, approved the way a device's is, read top to bottom"
+)]
 async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let state = tempfile::tempdir().unwrap();
@@ -440,13 +448,12 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
         .author_agents(&workspace, |_| Ok(()))
         .await
         .expect("Studio's list of agents starts");
-    let agents = tilo_agent_session::resource_provider(
-        &tilo_peer_state::document_frame::DocumentRoute {
+    let agents =
+        tilo_agent_session::resource_provider(&tilo_peer_state::document_frame::DocumentRoute {
             app_id: "so.tilo.workspace".to_owned(),
             cluster_id: workspace.clone(),
             document: collab_types::workspace_document_id(AGENTS),
-        },
-    );
+        });
     let from_laptop = Arc::new(
         ActionService::new(laptop_key.clone(), Arc::new(NoActions)).remote(
             &laptop_endpoint,
@@ -574,7 +581,8 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
 
     let heard = tilo_test_env::within("the agent hears its certificate", async {
         loop {
-            if let Some(cert) = certified.borrow_and_update().clone() {
+            let certified_here = certified.borrow_and_update().clone();
+            if let Some(cert) = certified_here {
                 return cert;
             }
             certified.changed().await.expect("the ticket is served");
@@ -797,7 +805,19 @@ async fn tilo_device_add_signs_a_browser_in_at_a_server_serving_a_workspace() {
         ActionService::new(laptop_key.clone(), Arc::new(NoActions)),
     );
 
-    // The server's web entry: a tab asks to be signed in as Ada and is shown a ticket.
+    the_tab_signs_in_at_the_server(&server, &root, &server_cert, &laptop).await;
+    server.shutdown().await;
+}
+
+/// The server's web entry, and the laptop's daemon logged in at it: a tab asks to be signed in as
+/// Ada and is shown a ticket, `tilo device add <ticket>` on the laptop approves what waits, and
+/// the tab ends signed in with the certificate the root signed for it.
+async fn the_tab_signs_in_at_the_server(
+    server: &tilo_server::daemon::Server,
+    root: &SigningKey,
+    server_cert: &DeviceCert,
+    laptop: &Tickets,
+) {
     let host = server_cert.device_public_key;
     let tab = TicketLink::new(tilo_server_client::ServerAddress::at(server.node_addr()));
     let key = new_key();
@@ -823,15 +843,15 @@ async fn tilo_device_add_signs_a_browser_in_at_a_server_serving_a_workspace() {
     );
 
     // `tilo device add <ticket>` on the laptop: what waits, then the root's certificate for it.
-    let pending = ask_device(&laptop, PENDING, json!({ "ticket": text }))
+    let pending = ask_device(laptop, PENDING, json!({ "ticket": text }))
         .await
         .expect("the daemon reads what waits at the server");
     assert_eq!(
         pending["device"],
         hex::encode(key.verifying_key().to_bytes())
     );
-    let cert = signed_for(&root, &key, "Firefox on Linux");
-    ask_device(&laptop, APPROVE, json!({ "ticket": text, "cert": cert }))
+    let cert = signed_for(root, &key, "Firefox on Linux");
+    ask_device(laptop, APPROVE, json!({ "ticket": text, "cert": cert }))
         .await
         .expect("the daemon signs the browser in");
 
@@ -846,5 +866,4 @@ async fn tilo_device_add_signs_a_browser_in_at_a_server_serving_a_workspace() {
     );
 
     tab.close().await;
-    server.shutdown().await;
 }

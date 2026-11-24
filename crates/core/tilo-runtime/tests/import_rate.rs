@@ -133,7 +133,7 @@ fn median(took: &mut [Duration]) -> Duration {
 async fn import_beside_the_person(host: &host::Host) -> (Vec<List>, Vec<Call>) {
     let workspace = host.workspace().to_owned();
     let key = host.page_key("Import");
-    open_app(&host, TASKS).await;
+    open_app(host, TASKS).await;
     // The device's own agent, what makes and reads what the rows time.
     let agent = host.agent();
     // The tracker takes writes once the workspace serves the key's session, as `tilo migrate`
@@ -181,7 +181,7 @@ async fn import_beside_the_person(host: &host::Host) -> (Vec<List>, Vec<Call>) {
                     "the person's listing beside the import",
                     list(key, workspace),
                 )
-                    .await;
+                .await;
                 calls.push(call("ls", at, started));
                 let (at, started) = (landed.load(Ordering::Acquire), Instant::now());
                 tilo_test_env::within(

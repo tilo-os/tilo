@@ -37,6 +37,9 @@ pub struct Mounting<'a> {
 /// Something kept while the machine is held awake: dropping it lets the machine sleep again.
 pub type Awake = Box<dyn Send>;
 
+/// Whether the Wi-Fi radio named (`phy0`) wakes its machine on a magic packet.
+pub type RadioWakes = fn(&str) -> Result<bool, String>;
+
 /// Taking a hold on suspend: `None` where the machine cannot be held now.
 pub type Holding = Pin<Box<dyn Future<Output = Option<Awake>> + Send>>;
 
@@ -68,7 +71,7 @@ pub struct Capabilities {
     /// reach.
     pub account_sign_ins: Option<ServeSignIns>,
     /// Whether the Wi-Fi radio named (`phy0`) wakes its machine on a magic packet.
-    pub radio_wakes: Option<fn(&str) -> Result<bool, String>>,
+    pub radio_wakes: Option<RadioWakes>,
 }
 
 static MOUNTED: OnceLock<Capabilities> = OnceLock::new();

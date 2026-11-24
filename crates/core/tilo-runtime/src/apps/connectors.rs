@@ -43,21 +43,20 @@ struct Running {
 /// workspace.
 pub type SignIns = dyn Fn(&Descriptor, &str, &str) -> std::io::Result<()> + Send + Sync;
 
-/// The pid a started connector runs as, as the launch record names it; `None` where the system
-/// does not say it in a pid this daemon records.
+/// The pid a started connector runs as, as the launch record names it: the system's own.
+#[cfg(any(target_os = "linux", target_os = "android", windows))]
 #[cfg_attr(
     any(target_os = "android", windows),
     expect(dead_code, reason = "Android and Windows start no connector process")
 )]
+pub(crate) fn pid(process: &Process) -> u32 {
+    process.id()
+}
+
+/// [`pid`] where the launcher reports its pid as an `i32`, which names one only where it fits.
+#[cfg(target_os = "macos")]
 pub(crate) fn pid(process: &Process) -> Option<u32> {
-    #[cfg(any(target_os = "linux", target_os = "android", windows))]
-    {
-        Some(process.id())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        u32::try_from(process.pid()).ok()
-    }
+    u32::try_from(process.pid()).ok()
 }
 
 /// The connectors this device runs, by app, origin and workspace.
@@ -137,6 +136,7 @@ impl Connectors {
                 child,
             },
         );
+        drop(running);
         Ok(())
     }
 }
@@ -162,7 +162,9 @@ impl Connectors {
                 .filter(|(of, _, inside)| of == app && inside == workspace)
                 .cloned()
                 .collect();
-            keys.iter().filter_map(|key| running.remove(key)).collect()
+            let stopped = keys.iter().filter_map(|key| running.remove(key)).collect();
+            drop(running);
+            stopped
         };
         for mut connector in stopped {
             tracing::info!(app, workspace, "an origin connector stopped");
@@ -202,7 +204,8 @@ fn reap(child: Process) {
     let spawned = std::thread::Builder::new()
         .name("tilo-reaper".to_owned())
         .spawn(move || {
-            if let Some(mut child) = theirs.lock_recover().take() {
+            let taken = theirs.lock_recover().take();
+            if let Some(mut child) = taken {
                 let _ = child.wait();
             }
         });

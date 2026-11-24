@@ -18,7 +18,9 @@
 //! ([`tilo_workspace_service::apps::services::AuthenticatedApplicationLaunch::opened_for`]):
 //! stamped as theirs, refused where they may not make it, and reading only what they may read.
 
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -45,7 +47,7 @@ pub(super) enum Shows {
     )]
     Window,
     /// A view opened for a caller the dispatch admitted.
-    View(Caller),
+    View(Box<Caller>),
 }
 
 /// A connection the daemon made for an instance, until its collaboration service attests it.
@@ -107,13 +109,6 @@ impl Instances {
             .inspect_err(|error| tracing::warn!(app, %error, "a hosted app gets no file chooser"))
             .ok()
             .map(descriptor_of)
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl Instances {
-    fn chooser_for(&self, _app: &str, _workspace: &str) -> Option<Descriptor> {
-        None
     }
 }
 
@@ -295,13 +290,13 @@ impl Instances {
     pub(crate) fn new(
         sockets: &crate::daemon::Sockets,
         launcher: FindsLauncher,
-        launched: Arc<super::Launched>,
+        started: Arc<super::Launched>,
     ) -> Self {
         Self {
             collab: sockets.collab.clone(),
             identity: sockets.identity.clone(),
             launcher,
-            launched,
+            launched: started,
             processes: OnceLock::new(),
             #[cfg(target_os = "macos")]
             chosen: Arc::new(tilo_dialogs::chosen::ChosenTable::new()),
@@ -412,7 +407,7 @@ impl Instances {
         self.start(
             (app, workspace, origin),
             person,
-            Shows::View(caller.clone()),
+            Shows::View(Box::new(caller.clone())),
             Some(patch),
             (record, reveal),
         )?;
@@ -471,6 +466,10 @@ impl Instances {
         let instance = self.next.fetch_add(1, Ordering::Relaxed);
         let collaboration = self.connect(app, workspace, instance, shows)?;
         let identity = self.identity(app, workspace)?;
+        #[cfg(target_os = "macos")]
+        let chooser = self.chooser_for(app, workspace);
+        #[cfg(not(target_os = "macos"))]
+        let chooser = None;
         processes
             .hand_over_now(Instance {
                 app: app.to_owned(),
@@ -482,7 +481,7 @@ impl Instances {
                 identity,
                 origin,
                 content: None,
-                chooser: self.chooser_for(app, workspace),
+                chooser,
                 clipboard: None,
                 tools: None,
                 document,
@@ -553,7 +552,7 @@ impl Instances {
         let (windowless, opened_for) = match made.shows {
             Shows::Nothing => (true, None),
             Shows::Window => (false, None),
-            Shows::View(caller) => (false, Some(caller)),
+            Shows::View(caller) => (false, Some(*caller)),
         };
         Some(AuthenticatedApplicationLaunch {
             continuation_instance: Some(instance),

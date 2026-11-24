@@ -58,7 +58,7 @@ fn an_app_with_no_window_reaches_the_daemons_call_and_is_refused_what_it_is_not_
     let _entered = tilo_rt::app().handle().enter();
     let at = crate::seats::AppAt {
         app: "so.tilo.discord".to_owned(),
-        workspace: workspace.clone(),
+        workspace,
         pid: std::process::id(),
     };
     let lines: Arc<Mutex<Vec<String>>> = Arc::default();

@@ -41,6 +41,14 @@ use super::workspaces::ServiceWorkspaces;
 
 /// What this device's dispatch answers its person's shell with, read again as `workspaces`
 /// changes. Its calls reach `dispatching` once the daemon serves it.
+/// What the shell is served beside its workspaces and links: the identity it takes its
+/// connections for, its live links, and what it says of what it speaks.
+pub(crate) struct Serving {
+    pub identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
+    pub live: Option<tilo_workspace_service::apps::shell::LiveLinks>,
+    pub speaking: Arc<dyn tilo_workspace_service::apps::shell::ShellSpeaking>,
+}
+
 pub(crate) fn services(
     workspaces: &Arc<ServiceWorkspaces>,
     links: &Arc<ShellLinks>,
@@ -48,10 +56,13 @@ pub(crate) fn services(
     dispatching: Arc<Dispatching>,
     published: Arc<dyn PublishedResources>,
     processes: Option<tilo_workspace_service::apps::shell::ShellProcesses>,
-    identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
-    live: Option<tilo_workspace_service::apps::shell::LiveLinks>,
-    speaking: Arc<dyn tilo_workspace_service::apps::shell::ShellSpeaking>,
+    serving: Serving,
 ) -> ShellServices {
+    let Serving {
+        identity,
+        live,
+        speaking,
+    } = serving;
     let standing = Standing::new(Arc::clone(workspaces));
     standing.follow();
     let copies = workspaces.copies().clone();
@@ -116,7 +127,7 @@ impl ShellActions for Actions {
             return Box::pin(std::future::ready(Ok((
                 Arc::new(Shell {
                     kept,
-                    shell,
+                    caller: shell,
                     workspace: None,
                 }) as Arc<dyn ActionProvider + Send + Sync>,
                 person,
@@ -162,7 +173,7 @@ impl ShellActions for Actions {
             (
                 Arc::new(Shell {
                     kept,
-                    shell,
+                    caller: shell,
                     workspace: Some(dispatch),
                 }) as Arc<dyn ActionProvider + Send + Sync>,
                 caller,
@@ -176,15 +187,17 @@ impl ShellActions for Actions {
 /// other one by the person's dispatch in the workspace it names.
 struct Shell {
     kept: Arc<Kept>,
-    shell: ShellCaller,
+    caller: ShellCaller,
     workspace: Option<Arc<dyn ActionProvider + Send + Sync>>,
 }
 
 impl Shell {
     fn in_workspace(&self) -> Result<&Arc<dyn ActionProvider + Send + Sync>, ActionCallError> {
-        self.workspace.as_ref().ok_or(ActionCallError::Refused {
-            reason: "the shell calls that in a workspace, and named none".into(),
-        })
+        self.workspace
+            .as_ref()
+            .ok_or_else(|| ActionCallError::Refused {
+                reason: "the shell calls that in a workspace, and named none".into(),
+            })
     }
 }
 
@@ -221,7 +234,7 @@ impl ActionProvider for Shell {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if kept_here(&request) {
-            return self.kept.invoke(self.shell, request);
+            return self.kept.invoke(self.caller, request);
         }
         match self.in_workspace() {
             Ok(dispatch) => dispatch.invoke(caller, request),
@@ -256,7 +269,7 @@ impl ActionProvider for Shell {
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if kept_here(&request) {
             // The device answers this one itself: it starts nothing that outlives the answer.
-            return self.kept.invoke(self.shell, request);
+            return self.kept.invoke(self.caller, request);
         }
         match self.in_workspace() {
             Ok(dispatch) => dispatch.run(caller, request, admitted),
@@ -313,7 +326,7 @@ impl Kept {
         let changed = Arc::clone(&self.changed);
         let invocation = request.invocation;
         tilo_rt::app().spawn(async move {
-            let answer = ask(&workspaces, shell, request).await;
+            let answer = Box::pin(ask(&workspaces, shell, request)).await;
             changed.notify_one();
             let status = match answer {
                 Ok(value) => ReceiptStatus::Completed {

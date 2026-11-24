@@ -96,17 +96,16 @@ impl DeviceRecords {
                     {
                         continue;
                     }
-                    match std::fs::read(&path)
+                    let read = std::fs::read(&path)
                         .ok()
-                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                    {
-                        Some(value) => {
-                            records.insert(name, value);
-                        }
-                        None => tracing::warn!(
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+                    if let Some(value) = read {
+                        records.insert(name, value);
+                    } else {
+                        tracing::warn!(
                             path = %path.display(),
                             "a device setting does not read and is skipped"
-                        ),
+                        );
                     }
                 }
             }
@@ -273,12 +272,13 @@ impl DeviceRecords {
     /// Whether `address` names a record of this device, read in one of the spaces its readers
     /// reach it in.
     fn names(&self, address: &ResourceAddress) -> bool {
-        address.app == DEVICE_SETTINGS
-            && self
-                .spaces
-                .lock_recover()
-                .iter()
-                .any(|space| *space == address.workspace)
+        if address.app != DEVICE_SETTINGS {
+            return false;
+        }
+        let spaces = self.spaces.lock_recover();
+        let named = spaces.contains(&address.workspace);
+        drop(spaces);
+        named
     }
 
     /// Run the setting action `action` with `args` for `caller`: the one write path for the
@@ -428,18 +428,18 @@ impl ResourceReads for DeviceRecords {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
             });
         }
-        let names: Vec<String> = self.records.lock_recover().keys().cloned().collect();
+        let mut names: Vec<String> = self.records.lock_recover().keys().cloned().collect();
+        names.retain(|name| {
+            self.allows(
+                caller,
+                workspace,
+                name,
+                tilo_action_policy::ActionKind::Read,
+            )
+            .is_ok()
+        });
         Ok(names
             .into_iter()
-            .filter(|name| {
-                self.allows(
-                    caller,
-                    workspace,
-                    name,
-                    tilo_action_policy::ActionKind::Read,
-                )
-                .is_ok()
-            })
             .map(|name| ResourceAddress {
                 workspace: workspace.to_owned(),
                 app: DEVICE_SETTINGS.to_owned(),

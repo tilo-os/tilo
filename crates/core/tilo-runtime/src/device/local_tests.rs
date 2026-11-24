@@ -587,6 +587,10 @@ fn answered<T: Send + 'static>(pending: tilo_actions::remote::Pending<T>) -> T {
 /// connection's resolve is refused, theirs through their own dispatch there answers it. A
 /// workspace they are not in refuses both the read and the call.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "two workspaces, one connection and the writes each reaches, read top to bottom"
+)]
 fn the_native_endpoint_serves_every_workspace_the_person_is_in_and_no_other() {
     use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionTarget};
     let Some(root) = isolated_root(WORKSPACES_TEST) else {

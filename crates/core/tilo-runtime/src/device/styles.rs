@@ -87,11 +87,12 @@ fn read_again(
             }
             None => Vec::new(),
         };
-        match tilolang {
-            Some(tilolang) => styles.offer(tilolang.styles.installed(&apps)),
-            None => tracing::warn!(
+        if let Some(tilolang) = tilolang {
+            styles.offer(tilolang.styles.installed(&apps));
+        } else {
+            tracing::warn!(
                 "this daemon links no tilolang runtime: it reads no installed package's styles"
-            ),
+            );
         }
     });
 }

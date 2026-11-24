@@ -235,6 +235,8 @@ tilo-capture = { path = "../../engines/tilo-capture", features = ["camera", "mic
 package-store = { package = "tilo-package-store", path = "../package-store", features = ["store"] }
 
 [dev-dependencies]
+# A test takes the changes a placed view wrote into the layout the one way the workspace does.
+tilo-automerge.workspace = true
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The action provider the workspace tests answer with.
 tilo-actions = { path = "../actions", features = ["test-support"] }

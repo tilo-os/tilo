@@ -61,6 +61,10 @@ const SECOND_PERSON_TEST: &str = "device::services::second_person_tests::a_secon
 /// puts content into it as that key. Naming Bo reached nothing: before they certified the key,
 /// they reached neither.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one account, from its sign-in to the key it certifies and the writes it makes, read top to bottom"
+)]
 fn a_second_person_signs_in_certifies_their_key_and_works_in_the_workspace_as_it() {
     let Some(root) = isolated_root(SECOND_PERSON_TEST) else {
         return;
@@ -229,7 +233,7 @@ fn answered_json(answer: &Value) -> Value {
 }
 
 /// `tilo_do` of `path` with `args`, asked on a connection of `uid`'s.
-fn do_here(socket: &Path, uid: u32, path: &str, args: Value) -> Value {
+fn do_here(socket: &Path, uid: u32, path: &str, args: &Value) -> Value {
     ask(
         socket,
         uid,
@@ -294,7 +298,7 @@ fn two_accounts_make_their_people_on_one_computer_and_each_certifies_as_itself()
     let mut people = Vec::new();
     let mut acting_keys = Vec::new();
     for uid in [ADA, BO] {
-        let made = do_here(&socket, uid, "devices#found", json!({}));
+        let made = do_here(&socket, uid, "devices#found", &json!({}));
         assert_ne!(
             made["result"]["isError"], true,
             "account {uid} made no person: {made}"
@@ -311,7 +315,7 @@ fn two_accounts_make_their_people_on_one_computer_and_each_certifies_as_itself()
         );
 
         // Each certifies with the root the daemon keeps for its own account.
-        let certified = do_here(&socket, uid, "seats#certified", json!({}));
+        let certified = do_here(&socket, uid, "seats#certified", &json!({}));
         assert_ne!(
             certified["result"]["isError"], true,
             "account {uid} did not certify its key with its own root here: {certified}"
@@ -334,9 +338,9 @@ fn two_accounts_make_their_people_on_one_computer_and_each_certifies_as_itself()
     );
 
     // A stranger reaches none of it: it may not make a person, and certifies no key.
-    let refused = do_here(&socket, STRANGER, "devices#found", json!({}));
+    let refused = do_here(&socket, STRANGER, "devices#found", &json!({}));
     assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
-    let refused = do_here(&socket, STRANGER, "seats#certified", json!({}));
+    let refused = do_here(&socket, STRANGER, "seats#certified", &json!({}));
     assert_eq!(refused["result"]["isError"], json!(true), "{refused}");
     let stranger = who_here(&socket, STRANGER);
     assert_eq!(stranger["person"], Value::Null, "{stranger}");
@@ -403,7 +407,7 @@ fn people_founded_while_the_daemon_serves_have_their_roots_served_here() {
     for uid in [ADA, BO] {
         let said = signed_in(&socket, uid);
         assert_ne!(said["result"]["isError"], true, "{said}");
-        let made = do_here(&socket, uid, "devices#found", json!({}));
+        let made = do_here(&socket, uid, "devices#found", &json!({}));
         assert_ne!(
             made["result"]["isError"], true,
             "account {uid} made no person: {made}"
@@ -412,7 +416,7 @@ fn people_founded_while_the_daemon_serves_have_their_roots_served_here() {
             .as_str()
             .expect("a person is made")
             .to_owned();
-        let certified = do_here(&socket, uid, "seats#certified", json!({}));
+        let certified = do_here(&socket, uid, "seats#certified", &json!({}));
         assert_ne!(
             certified["result"]["isError"], true,
             "account {uid} certified no key with its own root: {certified}"
@@ -435,7 +439,11 @@ fn people_founded_while_the_daemon_serves_have_their_roots_served_here() {
     // reaches one: the calls below wait for that to end.
     let mut reachable = true;
     for (uid, person) in [ADA, BO].into_iter().zip(&people) {
-        if add_as_editor(&daemon, person, uid as u8).is_err() {
+        let Ok(editor) = u8::try_from(uid) else {
+            reachable = false;
+            continue;
+        };
+        if add_as_editor(&daemon, person, editor).is_err() {
             reachable = false;
         }
     }
@@ -443,7 +451,7 @@ fn people_founded_while_the_daemon_serves_have_their_roots_served_here() {
         return;
     }
     for uid in [ADA, BO] {
-        let words = do_here(&socket, uid, "devices#recoveryWords", json!({}));
+        let words = do_here(&socket, uid, "devices#recoveryWords", &json!({}));
         assert_ne!(
             words["result"]["isError"], true,
             "account {uid}'s root-only call is not answered as itself: {words}"
@@ -481,7 +489,7 @@ fn a_fresh_computers_identity_is_founded_through_the_system_admission() {
 
     let said = signed_in(&socket, ADA);
     assert_ne!(said["result"]["isError"], true, "{said}");
-    let made = do_here(&socket, ADA, "devices#found", json!({}));
+    let made = do_here(&socket, ADA, "devices#found", &json!({}));
     assert_ne!(
         made["result"]["isError"], true,
         "a fresh account made no person: {made}"
@@ -506,7 +514,7 @@ fn a_fresh_computers_identity_is_founded_through_the_system_admission() {
     );
     // The login asks again only while it holds nothing, but a computer whose person is here
     // answers the ask all the same: it refuses, and never waits on the part it is starting.
-    let again = do_here(&socket, ADA, "devices#found", json!({}));
+    let again = do_here(&socket, ADA, "devices#found", &json!({}));
     assert_eq!(
         again["result"]["isError"],
         json!(true),

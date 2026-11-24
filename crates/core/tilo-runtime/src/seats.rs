@@ -356,12 +356,12 @@ impl Seats {
         *self
             .app_of
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(app_of);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(app_of);
     }
 
     /// The key the account `seat` acts as, with its certificate: an account signed in as
     /// another person than the device's, once their certificate for it came.
-    pub(crate) fn key(&self, seat: Seat) -> Option<(SigningKey, DeviceCert)> {
+    pub(crate) fn key(&self, seat: &Seat) -> Option<(SigningKey, DeviceCert)> {
         let Admitted::Key { key, .. } = seat.admitted else {
             return None;
         };
@@ -378,7 +378,7 @@ impl Seats {
     /// unit, an account nobody signed in and a stranger to a person's own daemon make none.
     ///
     /// [`FOUND`]: tilo_device_identity::login::FOUND
-    pub(crate) fn may_found(&self, seat: Seat) -> Result<bool, &'static str> {
+    pub(crate) fn may_found(&self, seat: &Seat) -> Result<bool, &'static str> {
         const NOT_SIGNED_IN: &str =
             "only an account signed in on this computer starts a person on it";
         if seat.uid == u32::MAX {
@@ -406,7 +406,7 @@ impl Seats {
 
     /// Record that the account `seat` made the person `person`: the first person a computer
     /// makes is the one it serves, and every account after it acts as a key of its own.
-    pub(crate) fn founded_by(&self, seat: Seat, person: [u8; 32]) -> Result<(), String> {
+    pub(crate) fn founded_by(&self, seat: &Seat, person: [u8; 32]) -> Result<(), String> {
         self.admission.founded_by(seat.uid, person)?;
         // The key the account signed in with acts for it from now on, as its certificate comes.
         self.admission.founded(seat.uid, person)
@@ -447,7 +447,7 @@ impl Seats {
                 let app_of = self
                     .app_of
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone();
                 app_of
                     .and_then(|app_of| app_of(pid))
@@ -472,7 +472,7 @@ impl Seats {
     /// its first line, which a shell's start hands the shell it starts.
     pub(crate) fn answer(
         &self,
-        seat: Seat,
+        seat: &Seat,
         request: &Value,
         received: &Mutex<Vec<Descriptor>>,
     ) -> Option<Answer<'static>> {
@@ -497,7 +497,7 @@ impl Seats {
     /// Whether the account `seat` starts its person's shell through this daemon: the account a
     /// person's own daemon runs as. The system's daemon starts none; root starts each session,
     /// with the link `seats#signed-in` answers.
-    fn starts_shells(&self, seat: Seat) -> Result<(), String> {
+    fn starts_shells(&self, seat: &Seat) -> Result<(), String> {
         if self.admission.system() {
             return Err("this computer starts its person's shell when they sign in".to_owned());
         }
@@ -524,7 +524,7 @@ impl Seats {
     /// request, the connection the asking session draws its window on (`WAYLAND_SOCKET`).
     fn start(
         &self,
-        seat: Seat,
+        seat: &Seat,
         request: &Value,
         received: &Mutex<Vec<Descriptor>>,
     ) -> Answer<'static> {
@@ -566,7 +566,7 @@ impl Seats {
     }
 
     /// Wait for the shell `request` names (`{pid}`) to end: how it ended.
-    fn wait(&self, seat: Seat, request: &Value) -> Result<Answer<'static>, String> {
+    fn wait(&self, seat: &Seat, request: &Value) -> Result<Answer<'static>, String> {
         self.starts_shells(seat)?;
         let pid = request
             .get("pid")
@@ -595,7 +595,7 @@ impl Seats {
     /// descriptor the answer carries is left in `handed`, to go with it.
     fn act(
         &self,
-        seat: Seat,
+        seat: &Seat,
         action: &str,
         args: &Value,
         handed: &Mutex<Option<Descriptor>>,
@@ -621,7 +621,7 @@ impl Seats {
     /// to act as: its own account alone hands it, and it must be its person's for that key. An
     /// account whose person this computer keeps the root of asks with none (`{}`), and the
     /// daemon signs it with that person's root: no root ever signs for another account.
-    fn certified(&self, seat: Seat, request: &Value) -> Result<Value, String> {
+    fn certified(&self, seat: &Seat, request: &Value) -> Result<Value, String> {
         let handed = request
             .get("cert")
             .and_then(Value::as_str)
@@ -632,7 +632,7 @@ impl Seats {
                     .map_err(|error| format!("the certificate does not read: {error}"))?;
                 (cert.device_public_key, cert)
             }
-            None => self.certify_here(seat.clone())?,
+            None => self.certify_here(seat)?,
         };
         let key = self
             .keys
@@ -652,7 +652,7 @@ impl Seats {
 
     /// The certificate of the key the account `seat` signed in to act as, signed here with the
     /// root this computer keeps for that account alone.
-    fn certify_here(&self, seat: Seat) -> Result<([u8; 32], DeviceCert), String> {
+    fn certify_here(&self, seat: &Seat) -> Result<([u8; 32], DeviceCert), String> {
         let (person, key) = self
             .admission
             .awaiting(seat.uid)
@@ -686,7 +686,7 @@ impl Seats {
 
     fn signed_in(
         &self,
-        seat: Seat,
+        seat: &Seat,
         request: &Value,
         handed: &Mutex<Option<Descriptor>>,
     ) -> Result<Value, String> {
@@ -706,39 +706,34 @@ impl Seats {
             ));
         }
         // The person this account is: the one it made here, else the one it names.
-        let held = match recorded {
-            Some(held) => held,
-            // A person whose identity another device of theirs holds: this computer records
-            // that the account made that person, and serves it a key of theirs.
-            None => {
-                let Some(named) = named else {
-                    // No identity yet: the account may make one here, then certify its key.
-                    let key = SigningKey::from_bytes(&rand::random());
-                    self.admission.signed_in_founding(
-                        seat.uid,
-                        uid,
-                        key.verifying_key().to_bytes(),
-                    )?;
-                    self.keys.lock_recover().insert(uid, key);
-                    return Ok(json!({"founding": true, "shell": false}));
-                };
-                // The device's own person is the account recorded as having set them up here,
-                // never one that only names them: naming them would act as them.
-                if self.device.person() == Some(named) {
-                    return Err(format!(
-                        "account {uid} is not the account this computer's person was set up from"
-                    ));
-                }
-                // Another person, whose identity another device of theirs holds: the account acts
-                // as a key of theirs once their root certified it.
-                let held = tilo_api::daemon::admission::AccountPerson {
-                    person: named,
-                    device: false,
-                };
+        let held = if let Some(held) = recorded {
+            held
+        } else {
+            let Some(named) = named else {
+                // No identity yet: the account may make one here, then certify its key.
+                let key = SigningKey::from_bytes(&rand::random());
                 self.admission
-                    .founded_by_as(uid, held.person, held.device)?;
-                held
+                    .signed_in_founding(seat.uid, uid, key.verifying_key().to_bytes())?;
+                self.keys.lock_recover().insert(uid, key);
+                return Ok(json!({"founding": true, "shell": false}));
+            };
+            // The device's own person is the account recorded as having set them up here, never
+            // one that only names them: naming them would act as them.
+            if self.device.person() == Some(named) {
+                return Err(format!(
+                    "account {uid} is not the account this computer's person was set up from"
+                ));
             }
+            // A person whose identity another device of theirs holds: this computer records that
+            // the account made that person, and the account acts as a key of theirs once their
+            // root certified it.
+            let held = tilo_api::daemon::admission::AccountPerson {
+                person: named,
+                device: false,
+            };
+            self.admission
+                .founded_by_as(uid, held.person, held.device)?;
+            held
         };
         // The account the computer was set up from is the person its own services serve.
         if !held.device {
@@ -765,7 +760,7 @@ impl Seats {
 
     /// The account `uid` signed in as `person`, another person than the device's: it acts as a
     /// key of theirs this daemon makes it now, once they certified it. Answers the key to certify.
-    fn another_person(&self, seat: Seat, uid: u32, person: [u8; 32]) -> Result<Value, String> {
+    fn another_person(&self, seat: &Seat, uid: u32, person: [u8; 32]) -> Result<Value, String> {
         let key = self
             .keys
             .lock_recover()
@@ -783,7 +778,7 @@ impl Seats {
         }))
     }
 
-    fn who(&self, seat: Seat) -> Value {
+    fn who(&self, seat: &Seat) -> Value {
         let person = match seat.admitted {
             Admitted::Person(person) | Admitted::Key { person, .. } => Some(person),
             // A person's own service is that person's; the system's daemon and root are none.
@@ -892,14 +887,12 @@ impl Seated {
 
     /// The seat action `action` with `args`, as this connection asks it.
     pub(crate) fn act(&self, action: &str, args: &Value) -> Result<Value, String> {
-        self.seats
-            .act(self.seat.clone(), action, args, &self.handed)
+        self.seats.act(&self.seat, action, args, &self.handed)
     }
 
     /// What the seats answer `request` with on this connection, when it is theirs.
     pub(crate) fn answer(&self, request: &Value) -> Option<Answer<'static>> {
-        self.seats
-            .answer(self.seat.clone(), request, &self.received)
+        self.seats.answer(&self.seat, request, &self.received)
     }
 }
 

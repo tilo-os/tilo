@@ -299,7 +299,9 @@ fn folders(
         },
     )?;
     let ResourceCopy::Reading { value, .. } = read else {
-        panic!("the folders read as a reading, not {read:?}");
+        return Err(ActionCallError::Unavailable {
+            reason: format!("the folders read as a reading, not {read:?}"),
+        });
     };
     Ok(serde_json::from_value(value).expect("the folders' reading is a list of them"))
 }
@@ -859,7 +861,7 @@ async fn a_file_only_a_mount_keeps_reaches_the_workspaces_server() {
         .await
         .expect("the mount keeps the file")
         .expect("a file with bytes has content");
-    let address = hash.to_hex().to_string();
+    let address = hash.to_hex().clone();
     mount.file_holding(
         &format!("{}/plan.md", tree_of(&workspace)),
         Some((hash, bytes.len() as u64)),

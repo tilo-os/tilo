@@ -102,7 +102,6 @@ impl ActionProvider for Sender {
                     "bytes": hex::encode(piece),
                 })
             }
-            nearby::RESULT => json!({}),
             _ => json!({}),
         };
         Pending::ready(Ok(InvocationReceipt {

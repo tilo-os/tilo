@@ -46,21 +46,38 @@ pub(crate) struct CallSession {
     speaker: Arc<Speaker>,
 }
 
+/// What this device joins `workspace`'s live session with: the endpoint it reaches the relay on,
+/// its certificate, the relay it serves or follows, the device it is, and the keys, roster and
+/// base word it seals and reads under.
+pub(crate) struct Joining<'a> {
+    pub endpoint: &'a iroh::Endpoint,
+    pub certificate: &'a tilo_user_identity::DeviceCert,
+    pub relay: [u8; 32],
+    pub device: [u8; 32],
+    pub workspace: WorkspaceId,
+    pub keys: LiveKeys,
+    pub roster: Roster,
+    pub base: Own,
+}
+
 impl CallSession {
-    /// Join `workspace`'s live session on `relay`, the one this device serves or the one its
-    /// keeping runs, as this device, sealed under `keys` and reading `roster`.
+    /// Join `joining`'s live session, the one this device serves or the one its keeping runs, as
+    /// this device, sealed under its keys and reading its roster.
     pub(crate) async fn join(
         local: Option<&Relay>,
         away: Option<iroh::EndpointAddr>,
-        endpoint: &iroh::Endpoint,
-        certificate: &tilo_user_identity::DeviceCert,
-        relay: [u8; 32],
-        device: [u8; 32],
-        workspace: WorkspaceId,
-        keys: LiveKeys,
-        roster: Roster,
-        base: Own,
+        joining: Joining<'_>,
     ) -> Result<Self, LiveError> {
+        let Joining {
+            endpoint,
+            certificate,
+            relay,
+            device,
+            workspace,
+            keys,
+            roster,
+            base,
+        } = joining;
         let scope = Scope::workspace(workspace.to_string());
         let epoch = keys.epoch();
         let join = Join {

@@ -139,7 +139,7 @@ impl ApprovedProject for ProjectChecks {
     ) -> Result<CheckReceipt, String> {
         self.checks
             .run_with_reports(&self.binding, check_id, authority, |event| {
-                report(observation(event))
+                report(observation(event));
             })
     }
 }
@@ -673,7 +673,11 @@ impl CheckJobs {
             }
         };
         if let Some(mut record) = self.get(job) {
-            record["progress"] = progress;
+            let Some(fields) = record.as_object_mut() else {
+                tracing::warn!(job, "a check's progress is not a record");
+                return;
+            };
+            fields.insert("progress".to_owned(), progress);
             if let Err(error) = self.set(job, record) {
                 tracing::warn!(%error, job, "a check's progress was not kept");
             }
@@ -699,8 +703,12 @@ impl CheckJobs {
 
     fn end(&self, job: &str, state: &str, done: &serde_json::Value) {
         if let Some(mut record) = self.get(job) {
-            record["state"] = state.into();
-            record["done"] = done.clone();
+            let Some(fields) = record.as_object_mut() else {
+                tracing::warn!(job, "a check's end is not a record");
+                return;
+            };
+            fields.insert("state".to_owned(), state.into());
+            fields.insert("done".to_owned(), done.clone());
             if let Err(error) = self.set(job, record) {
                 tracing::warn!(%error, job, "a check's end was not kept");
             }
@@ -800,13 +808,13 @@ impl ResourceReads for CheckJobs {
                 reason: tilo_actions::remote::RESOURCE_READS_UNAVAILABLE.into(),
             });
         }
-        let names: Vec<String> = self.records.lock_recover().keys().cloned().collect();
+        let mut names: Vec<String> = self.records.lock_recover().keys().cloned().collect();
+        names.retain(|job| {
+            self.allows(caller, workspace, job, tilo_action_policy::ActionKind::Read)
+                .is_ok()
+        });
         Ok(names
             .into_iter()
-            .filter(|job| {
-                self.allows(caller, workspace, job, tilo_action_policy::ActionKind::Read)
-                    .is_ok()
-            })
             .map(|job| ResourceAddress {
                 workspace: workspace.to_owned(),
                 app: JOBS.to_owned(),

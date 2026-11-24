@@ -26,8 +26,7 @@ use tilo_actions::remote::{
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_device_identity::login::{
     ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, ENROL_BOOT, FOUND, LOG_IN, PROVIDER, Place,
-    RESOURCE,
-    RESTORE,
+    RESOURCE, RESTORE,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -471,7 +470,11 @@ impl DeviceOnly {
     fn keep(&self, invocation: InvocationId, update: InvocationUpdate) -> InvocationReceipt {
         let state = InvocationState::new(invocation, update);
         let receipt = state.receipt();
-        self.0.founding.calls().lock_recover().insert(invocation, state);
+        self.0
+            .founding
+            .calls()
+            .lock_recover()
+            .insert(invocation, state);
         receipt
     }
 
@@ -590,7 +593,7 @@ impl DeviceOnly {
         };
         if !seated
             .seats
-            .may_found(seated.seat.clone())
+            .may_found(&seated.seat)
             .map_err(str::to_owned)?
         {
             return Err(
@@ -598,7 +601,7 @@ impl DeviceOnly {
             );
         }
         let person = make(seated)?;
-        seated.seats.founded_by(seated.seat.clone(), person)?;
+        seated.seats.founded_by(&seated.seat, person)?;
         // A person founded while this daemon serves has their root marked and their asks served
         // from now on, without the daemon starting again.
         super::services::person_founded(person, seated.seat.uid);
@@ -706,6 +709,56 @@ impl DeviceOnly {
         });
         Pending::ready(Ok(receipt))
     }
+
+    /// A seat action asks this device before a person claims it: what the seat serving here
+    /// answers, kept as the call's receipt.
+    fn answer_seat(
+        &self,
+        invocation: InvocationId,
+        address: &tilo_actions::ActionAddress,
+        argument: InvokeArgument,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let InvokeArgument::Json(argument) = argument else {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "a seat action asks with its arguments".into(),
+            }));
+        };
+        let Some(seated) = &self.1 else {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: crate::seats::ROOT_ALONE.into(),
+            }));
+        };
+        Pending::ready(
+            seated
+                .act(&address.action, &Value::Object(argument))
+                .map(|value| self.keep(invocation, succeeded(invocation, value)))
+                .map_err(|reason| ActionCallError::Refused { reason }),
+        )
+    }
+
+    /// The device's own records, its settings, written here before anyone claims it: the action
+    /// `action` of one, as `caller` asks it with `argument`.
+    fn answer_setting(
+        &self,
+        caller: &Caller,
+        invocation: InvocationId,
+        argument: &InvokeArgument,
+        action: &str,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let answer = match argument {
+            InvokeArgument::Json(args) => self.0.records.act(caller, action, args),
+            _ => Err(ActionCallError::InvalidRequest {
+                reason: "a setting action asks with its arguments".to_owned(),
+            }),
+        };
+        let update = match answer {
+            Ok(value) => super::ticket::succeeded(invocation, value),
+            Err(error) => {
+                super::ticket::failed_as(invocation, "device-setting", &error.to_string())
+            }
+        };
+        Pending::ready(Ok(self.keep(invocation, update)))
+    }
 }
 
 impl ActionProvider for DeviceOnly {
@@ -768,38 +821,11 @@ impl ActionProvider for DeviceOnly {
         }
         let address = &request.target.address;
         if request.target.provider == crate::seats::PROVIDER {
-            let InvokeArgument::Json(argument) = request.argument else {
-                return Pending::ready(Err(ActionCallError::Refused {
-                    reason: "a seat action asks with its arguments".into(),
-                }));
-            };
-            let Some(seated) = &self.1 else {
-                return Pending::ready(Err(ActionCallError::Refused {
-                    reason: crate::seats::ROOT_ALONE.into(),
-                }));
-            };
-            return Pending::ready(
-                seated
-                    .act(&address.action, &Value::Object(argument))
-                    .map(|value| self.keep(invocation, succeeded(invocation, value)))
-                    .map_err(|reason| ActionCallError::Refused { reason }),
-            );
+            return self.answer_seat(invocation, address, request.argument);
         }
         // The device's own records: its settings, written here before anyone claims it.
         if request.target.provider == PROVIDER && address.resource == super::records::RESOURCE {
-            let answer = match &request.argument {
-                InvokeArgument::Json(args) => self.0.records.act(caller, &address.action, args),
-                _ => Err(ActionCallError::InvalidRequest {
-                    reason: "a setting action asks with its arguments".to_owned(),
-                }),
-            };
-            let update = match answer {
-                Ok(value) => super::ticket::succeeded(invocation, value),
-                Err(error) => {
-                    super::ticket::failed_as(invocation, "device-setting", &error.to_string())
-                }
-            };
-            return Pending::ready(Ok(self.keep(invocation, update)));
+            return self.answer_setting(caller, invocation, &request.argument, &address.action);
         }
         if request.target.provider != PROVIDER || address.resource != RESOURCE {
             return Pending::ready(Err(self.needs_a_person()));

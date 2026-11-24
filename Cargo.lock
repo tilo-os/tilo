@@ -19610,6 +19610,7 @@ dependencies = [
  "tilo-app-id",
  "tilo-app-package",
  "tilo-app-registry",
+ "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-broker-core",

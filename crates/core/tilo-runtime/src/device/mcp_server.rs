@@ -44,9 +44,9 @@ mod tests {
     }
 
     /// A provider over one value a test changes, and one revision it moves with.
-    fn provider(reading: Arc<StdMutex<String>>, revision: u64) -> (Served, watch::Sender<u64>) {
+    fn provider(reading: &Arc<StdMutex<String>>, revision: u64) -> (Served, watch::Sender<u64>) {
         let (sender, _) = watch::channel(revision);
-        let read = Arc::clone(&reading);
+        let read = Arc::clone(reading);
         let changing = sender.clone();
         (
             Served::new(
@@ -65,7 +65,7 @@ mod tests {
     #[tokio::test]
     async fn the_server_reads_and_each_change_reaches_the_watch() {
         let reading = Arc::new(StdMutex::new("first".to_owned()));
-        let (published, changed) = provider(Arc::clone(&reading), 1);
+        let (published, changed) = provider(&reading, 1);
 
         let (revision, bytes) = published
             .snapshot(&caller(), SERVER)

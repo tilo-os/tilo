@@ -62,8 +62,10 @@ fn style_line(style: &str) -> String {
     tilolang_records::styles::installed(&[])
         .into_iter()
         .find(|offered| offered.style == style)
-        .map(|offered| offered.line)
-        .unwrap_or_else(|| panic!("the shell offers {style}"))
+        .map_or_else(
+            || panic!("the shell offers {style}"),
+            |offered| offered.line,
+        )
 }
 
 /// What `pending` settles to, within the bound a hung test is given.
@@ -363,7 +365,7 @@ impl Computer {
             &tree,
             &[],
             &[],
-            &Default::default(),
+            &std::collections::BTreeMap::default(),
         );
         layout.commit();
         let change = tilo_desktop_model::place::place_view(
@@ -381,7 +383,7 @@ impl Computer {
         )
         .unwrap()
         .expect("the window is added");
-        layout.load_incremental(&change).unwrap();
+        tilo_automerge::ApplyIncoming::load_incoming(&mut layout, &change).unwrap();
         tilo_test_env::within("the daemon takes the computer's layout", async {
             loop {
                 let written = self
@@ -659,8 +661,7 @@ fn a_style_installed_while_readers_follow_reaches_each_of_them() {
             .find(|label| {
                 label.starts_with("Showing ") || label.ends_with(": style and workspaces")
             })
-            .map(str::to_owned)
-            .unwrap_or_else(|| panic!("the page's style menu: {whole}"));
+            .map_or_else(|| panic!("the page's style menu: {whole}"), str::to_owned);
         let menu = labelled(&whole, &menu).unwrap();
         let listed = page.act(Some((menu, PageAction::Activate))).await;
         if labelled(&listed, "Timeline of the layout").is_none() {
@@ -712,8 +713,7 @@ fn an_agents_pick_and_a_press_change_the_shells_record_the_computer_merges() {
             .find(|label| {
                 label.ends_with(": style and workspaces") || label.starts_with("Showing ")
             })
-            .map(str::to_owned)
-            .unwrap_or_else(|| panic!("the page's style menu: {whole}"));
+            .map_or_else(|| panic!("the page's style menu: {whole}"), str::to_owned);
         let menu = labelled(&whole, &menu).unwrap();
         let strips = style_line(STRIPS);
         let listed = page.act(Some((menu, PageAction::Activate))).await;

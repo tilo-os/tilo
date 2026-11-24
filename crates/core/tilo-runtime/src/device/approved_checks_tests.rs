@@ -50,10 +50,9 @@ impl ApprovedProject for Passing {
         authority: &(dyn Fn() -> Result<(), String> + Sync),
         report: &dyn Fn(ReportObservation),
     ) -> Result<CheckReceipt, String> {
-        assert_eq!(
-            check_id, self.check_id,
-            "the approved id is the one that runs"
-        );
+        if check_id != self.check_id {
+            return Err("the approved id is the one that runs".to_owned());
+        }
         authority()?;
         let observation = ReportObservation::Reported {
             phase: "tests".into(),
@@ -156,10 +155,9 @@ impl Placement for Placed {
             record.to_owned(),
             check_id.to_owned(),
         ));
-        assert!(
-            !invocation.is_empty(),
-            "a placed check names its invocation"
-        );
+        if invocation.is_empty() {
+            return Err("a placed check names its invocation".to_owned());
+        }
         Ok(Box::new(Kept))
     }
 }
@@ -223,11 +221,12 @@ fn an_approved_check_is_placed_kept_and_answered() {
         placed.as_slice(),
         &[(
             APP.to_owned(),
-            workspace.clone(),
+            workspace,
             RECORD.to_owned(),
             "unit".to_owned()
         )][..]
     );
+    drop(placed);
 
     let job = jobs
         .get("0f8fad5b-d9cb-469f-a165-70867728950e")

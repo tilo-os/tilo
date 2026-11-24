@@ -9,6 +9,9 @@ use std::{
     sync::Arc,
 };
 
+/// What fetches content this device does not keep, when a session asks for it.
+pub type FetchContent = Arc<dyn Fn(&runtime_fs::blobs::BlobScope, &str) + Send + Sync>;
+
 /// Create the profile's private directories and answer the environment its
 /// services start with. This does not mutate process-global state: the native
 /// executable applies the returned values at its single-threaded startup
@@ -111,10 +114,7 @@ impl MediaHost {
     /// Answer a session's ask for content this device does not keep through `fetch` from now on:
     /// the profile's record content, which asks the workspace's other devices and keeps what they
     /// answer on this store, where the session's next read finds it.
-    pub fn fetch_content_through(
-        &self,
-        fetch: Arc<dyn Fn(&runtime_fs::blobs::BlobScope, &str) + Send + Sync>,
-    ) {
+    pub fn fetch_content_through(&self, fetch: FetchContent) {
         self.media.fetch_through(fetch);
     }
 }

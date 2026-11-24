@@ -446,12 +446,12 @@ fn settings_rows() -> Vec<CatalogueRow> {
     );
     descriptor.address =
         tilo_actions::ActionAddress::new(super::records::RESOURCE, super::records::SET);
-    descriptor.resource_kind = "settings".to_owned();
-    descriptor.resource_label = "Settings".to_owned();
+    "settings".clone_into(&mut descriptor.resource_kind);
+    "Settings".clone_into(&mut descriptor.resource_label);
     let mut remove = descriptor.clone();
     remove.address =
         tilo_actions::ActionAddress::new(super::records::RESOURCE, super::records::REMOVE);
-    remove.action_label = "Remove a setting".to_owned();
+    "Remove a setting".clone_into(&mut remove.action_label);
     remove.description = Some("Forget a setting this device kept.".to_owned());
     remove.params = vec![ActionParam::required(
         "name",
@@ -549,8 +549,8 @@ fn server_rows() -> Vec<CatalogueRow> {
         params.insert(0, device());
         let mut described = descriptor(action, label, description, &params);
         described.address = tilo_actions::ActionAddress::new(SERVER, action);
-        described.resource_kind = "server".to_owned();
-        described.resource_label = "Server".to_owned();
+        "server".clone_into(&mut described.resource_kind);
+        "Server".clone_into(&mut described.resource_label);
         if matches!(action, "status" | "journal") {
             described.contract.kind = ActionKind::Read;
         }
@@ -781,8 +781,8 @@ fn update_descriptor(
 ) -> ActionDescriptor {
     let mut descriptor = descriptor(action, label, description, params);
     descriptor.address = tilo_actions::ActionAddress::new(UPDATES, action);
-    descriptor.resource_kind = "update".to_owned();
-    descriptor.resource_label = "Updates".to_owned();
+    "update".clone_into(&mut descriptor.resource_kind);
+    "Updates".clone_into(&mut descriptor.resource_label);
     descriptor
 }
 
@@ -984,7 +984,6 @@ impl Tickets {
     /// The record of the root the calling account's person keeps here, with the identity it
     /// signs for: root-only calls are signed with it and no other account's.
     fn rooted_for(
-        &self,
         caller: &tilo_actions::remote::Caller,
     ) -> Result<(std::path::PathBuf, super::signing::Rooted), String> {
         let record = if caller.is_system() {
@@ -1052,10 +1051,10 @@ impl Tickets {
                         | USE_IDENTITY
                         | REMOVE_IDENTITY
                         | PROTECT_IDENTITY
-                ) || super::key_use::FOR_A_PERSON
-                    .contains(&request.target.address.action.as_str())
-                    || super::key_use::FOR_THE_SYSTEM
-                        .contains(&request.target.address.action.as_str()))
+                )
+                || super::key_use::FOR_A_PERSON.contains(&request.target.address.action.as_str())
+                || super::key_use::FOR_THE_SYSTEM
+                    .contains(&request.target.address.action.as_str()))
                 || (request.target.address.resource == UPDATES
                     && matches!(
                         request.target.address.action.as_str(),
@@ -1125,7 +1124,7 @@ impl Tickets {
         // What the calling account's own root signs is answered with that root, and with no
         // other: an account whose root this computer keeps not signs nothing here.
         let rooted = if ROOT_PERSON_SIGNED.contains(&action.as_str()) {
-            match self.rooted_for(caller) {
+            match Self::rooted_for(caller) {
                 Ok(rooted) => Some(rooted),
                 Err(reason) => return Pending::ready(Err(refused(reason))),
             }
@@ -1139,7 +1138,9 @@ impl Tickets {
         let unreached = action == ISSUE && !wait && !reached(&self.0.endpoint);
         // What the daemon does with the device key, it does for the device's own system and the
         // person's own programs on this computer ([`super::services`] admits which reach it).
-        if Self::uses_the_device_key(request) && !caller.is_system() && acting_person(caller).is_none()
+        if Self::uses_the_device_key(request)
+            && !caller.is_system()
+            && acting_person(caller).is_none()
         {
             return Pending::ready(Err(refused(
                 "only this device's system and its person ask what the device key does",
@@ -1150,71 +1151,7 @@ impl Tickets {
             ISSUE | LOG_IN | PENDING | APPROVE | REPORTED | RENAME | REVOKE | UPDATE | ENROL_BOOT
         );
         if !waiting {
-            let answer = match action.as_str() {
-                INFO => Ok(device_info(&self.0.place, &self.0.key)),
-                FOUND | RESTORE => Err(anyhow!("{ALREADY_A_PERSONS}: it serves them")),
-                RECOVERY_WORDS => {
-                    let (record, _) = rooted.expect("the caller's root is read for its words");
-                    super::services::recovery_words_in(&record)
-                        .map(|words| json!({ "words": words }))
-                        .map_err(Into::into)
-                }
-                BACKUP => {
-                    let (record, _) = rooted.expect("the caller's root is read for its backup");
-                    super::services::backup_in(
-                        &record,
-                        args.get("passphrase")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default(),
-                    )
-                    .map(|backup| json!({ "backup": hex::encode(backup) }))
-                    .map_err(Into::into)
-                }
-                CERTIFY_KEY => {
-                    let (_, root) = rooted.expect("the caller's root certifies its key");
-                    self.certify_key(&args, root)
-                }
-                RELEASE_HALF => {
-                    let (_, root) = rooted.expect("the caller's root releases a half");
-                    super::signing::release_half(&args, root).map_err(Into::into)
-                }
-                ANSWER_SIGN_IN => {
-                    let (_, root) = rooted.expect("the caller's root answers a sign-in");
-                    super::signing::answer_sign_in(self.0.place.keys(), &args, root)
-                        .map_err(Into::into)
-                }
-                key_use if super::key_use::FOR_A_PERSON.contains(&key_use)
-                    || key_use == ENDORSE_IMAGE =>
-                {
-                    super::key_use::answer(key_use, &args, &self.0.key).map_err(Into::into)
-                }
-                _ => super::services::identity_step(&action, &args).map_err(Into::into),
-            };
-            let update = match answer {
-                Ok(value) => succeeded(invocation, value),
-                Err(error) => match error.downcast_ref::<super::key_use::Refusal>() {
-                    Some(refusal) => failed_as(invocation, refusal.code, &refusal.message),
-                    None => failed(invocation, &format!("{error:#}")),
-                },
-            };
-            let state = InvocationState::new(invocation, update);
-            let receipt = state.receipt();
-            let succeeded_now = matches!(state.update, InvocationUpdate::Succeeded { .. });
-            // What the Secret Service asks of the device key is answered in the receipt alone, a
-            // refusal too, and kept nowhere: an opened vault is a secret, and a sealed one is the
-            // person's to keep.
-            if super::key_use::FOR_A_PERSON.contains(&action.as_str()) {
-                return Pending::ready(Ok(receipt));
-            }
-            // A secret is handed over in the receipt alone: what is kept of the call says only
-            // that it was given.
-            let kept = if SECRET_ANSWERS.contains(&action.as_str()) && succeeded_now {
-                InvocationState::new(invocation, succeeded(invocation, json!({ "given": true })))
-            } else {
-                state
-            };
-            self.0.calls.lock_recover().insert(invocation, kept);
-            return Pending::ready(Ok(receipt));
+            return Pending::ready(self.answer_at_once(&action, &args, rooted, invocation));
         }
         let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
         let receipt = accepted.receipt();
@@ -1259,6 +1196,81 @@ impl Tickets {
                 served.0.ended.notify_waiters();
             }));
         Pending::ready(Ok(receipt))
+    }
+
+    /// Answer `action` here and now, with the root the calling account keeps where only it signs
+    /// the call: its receipt, and what the call keeps recorded beside it.
+    fn answer_at_once(
+        &self,
+        action: &str,
+        args: &Value,
+        rooted: Option<(std::path::PathBuf, super::signing::Rooted)>,
+        invocation: InvocationId,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let answer = match action {
+            INFO => Ok(device_info(&self.0.place, &self.0.key)),
+            FOUND | RESTORE => Err(anyhow!("{ALREADY_A_PERSONS}: it serves them")),
+            RECOVERY_WORDS => {
+                let (record, _) = rooted_or_refused(rooted)?;
+                super::services::recovery_words_in(&record)
+                    .map(|words| json!({ "words": words }))
+                    .map_err(Into::into)
+            }
+            BACKUP => {
+                let (record, _) = rooted_or_refused(rooted)?;
+                super::services::backup_in(
+                    &record,
+                    args.get("passphrase")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                )
+                .map(|backup| json!({ "backup": hex::encode(backup) }))
+                .map_err(Into::into)
+            }
+            CERTIFY_KEY => {
+                let (_, root) = rooted_or_refused(rooted)?;
+                self.certify_key(args, root)
+            }
+            RELEASE_HALF => {
+                let (_, root) = rooted_or_refused(rooted)?;
+                super::signing::release_half(args, &root).map_err(Into::into)
+            }
+            ANSWER_SIGN_IN => {
+                let (_, root) = rooted_or_refused(rooted)?;
+                super::signing::answer_sign_in(self.0.place.keys(), args, root).map_err(Into::into)
+            }
+            key_use
+                if super::key_use::FOR_A_PERSON.contains(&key_use) || key_use == ENDORSE_IMAGE =>
+            {
+                super::key_use::answer(key_use, args, &self.0.key).map_err(Into::into)
+            }
+            _ => super::services::identity_step(action, args).map_err(Into::into),
+        };
+        let update = match answer {
+            Ok(value) => succeeded(invocation, value),
+            Err(error) => match error.downcast_ref::<super::key_use::Refusal>() {
+                Some(refusal) => failed_as(invocation, refusal.code, &refusal.message),
+                None => failed(invocation, &format!("{error:#}")),
+            },
+        };
+        let state = InvocationState::new(invocation, update);
+        let receipt = state.receipt();
+        let succeeded_now = matches!(state.update, InvocationUpdate::Succeeded { .. });
+        // What the Secret Service asks of the device key is answered in the receipt alone, a
+        // refusal too, and kept nowhere: an opened vault is a secret, and a sealed one is the
+        // person's to keep.
+        if super::key_use::FOR_A_PERSON.contains(&action) {
+            return Ok(receipt);
+        }
+        // A secret is handed over in the receipt alone: what is kept of the call says only that
+        // it was given.
+        let kept = if SECRET_ANSWERS.contains(&action) && succeeded_now {
+            InvocationState::new(invocation, succeeded(invocation, json!({ "given": true })))
+        } else {
+            state
+        };
+        self.0.calls.lock_recover().insert(invocation, kept);
+        Ok(receipt)
     }
 
     /// Issue the ticket `kind` asks for (`server` for a server, `device` for a computer at hand)
@@ -1811,6 +1823,14 @@ fn refused(reason: impl Into<String>) -> ActionCallError {
     ActionCallError::Refused {
         reason: reason.into(),
     }
+}
+
+/// The calling account's root, which signs the device's actions that only it may sign: the
+/// device's refusal where it keeps none.
+fn rooted_or_refused(
+    rooted: Option<(std::path::PathBuf, super::signing::Rooted)>,
+) -> Result<(std::path::PathBuf, super::signing::Rooted), ActionCallError> {
+    rooted.ok_or_else(|| refused("this device keeps no root to sign the call with"))
 }
 
 pub(crate) fn succeeded(invocation: InvocationId, value: Value) -> InvocationUpdate {

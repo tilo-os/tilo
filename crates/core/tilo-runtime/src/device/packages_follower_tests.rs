@@ -3,6 +3,7 @@
 //! recorded, and installs it into its cache. A download that is not the signed package, and a
 //! publisher the workspace refuses, install nothing.
 
+use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -84,11 +85,14 @@ fn author_bound_to(
     let (architecture, isa, _) = native_target();
     let mut bound = String::new();
     if let Some(runtime) = runtime {
-        bound.push_str(&format!("runtime = \"{runtime}\"\n"));
+        let _ = writeln!(bound, "runtime = \"{runtime}\"");
     }
     if !optional.is_empty() {
-        let listed: Vec<String> = optional.iter().map(|runtime| format!("\"{runtime}\"")).collect();
-        bound.push_str(&format!("optional-runtimes = [{}]\n", listed.join(", ")));
+        let listed: Vec<String> = optional
+            .iter()
+            .map(|runtime| format!("\"{runtime}\""))
+            .collect();
+        let _ = writeln!(bound, "optional-runtimes = [{}]", listed.join(", "));
     }
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
@@ -250,7 +254,10 @@ fn serve(mut stream: TcpStream, entries: &str, tapp: &[u8]) {
     let path = request.split_whitespace().nth(1).unwrap_or("/");
     let (status, body) = if path.starts_with("/entries") {
         ("200 OK", entries.as_bytes())
-    } else if path.ends_with(".tapp") {
+    } else if std::path::Path::new(path)
+        .extension()
+        .is_some_and(|extension| extension == "tapp")
+    {
         ("200 OK", tapp)
     } else {
         ("404 Not Found", b"no".as_slice())
@@ -537,7 +544,9 @@ fn host_carries() {
         manifest.package.runtime = Some(HOST_TILO_RUNTIME.into());
         manifest.package.required_runtimes = vec![HOST_TILOLANG_RUNTIME.into()];
         manifest
-            .sign(&SigningIdentity::from_signing_key(SigningKey::from_bytes(&PUBLISHER)))
+            .sign(&SigningIdentity::from_signing_key(SigningKey::from_bytes(
+                &PUBLISHER,
+            )))
             .expect("the host signs the manifest it carries");
         super::carry_runtimes(&manifest).expect("the host declares the runtimes it carries");
     });
@@ -642,7 +651,11 @@ mode = "off"
 bin = "bin/tilo-phone"
 type = "gui"
 "#,
-        publisher = hex::encode(SigningKey::from_bytes(&PUBLISHER).verifying_key().to_bytes()),
+        publisher = hex::encode(
+            SigningKey::from_bytes(&PUBLISHER)
+                .verifying_key()
+                .to_bytes()
+        ),
     ))
     .unwrap();
     let refused = super::carry_runtimes(&unsigned)

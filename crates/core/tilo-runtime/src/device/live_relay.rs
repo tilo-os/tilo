@@ -265,6 +265,7 @@ fn bind(
 /// * This device's own scope admits its person's devices as the record of them keeps them, less
 ///   the ones they took back and the ones whose certificate ran out, and only in their own
 ///   workspace. `person` is that record, `own` this device's certificate.
+///
 /// The keys a workspace's live session seals under here, or why it holds none.
 enum SessionKeys {
     Ready(tilo_live::frame::LiveKeys),
@@ -1014,28 +1015,59 @@ impl Live {
                 .cloned()
         };
         if let Some(call) = kept {
-            match keys {
-                SessionKeys::Ready(keys) => {
-                    let gate = self.call_gate(workspace);
-                    call.refresh(keys, &devices, gate);
-                    call.hand_call_keys(self.shared.workspaces.copies()).await;
-                    self.shared.note_session(
-                        workspace,
-                        SessionState::Open {
-                            relay: serving,
-                            name: relay_name,
-                            epoch: call.epoch(),
-                        },
-                    );
-                }
-                SessionKeys::Waiting => self
-                    .shared
-                    .note_session(workspace, SessionState::WaitingForKeys),
-                SessionKeys::Keyless => self.shared.note_session(workspace, SessionState::Keyless),
-            }
+            self.refresh_call(workspace, &call, keys, &devices, serving, relay_name)
+                .await;
             return;
         }
         self.drop_call(workspace);
+        self.open_call(workspace, held, &devices, keys, serving, away, relay_name)
+            .await;
+    }
+
+    /// The call this device already holds for `workspace`, taken up as its keys, the workspace's
+    /// devices and its relay are now.
+    async fn refresh_call(
+        &self,
+        workspace: WorkspaceId,
+        call: &Arc<super::live_call::CallSession>,
+        keys: SessionKeys,
+        devices: &[Device],
+        serving: [u8; 32],
+        relay_name: String,
+    ) {
+        match keys {
+            SessionKeys::Ready(keys) => {
+                let gate = self.call_gate(workspace);
+                call.refresh(keys, devices, gate);
+                call.hand_call_keys(self.shared.workspaces.copies()).await;
+                self.shared.note_session(
+                    workspace,
+                    SessionState::Open {
+                        relay: serving,
+                        name: relay_name,
+                        epoch: call.epoch(),
+                    },
+                );
+            }
+            SessionKeys::Waiting => self
+                .shared
+                .note_session(workspace, SessionState::WaitingForKeys),
+            SessionKeys::Keyless => self.shared.note_session(workspace, SessionState::Keyless),
+        }
+    }
+
+    /// This device's call for `workspace`, joined where it holds none: its own relay serves it, or
+    /// the device that holds the workspace does.
+    async fn open_call(
+        self: &Arc<Self>,
+        workspace: WorkspaceId,
+        held: Held,
+        devices: &[Device],
+        keys: SessionKeys,
+        serving: [u8; 32],
+        away: Option<iroh::EndpointAddr>,
+        relay_name: String,
+    ) {
         let SessionKeys::Ready(keys) = keys else {
             self.shared.note_session(
                 workspace,
@@ -1046,6 +1078,7 @@ impl Live {
             );
             return;
         };
+        let own = self.shared.device;
         let gate = self.call_gate(workspace);
         let roster = Roster::new(devices.iter().map(|device| device.device));
         let local = matches!(held, Held::Governs).then_some(&self.relay);
@@ -1053,14 +1086,16 @@ impl Live {
         match super::live_call::CallSession::join(
             local,
             away,
-            &self.endpoint,
-            &certificate,
-            serving,
-            own,
-            workspace,
-            keys,
-            roster,
-            self.base_word(&devices),
+            super::live_call::Joining {
+                endpoint: &self.endpoint,
+                certificate: &certificate,
+                relay: serving,
+                device: own,
+                workspace,
+                keys,
+                roster,
+                base: self.base_word(devices),
+            },
         )
         .await
         {
@@ -1122,8 +1157,7 @@ impl Live {
     fn base_word(&self, devices: &[Device]) -> tilo_live::presence::Own {
         let cert = self.shared.workspaces.device_cert();
         let name = tilo_user_identity::device_name(&cert.device_label)
-            .map(str::to_owned)
-            .unwrap_or_else(|| name_of(devices, self.shared.device));
+            .map_or_else(|| name_of(devices, self.shared.device), str::to_owned);
         tilo_live::presence::Own {
             label: name.clone(),
             device: name,

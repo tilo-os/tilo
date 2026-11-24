@@ -54,7 +54,7 @@ impl DeviceSearch {
                 match writes.recv().await {
                     Ok(write) => match following.upgrade() {
                         Some(records) => {
-                            records.changed(&write.workspace, &write.app, &write.record)
+                            records.changed(&write.workspace, &write.app, &write.record);
                         }
                         None => return,
                     },

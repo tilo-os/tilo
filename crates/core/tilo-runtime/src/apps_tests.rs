@@ -702,7 +702,7 @@ tilo_test_env::scenario! {
         let launch = apps.start(&dev.id, WORKSPACE).unwrap();
         assert_eq!(
             apps.attested(launch.pid),
-            Some((dev.id.clone(), WORKSPACE.to_owned())),
+            Some((dev.id, WORKSPACE.to_owned())),
             "the launch is attested as the dev build, not as the app it builds"
         );
         assert!(
@@ -971,7 +971,9 @@ tilo_test_env::scenario! {
 /// are the launcher's to record, and the process runs on until the test ends.
 #[cfg(target_os = "linux")]
 fn wait_for(path: &str) -> String {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let until = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(30))
+        .unwrap_or_else(std::time::Instant::now);
     loop {
         if let Ok(written) = std::fs::read_to_string(path) {
             return written;
@@ -1248,7 +1250,7 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
 
     let _view = apps
         .instances
-        .connect(VIEWER, WORKSPACE, 7, Shows::View(visitor.clone()))
+        .connect(VIEWER, WORKSPACE, 7, Shows::View(Box::new(visitor.clone())))
         .unwrap();
     let (mut broker_end, _) = listener.accept().unwrap();
     let mut named = [0; 256];

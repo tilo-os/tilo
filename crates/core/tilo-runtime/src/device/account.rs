@@ -159,14 +159,18 @@ impl Account {
             .await;
         let names = devices.as_ref().map_or_else(
             |_| std::collections::BTreeMap::new(),
-            |value| tilo_server_protocol::devices::names(value),
+            tilo_server_protocol::devices::names,
         );
         list.with_hosts(&names, Some(&self.server.device()));
         let member = member_record(person);
         for index in 0..list.workspaces.len() {
-            let named = list.workspaces[index].workspace.clone();
+            let Some(entry) = list.workspaces.get(index) else {
+                continue;
+            };
+            let workspace_id = entry.workspace.clone();
+            let owner = entry.role.as_deref() == Some(OWNER_ROLE);
             let record = |app: &str, record: &str| ResourceReadRequest {
-                workspace: named.clone(),
+                workspace: workspace_id.clone(),
                 app: app.to_owned(),
                 record: record.to_owned(),
                 joined: false,
@@ -175,12 +179,11 @@ impl Account {
                 answer: tilo_actions::remote::ReadAnswer::Reading,
             };
             if let Ok(reading) = self.read_records(record(MEMBERSHIP_APP, &member)).await {
-                list.with_membership(&named, &reading);
+                list.with_membership(&workspace_id, &reading);
             }
-            if list.workspaces[index].role.as_deref() == Some(OWNER_ROLE)
-                && let Ok(reading) = self.read_records(record(OWNERSHIP.0, OWNERSHIP.1)).await
+            if owner && let Ok(reading) = self.read_records(record(OWNERSHIP.0, OWNERSHIP.1)).await
             {
-                list.with_ownership(&named, &reading);
+                list.with_ownership(&workspace_id, &reading);
             }
         }
         list.workspaces.retain(|entry| {

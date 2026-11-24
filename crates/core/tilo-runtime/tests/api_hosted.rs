@@ -134,7 +134,8 @@ impl Receiver {
     async fn next(&self) -> Delivered {
         let waiting = async {
             loop {
-                if let Some(first) = self.got.lock().unwrap().first().cloned() {
+                let first = self.got.lock().unwrap().first().cloned();
+                if let Some(first) = first {
                     return first;
                 }
                 self.woken.notified().await;
@@ -191,6 +192,8 @@ async fn deliveries(host: &host::Host, workspace: &str) -> Vec<Invocation> {
 #[test]
 fn a_hosted_apis_webhook_reaches_its_receiver_signed() {
     host::run(|host| async move {
+        use ed25519_dalek::Verifier as _;
+
         let workspace = host.workspace().to_owned();
         let key = host.key("Visa backend");
         let create = "/v1/resources/account/webhooks/actions/create";
@@ -247,7 +250,6 @@ fn a_hosted_apis_webhook_reaches_its_receiver_signed() {
             &<[u8; 32]>::try_from(hex::decode(signing).unwrap().as_slice()).unwrap(),
         )
         .unwrap();
-        use ed25519_dalek::Verifier as _;
         verifier
             .verify(
                 &signed,

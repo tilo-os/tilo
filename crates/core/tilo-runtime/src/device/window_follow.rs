@@ -220,6 +220,7 @@ mod tests {
                 (record, CollabEvent::Handoff { request: HandoffRequest::Checkpoint { token: 3 } })
                     if record == "continuation:7"
             ));
+            drop(heard);
         }
 
         // An app, an agent and another device naming the same step are refused, and no app

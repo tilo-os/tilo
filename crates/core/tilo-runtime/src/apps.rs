@@ -600,10 +600,8 @@ impl Apps {
                 &original,
                 (origin, socket.as_fd()),
             )?;
-            if let Some(pid) = connectors::pid(&child) {
-                self.record_started(pid, app_id, workspace);
-            }
-            return Ok(child);
+            self.record_started(connectors::pid(&child), app_id, workspace);
+            Ok(child)
         }
         #[cfg(target_os = "macos")]
         {
@@ -611,7 +609,7 @@ impl Apps {
             if let Some(pid) = connectors::pid(&child) {
                 self.record_started(pid, app_id, workspace);
             }
-            return Ok(child);
+            Ok(child)
         }
         #[cfg(target_os = "android")]
         {
