@@ -77,10 +77,9 @@ SCANNED += (
     Path("crates/os/network-secret-agent"),
     Path("crates/os/polkit-agent"),
     Path("crates/os/power-service"),
-    Path("crates/os/prepared-setup-model"),
     Path("crates/core/session-actions"),
     Path("crates/os/system-service"),
-    Path("crates/services/vision-service"),
+    Path("crates/services/vision"),
     Path("crates/core/workspace-directory"),
 )
 # Crates of the same kind that live in other groups.
@@ -136,7 +135,6 @@ EXEMPT = {
     "crates/engines/ocr/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/segment/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/thumbnail/": "paint, brush and media physics simulate the medium, not UI motion",
-    "crates/engines/vision/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/wet-media/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/video-edit/": "a clip's tone curve and transitions are the cut's own content, not UI motion",
     "crates/ui/ui-core/src/theme.rs": "blends two themes' tokens, spring presets included",

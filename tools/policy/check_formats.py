@@ -59,10 +59,9 @@ SCOPES += (
     Path("crates/os/network-secret-agent"),
     Path("crates/os/polkit-agent"),
     Path("crates/os/power-service"),
-    Path("crates/os/prepared-setup-model"),
     Path("crates/core/session-actions"),
     Path("crates/os/system-service"),
-    Path("crates/services/vision-service"),
+    Path("crates/services/vision"),
     Path("crates/core/workspace-directory"),
 )
 # Crates of the same kind that live in other groups.
