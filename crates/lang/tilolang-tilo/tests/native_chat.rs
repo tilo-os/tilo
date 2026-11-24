@@ -143,11 +143,12 @@ fn assert_carried(ada: &Replica, all: &ResourceRef) {
         sidebar(ada, all),
         [
             "#chat",
+            "#voice",
             "#general",
             "Team: design, release",
             "Social: weekend",
             "#u_ada, u_leo",
-            "Set aside: voice, old-plans",
+            "Set aside: old-plans",
         ],
         "the sidebar in the native app's order, what has no place here set aside"
     );
