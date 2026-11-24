@@ -167,6 +167,25 @@ impl Window {
                     ToUi::Rows { list, rows, .. } => {
                         self.rows.insert(list, rows);
                     }
+                    // The rows of a list that changed after they were sent: a rendered row
+                    // showing something else, or the list read anew.
+                    ToUi::RowsChanged { list, changes, .. } => {
+                        let stored = self.rows.entry(list).or_default();
+                        for change in changes {
+                            match change {
+                                patch::RowChange::Changed { row } => {
+                                    match stored.iter_mut().find(|shown| shown.key == row.key) {
+                                        Some(shown) => *shown = *row,
+                                        None => stored.push(*row),
+                                    }
+                                }
+                                patch::RowChange::Reset => stored.clear(),
+                                patch::RowChange::Inserted { .. }
+                                | patch::RowChange::Removed { .. }
+                                | patch::RowChange::Moved { .. } => {}
+                            }
+                        }
+                    }
                     ToUi::Took { fired } => self.took = fired,
                     ToUi::Notice { words, .. } => self.notices.push(words),
                     _ => {}
