@@ -1,6 +1,6 @@
 //! What an app reaches of a record by what its signed manifest declares: its own records and the
 //! workspace's to change, another app's only to read where it declares that read, and in the
-//! person's own workspace only its windows' records and the records of theirs it declares.
+//! person's own workspace its own records and the records of theirs it declares.
 
 use super::{AppReach, app_reach, persons_record};
 use tilo_actions::remote::ResourceAddress;
@@ -153,11 +153,11 @@ fn an_app_reaches_the_persons_workspace_only_for_the_records_it_declares() {
     );
     assert!(
         persons_record(
-            "test.person-terminal",
+            "test.person-notes",
             &person_record("test.person-terminal", "tab:01")
         )
         .is_err(),
-        "nothing but the person's records"
+        "nor another app's record"
     );
     assert_eq!(
         persons_record(
@@ -213,6 +213,33 @@ fn an_app_reaches_the_persons_workspace_only_for_the_records_it_declares() {
     );
 }
 
+/// Messages opens its own primary record in the person's workspace, as in any workspace it is
+/// installed in; another app's record there, and a record of the person's it declares no kind
+/// of, stay refused.
+#[test]
+fn an_app_opens_its_own_primary_record_in_the_persons_workspace() {
+    let primary = collab_types::document::DocumentId::package_primary();
+    let messages = "so.tilo.messages";
+    assert_eq!(
+        app_reach(messages, &person_record(messages, primary.as_str()), true),
+        Ok(AppReach::Changes)
+    );
+    assert!(
+        app_reach(
+            messages,
+            &person_record("so.tilo.notes", primary.as_str()),
+            true
+        )
+        .is_err(),
+        "another app's record"
+    );
+    let identity = collab_types::person_document_id("tilo.identity");
+    assert!(
+        app_reach(messages, &person_record(messages, &identity), true).is_err(),
+        "a record of the person's it declares no kind of"
+    );
+}
+
 #[test]
 fn contextual_views_reach_the_profile_with_their_own_kind() {
     let app = "so.tilo.lang.views";
@@ -260,13 +287,18 @@ fn an_apps_windows_records_are_its_own_in_every_workspace() {
         app_reach("test.lang-board", &shared("test.lang-notes", &view), false).is_err(),
         "a declared read of an app's kinds reaches no view of its windows"
     );
+    let tab_view = "derived:view.d0a1b@tab:000000000000002a";
+    assert!(
+        !collab_types::document::DocumentId::is_window_record(tab_view),
+        "a view of anything but a window's default document is no window's record"
+    );
     assert!(
         app_reach(
-            "test.lang-notes",
-            &person_record("test.lang-notes", "derived:view.d0a1b@tab:000000000000002a"),
+            "test.lang-chat",
+            &person_record("test.lang-notes", tab_view),
             true
         )
         .is_err(),
-        "a view of anything but a window's default document is no window's record"
+        "nor another app's to reach"
     );
 }

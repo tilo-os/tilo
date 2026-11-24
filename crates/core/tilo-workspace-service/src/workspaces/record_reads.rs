@@ -146,14 +146,18 @@ fn window_record(record: &str) -> bool {
     collab_types::document::DocumentId::is_window_record(record)
 }
 
-/// Whether `app` reaches `address` in the person's own workspace: its own record naming no
-/// record; its own windows' records ([`window_record`]), as in any workspace; one of the
-/// workspace's records, when it is the record's app or declares that it reads that app's kinds;
-/// or a record of the person's whose kind its manifest declares (its own, or another app's it
-/// reads). The person's workspace holds nothing else for an app.
+/// Whether `app` reaches `address` in the person's own workspace, as in any workspace it is
+/// installed in: its own records (its primary record, its windows' records ([`window_record`])
+/// and the others it keeps); one of the workspace's records, when it is the record's app or
+/// declares that it reads that app's kinds; or a record of the person's whose kind its manifest
+/// declares (its own, or another app's it reads). Nothing else of the person's (their identity,
+/// their settings, another app's data) is an app's.
 pub(crate) fn persons_record(app: &str, address: &ResourceAddress) -> Result<(), String> {
     let own = address.app.is_empty() || address.app == app;
-    if own && (address.record.is_empty() || window_record(&address.record)) {
+    if own
+        && (window_record(&address.record)
+            || collab_types::person_resource_type(&address.record).is_none())
+    {
         return Ok(());
     }
     if collab_types::shared_workspace_document(&address.app, &address.record).is_some() {
@@ -165,8 +169,9 @@ pub(crate) fn persons_record(app: &str, address: &ResourceAddress) -> Result<(),
             address.app
         ));
     }
-    let kind = collab_types::person_resource_type(&address.record)
-        .ok_or("an app reaches the person's workspace only for its windows and their records")?;
+    let kind = collab_types::person_resource_type(&address.record).ok_or(
+        "an app reaches the person's workspace only for its own records and those it declares",
+    )?;
     if !collab_types::app_surface::keeps_person_resource(app, kind) {
         return Err(format!(
             "{app} declares no record of the person's of kind {kind}"
