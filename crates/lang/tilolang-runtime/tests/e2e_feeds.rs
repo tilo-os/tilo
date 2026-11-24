@@ -128,7 +128,13 @@ mod cases {
         }
 
         fn cancel(&self, job: &str) -> bool {
-            job == "job-1"
+            if job != "job-1" {
+                return false;
+            }
+            // A cancelled read answers nothing more: what it had not taken is dropped.
+            self.ready.borrow_mut().clear();
+            self.feeds.borrow_mut().clear();
+            true
         }
     }
 
@@ -272,8 +278,12 @@ mod cases {
         }
 
         /// Reads every subscription and takes what came back, as the window does each second.
+        /// A subscription just added starts its own read, so a press only starts one when none
+        /// runs; either way what the device answers is taken.
         fn refresh(&self) {
-            self.call("refresh", &[("lib", Value::resource(&self.lib))]);
+            if self.refresh_field("state") != json!("running") {
+                self.call("refresh", &[("lib", Value::resource(&self.lib))]);
+            }
             for _ in 0..3 {
                 self.call("poll_refresh", &[("lib", Value::resource(&self.lib))]);
             }
@@ -367,6 +377,29 @@ mod cases {
         }
     }
 
+    /// Every text the window shows, under `node`.
+    fn shown(view: &ViewInstance) -> Vec<String> {
+        fn walk(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
+            for value in node.props.values() {
+                match value {
+                    Value::Text(text) => out.push(text.clone()),
+                    Value::Opt(Some(held)) => {
+                        if let Value::Text(text) = &**held {
+                            out.push(text.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for child in &node.children {
+                walk(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(view.tree(), &mut out);
+        out
+    }
+
     fn number(node: &tilolang_runtime::UiNode, name: &str) -> f64 {
         match node.props.get(name) {
             Some(Value::Float(n)) => *n,
@@ -428,9 +461,31 @@ mod cases {
         assert_eq!(feeds.refresh_field("fresh"), json!(2));
         assert_eq!(feeds.refresh_field("state"), json!("done"));
 
-        // A second refresh brings nothing twice: the articles it lists are already kept.
+        // The window says what the refresh brought.
+        let window = feeds.feeds_window();
+        let banner = of_kind(window.tree(), "ui.Banner")
+            .into_iter()
+            .next()
+            .expect("a banner over the list");
+        assert_eq!(text(banner, "title"), "2 new articles");
+
+        // A second refresh brings nothing twice: the articles it lists are already kept, and
+        // the window says the subscriptions have nothing newer.
         feeds.refresh();
         assert_eq!(feeds.article_titles().len(), 2);
+        let window = feeds.feeds_window();
+        assert!(
+            of_kind(window.tree(), "ui.Banner").is_empty(),
+            "nothing new, no banner: {:?}",
+            shown(&window)
+        );
+        assert!(
+            shown(&window)
+                .iter()
+                .any(|text| text == "All feeds are up to date"),
+            "{:?}",
+            shown(&window)
+        );
     }
 
     #[test]
@@ -594,7 +649,8 @@ mod cases {
             .device
             .inputs()
             .into_iter()
-            .find(|input| input.contains("\"feeds\""))
+            .filter(|input| input.contains("\"feeds\""))
+            .next_back()
             .expect("the export names the subscriptions");
         assert!(
             export.contains("LWN") && export.contains("lwn.net"),
@@ -620,7 +676,26 @@ mod cases {
             "{places:?}"
         );
 
+        // A subscription just added is read and shown, so the window stands on it.
         let rows: Vec<ResourceRef> = of_kind(window.tree(), "ui.ListItem")
+            .into_iter()
+            .map(row_item)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "the capsule's own article, in the place it opened"
+        );
+
+        feeds.call(
+            "show_place",
+            &[
+                ("reader", Value::resource(&feeds.reader())),
+                ("place", Value::text("all")),
+            ],
+        );
+        let all = feeds.feeds_window();
+        let rows: Vec<ResourceRef> = of_kind(all.tree(), "ui.ListItem")
             .into_iter()
             .map(row_item)
             .collect();

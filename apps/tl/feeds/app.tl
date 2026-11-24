@@ -254,9 +254,20 @@ primary action add_subscription(lib: Library, url: Text, folder: Option<Folder> 
         return had
     }
     let name = site_of(address)
-    lib.feeds.insert(
+    let made = lib.feeds.insert(
         Feed(name: name, url: address, site: name, folder: folder, format: format_of(address)),
     )
+    // What a person just subscribed to is read at once and shown, as a reader expects.
+    if let reader = lib.readers.first() {
+        reader.place = "feed:{made.id()}"
+    }
+    // A read already running is started again over every subscription, so the new one comes
+    // along rather than waiting for the next press.
+    if lib.refresh.state == "running" {
+        stop_refresh(lib)
+        refresh(lib)
+    } else { refresh(lib, only: [made]) }
+    made
 }
 
 /// Unsubscribes: the subscription leaves the sidebar, and what it brought in is taken away with
@@ -376,7 +387,7 @@ action set_tags(a: Article, tags: Text) (
 /// Reads every subscription again. The device fetches them away from the frame and the app takes
 /// each answer as it lands (`poll_refresh`), so a slow site never holds the window.
 // ---------------------------------------------------------------- refreshing
-action refresh(lib: Library) (
+action refresh(lib: Library, only: List<Feed> = []) (
     icon: .refresh,
     key: "r",
     label: "Refresh all feeds",
@@ -384,16 +395,18 @@ action refresh(lib: Library) (
 ) {
     require not lib.feeds.is_empty() "There are no subscriptions to refresh"
     require lib.refresh.state != "running" "A refresh is already running"
-    let asked = Ask(feeds: lib.feeds.map(f -> AskFeed(url: f.url, pin: f.pin)))
+    // A subscription just added asks for itself alone; the window's own press asks for all.
+    let wanted = if only.is_empty() { lib.feeds.map(f -> f) } else { only }
+    let asked = Ask(feeds: wanted.map(f -> AskFeed(url: f.url, pin: f.pin)))
     match engine.start("refresh", json.encode(asked)) {
         .ok(job) => {
-            for f in lib.feeds {
+            for f in wanted {
                 f.trouble = ""
             }
             lib.refresh.job = job
             lib.refresh.state = "running"
             lib.refresh.done = 0
-            lib.refresh.total = lib.feeds.len()
+            lib.refresh.total = wanted.len()
             // What the last refresh added up to goes back to nothing for this one.
             lib.refresh.fresh -= lib.refresh.fresh
             lib.refresh.failed -= lib.refresh.failed
@@ -554,6 +567,7 @@ action import_opml(lib: Library, file: File) (
     if text == "" {
         return
     }
+    let before = lib.feeds.len()
     let answer = match engine.call("opml", json.encode(OpmlAsk(text: text))) {
         .ok(said) => json.decode<Outlines>(said),
         .err(_) => .err(""),
@@ -592,6 +606,11 @@ action import_opml(lib: Library, file: File) (
                     }
                     .err(_) => {}
                 }
+            }
+            // What the file brought is read at once, as a person expects of a subscription.
+            if lib.feeds.len() > before {
+                if lib.refresh.state == "running" { stop_refresh(lib) }
+                refresh(lib)
             }
         }
         .err(_) => {}
@@ -962,6 +981,14 @@ view refresh_bar(lib: Library) {
             kind: .warning,
             icon: .triangle_alert,
         )
+    } else if job.fresh > 0 {
+        ui.Banner(
+            if job.fresh == 1 { "1 new article" } else { "{job.fresh} new articles" },
+            kind: .success,
+            icon: .check,
+        )
+    } else if job.total > 0 and job.done == job.total {
+        ui.Text("All feeds are up to date", role: .caption, secondary: true)
     }
 }
 

@@ -437,6 +437,8 @@ d-wjiyczto = Refresh all feeds
     .w-a-refresh-is-already-running = A refresh is already running
     .w-couldn-t-start-fetching = Couldn't start fetching: { $why }
 
+d-wjiyczto-only = Only
+
 d-io5ncepq = Stop refreshing
     .doc = Stops a refresh that is running.
 
@@ -532,6 +534,9 @@ d-k2jb46f2 = Refresh bar
     .w-stop = Stop
     .w-1-feed-could-not-be-refreshed = 1 feed could not be refreshed
     .w-feeds-could-not-be-refreshed = { $failed } feeds could not be refreshed
+    .w-1-new-article = 1 new article
+    .w-new-articles = { $fresh } new articles
+    .w-all-feeds-are-up-to-date = All feeds are up to date
 
 d-2kgv5ybw = Place bar
     .w-open-site = Open site
