@@ -245,6 +245,26 @@ async fn an_update_lists_what_a_build_that_named_surfaces_by_their_file_wrote() 
             "the update reads article-{at} as the earlier build wrote it"
         );
     }
+    // The workspace lets its person change the app's records, as a workspace that runs the app
+    // does; without that it grants no edit of any app's records.
+    let person = hex::encode(cert.user_public_key);
+    let grant = tilo_action_policy::Grant::new(
+        "older-version",
+        tilo_action_policy::Grantee::person(person.clone()),
+        tilo_action_policy::TreePath::workspace(workspace.clone()),
+        tilo_action_policy::KindSet::READ_UNDOABLE,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(person),
+    );
+    workspaces
+        .commit_own_membership(
+            &workspace,
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Grant { grant },
+            None,
+        )
+        .await
+        .unwrap();
+
     // A change of the earlier build's still arriving names its surface: the update reads that
     // surface from the content store, in the form the earlier build kept it.
     let written = "Article 0, as the earlier build wrote it";
