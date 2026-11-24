@@ -75,6 +75,7 @@ mod removed;
 mod resource_store;
 mod rich_text;
 mod scenarios;
+mod settings_panes;
 mod suggest;
 mod surface;
 mod task;
