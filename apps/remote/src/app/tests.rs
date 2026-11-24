@@ -532,7 +532,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().screen, Screen::Session { id: rdp });
         assert_eq!(
             app.state().status_model(rdp).action,
-            Some(("Edit connection", Action::EditConnection(rdp)))
+            Some(("Edit connection", RemoteEffect::EditConnection { connection: rdp }))
         );
         app.apply(Action::Disconnect);
         assert!(app.dialog.is_some(), "closing a session asks first");

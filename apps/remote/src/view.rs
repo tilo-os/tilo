@@ -111,7 +111,6 @@ pub(crate) fn kind_icon(kind: ConnectionKind) -> Icon {
 }
 
 fn connection_row(
-    requests: &Requests,
     actions: Option<&ResourceActions<Remote>>,
     row: &RowModel,
 ) -> ListRow {
@@ -120,8 +119,11 @@ fn connection_row(
         .leading_tooltip(CATALOG.t(row.kind.label_message()))
         .secondary(&row.address)
         .meta(&row.meta)
-        .selected(row.selected)
-        .on_activate(queue(requests, Action::RequestConnect(row.id)));
+        .selected(row.selected);
+    match actions.and_then(|actions| actions.effect(&RemoteEffect::Connect { connection: row.id })) {
+        Some(open) => list_row = list_row.on_action(open),
+        None => list_row = list_row.with_enabled(false),
+    }
     if let Some(actions) = actions {
         if let Some(edit) = actions.effect(&RemoteEffect::EditConnection { connection: row.id }) {
             list_row = list_row.action_binding(Icon::Pencil, "Edit connection", edit);
@@ -189,7 +191,7 @@ pub(crate) fn connection_list(
     }
     let list = |rows: Vec<&RowModel>| -> Vec<Element> {
         rows.into_iter()
-            .map(|row| Box::new(connection_row(requests, actions, row)) as Element)
+            .map(|row| Box::new(connection_row(actions, row)) as Element)
             .collect()
     };
     let (pinned, others): (Vec<&RowModel>, Vec<&RowModel>) =
@@ -479,10 +481,13 @@ pub(crate) struct StatusModel {
     pub title: String,
     pub message: String,
     pub error: bool,
-    pub action: Option<(&'static str, Action)>,
+    pub action: Option<(&'static str, RemoteEffect)>,
 }
 
-pub(crate) fn session_status(requests: &Requests, model: StatusModel) -> Element {
+pub(crate) fn session_status(
+    actions: Option<&ResourceActions<Remote>>,
+    model: StatusModel,
+) -> Element {
     let state = if model.error {
         EmptyState::error(model.title, model.message)
     } else {
@@ -490,12 +495,15 @@ pub(crate) fn session_status(requests: &Requests, model: StatusModel) -> Element
     }
     .with_icon(model.icon);
     match model.action {
-        Some((label, action)) => Box::new(
-            state
+        Some((label, effect)) => {
+            let state = state
                 .with_action(label)
-                .with_action_id("remote.session.recover")
-                .on_click(queue(requests, action)),
-        ),
+                .with_action_id("remote.session.recover");
+            match actions.and_then(|actions| actions.effect(&effect)) {
+                Some(binding) => Box::new(state.on_action(binding)),
+                None => Box::new(state.with_enabled(false)),
+            }
+        }
         None => Box::new(state),
     }
 }

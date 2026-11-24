@@ -258,6 +258,8 @@ enum PendingResourceOperation {
     },
 }
 
+use crate::actions::RemoteEffect;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     /// Go to a rail destination.
@@ -832,7 +834,7 @@ impl RemoteApp {
             Content::Form(model) => view::connection_form(&store.requests, &store.fields, &model),
             Content::Surface(_) => Box::new(SessionPane::new(Rc::clone(&self.session))),
             Content::Status { id, .. } => {
-                view::session_status(&store.requests, store.status_model(id))
+                view::session_status(store.actions.as_ref(), store.status_model(id))
             }
             Content::Missing => Box::new(
                 ui::widget::EmptyState::new("This connection was deleted")
@@ -1508,7 +1510,7 @@ impl Store {
                 title: "Not connected".to_owned(),
                 message: format!("No session to {name} is open."),
                 error: false,
-                action: Some(("Connect", Action::RequestConnect(id))),
+                action: Some(("Connect", RemoteEffect::Connect { connection: id })),
             },
             Some(SessionStatus::Connecting) => {
                 if kind == ConnectionKind::Tilo {
@@ -1518,7 +1520,7 @@ impl Store {
                         message: "Its owner is asked before the device shares a workspace."
                             .to_owned(),
                         error: false,
-                        action: Some(("Stop", Action::Disconnect)),
+                        action: Some(("Stop", RemoteEffect::Disconnect { connection: id })),
                     }
                 } else {
                     StatusModel {
@@ -1526,7 +1528,7 @@ impl Store {
                         title: format!("Connecting to {name}"),
                         message: "Remote is reaching the machine and signing in. This stops on its own after 45 seconds.".to_owned(),
                         error: false,
-                        action: Some(("Stop", Action::Disconnect)),
+                        action: Some(("Stop", RemoteEffect::Disconnect { connection: id })),
                     }
                 }
             }
@@ -1539,13 +1541,13 @@ impl Store {
             },
             Some(SessionStatus::Failed(error)) => {
                 let recovery = match self.ssh_host_key_issue(id) {
-                    Some(crate::ssh::HostKeyIssue::FirstContact { .. }) => {
-                        ("Trust key", Action::RequestTrustSshHostKey(id))
+                    Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => {
+                        ("Trust key", RemoteEffect::TrustHostKey { connection: id, observed })
                     }
                     Some(crate::ssh::HostKeyIssue::Changed { .. }) => {
-                        ("Forget key", Action::RequestForgetSshHostKey(id))
+                        ("Forget key", RemoteEffect::ForgetHostKey { connection: id })
                     }
-                    _ => ("Try again", Action::RequestConnect(id)),
+                    _ => ("Try again", RemoteEffect::Connect { connection: id }),
                 };
                 StatusModel {
                     icon,
@@ -1564,14 +1566,14 @@ impl Store {
                 // pretends to grant a capability this build lacks.
                 action: (kind == ConnectionKind::Rdp
                     || connection.is_some_and(|c| c.profile_issue().is_some()))
-                .then_some(("Edit connection", Action::EditConnection(id))),
+                .then_some(("Edit connection", RemoteEffect::EditConnection { connection: id })),
             },
             Some(SessionStatus::Closed) => StatusModel {
                 icon,
                 title: "Session ended".to_owned(),
                 message: format!("{name} closed the session."),
                 error: false,
-                action: Some(("Reconnect", Action::RequestConnect(id))),
+                action: Some(("Reconnect", RemoteEffect::Connect { connection: id })),
             },
         }
     }
