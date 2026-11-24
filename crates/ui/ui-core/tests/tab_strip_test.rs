@@ -102,6 +102,7 @@ tilo_test_env::scenario! {
                 identity: tilo_actions::MemberId::person("mia").into(),
                 name: "Mia".to_owned(),
                 hue: PresenceHue::of_identity("mia"),
+                picture: None,
             }),
             name: None,
         }];

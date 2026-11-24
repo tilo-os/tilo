@@ -2328,11 +2328,13 @@ mod tests {
                             identity: tilo_actions::MemberId::person("person-0").into(),
                             name: "Mia".to_owned(),
                             hue: crate::tokens::PresenceHue::of_identity("person-0"),
+                            picture: None,
                         },
                         Person {
                             identity: tilo_actions::MemberId::person("person-1").into(),
                             name: "Writer 1".to_owned(),
                             hue: crate::tokens::PresenceHue::of_identity("person-1"),
+                            picture: None,
                         },
                     ],
                     _ => Vec::new(),
@@ -2453,6 +2455,7 @@ mod tests {
                         identity: tilo_actions::MemberId::person("bo").into(),
                         name: "Bo".to_owned(),
                         hue: crate::tokens::PresenceHue::of_identity("bo"),
+                        picture: None,
                     }),
                     said: Some("moved it to Today".to_owned()),
                     ..ChangeMarkProps::default()

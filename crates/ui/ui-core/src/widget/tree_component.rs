@@ -2346,6 +2346,7 @@ mod tests {
             identity: tilo_actions::MemberId::person("bo").into(),
             name: "Bo".to_owned(),
             hue: crate::tokens::PresenceHue::of_identity("bo"),
+            picture: None,
         });
         let tree = tree_of(vec![props], true, Moves::default());
         assert_eq!(
