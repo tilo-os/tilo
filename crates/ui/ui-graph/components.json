@@ -2084,6 +2084,96 @@
       }
     },
     {
+      "name": "DiffGrid",
+      "doc": "Two texts aligned line by line, as a comparison reads: each side's own line numbers, the changed rows washed, and a strip down the side where the changes stand.",
+      "props": [
+        {
+          "name": "left",
+          "doc": "The left side's lines, one per aligned row: an empty line where it has none.",
+          "type": {
+            "list": "text"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "right",
+          "doc": "The right side's lines, one per aligned row: an empty line where it has none.",
+          "type": {
+            "list": "text"
+          }
+        },
+        {
+          "name": "kinds",
+          "doc": "One character per aligned row: `\" \"` where both sides hold the same line, `\"a\"` a line only the right has, `\"r\"` a line only the left has, `\"m\"` a line both have and differ.",
+          "type": "text"
+        },
+        {
+          "name": "at",
+          "doc": "The first row of the change the window is at: the grid brings it into view when it changes.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "side",
+          "doc": "Which side shows: both side by side, or one of them alone where the window is narrow.",
+          "type": {
+            "choice": {
+              "name": "DiffSide",
+              "cases": [
+                "both",
+                "left",
+                "right"
+              ]
+            }
+          }
+        },
+        {
+          "name": "language",
+          "doc": "The language the lines are coloured as (the language's own name, `rust`, `json`); plain text unless said.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Language",
+                "cases": [
+                  "plain_text",
+                  "rust",
+                  "typst",
+                  "sql",
+                  "json",
+                  "tilolang"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "label",
+          "doc": "What the grid shows, as assistive technology announces it: \"a.rs and b.rs, 3 changes\".",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "A row was pressed: carries its place among the aligned rows.",
+          "value": "int"
+        },
+        {
+          "name": "wheel",
+          "doc": "The wheel or the scroll bar asked to show other rows: carries the rows the first one moves by, down for a positive number.",
+          "value": "int"
+        }
+      ],
+      "semantics": {
+        "role": "Table",
+        "label": "label"
+      }
+    },
+    {
       "name": "DisclosureBand",
       "doc": "Content a view shows only while something is open, unrolling from its top.",
       "parts": [

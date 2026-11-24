@@ -57,7 +57,11 @@ mod cases {
         }
 
         fn ops(&self) -> Vec<String> {
-            self.calls.borrow().iter().map(|(op, _)| op.clone()).collect()
+            self.calls
+                .borrow()
+                .iter()
+                .map(|(op, _)| op.clone())
+                .collect()
         }
 
         fn last_ask(&self) -> Asked {
@@ -169,7 +173,10 @@ mod cases {
             let state = self.state.borrow().clone();
             let (answer, error) = match state.as_str() {
                 "done" => (self.answer.borrow().clone(), String::new()),
-                "failed" => (String::new(), "the server refused the connection".to_owned()),
+                "failed" => (
+                    String::new(),
+                    "the server refused the connection".to_owned(),
+                ),
                 "cancelled" => (String::new(), "The request was cancelled.".to_owned()),
                 _ => (String::new(), String::new()),
             };
@@ -347,7 +354,11 @@ mod cases {
         fn window(&self) -> ViewInstance {
             let mut window = self
                 .rt
-                .open_view(&me(), &self.app.view("tester"), vec![Value::resource(&self.root)])
+                .open_view(
+                    &me(),
+                    &self.app.view("tester"),
+                    vec![Value::resource(&self.root)],
+                )
                 .unwrap_or_else(|e| panic!("tester: {e}"));
             window.set_lazy_rows(false).unwrap();
             window
@@ -536,7 +547,8 @@ mod cases {
             vec![Value::resource(&s.root), Value::resource(&env)],
         );
         assert_eq!(
-            s.of(&s.root, "active_environment").map(|e| s.text(&e, "name")),
+            s.of(&s.root, "active_environment")
+                .map(|e| s.text(&e, "name")),
             Some("Staging".to_owned())
         );
     }
@@ -566,7 +578,8 @@ mod cases {
             "keep_credential",
             vec![Value::resource(&s.root), Value::text("a-private-token")],
         );
-        let reference = s.nested(&s.draft(), "auth", "reference")
+        let reference = s
+            .nested(&s.draft(), "auth", "reference")
             .as_str()
             .unwrap_or_default()
             .to_owned();
@@ -581,14 +594,13 @@ mod cases {
         s.done("send", vec![Value::resource(&s.root)]);
         let ask = s.engine.last_ask();
         assert_eq!(ask.method, "GET");
-        assert_eq!(ask.url, "{{base}}/users", "the device resolves the variables");
+        assert_eq!(
+            ask.url, "{{base}}/users",
+            "the device resolves the variables"
+        );
         assert_eq!(
             ask.vars,
-            vec![(
-                "base".to_owned(),
-                String::new(),
-                String::new()
-            )],
+            vec![("base".to_owned(), String::new(), String::new())],
             "a shared variable's value is the workspace's"
         );
         assert_eq!(ask.auth_scheme, "none", "no scheme was chosen yet");
@@ -618,10 +630,7 @@ mod cases {
             s.nested(&s.root, "answer", "size_bytes"),
             serde_json::json!(body.len())
         );
-        assert_eq!(
-            s.nested(&s.root, "answer", "body"),
-            serde_json::json!(body)
-        );
+        assert_eq!(s.nested(&s.root, "answer", "body"), serde_json::json!(body));
         assert_eq!(
             s.nested(&s.root, "answer", "pretty"),
             serde_json::json!("{\n  \"id\": 1\n}"),
@@ -642,7 +651,8 @@ mod cases {
         );
         assert_eq!(s.number(&history[0], "status"), 200);
         assert!(
-            s.text(&history[0], "replay").contains("https://api.example.com/users"),
+            s.text(&history[0], "replay")
+                .contains("https://api.example.com/users"),
             "the entry keeps the request it sent"
         );
     }
@@ -803,5 +813,3 @@ mod cases {
         assert!(editors.len() >= 1, "the response has its editor");
     }
 }
-
-

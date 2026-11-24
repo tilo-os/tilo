@@ -21,7 +21,6 @@ exclude = [
     "workspace-unify",
     "activity",
     "assistant",
-    "diffmerge",
     "discord",
     "file-explorer",
     "mail",

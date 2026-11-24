@@ -3144,44 +3144,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab03c107fafeb3ee9f5925686dbb7a73bc76e3932abb0d2b365cb64b169cf04c"
 
 [[package]]
-name = "diffmerge"
-version = "0.1.0"
-dependencies = [
- "diffmerge",
- "diffmerge-model",
- "runtime-dylib",
- "serde_json",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-automerge-fork",
- "tilo-files",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "workspace-hack",
-]
-
-[[package]]
-name = "diffmerge-model"
+name = "diffmerge-engine"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "fnv",
  "serde",
  "serde_json",
  "similar",
  "tilo-resource",
  "tilo-test-env",
- "workspace-hack",
-]
-
-[[package]]
-name = "diffmerge-model-wasm"
-version = "0.1.0"
-dependencies = [
- "diffmerge-model",
- "tilo-model-guest",
+ "tilolang-tilo",
  "workspace-hack",
 ]
 
@@ -18396,7 +18368,6 @@ version = "0.1.0"
 dependencies = [
  "assistant-model-wasm",
  "console-model-wasm",
- "diffmerge-model-wasm",
  "poker-model-wasm",
  "publisher-model-wasm",
  "remote-model-wasm",
@@ -20230,6 +20201,7 @@ dependencies = [
  "code-engine",
  "compat-catalogue",
  "compat-service",
+ "diffmerge-engine",
  "ed25519-dalek 3.0.0",
  "futures-util",
  "gbm",
@@ -22224,6 +22196,7 @@ name = "tilolang-process"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "diffmerge-engine",
  "image",
  "jiff",
  "libc",
@@ -22317,6 +22290,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "diffmerge-engine",
  "foldhash 0.1.5",
  "getrandom 0.4.3",
  "hex-engine",
@@ -26506,9 +26480,6 @@ dependencies = [
  "derive_utils",
  "des",
  "diatomic-waker",
- "diffmerge",
- "diffmerge-model",
- "diffmerge-model-wasm",
  "digest 0.10.7",
  "digest 0.11.3",
  "dirs",

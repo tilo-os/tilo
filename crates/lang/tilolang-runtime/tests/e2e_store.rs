@@ -213,8 +213,10 @@ action open_app(app_name: Text) {
             if *self.done.borrow() {
                 Ok(r#"{"state":"done","done":1,"total":1,"error":"","status":"Done."}"#.to_owned())
             } else {
-                Ok(r#"{"state":"running","done":0,"total":1,"error":"","status":"Working."}"#
-                    .to_owned())
+                Ok(
+                    r#"{"state":"running","done":0,"total":1,"error":"","status":"Working."}"#
+                        .to_owned(),
+                )
             }
         }
 
@@ -351,7 +353,11 @@ action open_app(app_name: Text) {
         fn window(&self) -> ViewInstance {
             let mut window = self
                 .rt
-                .open_view(&me(), &self.app.view("catalogue"), vec![Value::resource(&self.root)])
+                .open_view(
+                    &me(),
+                    &self.app.view("catalogue"),
+                    vec![Value::resource(&self.root)],
+                )
                 .unwrap();
             window.set_lazy_rows(false).unwrap();
             window

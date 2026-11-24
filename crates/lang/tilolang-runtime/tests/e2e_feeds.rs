@@ -8,11 +8,9 @@ mod cases {
     use serde_json::{Value as Json, json};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::blob::FileValue;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance,
-    };
+    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/feeds/app.tl");
 
@@ -56,7 +54,9 @@ mod cases {
         /// The file `name` holding `text`, kept in this device's store.
         fn file(&self, name: &str, text: &str) -> Value {
             let hash = format!("h{}", text.len());
-            self.files.borrow_mut().push((hash.clone(), text.as_bytes().to_vec()));
+            self.files
+                .borrow_mut()
+                .push((hash.clone(), text.as_bytes().to_vec()));
             Value::file(FileValue::new(
                 name,
                 "text/x-opml",
@@ -69,7 +69,9 @@ mod cases {
     impl EngineHost for Device {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
             assert_eq!(app, "so.tilo.feeds", "the engine answers its own app");
-            self.asked.borrow_mut().push((op.to_owned(), input.to_owned()));
+            self.asked
+                .borrow_mut()
+                .push((op.to_owned(), input.to_owned()));
             let ask: Json = serde_json::from_str(input).unwrap_or(Json::Null);
             match op {
                 "take" => {
@@ -97,7 +99,9 @@ mod cases {
         fn start(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
             assert_eq!(app, "so.tilo.feeds");
             assert_eq!(op, "refresh");
-            self.asked.borrow_mut().push((op.to_owned(), input.to_owned()));
+            self.asked
+                .borrow_mut()
+                .push((op.to_owned(), input.to_owned()));
             let ask: Json = serde_json::from_str(input).expect("the refresh reads as JSON");
             let feeds = ask["feeds"].as_array().cloned().unwrap_or_default();
             self.ready.borrow_mut().extend(
@@ -244,10 +248,8 @@ mod cases {
                 device,
             };
             // The person starts reading here: their place, size, face and paper.
-            feeds.reader = returned_ref(feeds.call(
-                "begin_reading",
-                &[("lib", Value::resource(&feeds.lib))],
-            ));
+            feeds.reader =
+                returned_ref(feeds.call("begin_reading", &[("lib", Value::resource(&feeds.lib))]));
             feeds
         }
 
@@ -262,7 +264,10 @@ mod cases {
         fn subscribe(&self, url: &str) -> ResourceRef {
             returned_ref(self.call(
                 "add_subscription",
-                &[("lib", Value::resource(&self.lib)), ("url", Value::text(url))],
+                &[
+                    ("lib", Value::resource(&self.lib)),
+                    ("url", Value::text(url)),
+                ],
             ))
         }
 
@@ -275,7 +280,10 @@ mod cases {
         }
 
         fn window(&self, view: &str, args: Vec<Value>) -> ViewInstance {
-            let mut window = self.rt.open_view(&me(), &self.app.view(view), args).unwrap();
+            let mut window = self
+                .rt
+                .open_view(&me(), &self.app.view(view), args)
+                .unwrap();
             window.set_lazy_rows(false).unwrap();
             window
         }
@@ -293,10 +301,12 @@ mod cases {
             let window = self.feeds_window();
             of_kind(window.tree(), "ui.NavItem")
                 .into_iter()
-                .filter_map(|item| item.props.get("item").and_then(|item| match item {
-                    Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
-                    _ => None,
-                }))
+                .filter_map(|item| {
+                    item.props.get("item").and_then(|item| match item {
+                        Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+                        _ => None,
+                    })
+                })
                 .find(|feed| self.field(feed, "url") == json!(url))
                 .unwrap_or_else(|| panic!("no subscription to {url} in the sidebar"))
         }
@@ -384,7 +394,10 @@ mod cases {
         assert_eq!(feeds.field(&feed, "url"), json!(GUARDIAN));
         assert_eq!(feeds.field(&feed, "format"), json!({"variant": "rss"}));
         let capsule = feeds.subscribe(CAPSULE);
-        assert_eq!(feeds.field(&capsule, "format"), json!({"variant": "gemini"}));
+        assert_eq!(
+            feeds.field(&capsule, "format"),
+            json!({"variant": "gemini"})
+        );
 
         // Subscribing twice shows the subscription the library already has.
         assert_eq!(
@@ -426,9 +439,16 @@ mod cases {
         feeds.subscribe(BROKEN);
         feeds.subscribe(CAPSULE);
         feeds.refresh();
-        assert_eq!(feeds.feed_field(BROKEN, "trouble"), json!("The site refused the request (HTTP 403)"));
+        assert_eq!(
+            feeds.feed_field(BROKEN, "trouble"),
+            json!("The site refused the request (HTTP 403)")
+        );
         assert_eq!(feeds.refresh_field("failed"), json!(1));
-        assert_eq!(feeds.feed_field(CAPSULE, "pin"), json!("abc123"), "the certificate is pinned");
+        assert_eq!(
+            feeds.feed_field(CAPSULE, "pin"),
+            json!("abc123"),
+            "the certificate is pinned"
+        );
         assert_eq!(feeds.feed_field(CAPSULE, "trouble"), json!(""));
 
         // The window says which subscriptions failed and why, in a banner over the list.
@@ -438,7 +458,8 @@ mod cases {
             .next()
             .expect("a banner over the list");
         assert!(
-            text(banner, "message").contains("broken.test: The site refused the request (HTTP 403)"),
+            text(banner, "message")
+                .contains("broken.test: The site refused the request (HTTP 403)"),
             "{}",
             text(banner, "message")
         );
@@ -453,14 +474,23 @@ mod cases {
         assert_eq!(feeds.field(&article, "read"), json!(false));
 
         // Opening it (what every path does) reads it.
-        let opened = feeds.rt.opened_action(&article.ty).expect("the type reads on open");
+        let opened = feeds
+            .rt
+            .opened_action(&article.ty)
+            .expect("the type reads on open");
         feeds
             .rt
             .invoke_action(&me(), (opened.as_str(), vec![Value::resource(&article)]))
             .unwrap();
         assert_eq!(feeds.field(&article, "read"), json!(true));
 
-        feeds.call("set_read", &[("a", Value::resource(&article)), ("read", Value::Bool(false))]);
+        feeds.call(
+            "set_read",
+            &[
+                ("a", Value::resource(&article)),
+                ("read", Value::Bool(false)),
+            ],
+        );
         assert_eq!(feeds.field(&article, "read"), json!(false));
 
         feeds.call("star", &[("a", Value::resource(&article))]);
@@ -468,7 +498,10 @@ mod cases {
 
         feeds.call(
             "set_tags",
-            &[("a", Value::resource(&article)), ("tags", Value::text("  #Design, design , Later "))],
+            &[
+                ("a", Value::resource(&article)),
+                ("tags", Value::text("  #Design, design , Later ")),
+            ],
         );
         let mut tags: Vec<String> = match feeds.rt.read(&article, "tags").unwrap() {
             Value::List(items) => items
@@ -478,7 +511,11 @@ mod cases {
             other => panic!("the tags read {other:?}"),
         };
         tags.sort();
-        assert_eq!(tags, ["design", "later"], "trimmed, lower case, without `#`");
+        assert_eq!(
+            tags,
+            ["design", "later"],
+            "trimmed, lower case, without `#`"
+        );
     }
 
     #[test]
@@ -491,11 +528,23 @@ mod cases {
         let guardian = feeds.feed(GUARDIAN);
         feeds.call(
             "show_place",
-            &[("reader", Value::resource(&feeds.reader())), ("place", Value::text(format!("feed:{}", guardian.id_string())))],
+            &[
+                ("reader", Value::resource(&feeds.reader())),
+                (
+                    "place",
+                    Value::text(format!("feed:{}", guardian.id_string())),
+                ),
+            ],
         );
         feeds.call("mark_read", &[("lib", Value::resource(&feeds.lib))]);
-        assert_eq!(feeds.field(&feeds.article("A quiet morning"), "read"), json!(true));
-        assert_eq!(feeds.field(&feeds.article("A second piece"), "read"), json!(true));
+        assert_eq!(
+            feeds.field(&feeds.article("A quiet morning"), "read"),
+            json!(true)
+        );
+        assert_eq!(
+            feeds.field(&feeds.article("A second piece"), "read"),
+            json!(true)
+        );
     }
 
     #[test]
@@ -506,10 +555,15 @@ mod cases {
         let guardian = feeds.feed(GUARDIAN);
         feeds.call(
             "unsubscribe",
-            &[("lib", Value::resource(&feeds.lib)), ("feed", Value::resource(&guardian))],
+            &[
+                ("lib", Value::resource(&feeds.lib)),
+                ("feed", Value::resource(&guardian)),
+            ],
         );
         assert!(feeds.article_titles().is_empty());
-        let project = feeds.rt.project(&feeds.rt.read(&feeds.lib, "feeds").unwrap());
+        let project = feeds
+            .rt
+            .project(&feeds.rt.read(&feeds.lib, "feeds").unwrap());
         assert_eq!(project["items"].as_array().map(Vec::len), Some(0));
     }
 
@@ -527,7 +581,9 @@ mod cases {
             json!("bare.test"),
             "an address that names no title is named by its site"
         );
-        let folders = feeds.rt.project(&feeds.rt.read(&feeds.lib, "folders").unwrap());
+        let folders = feeds
+            .rt
+            .project(&feeds.rt.read(&feeds.lib, "folders").unwrap());
         assert!(
             folders.to_string().contains("Reading"),
             "the folder the file names is made"
@@ -540,7 +596,10 @@ mod cases {
             .into_iter()
             .find(|input| input.contains("\"feeds\""))
             .expect("the export names the subscriptions");
-        assert!(export.contains("LWN") && export.contains("lwn.net"), "{export}");
+        assert!(
+            export.contains("LWN") && export.contains("lwn.net"),
+            "{export}"
+        );
     }
 
     #[test]
@@ -556,7 +615,10 @@ mod cases {
             .collect();
         assert!(places.contains(&"All articles".to_owned()), "{places:?}");
         assert!(places.contains(&"Unread".to_owned()), "{places:?}");
-        assert!(places.contains(&"The Guardian: World".to_owned()), "{places:?}");
+        assert!(
+            places.contains(&"The Guardian: World".to_owned()),
+            "{places:?}"
+        );
 
         let rows: Vec<ResourceRef> = of_kind(window.tree(), "ui.ListItem")
             .into_iter()
@@ -580,9 +642,27 @@ mod cases {
         );
 
         let reader = feeds.reader();
-        feeds.call("set_face", &[("reader", Value::resource(&reader)), ("face", Value::text("mono"))]);
-        feeds.call("set_paper", &[("reader", Value::resource(&reader)), ("paper", Value::text("sepia"))]);
-        feeds.call("set_scale", &[("reader", Value::resource(&reader)), ("scale", Value::Float(1.4))]);
+        feeds.call(
+            "set_face",
+            &[
+                ("reader", Value::resource(&reader)),
+                ("face", Value::text("mono")),
+            ],
+        );
+        feeds.call(
+            "set_paper",
+            &[
+                ("reader", Value::resource(&reader)),
+                ("paper", Value::text("sepia")),
+            ],
+        );
+        feeds.call(
+            "set_scale",
+            &[
+                ("reader", Value::resource(&reader)),
+                ("scale", Value::Float(1.4)),
+            ],
+        );
         let page = feeds.page(&article);
         let reading = of_kind(page.tree(), "ui.Reading")
             .into_iter()
@@ -603,11 +683,17 @@ mod cases {
         // A tag's place shows the articles that carry it.
         feeds.call(
             "set_tags",
-            &[("a", Value::resource(&article)), ("tags", Value::text("morning"))],
+            &[
+                ("a", Value::resource(&article)),
+                ("tags", Value::text("morning")),
+            ],
         );
         feeds.call(
             "show_tag",
-            &[("reader", Value::resource(&feeds.reader())), ("tag", Value::text("morning"))],
+            &[
+                ("reader", Value::resource(&feeds.reader())),
+                ("tag", Value::text("morning")),
+            ],
         );
         let window = feeds.feeds_window();
         let rows: Vec<ResourceRef> = of_kind(window.tree(), "ui.ListItem")

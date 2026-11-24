@@ -59,12 +59,6 @@ const APPS: &[App] = &[
         kind: "console.view",
     },
     App {
-        package: "diffmerge",
-        bin: "diffmerge",
-        id: "so.tilo.diffmerge",
-        kind: "diffmerge.session",
-    },
-    App {
         package: "messages",
         bin: "messages",
         id: "so.tilo.messages",

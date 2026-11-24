@@ -230,7 +230,11 @@ mod cases {
             match op {
                 "stage_file" | "unstage_file" => {
                     let file = field(input, "file");
-                    let area = if op == "stage_file" { "staged" } else { "unstaged" };
+                    let area = if op == "stage_file" {
+                        "staged"
+                    } else {
+                        "unstaged"
+                    };
                     for change in repo.changes.iter_mut() {
                         if serde_json::Value::String(change.path.to_owned()) == file {
                             change.area = area;
@@ -244,7 +248,11 @@ mod cases {
                     Ok(self.loaded())
                 }
                 "stage_all" | "unstage_all" => {
-                    let area = if op == "stage_all" { "staged" } else { "unstaged" };
+                    let area = if op == "stage_all" {
+                        "staged"
+                    } else {
+                        "unstaged"
+                    };
                     for change in repo.changes.iter_mut() {
                         change.area = area;
                     }
@@ -333,7 +341,8 @@ mod cases {
                     let files: Vec<String> = repo
                         .files
                         .iter()
-                        .map(|path| serde_json::json!({
+                        .map(|path| {
+                            serde_json::json!({
                             "path": path,
                             "old_path": null,
                             "kind": "modified",
@@ -344,7 +353,8 @@ mod cases {
                             "unified": "   1    1  fn beds() {}\n   2      -one\n         2 +two\n",
                             "left": "   1  fn beds() {}\n   2  -one\n",
                             "right": "   1  fn beds() {}\n   2  +two\n",
-                        }).to_string())
+                        }).to_string()
+                        })
                         .collect();
                     Ok(serde_json::to_string(&files).unwrap())
                 }
@@ -352,14 +362,17 @@ mod cases {
                     let files: Vec<String> = repo
                         .files
                         .iter()
-                        .map(|path| serde_json::json!({
-                            "path": path,
-                            "old_path": null,
-                            "area": "staged",
-                            "kind": "modified",
-                            "additions": 2,
-                            "deletions": 1,
-                        }).to_string())
+                        .map(|path| {
+                            serde_json::json!({
+                                "path": path,
+                                "old_path": null,
+                                "area": "staged",
+                                "kind": "modified",
+                                "additions": 2,
+                                "deletions": 1,
+                            })
+                            .to_string()
+                        })
                         .collect();
                     Ok(serde_json::to_string(&files).unwrap())
                 }
@@ -434,7 +447,11 @@ mod cases {
             answer
         }
 
-        fn try_call(&self, action: &str, args: Vec<Value>) -> Result<tilolang_runtime::InvokeOutcome, String> {
+        fn try_call(
+            &self,
+            action: &str,
+            args: Vec<Value>,
+        ) -> Result<tilolang_runtime::InvokeOutcome, String> {
             let id = self.app.action(action);
             self.rt
                 .invoke_action(&me(), (id.as_str(), args))
@@ -486,7 +503,11 @@ mod cases {
         fn window(&self) -> ViewInstance {
             let mut window = self
                 .rt
-                .open_view(&me(), &self.app.view("changes"), vec![Value::resource(&self.root)])
+                .open_view(
+                    &me(),
+                    &self.app.view("changes"),
+                    vec![Value::resource(&self.root)],
+                )
                 .unwrap();
             window.set_lazy_rows(false).unwrap();
             window

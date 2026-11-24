@@ -5,8 +5,8 @@
 
 #[cfg(test)]
 mod cases {
-    use std::collections::HashMap;
     use std::cell::RefCell;
+    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
@@ -163,9 +163,7 @@ mod cases {
 
         fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
             let id = self.app.action(action);
-            self.rt
-                .invoke_action(&me(), (id.as_str(), args))
-                .unwrap()
+            self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap()
         }
 
         /// A file on this device, holding `bytes`, and the path it stands at.
@@ -177,11 +175,17 @@ mod cases {
 
         /// A file as another app hands it over.
         fn handed(name: &str, bytes: &[u8]) -> (FileValue, Vec<u8>) {
-            (FileValue::new(name, "application/octet-stream", 1, String::new()), bytes.to_vec())
+            (
+                FileValue::new(name, "application/octet-stream", 1, String::new()),
+                bytes.to_vec(),
+            )
         }
 
         fn open(&self, path: &str) -> ResourceRef {
-            returned_ref(self.call("open_path", vec![Value::resource(&self.root), Value::text(path)]))
+            returned_ref(self.call(
+                "open_path",
+                vec![Value::resource(&self.root), Value::text(path)],
+            ))
         }
 
         fn opened_file(&self, file: FileValue) -> ResourceRef {

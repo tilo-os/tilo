@@ -1,0 +1,74 @@
+{
+  "app": "diffmerge",
+  "said": "Diff & Merge",
+  "family": "apps",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.diffmerge",
+    "package": "diffmerge"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Diff & Merge with nothing open: the library says so",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "actions" },
+        { "wait_for": "Compare files" },
+        { "targets": true }
+      ]
+    },
+    {
+      "id": "sample",
+      "said": "Load the sample, open the comparison and see what it found",
+      "ops": {
+        "tl": [
+          { "press_any": ["Load sample"] },
+          { "wait_for": { "prefix": "Merge of config.toml" } },
+          { "press_any": ["Merge of config.toml"] },
+          { "wait_for": { "prefix": "Merged result" } },
+          { "offered": ["Previous change", "Next change", "Save…"] }
+        ]
+      }
+    },
+    {
+      "id": "diff",
+      "said": "The comparison reads as two aligned columns with its changes beside them",
+      "ops": {
+        "tl": [
+          { "press_any": ["Diff"] },
+          { "wait_for": { "prefix": "Changes" } },
+          { "offered": ["Previous change", "Next change"] }
+        ]
+      }
+    },
+    {
+      "id": "resolve",
+      "said": "Take their side of a change and the merged result follows",
+      "ops": {
+        "tl": [
+          { "press_any": ["Merge"] },
+          { "wait_for": { "prefix": "Take theirs" } },
+          { "press_any": ["Take theirs"] }
+        ]
+      }
+    },
+    {
+      "id": "folders",
+      "said": "The folders page offers the two folder choices and the sample",
+      "ops": {
+        "tl": [
+          { "press_any": ["Folders"] },
+          { "offered": ["Show the sample folders", "Choose the left folder"] }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [{ "theme": true }],
+      "dark": true
+    }
+  ]
+}

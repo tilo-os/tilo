@@ -79,10 +79,7 @@ action look(f: Feed) uses page {
         }
     }
 
-    fn effects(
-        rt: &Runtime,
-        feed: &tilolang_runtime::ResourceRef,
-    ) -> Vec<JournalEntry> {
+    fn effects(rt: &Runtime, feed: &tilolang_runtime::ResourceRef) -> Vec<JournalEntry> {
         rt.history(&feed.doc)
             .unwrap()
             .last()

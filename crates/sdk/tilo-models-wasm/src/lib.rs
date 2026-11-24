@@ -14,7 +14,6 @@
 
 extern crate assistant_model_wasm;
 extern crate console_model_wasm;
-extern crate diffmerge_model_wasm;
 extern crate poker_model_wasm;
 extern crate publisher_model_wasm;
 extern crate remote_model_wasm;

@@ -114,6 +114,7 @@ tilolang-tilo = { path = "../tilolang-tilo" }
 wat = "1"
 # The hex editor's device work, answered by the crate a session registers.
 hex-engine = { path = "../../engines/hex-engine" }
+diffmerge-engine = { path = "../../engines/diffmerge-engine" }
 tilo-content = { path = "../../core/content" }
 tilo-wake = { path = "../../platform/tilo-wake" }
 

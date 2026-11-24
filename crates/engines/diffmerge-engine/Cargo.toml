@@ -1,0 +1,25 @@
+[package]
+name = "diffmerge-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Diff & Merge's device work: two texts aligned line by line, a three-way merge hunked and composed, two folders compared, and the files a person names read and written"
+
+[dependencies]
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+# A file a chooser hands over is kept where every device of the workspace reads it, by address.
+tilo-resource = { path = "../../core/tilo-resource" }
+serde.workspace = true
+serde_json.workspace = true
+# The alignment and the three-way merge are this crate's own algorithm over `similar`.
+similar = "2.6"
+# The alignment of this exact content, shared by the resource and its view.
+blake3.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

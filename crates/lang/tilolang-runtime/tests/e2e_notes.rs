@@ -1858,7 +1858,9 @@ mod cases {
             "the picture's path is the path it is, in angle brackets: {page}"
         );
         assert!(
-            files.iter().any(|(name, _)| name == "Q3 plan/images/fox.png"),
+            files
+                .iter()
+                .any(|(name, _)| name == "Q3 plan/images/fox.png"),
             "and the file it names is in the archive: {:?}",
             files.iter().map(|(name, _)| name).collect::<Vec<_>>()
         );

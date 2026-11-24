@@ -50,6 +50,8 @@ mod e2e_code_editor;
 mod e2e_counter;
 #[path = "e2e_db_client.rs"]
 mod e2e_db_client;
+#[path = "e2e_diffmerge.rs"]
+mod e2e_diffmerge;
 #[path = "e2e_disk_usage.rs"]
 mod e2e_disk_usage;
 #[path = "e2e_ebook.rs"]

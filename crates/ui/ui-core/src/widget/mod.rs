@@ -2498,6 +2498,9 @@ pub use drawing::{Drawing, DrawingProps, Ink, Meaning, Shape, Weight};
 pub mod hex_grid;
 pub use hex_grid::{HexColumn, HexGrid, HexGridProps};
 
+pub mod diff_grid;
+pub use diff_grid::{DiffGrid, DiffGridProps, DiffSide};
+
 pub mod paint_surface;
 pub use paint_surface::{PaintSurface, PaintSurfaceProps};
 pub mod chart;

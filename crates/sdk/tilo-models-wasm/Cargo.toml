@@ -19,7 +19,6 @@ path = "src/lib.rs"
 [dependencies]
 assistant-model-wasm = { path = "../../../apps/assistant-model-wasm" }
 console-model-wasm = { path = "../../../apps/console-model-wasm" }
-diffmerge-model-wasm = { path = "../../../apps/diffmerge-model-wasm" }
 poker-model-wasm = { path = "../../../apps/poker-model-wasm" }
 publisher-model-wasm = { path = "../../../apps/publisher-model-wasm" }
 remote-model-wasm = { path = "../../../apps/remote-model-wasm" }

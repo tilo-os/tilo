@@ -196,7 +196,6 @@ touch. Expanded neighbouring targets must not overlap.
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `terminal`    | GPU-accelerated terminal: portable-pty + vte; embeddable as a tile widget in the shell.                                              |
 | `code-editor` | Code editor / light IDE ("Code"): file-tree, editor tabs, syntect highlighting, command palette, problems panel.                     |
-| `diffmerge`   | Diff + 3-way merge tool ("Diff"): `similar` line diff, per-hunk conflict resolution, editable merged output.                         |
 
 ## Files & web
 
