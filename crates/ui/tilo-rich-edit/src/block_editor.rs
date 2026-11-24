@@ -1631,9 +1631,6 @@ impl BlockEditor {
         self.dirty = true;
     }
 
-    /// Align every line within the editor's width: a text box whose
-    /// alignment belongs to the box rather than to each paragraph.
-    #[must_use]
     /// Set the paper the document is set on, or `None` to write on one continuous page: the
     /// stack breaks blocks into sheets, and each sheet carries the header in its top margin
     /// and the footer and its number in the bottom one.
@@ -1652,6 +1649,9 @@ impl BlockEditor {
         self.pages.as_ref()
     }
 
+    /// Align every line within the editor's width: a text box whose
+    /// alignment belongs to the box rather than to each paragraph.
+    #[must_use]
     pub fn with_text_align(mut self, align: ui::richtext::TextAlign) -> Self {
         self.set_text_align(align);
         self
@@ -8159,8 +8159,6 @@ impl Paper {
 struct PageGrid {
     /// Each page's first block, in the stack's coordinates.
     pages: Vec<f32>,
-    /// How tall a page's writing is.
-    content: f32,
     /// A sheet's height and its margins, in pixels: where its paper and its bands stand.
     sheet: f32,
     margin_top: f32,
@@ -8676,7 +8674,6 @@ impl BlockEditor {
                 .map_or(0.0, |(top, height)| top + height);
             stack.pages = PageGrid {
                 pages,
-                content,
                 sheet: paper_height * PIXELS_PER_POINT * scale,
                 margin_top: margin,
                 margin_bottom: bottom,

@@ -120,7 +120,7 @@ fn attr(tag: &str, key: &str) -> Option<String> {
 }
 
 /// The subscriptions as an OPML 2.0 file, grouped under their folders.
-pub fn export(feeds: &[OutLine]) -> String {
+pub(crate) fn export(feeds: &[OutLine]) -> String {
     let mut folders: Vec<&str> = feeds
         .iter()
         .map(|feed| feed.folder.as_str())

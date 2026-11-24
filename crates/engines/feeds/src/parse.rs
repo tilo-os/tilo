@@ -118,12 +118,6 @@ pub fn markdown(html: &str) -> String {
             BlockKind::Bullet => format!("- {}", escape(&block.text)),
             BlockKind::Quote => format!("> {}", escape(&block.text)),
             BlockKind::Code => format!("```\n{}\n```", block.text),
-            BlockKind::Link => match block.href.as_deref() {
-                Some(href) if !href.is_empty() => {
-                    format!("[{}]({})", escape(&block.text), escape(href))
-                }
-                _ => escape(&block.text),
-            },
             BlockKind::Divider => "---".to_owned(),
         })
         .collect::<Vec<_>>()
@@ -215,14 +209,12 @@ enum BlockKind {
     Bullet,
     Quote,
     Code,
-    Link,
     Divider,
 }
 
 struct Block {
     kind: BlockKind,
     text: String,
-    href: Option<String>,
 }
 
 impl Block {
@@ -230,7 +222,6 @@ impl Block {
         Self {
             kind,
             text: text.into(),
-            href: None,
         }
     }
 }
