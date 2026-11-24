@@ -19573,6 +19573,7 @@ dependencies = [
  "tilo-registry-types",
  "tilo-runtime-portal",
  "tilo-settings-store",
+ "tilo-socket",
  "tilo-sort",
  "tilo-test-env",
  "tilo-user-identity",

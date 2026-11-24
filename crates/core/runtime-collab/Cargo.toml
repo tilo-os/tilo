@@ -85,4 +85,6 @@ rustix = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
+# The daemon's processes socket, reached at its path whatever its length.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 rustix = { workspace = true, features = ["process"] }

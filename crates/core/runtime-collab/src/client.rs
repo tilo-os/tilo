@@ -1929,7 +1929,9 @@ impl ShellClient {
                 )));
             }
         };
-        let stream = tokio::net::UnixStream::connect(&socket).await?;
+        let stream = tilo_socket::connect(&socket)?;
+        stream.set_nonblocking(true)?;
+        let stream = tokio::net::UnixStream::from_std(stream)?;
         let (ours, theirs) = runtime_portal::packet::pair()?;
         let mut opening = crate::wire::shell::PROCESSES_MAGIC.to_vec();
         opening.extend_from_slice(&secret);
