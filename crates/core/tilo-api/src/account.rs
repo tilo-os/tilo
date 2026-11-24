@@ -1182,7 +1182,7 @@ impl Account {
                 "a key is asked for from the device that answers for the account",
                 "create the key with account/keys#mint, or make one in Tilo",
             ),
-            Op::MintKey => self.here_mint(here, host, &key, grant, &server, args),
+            Op::MintKey => Self::here_mint(here, host, &key, grant, &server, args),
             Op::RevokeKey => self.here_revoke(host, &key, grant, &server, args).await,
             Op::Usage => failed(
                 "unavailable",
@@ -1272,7 +1272,6 @@ impl Account {
 
     /// Mint a key reaching one workspace, for an agent to act there, from the key that asks.
     fn here_mint(
-        &self,
         here: &dyn crate::session::Here,
         host: &dyn crate::session::AccountHere,
         key: &GrantKey,
@@ -1329,15 +1328,12 @@ impl Account {
         let kind = GrantKind::Minted {
             parent: grant.id.clone(),
         };
-        let (minted, token) = match server.store.resource_key(&minted, &name, kind, None, now) {
-            Ok(kept) => kept,
-            Err(_) => {
-                return failed(
-                    "unavailable",
-                    "the key could not be kept",
-                    "try again shortly",
-                );
-            }
+        let Ok((minted, token)) = server.store.resource_key(&minted, &name, kind, None, now) else {
+            return failed(
+                "unavailable",
+                "the key could not be kept",
+                "try again shortly",
+            );
         };
         // The workspace keeps the new key's certificate before anyone holds it, so its first
         // read is answered as that key's own.
@@ -2180,6 +2176,10 @@ async fn revoke_in(connection: &Connection, workspace: &str, grant: &str) -> Res
 
 /// The key's webhooks: a record of the workspace that keeps it, registered and removed through
 /// the workspace's own verbs, and posted by the device that keeps it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per webhook action, each a few lines of arguments and an answer"
+)]
 async fn forwarded_webhooks(connection: &Connection, op: Op, args: &Value) -> Outcome {
     let cert = connection.key.cert();
     let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key);
@@ -2267,8 +2267,10 @@ async fn forwarded_webhooks(connection: &Connection, op: Op, args: &Value) -> Ou
                     .await
                 {
                     Ok(deleted) => return Outcome::Ok(deleted),
-                    Err(Outcome::Failed { code, .. }) if code == "not_found" => continue,
-                    Err(Outcome::Failed { code, .. }) if code == "refused" => continue,
+                    Err(Outcome::Failed {
+                        code: "not_found" | "refused",
+                        ..
+                    }) => {}
                     Err(outcome) => return outcome,
                 }
             }
@@ -2279,7 +2281,7 @@ async fn forwarded_webhooks(connection: &Connection, op: Op, args: &Value) -> Ou
             )
         }
         _ => Outcome::Failed {
-            code: "unavailable".into(),
+            code: "unavailable",
             message: "that is no webhook action".into(),
             next: String::new(),
         },
@@ -2423,6 +2425,10 @@ async fn workspaces(key: &Connection, server: &Server, args: &Value) -> Outcome 
 /// What a desktop answers `op` with `args`: the workspaces it keeps, kept or left at the
 /// person's word, and everything else as the person's account at their server answers it.
 /// A workspace made there is kept here too, and one deleted there is kept here no more.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per action a desktop answers for its person, each a few lines"
+)]
 async fn here_answers(
     here: &dyn Here,
     key: &tilo_user_identity::DeviceCert,

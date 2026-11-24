@@ -892,6 +892,10 @@ fn the_grants_page_says_which_keys_ask_before_each_command() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one key's life read from minting to revocation"
+)]
 async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     const DAY_MS: u64 = 24 * 60 * 60 * 1000;
     let alice = Person::new(1);
