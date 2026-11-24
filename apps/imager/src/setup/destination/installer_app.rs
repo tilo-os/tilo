@@ -3176,32 +3176,47 @@ impl InstallerApp {
                 .with_role(TextRole::Caption)
                 .with_color(theme.status_success),
         ));
-        children.push(Box::new(Text::new(key).with_role(TextRole::Caption)));
+        // Read off the screen when nothing can be copied: monospace at the body size, which
+        // follows the person's text size, and wrapped inside its groups rather than cut off.
         children.push(Box::new(
-            ActionButton::new(
-                if self.recovery_key_copied {
-                    "installer-action-copy-recovery-key-again"
+            Text::new(key)
+                .with_role(TextRole::Code)
+                .with_wrap_mode(ui::TextWrapMode::WordOrGlyph)
+                .with_id("recovery_key"),
+        ));
+        if ui::clipboard_available() {
+            children.push(Box::new(
+                ActionButton::new(
+                    if self.recovery_key_copied {
+                        "installer-action-copy-recovery-key-again"
+                    } else {
+                        "installer-action-copy-recovery-key"
+                    },
+                    self.control(DestinationEffect::CopyRecoveryKey),
+                )
+                .with_test_id("recovery_key_copy"),
+            ));
+            children.push(Box::new(
+                Text::new(&if self.recovery_key_copied {
+                    crate::setup::strings::t("installer-recovery-key-copied")
                 } else {
-                    "installer-action-copy-recovery-key"
-                },
-                self.control(DestinationEffect::CopyRecoveryKey),
-            )
-            .with_test_id("recovery_key_copy"),
-        ));
-        children.push(Box::new(
-            Text::new(&if self.recovery_key_copied {
-                crate::setup::strings::t("installer-recovery-key-copied")
-            } else {
-                crate::setup::strings::t("installer-recovery-key-copy-note")
-            })
-            .with_role(TextRole::Caption)
-            .with_color(if self.recovery_key_copied {
-                theme.status_success
-            } else {
-                theme.text_dim
-            })
-            .with_live(Politeness::Polite),
-        ));
+                    crate::setup::strings::t("installer-recovery-key-copy-note")
+                })
+                .with_role(TextRole::Caption)
+                .with_color(if self.recovery_key_copied {
+                    theme.status_success
+                } else {
+                    theme.text_dim
+                })
+                .with_live(Politeness::Polite),
+            ));
+        } else {
+            children.push(Box::new(
+                Text::new(&crate::setup::strings::t("installer-recovery-key-write-note"))
+                    .with_role(TextRole::Caption)
+                    .with_color(theme.text_dim),
+            ));
+        }
         children.push(Box::new(
             ActionButton::new(
                 "installer-action-recovery-saved",

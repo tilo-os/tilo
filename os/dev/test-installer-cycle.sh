@@ -655,10 +655,16 @@ if [ "$selinux_audit_ssh" -eq 1 ]; then
     || die 'live installer recorded an AVC, lost audit records, or audit inspection failed'
 fi
 
-# Copy the key into the ephemeral live clipboard, acknowledge the disposable
+# The live installer runs on its kiosk with no session or launcher, so it has
+# no clipboard: it offers no Copy, and asked to copy it says why instead of
+# failing. The key is read off the Finish screen. Acknowledge the disposable
 # test target, then Power off so the next boot contains only the produced
 # target. The reply to power-off may be cut off by the guest going down.
-ic invoke copy-recovery-key@installer || die "installer could not copy the recovery key"
+if ic invoke copy-recovery-key@installer 2>"$out/copy-recovery-key.txt"; then
+  die "the live installer copied the recovery key to a clipboard nothing on its kiosk reads"
+fi
+grep -qi 'no clipboard' "$out/copy-recovery-key.txt" \
+  || die "the live installer refused the copy without saying it has no clipboard"
 ic invoke confirm-recovery-saved@installer '{"saved":true}' \
   || die "installer refused the saved-key acknowledgement"
 ic invoke power-off@installer || true

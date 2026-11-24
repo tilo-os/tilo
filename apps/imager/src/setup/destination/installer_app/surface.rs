@@ -475,7 +475,13 @@ impl InstallerApp {
                 .or_else(|| (!self.recovery_key_saved).then(|| ("recovery_key_unsaved", t(key))))
         };
         vec![
-            Check::new("copy-recovery-key", no_key.clone()),
+            Check::new(
+                "copy-recovery-key",
+                no_key.clone().or_else(|| {
+                    (!ui::clipboard_available())
+                        .then(|| ("no_clipboard", t("installer-blocked-no-clipboard")))
+                }),
+            ),
             Check::new("confirm-recovery-saved", no_key),
             Check::new(
                 "reboot",
@@ -1211,6 +1217,9 @@ impl InstallerApp {
                 let Some(key) = &self.recovery_key else {
                     return Err("No recovery key has been generated".into());
                 };
+                if !ui::clipboard_available() {
+                    return Err(t("installer-blocked-no-clipboard"));
+                }
                 let copy = ui::try_clipboard_copy_secret(key, RECOVERY_KEY_ON_CLIPBOARD_FOR);
                 if !self.recovery_key_copy.watch(copy) {
                     return Err("Could not copy the recovery key to the clipboard".into());

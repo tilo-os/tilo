@@ -597,7 +597,8 @@ pub use text_render::{
     configured_font_system,
 };
 pub use text_selection::{
-    CopyWatch, Selection, TextAffinity, TextPosition, clipboard_copy, clipboard_copy_image,
+    CopyWatch, Selection, TextAffinity, TextPosition, clipboard_available, clipboard_copy,
+    clipboard_copy_image,
     clipboard_copy_primary, clipboard_copy_rich_accepted, clipboard_paste, clipboard_paste_image,
     clipboard_paste_primary, clipboard_paste_rich, extend_span_drag,
     grapheme_boundary_at_or_before, line_boundaries, next_char_boundary, next_word_boundary,

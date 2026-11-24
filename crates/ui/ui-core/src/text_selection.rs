@@ -272,6 +272,13 @@ fn clipboard() -> std::sync::Arc<dyn crate::clipboard::ClipboardBackend> {
     crate::process::current().clipboard
 }
 
+/// Whether this process has a clipboard a copy can reach. A program its session or launcher
+/// handed none (the live installer on its kiosk) refuses every copy, so it offers no Copy.
+#[must_use]
+pub fn clipboard_available() -> bool {
+    !crate::clipboard::is_unavailable(&*clipboard())
+}
+
 pub(crate) fn request_clipboard_paste() -> std::sync::mpsc::Receiver<Option<String>> {
     clipboard().request_text(ClipboardTarget::Clipboard)
 }

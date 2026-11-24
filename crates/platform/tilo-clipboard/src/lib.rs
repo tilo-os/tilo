@@ -492,6 +492,12 @@ pub fn unavailable() -> std::sync::Arc<dyn ClipboardBackend> {
     std::sync::Arc::new(Nowhere)
 }
 
+/// Whether `backend` is [`unavailable`]: a copy made to it can only be refused, so an app offers no
+/// Copy there.
+pub fn is_unavailable(backend: &dyn ClipboardBackend) -> bool {
+    backend.name() == Nowhere.name()
+}
+
 /// The operating system's clipboard of this process: the selection a person's own desktop holds.
 ///
 /// This is for the process that serves an app's clipboard where no Tilo session does — the

@@ -1954,6 +1954,34 @@ tilo_test_env::scenario! {
             );
         }
         {
+            // The live installer on its kiosk: no session or launcher handed it a clipboard.
+            let services = ui::process::ProcessServices::null()
+                .with_clipboard(ui::clipboard::unavailable());
+            let _host = ui::process::enter(&services);
+            let mut app = InstallerApp::with_disks(sample());
+            app.step = Step::Install;
+            app.install_state = InstallState::Running;
+            let key = "abcd-efgh-ijkl-mnop";
+            app.receive(&format!("{RECOVERY_KEY_PREFIX}{key}"));
+            let composition = app.build_composition(&Theme::dark());
+            assert!(
+                !has_test_id(composition.as_ref(), "recovery_key_copy"),
+                "no Copy is offered where every copy is refused"
+            );
+            assert!(has_test_id(composition.as_ref(), "recovery_key_saved"));
+            let reason = crate::setup::strings::t("installer-blocked-no-clipboard");
+            assert_eq!(
+                app.blocked(&DestinationEffect::CopyRecoveryKey),
+                Some(("no_clipboard", reason.clone())),
+                "an agent asking to copy is told why it cannot"
+            );
+            assert_eq!(
+                app.apply(DestinationEffect::CopyRecoveryKey).err(),
+                Some(reason)
+            );
+            assert!(!app.recovery_key_copied);
+        }
+        {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Install;
             app.install_state = InstallState::Running;
