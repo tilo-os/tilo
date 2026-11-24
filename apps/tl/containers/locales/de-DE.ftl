@@ -325,3 +325,13 @@ d-vrra64ga = Distrobox-Seite
     .w-no-distroboxes = Keine Distroboxen
     .w-distrobox-runs-another-distribution-s-tools = Distrobox führt die Werkzeuge einer anderen Distribution in einem Container aus.
     .w-enter = Betreten
+
+d-pgwyi64n = Container zeigen
+
+d-ijt6urg5 = Images zeigen
+
+d-k2tjtdvx = Volumes zeigen
+
+d-syp6cif7 = Distroboxen zeigen
+
+d-3uis6yzh = Neuer Container

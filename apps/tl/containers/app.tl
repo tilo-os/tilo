@@ -192,6 +192,29 @@ action create_container(c: Containers) {
     clear_create(c)
 }
 
+/// Shows what the engine holds of one kind. Each is the place's number key, pressed anywhere in
+/// the window.
+action show_containers(c: Containers) (icon: .box, label: "Show containers", key: "1") {
+    window_state("place", "containers")
+}
+
+action show_images(c: Containers) (icon: .layers, label: "Show images", key: "2") {
+    window_state("place", "images")
+}
+
+action show_volumes(c: Containers) (icon: .hard_drive, label: "Show volumes", key: "3") {
+    window_state("place", "volumes")
+}
+
+action show_distrobox(c: Containers) (icon: .terminal, label: "Show distroboxes", key: "4") {
+    window_state("place", "distrobox")
+}
+
+/// Opens the new-container form, as `n` does from the window.
+action new_container_form(c: Containers) (icon: .plus, label: "New container", key: "n") {
+    window_state("creating", true)
+}
+
 /// Makes a volume.
 action make_volume(c: Containers, name: Text) {
     require name.trim() != "" "A volume needs a name"

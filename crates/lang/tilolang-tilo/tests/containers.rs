@@ -8,7 +8,9 @@ use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::files::{Entry, FileTarget, FilesHost, TrashEntry};
 use tilolang_runtime::host_work::EngineHost;
-use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewInstance};
+use tilolang_runtime::{
+    ActionRef, Actor, InvokeOutcome, ResourceRef, UiNode, Value, ViewInstance,
+};
 use tilolang_tilo::host::Host;
 
 const SOURCE: &str = include_str!("../../../../apps/tl/containers/app.tl");
@@ -210,6 +212,7 @@ struct Installed {
     root: ResourceRef,
     view: String,
     actions: Vec<(String, String)>,
+    keys: Vec<(String, String)>,
     sent: Sent,
     shells: Shells,
     pulls: Pulls,
@@ -240,6 +243,17 @@ impl Installed {
             .iter()
             .map(|action| (action.name.clone(), action.id.clone()))
             .collect();
+        let keys = package
+            .meta
+            .actions
+            .iter()
+            .filter_map(|action| {
+                action
+                    .key
+                    .clone()
+                    .map(|key| (action.name.clone(), key))
+            })
+            .collect();
         let sent = Sent::default();
         // The app's own actions run here, as its window's do; what it asks of the device's
         // engine is sent, since the device is a package this host only reads.
@@ -251,10 +265,26 @@ impl Installed {
             root,
             view,
             actions,
+            keys,
             sent,
             shells: Shells::default(),
             pulls: Pulls::default(),
         }
+    }
+
+    fn action_id(&self, name: &str) -> String {
+        self.actions
+            .iter()
+            .find(|(asked, _)| asked == name)
+            .map(|(_, id)| id.clone())
+            .unwrap_or_else(|| panic!("no action {name}"))
+    }
+
+    fn key_of(&self, name: &str) -> Option<&str> {
+        self.keys
+            .iter()
+            .find(|(asked, _)| asked == name)
+            .map(|(_, key)| key.as_str())
     }
 
     fn with_engine(self) -> Self {
@@ -540,6 +570,41 @@ fn a_shell_opens_inside_the_container_and_a_distrobox() {
             ("9f3c1a7be4d2c0118af26b5d4e9f01a2".to_owned(), "podman".to_owned()),
             ("toolbox".to_owned(), "distrobox".to_owned()),
         ]
+    );
+}
+
+#[test]
+fn assert_number_keys_navigate_sections() {
+    let app = Installed::new(READING);
+    let window = app.window();
+    for (action, key, place) in [
+        ("show_containers", "1", "containers"),
+        ("show_images", "2", "images"),
+        ("show_volumes", "3", "volumes"),
+        ("show_distrobox", "4", "distrobox"),
+    ] {
+        assert_eq!(app.key_of(action), Some(key), "{action} is on {key}");
+        window
+            .invoke(&ActionRef::new(app.action_id(action), vec![app.root_value()]))
+            .unwrap_or_else(|why| panic!("{key} runs: {why}"));
+        assert_eq!(
+            window.view_state("place"),
+            Some(Value::text(place)),
+            "{key} shows {place}"
+        );
+    }
+    // `n` opens the form a new container is made in.
+    assert_eq!(app.key_of("new_container_form"), Some("n"));
+    window
+        .invoke(&ActionRef::new(
+            app.action_id("new_container_form"),
+            vec![app.root_value()],
+        ))
+        .expect("n runs");
+    assert_eq!(
+        window.view_state("creating"),
+        Some(Value::some(Value::Int(1))),
+        "n opens the new-container form"
     );
 }
 
