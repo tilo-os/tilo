@@ -1262,6 +1262,9 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // A first line that is an action frame says the connection speaks the action wire,
         // answered as whoever its account is admitted as.
         let line = first.strip_suffix(b"\n").unwrap_or(&first);
+        // Whether the first line asks what this device is, read before anything admits it.
+        let asked_status = serde_json::from_slice::<Value>(line)
+            .is_ok_and(|request| request == json!({"native": "status"}));
         if crate::device::local::is_frame(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
             return self.frames.serve(stream, line, input);
@@ -1309,9 +1312,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         // What this device is, answered before a session is admitted: asking founds no
         // workspace and waits for none, since a desktop about to hand its workspaces over asks,
         // and a computer whose person's part is still starting must say how it stands.
-        if serde_json::from_slice::<Value>(line)
-            .is_ok_and(|request| request == json!({"native": "status"}))
-        {
+        if asked_status {
             if let Ok(answer) = serde_json::to_vec(&(self.status)()) {
                 let _ = (&stream).write_all(&answer);
                 let _ = (&stream).write_all(b"\n");
