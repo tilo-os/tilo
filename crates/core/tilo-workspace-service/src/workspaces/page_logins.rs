@@ -214,7 +214,7 @@ impl Workspaces {
                     keeping.secret.clone(),
                 );
                 let kept = self
-                    .changing_vault(workspace, Some(caller.acting()), |items| {
+                    .changing_vault(workspace, (Some(caller.acting()), Some(request)), |items| {
                         items.keep_tagged(&own_tags(app), replacing.as_ref(), item)
                     })
                     .await
@@ -236,7 +236,7 @@ impl Workspaces {
                     .await?
                     .facts
                     .id;
-                self.changing_vault(workspace, Some(caller.acting()), |items| {
+                self.changing_vault(workspace, (Some(caller.acting()), Some(request)), |items| {
                     Ok(items.remove(&id))
                 })
                 .await
@@ -263,7 +263,7 @@ impl Workspaces {
                 }
                 let what = format!("{app}'s page at {place}");
                 let released = self
-                    .changing_vault(workspace, Some(caller.acting()), |items| {
+                    .changing_vault(workspace, (Some(caller.acting()), Some(request)), |items| {
                         items.use_for(
                             &facts.id,
                             vault_items::ItemKind::Login,
