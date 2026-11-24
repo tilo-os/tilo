@@ -402,7 +402,6 @@ impl Store {
                 .get(kind, id)
                 .is_some_and(|held| when.iter().all(|filter| filter.holds(held)))
         });
-        if when.is_some() {}
         let Some(when) = when.filter(|_| holds) else {
             if self.live.remove(&key).is_some() {
                 self.live_revision = self.live_revision.wrapping_add(1);
