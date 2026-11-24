@@ -242,7 +242,9 @@ action describe_photo(p: Photo) (icon: .sparkles, label: "Describe", group: "Det
     let asked = json.encode(AskedPicture(image: shown_picture(p)))
     match engine.call("describe", asked) {
         .ok(text) => match json.decode<Description>(text) {
-            .ok(found) => p.description = found.description
+            .ok(found) => {
+                p.description = found.description
+            }
             .err(_) => {}
         },
         .err(_) => {}
@@ -1021,15 +1023,16 @@ view viewer(
             row(gap: .related, align: .center, wrap: true) {
                 ui.Text("Drag the corners to the part you keep.", role: .caption, secondary: true)
                 ui.Button("Apply crop", icon: .check, role: .primary) {
-                    on press: set(cropping, false).then(
-                        crop_photo(
-                            p,
-                            crop_edges.at(0) ?? 0.0,
-                            crop_edges.at(1) ?? 0.0,
-                            (crop_edges.at(2) ?? 1.0) - (crop_edges.at(0) ?? 0.0),
-                            (crop_edges.at(3) ?? 1.0) - (crop_edges.at(1) ?? 0.0),
-                        ),
-                    )
+                    on press: set(cropping, false)
+                        .then(
+                            crop_photo(
+                                p,
+                                crop_edges.at(0) ?? 0.0,
+                                crop_edges.at(1) ?? 0.0,
+                                (crop_edges.at(2) ?? 1.0) - (crop_edges.at(0) ?? 0.0),
+                                (crop_edges.at(3) ?? 1.0) - (crop_edges.at(1) ?? 0.0),
+                            ),
+                        )
                 }
                 ui.Button("Cancel") {
                     on press: set(cropping, false)

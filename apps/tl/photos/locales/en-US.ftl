@@ -3,6 +3,8 @@
 
 d-so-tilo-photos = Photos
 
+d-so-tilo-photos-keywords = photo, photos, picture, pictures, image, images, album, albums, favorites, gallery, camera roll, foto, fotos, bild, bilder, alben, favoriten
+
 d-vf6rmvyr = Photo
     .doc = A photo in the library: its name, the address of its picture, and what the library knows of it.
     .noun = { $count ->
@@ -87,6 +89,35 @@ d-vbzsnqg5 = Photos
 
 d-hc736lwy-filter-photos = Photos
 
+d-npagsiqh = Asked picture
+    .doc = A picture asked of the device's image model: its address in the content store.
+    .noun = { $count ->
+        [one] asked picture
+       *[other] asked pictures
+    }
+
+d-ilnmwg2o = Image
+
+d-j7rusgg3 = Description
+    .doc = What the device's image model says a picture shows: a sentence.
+    .noun = { $count ->
+        [one] description
+       *[other] descriptions
+    }
+
+d-f3c37dlw = Description
+
+d-lgulun3e = Findings
+    .doc = The objects and pets the device's image model finds in a picture.
+    .noun = { $count ->
+        [one] finding
+       *[other] findings
+    }
+
+d-lppdtcyl = Objects
+
+d-xvwv7col = Pets
+
 d-j45kskqf = Library
     .doc = The workspace's photo library: every photo, the albums people made of them, and the people the photos show.
     .noun = { $count ->
@@ -135,6 +166,23 @@ d-hquyf5vr = Rotate left
 
 d-6a6afnkj = Reset edits
     .doc = Puts the photograph back as it came, taking the person's own turns off it.
+
+d-jwejbqyn = Describe
+    .doc = What a picture shows, in a sentence, as the device's image model reads it: the sentence the library's details show and search finds.
+
+d-3uzo3qzj = Tags
+    .doc = The objects and pets the device's image model finds in a picture, added to what the photo already lists.
+
+d-xo4knffj = Crop
+    .doc = Keeps the part of the photograph its person chose: `x`, `y`, `width` and `height` are fractions of the picture as the window shows it, so every member and device reads the crop.
+
+d-xo4knffj-x = X
+
+d-xo4knffj-y = Y
+
+d-xo4knffj-width = Width
+
+d-xo4knffj-height = Height
 
 d-zyrmacyr = Favorite selected
     .doc = Marks each named photo a favorite.
@@ -258,6 +306,9 @@ d-hfgcskel = Library
     .w-import-folder = Import folder
     .w-select = Select
     .w-present = Present
+    .w-analyzing-of = Analyzing { $completed } of { $total }
+    .w-analysis-paused = Analysis paused
+    .w-analyze-photos = Analyze photos
     .w-library = Library
     .w-favorites = Favorites
     .w-timeline = Timeline
@@ -277,14 +328,20 @@ d-hfgcskel = Library
     .w-favorite = Favorite
     .w-rotate-left = Rotate left
     .w-rotate-right = Rotate right
+    .w-crop = Crop
+    .w-describe = Describe
     .w-reset-edits = Reset edits
     .w-share = Share
     .w-remove = Remove
     .w-take-this-photo-out-of-the = Take this photo out of the library?
     .w-remove-from-library = Remove from library
     .w-cancel = Cancel
+    .w-drag-the-corners-to-the-part = Drag the corners to the part you keep.
+    .w-apply-crop = Apply crop
     .w-no-people-yet = No people yet
     .w-the-vision-service-proposes-the-people = The vision service proposes the people in your photos; name them, merge them and split them here.
+    .w-no-capture-date = No capture date
+    .w-named-places = Named places
 
 d-i4ssir2r = Person row
     .w-photos = { $len } photos

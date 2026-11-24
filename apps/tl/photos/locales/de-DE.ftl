@@ -3,6 +3,54 @@
 
 d-so-tilo-photos = Fotos
 
+d-so-tilo-photos-keywords = photo, photos, picture, pictures, image, images, album, albums, favorites, gallery, camera roll, foto, fotos, bild, bilder, alben, favoriten
+
+d-npagsiqh = Gefragtes Bild
+    .doc = Ein Bild, das dem Bildmodell des Geräts gestellt wird: seine Adresse im Inhaltsspeicher.
+    .noun = { $count ->
+        [one] gefragtes Bild
+       *[other] gefragte Bilder
+    }
+
+d-ilnmwg2o = Bild
+
+d-j7rusgg3 = Beschreibung
+    .doc = Was das Bildmodell des Geräts über ein Bild sagt: ein Satz.
+    .noun = { $count ->
+        [one] Beschreibung
+       *[other] Beschreibungen
+    }
+
+d-f3c37dlw = Beschreibung
+
+d-lgulun3e = Funde
+    .doc = Die Objekte und Tiere, die das Bildmodell des Geräts in einem Bild findet.
+    .noun = { $count ->
+        [one] Fund
+       *[other] Funde
+    }
+
+d-lppdtcyl = Objekte
+
+d-xvwv7col = Tiere
+
+d-jwejbqyn = Beschreiben
+    .doc = Was ein Bild zeigt, in einem Satz, wie das Bildmodell des Geräts es liest: der Satz, den die Details der Bibliothek zeigen und die Suche findet.
+
+d-3uzo3qzj = Tags
+    .doc = Die Objekte und Tiere, die das Bildmodell des Geräts in einem Bild findet, zu dem hinzugefügt, was das Foto schon aufführt.
+
+d-xo4knffj = Zuschneiden
+    .doc = Behält den Teil des Fotos, den die Person gewählt hat: `x`, `y`, `width` und `height` sind Anteile des Bildes, wie das Fenster es zeigt, sodass jedes Mitglied und jedes Gerät den Zuschnitt liest.
+
+d-xo4knffj-x = X
+
+d-xo4knffj-y = Y
+
+d-xo4knffj-width = Breite
+
+d-xo4knffj-height = Höhe
+
 d-vf6rmvyr = Foto
     .doc = Ein Foto in der Bibliothek: sein Name, die Adresse seines Bildes und was die Bibliothek darüber weiß.
     .noun = { $count ->
@@ -258,6 +306,9 @@ d-hfgcskel = Bibliothek
     .w-import-folder = Ordner importieren
     .w-select = Auswählen
     .w-present = Präsentieren
+    .w-analyzing-of = Analysiere { $completed } von { $total }
+    .w-analysis-paused = Analyse pausiert
+    .w-analyze-photos = Fotos analysieren
     .w-library = Bibliothek
     .w-favorites = Favoriten
     .w-timeline = Zeitleiste
@@ -277,13 +328,19 @@ d-hfgcskel = Bibliothek
     .w-favorite = Favorit
     .w-rotate-left = Nach links drehen
     .w-rotate-right = Nach rechts drehen
+    .w-crop = Zuschneiden
+    .w-describe = Beschreiben
     .w-reset-edits = Änderungen zurücksetzen
     .w-share = Teilen
     .w-remove = Entfernen
     .w-take-this-photo-out-of-the = Dieses Foto aus der Bibliothek nehmen?
     .w-remove-from-library = Aus der Bibliothek entfernen
     .w-cancel = Abbrechen
+    .w-drag-the-corners-to-the-part = Ziehe die Ecken auf den Teil, den du behalten willst.
+    .w-apply-crop = Zuschnitt übernehmen
     .w-no-people-yet = Noch keine Personen
+    .w-no-capture-date = Kein Aufnahmedatum
+    .w-named-places = Benannte Orte
     .w-the-vision-service-proposes-the-people = Der Sehdienst schlägt die Personen in deinen Fotos vor; benenne, führe und teile sie hier.
 
 d-i4ssir2r = Personenzeile
