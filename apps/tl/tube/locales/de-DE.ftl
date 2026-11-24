@@ -798,6 +798,15 @@ d-74u5fpbj = Abgleich aufnehmen
 
 d-74u5fpbj-answer = Antwort
 
+d-ol77igxi = Gestarteter Grayjay-Vorgang
+    .doc = Was das Gerät antwortet, wenn es einen Grayjay-Vorgang startet: den Auftrag, dem zu folgen ist.
+    .noun = { $count ->
+        [one] gestarteter Grayjay-Vorgang
+       *[other] gestartete Grayjay-Vorgänge
+    }
+
+d-xtg3ig6h = Auftrag
+
 d-cx2bqry3 = Grayjay-Kopplungsanfrage
     .doc = Was eine Kopplung diese Grayjay-Brücke des Geräts fragt: die Einladung, die Grayjays Sync-Bildschirm zeigt.
     .noun = { $count ->

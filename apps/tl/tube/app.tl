@@ -252,6 +252,22 @@ type PairedDevice {
     last_error: Text = ""
 }
 
+/// What the device answers when it starts a Grayjay operation: the job to follow.
+type GrayjayStarted {
+    job: Text
+}
+
+/// The job a start of the Grayjay bridge answered, or why it did not start.
+fn started_job(answer: Result<Text, Text>) -> Result<Text, Text> {
+    match answer {
+        .err(why) => .err(why),
+        .ok(text) => match json.decode<GrayjayStarted>(text) {
+            .ok(started) => .ok(started.job),
+            .err(why) => .err(why),
+        },
+    }
+}
+
 /// What a pairing asks this device's Grayjay bridge for: the invite Grayjay's Sync screen shows.
 type GrayjayPairAsk {
     invite: Text
@@ -939,7 +955,7 @@ destructive action pair_device(yt: YouTube, invite: Text) (
     require invite.trim() != "" "Paste the invite first"
     yt.sync_trouble = ""
     yt.sync_notice = ""
-    match engine.start("pair", json.encode(GrayjayPairAsk(invite: invite.trim()))) {
+    match started_job(engine.start("pair", json.encode(GrayjayPairAsk(invite: invite.trim())))) {
         .err(why) => {
             yt.sync_trouble = why
         }
@@ -1020,9 +1036,11 @@ fn start_exchange(yt: YouTube) -> Result<Text, Text> {
     let peers: List<GrayjayPeer> = approved.map(
         d -> GrayjayPeer(key: d.key, name: d.name, addresses: d.addresses, port: d.port),
     )
-    engine.start(
-        "sync",
-        json.encode(GrayjaySyncAsk(peers: peers, subscriptions: shared_subscriptions(yt))),
+    started_job(
+        engine.start(
+            "sync",
+            json.encode(GrayjaySyncAsk(peers: peers, subscriptions: shared_subscriptions(yt))),
+        ),
     )
 }
 
