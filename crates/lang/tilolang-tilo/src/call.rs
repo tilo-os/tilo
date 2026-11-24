@@ -246,7 +246,7 @@ fn published_call(
         Some(target) => target.id_string(),
         // The session's loose actions keep their own ids; a provider's are named by its app.
         None => addresses
-            .get(action)
+            .get(&crate::catalogue::untyped_id(action))
             .cloned()
             .filter(|_| {
                 app == crate::platform_apps::SESSION_APP

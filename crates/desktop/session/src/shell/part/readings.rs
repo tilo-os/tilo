@@ -513,18 +513,23 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     }),
             },
             Invocation::Action { app, action, .. }
-                if app == super::SESSION_APP && self.session.contains_key(action) =>
+                if app == super::SESSION_APP
+                    && self
+                        .session
+                        .contains_key(&tilolang_tilo::catalogue::untyped_id(action)) =>
             {
+                // The session's loose action, by the verb its id names after its type.
+                let verb = tilolang_tilo::catalogue::untyped_id(action);
                 Ask {
                     // The guard says this action's resource is here; read it
                     // without indexing so a later change to the guard cannot
                     // panic a press.
-                    resource: self.session.get(action).cloned().unwrap_or_default(),
-                    action: action.clone(),
+                    resource: self.session.get(&verb).cloned().unwrap_or_default(),
                     arguments: session_arguments(
-                        self.verbs.get(action),
+                        self.verbs.get(&verb),
                         invocation.api_arguments(),
                     ),
+                    action: verb,
                     from: None,
                 }
             }

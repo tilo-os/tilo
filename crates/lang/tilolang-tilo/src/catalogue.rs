@@ -3,7 +3,8 @@
 //! The catalogue is the one description of an app: its resources' surfaces
 //! (`tilo_actions::surface::Surface`), whichever language the app is written in. Read as a
 //! package, a surface's resource kinds are its types, the documents and enums its fields name are
-//! types and enums, and its verbs are actions on their resource. That package is what another
+//! types and enums, and its verbs are actions on their resource, each with an id naming that
+//! type and the verb (`Banners/act`). That package is what another
 //! package `use`s (`use so.tilo.chat as chat`), type-checked against at compile time, and what
 //! `tilolang describe` prints, native and tilolang apps alike.
 //!
@@ -203,24 +204,40 @@ pub fn provided(
     (meta, addresses)
 }
 
-/// The id a catalogue gives the action `verb` of the app `app`: `so.tilo.chat#share-window`.
-/// A surface's verb ids are the app's own (`open`, `share-window`), so several apps in one
-/// catalogue would otherwise be one action; its types are named by their app the same way. The
-/// app's own api takes the verb back ([`published_verb`]).
+/// The id a catalogue gives the action `verb` of the app `app`: `so.tilo.chat#share-window`, or
+/// `so.tilo.chat#Messages/share-window` where the verb names its type. A surface's verb ids are
+/// the app's own, so several apps in one catalogue would otherwise be one action; its types are
+/// named by their app the same way. The app's own api takes the verb back ([`published_verb`]).
 #[must_use]
 pub fn action_id(app: &str, verb: &str) -> String {
     format!("{app}#{verb}")
 }
 
-/// The verb id the app's own api takes for the catalogue action `id` ([`action_id`]): a
-/// tilolang package's action keeps the id its app gives it, and one whose id names its resource
-/// type (`Workspace/rename`, where several types offer the verb) is taken by the verb alone.
+/// The verb id the app's own api takes for the catalogue action `id` ([`action_id`]): every
+/// catalogue action's id names its resource type and the verb (`so.tilo.chat#Workspace/rename`,
+/// the session's `Shell/place`), and the api takes it by the verb alone. A tilolang package's
+/// action keeps the id its app gives it.
 #[must_use]
 pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {
-    let Some(verb) = id.strip_prefix(app).and_then(|rest| rest.strip_prefix('#')) else {
-        return id;
-    };
-    verb.rsplit_once('/').map_or(verb, |(_, verb)| verb)
+    let id = id
+        .strip_prefix(app)
+        .and_then(|rest| rest.strip_prefix('#'))
+        .unwrap_or(id);
+    id.rsplit_once('/').map_or(id, |(_, verb)| verb)
+}
+
+/// The catalogue action `id` without its type: `so.tilo.chat#Workspace/rename` is
+/// `so.tilo.chat#rename`, and the session's `Shell/place` is `place`, as [`addresses`] and
+/// [`provided`] list the resource each loose action is published on.
+#[must_use]
+pub fn untyped_id(id: &str) -> String {
+    match id.rsplit_once('/') {
+        Some((head, verb)) => match head.rsplit_once('#') {
+            Some((app, _)) => format!("{app}#{verb}"),
+            None => verb.to_owned(),
+        },
+        None => id.to_owned(),
+    }
 }
 
 /// The surface a native app directory publishes: its manifest's id and name, and its
@@ -517,7 +534,6 @@ fn package_with(
         ids,
         kinds: kind_names(surfaces, instances),
         rows: row_kinds(surfaces),
-        shared: shared_verbs(surfaces),
         declared: BTreeMap::new(),
         meta: PackageMeta {
             app: app.to_owned(),
@@ -574,23 +590,6 @@ fn row_kinds(surfaces: &[Surface]) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The verbs more than one of `surfaces` offers: `act` on the banners and on the notifications.
-fn shared_verbs(surfaces: &[Surface]) -> BTreeSet<String> {
-    let mut seen = BTreeSet::new();
-    surfaces
-        .iter()
-        .flat_map(|surface| {
-            surface
-                .verbs
-                .iter()
-                .filter(|verb| !platform_verb(verb))
-                .map(|verb| verb.id.clone())
-                .collect::<BTreeSet<_>>()
-        })
-        .filter(|verb| !seen.insert(verb.clone()))
-        .collect()
-}
-
 /// How a package spells the ids of its types.
 #[derive(Clone, Copy)]
 enum Ids {
@@ -624,8 +623,6 @@ struct Reader<'a> {
     /// The record types that are resources of their own ([`row_kinds`]), by kind: their kind's
     /// verbs are actions on them, and the record its reading declares is their type.
     rows: BTreeMap<String, String>,
-    /// The verbs several of the app's resource types offer ([`shared_verbs`]).
-    shared: BTreeSet<String>,
     /// The named types declared so far, by name, and whether each is an enum.
     declared: BTreeMap<String, (NamedType, bool)>,
     meta: PackageMeta,
@@ -671,8 +668,10 @@ impl Reader<'_> {
         if let Some(own) = own.as_ref().filter(|_| row.is_none()) {
             self.own_type(surface, own, &rename);
         }
+        // Every action is its resource type's: a loose verb's type is its resource's kind.
+        let ty = own.clone().unwrap_or_else(|| kind_type_name(&surface.kind));
         for verb in surface.verbs.iter().filter(|verb| !platform_verb(verb)) {
-            self.action(verb, own.as_deref(), &rename);
+            self.action(verb, own.as_deref(), &ty, &rename);
         }
     }
 
@@ -776,7 +775,13 @@ impl Reader<'_> {
     /// Declares the verb `verb` of the resource type `own` (none: a loose verb) as an action
     /// taking its resource first. A verb with a parameter of a type tilolang code cannot give
     /// (bytes, any JSON value) is left out: tilolang code cannot call it.
-    fn action(&mut self, verb: &VerbSurface, own: Option<&str>, rename: &dyn Fn(&str) -> String) {
+    fn action(
+        &mut self,
+        verb: &VerbSurface,
+        own: Option<&str>,
+        ty: &str,
+        rename: &dyn Fn(&str) -> String,
+    ) {
         let mut params = Vec::new();
         if let Some(own) = own {
             params.push(ParamMeta {
@@ -831,18 +836,12 @@ impl Reader<'_> {
             };
             self.ty(&ty, rename)
         });
-        // An action's name belongs to its resource type: `act` on `Banners` and `act` on
-        // `Notifications` are two actions, so where several types offer a verb, the id of each
-        // names its type (`Banners/act`), and the app's own api takes it back by the verb alone.
-        let (id, by_verb) = match own {
-            Some(own) if self.shared.contains(&verb.id) => {
-                (format!("{own}/{}", verb.id), verb.id.clone())
-            }
-            _ => (verb.id.clone(), String::new()),
-        };
+        // An action belongs to its resource's type, and its id names that type and the verb
+        // (`Banners/act`), so a second type offering the verb never changes an id that grants
+        // and records already name. The app's own api takes it back by the verb alone.
         self.meta.actions.push(ActionMeta {
-            id,
-            verb: by_verb,
+            id: format!("{ty}/{}", verb.id),
+            verb: verb.id.clone(),
             // The name the action API offers it by, made a tilolang action's name: a tilolang
             // app's own (`pin`), else the id a native verb publishes it as
             // (`read-form-fields` is `read_form_fields`).

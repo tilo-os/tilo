@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
         };
         assert_eq!(
             (app.as_str(), action.as_str(), name.as_str()),
-            (APP, "sound#set-level", "set-level"),
+            (APP, "sound#Player/set-level", "set-level"),
             "the verb, named here by its app, goes to the app by the name it publishes"
         );
         assert_eq!(target.as_ref(), Some(&player()));
@@ -823,7 +823,7 @@ tilo_test_env::scenario! {
             (app.as_str(), action.as_str(), name.as_str()),
             (
                 "so.tilo.contacts.directory",
-                "so.tilo.contacts.directory#confirm-endpoint",
+                "so.tilo.contacts.directory#Identities/confirm-endpoint",
                 "confirm-endpoint"
             ),
             "the directory's verb, named here by its package, reaches it as the verb it publishes"

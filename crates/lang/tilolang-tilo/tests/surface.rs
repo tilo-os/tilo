@@ -1053,10 +1053,26 @@ fn a_description_declares_each_action_once_for_its_resource() {
     opens.sort_unstable();
     assert_eq!(
         opens,
-        [("App/open", "open"), ("open", "")],
+        [("App/open", "open"), ("Shell/open", "open")],
         "{:#?}",
         read.actions
     );
+    // Each id names its type and the verb, so the app's `open` keeps its id whether or not the
+    // layout offers one too: a grant or a record naming it still does.
+    let alone = ONE_VERB_ON_TWO.replacen(
+        "[[resources.verbs]]\nid = \"open\"\nkind = \"outside\"\n\n[[resources.verbs.params]]\nname = \"link\"\nrequired = true\ntype = \"text\"\n",
+        "",
+        1,
+    );
+    assert_ne!(alone, ONE_VERB_ON_TWO, "the layout's `open` is taken out");
+    let ids: Vec<String> = tilolang_tilo::catalogue::described("t.session", "Session", &alone)
+        .expect("the app's open alone")
+        .actions
+        .into_iter()
+        .filter(|action| action.name == "open")
+        .map(|action| action.id)
+        .collect();
+    assert_eq!(ids, ["App/open"]);
     // What the session sends a loose call with is the layout's `open`, never the app's.
     let loose = tilolang_tilo::catalogue::loose_verbs(ONE_VERB_ON_TWO).unwrap();
     assert_eq!(
@@ -1071,5 +1087,5 @@ fn a_description_declares_each_action_once_for_its_resource() {
     );
     let refused = tilolang_tilo::catalogue::described("t.session", "Session", &twice)
         .expect_err("one verb twice on the layout names neither");
-    assert!(refused.contains("`open` twice"), "{refused}");
+    assert!(refused.contains("`Shell/open` twice"), "{refused}");
 }

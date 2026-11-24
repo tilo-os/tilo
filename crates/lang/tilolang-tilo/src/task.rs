@@ -381,7 +381,7 @@ impl TaskSession {
                 .flatten()
                 .filter(|ty| own_types.contains(&(signature.app.clone(), (*ty).to_owned())));
             let at = (action && on.is_none() && signature.app == crate::platform_apps::SESSION_APP)
-                .then(|| addresses.get(&signature.id))
+                .then(|| addresses.get(&crate::catalogue::untyped_id(&signature.id)))
                 .flatten();
             let app = apps
                 .entry(alias)
@@ -1149,13 +1149,13 @@ mod tests {
         phase a_catalogue_of_apps_names_each_ones_verbs_by_its_app;
         {
             // Chat and the session both publish a `share-window` verb: in one catalogue they are
-            // two actions, and each app's own api takes its verb back.
+            // two actions, each named by its type, and each app's own api takes its verb back.
             let chat = chat();
             let session = crate::platform_apps::session_package().expect("the session's reads");
             assert!(
                 chat.actions
                     .iter()
-                    .any(|action| action.id == "so.tilo.chat#share-window"),
+                    .any(|action| action.id == "so.tilo.chat#Messages/share-window"),
                 "{:?}",
                 chat.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
             );
@@ -1163,12 +1163,13 @@ mod tests {
                 session
                     .actions
                     .iter()
-                    .any(|action| action.id == "share-window"),
+                    .any(|action| action.id == "Desktop/share-window"),
                 "{:?}",
                 session.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
             );
             for (app, id, verb) in [
-                ("so.tilo.chat", "so.tilo.chat#share-window", "share-window"),
+                ("so.tilo.chat", "so.tilo.chat#Messages/share-window", "share-window"),
+                ("so.tilo.session", "Desktop/share-window", "share-window"),
                 ("so.tilo.chat", "create-channel", "create-channel"),
                 ("so.tilo.chat", "a1b2c3", "a1b2c3"),
             ] {
@@ -1271,7 +1272,7 @@ mod tests {
         };
         let invocation = Invocation::Action {
             app,
-            action: "so.tilo.chat#rename-channel".to_owned(),
+            action: "so.tilo.chat#Workspace/rename-channel".to_owned(),
             name: "rename_channel".to_owned(),
             args: vec![
                 ("workspace".to_owned(), Value::resource(&record)),
@@ -1336,7 +1337,7 @@ mod tests {
             .expect("the model's resource id");
         let invocation = Invocation::Action {
             app: tilolang_runtime::ids::AppId::from(crate::platform_apps::VISION_APP),
-            action: "so.tilo.vision#describe".to_owned(),
+            action: "so.tilo.vision#ImageModel/describe".to_owned(),
             name: "describe".to_owned(),
             args: vec![
                 ("model".to_owned(), Value::resource(&model)),
