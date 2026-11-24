@@ -71,6 +71,11 @@ async fn document_reference_tag(store: &ContentStore, tag: String, hash: Hash) -
     store.set_reference(&tag, hash).await
 }
 
+/// Fetches content this device does not keep, given the scope that references it and its address.
+type ContentFetcher = Arc<dyn Fn(&BlobScope, &str) + Send + Sync>;
+/// When each open scope's address was last asked for.
+type AskedAt = std::collections::HashMap<(BlobScope, String), std::time::Instant>;
+
 pub struct DocumentMedia {
     store: Arc<ContentStore>,
     /// The public content this device keeps, where it keeps any.
@@ -78,10 +83,10 @@ pub struct DocumentMedia {
     /// What a session's ask for content this device does not keep reaches: the host's record
     /// content, which asks the workspace's other devices and keeps what they answer here, where
     /// the session's next read finds it.
-    fetching: std::sync::RwLock<Option<Arc<dyn Fn(&BlobScope, &str) + Send + Sync>>>,
+    fetching: std::sync::RwLock<Option<ContentFetcher>>,
     /// When each scope's address was last asked for among those open: a session reads again as it
     /// waits, and the host is asked once a moment rather than once a read.
-    asked: std::sync::Mutex<std::collections::HashMap<(BlobScope, String), std::time::Instant>>,
+    asked: std::sync::Mutex<AskedAt>,
 }
 
 /// How long after a want the same address is asked for again: a session's wait reads it often,
@@ -113,7 +118,7 @@ impl DocumentMedia {
     /// Answer a session's ask for content this device lacks through `fetch` from now on: the
     /// host's record content, which asks the workspace's other devices for it and keeps what they
     /// answer on this device's store. Until a host installs one, a session's ask starts nothing.
-    pub fn fetch_through(&self, fetch: Arc<dyn Fn(&BlobScope, &str) + Send + Sync>) {
+    pub fn fetch_through(&self, fetch: ContentFetcher) {
         if let Ok(mut held) = self.fetching.write() {
             *held = Some(fetch);
         }
