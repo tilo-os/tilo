@@ -50,22 +50,32 @@ const KEY_F: u32 = 33;
 const KEY_LEFT_SHIFT: u32 = 42;
 const KEY_LEFT_META: u32 = 125;
 
+thread_local! {
+    /// This computer: its device daemon, holding its workspaces. The shell's record is a
+    /// workspace's layout, which the daemon keeps and signs, so a session takes a step of it back
+    /// only as its daemon's shell.
+    static DEVICE: crate::common::Device =
+        crate::common::device_daemon(crate::common::device_home(), None);
+    /// Where a session of this computer keeps its own services' files.
+    static STATE: tempfile::TempDir = tempfile::tempdir().expect("a state directory");
+}
+
 /// A session as a development one starts: the tilolang shell as the whole screen, the seeded apps
-/// published, and the appearance section beside them.
+/// published, and the appearance section beside them, as this computer's daemon's shell.
 fn session() -> Session {
     let mut services = crate::common::seeded_apps();
     services.push(Box::new(settings_sections::service::SettingsService::new()));
-    crate::common::headless(Options {
-        person: crate::common::PERSON.to_owned(),
+    let options = Options {
         // A device that holds its workspaces: the layout and its steps are theirs.
-        state: Some(crate::common::device_state()),
+        state: Some(STATE.with(|state| state.path().to_path_buf())),
         collab: false,
         // The apps installed on this device, as a real session reads them: the launcher opens
         // them, and the shell names their windows by their own names.
         lists: tilo_session::Lists::fixed(tilo_session::AppLists::read()),
         services,
         ..Options::default()
-    })
+    };
+    DEVICE.with(|device| device.session_with(options))
 }
 
 fn step(session: &mut Session) {

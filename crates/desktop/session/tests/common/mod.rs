@@ -833,6 +833,20 @@ impl Device {
     /// The daemon makes no link, or the session does not start.
     #[track_caller]
     pub fn session(&self, state: &Path) -> Session {
+        self.session_with(Options {
+            collab: false,
+            state: Some(state.to_path_buf()),
+            ..Options::default()
+        })
+    }
+
+    /// [`Self::session`] started with `options`: the session is this device's person's, on the
+    /// link its daemon makes for it.
+    ///
+    /// # Panics
+    /// The daemon makes no link, or the session does not start.
+    #[track_caller]
+    pub fn session_with(&self, options: Options) -> Session {
         let link = self
             .daemon
             .link_shell(tilo_test_env::hang_bound())
@@ -842,9 +856,7 @@ impl Device {
                 presentation: ui::headless::fixture_runner_inputs,
                 person: self.person.clone(),
                 shell_link: Some(link),
-                collab: false,
-                state: Some(state.to_path_buf()),
-                ..Options::default()
+                ..options
             },
             &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         )
