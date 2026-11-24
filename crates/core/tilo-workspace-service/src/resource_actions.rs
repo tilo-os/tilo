@@ -264,6 +264,10 @@ impl ResourceActions {
         if ambient.invoker.is_none() {
             ambient = ambient.with_invoker(tilo_actions::ActionInvoker::member(member.clone()));
         }
+        // The change is the record's own app's action, which is what the record's history and its
+        // receipt check read: a name guessed from the record's type is no app the record has, and
+        // every device's write of it would be refused.
+        ambient = ambient.with_app(app, declared.kind.app_title().unwrap_or(app));
         let actor = member.actor_bytes();
         let mut registry = tilo_actions::ActionRegistry::new();
         declared.kind.register(&mut registry);

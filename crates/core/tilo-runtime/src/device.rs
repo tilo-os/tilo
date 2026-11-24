@@ -74,6 +74,8 @@ pub mod processes;
 /// The resources the daemon publishes to the apps attached to it: one table, a provider each.
 pub mod published;
 mod reading;
+#[cfg(test)]
+mod record_actions_tests;
 pub(crate) mod records;
 mod search;
 pub mod serve;
