@@ -672,6 +672,24 @@ impl AppBrokerState {
     pub(crate) fn invocation_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.invocation_generation.subscribe()
     }
+    /// What the windows here hold, as a generation that changes exactly when
+    /// they do: what the device's daemon publishes.
+    #[must_use]
+    pub fn windows_generation(&self) -> u64 {
+        *self.window_generation.borrow()
+    }
+    /// Record that what the windows here hold changed, waking every
+    /// [`Self::window_changes`] waiter.
+    pub(super) fn windows_changed(&self) {
+        self.window_generation
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+    }
+    /// A receiver that sees every later change of what the windows here hold;
+    /// what it has seen so far counts as seen.
+    #[must_use]
+    pub fn window_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.window_generation.subscribe()
+    }
     /// A receiver that sees every later published-surface change; what it
     /// has seen so far counts as seen. What a session holding a window reads
     /// to notice the app publishing what it now offers — a page holding a

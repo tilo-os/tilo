@@ -79,11 +79,18 @@ impl AppBrokerState {
     /// Peer `peer_id` disconnected: forget the window it was for, and that
     /// it had none.
     pub(super) fn forget_windows_of(&self, peer_id: u64) {
-        if let Ok(mut windows) = self.window_instances.lock() {
-            windows.remove(&peer_id);
-        }
+        let window = self
+            .window_instances
+            .lock()
+            .ok()
+            .and_then(|mut windows| windows.remove(&peer_id));
         if let Ok(mut windowless) = self.publishers.windowless.lock() {
             windowless.remove(&peer_id);
+        }
+        // The window its app held is gone: the device's daemon publishes that
+        // it shows no record now.
+        if window.is_some() {
+            self.windows_changed();
         }
     }
 }

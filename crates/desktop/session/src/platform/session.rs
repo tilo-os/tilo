@@ -288,9 +288,12 @@ impl Session {
             .map_or_else(crate::platform::records::Changes::default, |records| {
                 records.changes()
             });
-        // What each open window shows, as the broker knows it: the shell offers the windows a person
-        // may share from, and the sharing services read it.
+        // What each open window shows, as the device's daemon names it: the shell offers the windows
+        // a person may share from, and the sharing services read it.
         let notes = options.launches.notes();
+        // What each window's app holds, as the device's daemon publishes it: the note the session
+        // writes beside each window, kept here from the follow on the shell link.
+        let window_routes: crate::live_list::WindowRoutes = std::sync::Arc::default();
         // The workspaces' layouts, which hold the shell itself: what every member shows, and what a
         // change of it is written into.
         let desktops = Rc::new(crate::layout::of_session(
@@ -760,6 +763,11 @@ impl Session {
                 &daemon,
                 identity.device_cert.user_public_key,
                 live_rows.clone(),
+            );
+            crate::live_list::follow_window_notes(
+                &daemon,
+                identity.device_cert.user_public_key,
+                std::sync::Arc::clone(&window_routes),
             );
         }
         // The stores of the workspaces the daemon keeps, as the apps the session runs itself read
@@ -1905,6 +1913,7 @@ impl Session {
             app_stores: RefCell::default(),
             desktops,
             notes,
+            window_routes,
             membership_fed: std::cell::RefCell::new(None),
             landings,
             _workspace_keys: channels,
@@ -2543,6 +2552,13 @@ impl Session {
         self.shared.activities.board()
     }
 
+    /// The record each window this session runs shows, by tab, as the session last read it of
+    /// the device's daemon: the note it writes beside the window, and where its bar goes.
+    #[must_use]
+    pub fn window_notes(&self) -> std::collections::BTreeMap<u64, String> {
+        self.shared.notes.records()
+    }
+
     /// The media service the apps reach through the session's app wire, while
     /// it serves one: what a call joins through.
     #[cfg(test)]
@@ -2987,16 +3003,10 @@ impl Session {
         }
     }
 
-    /// Note what each window this session runs shows, as the broker knows the
-    /// record its app holds: read every pass, so a window that opens a record,
-    /// moves in it or closes is named by what it shows now.
+    /// Note what each window this session runs shows, as the device's daemon publishes the
+    /// record its app holds: read every pass, so a window that opens a record, moves in it or
+    /// closes is named by what it shows now.
     pub(crate) fn read_window_notes(&self) {
-        let Some(app_wire) = &self.app_wire else {
-            return;
-        };
-        let Some(broker) = app_wire.action_broker() else {
-            return;
-        };
         // The app each window runs, and the windows the shell shows: a record of another app is
         // not what a window shows, and a window the shell no longer shows says nothing.
         let (apps, live): (
@@ -3022,11 +3032,12 @@ impl Session {
                 tabs.iter().map(|(tab, _)| *tab).collect(),
             )
         });
-        self.shared.notes.read(
-            &broker.state().window_resources(),
-            &|instance| apps.get(&instance).cloned(),
-            &live,
-        );
+        // What each window's app holds, as the device's daemon publishes it: the broker that
+        // knows it runs there, and this session follows its reading on its shell link.
+        let routes = self.shared.window_routes.lock_recover().clone();
+        self.shared
+            .notes
+            .read(&routes, &|instance| apps.get(&instance).cloned(), &live);
     }
 
     /// Hand every agent following the catalogue the session's own actions again when what it

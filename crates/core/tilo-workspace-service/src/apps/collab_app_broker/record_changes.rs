@@ -159,6 +159,9 @@ impl AppBrokerState {
             .iter_mut()
             .filter(|(key, _)| route.delivers_to(&CrdtRoute::from_channel_key(key)))
             .map(|(_, subscribers)| subscribers);
-        subscriptions::context_frame(channels, except, &ContextUpdate::RecordChanged);
+        // A window that went away is no longer shown by this record.
+        if subscriptions::context_frame(channels, except, &ContextUpdate::RecordChanged) {
+            self.windows_changed();
+        }
     }
 }

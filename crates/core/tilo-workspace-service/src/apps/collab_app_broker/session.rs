@@ -997,6 +997,7 @@ pub(super) async fn drive_connection(
                     && let Ok(mut windows) = state.window_instances.lock()
                 {
                     windows.insert(peer_id, instance);
+                    state.windows_changed();
                 }
                 state.note_windowless(peer_id, local_media.as_deref());
                 local_media

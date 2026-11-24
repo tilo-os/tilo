@@ -440,6 +440,11 @@ pub struct AppBrokerState {
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
     invocation_generation: tokio::sync::watch::Sender<u64>,
+    /// Bumped whenever what the windows here hold changes — a window's app
+    /// subscribes or lets go of a record, or the shell says which window a
+    /// connection is — so the device's daemon publishes the change to the
+    /// desktop at once ([`Self::window_changes`]).
+    window_generation: tokio::sync::watch::Sender<u64>,
     execution_activity: ActivityBus,
     /// Admission serialization covers policy, one-use confirmation, the durable
     /// barrier and the single application delivery. Never held across awaits.

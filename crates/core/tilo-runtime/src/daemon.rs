@@ -1090,7 +1090,8 @@ pub(crate) struct Endpoint<H> {
 }
 
 /// A launcher's request to start an app on this computer, with what the connection sent with it.
-type LaunchTake = dyn Fn(Stream, &[u8], Vec<runtime_portal::process_link::Descriptor>) + Send + Sync;
+type LaunchTake =
+    dyn Fn(Stream, &[u8], Vec<runtime_portal::process_link::Descriptor>) + Send + Sync;
 
 /// The endpoint every agent of this computer's login reaches at its device socket: the
 /// daemon's own workspace, as the native endpoint serves the person's apps, each connection a

@@ -763,6 +763,7 @@ impl AppBrokerState {
                 ),
                 app_resource_kinds: RwLock::new(services.app_resource_kinds.clone()),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
+                window_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
                 journal: Mutex::new(journal),

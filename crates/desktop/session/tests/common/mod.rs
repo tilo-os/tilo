@@ -747,10 +747,17 @@ pub fn device_daemon(home: tilo_test_env::TestHome, name: Option<&str>) -> Devic
     let within = tilo_test_env::hang_bound();
     let daemon =
         tilo_runtime::daemon::Running::start(profile.path()).expect("the device's daemon starts");
+    // The directory the daemon keeps its sockets in: a profile named apart keeps them beside
+    // itself, not inside it, so the endpoint it listens on says where they are.
+    let sockets = daemon
+        .native_socket()
+        .parent()
+        .expect("the daemon's endpoint is in its sockets directory")
+        .to_path_buf();
     // This computer's person is founded by its daemon, as the first set-up on a machine founds
     // them: their root stays with this account, their certificate names this device, and their
     // services start once it does.
-    tilo_api::daemon::DaemonPlace::at(profile.path(), profile.path())
+    tilo_api::daemon::DaemonPlace::at(&sockets, profile.path())
         .found(&tilo_api::daemon::Founding {
             name: name.map(str::to_owned),
             ..tilo_api::daemon::Founding::default()

@@ -1776,6 +1776,7 @@ impl Daemon {
                 shell_dispatch: &shell_dispatch,
                 identity: identity_broker.handover(),
                 live: &live,
+                fanout: &fanout,
             },
             brokers,
             Arc::clone(&fanout),
@@ -2437,6 +2438,9 @@ struct BrokerParts<'a> {
     identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
     /// The device's live session, which carries those shells' live links.
     live: &'a Arc<super::live_relay::Live>,
+    /// The broker's fanout, which serves the broker the windows connect to: what the daemon
+    /// publishes what those windows hold of.
+    fanout: &'a Arc<FanoutState>,
 }
 
 /// What carries a shell's live links: `live`, for as long as each link lasts.
@@ -2568,6 +2572,9 @@ fn broker_services(
     let nearby: Arc<dyn PublishedResources> = Arc::new(parts.nearby.published());
     // What is live in the workspaces this device keeps, which the desktop shows.
     let live: Arc<dyn PublishedResources> = super::live::Published::of(parts.workspaces.copies());
+    // The record each window this device runs holds, which its desktop notes beside the window.
+    let window_notes: Arc<dyn PublishedResources> =
+        super::window_notes::Published::of(parts.fanout);
     // The code of this moment a vault item's seed makes, which an app that shows one-time codes
     // follows as the item's reading: read here, where the seed is.
     let vault_codes: Arc<dyn PublishedResources> =
@@ -2584,6 +2591,10 @@ fn broker_services(
             )
             .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
             .serving(&[tilo_workspace_service::live::RESOURCE], Arc::clone(&live))
+            .serving(
+                &[tilo_workspace_service::window_notes::RESOURCE],
+                Arc::clone(&window_notes),
+            )
             .serving(&[super::mcp_server::SERVER], Arc::clone(&mcp_server))
             .serving(
                 &[tilo_actions::remote::model_providers::RESOURCE],

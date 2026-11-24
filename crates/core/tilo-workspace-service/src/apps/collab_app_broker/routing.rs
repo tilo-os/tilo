@@ -141,33 +141,29 @@ impl AppBrokerState {
             .iter_mut()
             .filter(|(k, _)| route.delivers_to(&CrdtRoute::from_channel_key(k)))
             .map(|(_, subs)| subs);
-        match event {
+        let pruned = match event {
             CollabEvent::Context {
                 members,
                 permissions,
                 apps,
             } => Self::fanout_context(channels, except, members, permissions, apps),
             CollabEvent::FollowChanged { peer_id } => {
-                Self::fanout_follow_changed(channels, except, peer_id.as_ref());
+                Self::fanout_follow_changed(channels, except, peer_id.as_ref())
             }
             CollabEvent::Handoff { request } => {
                 let handoff = ContextUpdate::Handoff(request.encode());
-                subscriptions::context_frame(channels, except, &handoff);
+                subscriptions::context_frame(channels, except, &handoff)
             }
-            CollabEvent::ResourcesArrived { records } => {
-                subscriptions::context_frame(
-                    channels,
-                    except,
-                    &ContextUpdate::ResourcesArrived(records.clone()),
-                );
-            }
-            CollabEvent::RecordsMoved { records } => {
-                subscriptions::context_frame(
-                    channels,
-                    except,
-                    &ContextUpdate::RecordsMoved(records.clone()),
-                );
-            }
+            CollabEvent::ResourcesArrived { records } => subscriptions::context_frame(
+                channels,
+                except,
+                &ContextUpdate::ResourcesArrived(records.clone()),
+            ),
+            CollabEvent::RecordsMoved { records } => subscriptions::context_frame(
+                channels,
+                except,
+                &ContextUpdate::RecordsMoved(records.clone()),
+            ),
             // What a member says reaches the apps as the frame they said it in ([`Self::heard`]).
             CollabEvent::RemoteCursorMoved { .. }
             | CollabEvent::RemotePresenceUpdate { .. }
@@ -189,7 +185,13 @@ impl AppBrokerState {
             | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
+                false
             }
+        };
+        // A window that went away is no longer shown by the record its app
+        // held: the device's daemon publishes what the windows hold again.
+        if pruned {
+            self.windows_changed();
         }
     }
     /// Hand `frame`, what `member` said in the workspace `scope` addresses, to every app
@@ -215,7 +217,9 @@ impl AppBrokerState {
             member: member.clone(),
             frame: Box::new(frame.clone()),
         };
-        subscriptions::context_frame(channels, except, &heard);
+        if subscriptions::context_frame(channels, except, &heard) {
+            self.windows_changed();
+        }
     }
     /// One arm of [`Self::fanout_to_route`]: the workspace's member +
     /// permission context.
@@ -225,13 +229,15 @@ impl AppBrokerState {
         members: &[collaboration::Member],
         permissions: &[String],
         apps: &[collab_types::history::NamedApp],
-    ) {
+    ) -> bool {
         let env = ContextUpdate::Snapshot {
             members: members.to_vec(),
             permissions: permissions.to_vec(),
             apps: apps.to_vec(),
         };
+        let mut pruned = false;
         for subs in channels {
+            let before = subs.context.len();
             subs.context.retain_mut(|s| {
                 if s.peer_id == except {
                     return true;
@@ -248,7 +254,9 @@ impl AppBrokerState {
                 s.apps = apps.to_vec();
                 true
             });
+            pruned |= subs.context.len() != before;
         }
+        pruned
     }
     /// Session-local view binding. It rides the session context stream but
     /// is explicitly tagged so clients do not replace their roster with an
@@ -257,18 +265,22 @@ impl AppBrokerState {
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
         peer_id: Option<&tilo_actions::MemberId>,
-    ) {
+    ) -> bool {
         let env = ContextUpdate::FollowChanged {
             peer_id: peer_id.cloned(),
         };
+        let mut pruned = false;
         for subs in channels {
+            let before = subs.context.len();
             subs.context.retain(|sub| {
                 if sub.peer_id == except {
                     return true;
                 }
                 sub.tx.send(env.clone()).is_ok()
             });
+            pruned |= subs.context.len() != before;
         }
+        pruned
     }
     /// Session-local handoff control for the instance(s) on the addressed
     /// primary route. Like Follow, it rides the context stream tagged so the
@@ -310,6 +322,8 @@ impl AppBrokerState {
                     apps,
                 });
         }
+        // A window's app now holds this record: the device's daemon publishes it.
+        self.windows_changed();
         // The records of its app's trees this device already holds in the
         // workspace ([`BrokerChannels::tree_records_held`]), such as those it was
         // replayed when it joined, before any window of the app ran: a
@@ -346,6 +360,7 @@ impl AppBrokerState {
                 let context = &mut channels.entry(alias.to_owned()).or_default().context;
                 context.retain(|entry| entry.peer_id != peer && !entry.tx.is_closed());
                 context.push(subscriber);
+                self.windows_changed();
             }
         }
     }
@@ -676,7 +691,9 @@ impl AppBrokerState {
             .channels
             .lock()
             .map_err(|_| "native context subscriptions unavailable")?;
+        let mut dropped = false;
         if let Some(subscribers) = channels.get_mut(channel) {
+            let before = subscribers.context.len();
             subscribers.context.retain(|subscriber| {
                 subscriber.peer_id != peer_id
                     || subscriber
@@ -684,8 +701,12 @@ impl AppBrokerState {
                         .as_ref()
                         .is_none_or(|native| native.admitted != *admitted)
             });
+            dropped = subscribers.context.len() != before;
         }
         drop(channels);
+        if dropped {
+            self.windows_changed();
+        }
         Ok(())
     }
     /// Tell one native context subscriber what its workspace's governance now
@@ -748,6 +769,11 @@ impl AppBrokerState {
             });
         }
         drop(channels);
+        // A subscriber that could not be told went away: what the windows here
+        // hold is the daemon's to publish again.
+        if changed {
+            self.windows_changed();
+        }
         Ok(changed)
     }
     /// Re-check every membership surface and native context subscriber,
