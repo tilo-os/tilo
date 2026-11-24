@@ -1,9 +1,6 @@
 //! Current committed reads on the actual admitted channel.
 mod capture;
-use super::{
-    Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, RouteAccess, Weak,
-    identity_reads_document,
-};
+use super::{Arc, CrdtRoute, Duration, JoinedChannel, Ordering, Rc, RouteAccess, Weak};
 use crate::apps::workspace_keys::KeyProvider;
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
@@ -488,16 +485,18 @@ impl JoinedChannel {
                 {
                     return Err("committed read launcher ownership ended".into());
                 }
-                // Another app's record is read with the person's own access
-                // on it, as the join decided, and again at every read.
-                if read_only
-                    && !identity_reads_document(
-                        state.membership.as_ref(),
-                        &admitted,
-                        &checked_route,
-                        state.policy_now_ns()? / 1_000_000_000,
-                    )
-                {
+                // Another app's record is read as the device's one reader lets
+                // the person read it, as the join decided, and again at every read.
+                let address = tilo_actions::remote::ResourceAddress {
+                    workspace: checked_route.cluster_id.clone(),
+                    app: checked_route.app_id.clone(),
+                    record: checked_route.document_id.clone(),
+                };
+                let reads = |reads: Arc<dyn tilo_actions::remote::ResourceReads>| {
+                    let caller = admitted.certified_caller(&address.workspace, false);
+                    reads.may_read(&caller, &address)
+                };
+                if read_only && !state.records().is_some_and(reads) {
                     return Err("committed read of another app's record ended".into());
                 }
             } else if !sealed || admitted.agent_id.is_some() {
