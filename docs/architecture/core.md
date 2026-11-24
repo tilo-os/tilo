@@ -677,7 +677,10 @@ and screen share only, never documents, and stays as it is.
   One check decides every read, apps' included: only grants the record's own
   workspace issued count, and a call made for someone gets the smaller of
   the caller's grant and theirs. An app acting for a person never reads or
-  does more than its manifest declares.
+  does more than its manifest declares; its own part of the workspace is its
+  own. An app's process keeps its live copy over this same path: sync from
+  known heads, its changes decided per caller like a read, with no channel
+  join beside it.
 - **One way to ask**: whenever a person is asked for a yes, a choice or a
   secret, the question is an asked invocation record answered through
   `tilo.invocations#resolve`. An app, an agent, a web page in the Browser, an
