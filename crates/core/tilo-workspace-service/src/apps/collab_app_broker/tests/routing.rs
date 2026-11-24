@@ -1278,19 +1278,20 @@ async fn a_members_picture_reaches_another_member_through_the_daemons_member_lis
 
     let route = CrdtRoute::record("so.tilo.lang.chat", &cluster_id, "main");
     let admitted = admit_verified_join(&tree, &route, verified_device(&bo_root)).unwrap();
+    let membership = tree.shared();
     let fanout = Arc::new(FanoutState::new());
     let (state, _bridge_rx) = AppBrokerState::new_configured(
         &fanout,
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::disabled(),
-        Some(tree.shared().authority()),
+        Some(membership.authority()),
         None,
         None,
         ProcessServices {
             // The service the daemon installs on its broker.
             workspace_memberships: Some(crate::workspaces::ProfileMemberships::new(
                 host.workspaces().clone(),
-                tree.shared().authority(),
+                membership.authority(),
             )
                 as Arc<dyn crate::apps::services::WorkspaceMemberships>),
             ..Default::default()
