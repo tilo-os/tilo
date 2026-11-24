@@ -3078,6 +3078,72 @@
             "option": "int"
           },
           "readonly": true
+        },
+        {
+          "path": "charge_limit",
+          "stored": "value",
+          "type": {
+            "option": {
+              "named": "ChargeLimit"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "ChargeLimit",
+          "doc": "Where the pack stops charging, and the values this machine takes.",
+          "fields": [
+            {
+              "name": "current",
+              "type": "int"
+            },
+            {
+              "name": "choices",
+              "type": {
+                "list": "int"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "battery_history",
+      "label": "Battery history",
+      "version": 1,
+      "verbs": [],
+      "fields": [
+        {
+          "path": "points",
+          "stored": "value",
+          "type": {
+            "list": {
+              "named": "HistoryPoint"
+            }
+          },
+          "readonly": true
+        }
+      ],
+      "types": [
+        {
+          "name": "HistoryPoint",
+          "doc": "The battery's charge at one moment.",
+          "fields": [
+            {
+              "name": "unix_minute",
+              "type": "int"
+            },
+            {
+              "name": "capacity",
+              "type": "int"
+            },
+            {
+              "name": "on_ac",
+              "type": "bool"
+            }
+          ]
         }
       ]
     },

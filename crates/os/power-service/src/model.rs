@@ -53,6 +53,10 @@ impl tilo_resource::JsonSchema for Battery {
                 "state": { "type": "string" },
                 "on_battery": { "type": "boolean" },
                 "minutes_left": { "type": ["integer", "null"], "minimum": 0 },
+                "charge_limit": { "type": ["object", "null"], "properties": {
+                    "current": { "type": "integer" },
+                    "choices": { "type": "array", "items": { "type": "integer" } },
+                }, "required": ["current", "choices"] },
             },
             "required": ["present", "percentage", "state", "on_battery"],
         })
@@ -71,6 +75,146 @@ impl tilo_resource::JsonSchema for Battery {
                 ("state", <String as JsonSchema>::field_type),
                 ("on_battery", <bool as JsonSchema>::field_type),
                 ("minutes_left", <Option<u32> as JsonSchema>::field_type),
+                (
+                    "charge_limit",
+                    <Option<ChargeLimit> as JsonSchema>::field_type,
+                ),
+            ],
+        )
+    }
+}
+
+/// The pack's charge limit as a view of another language reads it: where the
+/// pack stops charging, and the values the hardware takes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChargeLimit {
+    /// The per cent the pack stops charging at.
+    pub current: u32,
+    /// The per cents this machine takes.
+    pub choices: Vec<u32>,
+}
+
+impl From<&ChargeCapCapability> for ChargeLimit {
+    fn from(capability: &ChargeCapCapability) -> Self {
+        Self {
+            current: capability.current,
+            choices: capability.choices.clone(),
+        }
+    }
+}
+
+impl tilo_resource::JsonSchema for ChargeLimit {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "current": { "type": "integer" },
+                "choices": { "type": "array", "items": { "type": "integer" } },
+            },
+            "required": ["current", "choices"],
+        })
+    }
+
+    fn field_type(types: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {
+        use tilo_resource::JsonSchema;
+        tilo_resource::surface::resource_of(
+            types,
+            "tilo_power_service::ChargeLimit",
+            "ChargeLimit",
+            "Where the pack stops charging, and the values this machine takes.",
+            &[
+                ("current", <u32 as JsonSchema>::field_type),
+                ("choices", <Vec<u32> as JsonSchema>::field_type),
+            ],
+        )
+    }
+}
+
+/// One reading of the battery's history: its charge at a moment, and whether
+/// the machine was on its charger then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryPoint {
+    /// The minute it was sampled at, in Unix minutes.
+    pub unix_minute: u64,
+    /// The charge then, in per cent.
+    pub capacity: u32,
+    /// Whether the machine was on its charger then.
+    pub on_ac: bool,
+}
+
+/// The battery's last month of readings, for a chart over the day or the week.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct History {
+    pub points: Vec<HistoryPoint>,
+}
+
+impl From<tilo_power_mgmt::BatteryHistory> for History {
+    fn from(history: tilo_power_mgmt::BatteryHistory) -> Self {
+        Self {
+            points: history
+                .points
+                .into_iter()
+                .map(|point| HistoryPoint {
+                    unix_minute: point.unix_minute,
+                    capacity: point.capacity,
+                    on_ac: point.on_ac,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl tilo_resource::JsonSchema for History {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "points": { "type": "array", "items": { "type": "object", "properties": {
+                    "unix_minute": { "type": "integer", "minimum": 0 },
+                    "capacity": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "on_ac": { "type": "boolean" },
+                }, "required": ["unix_minute", "capacity", "on_ac"] } },
+            },
+            "required": ["points"],
+        })
+    }
+
+    fn field_type(types: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {
+        use tilo_resource::JsonSchema;
+        tilo_resource::surface::resource_of(
+            types,
+            "tilo_power_service::History",
+            "BatteryHistory",
+            "The battery's readings over the last month.",
+            &[("points", <Vec<HistoryPoint> as JsonSchema>::field_type)],
+        )
+    }
+}
+
+impl tilo_resource::JsonSchema for HistoryPoint {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "unix_minute": { "type": "integer", "minimum": 0 },
+                "capacity": { "type": "integer", "minimum": 0, "maximum": 100 },
+                "on_ac": { "type": "boolean" },
+            },
+            "required": ["unix_minute", "capacity", "on_ac"],
+        })
+    }
+
+    fn field_type(types: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {
+        use tilo_resource::JsonSchema;
+        tilo_resource::surface::resource_of(
+            types,
+            "tilo_power_service::HistoryPoint",
+            "HistoryPoint",
+            "The battery's charge at one moment.",
+            &[
+                ("unix_minute", <u64 as JsonSchema>::field_type),
+                ("capacity", <u32 as JsonSchema>::field_type),
+                ("on_ac", <bool as JsonSchema>::field_type),
             ],
         )
     }

@@ -98,6 +98,7 @@ const DEVICE_ROOTS: &[(&str, &str, &str)] = &[
     ("network", "Network", "network"),
     ("bluetooth", "Bluetooth", "bluetooth"),
     ("battery", "Battery", "power:battery"),
+    ("battery_history", "BatteryHistory", "power:history"),
     ("power", "Power", "power"),
     ("displays", "Displays", "session:displays"),
     ("screen", "Screen", "session:screen"),
@@ -503,21 +504,29 @@ pub fn platform_packages_of<'a>(
 /// against, a built-in package or a test's alike.
 ///
 /// # Errors
-/// A named surface does not read.
+/// The source does not parse, or a named surface does not read.
 pub fn named_platform_packages(source: &str) -> Result<Vec<PackageMeta>, String> {
-    let named: Vec<String> = tilolang::parser::parse_module(source)
-        .0
-        .map(|module| {
-            module
-                .items
-                .into_iter()
-                .filter_map(|item| match item {
-                    tilolang::ast::Item::Use(used) => Some(used.app),
-                    _ => None,
-                })
-                .collect()
+    let (module, diagnostics) = tilolang::parser::parse_module(source);
+    let module = module.ok_or_else(|| {
+        let said = diagnostics
+            .iter()
+            .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        if said.is_empty() {
+            "the source does not parse".to_owned()
+        } else {
+            said
+        }
+    })?;
+    let named: Vec<String> = module
+        .items
+        .into_iter()
+        .filter_map(|item| match item {
+            tilolang::ast::Item::Use(used) => Some(used.app),
+            _ => None,
         })
-        .unwrap_or_default();
+        .collect();
     platform_packages_of(named.iter().map(String::as_str))
 }
 

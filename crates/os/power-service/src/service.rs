@@ -5,8 +5,11 @@
 use os_actions::battery::{BATTERY, BATTERY_KIND};
 use serde_json::{Map, Value};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
+use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect as _;
 use tilo_service::{Service, Started, decode, offer, reading};
+
+use std::time::{Duration, Instant};
 
 use crate::PowerLink;
 use crate::effects::{BatteryAction, SleepAction};
@@ -17,6 +20,12 @@ pub const SLEEP: &str = "power:sleep";
 /// The kind of [`SLEEP`].
 pub const SLEEP_KIND: &str = "so.tilo.power.sleep";
 
+/// The resource holding the battery's readings over the last month, for a
+/// chart over the day or the week.
+pub const HISTORY: &str = "power:history";
+/// The kind of [`HISTORY`].
+pub const HISTORY_KIND: &str = "power:history";
+
 /// The session's power service: the policy, and the machine's logind and
 /// `UPower` behind it.
 ///
@@ -26,6 +35,10 @@ pub struct SessionPower {
     runtime: tokio::runtime::Runtime,
     /// How often the readings had moved when the session last read them.
     seen: u64,
+    /// The history as it last read, with when it read it: the readings change
+    /// every quarter hour, so reading the file on each pass would read it far
+    /// more often than it changes.
+    history: std::sync::Mutex<Option<(Instant, crate::History)>>,
 }
 
 impl SessionPower {
@@ -104,6 +117,7 @@ impl SessionPower {
             link,
             runtime,
             seen: 0,
+            history: std::sync::Mutex::new(None),
         }
     }
 
@@ -139,6 +153,16 @@ pub struct PowerSleep;
 #[row(kind = "power:battery", label = "Battery")]
 pub struct PowerBattery;
 
+/// The `power:history` resource's declared type: the pack's readings over the
+/// last month.
+#[derive(tilo_resource::Row)]
+#[row(kind = "power:history", label = "Battery history")]
+pub struct PowerHistory;
+
+/// How often the history is read again: its readings land every quarter hour,
+/// and a pass reads it far more often than that.
+const HISTORY_READ_EVERY: Duration = Duration::from_secs(60);
+
 /// The `power:sleep` resource, with the actions a person can take on it.
 #[must_use]
 pub fn sleep_resource() -> ResourceSpec {
@@ -165,22 +189,70 @@ pub fn battery_surface() -> tilo_resource::surface::Surface {
     tilo_resource::surface::reading_surface::<crate::Battery, BatteryAction>("battery", "Battery")
 }
 
+/// The `power:history` resource: the pack's readings over the last month.
+#[must_use]
+pub fn history_resource() -> ResourceSpec {
+    tilo_resource::typed_resource::<PowerHistory>(
+        HISTORY,
+        crate::i18n::name(HISTORY_KIND, "Battery history"),
+    )
+}
+
+/// The battery's history as a view of another language reads it.
+#[must_use]
+pub fn battery_history_surface() -> tilo_resource::surface::Surface {
+    tilo_resource::surface::reading_surface::<crate::History, tilo_resource::NoEffect>(
+        "battery_history",
+        "Battery history",
+    )
+}
+
+impl SessionPower {
+    /// The history as it reads now, re-read when the last read is a minute
+    /// old.
+    fn history_reading(&self) -> Value {
+        let mut kept = self.history.lock_recover();
+        if kept
+            .as_ref()
+            .is_none_or(|(read, _)| read.elapsed() >= HISTORY_READ_EVERY)
+        {
+            *kept = Some((
+                Instant::now(),
+                tilo_power_mgmt::load_battery_history().into(),
+            ));
+        }
+        let history = kept
+            .as_ref()
+            .map_or_else(crate::History::default, |(_, history)| history.clone());
+        serde_json::to_value(&history).unwrap_or(Value::Null)
+    }
+
+    /// Whether the history is old enough to read again.
+    fn history_due(&self) -> bool {
+        let kept = self.history.lock_recover();
+        kept.as_ref()
+            .is_none_or(|(read, _)| read.elapsed() >= HISTORY_READ_EVERY)
+    }
+}
+
 impl Service for SessionPower {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![sleep_resource(), battery_resource()]
+        vec![sleep_resource(), battery_resource(), history_resource()]
     }
 
     /// The daemons answer on the service's own thread: the battery lands after
-    /// the session first read it, and moves while it runs.
+    /// the session first read it, and moves while it runs. The history is read
+    /// again once a minute, so its chart fills in as the readings land.
     fn poll(&mut self) -> bool {
         let moved = self.link.bridge().readings_moved();
-        std::mem::replace(&mut self.seen, moved) != moved
+        std::mem::replace(&mut self.seen, moved) != moved || self.history_due()
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
         match resource {
             SLEEP => Some(reading(&self.link.sleep())),
             BATTERY => Some(reading(&self.link.battery())),
+            HISTORY => Some(self.history_reading()),
             _ => None,
         }
     }
