@@ -61,6 +61,12 @@ impl TestDaemon {
             .block_on(test_host(&dir.path().join("host"), &key, &cert))
             .expect("the runtime runs");
         let workspaces = host.workspaces().clone();
+        // The daemon's service acts as its device, as a device's daemon does: the record commands
+        // it carries out for the session are the device's writes.
+        workspaces.set_member_device(Arc::new(tilo_workspace_service::workspaces::MemberDevice {
+            cert: cert.clone(),
+            signer: Arc::new(key.clone()),
+        }));
         // The daemon runs the typed actions of the workspace resources the session changes, as
         // the device's runtime does.
         runtime
