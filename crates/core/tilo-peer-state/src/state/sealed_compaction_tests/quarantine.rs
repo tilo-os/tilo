@@ -73,7 +73,7 @@ fn write_to(
         ))
         .copied()
         .unwrap_or(0)
-        + 1;
+        .saturating_add(1);
     let mut op = SignedOp::new_unsigned(
         payload,
         artifact_of(record),
@@ -102,30 +102,10 @@ fn write_to(
 /// it back, and a restart reads it whole.
 #[test]
 fn a_tampered_record_is_set_aside_and_comes_back_from_a_device_keeping_it() {
-    let mut f = fixture_holding(&[RECORD, OTHER]);
-    let (now, keys, other) = (f.now, f.keys(), f.other.clone());
-    let mut author = Author::new(&f.replica);
-    let mut beside = Author(AutoCommit::load(&f.replica.document(APP, OTHER).unwrap()).unwrap());
-    let mut history = Vec::new();
-    for value in ["1", "2"] {
-        let sealed = write(&f.replica, &other, &keys, &author.edit("value", value), now);
-        history.push(sealed.clone());
-        admit(&mut f.replica, &other, sealed, now);
-        let sealed = write_to(
-            &f.replica,
-            OTHER,
-            &other,
-            &keys,
-            &beside.edit("value", value),
-            now,
-        );
-        admit(&mut f.replica, &other, sealed, now);
-    }
-    let kept = held(&f.replica);
-    let other_kept = f.replica.publication().sealed_history(APP, OTHER);
-    assert_eq!((kept.len(), other_kept.len()), (2, 2));
-
+    let (f, history, kept, other_kept, author) = two_writes_each();
+    let (now, other) = (f.now, f.other.clone());
     let bytes = f.replica.durable().unwrap();
+
     let mut stored: Durable<'_> = postcard::from_bytes(&bytes).unwrap();
     let entry = stored
         .sealed
@@ -188,19 +168,65 @@ fn a_tampered_record_is_set_aside_and_comes_back_from_a_device_keeping_it() {
         "a restart sets it aside again"
     );
 
-    // A device sending the tampered write is refused as any write that does not verify is.
+    refuses_writes(&f, &mut restored, &history, forged, now, &author);
+    brings_it_back(&f, restored, history, kept, &other_kept, now, author);
+}
+
+/// A replica holding [`RECORD`] and [`OTHER`] with two writes admitted to each, the writes to
+/// `RECORD` in order, what the replica keeps of each record, and the author that wrote it.
+fn two_writes_each() -> (
+    Fixture,
+    Vec<NeighbourMsg>,
+    Vec<SignedOp>,
+    Vec<SignedOp>,
+    Author,
+) {
+    let mut f = fixture_holding(&[RECORD, OTHER]);
+    let (now, keys, other) = (f.now, f.keys(), f.other.clone());
+    let mut author = Author::new(&f.replica);
+    let mut beside = Author(AutoCommit::load(&f.replica.document(APP, OTHER).unwrap()).unwrap());
+    let mut history = Vec::new();
+    for value in ["1", "2"] {
+        let sealed = write(&f.replica, &other, &keys, &author.edit("value", value), now);
+        history.push(sealed.clone());
+        admit(&mut f.replica, &other, sealed, now);
+        let sealed = write_to(
+            &f.replica,
+            OTHER,
+            &other,
+            &keys,
+            &beside.edit("value", value),
+            now,
+        );
+        admit(&mut f.replica, &other, sealed, now);
+    }
+    let kept = held(&f.replica);
+    let other_kept = f.replica.publication().sealed_history(APP, OTHER);
+    assert_eq!((kept.len(), other_kept.len()), (2, 2));
+    (f, history, kept, other_kept, author)
+}
+
+/// A device sending the tampered write is refused as any write that does not verify is, a write
+/// signed at a number this device admitted another write at is refused by that evidence, and a
+/// local write to the record while it is set aside is refused at once, saying why.
+fn refuses_writes(
+    f: &Fixture,
+    restored: &mut StatePeer,
+    history: &[NeighbourMsg],
+    forged: SignedOp,
+    now: SystemTime,
+    author: &Author,
+) {
     assert!(
         restored
-            .receive_from_report(origin(&other), message(forged), now)
+            .receive_from_report(origin(&f.other), message(forged), now)
             .is_err()
     );
-    // A write signed by its author at a number this device admitted another write at is refused
-    // by the evidence this device kept.
     let mut conflicting = envelope_of(&history[1]);
     conflicting.payload[0] ^= 1;
-    collab_types::sign_op(&mut conflicting, &other).unwrap();
+    collab_types::sign_op(&mut conflicting, &f.other).unwrap();
     assert!(matches!(
-        restored.receive_from_report(origin(&other), message(conflicting), now),
+        restored.receive_from_report(origin(&f.other), message(conflicting), now),
         Err(AdmissionError::ConflictingSequence)
     ));
     assert_eq!(
@@ -212,14 +238,12 @@ fn a_tampered_record_is_set_aside_and_comes_back_from_a_device_keeping_it() {
         }],
         "refused writes leave it set aside"
     );
-    assert!(held(&restored).is_empty());
+    assert!(held(restored).is_empty());
 
-    // A device keeping the record sends its history again: the full admission takes it in, and
-    // once it reaches the record's watermark the record leaves quarantine.
     // Nothing written here while the record is set aside could be kept across a restart: a
     // local write to it is refused at once, and says why.
     let mut aside = Author(author.0.clone());
-    let early = write(&restored, &other, &keys, &aside.edit("value", "3"), now);
+    let early = write(restored, &f.other, &f.keys(), &aside.edit("value", "3"), now);
     let refused = restored
         .admit_new_local_document(APP, RECORD, envelope_of(&early), now)
         .unwrap_err();
@@ -228,8 +252,22 @@ fn a_tampered_record_is_set_aside_and_comes_back_from_a_device_keeping_it() {
         refused.to_string(),
         "This record is being restored from another device."
     );
-    assert!(held(&restored).is_empty());
+    assert!(held(restored).is_empty());
+}
 
+/// A device keeping the record sends its history again: the full admission takes it in, once it
+/// reaches the record's watermark the record leaves quarantine, and back it takes this device's
+/// writes, which survive a restart.
+fn brings_it_back(
+    f: &Fixture,
+    mut restored: StatePeer,
+    history: Vec<NeighbourMsg>,
+    mut kept: Vec<SignedOp>,
+    other_kept: &[SignedOp],
+    now: SystemTime,
+    mut author: Author,
+) {
+    let (keys, other) = (f.keys(), f.other.clone());
     for sealed in history {
         admit(&mut restored, &other, sealed, now);
     }
@@ -240,14 +278,10 @@ fn a_tampered_record_is_set_aside_and_comes_back_from_a_device_keeping_it() {
     restored
         .admit_new_local_document(APP, RECORD, envelope_of(&later), now)
         .unwrap();
-    let mut kept = kept;
     kept.push(envelope_of(&later));
     assert_eq!(held(&restored), kept);
     let reopened = f.restore(&restored.durable().unwrap()).unwrap();
     assert!(reopened.quarantined().is_empty());
     assert_eq!(held(&reopened), kept);
-    assert_eq!(
-        reopened.publication().sealed_history(APP, OTHER),
-        other_kept
-    );
+    assert_eq!(reopened.publication().sealed_history(APP, OTHER), other_kept);
 }

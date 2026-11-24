@@ -100,7 +100,7 @@ tilo_test_env::scenario! {
             "even the group keys of the workspace it reaches are not sealed to the VM"
         );
         // Its access, carried into another workspace's policy, writes for no one there.
-        let mut elsewhere = access.clone();
+        let mut elsewhere = access;
         elsewhere.policy = std::sync::Arc::new(tilo_action_policy::WorkspacePolicy::new(
             OTHER_WORKSPACE,
             hex::encode(vm.user_public_key),

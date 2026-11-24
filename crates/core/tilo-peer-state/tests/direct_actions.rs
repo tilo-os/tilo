@@ -1644,10 +1644,31 @@ async fn a_forwarded_call_runs_as_the_one_who_signed_it() {
     let b_caller = Caller::authenticated(person, b.1.device_public_key);
 
     // The agent signed with its own key; the device that does not run the action brings it.
+    agent_call_runs_as_the_agent(&forwarding, &dispatcher, &b_caller, &helper, &b).await;
+    // A person's call from another of their devices travels the same way.
+    a_persons_call_runs_as_its_device(&forwarding, &dispatcher, &b_caller, &c, &b, person).await;
+    // The device's own unsigned call runs as that device, forwarded by nobody.
+    the_devices_own_call_runs_as_itself(&forwarding, &dispatcher, &b_caller, &b).await;
+    // What does not prove itself never runs as the device that sent it, or at all.
+    unproven_forwards_are_refused(&forwarding, &dispatcher, &b_caller, &helper, person, &engine).await;
+
+    engine.close().await;
+    b_endpoint.close().await;
+}
+
+/// The agent's signed call, brought by another device, runs as the agent and asks under its
+/// signature, never as the device that brought it.
+async fn agent_call_runs_as_the_agent(
+    forwarding: &RemoteDevice,
+    dispatcher: &TestProvider,
+    b_caller: &Caller,
+    helper: &(SigningKey, DeviceCert),
+    b: &(SigningKey, DeviceCert),
+) {
     let agent_call = signed_request(&invoke(InvocationId::new()), &helper.1, &helper.0);
     assert!(
         matches!(
-            invoke_as(&forwarding, &b_caller, agent_call.clone()).await,
+            invoke_as(forwarding, b_caller, agent_call.clone()).await,
             Ok(ReceiptStatus::Completed { .. })
         ),
         "the agent's forwarded call runs"
@@ -1664,34 +1685,61 @@ async fn a_forwarded_call_runs_as_the_one_who_signed_it() {
     );
     assert_eq!(ran_as.forwarder(), Some(&b.1.device_public_key));
     assert_eq!(dispatcher.asked().pop().unwrap().signed, agent_call.signed);
+}
 
-    // A person's call from another of their devices travels the same way.
+/// A person's signed call from another of their devices runs as that device, forwarded by the one
+/// that brought it.
+async fn a_persons_call_runs_as_its_device(
+    forwarding: &RemoteDevice,
+    dispatcher: &TestProvider,
+    b_caller: &Caller,
+    c: &(SigningKey, DeviceCert),
+    b: &(SigningKey, DeviceCert),
+    person: [u8; 32],
+) {
     let person_call = signed_request(&invoke(InvocationId::new()), &c.1, &c.0);
     assert!(matches!(
-        invoke_as(&forwarding, &b_caller, person_call).await,
+        invoke_as(forwarding, b_caller, person_call).await,
         Ok(ReceiptStatus::Completed { .. })
     ));
     let ran_as = dispatcher.callers().pop().unwrap();
     assert_eq!(ran_as.user_public_key(), Some(&person));
     assert_eq!(ran_as.device_public_key(), Some(&c.1.device_public_key));
     assert_eq!(ran_as.forwarder(), Some(&b.1.device_public_key));
+}
 
-    // The device's own unsigned call runs as that device, forwarded by nobody.
+/// The bringing device's own unsigned call runs as that device, forwarded by nobody.
+async fn the_devices_own_call_runs_as_itself(
+    forwarding: &RemoteDevice,
+    dispatcher: &TestProvider,
+    b_caller: &Caller,
+    b: &(SigningKey, DeviceCert),
+) {
     let own = naming(invoke(InvocationId::new()), b_caller.acting());
     assert!(matches!(
-        invoke_as(&forwarding, &b_caller, own).await,
+        invoke_as(forwarding, b_caller, own).await,
         Ok(ReceiptStatus::Completed { .. })
     ));
     let ran_as = dispatcher.callers().pop().unwrap();
     assert_eq!(ran_as.device_public_key(), Some(&b.1.device_public_key));
     assert_eq!(ran_as.forwarder(), None);
+}
 
-    // The agent's call forwarded without its signature names the agent and proves nothing:
-    // it is refused, and never runs as the device that sent it.
+/// The agent's call forwarded without its signature names the agent and proves nothing: it is
+/// refused, and never runs as the device that sent it. A device the workspace does not know
+/// brings the agent's signed call: it is refused too, and nothing runs either way.
+async fn unproven_forwards_are_refused(
+    forwarding: &RemoteDevice,
+    dispatcher: &TestProvider,
+    b_caller: &Caller,
+    helper: &(SigningKey, DeviceCert),
+    person: [u8; 32],
+    engine: &Engine,
+) {
     let agent = Caller::delegated_agent("scribe", person, helper.1.device_public_key);
     let before = dispatcher.asked().len();
     let unsigned = naming(invoke(InvocationId::new()), agent.acting());
-    let refused = invoke_as(&forwarding, &b_caller, unsigned)
+    let refused = invoke_as(forwarding, b_caller, unsigned)
         .await
         .expect_err("an unsigned forward of another caller's call is refused");
     assert!(
@@ -1700,12 +1748,11 @@ async fn a_forwarded_call_runs_as_the_one_who_signed_it() {
     );
     assert_eq!(dispatcher.asked().len(), before, "nothing ran");
 
-    // A device the workspace does not know brings the agent's signed call: refused.
     let stranger = device(&SigningKey::from_bytes(&[9; 32]), 6);
     let (stranger_endpoint, stranger_service) = asking(&stranger.0).await;
     let from_outside = stranger_service.remote(&stranger_endpoint, &engine.addr(), WORKSPACE);
     let carried = signed_request(&invoke(InvocationId::new()), &helper.1, &helper.0);
-    let refused = invoke_as(&from_outside, &b_caller, carried)
+    let refused = invoke_as(&from_outside, b_caller, carried)
         .await
         .expect_err("a device outside the workspace forwards nobody's call");
     assert!(
@@ -1713,8 +1760,5 @@ async fn a_forwarded_call_runs_as_the_one_who_signed_it() {
         "{refused:?}"
     );
     assert_eq!(dispatcher.asked().len(), before, "nothing ran");
-
-    engine.close().await;
-    b_endpoint.close().await;
     stranger_endpoint.close().await;
 }
