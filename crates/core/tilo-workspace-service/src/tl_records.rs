@@ -338,6 +338,9 @@ pub struct Record {
     workspaces: crate::workspaces::Workspaces,
     workspace: String,
     app: String,
+    /// The person a record opened to be read reads it as: what of it they may read, and
+    /// nothing else. `None` for a record a host changes, which reads as this device.
+    reader: Option<String>,
     /// The reactor a command waits on. A record without one only reads, waiting as a search
     /// does.
     runtime: Option<tokio::runtime::Handle>,
@@ -364,13 +367,13 @@ impl Record {
     /// `command` carried out by the workspace service, a refusal kept as [`Self::refused`].
     async fn carry(
         workspaces: crate::workspaces::Workspaces,
-        (workspace, app): (String, String),
+        (workspace, app, reader): (String, String, Option<String>),
         command: Command,
         refused: Arc<std::sync::Mutex<Option<String>>>,
     ) -> Result<Reply, String> {
         use crate::workspaces::RecordFailure;
         workspaces
-            .record_command(&workspace, &app, command)
+            .record_command(&workspace, &app, reader.as_deref(), command)
             .await
             .map_err(|failure| match failure {
                 RecordFailure::Refused(why) => {
@@ -385,7 +388,11 @@ impl Record {
 impl tilolang_tilo::resources::Port for Record {
     fn command(&self, command: Command) -> Result<Reply, String> {
         let workspaces = self.workspaces.clone();
-        let (workspace, app) = (self.workspace.clone(), self.app.clone());
+        let (workspace, app, reader) = (
+            self.workspace.clone(),
+            self.app.clone(),
+            self.reader.clone(),
+        );
         let Some(runtime) = &self.runtime else {
             if command.writes() {
                 return Err(format!(
@@ -394,14 +401,14 @@ impl tilolang_tilo::resources::Port for Record {
             }
             return crate::device_documents::on_its_own(Self::carry(
                 workspaces,
-                (workspace, app),
+                (workspace, app, reader),
                 command,
                 Arc::clone(&self.refused),
             ));
         };
         let carried = Self::carry(
             workspaces,
-            (workspace, app),
+            (workspace, app, reader),
             command,
             Arc::clone(&self.refused),
         );
@@ -1116,6 +1123,7 @@ impl crate::workspaces::Workspaces {
             workspaces: self.clone(),
             workspace: workspace.to_owned(),
             app: app.to_owned(),
+            reader: None,
             runtime: Some(runtime),
             refused: Arc::default(),
         })
@@ -1142,7 +1150,7 @@ impl crate::workspaces::Workspaces {
         installed: Option<&runtime_portal::process_link::Module>,
         person: &str,
     ) -> Result<Vec<tilo_resource::search_index::IndexEntry>, String> {
-        let record = self.record_to_read(workspace, app).store();
+        let record = self.record_to_read(workspace, app, person).store();
         let viewer = Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
         // Without the policy nobody's reads are known, and every resource would read as anyone's.
         let policy = self
@@ -1234,7 +1242,12 @@ impl crate::workspaces::Workspaces {
                     reason: runs_elsewhere(app),
                 })?;
         let record = if read {
-            self.record_to_read(workspace, app)
+            // A read reads only what the person the caller acts for may read.
+            let person = viewer
+                .member_id()
+                .and_then(tilo_actions::MemberId::person_id)
+                .ok_or_else(|| ApiError::Failed("a record is read as a person".to_owned()))?;
+            self.record_to_read(workspace, app, person)
         } else {
             self.tl_record(workspace, app).map_err(ApiError::Failed)?
         };
@@ -1289,11 +1302,12 @@ impl crate::workspaces::Workspaces {
 
     /// `app`'s record of `workspace` to be read on this thread, waiting as a search does: it
     /// takes no write.
-    fn record_to_read(&self, workspace: &str, app: &str) -> Record {
+    fn record_to_read(&self, workspace: &str, app: &str, person: &str) -> Record {
         Record {
             workspaces: self.clone(),
             workspace: workspace.to_owned(),
             app: app.to_owned(),
+            reader: Some(person.to_owned()),
             runtime: None,
             refused: Arc::default(),
         }
@@ -1315,7 +1329,7 @@ impl crate::workspaces::Workspaces {
                 return None;
             }
         };
-        let record = self.record_to_read(workspace, &route.app_id);
+        let record = self.record_to_read(workspace, &route.app_id, person);
         let viewer = Actor::Member(tilo_actions::MemberId::person(person.to_owned()));
         let policy = self.policy_now(workspace).map(Arc::new);
         match Opened::open(record.store(), &packages, viewer, policy) {

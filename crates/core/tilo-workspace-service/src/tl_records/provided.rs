@@ -691,6 +691,22 @@ mod tests {
             !seen(&records, &cy).contains("4711"),
             "a member outside the conversation reads nothing of it"
         );
+        let cy_person = hex::encode(cy_root.verifying_key().to_bytes());
+        let found = workspaces
+            .record_entries(&workspace, CHAT, None, &cy_person)
+            .expect("Cy's search reads the record");
+        assert!(
+            !format!("{found:?}").contains("4711"),
+            "search finds nothing of it for a member outside the conversation"
+        );
+        let ada_person = hex::encode(owner.user_public_key);
+        let found = workspaces
+            .record_entries(&workspace, CHAT, None, &ada_person)
+            .expect("Ada's search reads the record");
+        assert!(
+            format!("{found:?}").contains("4711"),
+            "search finds it for the conversation's own person"
+        );
         server.shutdown().await;
     }
 }
