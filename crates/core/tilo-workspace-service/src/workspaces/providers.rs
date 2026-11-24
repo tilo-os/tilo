@@ -325,6 +325,7 @@ impl Providers {
         let provided = self.0.provided.read_recover();
         provided
             .get(provider)
+            .or_else(|| resources(&provided, provider))
             .or_else(|| {
                 let (app, _) = tilo_actions::remote::resource_parts(provider)?;
                 provided.get(app)
@@ -421,14 +422,8 @@ impl Providers {
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let provider = request.target.provider.as_str();
         let named = self.0.provided.read_recover().get(provider).cloned();
-        let registered = named.or_else(|| {
-            self.0
-                .provided
-                .read_recover()
-                .get(tilo_actions::remote::RESOURCE_PROVIDER)
-                .filter(|resources| resources.answers.serves(provider))
-                .cloned()
-        });
+        let registered =
+            named.or_else(|| resources(&self.0.provided.read_recover(), provider).cloned());
         if registered.is_none()
             && let Some(host) = self.host_of(caller, &request)
         {
@@ -502,6 +497,14 @@ impl Providers {
         ) else {
             return Some(Pending::ready(Err(ActionCallError::NotPermitted)));
         };
+        // A record's actions are decided as its own app's: the grants name the app whose record
+        // it is, not the provider that applies its typed actions.
+        let app = match tilo_actions::remote::resource_parts(&request.target.provider) {
+            Some((app, _)) if &*registered.provider == tilo_actions::remote::RESOURCE_PROVIDER => {
+                Arc::from(app)
+            }
+            _ => Arc::clone(&registered.app),
+        };
         let providers = self.clone();
         let workspaces = Arc::clone(workspaces);
         let caller = caller.clone();
@@ -512,7 +515,7 @@ impl Providers {
                 &workspaces,
                 device,
                 &workspace,
-                &registered.app,
+                &app,
                 &address.resource,
                 &address.action,
             )
@@ -559,6 +562,17 @@ impl Providers {
 
 /// Whether `workspace`'s grants let `device` run `action` on `resource` of the application `app`
 /// now; the refusal its caller reads when they do not.
+/// The provider applying the typed actions of the built-in record `provider` names, registered
+/// under the resource provider itself, when it applies that record's.
+fn resources<'a>(
+    provided: &'a BTreeMap<Arc<str>, Registered>,
+    provider: &str,
+) -> Option<&'a Registered> {
+    provided
+        .get(tilo_actions::remote::RESOURCE_PROVIDER)
+        .filter(|resources| resources.answers.serves(provider))
+}
+
 async fn permits(
     workspaces: &super::device_actions::WorkspacesMap,
     device: [u8; 32],

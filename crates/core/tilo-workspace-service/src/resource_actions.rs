@@ -11,9 +11,10 @@
 //! workspace as this device's write, signed and sealed as the device, so every app of the
 //! workspace and the person's other devices take it as any other.
 //!
-//! It is registered once on a device's providers ([`register`]) under the resource provider
-//! itself, reached by a call made on this device ([`crate::workspaces::providers::Providers::invoke`])
-//! and never by another device's.
+//! It is registered once on every device's providers ([`register`]) under the resource provider
+//! itself: a call made on this device reaches it ([`crate::workspaces::providers::Providers::invoke`]),
+//! and so does a call a device of the workspace makes here, a person's server included, decided
+//! by the workspace's grants for that device and the record's app as every other device call is.
 
 use std::sync::Arc;
 
@@ -31,12 +32,13 @@ use crate::device_documents::ServiceWrites;
 use crate::workspaces::Workspaces;
 use crate::workspaces::providers::Reach;
 
-/// Apply the typed actions of the resources [`Declared`] names on this device from now on.
-pub fn register(workspaces: &Workspaces) {
+/// Apply the typed actions of the resources [`Declared`] names on this device from now on, for
+/// its own callers and the devices of the workspaces it keeps.
+pub(crate) fn register(workspaces: &Workspaces) {
     workspaces.providers().provide(
         RESOURCE_PROVIDER,
         RESOURCE_PROVIDER,
-        Reach::ThisDevice,
+        Reach::Devices,
         Arc::new(ResourceActions {
             writes: ServiceWrites::of(workspaces.clone()),
             workspaces: workspaces.clone(),

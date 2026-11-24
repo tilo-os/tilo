@@ -53,9 +53,6 @@ pub(crate) fn services(
     let standing = Standing::new(Arc::clone(workspaces));
     standing.follow();
     let copies = workspaces.copies().clone();
-    // The typed actions of the workspace resources the shell changes, applied here.
-    #[cfg(not(windows))]
-    tilo_workspace_service::resource_actions::register(&copies);
     ShellServices {
         links: Arc::clone(links),
         socket,
