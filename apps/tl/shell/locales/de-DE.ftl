@@ -1933,6 +1933,7 @@ d-vb456dpi = Liste
     .w-you = Du
     .w-nobody-else-is-here = Niemand sonst ist hier
     .w-invite-someone-to-this-workspace-or = Lade jemanden in diesen Arbeitsbereich ein oder öffne denselben auf einem anderen Gerät
+    .w-people-here-now = Jetzt hier
     .w-people = Personen
     .w-agents = Agenten
     .w-invite-someone = Jemanden einladen
