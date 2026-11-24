@@ -131,6 +131,8 @@ if (( dev )); then
   cp os/etc/polkit-1/rules.d/49-tilo-device-steps.rules os/usr/lib/tmpfiles.d/tilo-device-control.conf \
     "$context/device-steps/"
   cp os/components.toml "$context/os/"
+  mkdir -p "$context/os/usr/lib/tilo"
+  cp os/usr/lib/tilo/node-server.toml "$context/os/usr/lib/tilo/"
   cp os/scripts/install-components.py os/scripts/finalize-dev-image.py "$context/os/scripts/"
   cp Cargo.lock "$context/"
   builder=$(awk '/^\[/ { exit } /^image = "/ { gsub(/^image = "|"$/, ""); print; exit }' t.toml)

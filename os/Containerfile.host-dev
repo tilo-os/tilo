@@ -39,6 +39,13 @@
 # bind-mounted from it, as os/Containerfile.dev does.
 FROM scratch AS dev-inputs
 COPY os/components.toml /tilo/os/
+# The node files the manifest places beside the daemon (`@manifest/...`).
+COPY os/usr/lib/tilo/node-server.toml /tilo/os/usr/lib/tilo/
+COPY os/usr/lib/sysusers.d/tilo-server.conf /tilo/os/usr/lib/sysusers.d/
+COPY os/usr/lib/systemd/system/tilo-node-server@.service \
+     os/usr/lib/systemd/system/tilo-node-session-key@.service \
+     os/usr/lib/systemd/system/tilo-node-session@.service \
+     os/usr/lib/systemd/system/tilo-node-session@.path /tilo/os/usr/lib/systemd/system/
 COPY os/scripts/install-components.py os/scripts/finalize-dev-image.py /tilo/os/scripts/
 COPY Cargo.lock /tilo/
 
