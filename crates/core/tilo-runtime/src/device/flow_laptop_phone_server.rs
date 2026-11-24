@@ -1040,3 +1040,129 @@ async fn detaching_a_server_revokes_its_administrators_and_refuses_its_writes() 
     laptop.entered.close();
     server.shutdown().await;
 }
+
+/// A server of the workspace's owner that stops serving a workspace writes nothing into it again,
+/// on the certificate the workspace still holds: the roster is what makes a device a writer, and
+/// the owner's other devices still write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removed_owners_server_writes_nothing_into_the_workspace() {
+    use tilo_peer_state::TransportOrigin;
+
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let (server_key, server_cert) = enrol(&root, "the-server", DeviceCapabilities::member());
+    let (laptop_key, laptop_cert) = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let (_, phone_cert) = enrol(&root, "android-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = tilo_server::daemon::Server::start_with_relay_mode(
+        tilo_server::ServerConfig::loopback(state.path().join("server")),
+        tilo_server::daemon::ServerIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_signing_key: server_key,
+            device_cert: server_cert.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let hosted = server
+        .workspaces()
+        .expect("the server has workspaces")
+        .clone();
+    let person = person_workspace_id(&root.verifying_key().to_bytes());
+    if hosted.summary(&person).await.is_err() {
+        hosted
+            .create_workspace("Servers", Some(&person))
+            .await
+            .unwrap();
+    }
+    let studio = hosted.create("Studio").await.unwrap().workspace;
+    let laptop = daemon(
+        &state.path().join("laptop"),
+        (&laptop_key, &laptop_cert),
+        (&server, &server_cert),
+        &person,
+        true,
+    )
+    .await;
+    let line = serde_json::to_string(&tilo_server_protocol::web::PageHost {
+        server_cert: laptop_cert.clone(),
+        address: Some(tilo_server_protocol::web::PageHostAddress {
+            endpoint_addr: laptop.own.endpoint().addr(),
+            relay_url: None,
+            web: None,
+        }),
+        origin: None,
+    })
+    .expect("a host line writes as JSON");
+    hosted
+        .add_server(&studio, &line, tilo_peer_state::CopyRole::KeyHolder)
+        .await
+        .expect("the server hands the studio to the laptop");
+    // The copy the laptop kept while it served the studio, which it holds on to once it is told to
+    // let the studio go: a server that stops serving keeps what it kept.
+    let mut away = laptop
+        .own
+        .peer(tilo_desktop_model::WorkspaceId::parse(&studio).expect("the studio's id"))
+        .expect("the laptop keeps the studio");
+
+    let removed = hosted
+        .remove_server(&studio, &hex::encode(laptop_cert.device_public_key))
+        .await
+        .expect("the server stops serving the studio");
+    assert!(removed, "the laptop said it let the studio go");
+
+    // It writes where its copy stands, and sends what it wrote.
+    let later = tilo_peer_state::HeldCopy {
+        catching_up_from: [7; 32].into(),
+        ..tilo_peer_state::HeldCopy::default()
+    };
+    assert!(
+        away.workspace_mut()
+            .report_copy(&laptop_cert, &later, std::time::SystemTime::now())
+            .is_ok(),
+        "the copy the removed server kept still takes its write"
+    );
+    let mut governed = hosted
+        .state(&studio)
+        .await
+        .expect("the studio is governed here");
+    let refused = governed
+        .receive_from(
+            TransportOrigin::ServerDelta(laptop_cert.device_public_key),
+            away.workspace_message(),
+            std::time::SystemTime::now(),
+        )
+        .expect_err("the studio refuses the removed server's write, however its certificate reads");
+    assert!(
+        refused.to_string().contains("absent from governed roster"),
+        "the removed server is no device of the studio: {refused}"
+    );
+
+    // The owner's other devices write: a device of theirs enters the studio and says where its
+    // copy stands.
+    hosted
+        .enter(&studio, &phone_cert)
+        .await
+        .expect("a device of the owner enters the studio");
+    let mut governed = hosted
+        .state(&studio)
+        .await
+        .expect("the studio is governed here");
+    let phone = tilo_peer_state::HeldCopy {
+        catching_up_from: [9; 32].into(),
+        ..tilo_peer_state::HeldCopy::default()
+    };
+    assert!(
+        governed
+            .workspace_mut()
+            .report_copy(&phone_cert, &phone, std::time::SystemTime::now())
+            .is_ok(),
+        "the owner's other device still writes the studio"
+    );
+
+    let _ = laptop.router.shutdown().await;
+    laptop.entered.close();
+    server.shutdown().await;
+}
+

@@ -717,9 +717,11 @@ impl StatePeer {
     /// Who writes the workspace's changes as `source`'s device: the member it
     /// is, else one of the workspace's holders by the address it signed.
     ///
-    /// The owner's devices write governance on their certificate alone: the
-    /// device this replica was joined through supplies the first governance
-    /// before any roster exists.
+    /// Every device, the owner's included, writes the workspace's governance
+    /// only while the roster holds it: a device the workspace took out of its
+    /// roster writes nothing there, whatever person's certificate it carries.
+    /// The device this replica was joined through supplies the first
+    /// governance before there is a roster to hold it.
     fn workspace_writer(
         &self,
         source: [u8; 32],
@@ -731,7 +733,7 @@ impl StatePeer {
             .and_then(|cert| {
                 let person = cert.user_public_key;
                 let foreign = backend::member::foreign(cert, &self.core.origin);
-                if person != self.core.owner {
+                if self.core.workspace_doc.is_some() || person != self.core.owner {
                     self.role(&source, now).map_err(|error| error.to_string())?;
                 }
                 Ok(workspace::SenderAccess::Member { person, foreign })
