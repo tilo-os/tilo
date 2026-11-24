@@ -2414,12 +2414,13 @@ fn broker_services(
         keyboard_shortcuts: Some(forwarded.keyboard_shortcuts),
         browser_service_sessions: Some(forwarded.browser_service_sessions),
         file_clipboard: Some(forwarded.file_clipboard),
-        // The workspaces' agents and the agent sessions the person admitted are the desktop
-        // session's: it reads the agents' records every pass, and the daemon hands it each agent's
-        // connection.
-        agents: Some(
-            Arc::clone(&forwarded.agents) as Arc<dyn tilo_broker_core::services::AgentRoster>
-        ),
+        // The agents each workspace's own record names, read here, so an agent is admitted with
+        // or without a desktop session; what each spent, and the agent sessions the person
+        // admitted, are the desktop session's, which the daemon hands each agent's connection.
+        agents: Some(Arc::new(super::workspaces::RecordedAgents {
+            workspaces: Arc::downgrade(parts.workspaces),
+            session: Arc::clone(&forwarded.agents),
+        })),
         agent_sessions: Some(
             forwarded.agents as Arc<dyn tilo_broker_core::services::AgentSessions>,
         ),

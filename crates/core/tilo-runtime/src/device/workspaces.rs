@@ -904,6 +904,28 @@ impl WorkspaceGrants for MemberListGrants {
     }
 }
 
+/// The agents each workspace this device keeps names in its own record of its agents: whom the
+/// broker admits as an agent acting for its person there, read again each time it asks, whether
+/// or not a desktop session runs. What each spent is counted by the desktop session.
+pub(crate) struct RecordedAgents {
+    pub(crate) workspaces: std::sync::Weak<ServiceWorkspaces>,
+    pub(crate) session: Arc<tilo_workspace_service::apps::seat::SeatAgents>,
+}
+
+impl tilo_workspace_service::apps::services::AgentRoster for RecordedAgents {
+    fn listed(&self, workspace: &str) -> Vec<tilo_workspace_service::apps::services::ListedAgent> {
+        let Some(workspaces) = self.workspaces.upgrade() else {
+            return Vec::new();
+        };
+        let workspace = workspace.to_owned();
+        block_on_owned(async move { workspaces.copies().listed_agents(&workspace).await })
+    }
+
+    fn spend(&self, workspace: &str, agent: &str) -> Option<runtime_collab::AgentSpend> {
+        self.session.spend(workspace, agent)
+    }
+}
+
 /// `workspace` as `workspaces` hold it here, with its name: its member copy, or the workspace
 /// the service founded and keeps here.
 async fn copy_of(
