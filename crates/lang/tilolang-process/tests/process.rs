@@ -175,10 +175,8 @@ impl Window {
                         ..
                     } => {
                         let stored = self.rows.entry(list).or_default();
-                        let mut held: BTreeMap<String, patch::Node> = stored
-                            .drain(..)
-                            .map(|row| (row.key.clone(), row))
-                            .collect();
+                        let mut held: BTreeMap<String, patch::Node> =
+                            stored.drain(..).map(|row| (row.key.clone(), row)).collect();
                         for row in rows {
                             held.insert(row.key.clone(), row);
                         }
@@ -2265,6 +2263,132 @@ tilo_test_env::scenario! {
             "the week the person starts on Sunday is the one their window shows: {sunday}"
         );
     }
+}
+
+tilo_test_env::scenario! {
+    fn the_workspaces_content_a_device_reads_reaches_the_windows_root;
+
+    phase a_refusal_the_device_reads_shows_in_the_window_and_clears_when_the_limit_is_raised;
+    // A window reads the workspace's owners' limits and the content a limit refused
+    // (`workspace.content`). The device reads them from its workspaces and says them on the API;
+    // the window shows them where it stands, and the refusal goes when the limit is raised.
+    {
+        let (mut host, mut window, _sent, _inbox, route) =
+            running_app("ada", CONTENT, contented());
+        settle(&mut host, &mut window);
+        let empty = shown(&window);
+        assert!(
+            empty.contains("0 bytes, 0 refused"),
+            "a workspace whose content was all kept reads as none refused: {empty}"
+        );
+
+        // The device reads a refusal for the file a message carries, and says it on the API as
+        // it says it to a process running the workspace's windows.
+        let refused = tilolang_tilo::content::WorkspaceContent {
+            file_bytes: 1_000,
+            member_bytes: 5_000,
+            hourly_bytes: 5_000,
+            refusals: vec![tilolang_tilo::content::RefusedContent {
+                record: "so.tilo.chat/".to_owned(),
+                hash: "ab".repeat(32),
+                bytes: 1_200,
+                limit: "file".to_owned(),
+                allowed: 1_000,
+                member: "ada".to_owned(),
+                at: 7,
+                raise: "owners".to_owned(),
+            }],
+            host_person: None,
+        };
+        let (session, api) = runtime_portal::process_link::pair().expect("an API");
+        runtime_portal::process_link::Packet::send(
+            &runtime_portal::process_link::ToProcess::Content(
+                runtime_portal::process_link::WorkspaceContent {
+                    workspace: route.cluster_id.to_string(),
+                    content: serde_json::to_string(&refused).expect("a reading encodes"),
+                },
+            ),
+            &session,
+        )
+        .expect("the reading crosses the API");
+        let packet =
+            <runtime_portal::process_link::ToProcess as runtime_portal::process_link::Packet>::receive(
+                &api,
+            )
+            .expect("the API carries it");
+        let Some(runtime_portal::process_link::ToProcess::Content(content)) = packet else {
+            panic!("the API carries the workspace's content as content");
+        };
+        let reading = serde_json::from_str(&content.content).expect("the reading reads");
+        assert!(
+            host.set_content(&content.workspace, Some(reading)),
+            "another reading is a change"
+        );
+        settle(&mut host, &mut window);
+        let refused = shown(&window);
+        assert!(
+            refused.contains("1000 bytes, 1 refused"),
+            "the window shows the limit and the refusal: {refused}"
+        );
+
+        // The owners raise the limit and the file is kept: the refusal no longer stands.
+        let raised = tilolang_tilo::content::WorkspaceContent {
+            file_bytes: 5_000,
+            ..tilolang_tilo::content::WorkspaceContent::default()
+        };
+        assert!(host.set_content(&route.cluster_id.to_string(), Some(raised)));
+        settle(&mut host, &mut window);
+        let cleared = shown(&window);
+        assert!(
+            cleared.contains("5000 bytes, 0 refused"),
+            "the refusal goes with the limit that made it: {cleared}"
+        );
+    }
+}
+
+/// The package whose window reads the workspace's content root.
+const CONTENT: &str = "so.tilo.lang.content";
+
+/// The text of the content package: a note's window says the limits on what members post in the
+/// workspace and how much of it a limit refused.
+const CONTENT_SOURCE: &str = r#"app so.tilo.lang.content "Content" (icon: .hash, category: .utility)
+
+use tilo.workspace as workspace
+
+/// Something the person reads the workspace's content limits beside.
+type Note {
+    key: Text merge register
+    read: Text = ""
+}
+
+root Note
+
+default view note for Note
+
+/// The window: the largest file the workspace's owners let a host keep, and how many refusals
+/// stand for the person at this window.
+view note(n: Note) {
+    std.page(n) {
+        section("Kept") {
+            ui.Text("{workspace.content.file_bytes} bytes, {workspace.content.refusals.count()} refused")
+        }
+    }
+}
+
+/// A note read before anything was typed.
+scenario "empty" {
+    let n = root Note
+    n.read = "nothing yet"
+}
+"#;
+
+/// The content package, compiled against the workspace package it reads.
+fn contented() -> Bundle {
+    let used = tilolang_tilo::platform_apps::platform_packages_of(["tilo.workspace"].into_iter())
+        .expect("the workspace package reads");
+    let compiled = tilolang::compile_package(CONTENT_SOURCE, &tilolang::IdsLock::new(), &used)
+        .unwrap_or_else(|diagnostics| panic!("the content package compiles: {diagnostics:#?}"));
+    Bundle::new(&compiled, [])
 }
 
 /// A package whose window writes the day the week it shows began on, as the person's region

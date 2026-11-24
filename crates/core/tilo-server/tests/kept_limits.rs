@@ -306,6 +306,32 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         refused(ContentLimit::File, 1_000)
     );
 
+    // What a window reads as `workspace.content`: the limit the host obeys, and the refusal it
+    // recorded, with the record and content it is about. A device whose person reads none of it
+    // is served none.
+    let reading = workspaces
+        .content_reading(&workspace, host_cert.user_public_key)
+        .await;
+    assert_eq!(reading["file_bytes"], 1_000, "{reading}");
+    let refusals = reading["refusals"].as_array().expect("the refusals");
+    assert!(
+        refusals.iter().any(|refusal| {
+            refusal["record"]
+                .as_str()
+                .is_some_and(|record| record.starts_with(CHAT))
+                && refusal["hash"] == blake3::hash(&big).to_hex().to_string()
+                && refusal["limit"] == "file"
+                && refusal["allowed"] == 1_000
+        }),
+        "the refused file is named in the root this device serves: {reading}"
+    );
+    let outside = workspaces.content_reading(&workspace, [9_u8; 32]).await;
+    assert_eq!(
+        outside["refusals"].as_array().map(Vec::len),
+        Some(0),
+        "a person the refusal is not for reads none of it: {outside}"
+    );
+
     // Cy posts within the hour's intake once, and the second file in the same
     // hour is refused, their share being no limit at all.
     settle(
@@ -397,6 +423,18 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         }
     })
     .await;
+    let after = workspaces
+        .content_reading(&workspace, host_cert.user_public_key)
+        .await;
+    assert_eq!(
+        after["refusals"].as_array().map(Vec::len),
+        Some(0),
+        "a raised limit's refusal stands for no reader: {after}"
+    );
+    assert_eq!(
+        after["file_bytes"], 5_000,
+        "the root reads the limits its owners now set: {after}"
+    );
 
     keeping.abort();
     host.shutdown().await;

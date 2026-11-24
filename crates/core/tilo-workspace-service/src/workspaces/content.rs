@@ -667,6 +667,37 @@ impl Workspaces {
         refused
     }
 
+    /// What `workspace` serves as its content root (`workspace.content`) to `reader`: the owners'
+    /// limits on what members post there — 0 where nobody set one — and the refusals `reader`
+    /// reads, their own, the workspace's owners' and the host's person's. The device hands this
+    /// to each of its windows' processes, which serve it as the Workspace package's root.
+    pub async fn content_reading(&self, workspace: &str, reader: [u8; 32]) -> serde_json::Value {
+        let policy = self.content_policy(workspace).await.unwrap_or_default();
+        // A limit raised since refuses nothing: its record stays until the content it refused is
+        // kept, and stands for no reader meanwhile. What the host keeps for the workspace
+        // together is its own person's budget, which the owners' policy does not carry.
+        let limits = tilo_action_policy::KeptLimits::of(&policy, None);
+        let refusals: Vec<serde_json::Value> = self
+            .refusals_for(workspace, reader)
+            .await
+            .iter()
+            .filter(|refusal| {
+                refusal.raise == tilo_action_policy::Raises::Host
+                    || !limits.allows(refusal.limit, refusal.bytes)
+            })
+            .filter_map(|refusal| serde_json::to_value(refusal.read()).ok())
+            .collect();
+        serde_json::json!({
+            "file_bytes": policy.file_bytes.unwrap_or(0),
+            "member_bytes": policy.member_bytes.unwrap_or(0),
+            "hourly_bytes": policy.hourly_bytes.unwrap_or(0),
+            "refusals": refusals,
+            // This device's person reads the refusals a host keeps too: the windows that serve
+            // this reading are theirs, and the reader filter above already kept only theirs.
+            "host_person": hex::encode(self.device_person()),
+        })
+    }
+
     /// The addresses of the content the resources of `workspace` that open
     /// here name this host keeps none of yet, as what keeps them says.
     pub(crate) async fn content_lacked(&self, workspace: &str) -> BTreeSet<String> {

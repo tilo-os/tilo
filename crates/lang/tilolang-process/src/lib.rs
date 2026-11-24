@@ -628,6 +628,39 @@ impl TilolangProcess {
         changed
     }
 
+    /// The workspace `workspace`'s content moved, as this device's person reads it: the windows
+    /// already running there serve the new reading on their next frame, and those still opening
+    /// run with it from theirs. Whether any running instance changed.
+    pub fn set_content(
+        &mut self,
+        workspace: &str,
+        content: Option<tilolang_tilo::content::WorkspaceContent>,
+    ) -> bool {
+        let mut changed = false;
+        for running in &mut self.running {
+            if running.hosted.spec().workspace != workspace {
+                continue;
+            }
+            changed |= running.hosted.set_content(content.clone());
+        }
+        let encoded = content
+            .as_ref()
+            .and_then(|content| serde_json::to_string(content).ok())
+            .unwrap_or_default();
+        for opening in &mut self.opening {
+            match &mut opening.stage {
+                Stage::Module { request, .. } if request.workspace == workspace => {
+                    request.content = encoded.clone();
+                }
+                Stage::Joining { spec, .. } if spec.workspace == workspace => {
+                    spec.content = content.clone();
+                }
+                Stage::Module { .. } | Stage::Joining { .. } | Stage::Moved => {}
+            }
+        }
+        changed
+    }
+
     /// The instances running.
     pub fn instances(&self) -> impl Iterator<Item = &Hosted> {
         self.running.iter().map(|running| &running.hosted)
@@ -910,6 +943,23 @@ impl TilolangProcess {
                 },
                 language: request.language,
                 access: request.access,
+                content: if request.content.is_empty() {
+                    None
+                } else {
+                    match serde_json::from_str(&request.content) {
+                        Ok(content) => Some(content),
+                        Err(error) => {
+                            // The daemon made this JSON from its workspaces; one that does not
+                            // read leaves the root as no limit and no refusal, and says why.
+                            tracing::warn!(
+                                %error,
+                                "a workspace's content the daemon named does not read: this \
+                                 window reads no limit and no refusal"
+                            );
+                            None
+                        }
+                    }
+                },
                 shows: request.shows,
                 link_home: request.link_home.as_deref().and_then(|home| {
                     match serde_json::from_str(home) {

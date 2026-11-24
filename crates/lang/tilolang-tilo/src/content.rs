@@ -20,7 +20,7 @@ pub type ContentSource = Rc<dyn Fn() -> Option<WorkspaceContent>>;
 
 /// Content a limit stopped a host keeping: what the member who posted it reads, naming the
 /// limit, what it allowed and who can raise it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RefusedContent {
     /// The address of the record whose content it is.
     pub record: String,
@@ -41,8 +41,9 @@ pub struct RefusedContent {
 }
 
 /// What a host serves of its workspace's content: its owners' limits and what a limit refused.
-/// A size is in bytes; 0 is no limit at all.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// A size is in bytes; 0 is no limit at all. It crosses to a window's process as the JSON the
+/// daemon's device reads from its workspaces ([`crate::content::ContentSource`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceContent {
     /// The largest file a host keeps.
     pub file_bytes: u64,

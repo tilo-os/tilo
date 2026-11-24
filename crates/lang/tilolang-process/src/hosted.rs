@@ -117,6 +117,10 @@ pub struct Spec {
     /// runtime refuses it before it reaches the broker. `None` where the session holds no policy
     /// for the workspace: the broker alone decides.
     pub access: Option<tilo_action_policy::MemberAccess>,
+    /// The workspace's content as this window reads it (`InstanceRequest::content`): its owners'
+    /// limits on what members post there and the content a limit refused. `None` where the device
+    /// reads none, and then the root reads as no limit and no refusal.
+    pub content: Option<tilolang_tilo::content::WorkspaceContent>,
     /// Whether the instance shows a window or runs with none (`InstanceRequest::shows`): an
     /// instance that shows nothing draws no window, offers no window verb, and runs the app's
     /// actions on its document alone.
@@ -149,6 +153,7 @@ impl Spec {
             installed: BTreeMap::new(),
             language: String::new(),
             access: None,
+            content: None,
             shows: Shows::View,
             link_home: None,
             provided: Vec::new(),
@@ -1615,6 +1620,10 @@ pub struct Hosted {
     /// What the person may do in the app now: the launch's, until the session says it changed
     /// ([`Self::set_access`]). The runtime reads it at each decision.
     access: Rc<RefCell<Option<tilo_action_policy::MemberAccess>>>,
+    /// The workspace's content as the person reads it now: the launch's, until the device says
+    /// it changed ([`Self::set_content`]). The instance serves it as `workspace.content` each
+    /// frame it moved.
+    content: Rc<RefCell<Option<tilolang_tilo::content::WorkspaceContent>>>,
     /// The workspace's document of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
     personal: PersonalDocument,
@@ -1719,6 +1728,9 @@ struct Opened {
     builds: BuildsSlot,
     /// What the person may do in the app, which the instance reads at each decision.
     access: Rc<RefCell<Option<tilo_action_policy::MemberAccess>>>,
+    /// The workspace's content as the person reads it, which the instance serves as
+    /// `workspace.content` each frame it moved.
+    content: Rc<RefCell<Option<tilolang_tilo::content::WorkspaceContent>>>,
     /// The platform roots the instance reads the device through, shared with the host.
     roots: Rc<RefCell<Roots>>,
     watches: Rc<crate::files::Watches>,
@@ -1854,12 +1866,19 @@ fn open_instance(
     let access = Rc::new(RefCell::new(spec.access.clone()));
     let read = Rc::clone(&access);
     instance.set_access(Rc::new(move || read.borrow().clone()));
+    // What the workspace's owners let members post there, and what a limit refused: the device
+    // hands it with the instance and says it again when it moved, and the host serves it as
+    // `workspace.content` each frame that reads something else.
+    let content = Rc::new(RefCell::new(spec.content.clone()));
+    let reading = Rc::clone(&content);
+    instance.set_content_source(Rc::new(move || reading.borrow().clone()));
     drop(in_scope);
     Opened {
         instance,
         surface,
         builds,
         access,
+        content,
         roots,
         watches,
         used,
@@ -1895,6 +1914,7 @@ impl Hosted {
             surface,
             builds,
             access,
+            content: workspace_content,
             roots: platform_roots,
             watches,
             used,
@@ -1960,6 +1980,7 @@ impl Hosted {
             scope,
             personal,
             access,
+            content: workspace_content,
             presence,
             calls,
             page_prompts: crate::page_prompts::PagePrompts::default(),
@@ -2113,6 +2134,21 @@ impl Hosted {
         self.published_from = None;
         self.answers = Answers::default();
         self.person_changed();
+        true
+    }
+
+    /// The workspace's content moved, as this device's person reads it (`workspace.content`): its
+    /// owners set another limit, or a host refused content or kept it once a limit was raised. The
+    /// next frame serves the new reading, so a view shows the refusal or its going where it
+    /// stands. Whether it changed.
+    pub fn set_content(
+        &mut self,
+        content: Option<tilolang_tilo::content::WorkspaceContent>,
+    ) -> bool {
+        if *self.content.borrow() == content {
+            return false;
+        }
+        *self.content.borrow_mut() = content;
         true
     }
 
