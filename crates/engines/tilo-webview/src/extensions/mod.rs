@@ -610,7 +610,10 @@ mod tests {
             assert!(approved_paths(root.path()).is_empty());
             set_approved(&extension, true).expect("turned on");
             assert!(is_approved(&extension));
-            assert_eq!(approved_paths(root.path()), [extension.path.clone()]);
+            assert_eq!(
+                approved_paths(root.path()),
+                std::slice::from_ref(&extension.path)
+            );
             set_approved(&extension, false).expect("turned off");
             assert!(approved_paths(root.path()).is_empty());
             assert!(extension.path.exists(), "what it stored stays");

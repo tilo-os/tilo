@@ -404,6 +404,12 @@ pub mod fixtures {
         }
     }
 
+    impl Default for Signer {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     pub fn crx(identity: &Signer, signers: &[&Signer], archive: &[u8]) -> Vec<u8> {
         let crx_id = &Sha256::digest(&identity.spki)[..16];
         let signed_data = field(1, crx_id);
