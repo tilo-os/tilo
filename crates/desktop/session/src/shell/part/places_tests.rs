@@ -398,6 +398,14 @@ const CHAT: &str = include_str!("../../../../../../apps/tl/chat/app.tl");
 const CHAT_IDS: &str = include_str!("../../../../../../apps/tl/chat/app.ids");
 const DISCUSSION: &str = include_str!("../../../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../../../apps/tl/discussion/app.ids");
+const CONTACTS: &str = concat!(
+    include_str!("../../../../../../apps/tl/contacts/app.tl"),
+    "\n",
+    include_str!("../../../../../../apps/tl/contacts/identities.tl")
+);
+const CONTACTS_IDS: &str = include_str!("../../../../../../apps/tl/contacts/app.ids");
+const NOTES: &str = include_str!("../../../../../../apps/tl/notes/app.tl");
+const NOTES_IDS: &str = include_str!("../../../../../../apps/tl/notes/app.ids");
 const TASKS: &str = concat!(
     include_str!("../../../../../../apps/tl/tasks/app.tl"),
     "\n",
@@ -450,6 +458,10 @@ fn room() -> Room {
     let host = Host::new(Actor::Member(MemberId::person("ada")), || None).unwrap();
     let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
     host.load_builtin(DISCUSSION, DISCUSSION_IDS).unwrap();
+    // Tasks names Contacts and Notes with `use`: each loads before it, as a package compiles
+    // against the ones loaded before it.
+    host.load_builtin(CONTACTS, CONTACTS_IDS).unwrap();
+    host.load_builtin(NOTES, NOTES_IDS).unwrap();
     let tasks = host.load_builtin(TASKS, TASKS_IDS).unwrap();
     // Both roots exist, as they do once each app's window was opened in the workspace.
     let all = Value::resource(&host.root_of(CHAT_APP).unwrap());
