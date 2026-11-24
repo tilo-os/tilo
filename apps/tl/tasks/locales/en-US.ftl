@@ -784,7 +784,7 @@ d-rjpcv6es = Delete finished tasks
     .w-nothing-is-finished-yet = Nothing is finished yet
 
 d-5ohbulhj = Share with
-    .doc = Gives the copy `to` what `from` holds in its set and its collection: what only an action may change.
+    .doc = Gives the copy `to` what `from` holds in its set, its list and its collection: what only an action may change.
     .did = copied a task
 
 d-5ohbulhj-from = From
