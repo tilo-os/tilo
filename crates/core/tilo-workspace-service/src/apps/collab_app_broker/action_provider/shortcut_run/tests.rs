@@ -91,8 +91,9 @@ impl Fixture {
             .set("XDG_CONFIG_HOME", scratch.path().join("config"))
             .set("TILO_IDENTITY_ROOT", scratch.path().join("identity"))
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity::sources::test_trust::install();
         tilo_identity::provisioning::ensure_collaboration_identity(
-            &scratch.path().join("config/tilo/identity"),
+            &tilo_identity::store::account_identity_dir(&scratch.path().join("config/tilo/identity")),
             &tilo_device_identity::IdentityPaths::under(scratch.path().join("identity")),
             tilo_identity::provisioning::IdentityStorage::Files,
         )

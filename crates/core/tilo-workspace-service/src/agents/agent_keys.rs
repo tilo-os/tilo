@@ -778,8 +778,9 @@ mod tests {
         env.set("XDG_CONFIG_HOME", &config)
             .set("TILO_IDENTITY_ROOT", &system)
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity::sources::test_trust::install();
         tilo_identity::provisioning::ensure_collaboration_identity(
-            &config.join("tilo/identity"),
+            &tilo_identity::store::account_identity_dir(&config.join("tilo/identity")),
             &tilo_device_identity::IdentityPaths::under(&system),
             tilo_identity::provisioning::IdentityStorage::Files,
         )

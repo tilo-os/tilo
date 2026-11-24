@@ -707,8 +707,9 @@ pub(crate) mod signed_test_support {
                 .set("XDG_CONFIG_HOME", directory.path().join("config"))
                 .set("TILO_IDENTITY_ROOT", directory.path().join("identity"))
                 .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+            tilo_identity::sources::test_trust::install();
             tilo_identity::provisioning::ensure_collaboration_identity(
-                &directory.path().join("config/tilo/identity"),
+                &tilo_identity::store::account_identity_dir(&directory.path().join("config/tilo/identity")),
                 &tilo_device_identity::IdentityPaths::under(directory.path().join("identity")),
                 tilo_identity::provisioning::IdentityStorage::Files,
             )

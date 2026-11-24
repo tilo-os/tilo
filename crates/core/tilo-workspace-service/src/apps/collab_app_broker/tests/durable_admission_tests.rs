@@ -46,8 +46,9 @@ fn durable_fixture(
         .set("XDG_CONFIG_HOME", root.join("config"))
         .set("TILO_IDENTITY_ROOT", root.join("identity"))
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::sources::test_trust::install();
     tilo_identity::provisioning::ensure_collaboration_identity(
-        &root.join("config/tilo/identity"),
+        &tilo_identity::store::account_identity_dir(&root.join("config/tilo/identity")),
         &tilo_device_identity::IdentityPaths::under(root.join("identity")),
         tilo_identity::provisioning::IdentityStorage::Files,
     )

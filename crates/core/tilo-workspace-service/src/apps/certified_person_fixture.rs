@@ -54,8 +54,9 @@ pub fn certified_person_fixture_for_seeds(
             evidence_home.root().join("system-identity"),
         )
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    tilo_identity::sources::test_trust::install();
     tilo_identity::provisioning::ensure_collaboration_identity(
-        &evidence_home.config().join("tilo/identity"),
+        &tilo_identity::store::account_identity_dir(&evidence_home.config().join("tilo/identity")),
         &identity_paths,
         tilo_identity::provisioning::IdentityStorage::Files,
     )
