@@ -9,6 +9,7 @@
 use tilo_image_codec::{DecodedImage, EncodeError, Encoding};
 
 use agent_provider_config::{ModelDescriptor, ProviderConfig};
+#[cfg(unix)]
 use base64::Engine as _;
 use image::{DynamicImage, GenericImageView};
 use serde::{Deserialize, Serialize};
@@ -249,6 +250,8 @@ pub fn analyze_on(
     parse_analysis(&output)
 }
 
+// The model gateway is reached over a Unix socket's descriptor; only Linux runs one.
+#[cfg(unix)]
 /// The gateway request one prepared image is sent as.
 fn request_of(image: PreparedImage) -> tilo_model_client::VisionImage {
     tilo_model_client::VisionImage {
@@ -281,6 +284,8 @@ pub fn cluster_faces_on(
     parse_face_clusters(&output, &ids)
 }
 
+// The model gateway is reached over a Unix socket's descriptor; only Linux runs one.
+#[cfg(unix)]
 /// The bounded batch a face request is sent as: the ids it may answer about,
 /// and each image's preview.
 fn face_requests(
@@ -392,6 +397,8 @@ pub fn parse_face_clusters(
     Ok(response)
 }
 
+// The model gateway is reached over a Unix socket's descriptor; only Linux runs one.
+#[cfg(unix)]
 fn prepare_face_preview(
     image: &DynamicImage,
     original_bytes: &[u8],
@@ -424,6 +431,8 @@ fn prepare_face_preview(
     Err(Error::EmptyImage)
 }
 
+// The model gateway is reached over a Unix socket's descriptor; only Linux runs one.
+#[cfg(unix)]
 /// A caller's name for one image of a face batch: opaque to the model, so any
 /// stable address the caller can map back (an app resource id, a content
 /// address) up to a bound.

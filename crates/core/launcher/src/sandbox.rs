@@ -760,7 +760,7 @@ pub struct EgressProxyBind {
     pub port: u16,
     /// The sandbox end of the call's datagram pair, handed down while this bind lives and never
     /// after: a launch without calls carries none.
-    pub udp_client: Option<std::sync::Arc<std::os::unix::net::UnixDatagram>>,
+    pub udp_client: Option<std::sync::Arc<tilo_socket::Datagram>>,
 }
 
 /// Wire the egress proxy into the sandbox: socket + env vars for an ordinary HTTP client

@@ -400,6 +400,18 @@ impl BlobClient {
         Self::start(connection.into(), false)
     }
 
+    /// The scoped capability the launcher handed this process: on Windows the launcher
+    /// inherits a process no service connections, so an app there reaches the daemon only
+    /// through a connection its session opens for it ([`Self::from_app_stream`]).
+    ///
+    /// # Errors
+    ///
+    /// Always [`BlobError::Disconnected`]: nothing was inherited.
+    #[cfg(windows)]
+    pub fn from_environment() -> Result<Self, BlobError> {
+        Err(BlobError::Disconnected("no document media service".into()))
+    }
+
     /// Wrap a connection whose handoff was already written for an app scope.
     /// Takes ownership of the stream.
     ///

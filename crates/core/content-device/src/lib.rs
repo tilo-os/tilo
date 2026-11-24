@@ -5,21 +5,21 @@
 //! capability to it, and [`device()`] is the one store every caller in the process
 //! shares.
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_content::ContentBackend;
 use tilo_content::ContentStore;
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 mod device;
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 mod public;
 
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 pub use device::DeviceBackend;
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 pub use device::SessionBackend;
-#[cfg(unix)]
+#[cfg(not(target_arch = "wasm32"))]
 pub use public::PublicCopy;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,12 +35,12 @@ pub enum PublicState {
     NotKept,
 }
 
-/// A public file on a host with no device to keep one on: there is never one.
-#[cfg(not(unix))]
+/// A public file in a browser, which has no device to keep one on: there is never one.
+#[cfg(target_arch = "wasm32")]
 #[derive(Clone)]
 pub struct PublicCopy(std::convert::Infallible);
 
-#[cfg(not(unix))]
+#[cfg(target_arch = "wasm32")]
 impl PublicCopy {
     /// # Errors
     ///
@@ -67,11 +67,11 @@ impl PublicCopy {
 /// transport; no storage fallback is opened.
 #[must_use]
 pub fn device() -> Option<ContentStore> {
-    #[cfg(unix)]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         device::store()
     }
-    #[cfg(not(unix))]
+    #[cfg(target_arch = "wasm32")]
     {
         None
     }
@@ -81,11 +81,11 @@ pub fn device() -> Option<ContentStore> {
 /// this process its capability.
 #[must_use]
 pub fn public_copy(name: &'static str) -> Option<PublicCopy> {
-    #[cfg(unix)]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         Some(PublicCopy::new(device::client()?.clone(), name))
     }
-    #[cfg(not(unix))]
+    #[cfg(target_arch = "wasm32")]
     {
         let _ = name;
         None
@@ -107,8 +107,8 @@ pub fn for_app() -> ContentStore {
 /// # Errors
 ///
 /// The connection is not the daemon's document-media handoff.
-#[cfg(unix)]
-pub fn for_connection(stream: std::os::unix::net::UnixStream) -> std::io::Result<ContentStore> {
+#[cfg(not(target_arch = "wasm32"))]
+pub fn for_connection(stream: tilo_socket::Stream) -> std::io::Result<ContentStore> {
     let client = runtime_fs::blobs::BlobClient::from_app_stream(stream)
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     Ok(ContentStore::from_backend(
@@ -122,11 +122,11 @@ pub fn for_connection(stream: std::os::unix::net::UnixStream) -> std::io::Result
 /// served or no workspace names a scope.
 #[must_use]
 pub fn session(workspace: &str) -> Option<ContentStore> {
-    #[cfg(unix)]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         device::session_store(workspace)
     }
-    #[cfg(not(unix))]
+    #[cfg(target_arch = "wasm32")]
     {
         let _ = workspace;
         None
@@ -136,18 +136,18 @@ pub fn session(workspace: &str) -> Option<ContentStore> {
 /// Tell every store a session's process opens from here on which workspaces it draws,
 /// the one in front first: a place of any of them reads its pictures through it.
 ///
-/// Off unix no store opens for those workspaces, so the list is taken and dropped.
+/// In a browser no store opens for those workspaces, so the list is taken and dropped.
 pub fn set_session_workspaces(workspaces: Vec<String>) {
-    #[cfg(unix)]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         device::set_session_workspaces(workspaces);
     }
-    #[cfg(not(unix))]
+    #[cfg(target_arch = "wasm32")]
     drop(workspaces);
 }
 
 #[cfg(test)]
-#[cfg(not(unix))]
+#[cfg(target_arch = "wasm32")]
 mod tests {
     #[test]
     fn device_store_is_unavailable_without_device_transport() {

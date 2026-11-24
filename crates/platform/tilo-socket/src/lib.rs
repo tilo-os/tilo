@@ -21,10 +21,12 @@ use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
+pub use datagram::Datagram;
 pub use descriptor::Descriptor;
 
 #[cfg(windows)]
 pub mod account;
+pub mod datagram;
 pub mod descriptor;
 #[cfg(feature = "tokio")]
 pub mod tokio;

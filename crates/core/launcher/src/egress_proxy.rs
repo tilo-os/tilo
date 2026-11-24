@@ -315,7 +315,7 @@ pub struct EgressProxy {
     stats: Arc<ProxyStats>,
     policy: Arc<LivePolicy>,
     /// The sandbox end of the datagram pair, until the launch hands it to its relay.
-    udp_client: Option<std::sync::Arc<std::os::unix::net::UnixDatagram>>,
+    udp_client: Option<std::sync::Arc<tilo_socket::Datagram>>,
     /// Dropping a sender ends the loop it stops.
     _stops: Vec<oneshot::Sender<()>>,
 }
@@ -369,13 +369,10 @@ impl EgressProxy {
         let mut stops = Vec::new();
         let (calls_state, udp_client) = if calls {
             let (proxy_end, sandbox_end) =
-                std::os::unix::net::UnixDatagram::pair().map_err(ProxyError::Runtime)?;
-            proxy_end
-                .set_nonblocking(true)
-                .map_err(ProxyError::Runtime)?;
+                tilo_socket::Datagram::pair().map_err(ProxyError::Runtime)?;
             let ingress = {
                 let _entered = runtime.enter();
-                tokio::net::UnixDatagram::from_std(proxy_end).map_err(ProxyError::Runtime)?
+                tilo_socket::tokio::Datagram::from_std(proxy_end).map_err(ProxyError::Runtime)?
             };
             let (cut, _) = tokio::sync::broadcast::channel(1);
             let calling = Arc::new(CallsState {
@@ -400,7 +397,7 @@ impl EgressProxy {
             if socket_path
                 .parent()
                 .and_then(|directory| std::fs::read_to_string(lane_path(directory)).ok())
-                .is_some_and(|lane| lane.trim() == app)
+                .is_some_and(|named| named.trim() == app)
             {
                 calling.live.store(true, Ordering::Relaxed);
             }
@@ -466,7 +463,7 @@ impl EgressProxy {
     }
 
     /// The sandbox end of the datagram pair, for the launch to hand its relay.
-    pub fn take_udp_client(&mut self) -> Option<std::sync::Arc<std::os::unix::net::UnixDatagram>> {
+    pub fn take_udp_client(&mut self) -> Option<std::sync::Arc<tilo_socket::Datagram>> {
         self.udp_client.take()
     }
 
@@ -602,7 +599,7 @@ struct CallsState {
     /// sets it: Discord's voice servers are public addresses.
     test_loopback: bool,
     /// The sandbox relay's end of the datagram pair: the only way into a call's UDP.
-    ingress: Arc<tokio::net::UnixDatagram>,
+    ingress: Arc<tilo_socket::tokio::Datagram>,
 }
 
 /// One destination a live call sends to, and the address replies must come back from.
@@ -653,11 +650,10 @@ fn serve_control(path: &Path, state: Arc<CallsState>) -> Result<oneshot::Sender<
     };
     let _ = std::fs::remove_file(path);
     let listener = tilo_files::native::socket::bind(path).map_err(bind_error)?;
-    listener.set_nonblocking(true).map_err(bind_error)?;
     let runtime = egress_runtime().map_err(ProxyError::Runtime)?;
     let listener = {
         let _entered = runtime.enter();
-        tokio::net::UnixListener::from_std(listener).map_err(bind_error)?
+        tilo_socket::tokio::listener(listener).map_err(bind_error)?
     };
     let (stop, mut stopped) = oneshot::channel();
     runtime.spawn(async move {
@@ -674,12 +670,16 @@ fn serve_control(path: &Path, state: Arc<CallsState>) -> Result<oneshot::Sender<
     Ok(stop)
 }
 
-async fn control_connection(mut stream: tokio::net::UnixStream, state: &CallsState) {
+async fn control_connection(mut stream: tilo_socket::tokio::Stream, state: &CallsState) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    let Ok(cred) = stream.peer_cred() else { return };
-    if cred.uid() != rustix::process::geteuid().as_raw() {
-        tracing::warn!("refused a calls control connection of another user");
-        return;
+    // On Windows the listener took only this account's peers.
+    #[cfg(unix)]
+    {
+        let Ok(cred) = stream.peer_cred() else { return };
+        if cred.uid() != rustix::process::geteuid().as_raw() {
+            tracing::warn!("refused a calls control connection of another user");
+            return;
+        }
     }
     let mut buf = [0u8; 512];
     let Ok(n) = stream.read(&mut buf).await else {
@@ -753,13 +753,10 @@ pub fn announce_calls(directory: &Path, app: &str, live: bool) {
 }
 
 /// The in-sandbox half of a call's UDP: the app's datagrams from `127.0.0.1:port`, carried to the
-/// proxy over `fd`, and only the proxy's replies carried back to the one client that sent first.
+/// proxy over `host`, and only the proxy's replies carried back to the one client that sent first.
 /// A datagram from any other source is dropped: this is never a relay open to the sandbox's other
 /// processes.
-pub fn run_udp_relay(fd: std::os::fd::RawFd, port: u16) -> io::Result<()> {
-    use std::os::fd::FromRawFd as _;
-    // SAFETY: the launcher passed this end of the pair to this process alone.
-    let host = unsafe { std::os::unix::net::UnixDatagram::from_raw_fd(fd) };
+pub fn run_udp_relay(host: &tilo_socket::Datagram, port: u16) -> io::Result<()> {
     let app = std::net::UdpSocket::bind(("127.0.0.1", port))?;
     let timeout = Some(Duration::from_millis(200));
     host.set_read_timeout(timeout)?;
@@ -914,8 +911,13 @@ fn serve_udp(state: Arc<CallsState>) -> Result<oneshot::Sender<()>, ProxyError> 
                 _ = &mut stopped => return,
                 got = state.ingress.recv(&mut buf) => got,
             };
-            let Some(frame) = got.ok().and_then(|n| buf.get(..n)) else {
-                continue;
+            // The relay's end is gone: nothing more comes, and reading again would spin.
+            let Some(frame) = got
+                .ok()
+                .and_then(|n| buf.get(..n))
+                .filter(|frame| !frame.is_empty())
+            else {
+                return;
             };
             handle_udp(&state, frame).await;
         }
@@ -2639,7 +2641,7 @@ mod tests {
 
     mod calls {
         use super::*;
-        use std::os::unix::net::{UnixDatagram, UnixStream};
+        use std::os::unix::net::UnixStream;
         use std::time::Instant;
 
         fn control(path: &Path, app: &str, on: bool) {
@@ -2879,15 +2881,13 @@ mod tests {
 
         #[test]
         fn the_relay_carries_only_the_client_that_sent_first() {
-            use std::os::fd::IntoRawFd as _;
-            let (proxy_end, relay_end) = UnixDatagram::pair().expect("a datagram pair");
+            let (proxy_end, relay_end) = tilo_socket::Datagram::pair().expect("a datagram pair");
             let port = {
                 let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
                 socket.local_addr().unwrap().port()
             };
-            let fd = relay_end.into_raw_fd();
             std::thread::spawn(move || {
-                let _ = run_udp_relay(fd, port);
+                let _ = run_udp_relay(&relay_end, port);
             });
             proxy_end
                 .set_read_timeout(Some(Duration::from_millis(500)))

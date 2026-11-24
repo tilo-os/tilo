@@ -19,6 +19,7 @@
 
 #[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::io;
 use std::ops::Deref;
 #[cfg(unix)]

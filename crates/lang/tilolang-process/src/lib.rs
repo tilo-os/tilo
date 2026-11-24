@@ -285,6 +285,7 @@ pub fn patch_connection(handed: Descriptor) -> std::io::Result<PatchConnection> 
     }
 }
 
+#[cfg(feature = "app-launch")]
 /// A patch connection's two ends: a window's and its instance's.
 ///
 /// # Errors
@@ -328,28 +329,11 @@ pub(crate) fn patch_transport(
 
 /// The device content store over the connection the session opened for this instance: the app's
 /// in its workspace, which the launcher never started the process with. A connection that does
-/// not hold leaves the instance running without one, as a launched app runs without media. The
-/// device content store has no Windows client yet: an instance there keeps its files in the
-/// store of its own machine.
-#[cfg_attr(
-    windows,
-    expect(
-        clippy::needless_pass_by_value,
-        reason = "the connection is dropped unused until Windows has a device content client"
-    )
-)]
+/// not hold leaves the instance running without one, as a launched app runs without media.
 fn store_of(fd: Option<Descriptor>) -> Option<tilo_content::ContentStore> {
-    #[cfg(unix)]
-    {
-        tilo_content_device::for_connection(fd?.into())
-            .inspect_err(|error| tracing::warn!(%error, "the instance's content store is unusable"))
-            .ok()
-    }
-    #[cfg(windows)]
-    {
-        let _ = fd;
-        None
-    }
+    tilo_content_device::for_connection(usable(fd, "content")?)
+        .inspect_err(|error| tracing::warn!(%error, "the instance's content store is unusable"))
+        .ok()
 }
 
 /// The person's chooser over the connection the session opened for this instance, over the

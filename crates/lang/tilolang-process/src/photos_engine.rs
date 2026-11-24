@@ -149,7 +149,7 @@ fn import(
             push.ended(slot, &record("stopped", done, &photos, &issues));
             return;
         }
-        done += 1;
+        done = done.saturating_add(1);
         if !seen.insert(file.url.clone()) {
             // The same bytes chosen twice are one photo.
             continue;
@@ -218,18 +218,22 @@ fn base_name(name: &str) -> &str {
 /// The folder a picture stood in within what the person chose, and empty for one on its own.
 fn folder_of(path: &str) -> String {
     let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    match parts.len() {
-        0 | 1 => String::new(),
-        n => parts.get(n - 2).copied().unwrap_or_default().to_owned(),
-    }
+    parts
+        .len()
+        .checked_sub(2)
+        .and_then(|at| parts.get(at))
+        .map_or_else(String::new, |folder| (*folder).to_owned())
 }
 
 /// The media type a picture's name says.
 fn media_of(name: &str) -> &'static str {
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".png") {
+    let extension = std::path::Path::new(name)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or_default();
+    if extension.eq_ignore_ascii_case("png") {
         "image/png"
-    } else if lower.ends_with(".webp") {
+    } else if extension.eq_ignore_ascii_case("webp") {
         "image/webp"
     } else {
         "image/jpeg"

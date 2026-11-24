@@ -18,14 +18,14 @@ description = "The device content store: tilo-content over the filesystem daemon
 tilo-content = { version = "0.1.0", path = "../content" }
 tracing.workspace = true
 
-# The launcher hands the capability over a Unix socket; elsewhere (the web,
-# Windows) there is no device store and `for_app` keeps content locally.
-[target.'cfg(unix)'.dependencies]
+# The daemon serves content over a local socket (a named pipe on Windows); in a
+# browser there is no device store and `for_app` keeps content locally.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 runtime-fs = { package = "tilo-fs-client", version = "0.1.0", path = "../tilo-fs-client" }
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1" }

@@ -176,7 +176,9 @@ impl Checks {
                                     return Poll::Ready(Step::Reported(said.is_ok()));
                                 }
                                 match Pin::new(&mut receipt).poll(cx) {
-                                    Poll::Ready(Ok(ended)) => Poll::Ready(Step::Ended(ended)),
+                                    Poll::Ready(Ok(ended)) => {
+                                        Poll::Ready(Step::Ended(ended.map(Box::new)))
+                                    }
                                     Poll::Ready(Err(_)) => Poll::Ready(Step::Ended(Err(
                                         "The check's host stopped answering".to_owned(),
                                     ))),
@@ -187,7 +189,7 @@ impl Checks {
                         };
                         match step {
                             Step::Stopped => return End::Cancelled,
-                            Step::Ended(Ok(observed)) => return End::Observed(Box::new(observed)),
+                            Step::Ended(Ok(observed)) => return End::Observed(observed),
                             Step::Ended(Err(why)) => return End::Failed(why),
                             Step::Reported(false) => open = false,
                             Step::Reported(true) => {
@@ -242,36 +244,51 @@ impl Checks {
             }) => (phase.clone(), *completed, *total),
             Some(ReportObservation::Disabled { .. }) | None => (String::new(), None, None),
         };
-        let mut status = serde_json::json!({
-            "state": "running",
-            "phase": phase,
-            "completed": completed,
-            "total": total,
-        });
+        let mut status = serde_json::Map::new();
+        let mut set = |key: &str, value: serde_json::Value| {
+            status.insert(key.to_owned(), value);
+        };
+        set("state", "running".into());
+        set("phase", phase.into());
+        set("completed", completed.into());
+        set("total", total.into());
         match &heard.end {
             None => {}
-            Some(End::Observed(receipt)) => {
-                let observed = serde_json::to_value(receipt).expect("a receipt is JSON");
-                status["state"] = "done".into();
-                status["outcome"] = observed["outcome"].clone();
-                status["exit_code"] = receipt.exit_code.into();
-                status["elapsed_ms"] = receipt.elapsed_ms.into();
-                status["output"] = receipt.stdout.preview.clone().into();
-                status["errors"] = receipt.stderr.preview.clone().into();
-                status["failure"] = receipt
-                    .failure
-                    .as_ref()
-                    .map_or_else(String::new, |failure| failure.preview.clone())
-                    .into();
-                status["receipt"] = observed;
-            }
+            Some(End::Observed(receipt)) => match serde_json::to_value(receipt) {
+                Ok(observed) => {
+                    set("state", "done".into());
+                    set(
+                        "outcome",
+                        observed.get("outcome").cloned().unwrap_or_default(),
+                    );
+                    set("exit_code", receipt.exit_code.into());
+                    set("elapsed_ms", receipt.elapsed_ms.into());
+                    set("output", receipt.stdout.preview.clone().into());
+                    set("errors", receipt.stderr.preview.clone().into());
+                    set(
+                        "failure",
+                        receipt
+                            .failure
+                            .as_ref()
+                            .map_or_else(String::new, |failure| failure.preview.clone())
+                            .into(),
+                    );
+                    set("receipt", observed);
+                }
+                Err(error) => {
+                    set("state", "failed".into());
+                    set("error", format!("the receipt did not read: {error}").into());
+                }
+            },
             Some(End::Failed(why)) => {
-                status["state"] = "failed".into();
-                status["error"] = why.clone().into();
+                set("state", "failed".into());
+                set("error", why.clone().into());
             }
-            Some(End::Cancelled) => status["state"] = "cancelled".into(),
+            Some(End::Cancelled) => set("state", "cancelled".into()),
         }
-        Some(status.to_string())
+        drop(heard);
+        drop(jobs);
+        Some(serde_json::Value::Object(status).to_string())
     }
 
     /// Stop the check `job`: false when it is no check of this instance or it had ended.
@@ -424,7 +441,7 @@ fn stop(shared: &Shared) -> bool {
 /// What one wait for a check came to.
 enum Step {
     Reported(bool),
-    Ended(Result<Receipt, String>),
+    Ended(Result<Box<Receipt>, String>),
     Stopped,
 }
 

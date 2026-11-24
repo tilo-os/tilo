@@ -16485,6 +16485,7 @@ version = "0.1.0"
 dependencies = [
  "tilo-content",
  "tilo-fs-client",
+ "tilo-socket",
  "tracing",
  "workspace-hack",
 ]

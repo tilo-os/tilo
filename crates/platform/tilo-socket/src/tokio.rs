@@ -147,6 +147,105 @@ pub fn peer_is_this_login(stream: &Stream) -> bool {
     }
 }
 
+/// One end of a connected datagram pair ([`crate::Datagram`]) on the runtime. Any number of
+/// tasks send on it at once; one task reads it at a time, and a read is not cancel-safe on Windows:
+/// a datagram there is a header and its bytes, and a read dropped between them loses its place.
+#[derive(Debug)]
+pub struct Datagram {
+    #[cfg(unix)]
+    socket: tokio::net::UnixDatagram,
+    #[cfg(windows)]
+    reader: tokio::sync::Mutex<tokio::io::ReadHalf<Stream>>,
+    #[cfg(windows)]
+    writer: tokio::sync::Mutex<tokio::io::WriteHalf<Stream>>,
+}
+
+#[cfg(any(unix, windows))]
+impl Datagram {
+    /// Drive `datagram` on the current runtime.
+    ///
+    /// # Errors
+    /// The runtime could not take it.
+    pub fn from_std(datagram: crate::Datagram) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            let socket = datagram.into_socket();
+            socket.set_nonblocking(true)?;
+            Ok(Self {
+                socket: tokio::net::UnixDatagram::from_std(socket)?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            let (reader, writer) = tokio::io::split(from_std(datagram.into_stream())?);
+            Ok(Self {
+                reader: tokio::sync::Mutex::new(reader),
+                writer: tokio::sync::Mutex::new(writer),
+            })
+        }
+    }
+
+    /// Send `payload` as one datagram.
+    ///
+    /// # Errors
+    /// The other end is gone, or `payload` is longer than [`crate::datagram::MAX_DATAGRAM`].
+    pub async fn send(&self, payload: &[u8]) -> std::io::Result<usize> {
+        if payload.len() > crate::datagram::MAX_DATAGRAM {
+            return Err(crate::datagram::too_long(payload.len()));
+        }
+        #[cfg(unix)]
+        {
+            self.socket.send(payload).await
+        }
+        #[cfg(windows)]
+        {
+            use tokio::io::AsyncWriteExt as _;
+            let mut writer = self.writer.lock().await;
+            writer.write_all(&crate::datagram::framed(payload)).await?;
+            writer.flush().await?;
+            drop(writer);
+            Ok(payload.len())
+        }
+    }
+
+    /// The next datagram, into `buffer`, as [`crate::Datagram::recv`] reads it.
+    ///
+    /// # Errors
+    /// The system's error reading.
+    pub async fn recv(&self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        #[cfg(unix)]
+        {
+            self.socket.recv(buffer).await
+        }
+        #[cfg(windows)]
+        {
+            use tokio::io::AsyncReadExt as _;
+            let mut reader = self.reader.lock().await;
+            let mut header = [0_u8; crate::datagram::HEADER];
+            let length = match reader.read_exact(&mut header).await {
+                Ok(_) => usize::try_from(u32::from_le_bytes(header)).unwrap_or(usize::MAX),
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(0),
+                Err(error) => return Err(error),
+            };
+            if length > crate::datagram::MAX_DATAGRAM {
+                return Err(crate::datagram::too_long(length));
+            }
+            let kept = length.min(buffer.len());
+            let mut rest = vec![0_u8; length.saturating_sub(kept)];
+            for part in [buffer.get_mut(..kept).unwrap_or_default(), &mut rest] {
+                match reader.read_exact(part).await {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        return Ok(0);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(kept)
+        }
+    }
+}
+
 #[cfg(windows)]
 mod pipe {
     use crate::account::{Account, LocalAllocation};

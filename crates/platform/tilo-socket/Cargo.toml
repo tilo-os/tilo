@@ -17,7 +17,7 @@ path = "src/lib.rs"
 # A std-only leaf on Unix: `tilo_files::native::socket` re-exports it, and tools that
 # stay dependency-free (the `cargo desktop` launcher) bind and connect through it too.
 [dependencies]
-tokio = { workspace = true, optional = true, features = ["net", "rt"] }
+tokio = { workspace = true, optional = true, features = ["io-util", "net", "rt", "sync"] }
 
 [features]
 # The same sockets for a tokio caller (`tilo_socket::tokio`).
