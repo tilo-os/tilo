@@ -5,10 +5,14 @@ Git runs `.githooks/pre-push` with one line per ref it is updating on stdin:
 
     <local ref> <local oid> <remote ref> <remote oid>
 
-Only a push to main is linted: everyone lands on main directly, rebased onto its
-head. A branch of one's own is pushed unlinted.
+Every pushed ref is linted for what it adds. A push to main is compared with main's head,
+which it must contain: everyone lands on main directly, rebased onto it, and nobody
+force-pushes it. A push to another branch is compared with the branch's old head when it
+builds on it; after a force-push, with the merge-base of the old head and the new one; and a
+new branch with its merge-base with the remote's main (`refs/remotes/<remote>/main`, which a
+fetch keeps). A deleted ref changes nothing that is built.
 
-A push to main lints the packages its commits own: the changed files through the
+A push lints the packages its commits own: the changed files through the
 repository's own format check, and Clippy over every target of the host with the
 features the workspace's unified build gives each package (so code behind a
 feature that no default build enables is compiled).
@@ -122,9 +126,9 @@ ZERO_OID = {"0"}
 # (shared by its worktrees), and how many of the newest are: one line each.
 PASSES = "tilo-pre-push-passes"
 PASSES_KEPT = 256
-# The branch everyone lands on, and the only one a push is linted for. A push to main that is
-# not a fast-forward is a race already lost: nobody force-pushes main, so the remote refuses it
-# after any lint.
+# The branch everyone lands on. A push to main that is not a fast-forward is a race already lost:
+# nobody force-pushes main, so the remote refuses it after any lint. Another branch may be
+# force-pushed, so its push is compared with where it forked instead.
 MAIN_REF = "refs/heads/main"
 
 
@@ -236,8 +240,46 @@ def contains(root: Path, head: str, commit: str) -> bool:
     return known(root, commit) and git(root, "merge-base", "--is-ancestor", commit, head).returncode == 0
 
 
-def pushed(root: Path, lines: Iterable[str]) -> Push:
-    """Every file a push to main changes, and its comparison; pushes to other branches are not linted."""
+def merge_base(root: Path, one: str, other: str) -> str | None:
+    result = git(root, "merge-base", one, other)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def branch_start(root: Path, remote: str, remote_ref: str, head: str,
+                 remote_oid: str) -> str | None:
+    """Where a push to a branch other than main is compared from, said to the person pushing.
+
+    The branch's old head when the push builds on it; after a force-push, where the old head and
+    the new one forked; for a new branch, or an old head that is not here, where the head forked
+    from the remote's main. None, said why, when there is nothing to compare with.
+    """
+    branch = remote_ref.removeprefix("refs/heads/")
+    if set(remote_oid) != ZERO_OID and known(root, remote_oid):
+        if contains(root, head, remote_oid):
+            say(f"pre-push: linting {branch} against {branch}'s {remote_oid[:12]}")
+            return remote_oid
+        if (fork := merge_base(root, remote_oid, head)) is not None:
+            say(f"pre-push: {branch} is force-pushed; linting it against its merge-base with "
+                f"{branch}'s {remote_oid[:12]}: {fork[:12]}")
+            return fork
+    main = f"refs/remotes/{remote}/main"
+    tip = rev(root, main)
+    if tip is None:
+        say(f"pre-push: {branch} is new here and there is no {main} to find where it forked, so "
+            f"nothing of it is linted; fetch {remote} and push again to lint it")
+        return None
+    fork = merge_base(root, tip, head)
+    if fork is None:
+        say(f"pre-push: {branch} shares no history with {main}, so nothing of it is linted")
+        return None
+    say(f"pre-push: linting {branch} against its merge-base with main {fork[:12]}")
+    return fork
+
+
+def pushed(root: Path, lines: Iterable[str], remote: str = "origin") -> Push:
+    """Every file the pushed refs change, and the comparison each is linted with."""
     files: set[str] = set()
     comparisons: list[tuple[str, str]] = []
     tips: list[str] = []
@@ -248,8 +290,17 @@ def pushed(root: Path, lines: Iterable[str]) -> Push:
         if len(parts) != 4:
             continue
         ref, head, remote_ref, remote_oid = parts
-        if remote_ref != MAIN_REF or set(head) == ZERO_OID:
-            continue  # work in progress, or a deleted ref, which changes nothing that is built
+        if set(head) == ZERO_OID:
+            say(f"pre-push: {remote_ref.removeprefix('refs/heads/')} is deleted, which changes "
+                "nothing that is built")
+            continue
+        if remote_ref != MAIN_REF:
+            start = branch_start(root, remote, remote_ref, head, remote_oid)
+            if start is not None:
+                comparisons.append((start, head))
+                tips.append(head)
+                files |= diff(root, start, head)
+            continue
         if set(remote_oid) != ZERO_OID and not contains(root, head, remote_oid):
             behind.append(remote_oid)
             continue
@@ -929,7 +980,7 @@ def main(argv: list[str]) -> int:
             parser.error("--range takes BASE..HEAD")
         push = Push(diff(root, base, head), [(base, head)], [head], [])
     else:
-        push = pushed(root, options.stdin)
+        push = pushed(root, options.stdin, options.remote)
     if push.behind:
         say(f"pre-push: main is at {push.behind[0][:12]} now, which this push does not contain, so "
             "the remote refuses it whatever a lint says; nothing was linted. Rebase onto it "
@@ -946,7 +997,10 @@ def main(argv: list[str]) -> int:
     if not files:
         if options.plan:
             catalogue_plan(push)
-        say("pre-push: no Rust or Cargo file changed; nothing to lint")
+        if push.comparisons:
+            say("pre-push: no Rust or Cargo file changed; nothing to lint")
+        else:
+            say("pre-push: no pushed ref has a range to lint (said above why); nothing to lint")
         return 0
     if tip := unchecked_tree(root, push):
         say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "

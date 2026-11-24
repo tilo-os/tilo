@@ -413,13 +413,100 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("is not the commit checked out here", result.stderr)
         self.assertEqual(self.calls(), [])
 
-    def test_a_push_to_another_branch_compiles_nothing(self):
-        # Only main is linted; a branch of one's own is pushed as it is.
+    def test_a_push_to_another_branch_lints_what_it_adds_to_the_branch(self):
+        # The branch already holds the web change: only what this push adds to it is linted.
+        self.write("web/src/lib.rs", LIB.format(answer=70))
+        branch = self.commit("feat: answer 70 in the page")
         self.write("native/src/lib.rs", LIB.format(answer=62))
         self.commit("feat: answer 62")
-        result = self.push(ref="refs/heads/topic")
+        result = self.push(ref="refs/heads/topic", remote_oid=branch)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.log.exists(), "a push to a topic branch compiled something")
+        self.assertIn(f"linting topic against topic's {branch[:12]}", result.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_a_branch_push_that_adds_no_rust_says_what_it_compared(self):
+        self.write("native/src/lib.rs", LIB.format(answer=71))
+        branch = self.commit("feat: answer 71")
+        self.write("docs/notes.md", "words\n")
+        self.commit("docs: describe the fixture")
+        result = self.push(ref="refs/heads/topic", remote_oid=branch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"against topic's {branch[:12]}", result.stderr)
+        self.assertIn("no Rust or Cargo file changed", result.stderr)
+        self.assertFalse(self.log.exists(), "nothing should have been compiled")
+
+    def test_a_new_branch_is_linted_from_where_it_forked_from_main(self):
+        # Main moved on past the fork with a change of its own; the branch adds the native change.
+        self.write("web/src/lib.rs", LIB.format(answer=72))
+        main = self.commit("feat: main's answer 72 in the page")
+        self.git("update-ref", "refs/remotes/origin/main", main)
+        self.git("checkout", "-q", "-b", "topic", self.base)
+        self.write("native/src/lib.rs", LIB.format(answer=63))
+        self.commit("feat: answer 63")
+        result = self.push(ref="refs/heads/topic", remote_oid="0" * 40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"linting topic against its merge-base with main {self.base[:12]}",
+                      result.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_a_new_branch_without_the_remotes_main_lints_nothing_and_says_why(self):
+        self.write("native/src/lib.rs", LIB.format(answer=73))
+        self.commit("feat: answer 73")
+        result = self.push(ref="refs/heads/topic", remote_oid="0" * 40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("there is no refs/remotes/origin/main", result.stderr)
+        self.assertIn("no pushed ref has a range to lint", result.stderr)
+        self.assertNotIn("no Rust or Cargo file changed", result.stderr)
+        self.assertFalse(self.log.exists(), "nothing should have been compiled")
+
+    def test_a_force_pushed_branch_is_linted_from_where_old_and_new_forked(self):
+        # The old head's web change is replaced; the new head adds the native change. A branch
+        # may be force-pushed, so this is no refusal, as it would be for main.
+        self.write("docs/notes.md", "words\n")
+        fork = self.commit("docs: where the two heads fork")
+        self.write("web/src/lib.rs", LIB.format(answer=74))
+        old = self.commit("feat: answer 74 in the page")
+        self.git("reset", "-q", "--hard", fork)
+        self.write("native/src/lib.rs", LIB.format(answer=65))
+        self.commit("feat: answer 65")
+        result = self.push(ref="refs/heads/topic", remote_oid=old)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"topic is force-pushed; linting it against its merge-base with "
+                      f"topic's {old[:12]}: {fork[:12]}", result.stderr)
+        self.assertNotIn("does not contain", result.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+
+    def test_deleting_a_branch_lints_nothing(self):
+        self.write("native/src/lib.rs", LIB.format(answer=66))
+        self.commit("feat: answer 66")
+        result = self.push(head="0" * 40, ref="refs/heads/topic")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("topic is deleted", result.stderr)
+        self.assertNotIn("no Rust or Cargo file changed", result.stderr)
+        self.assertFalse(self.log.exists(), "deleting a branch compiled something")
+
+    def test_a_branch_pass_is_reused_after_a_rebase_too(self):
+        # The pass is remembered by the push's patch, whichever ref it went to: the same change
+        # replayed onto main's newer head and pushed onto a branch that holds that head reuses it.
+        self.write("native/src/lib.rs", LIB.format(answer=67))
+        self.commit("feat: answer 67")
+        first = self.push(ref="refs/heads/topic")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertNotEqual(self.calls(), [], "the first push is linted")
+        main = self.rebase({"docs/notes.md": "words\n"})
+        retry = self.push(ref="refs/heads/topic", remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], retry.stderr)
+        self.assertIn("reusing the clippy pass for patch ", retry.stderr)
+
+    def test_a_push_to_main_says_nothing_of_branches(self):
+        self.write("native/src/lib.rs", LIB.format(answer=68))
+        self.commit("feat: answer 68")
+        result = self.push()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        self.assertNotIn("linting main against", result.stderr)
+        self.assertNotIn("merge-base", result.stderr)
 
     def test_an_agent_pushes_main_directly(self):
         self.write("native/src/lib.rs", LIB.format(answer=64))

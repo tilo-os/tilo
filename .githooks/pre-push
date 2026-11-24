@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Lint the packages a push to main changes before the refs leave - and the
-# packages that build directly on them through a path dependency - with the
+# Lint the packages a push changes before the refs leave - and the packages
+# that build directly on them through a path dependency - with the
 # repository's format check over the changed files and Clippy over the host's
 # targets with the features the workspace's whole build gives each package; a
-# package the page family names is linted for wasm32 too. A push to any other
-# branch is not linted. What a change reaches through the direct dependants, and
+# package the page family names is linted for wasm32 too. A push to main is
+# compared with main's head; one to another branch with the branch's old head,
+# or where it forked (from its old head after a force-push, from main when the
+# branch is new). What a change reaches through the direct dependants, and
 # the packages as they ship, is t's own families (`clippy`, `clippy-{arch}`,
 # `clippy-shipped`, `clippy-page`) on every change (`t main` names the one that
 # broke it): run here, those rebuilds took minutes and lost the race to main's
