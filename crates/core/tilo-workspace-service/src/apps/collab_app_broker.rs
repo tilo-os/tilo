@@ -58,6 +58,7 @@ mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
 mod observed_launch;
+mod presses;
 pub use observed_launch::AppOpen;
 mod offload_api;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
@@ -410,6 +411,10 @@ pub struct AppBrokerState {
     /// The window instance the shell launched each connected app for, by
     /// peer id: which tab's window the records it holds are shown in.
     window_instances: Mutex<HashMap<u64, u64>>,
+    /// The person's own presses, as the compositor attested them over the shell link: what a
+    /// call an app's window makes proves it runs as the person
+    /// ([`presses::Presses`]).
+    presses: presses::Presses,
     /// Pull-only, revisioned directories owned by currently connected apps.
     /// This intentionally has no durable/archive counterpart: retaining a
     /// capability after disconnect would make a stale live-only row look

@@ -278,7 +278,7 @@ impl State {
                     held.keys.remove(&keycode);
                 }
                 if pressed != had {
-                    self.key(keycode, pressed, serial, time, tilo_clock::now());
+                    self.key(keycode, pressed, serial, time, tilo_clock::now(), false);
                 }
             }
             // Touches, tablets, gestures and switches belong to the person's own devices, and no
@@ -358,7 +358,7 @@ impl State {
 /// Press or release `keys` on the app-facing keyboard.
 fn keys(state: &mut State, keys: &[u32], pressed: bool, serial: Serial, time: u32) {
     for &keycode in keys {
-        state.key(keycode, pressed, serial, time, tilo_clock::now());
+        state.key(keycode, pressed, serial, time, tilo_clock::now(), false);
     }
 }
 

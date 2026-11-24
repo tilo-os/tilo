@@ -2394,6 +2394,13 @@ pub struct RemoteActionFrame {
     /// ([`Self::workspace`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// The input serial the person's press that ran this request travelled with, as the
+    /// compositor issued it to the window the app's connection is: what a host checks to admit
+    /// the request as the person, once. Only an app whose window received the press can name
+    /// it: a synthetic or replayed serial proves nothing, and a request naming none followed no
+    /// press. It is transport, never part of the invocation's identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub press: Option<u32>,
 }
 
 /// Why bytes are not a usable [`RemoteActionFrame`].
@@ -2415,7 +2422,15 @@ impl RemoteActionFrame {
             version: REMOTE_ACTIONS_VERSION,
             message,
             workspace: None,
+            press: None,
         }
+    }
+
+    /// The same request, asked by the person's press the compositor issued `serial` with.
+    #[must_use]
+    pub fn pressed(mut self, press: Option<u32>) -> Self {
+        self.press = press;
+        self
     }
 
     /// The same request, asked in `workspace` (none: the device's own).

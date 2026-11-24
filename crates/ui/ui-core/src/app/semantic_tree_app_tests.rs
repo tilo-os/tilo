@@ -689,6 +689,7 @@ fn background_document_job_from_an_unbound_resource_waits_for_broker_admission()
         .find_map(|request| match request {
             CollabRequest::RemoteAction {
                 message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+                ..
             } => Some(invoke.clone()),
             _ => None,
         })
@@ -714,7 +715,8 @@ fn background_document_job_from_an_unbound_resource_waits_for_broker_admission()
             .filter(|request| matches!(
                 request,
                 CollabRequest::RemoteAction {
-                    message: tilo_actions::remote::RemoteActionMessage::Invoke(_)
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(_),
+                    ..
                 }
             ))
             .count(),
@@ -1876,6 +1878,7 @@ fn with_a_broker_an_effects_edit_is_admitted_there_for_its_invoker() {
             .find_map(|request| match request {
                 CollabRequest::RemoteAction {
                     message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+                    ..
                 } => Some(invoke.clone()),
                 _ => None,
             })

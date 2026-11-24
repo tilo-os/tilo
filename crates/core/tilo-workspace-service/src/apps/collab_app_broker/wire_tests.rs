@@ -1061,6 +1061,7 @@ async fn an_app_takes_its_invocations_and_answers_only_its_own() {
                         app_id: "so.tilo.notes".into(),
                         package_root: String::new(),
                         on_behalf_of: Vec::new(),
+                        press: None,
                     })
                     .await
                     .is_err(),

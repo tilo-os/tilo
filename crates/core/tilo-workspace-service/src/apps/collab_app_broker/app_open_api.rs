@@ -22,11 +22,10 @@
 //! `open`), or an installed app through the published-application launch the
 //! Store uses) is no one's just because the app sent it. It is decided as
 //! the caller of the invocation it continues, as above, or as the person
-//! using the app, when their own press reached one of its windows
-//! ([`crate::apps::services::LauncherServices::person_initiated`]: a click, a key
-//! or a tap the compositor delivered, never input an agent or a remote
-//! member sends through the shared device), which this open uses up;
-//! else it is refused.
+//! using the app, when the call names the input serial the compositor issued
+//! to one of its windows with the person's own press (a click, a key or a tap,
+//! never input an agent or a remote member sends through the shared device),
+//! which this open uses up; else it is refused.
 
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller,
@@ -70,12 +69,13 @@ impl AppBrokerState {
     /// decided as, and the ownership it is admitted under, when it opens an
     /// application or continues an invocation; `None` for a request the
     /// app's own api decides. `person` is who admitted the connection.
-    pub(super) fn app_request_caller(
+    pub(super) async fn app_request_caller(
         &self,
         peer_id: u64,
         app_id: &str,
         person: &Caller,
         message: &RemoteActionMessage,
+        press: Option<u32>,
     ) -> Option<Result<RequestCaller, Box<RemoteActionMessage>>> {
         if let RemoteActionMessage::ResourceRead {
             on_behalf_of: Some(parent),
@@ -103,7 +103,10 @@ impl AppBrokerState {
         };
         if opens_application(invoke) {
             return Some(
-                match self.app_open_authority(peer_id, app_id, invoke.on_behalf_of) {
+                match self
+                    .app_open_authority(peer_id, app_id, invoke.on_behalf_of, press)
+                    .await
+                {
                     Some(OpenAuthority::Invocation(continued)) => {
                         Ok(continued.child(invoke.invocation))
                     }
@@ -169,24 +172,50 @@ impl AppBrokerState {
     /// application for `parent`, the invocation it names, if any: that
     /// invocation's caller when the broker delivered it to this connection
     /// and it is still running (unless the app invoked it itself), else the
-    /// person's press in one of the app's windows. `None` when neither is
-    /// behind it.
-    pub(super) fn app_open_authority(
+    /// person's press in the window this connection is, which `press` names
+    /// the compositor's serial of. `None` when neither is behind it.
+    pub(super) async fn app_open_authority(
+        &self,
+        peer_id: u64,
+        app_id: &str,
+        parent: Option<tilo_actions::InvocationId>,
+        press: Option<u32>,
+    ) -> Option<OpenAuthority> {
+        if let Some(authority) = self.open_authority_continuing(peer_id, app_id, parent) {
+            return Some(authority);
+        }
+        self.person_pressed(peer_id, press)
+            .await
+            .then_some(OpenAuthority::Press)
+    }
+
+    /// [`Self::app_open_authority`] for a caller that cannot wait for the shell link to carry the
+    /// press: an attestation on its way proves nothing here.
+    pub(super) fn app_open_authority_now(
+        &self,
+        peer_id: u64,
+        app_id: &str,
+        parent: Option<tilo_actions::InvocationId>,
+        press: Option<u32>,
+    ) -> Option<OpenAuthority> {
+        if let Some(authority) = self.open_authority_continuing(peer_id, app_id, parent) {
+            return Some(authority);
+        }
+        self.person_pressed_now(peer_id, press)
+            .then_some(OpenAuthority::Press)
+    }
+
+    /// The authority an invocation `parent` this connection still runs gives an open, if any.
+    fn open_authority_continuing(
         &self,
         peer_id: u64,
         app_id: &str,
         parent: Option<tilo_actions::InvocationId>,
     ) -> Option<OpenAuthority> {
-        if let Some(Continuing::Invocation(continued)) =
-            parent.and_then(|parent| self.continuing(peer_id, app_id, parent))
-        {
-            return Some(OpenAuthority::Invocation(continued));
+        match parent.and_then(|parent| self.continuing(peer_id, app_id, parent)) {
+            Some(Continuing::Invocation(continued)) => Some(OpenAuthority::Invocation(continued)),
+            Some(Continuing::OwnApi) | None => None,
         }
-        self.services
-            .launcher
-            .as_ref()
-            .is_some_and(|launcher| launcher.person_initiated(app_id))
-            .then_some(OpenAuthority::Press)
     }
 }
 

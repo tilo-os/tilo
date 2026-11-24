@@ -254,6 +254,10 @@ pub struct State {
     /// [`WindowInfo`] id: the input a control the shell presses afterwards comes after, so what
     /// the person typed before the press is read before it.
     pub(crate) last_input_serial: std::collections::BTreeMap<u64, u32>,
+    /// The person's own presses, as this compositor delivered them to their windows,
+    /// with the input serials it issued to those windows
+    /// ([`crate::presses::PersonPresses`]).
+    pub(crate) person_presses: std::sync::Arc<crate::presses::PersonPresses>,
     /// The seats beside the person's: an agent's, a viewer's (§ seats).
     pub(crate) seats: crate::seats::Seats,
     /// A seat's keys are the app-facing seat's for this delivery: no surface takes them, and
@@ -476,6 +480,7 @@ impl State {
             pointer_target: PointerTarget::Clients,
             pressed_surface: None,
             last_input_serial: std::collections::BTreeMap::new(),
+            person_presses: std::sync::Arc::default(),
             seats: crate::seats::Seats::default(),
             seat_keys_only: false,
             protocols,
@@ -1039,7 +1044,7 @@ impl State {
             }
             return;
         }
-        self.route_input(event, at);
+        self.route_input(event, at, true);
     }
 
     /// Route one event from another device, if the person allows it now.
@@ -1049,7 +1054,7 @@ impl State {
             tracing::debug!(refusal, "remote input refused");
             return;
         }
-        self.route_input(event, now);
+        self.route_input(event, now, false);
     }
 
     /// Wait for the shell's frames drawing on other threads to be in their pixels. The pointer goes
@@ -1065,7 +1070,7 @@ impl State {
     }
 
     /// Route `event` by what the surfaces show.
-    pub(crate) fn route_input(&mut self, event: InputEvent, at: Instant) {
+    pub(crate) fn route_input(&mut self, event: InputEvent, at: Instant, person: bool) {
         match event {
             // The pointer that stayed still is routed by what is under it once those draws are in.
             InputEvent::PointerButton { pressed: true, .. } => {
@@ -1136,7 +1141,7 @@ impl State {
                 self.pointer_motion(to, serial, time);
             }
             InputEvent::PointerButton { button, pressed } => {
-                self.pointer_button(button, pressed, serial, time);
+                self.pointer_button(button, pressed, serial, time, person);
             }
             InputEvent::PointerAxis(scroll) => self.pointer_axis(scroll, time),
             InputEvent::Key { keycode, pressed } => {
@@ -1144,7 +1149,7 @@ impl State {
                 // and gives them back.
                 self.seats.hold_person_key(keycode, pressed);
                 if !self.await_window_with_key(keycode, pressed, at) {
-                    self.key(keycode, pressed, serial, time, at);
+                    self.key(keycode, pressed, serial, time, at, person);
                 }
             }
             InputEvent::TouchDown { slot, x, y } => {
@@ -1180,6 +1185,7 @@ impl State {
         serial: Serial,
         time: u32,
         at: Instant,
+        person: bool,
     ) {
         self.sync_keyboard_owner();
         self.keyboard_grab_follows_lock();
@@ -1290,6 +1296,9 @@ impl State {
                 .and_then(|seat| seat.current_focus());
             if let Some(focus) = &focus {
                 self.note_input_serial(focus, serial.into());
+                if pressed {
+                    self.note_person_press(focus, serial.into(), person);
+                }
             }
             if pressed && let Some(focus) = focus {
                 self.key_delivered(&focus, keycode);
@@ -1552,7 +1561,14 @@ impl State {
         pointer.frame(self);
     }
 
-    pub(crate) fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
+    pub(crate) fn pointer_button(
+        &mut self,
+        button: u32,
+        pressed: bool,
+        serial: Serial,
+        time: u32,
+        person: bool,
+    ) {
         // Somebody else already holds this button: the one pointer the windows see stays down until
         // the last of them lets go.
         if !self.seats.hold_person_button(button, pressed) {
@@ -1626,6 +1642,9 @@ impl State {
             .and_then(|seat| seat.current_focus());
         if let Some(focus) = &focus {
             self.note_input_serial(focus, serial.into());
+            if pressed {
+                self.note_person_press(focus, serial.into(), person);
+            }
         }
         if pressed && let Some(focus) = focus {
             self.note_input_on(&focus);
@@ -2753,6 +2772,26 @@ impl State {
         if let Some(window) = window_id_of(&root_surface(surface)) {
             self.last_input_serial.insert(window, serial);
         }
+    }
+
+    /// Note that the person pressed in the window drawing `surface`, delivered with `serial`:
+    /// what lets a call the window's app makes run as the person
+    /// ([`crate::presses::PersonPresses`]). Input another device or an agent seat sent is never
+    /// the person's, and only the window with the keyboard had their press.
+    fn note_person_press(&self, surface: &WlSurface, serial: u32, person: bool) {
+        if !person {
+            return;
+        }
+        let Some(window) = window_id_of(&root_surface(surface)) else {
+            return;
+        };
+        if self
+            .focused_window()
+            .is_none_or(|focused| focused.id != window)
+        {
+            return;
+        }
+        self.person_presses.note(window, serial);
     }
 
     /// Judge the pings in flight. Returns whether the set of windows whose app is not responding

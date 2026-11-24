@@ -390,6 +390,25 @@ impl Session {
         );
     }
 
+    /// The person's own presses, as the compositor delivered them, go to the device's daemon over
+    /// its shell link, each under the tab of the window it reached: what a call an app's window
+    /// makes names to run as the person ([`tilo_compositor::presses`]).
+    #[cfg(target_os = "linux")]
+    fn deliver_person_presses(&self) {
+        for (window, serial) in self.compositor.person_presses().take() {
+            let Some(tab) = self.shared.desktop.tab_of(window) else {
+                // A press in something that is no window of the layout (a layer, the lock screen):
+                // nothing an app's call names.
+                continue;
+            };
+            self.shared.daemon.press(tab, serial);
+        }
+    }
+
+    /// No compositor records a press on a platform without one.
+    #[cfg(not(target_os = "linux"))]
+    fn deliver_person_presses(&self) {}
+
     /// A Windows program's window names the class its saved tab reopens with: what makes the next
     /// start find the program again after a reboot.
     fn follow_windows_identities(&self, launch: &crate::apps::Apps) {
@@ -671,6 +690,10 @@ impl Session {
         reason = "one ordered pass: what was asked, in the order the session, its panels and its hosted surfaces must see it"
     )]
     pub(super) fn settle(&mut self) -> Result<(), Error> {
+        // The person's own presses, as the compositor saw them, reach the device's daemon before
+        // anything else: a call an app's window makes names the serial one carried, and runs as
+        // the person once.
+        self.deliver_person_presses();
         // What the history wrote back reaches the session before anything reads it, and what the
         // person opened from it starts from here.
         self.shared.serve_activity();

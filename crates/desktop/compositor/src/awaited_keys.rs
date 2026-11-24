@@ -67,7 +67,14 @@ impl State {
         );
         for (keycode, pressed, at) in keys {
             let time = self.now_ms();
-            self.key(keycode, pressed, SERIAL_COUNTER.next_serial(), time, at);
+            self.key(
+                keycode,
+                pressed,
+                SERIAL_COUNTER.next_serial(),
+                time,
+                at,
+                true,
+            );
         }
     }
 }

@@ -135,6 +135,19 @@ impl DaemonShell {
         &self.inner.runtime
     }
 
+    /// Tell the daemon the person pressed in `window` (its tab id, as `device.Window.key` names
+    /// it), delivered with the input serial `serial` the compositor issued: a call an app's
+    /// window makes that names it runs as the person, once. Sent without waiting: a press the
+    /// daemon hears late proves nothing, and the call it makes possible waits for it.
+    pub fn press(&self, window: u64, serial: u32) {
+        let inner = Arc::clone(&self.inner);
+        self.inner.runtime.spawn(async move {
+            if let Err(error) = inner.ask(ShellCall::Press { window, serial }).await {
+                tracing::debug!(%error, "the device's daemon was not told of the person's press");
+            }
+        });
+    }
+
     /// Ask the device's one dispatch `message` as the person, in `workspace` where it is an
     /// action of one of its resources: the readings a read answers, or the value an action
     /// answered, as JSON.

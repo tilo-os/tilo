@@ -33,7 +33,7 @@ fn sent(opener: &Opener) -> Vec<RemoteActionMessage> {
         .unwrap_or_default()
         .into_iter()
         .filter_map(|request| match request {
-            CollabRequest::RemoteAction { message } => Some(message),
+            CollabRequest::RemoteAction { message, .. } => Some(message),
             _ => None,
         })
         .collect()

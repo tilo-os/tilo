@@ -917,10 +917,6 @@ impl LauncherServices for SeatLauncher {
         self.own.applications_for(app_id)
     }
 
-    fn person_initiated(&self, app_id: &str) -> bool {
-        self.own.person_initiated(app_id)
-    }
-
     fn launch(
         &self,
         app: &str,

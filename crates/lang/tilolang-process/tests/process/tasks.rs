@@ -635,6 +635,7 @@ impl Shell {
             .filter_map(|request| match request {
                 CollabRequest::RemoteAction {
                     message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+                    ..
                 } if invoke.target.provider.ends_with(&format!(":{TASKS}")) => Some(invoke.clone()),
                 _ => None,
             })
@@ -784,6 +785,7 @@ fn today_reads_tasks_from_the_workspace_and_clears_it_at_its_api() {
     let filed = shell.today_sent.borrow().iter().any(|request| {
         matches!(request, CollabRequest::RemoteAction {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+            ..
         } if invoke.target.provider.ends_with(":so.tilo.notes")
             && format!("{:?}", invoke.argument).contains("Morning: 1 done"))
     });

@@ -77,6 +77,7 @@ fn deferred_server_preferred_client_routes_address_without_minting() {
         request,
         CollabRequest::RemoteAction {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+            ..
         } if invoke.target.address.resource == "test.counter"
             && invoke.target.address.action == "create"
             && matches!(&invoke.argument, tilo_actions::remote::InvokeArgument::Json(arguments) if arguments.is_empty())

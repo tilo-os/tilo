@@ -116,7 +116,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         | CollabRequest::CloseWorkspaceControl { .. }
         | CollabRequest::ClearContinuation
         | CollabRequest::RetiredNearbyTransferCommand { .. } => {}
-        CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabRequest::RemoteAction { message, .. } => serialized_bytes(message, &mut meter),
         CollabRequest::ExternalModeration { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
             meter.string_capacity(hash);
@@ -330,11 +330,13 @@ fn context_event_bytes(
 pub(super) async fn remote_action_round_trip(
     channel: &runtime_collab::RecordHandle,
     message: tilo_actions::remote::RemoteActionMessage,
+    press: Option<u32>,
 ) -> tilo_actions::remote::RemoteActionMessage {
     use tilo_actions::remote::RemoteActionFrame;
 
     let answer = async {
         let frame = RemoteActionFrame::new(message.clone())
+            .pressed(press)
             .encode()
             .map_err(|error| error.to_string())?;
         let reply = channel

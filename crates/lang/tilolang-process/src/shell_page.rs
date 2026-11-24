@@ -354,7 +354,10 @@ impl ShellPage {
                 | RemoteActionMessage::ResourceRead { correlation, .. } => Some(*correlation),
                 _ => None,
             };
-            if send(CollabRequest::RemoteAction { message }) {
+            if send(CollabRequest::RemoteAction {
+                message,
+                press: None,
+            }) {
                 continue;
             }
             if invocation.is_some() && invocation == self.reading {

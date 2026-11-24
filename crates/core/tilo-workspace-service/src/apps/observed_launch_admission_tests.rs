@@ -27,7 +27,6 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                     requests: Mutex::new(Vec::new()),
                     adoption: Mutex::new(None),
                     original: Mutex::new(None),
-                    pressed: true.into(),
                 });
                 let rig = Rig::with_services(
                     &env,
@@ -38,6 +37,9 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                 )
                 .await;
                 let caller = rig.caller(&env, 905, None).await;
+                // The person's press in the connection's window, which the launch names.
+                rig.state.bind_window_instance_for_test(905, 12);
+                rig.state.note_press(12, 5);
                 {
                     let mut guard = rig.state.journal.lock().unwrap();
                     if scenario == "no_journal" {
@@ -64,7 +66,12 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                 let selected = root.clone();
                 let mut pending = tokio::task::spawn_local(async move {
                     handle
-                        .launch_installed_application("so.tilo.word-processor", Some(&selected))
+                        .launch_installed_application_pressed(
+                            "so.tilo.word-processor",
+                            Some(&selected),
+                            None,
+                            Some(5),
+                        )
                         .await
                 });
                 if !matches!(

@@ -57,6 +57,7 @@ mod pointer_lock;
 pub mod policy;
 mod power;
 mod present;
+pub mod presses;
 mod protocols;
 pub mod remote_input;
 pub mod render;
@@ -2111,6 +2112,14 @@ impl Compositor {
         self.data.state.last_input_serial.get(&id).copied()
     }
 
+    /// The person's own presses this compositor delivered, and the serials it issued to the
+    /// windows they reached, waiting to be handed to the device's daemon
+    /// ([`presses::PersonPresses`]): what a call an app makes names to run as the person.
+    #[must_use]
+    pub fn person_presses(&self) -> std::sync::Arc<presses::PersonPresses> {
+        std::sync::Arc::clone(&self.data.state.person_presses)
+    }
+
     /// The frames the client of the window whose [`WindowInfo::id`] is `id` committed since it
     /// opened: a window that keeps showing the same thing keeps its count, so two reads that agree
     /// say the window drew nothing between them.
@@ -2614,15 +2623,21 @@ impl Compositor {
             let at = tilo_clock::now();
             for modifier in &stroke.modifiers {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                self.data.state.key(modifier.key, true, serial, time, at);
+                self.data
+                    .state
+                    .key(modifier.key, true, serial, time, at, false);
             }
             for pressed in [true, false] {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                self.data.state.key(stroke.key, pressed, serial, time, at);
+                self.data
+                    .state
+                    .key(stroke.key, pressed, serial, time, at, false);
             }
             for modifier in stroke.modifiers.iter().rev() {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                self.data.state.key(modifier.key, false, serial, time, at);
+                self.data
+                    .state
+                    .key(modifier.key, false, serial, time, at, false);
             }
         }
         self.data.state.seat_end(seat, person);

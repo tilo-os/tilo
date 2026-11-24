@@ -170,6 +170,13 @@ impl ShellDesktop {
         read(&mut self.desktop.borrow_mut().policy)
     }
 
+    /// The tab of the window `window` draws once it mapped, which a press in it belongs to; `None`
+    /// for a window the layout holds no tab of (a layer, a dialog).
+    #[must_use]
+    pub fn tab_of(&self, window: u64) -> Option<tilo_desktop_model::TabId> {
+        self.desktop.borrow().policy.tab_of(window)
+    }
+
     /// The desktop's policy, held: what the window policy placing its windows changes.
     pub(super) fn policy(&self) -> std::cell::RefMut<'_, DesktopPolicy> {
         std::cell::RefMut::map(self.desktop.borrow_mut(), |desktop| &mut desktop.policy)

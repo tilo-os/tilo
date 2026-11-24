@@ -319,6 +319,7 @@ tilo_test_env::scenario! {
         let dispatched = sent.borrow().iter().find_map(|request| match request {
             CollabRequest::RemoteAction {
                 message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+                ..
             } => Some(invoke.clone()),
             _ => None,
         });

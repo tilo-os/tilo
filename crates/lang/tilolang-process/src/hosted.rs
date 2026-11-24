@@ -3436,7 +3436,10 @@ impl Hosted {
         if let Err(error) = self
             .connection
             .manager()
-            .try_send(CollabRequest::RemoteAction { message })
+            .try_send(CollabRequest::RemoteAction {
+                message,
+                press: None,
+            })
         {
             tracing::warn!(app = self.spec.app, %error, "{unsent}");
         }
@@ -3460,7 +3463,10 @@ impl Hosted {
             if let Err(error) = self
                 .connection
                 .manager()
-                .try_send(CollabRequest::RemoteAction { message })
+                .try_send(CollabRequest::RemoteAction {
+                    message,
+                    press: None,
+                })
             {
                 tracing::warn!(app = self.spec.app, %error, "a stopped run's call was not stopped");
             }
@@ -4296,11 +4302,10 @@ impl Hosted {
             signed: None,
         };
         let message = RemoteActionMessage::Invoke(request);
-        if !self
-            .connection
-            .manager()
-            .send(CollabRequest::RemoteAction { message })
-        {
+        if !self.connection.manager().send(CollabRequest::RemoteAction {
+            message,
+            press: None,
+        }) {
             self.instance
                 .failed("The workspace could not be reached to run the check".to_owned());
         }
@@ -4516,7 +4521,10 @@ impl Invoker for Apis {
         if let Err(error) = self
             .manager
             .borrow_mut()
-            .try_send(CollabRequest::RemoteAction { message })
+            .try_send(CollabRequest::RemoteAction {
+                message,
+                press: None,
+            })
         {
             tracing::warn!(to = app, %error, "a child call did not reach the dispatch");
             return Invoked::Failed(format!("the call did not reach {app}: {error}"));
