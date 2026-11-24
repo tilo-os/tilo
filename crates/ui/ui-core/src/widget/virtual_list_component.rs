@@ -528,12 +528,7 @@ impl DescribedRows {
         self.with(key, RowRead::PropsOnly, read)
     }
 
-    fn with<R>(
-        &self,
-        key: &str,
-        how: RowRead,
-        read: impl FnOnce(ListItemProps) -> R,
-    ) -> Option<R> {
+    fn with<R>(&self, key: &str, how: RowRead, read: impl FnOnce(ListItemProps) -> R) -> Option<R> {
         if let Some(item) = self.removed.iter().find(|item| item.key == key) {
             return Some(read(reusable(item)?));
         }
@@ -1011,19 +1006,20 @@ fn wire_keys(
 /// on that row: the item's menu first, then what the view attached to the row, then the keys the
 /// app names for it ([`ListItemProps::keys`]). The row answers however it is drawn, a list row
 /// and a view of any kind alike, because what it declares is the item's, not its widget's.
-fn wire_row_shortcuts(
-    list: &mut VirtualList<DescribedRows>,
-    reading: &Rc<RefCell<DescribedRows>>,
-) {
+fn wire_row_shortcuts(list: &mut VirtualList<DescribedRows>, reading: &Rc<RefCell<DescribedRows>>) {
     let rows = Rc::clone(reading);
     list.set_on_row_shortcut(move |key, pressed| {
         let run = {
             let rows = rows.borrow();
             rows.with_props(key, |item| {
-                declared_shortcuts(&item.menu, &item.attached.menu, (&item.keys, &item.shortcut))
-                    .into_iter()
-                    .find(|(declared, _)| declared.same_press(pressed))
-                    .map(|(_, run)| run)
+                declared_shortcuts(
+                    &item.menu,
+                    &item.attached.menu,
+                    (&item.keys, &item.shortcut),
+                )
+                .into_iter()
+                .find(|(declared, _)| declared.same_press(pressed))
+                .map(|(_, run)| run)
             })
             .flatten()
         };
@@ -3609,10 +3605,8 @@ mod tests {
     fn a_keyed_row_answers_whichever_way_it_is_drawn() {
         for views in [false, true] {
             let queue = crate::Intents::<Fired>::default();
-            let mut rows = ViewRows::new(&[("row-0", None), ("row-1", None)], 20.0, 8.0).keys(
-                &["s"],
-                Event::View(Intent::new(&queue, "row", "key")),
-            );
+            let mut rows = ViewRows::new(&[("row-0", None), ("row-1", None)], 20.0, 8.0)
+                .keys(&["s"], Event::View(Intent::new(&queue, "row", "key")));
             if views {
                 rows = rows.with_views();
             }
