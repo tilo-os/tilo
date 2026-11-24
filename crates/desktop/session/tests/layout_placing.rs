@@ -129,6 +129,14 @@ fn person() -> String {
     DEVICE.with(|device| device.person.clone())
 }
 
+/// The workspace in front, by its id.
+fn workspace_in_front(session: &Session) -> Option<String> {
+    session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+    })
+}
+
 fn step(session: &mut Session) {
     session.step(Duration::from_millis(1)).expect("a frame");
 }
@@ -394,16 +402,13 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
     let _settled = ui::motion::testing::settled();
     let index = std::sync::Arc::new(tilo_workspace_service::search::AppContentIndex::in_memory());
     let mut session = session_searching(index.clone());
-    step(&mut session);
+    // The workspace in front is the device's once the daemon's list reaches this session: the id
+    // a search entry is read under is that workspace's, never the shell's own before it.
+    let seeded = workspace_in_front(&session);
+    let workspace = crate::common::wait_for(&mut session, "the device's workspace", |session| {
+        workspace_in_front(session).filter(|now| Some(now.as_str()) != seeded.as_deref())
+    });
     let (app, _) = with_mailbox(&mut session);
-    // The id of the workspace in front: where search reads its entries.
-    let workspace = session
-        .handle()
-        .read(|tree| {
-            tree.active_workspace()
-                .map(|workspace| workspace.id().to_string())
-        })
-        .expect("a workspace is in front");
     index_mailbox(&index, &app, &workspace);
 
     session
