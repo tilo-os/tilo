@@ -685,59 +685,71 @@ impl Core {
         // store: a read of one is that value, or what the type declares for a field text left
         // out. Its id comes when it is put in a collection.
         if self.with_val(rh, |v| Ok(matches!(v, Value::Rec(_))))? {
-            let field = self.text(fh)?;
-            return self.with_val(rh, |v| {
-                let Value::Rec(rec) = v else {
-                    return trap("expected a record");
-                };
-                let registry = self.registry.borrow();
-                let Some((_, info)) = registry.type_info(&rec.ty) else {
-                    return trap(format!(
-                        "`{}` is not declared by any loaded package",
-                        rec.ty
-                    ));
-                };
-                let f = field_in(&info, &field)?.clone();
-                match rec.fields.get(&f.id) {
-                    Some(held) => Ok(whole_map(f.kind, held.clone())),
-                    None => match declared_default(&f.ty, f.default.as_ref()) {
-                        Ok(v) => Ok(whole_map(f.kind, v)),
-                        Err(why) => trap(why),
-                    },
-                }
-            });
+            return self.record_field(rh, fh);
         }
-        let journaled = self.frames.borrow().run().is_some_and(|run| run.journaled);
-        if journaled {
-            // A journaled run's reads go through its journal, which takes the frames to record
-            // them, and holds them whole: a replay reads what the run read, not the store.
-            let target = Rc::unwrap_or_clone(self.ref_arg(rh)?.target);
-            let field = self.text(fh)?;
-            let (_, f) = self.lookup_field(&target, &field)?;
-            let author = self.module_of_frame()?;
-            // A collection reads as one, as outside a journaled run, and is listed where the run
-            // first reads its items: what the journal keeps of it is the items it listed then
-            // ([`Core::coll_listing`]), and a filter the store answers lists only the items it
-            // kept, so a stroke among ten thousand marks never lists them all.
-            if f.kind == FieldKind::Collection && !crate::foreign::is_foreign(&target) {
-                let item = match inner_ty(&f.ty) {
-                    Some(Ty::Union(_)) => String::new(),
-                    _ => self.item_type(&f.ty)?.id.clone(),
-                };
-                return Ok(Value::Coll(Rc::new(CollRef {
-                    target: Rc::new(target),
-                    field: f.id.clone(),
-                    item,
-                    author: Some(author),
-                    filter: None,
-                    order: None,
-                    pinned: crate::value::Pinned(Some(std::cell::OnceCell::new())),
-                })));
+        if self.frames.borrow().run().is_some_and(|run| run.journaled) {
+            return self.journaled_field(rh, fh);
+        }
+        self.live_field(rh, fh)
+    }
+
+    /// A field of a record value built in the run, read where it was built.
+    fn record_field(&self, rh: i32, fh: i32) -> HResult<Value> {
+        let field = self.text(fh)?;
+        self.with_val(rh, |v| {
+            let Value::Rec(rec) = v else {
+                return trap("expected a record");
+            };
+            let registry = self.registry.borrow();
+            let Some((_, info)) = registry.type_info(&rec.ty) else {
+                return trap(format!(
+                    "`{}` is not declared by any loaded package",
+                    rec.ty
+                ));
+            };
+            let f = field_in(&info, &field)?.clone();
+            match rec.fields.get(&f.id) {
+                Some(held) => Ok(whole_map(f.kind, held.clone())),
+                None => match declared_default(&f.ty, f.default.as_ref()) {
+                    Ok(v) => Ok(whole_map(f.kind, v)),
+                    Err(why) => trap(why),
+                },
             }
-            let value =
-                self.journaled_read(|| Ok(self.read_value(&target, &f, Some(&author))?))?;
-            return Ok(whole_map(f.kind, value));
+        })
+    }
+
+    /// A field read in a journaled run: through its journal, which takes the frames to record
+    /// the read, and holds it whole, so a replay reads what the run read, not the store.
+    fn journaled_field(&self, rh: i32, fh: i32) -> HResult<Value> {
+        let target = Rc::unwrap_or_clone(self.ref_arg(rh)?.target);
+        let field = self.text(fh)?;
+        let (_, f) = self.lookup_field(&target, &field)?;
+        let author = self.module_of_frame()?;
+        // A collection reads as one, as outside a journaled run, and is listed where the run
+        // first reads its items: what the journal keeps of it is the items it listed then
+        // ([`Core::coll_listing`]), and a filter the store answers lists only the items it
+        // kept, so a stroke among ten thousand marks never lists them all.
+        if f.kind == FieldKind::Collection && !crate::foreign::is_foreign(&target) {
+            let item = match inner_ty(&f.ty) {
+                Some(Ty::Union(_)) => String::new(),
+                _ => self.item_type(&f.ty)?.id.clone(),
+            };
+            return Ok(Value::Coll(Rc::new(CollRef {
+                target: Rc::new(target),
+                field: f.id,
+                item,
+                author: Some(author),
+                filter: None,
+                order: None,
+                pinned: crate::value::Pinned(Some(std::cell::OnceCell::new())),
+            })));
         }
+        let value = self.journaled_read(|| Ok(self.read_value(&target, &f, Some(&author))?))?;
+        Ok(whole_map(f.kind, value))
+    }
+
+    /// A field read from the store, or from another app's reading, outside a journaled run.
+    fn live_field(&self, rh: i32, fh: i32) -> HResult<Value> {
         // The hottest import: a view over a list reads a field of every item. The reference,
         // the field's name and the author are read where they are held, not copied.
         let (value, read, reading) = {
