@@ -302,7 +302,7 @@ impl tilo_actions::remote::ActionProvider for AppCalls {
         let Some(state) = self.state.upgrade() else {
             return Pending::ready(Err(Self::unavailable()));
         };
-        state.action_query(caller, &query)
+        state.query_here(caller, None, &query, false)
     }
 
     fn invoke(
@@ -322,13 +322,13 @@ impl tilo_actions::remote::ActionProvider for AppCalls {
         {
             seen.mark_unchanged();
         }
-        self.state.upgrade()?.action_observe(caller, id)
+        self.state.upgrade()?.observe_here(caller, id)
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         let state = self.state.upgrade()?;
         let seen = self.seen.lock().ok()?.clone()?;
-        state.action_next_change(caller, id, seen)
+        state.next_change_here(caller, id, seen)
     }
 
     fn cancel(
@@ -339,7 +339,7 @@ impl tilo_actions::remote::ActionProvider for AppCalls {
         let Some(state) = self.state.upgrade() else {
             return Pending::ready(Err(Self::unavailable()));
         };
-        state.action_cancel(caller, id)
+        state.cancel_here(caller, id)
     }
 }
 
@@ -1735,6 +1735,19 @@ impl AppBrokerState {
         origin: Option<&super::InvocationCaller>,
         query: &CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        self.query_here(caller, origin, query, true)
+    }
+
+    /// [`Self::action_query_with_origin`]; a provider the device's registry names is asked
+    /// there only when `registered` says so. What answers an app's calls in the registry
+    /// ([`AppCalls`]) is this broker, so it never asks the registry back.
+    fn query_here(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::InvocationCaller>,
+        query: &CatalogueQuery,
+        registered: bool,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
@@ -1743,6 +1756,7 @@ impl AppBrokerState {
         }
         if let Some(page) = self
             .provided()
+            .filter(|_| registered)
             .and_then(|providers| providers.query(caller, query.clone()))
         {
             return page;
@@ -3079,6 +3093,15 @@ impl AppBrokerState {
         {
             return state;
         }
+        self.observe_here(caller, id)
+    }
+
+    /// [`Self::action_observe`] of an invocation this broker took itself, not the registry.
+    fn observe_here(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Option<InvocationState> {
         let job = self.remote_job(caller, id)?;
         let state = InvocationState::new(*id, self.invocation_status(job)?)
             .with_untrusted(self.untrusted_job(job));
@@ -3099,7 +3122,7 @@ impl AppBrokerState {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-        mut seen: tokio::sync::watch::Receiver<u64>,
+        seen: tokio::sync::watch::Receiver<u64>,
     ) -> Option<Pending<()>> {
         if let Some(change) = self
             .provided()
@@ -3107,6 +3130,16 @@ impl AppBrokerState {
         {
             return change;
         }
+        self.next_change_here(caller, id, seen)
+    }
+
+    /// [`Self::action_next_change`] of an invocation this broker took itself.
+    fn next_change_here(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+        mut seen: tokio::sync::watch::Receiver<u64>,
+    ) -> Option<Pending<()>> {
         self.remote_job(caller, id)?;
         let (changed, change) = pending();
         let wait = async move {
@@ -3194,6 +3227,15 @@ impl AppBrokerState {
         {
             return cancelled;
         }
+        self.cancel_here(caller, id)
+    }
+
+    /// [`Self::action_cancel`] of an invocation this broker took itself.
+    fn cancel_here(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Pending<Result<(), ActionCallError>> {
         let Some(job) = self.remote_job(caller, id) else {
             return Pending::ready(Err(ActionCallError::UnknownInvocation));
         };
