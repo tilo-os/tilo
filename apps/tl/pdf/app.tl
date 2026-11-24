@@ -90,6 +90,7 @@ type Picture (untitled: "Page picture") {
 
 /// One entry of the document's contents, as the engine lists it, flattened.
 type Outline (title: title) {
+    title: Text
     /// The page it leads to, counted from 1; 0 for an entry that leads nowhere.
     page: Int
     /// How deep it stands: 0 at the top.
@@ -104,11 +105,11 @@ type Field (title: name) {
     value: Text = ""
     checked: Bool = false
     export: Text = ""
-    options: List<Text> = []
+    options: List<Text>
     /// The page its widget stands on, counted from 1; 0 for one with no widget.
     page: Int = 0
     /// Its widget's area in points: x, y, width, height.
-    rect: List<Float> = []
+    rect: List<Float>
     read_only: Bool = false
     required: Bool = false
 }
@@ -148,10 +149,13 @@ type Mark (untitled: "Mark") {
     strokes: Collection<Stroke>
     /// Who left it, when the file says; empty for a mark made here, whose author is its change.
     author: Text = ""
+    /// The file's own mark this was taken over from, by the id the engine names it; empty for a
+    /// mark made here. A save finds the file's object by it, so an unchanged one is kept.
+    adopted_id: Text = ""
 }
 
 /// One stroke of a drawing: its points, x and y in turn.
-type Stroke (untitled: "Stroke") {
+type Stroke {
     points: List<Float>
 }
 
@@ -249,15 +253,21 @@ action lay_out(d: Document) (label: "Lay out the pages", did: "laid out the page
         .ok(text) => match json.decode<List<PageRow>>(text) {
             .ok(rows) => {
                 for row in rows {
-                    d.pages.insert(Page(source_page: row.page, width: row.width, height: row.height))
+                    d.pages.insert(
+                        Page(source_page: row.page, width: row.width, height: row.height),
+                    )
                 }
                 d.trouble = ""
                 read_outline(d)
                 read_fields(d)
             }
-            .err(why) => set_trouble(d, why),
+            .err(why) => {
+                d.trouble = why
+            }
         },
-        .err(why) => set_trouble(d, why),
+        .err(why) => {
+            d.trouble = why
+        }
     }
 }
 
@@ -268,8 +278,12 @@ action read_outline(d: Document) (label: "Read the contents") {
         .ok(text) => match json.decode<List<OutlineRow>>(text) {
             .ok(rows) => {
                 for row in rows {
-                    if not d.outlines.any(x -> x.title == row.title and x.page == row.page and x.level == row.level) {
-                        d.outlines.insert(Outline(title: row.title, page: row.page, level: row.level))
+                    if not d.outlines.any(
+                        x -> x.title == row.title and x.page == row.page and x.level == row.level,
+                    ) {
+                        d.outlines.insert(
+                            Outline(title: row.title, page: row.page, level: row.level),
+                        )
                     }
                 }
             }
@@ -329,10 +343,7 @@ action read_page(d: Document, p: Page) (label: "Read a page's words") {
 
 /// Draws one page as a picture at `width` pixels, kept so a person looking at it again, or
 /// another member of the workspace, does not wait for the engine.
-action show_page(d: Document, p: Page, width: Int) (
-    icon: .image,
-    label: "Draw a page",
-) {
+action show_page(d: Document, p: Page, width: Int) (icon: .image, label: "Draw a page") {
     let wanted = width.clamp(64, 2048)
     if d.pictures.any(x -> x.page == p and x.width == wanted) {
         return
@@ -346,7 +357,9 @@ action show_page(d: Document, p: Page, width: Int) (
                 d.pictures.insert(Picture(page: p, width: wanted, url: file.url))
             }
         }
-        .err(why) => set_trouble(d, why),
+        .err(why) => {
+            d.trouble = why
+        }
     }
 }
 
@@ -360,9 +373,7 @@ trigger read_pages(d: Document) every 1m: read_next(d)
 
 /// Reads the words of the next page nobody read.
 action read_next(d: Document) (label: "Read the next page's words") {
-    if let next = d.pages.find(p -> not p.read) {
-        read_page(d, next)
-    }
+    if let next = d.pages.find(p -> not p.read) { read_page(d, next) }
 }
 
 /// Draws the next page nobody drew at the reader's zoom.
@@ -377,7 +388,7 @@ action draw_next(d: Document) (label: "Draw the next page") {
 /// page needs.
 fn width_for(d: Document) -> Int {
     let zoom = if d.reading_zoom <= 0.0 { 100.0 } else { d.reading_zoom }
-    (zoom * 8.0).to_int() ?? 800
+    (zoom * 8.0).to_int()
 }
 
 /// Turns a page a quarter clockwise.
@@ -388,7 +399,7 @@ action rotate_page(d: Document, p: Page) (icon: .rotate_cw, label: "Rotate page"
 /// Puts a page after another one, or first.
 action move_page(d: Document, p: Page, after: Option<Page>) (label: "Move page", group: "Pages") {
     require after != .some(p) "A page cannot go after itself"
-    d.pages.move(p, after: after)
+    if let x = after { d.pages.move(p, after: x) } else { d.pages.move(p, to: 0) }
 }
 
 /// Copies a page right after itself. The marks stay with the page they were made on.
@@ -440,13 +451,19 @@ action import_pages(d: Document, after: Option<Page>, file: File) (
                             height: row.height,
                         ),
                     )
-                    d.pages.move(page, after: at)
+                    if let x = at {
+                        d.pages.move(page, after: x)
+                    } else { d.pages.move(page, to: 0) }
                     at = .some(page)
                 }
             }
-            .err(why) => set_trouble(d, why),
+            .err(why) => {
+                d.trouble = why
+            }
         },
-        .err(why) => set_trouble(d, why),
+        .err(why) => {
+            d.trouble = why
+        }
     }
 }
 
@@ -490,10 +507,8 @@ action new_note(d: Document, p: Page, x: Float, y: Float, colour: Text) -> Mark 
 /// Adds a note with these words at the top of a page: for the palette, a script and an agent.
 action add_note(d: Document, p: Page, words: Text) (icon: .message_square, did: "added a note") {
     let made = new_note(d, p, 64.0, 64.0, "#facc15")
-    made.words = words
-    if let about = d.comments.find(c -> c.mark == .some(made)) {
-        about.words = words
-    }
+    write_mark(d, made, words)
+    if let about = d.comments.find(c -> c.mark == .some(made)) { edit_comment(d, about, words) }
 }
 
 /// Puts a box of words on a page.
@@ -517,13 +532,19 @@ action write_mark(d: Document, m: Mark, words: Text, rects: List<Float> = []) (
 }
 
 /// Puts a note where the person moved it.
-action move_mark(d: Document, m: Mark, x: Float, y: Float) (label: "Move a note", did: "moved a note") {
+action move_mark(d: Document, m: Mark, x: Float, y: Float) (
+    label: "Move a note",
+    did: "moved a note",
+) {
     m.x = x
     m.y = y
 }
 
 /// Gives a mark another colour.
-action recolour(d: Document, m: Mark, colour: Text) (label: "Change a mark's colour", did: "recoloured a mark") {
+action recolour(d: Document, m: Mark, colour: Text) (
+    label: "Change a mark's colour",
+    did: "recoloured a mark",
+) {
     m.colour = colour
 }
 
@@ -540,7 +561,7 @@ destructive action delete_mark(d: Document, m: Mark) (icon: .trash, label: "Dele
 
 /// Says something about a page, or about one of its marks.
 action comment_on(d: Document, p: Page, m: Option<Mark>, words: Text) -> Comment (
-    icon: .message_plus,
+    icon: .circle_plus,
     label: "Comment",
     did: "commented",
 ) {
@@ -548,21 +569,28 @@ action comment_on(d: Document, p: Page, m: Option<Mark>, words: Text) -> Comment
 }
 
 /// Answers a comment.
-action reply(d: Document, c: Comment, words: Text) -> Reply (icon: .reply, label: "Reply", did: "replied") {
+action reply(d: Document, c: Comment, words: Text) -> Reply (
+    icon: .reply,
+    label: "Reply",
+    did: "replied",
+) {
     c.replies.insert(Reply(words: words))
 }
 
 /// Marks a conversation as resolved, or opens it again.
 action resolve_comment(d: Document, c: Comment, resolved: Bool) (
     icon: .check,
-    label: if resolved { "Resolve" } else { "Reopen" },
+    label: "Resolve or reopen a comment",
     did: "changed a comment's state",
 ) {
     c.resolved = resolved
 }
 
 /// Rewrites what a comment says.
-action edit_comment(d: Document, c: Comment, words: Text) (label: "Edit comment", did: "edited a comment") {
+action edit_comment(d: Document, c: Comment, words: Text) (
+    label: "Edit comment",
+    did: "edited a comment",
+) {
     c.words = words
     c.body = RichText(words)
 }
@@ -572,9 +600,7 @@ action edit_comment(d: Document, c: Comment, words: Text) (label: "Edit comment"
 destructive action delete_comment(d: Document, c: Comment) (icon: .trash, label: "Delete comment") {
     if let m = c.mark {
         let alone = d.comments.filter(other -> other.mark == .some(m) and other != c).is_empty()
-        if alone and m.kind == .note {
-            d.marks.remove(m)
-        }
+        if alone and m.kind == .note { d.marks.remove(m) }
     }
     for r in c.replies {
         c.replies.remove(r)
@@ -583,12 +609,19 @@ destructive action delete_comment(d: Document, c: Comment) (icon: .trash, label:
 }
 
 /// Deletes one answer of a conversation.
-destructive action delete_reply(d: Document, c: Comment, r: Reply) (icon: .trash, label: "Delete reply") {
+destructive action delete_reply(d: Document, c: Comment, r: Reply) (
+    icon: .trash,
+    label: "Delete reply",
+) {
     c.replies.remove(r)
 }
 
 /// The name typed signatures carry from now on.
-action sign_as(lib: Library, name: Text) (icon: .pen_line, label: "Sign as", did: "set the signing name") {
+action sign_as(lib: Library, name: Text) (
+    icon: .pen_tool,
+    label: "Sign as",
+    did: "set the signing name",
+) {
     lib.signer = name.trim()
 }
 
@@ -616,10 +649,10 @@ action place_signature(
     y: Float,
     width: Float = 218.0,
     height: Float = 74.0,
-) -> Signature (icon: .pen_line, label: "Sign", did: "signed a page") {
+) -> Signature uses time (icon: .pen_tool, label: "Sign", did: "signed a page") {
+    require can_sign(root Library) "Type the name to sign as, or draw a signature, first"
     let lib = root Library
     let name = lib.signer.trim()
-    require name != "" or not lib.strokes.is_empty() "Type the name to sign as, or draw a signature, first"
     let made = d.signatures.insert(
         Signature(
             page: p,
@@ -639,7 +672,10 @@ action place_signature(
 
 /// Signs a page with a typed name, in its lower right corner: for the palette, a script and an
 /// agent.
-action sign_with_name(d: Document, p: Page, signer: Text) (icon: .pen_line, did: "signed a page") {
+action sign_with_name(d: Document, p: Page, signer: Text) uses time (
+    icon: .pen_tool,
+    did: "signed a page",
+) {
     require signer.trim() != "" "A signature names who signed"
     d.signatures.insert(
         Signature(
@@ -655,17 +691,26 @@ action sign_with_name(d: Document, p: Page, signer: Text) (icon: .pen_line, did:
 }
 
 /// Takes a signature off the page.
-destructive action delete_signature(d: Document, s: Signature) (icon: .trash, label: "Delete signature") {
+destructive action delete_signature(d: Document, s: Signature) (
+    icon: .trash,
+    label: "Delete signature",
+) {
     d.signatures.remove(s)
 }
 
 /// Fills a form field with words.
-action fill_field(d: Document, name: Text, text: Text) (label: "Fill in a field", did: "filled in the form") {
+action fill_field(d: Document, name: Text, text: Text) (
+    label: "Fill in a field",
+    did: "filled in the form",
+) {
     d.form_text.put(name, text)
 }
 
 /// Chooses an option of a form's choice.
-action choose_field(d: Document, name: Text, choice: Text) (label: "Choose a field's option", did: "filled in the form") {
+action choose_field(d: Document, name: Text, choice: Text) (
+    label: "Choose a field's option",
+    did: "filled in the form",
+) {
     d.form_choice.put(name, choice)
 }
 
@@ -675,9 +720,7 @@ action check_field(d: Document, name: Text, on: Bool, export: Text = "") (
     did: "filled in the form",
 ) {
     d.form_checked.put(name, on)
-    if export != "" {
-        d.form_export.put(name, export)
-    }
+    if export != "" { d.form_export.put(name, export) }
 }
 
 /// Remembers where the reader left off.
@@ -693,7 +736,10 @@ action remember_reading(d: Document, p: Page, fraction: Float, zoom: Float) (
 /// Takes over the mark-up the PDF's own bytes carry: its highlights, notes with their answers,
 /// free text and ink become this document's, once per source. The file's own objects are kept,
 /// so a copy saved with them shows each mark once.
-action adopt_markup(d: Document) (label: "Take over the PDF's own mark-up", did: "took over the PDF's mark-up") {
+action adopt_markup(d: Document) (
+    label: "Take over the PDF's own mark-up",
+    did: "took over the PDF's mark-up",
+) {
     if d.imported_source == d.source and d.imported_source != "" {
         return
     }
@@ -702,50 +748,72 @@ action adopt_markup(d: Document) (label: "Take over the PDF's own mark-up", did:
             .ok(held) => {
                 let short = d.source.slice(d.source.len() - 16, d.source.len())
                 for row in held.marks {
-                    if row.hidden or not row.readable or row.reply or row.kind == "popup" or row.kind == "other" {
-                        continue
-                    }
-                    let id = "pdf-{short}-{row.page}-{row.index}"
-                    if d.adopted.get(id) != .none {
-                        continue
-                    }
-                    if let page = d.pages.at(row.page) {
-                        let made = take_mark(d, page, row, id)
-                        if made != .none {
-                            d.adopted.put(id, fingerprinted(row))
+                    if not (row.hidden
+                        or not row.readable
+                        or row.reply
+                        or row.kind == "popup"
+                        or row.kind == "other") {
+                        let id = "pdf-{short}-{row.page}-{row.index}"
+                        if d.adopted.get(id) == .none {
+                            if let page = d.pages.at(row.page) {
+                                if let made = take_mark(d, page, row, id) {
+                                    d.adopted.put(
+                                        id,
+                                        carried_of(
+                                            row.page,
+                                            row.index,
+                                            row.name,
+                                            row.kind,
+                                            print_of(made),
+                                        ),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
                 for row in held.marks {
-                    if row.hidden or not row.readable or not row.reply {
-                        continue
-                    }
-                    if let page = d.pages.at(row.page) {
-                        let short_id = "pdf-{short}-{row.page}-{row.in_reply_to ?? 0}"
-                        let about = if d.adopted.get(short_id) != .none {
-                            d.comments.find(c -> c.page == page)
-                        } else {
-                            .none
+                    if not (row.hidden or not row.readable or not row.reply) {
+                        if let page = d.pages.at(row.page) {
+                            let short_id = "pdf-{short}-{row.page}-{row.in_reply_to ?? 0}"
+                            let about = if d.adopted.get(short_id) != .none {
+                                d.comments.find(c -> c.page == page)
+                            } else { .none }
+                            let thread = about ?? comment_on(d, page, .none, "")
+                            thread.replies.insert(Reply(words: row.contents))
+                            d.adopted.put(
+                                "pdf-{short}-{row.page}-{row.index}",
+                                carried_of(row.page, row.index, row.name, row.kind, ""),
+                            )
                         }
-                        let thread = about ?? comment_on(d, page, .none, "")
-                        thread.replies.insert(Reply(words: row.contents))
-                        d.adopted.put("pdf-{short}-{row.page}-{row.index}", fingerprinted(row))
                     }
                 }
                 d.imported_source = d.source
             }
-            .err(why) => set_trouble(d, why),
+            .err(why) => {
+                d.trouble = why
+            }
         },
-        .err(why) => set_trouble(d, why),
+        .err(why) => {
+            d.trouble = why
+        }
     }
 }
 
-/// Writes one mark the file carried into the document.
-fn take_mark(d: Document, page: Page, row: MarkRow, id: Text) -> Option<Mark> {
+/// Writes one mark the file carried into the document. The mark takes the id its key names, so
+/// two readers who take the same file over make one mark, and taking it over again is the same
+/// mark.
+action take_mark(d: Document, page: Page, row: MarkRow, id: Text) -> Option<Mark> {
     if row.kind == "ink" {
         let made = d.marks.insert(
-            Mark(page: page, kind: .ink, colour: row.color ?? "#1c212f", author: row.author),
-            id: id,
+            Mark(
+                page: page,
+                kind: .ink,
+                colour: row.color ?? "#1c212f",
+                author: row.author,
+                adopted_id: id,
+            ),
+            key: id,
         )
         for stroke in row.strokes {
             made.strokes.insert(Stroke(points: stroke))
@@ -762,8 +830,9 @@ fn take_mark(d: Document, page: Page, row: MarkRow, id: Text) -> Option<Mark> {
                 y: (row.rect.at(1) ?? 0.0) + (row.rect.at(3) ?? 0.0),
                 words: row.contents,
                 author: row.author,
+                adopted_id: id,
             ),
-            id: id,
+            key: id,
         )
         if row.contents.trim() != "" {
             d.comments.insert(Comment(mark: .some(made), page: page, words: row.contents))
@@ -781,8 +850,9 @@ fn take_mark(d: Document, page: Page, row: MarkRow, id: Text) -> Option<Mark> {
                     words: row.contents,
                     size: row.size ?? 14.0,
                     author: row.author,
+                    adopted_id: id,
                 ),
-                id: id,
+                key: id,
             ),
         )
     }
@@ -796,21 +866,29 @@ fn take_mark(d: Document, page: Page, row: MarkRow, id: Text) -> Option<Mark> {
                 colour: row.color ?? "#facc15",
                 rects: lines.flat_map(r -> r),
                 author: row.author,
+                adopted_id: id,
             ),
-            id: id,
+            key: id,
         ),
     )
 }
 
-/// What a mark of the file looked like when it was taken over: where it stood, how it was named,
-/// what it was, and what it said.
-fn fingerprinted(row: MarkRow) -> Text {
-    "{row.page}@{row.index}@{row.name}@{row.kind}@{row.contents}|{row.rect}|{row.quads}|{row.strokes}"
+/// What a mark looks like now, in the same shape a save compares with the fingerprint it had.
+/// Its lists are written as JSON, so a word or a point that looks like the separator cannot make
+/// two different marks read the same.
+fn print_of(m: Mark) -> Text {
+    "{m.words}|{json.encode(m.rects)}|{json.encode(m.strokes.map(s -> s.points))}"
 }
 
-/// What a mark looks like now, in the same shape a save compares with the fingerprint it had.
-fn print_of(m: Mark) -> Text {
-    "{m.words}|{m.rects}|{m.strokes.map(s -> s.points)}"
+/// What was taken over from one of the file's own objects: the page and place it stood at, the
+/// name and kind the file gave it, and what the mark looked like then.
+fn carried_of(page: Int, index: Int, name: Text, kind: Text, print: Text) -> Text {
+    json.encode(["{page}", "{index}", name, kind, print])
+}
+
+/// Whether a signature can be placed: a name typed to sign as, or one drawn to reuse.
+fn can_sign(lib: Library) -> Bool {
+    lib.signer.trim() != "" or lib.strokes.len() > 0
 }
 
 /// The PDF's own bytes, as the file the engine reads.
@@ -821,11 +899,6 @@ fn source_of(d: Document) -> File {
 /// The bytes a page comes from.
 fn file_of(d: Document, p: Page) -> File {
     if p.imported == "" { source_of(d) } else { File.at("page.{p.kind}", p.imported) }
-}
-
-/// Why the document cannot be read, kept where the reader shows it.
-fn set_trouble(d: Document, why: Text) {
-    d.trouble = why
 }
 
 /// The words a page's glyphs make, a space between the lines: what the workspace's search reads.
@@ -858,29 +931,48 @@ action save_copy(d: Document) -> File (
     }
     let pages: List<PageOut> = []
     for p in d.pages {
-        let source = if p.imported == "" { 0 } else { files.index_of(imported_of(files, p)) }
+        let source = if p.imported == "" {
+            0
+        } else {
+            files.index_of(imported_of(files, p)) ?? 0
+        }
         let first = d.pages.find(q -> q.source_page == p.source_page and q.imported == p.imported)
         pages = [
             pages,
-            [PageOut(source: source, page: p.source_page - 1, rotation: p.rotation, primary: first == .some(p))],
+            [
+                PageOut(
+                    source: source,
+                    page: p.source_page - 1,
+                    rotation: p.rotation,
+                    primary: first == .some(p),
+                ),
+            ],
         ]
             .flat_map(x -> x)
     }
     let marks: List<MarkOut> = []
     let replies: List<ReplyOut> = []
     for m in d.marks {
-        let at = d.pages.index_of(m.page) ?? -1
-        if at < 0 {
-            continue
-        }
-        marks = [marks, [mark_out(d, m, at)]].flat_map(x -> x)
-        for c in d.comments.filter(c -> c.mark == .some(m)) {
-            for r in c.replies {
-                replies = [
-                    replies,
-                    [ReplyOut(page: at, x: m.x, y: m.y, author: "", body: r.words, name: r.id, answers: m.id)],
-                ]
-                    .flat_map(x -> x)
+        if let at = d.pages.index_of(m.page) {
+            marks = [marks, [mark_out(d, m, at)]].flat_map(x -> x)
+            for c in d.comments.filter(c -> c.mark == .some(m)) {
+                for r in c.replies {
+                    replies = [
+                        replies,
+                        [
+                            ReplyOut(
+                                page: at,
+                                x: m.x,
+                                y: m.y,
+                                author: "",
+                                body: r.words,
+                                name: r.id,
+                                answers: m.id,
+                            ),
+                        ],
+                    ]
+                        .flat_map(x -> x)
+                }
             }
         }
     }
@@ -966,7 +1058,14 @@ fn quads_from(rects: List<Float>, at: Int) -> List<List<Float>> {
         return []
     }
     [
-        [rects.at(at) ?? 0.0, rects.at(at + 1) ?? 0.0, rects.at(at + 2) ?? 0.0, rects.at(at + 3) ?? 0.0],
+        [
+            [
+                rects.at(at) ?? 0.0,
+                rects.at(at + 1) ?? 0.0,
+                rects.at(at + 2) ?? 0.0,
+                rects.at(at + 3) ?? 0.0,
+            ],
+        ],
         quads_from(rects, at + 4),
     ]
         .flat_map(x -> x)
@@ -980,12 +1079,14 @@ fn box_of(rects: List<Float>) -> List<Float> {
 /// What a mark is named in the file: the file's own `/NM` for a mark it carried, else the mark's
 /// id, so a re-export names it the same way.
 fn name_of(d: Document, m: Mark) -> Text {
-    if let carried = d.adopted.get(m.id) {
-        let fields = carried.split("@")
-        if let named = fields.at(2) {
-            if named != "" {
-                return named
-            }
+    let carried = d.adopted.get(m.adopted_id) ?? ""
+    let fields: List<Text> = match json.decode<List<Text>>(carried) {
+        .ok(parsed) => parsed,
+        .err(_) => [],
+    }
+    if let named = fields.at(2) {
+        if named != "" {
+            return named
         }
     }
     m.id
@@ -993,21 +1094,19 @@ fn name_of(d: Document, m: Mark) -> Text {
 
 /// What was said about a note, as the file writes a sticky note's words.
 fn note_words(d: Document, m: Mark) -> Text {
-    if let c = d.comments.find(c -> c.mark == .some(m)) {
-        c.words
-    } else {
-        m.words
-    }
+    if let c = d.comments.find(c -> c.mark == .some(m)) { c.words } else { m.words }
 }
 
 /// The form's values as a save names them.
 fn values_of(d: Document) -> List<ValueOut> {
     let made: List<ValueOut> = []
     for name in d.form_text.keys() {
-        made = [made, [ValueOut(name: name, kind: "text", text: d.form_text.get(name) ?? "")]].flat_map(x -> x)
+        made = [made, [ValueOut(name: name, kind: "text", text: d.form_text.get(name) ?? "")]]
+            .flat_map(x -> x)
     }
     for name in d.form_choice.keys() {
-        made = [made, [ValueOut(name: name, kind: "choice", text: d.form_choice.get(name) ?? "")]].flat_map(x -> x)
+        made = [made, [ValueOut(name: name, kind: "choice", text: d.form_choice.get(name) ?? "")]]
+            .flat_map(x -> x)
     }
     for name in d.form_checked.keys() {
         made = [
@@ -1032,9 +1131,12 @@ fn adopted_of(d: Document) -> List<AdoptedOut> {
     let made: List<AdoptedOut> = []
     for id in d.adopted.keys() {
         let carried = d.adopted.get(id) ?? ""
-        let fields = carried.split("@")
+        let fields: List<Text> = match json.decode<List<Text>>(carried) {
+            .ok(parsed) => parsed,
+            .err(_) => [],
+        }
         let kept = fields.at(4) ?? ""
-        let now = if let m = d.marks.find(x -> x.id == id) { print_of(m) } else { "" }
+        let now = if let m = d.marks.find(x -> x.adopted_id == id) { print_of(m) } else { "" }
         made = [
             made,
             [
@@ -1141,8 +1243,8 @@ type MarkOut {
     contents: Text
     name: Text
     created_ms: Int
-    rects: List<List<Float>> = []
-    strokes: List<List<Float>> = []
+    rects: List<List<Float>>
+    strokes: List<List<Float>>
     rect: Option<List<Float>> = .none
     size: Option<Float> = .none
 }

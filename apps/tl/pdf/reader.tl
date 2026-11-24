@@ -1,6 +1,5 @@
-//! The reader's views: the workspace's PDFs, the pages of one, and the panels beside them.
-
 /// The workspace's PDFs: what can be opened, and how one opens.
+// ! The reader's views: the workspace's PDFs, the pages of one, and the panels beside them.
 view library(lib: Library) {
     std.page(lib, header: { library_head(lib) }) {
         if lib.documents.is_empty() {
@@ -25,6 +24,16 @@ view library(lib: Library) {
     }
 }
 
+/// One PDF in a list: what it is called, how many pages it has and why it cannot be read.
+view document_row(d: Document) {
+    ui.ListRow(
+        title: d.source_name,
+        secondary: if d.trouble == "" { pages_said(d) } else { d.trouble },
+        mark: if d.trouble == "" { .file } else { .triangle_alert },
+        tone: if d.trouble == "" { .neutral } else { .warning },
+    )
+}
+
 /// The library's own controls: opening a PDF, from this device or from the workspace.
 view library_head(lib: Library) {
     row(gap: .related, align: .center) {
@@ -32,16 +41,6 @@ view library_head(lib: Library) {
             on press: file.choose(open_pdf(lib), accept: ["application/pdf"])
         }
     }
-}
-
-/// One PDF in a list: what it is called, how many pages it has and why it cannot be read.
-row view document_row(d: Document) {
-    ui.ListRow(
-        title: d.source_name,
-        secondary: if d.trouble == "" { pages_said(d) } else { d.trouble },
-        mark: if d.trouble == "" { .file } else { .triangle_alert },
-        tone: if d.trouble == "" { .neutral } else { .warning },
-    )
 }
 
 /// How many pages a document has, in words.
@@ -68,9 +67,21 @@ view reader(d: Document) {
     state to: Option<List<Float>> = .none
     state finding: Bool = false
     state query: Text = ""
-    std.page(d, canvas: true, fill: true, header: { reader_head(d, page_at, zoom, rail, review, tool, colour) }) {
+    std.page(
+        d,
+        canvas: true,
+        fill: true,
+        header: {
+            reader_head(d, page_at, zoom, rail, review, tool, colour)
+        },
+    ) {
         if d.trouble != "" {
-            ui.EmptyState("This PDF cannot be opened", message: d.trouble, icon: .triangle_alert, error: true)
+            ui.EmptyState(
+                "This PDF cannot be opened",
+                message: d.trouble,
+                icon: .triangle_alert,
+                error: true,
+            )
         } else if d.pages.is_empty() {
             ui.EmptyState("Laying out the pages", icon: .file)
         } else {
@@ -106,11 +117,7 @@ view reader(d: Document) {
 
 /// The page the window opens on: the one the reader left off at.
 fn at_page(d: Document) -> Int {
-    if let p = d.reading_page {
-        d.pages.index_of(p) ?? 0
-    } else {
-        0
-    }
+    if let p = d.reading_page { d.pages.index_of(p) ?? 0 } else { 0 }
 }
 
 /// The reader's own controls: turning pages, the zoom, the tool and its colour, the rail and the
@@ -126,10 +133,12 @@ view reader_head(
 ) {
     ui.Toolbar {
         ui.ToolbarButton("Previous", icon: .chevron_left) {
-            on press: turn(d, page_at, zoom, -1)
+            on press: turn_to(d, stepped(d, page_at, -1), zoom)
+                .then(set(page_at, stepped(d, page_at, -1)))
         }
         ui.ToolbarButton("Next", icon: .chevron_right) {
-            on press: turn(d, page_at, zoom, 1)
+            on press: turn_to(d, stepped(d, page_at, 1), zoom)
+                .then(set(page_at, stepped(d, page_at, 1)))
         }
         ui.ToolbarSeparator()
         ui.ToolbarButton("Zoom out", icon: .zoom_out) {
@@ -142,7 +151,19 @@ view reader_head(
             on press: set(zoom, 100.0)
         }
         ui.ToolbarSeparator()
-        ui.MenuButton("Tools", icon: tool_icon(tool), icon_only: true) {
+        ui.MenuButton(
+            "Tools",
+            icon: if tool == "ink" {
+                .pencil
+            } else if tool == "note" {
+                .message_square
+            } else if tool == "text" {
+                .text_cursor
+            } else if tool == "sign" {
+                .square_pen
+            } else if tool == "select" { .mouse_pointer_2 } else { .highlighter },
+            icon_only: true,
+        ) {
             ui.MenuItem("Select", icon: .mouse_pointer_2) {
                 on choose: set(tool, "select")
             }
@@ -182,29 +203,17 @@ view reader_head(
         ui.ToolbarButton("Rail", icon: .panel_left, toggled: rail) {
             on press: set(rail, not rail)
         }
-        ui.ToolbarButton("Review", icon: .message_circle, toggled: review, dot: open_comments(d) > 0) {
+        ui.ToolbarButton(
+            "Review",
+            icon: .message_circle,
+            toggled: review,
+            dot: open_comments(d) > 0,
+        ) {
             on press: set(review, not review)
         }
         ui.ToolbarButton("Save a copy", icon: .download) {
             on press: file.save(save_copy(d), name: "Document (annotated).pdf")
         }
-    }
-}
-
-/// The icon a tool stands for.
-fn tool_icon(tool: Text) -> Icon {
-    if tool == "ink" {
-        .pencil
-    } else if tool == "note" {
-        .message_square
-    } else if tool == "text" {
-        .text_cursor
-    } else if tool == "sign" {
-        .square_pen
-    } else if tool == "select" {
-        .mouse_pointer_2
-    } else {
-        .highlighter
     }
 }
 
@@ -230,9 +239,9 @@ fn open_comments(d: Document) -> Int {
     d.comments.filter(c -> not c.resolved).count()
 }
 
-/// Turns to the page `step` places on, and remembers it.
-fn turn(d: Document, page_at: State<Int>, zoom: State<Float>, step: Int) {
-    turned_to(d, page_at, zoom, (page_at + step).clamp(0, d.pages.len() - 1))
+/// The page `step` places from `at`, kept inside the document.
+fn stepped(d: Document, at: Int, step: Int) -> Int {
+    (at + step).clamp(0, d.pages.len() - 1)
 }
 
 /// The rail of page thumbnails beside the pages: choosing one turns to it, dragging reorders,
@@ -246,7 +255,7 @@ view rail_view(d: Document, page_at: State<Int>, zoom: State<Float>, note: State
         header: "Pages",
         add: "Import…",
     ) {
-        on select(index: Int): turned_to(d, page_at, zoom, index)
+        on select(index: Int): turn_to(d, index, zoom).then(set(page_at, index))
         on reorder(index: Int, at: Int): reorder(d, index, at)
         on add_page: file.choose(import_after(d, at), accept: ["application/pdf", "image/*"])
     }
@@ -255,19 +264,12 @@ view rail_view(d: Document, page_at: State<Int>, zoom: State<Float>, note: State
 /// The row the page column shows for the page at `at`: what the list scrolls to when the person
 /// turns a page.
 fn at_page_row(d: Document, at: Int) -> Option<Text> {
-    if let p = d.pages.at(at) {
-        .some(p.id)
-    } else {
-        .none
-    }
+    if let p = d.pages.at(at) { .some(p.id) } else { .none }
 }
 
-/// Turns to the page at `at` and remembers it.
-fn turned_to(d: Document, page_at: State<Int>, zoom: State<Float>, at: Int) {
-    set(page_at, at)
-    if let p = d.pages.at(at) {
-        remember_reading(d, p, 0.0, zoom)
-    }
+/// Remembers that the reader turned to the page at `at`.
+action turn_to(d: Document, at: Int, zoom: Float) (label: "Turn to a page") {
+    if let p = d.pages.at(at) { remember_reading(d, p, 0.0, zoom) }
 }
 
 /// Puts the page at `index` where the rail dropped it: after the page at `at`.
@@ -275,11 +277,7 @@ action reorder(d: Document, index: Int, at: Int) (label: "Move a page", did: "mo
     let moved = d.pages.at(index)
     let over = d.pages.at(at)
     if let p = moved {
-        if let q = over {
-            if p != q {
-                d.pages.move(p, after: .some(q))
-            }
-        }
+        if let q = over { if p != q { d.pages.move(p, after: q) } }
     }
 }
 
@@ -302,13 +300,19 @@ view page_sheet(
 ) {
     let picture = d.pictures.find(x -> x.page == p)
     let shown = if let held = picture { held.url } else { "" }
-    let width = (p.width * zoom) * 1dp
+    let width = p.width * zoom * 1dp
     stack(gap: .related) {
         layers(fill) {
             if shown == "" {
-                ui.Skeleton(.media, aspect: p.width / p.height)
+                ui.Skeleton(.media, aspect: .portrait)
             } else {
-                ui.Image(shown, alt: "Page {p.source_page}", aspect: p.width / p.height, fit: .contain, max: width)
+                ui.Image(
+                    shown,
+                    alt: "Page {p.source_page}",
+                    aspect: p.width / p.height,
+                    fit: .contain,
+                    max: width,
+                )
             }
             ui.Drawing(
                 mark_shapes(d, p, from, to),
@@ -317,9 +321,15 @@ view page_sheet(
                 max: width,
                 aspect: p.width / p.height,
             ) {
-                on press_at(at: List<Float>): pressed(d, p, at, tool, colour, from, to, note)
-                on drag_at(at: List<Float>): set(to, .some(at))
-                on release_at(at: List<Float>): released(d, p, tool, colour, from, to, note)
+                on press_at(at: List<Float>): press(d, p, at, tool, colour)
+                    .then(set(note, pressed_note(tool)))
+                    .then(set(from, if tool == "select" { .some(at) } else { .none }))
+                    .then(set(to, if tool == "select" { .some(at) } else { .none }))
+                on drag(at: List<Float>): set(to, .some(at))
+                on release_at: release(d, p, tool, colour, from, to)
+                    .then(set(note, released_note(tool, from, to)))
+                    .then(set(from, .none))
+                    .then(set(to, .none))
             }
         }
         row(gap: .related, align: .center) {
@@ -337,63 +347,67 @@ view page_sheet(
     }
 }
 
-/// What pressing on a page does, by the tool the window holds: start a selection with a marking
-/// tool, or place what the tool puts there.
-fn pressed(
-    d: Document,
-    p: Page,
-    at: List<Float>,
-    tool: Text,
-    colour: Text,
-    from: State<Option<List<Float>>>,
-    to: State<Option<List<Float>>>,
-    note: State<Text>,
-) {
-    let x = at.at(0) ?? 0.0
-    let y = at.at(1) ?? 0.0
+/// What pressing on a page does, by the tool the window holds: places a note, a text box or a
+/// signature where the person pressed. A marking tool starts a selection instead, which the
+/// window keeps.
+action press(d: Document, p: Page, at: List<Float>, tool: Text, colour: Text) (label: "Press a page") {
+    let x = (at.at(0) ?? 0.0) * p.width
+    let y = (at.at(1) ?? 0.0) * p.height
     if tool == "note" {
-        new_note(d, p, x * p.width, y * p.height, colour)
-        set(note, "Added a note")
+        new_note(d, p, x, y, colour)
     } else if tool == "text" {
-        new_text_box(d, p, x * p.width, y * p.height, 200.0, 32.0)
-        set(note, "Added a text box")
+        new_text_box(d, p, x, y, 200.0, 32.0)
     } else if tool == "sign" {
-        place_signature(d, p, x * p.width, y * p.height)
-        set(note, "Signed the page")
-    } else if tool == "ink" {
-        set(note, "Drawing")
-    } else {
-        set(from, .some(at))
-        set(to, .some(at))
+        place_signature(d, p, x, y)
     }
 }
 
-/// What letting go does: a marking tool marks the box the person dragged over, and ink keeps
-/// the stroke it drew.
-fn released(
+/// What letting go does: a marking tool marks the box dragged over, and ink keeps the stroke.
+action release(
     d: Document,
     p: Page,
     tool: Text,
     colour: Text,
-    from: State<Option<List<Float>>>,
-    to: State<Option<List<Float>>>,
-    note: State<Text>,
-) {
+    start: Option<List<Float>>,
+    end: Option<List<Float>>,
+) (label: "Release a page") {
     if tool == "ink" {
-        if let end = to {
-            draw_ink(d, p, colour, [[end.at(0) ?? 0.0, end.at(1) ?? 0.0]])
-            set(note, "Drew on the page")
+        if let e = end {
+            draw_ink(d, p, colour, [[e.at(0) ?? 0.0, e.at(1) ?? 0.0]])
         }
     } else if tool != "select" and tool != "note" and tool != "text" and tool != "sign" {
-        if let start = from {
-            if let end = to {
-                mark_text(d, p, tool, colour, box_between(p, start, end))
-                set(note, "Marked the page")
+        if let s = start {
+            if let e = end {
+                mark_text(d, p, tool, colour, box_between(p, s, e))
             }
         }
     }
-    set(from, .none)
-    set(to, .none)
+}
+
+/// What pressing says, by the tool.
+fn pressed_note(tool: Text) -> Text {
+    if tool == "note" {
+        "Added a note"
+    } else if tool == "text" {
+        "Added a text box"
+    } else if tool == "sign" {
+        "Signed the page"
+    } else if tool == "ink" {
+        "Drawing"
+    } else {
+        ""
+    }
+}
+
+/// What letting go says, when it marked something.
+fn released_note(tool: Text, start: Option<List<Float>>, end: Option<List<Float>>) -> Text {
+    if tool == "ink" {
+        if end != .none { "Drew on the page" } else { "" }
+    } else if tool != "select" and tool != "note" and tool != "text" and tool != "sign" {
+        if start != .none and end != .none { "Marked the page" } else { "" }
+    } else {
+        ""
+    }
 }
 
 /// The box two points of a page's box make, in the page's points.
@@ -406,29 +420,39 @@ fn box_between(p: Page, start: List<Float>, end: List<Float>) -> List<Float> {
 }
 
 /// The shapes drawn over a page: its marks, the signatures on it, and the selection being made.
-fn mark_shapes(d: Document, p: Page, from: State<Option<List<Float>>>, to: State<Option<List<Float>>>) -> List<ui.Shape> {
-    let lines = d.marks.filter(m -> m.page == p and m.kind == .markup).flat_map(m -> markup_lines(m, p))
+fn mark_shapes(
+    d: Document,
+    p: Page,
+    from: Option<List<Float>>,
+    to: Option<List<Float>>,
+) -> List<ui.Shape> {
+    let lines = d.marks
+        .filter(m -> m.page == p and m.kind == .markup)
+        .flat_map(m -> markup_lines(m, p))
     let ink = d.marks.filter(m -> m.page == p and m.kind == .ink).flat_map(m -> ink_strokes(m))
-    let boxes = d.marks.filter(m -> m.page == p and (m.kind == .text or m.kind == .note)).flat_map(m -> box_shapes(m, p))
+    let boxes = d.marks
+        .filter(m -> m.page == p and (m.kind == .text or m.kind == .note))
+        .flat_map(m -> box_shapes(m, p))
     let signatures = d.signatures.filter(s -> s.page == p).flat_map(s -> signature_shapes(s, p))
     let picked = if let start = from {
         if let end = to { [selection_shape(p, start, end)] } else { [] }
-    } else {
-        []
-    }
+    } else { [] }
     [lines, ink, boxes, signatures, picked].flat_map(x -> x)
 }
 
 /// A text mark's lines over its page.
 fn markup_lines(m: Mark, p: Page) -> List<ui.Shape> {
-    rect_rows(m.rects, p).map(r -> ui.Shape.area(
-        x: r.at(0) ?? 0.0,
-        y: r.at(1) ?? 0.0,
-        w: r.at(2) ?? 0.0,
-        h: r.at(3) ?? 0.0,
-        round: 0.02,
-        colour: m.colour,
-    ))
+    rect_rows(m.rects, p)
+        .map(
+            r -> ui.Shape.area(
+                x: r.at(0) ?? 0.0,
+                y: r.at(1) ?? 0.0,
+                w: r.at(2) ?? 0.0,
+                h: r.at(3) ?? 0.0,
+                round: 0.02,
+                colour: m.colour,
+            ),
+        )
 }
 
 /// A mark's rectangles as fractions of its page's box.
@@ -447,7 +471,7 @@ fn rect_rows_from(rects: List<Float>, p: Page, at: Int) -> List<List<Float>> {
         (rects.at(at + 2) ?? 0.0) / p.width,
         (rects.at(at + 3) ?? 0.0) / p.height,
     ]
-    [row, rect_rows_from(rects, p, at + 4)].flat_map(x -> x)
+    [[row], rect_rows_from(rects, p, at + 4)].flat_map(x -> x)
 }
 
 /// An ink mark's strokes.
@@ -462,27 +486,38 @@ fn box_shapes(m: Mark, p: Page) -> List<ui.Shape> {
         let y = if p.height > 0.0 { m.y / p.height } else { 0.0 }
         [
             ui.Shape.area(x: x, y: y, w: 0.03, h: 0.03, round: 0.5, colour: m.colour),
-            ui.Shape.label(x: x + 0.02, y: y + 0.01, text: m.words, colour: "#1c212f", size: 0.02, anchor: .start),
+            ui.Shape.label(
+                x: x + 0.02,
+                y: y + 0.01,
+                text: m.words,
+                colour: "#1c212f",
+                size: 0.02,
+                anchor: .start,
+            ),
         ]
     } else {
         let box = rect_rows(m.rects, p)
         [
-            box.map(r -> ui.Shape.area(
-                x: r.at(0) ?? 0.0,
-                y: r.at(1) ?? 0.0,
-                w: r.at(2) ?? 0.0,
-                h: r.at(3) ?? 0.0,
-                round: 0.01,
-                colour: "#ffffff00",
-            )),
-            [ui.Shape.label(
-                x: (box.at(0)?.at(0) ?? 0.0) + 0.005,
-                y: (box.at(0)?.at(1) ?? 0.0) + 0.01,
-                text: m.words,
-                colour: m.colour,
-                size: 0.02,
-                anchor: .start,
-            )],
+            box.map(
+                r -> ui.Shape.area(
+                    x: r.at(0) ?? 0.0,
+                    y: r.at(1) ?? 0.0,
+                    w: r.at(2) ?? 0.0,
+                    h: r.at(3) ?? 0.0,
+                    round: 0.01,
+                    colour: "#ffffff00",
+                ),
+            ),
+            [
+                ui.Shape.label(
+                    x: (box.at(0)?.at(0) ?? 0.0) + 0.005,
+                    y: (box.at(0)?.at(1) ?? 0.0) + 0.01,
+                    text: m.words,
+                    colour: m.colour,
+                    size: 0.02,
+                    anchor: .start,
+                ),
+            ],
         ]
             .flat_map(x -> x)
     }
@@ -494,16 +529,25 @@ fn signature_shapes(s: Signature, p: Page) -> List<ui.Shape> {
     let y = if p.height > 0.0 { s.y / p.height } else { 0.0 }
     let w = if p.width > 0.0 { s.width / p.width } else { 0.0 }
     let h = if p.height > 0.0 { s.height / p.height } else { 0.0 }
-    let drawn = s.strokes.map(stroke -> ui.Shape.stroke(
-        points: stroke_in(stroke.points, x, y, w, h),
-        colour: "#1c212f",
-        width: 0.003,
-    ))
+    let drawn = s.strokes.map(
+        stroke -> ui.Shape.stroke(
+            points: stroke_in(stroke.points, x, y, w, h),
+            colour: "#1c212f",
+            width: 0.003,
+        ),
+    )
     if drawn.is_empty() {
-        [ui.Shape.label(x: x + w / 2.0, y: y + h / 2.0, text: s.signer, colour: "#1c212f", size: 0.05, anchor: .middle)]
-    } else {
-        drawn
-    }
+        [
+            ui.Shape.label(
+                x: x + w / 2.0,
+                y: y + h / 2.0,
+                text: s.signer,
+                colour: "#1c212f",
+                size: 0.05,
+                anchor: .middle,
+            ),
+        ]
+    } else { drawn }
 }
 
 /// A stroke of a signature's own box, placed on its page's box.
@@ -512,7 +556,14 @@ fn stroke_in(points: List<Float>, x: Float, y: Float, w: Float, h: Float) -> Lis
 }
 
 /// The points of `points` from the pair `at` on, placed on the page's box.
-fn stroke_in_from(points: List<Float>, x: Float, y: Float, w: Float, h: Float, at: Int) -> List<Float> {
+fn stroke_in_from(
+    points: List<Float>,
+    x: Float,
+    y: Float,
+    w: Float,
+    h: Float,
+    at: Int,
+) -> List<Float> {
     if at + 1 >= points.len() {
         return []
     }
@@ -533,7 +584,12 @@ fn selection_shape(p: Page, start: List<Float>, end: List<Float>) -> ui.Shape {
 /// One form field over its page: its words as a field, its box as a switch, its choice as a menu.
 view field_row(d: Document, f: Field) {
     if f.kind == "checkbox" or f.kind == "radio" {
-        ui.Button(f.name, icon: if d.form_checked.get(f.name) ?? false { .check } else { .square }, role: .plain, toggled: d.form_checked.get(f.name) ?? false) {
+        ui.Button(
+            f.name,
+            icon: if d.form_checked.get(f.name) ?? false { .check } else { .square },
+            role: .plain,
+            toggled: d.form_checked.get(f.name) ?? false,
+        ) {
             on press: check_field(d, f.name, not (d.form_checked.get(f.name) ?? false), f.export)
         }
     } else if f.kind == "choice" {
@@ -561,21 +617,28 @@ view field_row(d: Document, f: Field) {
 /// The review panel: what people said, the document's contents and the signing.
 view review_panel(d: Document, tab: State<Int>) {
     ui.Docked {
-        ui.ViewTabs(selected: tab, label: "Review") {
-            ui.Segment("Comments")
-            ui.Segment("Contents")
-            ui.Segment("Signing")
-            on change(i): set(tab, i)
-        }
-        ui.Scroll {
-            if tab == 0 {
-                comments_panel(d)
-            } else if tab == 1 {
-                contents_panel(d, tab)
-            } else {
-                signing_panel(d)
+        stack(gap: .none) {
+            ui.ViewTabs(selected: tab, label: "Review") {
+                ui.Segment("Comments")
+                ui.Segment("Contents")
+                ui.Segment("Signing")
+                on change(i): set(tab, i)
+            }
+            ui.Scroll {
+                review_body(d, tab)
             }
         }
+    }
+}
+
+/// What the review panel shows, by the tab the window holds.
+view review_body(d: Document, tab: State<Int>) {
+    if tab == 0 {
+        comments_panel(d)
+    } else if tab == 1 {
+        contents_panel(d, tab)
+    } else {
+        signing_panel(d)
     }
 }
 
@@ -595,10 +658,8 @@ view comments_panel(d: Document) {
 }
 
 /// Says something about the page the window shows.
-action speak(d: Document, words: Text) -> Comment (label: "Comment") {
-    if let page = d.pages.first() {
-        comment_on(d, page, .none, words)
-    }
+action speak(d: Document, words: Text) -> Option<Comment> (label: "Comment") {
+    if let page = d.pages.first() { .some(comment_on(d, page, .none, words)) } else { .none }
 }
 
 /// One conversation about the document, or about a mark on it.
@@ -635,11 +696,7 @@ view contents_panel(d: Document, tab: State<Int>) {
     } else {
         stack(gap: .tight) {
             for entry in d.outlines {
-                ui.ListRow(
-                    title: entry.title,
-                    note: "Page {entry.page}",
-                    dense: true,
-                ) {
+                ui.ListRow(title: entry.title, note: "Page {entry.page}", dense: true) {
                     on activate: set(tab, 0)
                 }
             }
@@ -651,7 +708,6 @@ view contents_panel(d: Document, tab: State<Int>) {
 /// is placed.
 view signing_panel(d: Document) {
     let lib = root Library
-    state typed: Text = lib.signer
     state strokes: List<List<Float>> = []
     state drawing: List<Float> = []
     stack(gap: .section) {
@@ -661,13 +717,18 @@ view signing_panel(d: Document) {
         ui.Section("Draw a signature") {
             ui.Drawing(
                 [
-                    ui.Shape.area(x: 0.0, y: 0.0, w: 1.0, h: 1.0, round: 0.04, colour: "#ffffff"),
+                    [
+                        ui.Shape.area(
+                            x: 0.0,
+                            y: 0.0,
+                            w: 1.0,
+                            h: 1.0,
+                            round: 0.04,
+                            colour: "#ffffff",
+                        ),
+                    ],
                     strokes.map(s -> ui.Shape.stroke(points: s, colour: "#1c212f", width: 0.01)),
-                    if drawing.is_empty() {
-                        []
-                    } else {
-                        [ui.Shape.stroke(points: drawing, colour: "#1c212f", width: 0.01)]
-                    },
+                    [ui.Shape.stroke(points: drawing, colour: "#1c212f", width: 0.01)],
                 ]
                     .flat_map(x -> x),
                 meaning: .decoration,
@@ -675,8 +736,9 @@ view signing_panel(d: Document) {
                 height: 120.0,
             ) {
                 on press_at(at: List<Float>): set(drawing, at)
-                on drag_at(at: List<Float>): set(drawing, [drawing, at].flat_map(x -> x))
-                on release_at(at: List<Float>): drew(strokes, drawing)
+                on drag(at: List<Float>): set(drawing, [drawing, at].flat_map(x -> x))
+                on release_at: set(strokes, [strokes, [drawing]].flat_map(x -> x))
+                    .then(set(drawing, []))
             }
             row(gap: .related) {
                 ui.Button("Keep this signature", icon: .check) {
@@ -688,15 +750,13 @@ view signing_panel(d: Document) {
             }
         }
         ui.Section("Place it") {
-            ui.Text("Choose Sign, then press the page where the signature goes.", role: .caption, secondary: true)
+            ui.Text(
+                "Choose Sign, then press the page where the signature goes.",
+                role: .caption,
+                secondary: true,
+            )
         }
     }
-}
-
-/// Adds the stroke being drawn to the signature's own, at the place the person let go.
-fn drew(strokes: State<List<List<Float>>>, drawing: State<List<Float>>) {
-    set(strokes, [strokes, [drawing]].flat_map(x -> x))
-    set(drawing, [])
 }
 
 /// The find bar: what to look for, and how often it stands in the document.
