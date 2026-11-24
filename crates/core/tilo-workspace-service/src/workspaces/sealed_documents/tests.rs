@@ -324,6 +324,11 @@ pub(super) struct Session {
     /// Every frame the link brings this device, missing none of the workspace's frames.
     pub(super) heard: tilo_peer_state::direct::Reader,
     pairing: tokio::task::JoinHandle<Result<(), tilo_server_protocol::refusal::Refusal>>,
+    /// What the link runs over, held for as long as the session: the device's endpoint
+    /// aborts its connections once its last handle is gone, and the relay it took as home
+    /// closes once dropped.
+    _dialer: tilo_server_client::link::Dialer,
+    _home: tilo_test_relay::Relay,
 }
 
 impl Session {
@@ -419,6 +424,8 @@ pub(super) async fn member_session(
         link,
         heard,
         pairing,
+        _dialer: dialer,
+        _home: home,
     }
 }
 
