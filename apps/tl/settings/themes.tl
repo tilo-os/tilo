@@ -285,6 +285,23 @@ template view theme_editor(t: settings.ThemeRecord) {
                 shows_value: true,
             )
         }
+        setting(
+            "Distinguish similar letters",
+            "Set I, l, 1, 0 and O apart in this theme's text; empty follows its typeface",
+        ) {
+            ui.Toggle(bind: t.distinct_letters)
+        }
+    }
+    ui.Section("Status colours") {
+        ui.Text(
+            "What a thing that failed, warns, went well or informs is drawn in. Each is the status's hue, this theme's lightness and how much colour it carries.",
+            role: .caption,
+            secondary: true,
+        )
+        status_tone("Something failed", t.status.danger)
+        status_tone("A warning", t.status.warning)
+        status_tone("Went well", t.status.success)
+        status_tone("Information", t.status.info)
     }
     ui.Section("Material") {
         setting("Blur", "How much what lies behind floating chrome is blurred") {
@@ -330,6 +347,26 @@ template view theme_editor(t: settings.ThemeRecord) {
                 shows_value: true,
             )
         }
+        setting("Rim brightness", "How strongly the rim light shows") {
+            ui.Slider(
+                bind: t.rim_alpha,
+                label: "Rim brightness",
+                min: 0.0,
+                max: 1.0,
+                step: 0.05,
+                shows_value: true,
+            )
+        }
+        setting("Hover wash", "How much a surface lightens under the pointer") {
+            ui.Slider(
+                bind: t.hover_alpha,
+                label: "Hover wash",
+                min: 0.0,
+                max: 0.5,
+                step: 0.01,
+                shows_value: true,
+            )
+        }
     }
     row(gap: .related, align: .center, wrap: true) {
         ui.Button("Duplicate", icon: .copy) {
@@ -342,6 +379,30 @@ template view theme_editor(t: settings.ThemeRecord) {
         }
         ui.Button("Start over from where it came from", icon: .rotate_ccw) {
             on press: settings.reset_theme(settings.appearance, theme: t.id)
+        }
+    }
+}
+
+/// One status colour: how light it is drawn and how much of its hue it carries.
+template view status_tone(label: Text, tone: settings.StatusTone) {
+    setting(label, "Its lightness, and how much colour it carries") {
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Slider(
+                bind: tone.lightness,
+                label: "{label}: lightness",
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                shows_value: true,
+            )
+            ui.Slider(
+                bind: tone.chroma,
+                label: "{label}: colour",
+                min: 0.0,
+                max: 0.25,
+                step: 0.005,
+                shows_value: true,
+            )
         }
     }
 }

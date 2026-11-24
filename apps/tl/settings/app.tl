@@ -332,6 +332,38 @@ view appearance_pane() {
         setting("Wallpaper", "The picture the desktop stands on; empty follows the theme") {
             ui.TextInput(bind: a.wallpaper, placeholder: "Follow the theme")
         }
+        setting("Where it shows", "Behind the windows, at the lock screen, or both") {
+            ui.ToggleGroup(
+                selected: wallpaper_target_index(a.wallpaper_target),
+                label: "Where it shows",
+            ) {
+                ui.Segment("Desktop") {
+                    on press: settings.set_wallpaper_target(a, "background")
+                }
+                ui.Segment("Lock screen") {
+                    on press: settings.set_wallpaper_target(a, "lockscreen")
+                }
+                ui.Segment("Both") {
+                    on press: settings.set_wallpaper_target(a, "both")
+                }
+            }
+        }
+        setting(
+            "Whose wallpaper",
+            "The one this workspace shows, or the one every workspace does",
+        ) {
+            ui.ToggleGroup(
+                selected: if a.wallpaper_scope == "all" { 1 } else { 0 },
+                label: "Whose wallpaper",
+            ) {
+                ui.Segment("This workspace") {
+                    on press: settings.set_wallpaper_scope(a, "workspace")
+                }
+                ui.Segment("Every workspace") {
+                    on press: settings.set_wallpaper_scope(a, "all")
+                }
+            }
+        }
         setting("Distinguish similar letters", "Set I, l, 1, 0 and O apart in all text") {
             ui.Toggle(bind: a.distinct_letters)
         }
@@ -343,6 +375,46 @@ view appearance_pane() {
                 max: 1.0,
                 step: 0.05,
                 shows_value: true,
+            )
+        }
+        setting(
+            "Force high-contrast colours",
+            "The accessibility palette over whatever theme shows",
+        ) {
+            ui.Toggle(bind: a.forced_colors)
+        }
+    }
+    ui.Section("Day and night") {
+        setting("Where the day ends", "What automatic light and dark, and the night light, go by") {
+            ui.ToggleGroup(
+                selected: if a.schedule == "custom" { 1 } else { 0 },
+                label: "Day and night",
+            ) {
+                ui.Segment("Follow the sun") {
+                    on press: settings.set_schedule(a, "sun")
+                }
+                ui.Segment("Fixed times") {
+                    on press: settings.set_schedule(a, "custom")
+                }
+            }
+        }
+        setting(
+            "Sunrise",
+            "When the day starts, as a clock reads it; it stands in when the sun cannot be followed",
+        ) {
+            ui.TextInput(bind: a.sunrise, placeholder: "07:00")
+        }
+        setting(
+            "Sunset",
+            "When the night starts, as a clock reads it; it stands in when the sun cannot be followed",
+        ) {
+            ui.TextInput(bind: a.sunset, placeholder: "19:00")
+        }
+        if a.schedule != "custom" {
+            ui.Text(
+                "Following the sun, today's times come from the location your time zone names. Without one, the fixed times above stand in.",
+                role: .caption,
+                secondary: true,
             )
         }
     }
@@ -454,6 +526,24 @@ view notifications_pane() {
             ui.Toggle(bind: n.focus.enabled)
         }
         if focus.enabled {
+            setting("From", "Minutes after midnight the quiet starts") {
+                ui.NumberInput(
+                    bind: n.focus.start_minute,
+                    label: "Minutes after midnight",
+                    min: 0.0,
+                    max: 1439.0,
+                    step: 15.0,
+                )
+            }
+            setting("Until", "Minutes after midnight the quiet ends") {
+                ui.NumberInput(
+                    bind: n.focus.end_minute,
+                    label: "Minutes after midnight",
+                    min: 0.0,
+                    max: 1439.0,
+                    step: 15.0,
+                )
+            }
             ui.Text(
                 "Quiet between {quiet_clock(focus.start_minute)} and {quiet_clock(focus.end_minute)}, {quiet_days(focus.weekdays)}.",
                 role: .caption,
@@ -495,6 +585,30 @@ view displays_pane() {
     let d = settings.display
     let night = settings.display_person
     let screens = device.displays
+    ui.Section("Arrangement") {
+        ui.Text(
+            "How this device shows what is on its screens. The desktop keeps where each display stands; choose the way it shows them here.",
+            role: .caption,
+            secondary: true,
+        )
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Extend across them", icon: .monitor) {
+                on press: device.set_mode(device.displays, mode: "extend")
+            }
+            ui.Button("Mirror them", icon: .copy) {
+                on press: device.set_mode(device.displays, mode: "mirror")
+            }
+            ui.Button("Only the built-in screen", icon: .laptop) {
+                on press: device.set_mode(device.displays, mode: "built-in")
+            }
+            ui.Button("Only the external screens", icon: .monitor) {
+                on press: device.set_mode(device.displays, mode: "external")
+            }
+        }
+        ui.Button("Arrange screens…", icon: .layout_grid) {
+            on press: device.open_sheet(device.displays)
+        }
+    }
     ui.Section("This device") {
         setting("Automatic brightness", "Follow the light in the room") {
             ui.Toggle(bind: d.auto_brightness)
@@ -540,6 +654,17 @@ view displays_pane() {
                 step: 50.0,
                 shows_value: true,
             )
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.Button("Subtle", size: .small) {
+                on press: settings.set_night_light_temperature(night, 4500)
+            }
+            ui.Button("Warm", size: .small) {
+                on press: settings.set_night_light_temperature(night, 3700)
+            }
+            ui.Button("Very warm", size: .small) {
+                on press: settings.set_night_light_temperature(night, 2800)
+            }
         }
         setting("Follow the evening", "Turn on at sunset and off at sunrise by itself") {
             ui.Toggle(bind: night.night_light_schedule)
@@ -723,6 +848,18 @@ view power_pane() {
                 step: 1.0,
             )
         }
+        setting(
+            "On the battery",
+            "Minutes away before it sleeps while its charger is out; empty uses the minutes above",
+        ) {
+            ui.NumberInput(
+                bind: prefs.battery_suspend_minutes,
+                label: "Minutes on the battery",
+                min: 0.0,
+                max: 240.0,
+                step: 1.0,
+            )
+        }
         setting("Turn the screen off after", "Minutes away before the screen goes dark") {
             ui.NumberInput(
                 bind: prefs.blank_minutes,
@@ -743,6 +880,40 @@ view power_pane() {
         }
         setting("Sleep locks the screen", "Ask for the person's key when it wakes") {
             ui.Toggle(bind: prefs.lock_on_sleep)
+        }
+    }
+    ui.Section("Sleep in each mode") {
+        ui.Text(
+            "Minutes away before the device sleeps in a mode of its own; empty uses the minutes above.",
+            role: .caption,
+            secondary: true,
+        )
+        setting("Power saver", "Minutes away in power saver") {
+            ui.NumberInput(
+                bind: prefs.saver_suspend_minutes,
+                label: "Minutes in power saver",
+                min: 0.0,
+                max: 240.0,
+                step: 1.0,
+            )
+        }
+        setting("Balanced", "Minutes away in balanced") {
+            ui.NumberInput(
+                bind: prefs.balanced_suspend_minutes,
+                label: "Minutes in balanced",
+                min: 0.0,
+                max: 240.0,
+                step: 1.0,
+            )
+        }
+        setting("Performance", "Minutes away in performance") {
+            ui.NumberInput(
+                bind: prefs.performance_suspend_minutes,
+                label: "Minutes in performance",
+                min: 0.0,
+                max: 240.0,
+                step: 1.0,
+            )
         }
     }
     ui.Section("What the device's buttons do") {
@@ -796,6 +967,11 @@ fn battery_words(state: Text) -> Text {
 /// The segment the mode picker shows for the person's mode.
 fn mode_index(mode: Text) -> Int {
     if mode == "dark" { 2 } else if mode == "light" { 1 } else { 0 }
+}
+
+/// The segment the wallpaper's place picker shows: the desktop, the lock screen, or both.
+fn wallpaper_target_index(target: Text) -> Int {
+    if target == "lockscreen" { 1 } else if target == "both" { 2 } else { 0 }
 }
 
 /// What an app's own notification rule says of itself, in a word or two.

@@ -99,6 +99,12 @@ view accessibility_pane() {
         ) {
             ui.Toggle(bind: a.dictation_literal)
         }
+        setting(
+            "Dictation's language",
+            "A language tag such as de-DE; empty follows the workspace's language",
+        ) {
+            ui.TextInput(bind: a.dictation_language, placeholder: "The workspace's language")
+        }
     }
     ui.Section("Key feedback") {
         setting("Bounce keys", "A key pressed again too soon is ignored") {

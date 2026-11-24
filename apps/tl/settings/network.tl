@@ -8,6 +8,8 @@ view network_pane() {
         all_networks(page, chosen)
     } else if page == "known" {
         known_networks(page)
+    } else if page == "hidden" {
+        hidden_network_page(page)
     } else if page == "wired" {
         wired_page(page)
     } else if page == "hotspot" {
@@ -167,11 +169,39 @@ view network_first(page: State<Text>, chosen: State<Text>) {
         ui.ListRow("Known networks", secondary: "{net.saved.len()} kept", icon: .bookmark) {
             on activate: set(page, "known")
         }
+        ui.ListRow(
+            "Join a hidden network",
+            secondary: "One that does not say its name",
+            icon: .eye_off,
+        ) {
+            on activate: set(page, "hidden")
+        }
         if net.wired != .none or net.mobile.available {
             ui.ListRow("Advanced", secondary: "Enterprise networks and checks", icon: .settings) {
                 on activate: set(page, "advanced")
             }
         }
+    }
+}
+
+/// Joining a network that does not say its name: the name and its password.
+view hidden_network_page(page: State<Text>) {
+    state name: Text = ""
+    state password: Text = ""
+    ui.Section("A hidden network") {
+        ui.ListRow("Back", icon: .chevron_left) {
+            on activate: set(page, "")
+        }
+        ui.TextInput(bind: name, placeholder: "The network's name")
+        ui.TextInput(bind: password, placeholder: "Password, where it has one")
+        ui.Button("Join it", icon: .wifi, role: .primary) {
+            on press: device.connect_hidden_wifi(device.network, network: name, password: password)
+        }
+        ui.Text(
+            "A network whose name is not broadcast is joined by typing it. Where it has no password, leave that empty.",
+            role: .caption,
+            secondary: true,
+        )
     }
 }
 
@@ -305,6 +335,9 @@ view network_page(name: Text, page: State<Text>) {
     state addresses: Text = ""
     state gateway: Text = ""
     state dns: Text = ""
+    state priority: Text = ""
+    state proxy_address: Text = ""
+    state password: Text = ""
     let net = device.network
     let n = net.wifi.networks.find(x -> x.name == name)
     ui.Section(name) {
@@ -351,6 +384,105 @@ view network_page(name: Text, page: State<Text>) {
             }
             if let proxy = saved.proxy {
                 ui.ListRow("Proxy", secondary: proxy, icon: .globe)
+            }
+            row(gap: .related, align: .center, wrap: true) {
+                ui.TextInput(bind: proxy_address, placeholder: "A proxy, as host:port", fill)
+                ui.Button("Use it", size: .small) {
+                    on press: device.set_network_policy(
+                        device.network,
+                        profile: saved.id,
+                        proxy_address: proxy_address.trim(),
+                    )
+                }
+                ui.Button("No proxy", size: .small) {
+                    on press: device.set_network_policy(
+                        device.network,
+                        profile: saved.id,
+                        proxy_address: "",
+                    )
+                }
+            }
+            ui.ListRow(
+                "Its priority",
+                secondary: "{saved.priority}; the higher one wins when several are in reach",
+                icon: .bar_chart,
+            ) {
+                trailing: {
+                    row(gap: .tight, align: .center, wrap: true) {
+                        ui.TextInput(bind: priority, placeholder: "A number")
+                        ui.Button("Save", size: .small) {
+                            on press: device.set_network_policy(
+                                device.network,
+                                profile: saved.id,
+                                priority: priority.to_int() ?? saved.priority,
+                            )
+                        }
+                    }
+                }
+            }
+            ui.ListRow(
+                "Counts as metered",
+                secondary: metered_words(saved.metered),
+                icon: .bar_chart,
+            ) {
+                trailing: {
+                    row(gap: .tight, align: .center, wrap: true) {
+                        ui.Button("Let it say", size: .small) {
+                            on press: device.set_network_policy(
+                                device.network,
+                                profile: saved.id,
+                                metered: "automatic",
+                            )
+                        }
+                        ui.Button("Metered", size: .small) {
+                            on press: device.set_network_policy(
+                                device.network,
+                                profile: saved.id,
+                                metered: "metered",
+                            )
+                        }
+                        ui.Button("Unmetered", size: .small) {
+                            on press: device.set_network_policy(
+                                device.network,
+                                profile: saved.id,
+                                metered: "unmetered",
+                            )
+                        }
+                    }
+                }
+            }
+            if saved.kind == .wifi {
+                ui.ListRow(
+                    "Says its name",
+                    secondary: if saved.hidden {
+                        "Hidden: joined by its name"
+                    } else { "Broadcast" },
+                    icon: if saved.hidden { .eye_off } else { .eye },
+                ) {
+                    trailing: {
+                        ui.Button("Change", role: .plain, size: .small) {
+                            on press: device.set_network_policy(
+                                device.network,
+                                profile: saved.id,
+                                hidden: not saved.hidden,
+                            )
+                        }
+                    }
+                }
+                row(gap: .related, align: .center, wrap: true) {
+                    ui.TextInput(
+                        bind: password,
+                        placeholder: "A new password, where it has one",
+                        fill,
+                    )
+                    ui.Button("Change the password", size: .small) {
+                        on press: device.set_wifi_password(
+                            device.network,
+                            profile: saved.id,
+                            password: password,
+                        )
+                    }
+                }
             }
             if let ipv4 = saved.ipv4 {
                 ui.ListRow(
@@ -550,6 +682,13 @@ view advanced_page() {
             )
         }
     }
+}
+
+/// Whether a saved network counts its traffic against a plan.
+fn metered_words(metered: device.Metered) -> Text {
+    if metered == .metered {
+        "Metered"
+    } else if metered == .unmetered { "Unmetered" } else { "The network says" }
 }
 
 /// What the radios say of a connected network.

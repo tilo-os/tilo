@@ -1,6 +1,8 @@
 /// How this person's keyboards and pointing devices behave: the pointer's speed and its
 /// acceleration, the touchpad's gestures, key repeat and the keyboard layouts this device has.
 view input_pane() {
+    state paste_app: Text = ""
+    state paste_chord: Text = "Ctrl+V"
     let i = settings.input
     let d = settings.input_device
     ui.Section("Pointing") {
@@ -157,12 +159,57 @@ view input_pane() {
         )
     }
     ui.Section("Paste shortcuts") {
+        ui.Text(
+            "When the desktop pastes for an app, this is the chord it presses there. A terminal pastes with Ctrl+Shift+V unless it is given another.",
+            role: .caption,
+            secondary: true,
+        )
         if i.paste_shortcuts.keys().is_empty() {
-            ui.Text(
-                "Every app pastes with the desktop's own shortcut.",
-                role: .caption,
-                secondary: true,
+            ui.Text("No app has a chord of its own.", role: .caption, secondary: true)
+        }
+        for app_id in i.paste_shortcuts.keys() {
+            if let chosen = i.paste_shortcuts.get(app_id) {
+                ui.ListRow(app_id, secondary: paste_words(chosen), icon: .clipboard) {
+                    trailing: {
+                        ui.Button("Use Ctrl+V", size: .small) {
+                            on press: settings.set_paste_shortcut(
+                                settings.input,
+                                app: app_id,
+                                shortcut: "ctrl_v",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        row(gap: .related, align: .center, wrap: true) {
+            ui.TextInput(
+                bind: paste_app,
+                placeholder: "An app's id, such as org.example.MyTerm",
+                fill,
             )
+            ui.Dropdown(
+                bind: paste_chord,
+                options: ["Ctrl+V", "Ctrl+Shift+V"],
+                caption: "It pastes with",
+            )
+            ui.Button("Set it", role: .primary, size: .small) {
+                on press: settings.set_paste_shortcut(
+                    settings.input,
+                    app: paste_app,
+                    shortcut: paste_key(paste_chord),
+                )
+            }
         }
     }
+}
+
+/// What a stored paste shortcut is called.
+fn paste_words(shortcut: Text) -> Text {
+    if shortcut == "ctrl_shift_v" { "Pastes with Ctrl+Shift+V" } else { "Pastes with Ctrl+V" }
+}
+
+/// The stored name of the chord a person picked.
+fn paste_key(chord: Text) -> Text {
+    if chord == "Ctrl+Shift+V" { "ctrl_shift_v" } else { "ctrl_v" }
 }

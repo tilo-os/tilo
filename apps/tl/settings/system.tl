@@ -199,6 +199,20 @@ view continuity_pane() {
         ) {
             ui.Toggle(bind: c.app_continuations)
         }
+        setting(
+            "A screen nearby becomes this one's input",
+            "This device uses the screen and keyboard of an enrolled device beside it without asking each time",
+        ) {
+            ui.Button(
+                if c.automatic_display_input { "On" } else { "Off" },
+                toggled: c.automatic_display_input,
+            ) {
+                on press: settings.set_automatic_display_input(
+                    settings.continuity,
+                    on: not c.automatic_display_input,
+                )
+            }
+        }
     }
     if not c.audit.is_empty() {
         ui.Section("What changed") {
