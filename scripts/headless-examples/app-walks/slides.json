@@ -64,10 +64,13 @@
     },
     {
       "id": "words-menu",
-      "said": "Right-press the words for the shared editor's formatting menu",
+      "said": "Open the words' menu from the keyboard and read its formatting",
       "ops": [
         {
-          "right_click": "Slide"
+          "chord": [
+            "Shift",
+            "F10"
+          ]
         },
         {
           "must": {
