@@ -880,7 +880,8 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     home.env()
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
     let root = home.root().to_owned();
-    let keys = tilo_device_identity::IdentityPaths::under(root.join("identity"));
+    // This computer's one device key, which also seals the root it keeps for an account.
+    let keys = tilo_api::calls::device_keys();
     let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
     let device = hex::encode(key.verifying_key().to_bytes());
     let place = tilo_device_identity::login::Place::at(root.join("login"), keys);
@@ -975,8 +976,9 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     assert_eq!(who["claimed"], true, "{who}");
     assert_eq!(who["device"], device, "{who}");
     // The person is made where a session on this account reads them, named as asked and holding
-    // their root here: what `tilo login --new-identity` and first-run setup ask for.
-    let identity_dir = crate::device::services::this_accounts_root_dir().unwrap();
+    // their root here: what `tilo login --new-identity` and first-run setup ask for. The root is
+    // kept for the account that asked alone.
+    let identity_dir = crate::device::services::account_identity_dir(OWN).unwrap();
     let active = tilo_identity::store::resolve_active_identity(&identity_dir)
         .expect("the person's record, where the session reads it");
     let metadata = tilo_identity::store::load_metadata_from_path(&active).unwrap();
