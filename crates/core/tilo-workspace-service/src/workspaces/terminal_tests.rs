@@ -320,7 +320,6 @@ async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() 
     assert!(again.is_err(), "approved once: {again:?}");
 
     // Another call they decline runs nothing.
-    let reached = app.confirmations().len();
     let declined_call = call(&provider);
     let held = answered(
         workspaces
@@ -332,6 +331,8 @@ async fn an_approved_machine_secret_action_keeps_its_yes_when_the_app_runs_it() 
     let Err(ActionCallError::ConfirmationRequired(facts)) = held else {
         panic!("the person is asked: {held:?}");
     };
+    // Asking reaches the app's own ask once; after the decline nothing more reaches it.
+    let reached = app.confirmations().len();
     let other = records
         .write_asked(&workspace, &caller, &declined_call, &facts)
         .expect("their question is kept");
