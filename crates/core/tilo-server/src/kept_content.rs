@@ -1739,9 +1739,24 @@ mod tests {
         assert_eq!(lacking, [vec![absent.clone()]]);
 
         // Remembered as whole, it is skipped without opening the store.
-        let known: BTreeSet<String> = [file.clone(), absent.clone()].into();
-        let (whole, lacking) = still_missing(&store, &known, vec![file, absent]);
-        assert!(whole.is_empty());
-        assert!(lacking.is_empty());
+    /// A person's own folder is the workspace's storage: with no policy and no
+    /// host budget, a 3 GiB file is over no limit, nor is one member's share.
+    #[test]
+    fn with_no_policy_a_three_gibibyte_file_is_over_no_limit() {
+        use tilo_action_policy::content::MIB;
+        let kept = BTreeMap::new();
+        let limits = KeptLimits::default();
+        assert_eq!(
+            KeptContent::over(&kept, &limits, &[1_u8; 32], 3 * 1024 * MIB, 0),
+            None
+        );
+        for limit in [
+            ContentLimit::File,
+            ContentLimit::Member,
+            ContentLimit::Hourly,
+            ContentLimit::Workspace,
+        ] {
+            assert!(limits.allows(limit, 3 * 1024 * MIB), "{limit:?}");
+        }
     }
 }

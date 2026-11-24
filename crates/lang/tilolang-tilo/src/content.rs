@@ -41,6 +41,7 @@ pub struct RefusedContent {
 }
 
 /// What a host serves of its workspace's content: its owners' limits and what a limit refused.
+/// A size is in bytes; 0 is no limit at all.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkspaceContent {
     /// The largest file a host keeps.

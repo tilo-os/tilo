@@ -1287,6 +1287,32 @@ pub(crate) mod entry_tests {
         assert_eq!(raised["file_bytes"], 4_096);
         assert_eq!(raised["member_bytes"], 65_536);
         assert_eq!(raised["hourly_bytes"], 16_384);
+
+        // A limit set to 0 is lifted: the file size is no limit again, and
+        // the limits the owners did not name stand.
+        let cleared = govern(
+            workspaces,
+            summary.workspace_id,
+            &owner,
+            invocation(
+                &workspace,
+                super::super::actions::SET_CONTENT_POLICY,
+                serde_json::json!({ "file_bytes": 0 }),
+            ),
+        )
+        .await;
+        assert_eq!(cleared["file_bytes"], 0);
+        assert_eq!(cleared["member_bytes"], 65_536);
+        assert_eq!(cleared["hourly_bytes"], 16_384);
+        assert_eq!(
+            workspaces.content_policy(&workspace).await,
+            Some(tilo_action_policy::ContentPolicy {
+                file_bytes: None,
+                member_bytes: Some(65_536),
+                hourly_bytes: Some(16_384),
+            }),
+            "a limit lifted is recorded as none, not as a zero"
+        );
         server.shutdown().await;
     }
 

@@ -225,6 +225,32 @@ fn the_content_pane_shows_what_the_host_keeps_in_mebibytes() {
     );
 }
 
+/// A limit nobody set reads as no limit: the workspace's folders are its storage, not a
+/// ceiling's, and the pane says so for each of the three.
+#[test]
+fn a_limit_nobody_set_reads_as_no_limit() {
+    use tilo_action_policy::WorkspacePolicy;
+    use tilolang_tilo::content::WorkspaceContent;
+
+    let owner = MemberAccess::person(WorkspacePolicy::new("team", "ada"), "ada");
+    let (host, _) = settings_with(Some(owner));
+    host.give_content(&WorkspaceContent {
+        file_bytes: 0,
+        member_bytes: 0,
+        hourly_bytes: 0,
+        refusals: Vec::new(),
+        host_person: None,
+    });
+    invoke(&host, "open_pane", vec![Value::text("content")]);
+    let view = open_content_pane(&host);
+    let shown = texts(&view);
+    assert_eq!(
+        shown.iter().filter(|text| *text == "No limit").count(),
+        3,
+        "a file, a member's files and their hour: {shown:?}"
+    );
+}
+
 /// An owner changes the limits where the workspace keeps them: the pane's Save sends the
 /// workspace's own `content.set-policy` with the sizes it shows, in bytes.
 #[test]

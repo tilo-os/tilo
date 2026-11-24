@@ -538,6 +538,7 @@ d-e2bkffks = Inhaltsgrenzen
     .w-mib = MiB
     .w-save-limits = Grenzen speichern
     .w-cancel = Abbrechen
+    .w-no-limit = Keine Grenze
 
 d-xa522ebd = Disk unlock pane
     .w-encrypted-volumes = Verschlüsselte Volumes

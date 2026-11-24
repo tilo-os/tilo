@@ -447,7 +447,7 @@ async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
     // Nobody set a limit: no policy on the workspace, no budget on the host's
     // entry among its person's servers.
     let ada = [3_u8; 32];
-    tilo_test_env::within("the host keeps a 3 GiB folder whole", async {
+    tilo_test_env::within("the host keeps a folder larger than every default whole", async {
         for (file, hash) in folder.iter().enumerate() {
             let bytes = vec![u8::try_from(file).unwrap_or(0); FILE_BYTES];
             let mut sent = 0_usize;

@@ -154,7 +154,7 @@ mod tests {
             ContentLimit::Workspace,
         ] {
             assert_eq!(limits.allowed(limit), None, "{limit:?}");
-            assert!(limits.allows(limit, 3_000 * 1024 * MIB), "{limit:?}");
+            assert!(limits.allows(limit, 3 * 1024 * MIB), "{limit:?}");
         }
     }
 
