@@ -2391,7 +2391,7 @@ impl Core {
     /// no app writes its own.
     pub(crate) fn actions_on(&self, target: &RefValue, above: &Value) -> HResult<Vec<Value>> {
         let mut out = self.offers_on(target, above, |offers| {
-            let mut out = Vec::with_capacity(offers.len() + 1);
+            let mut out = Vec::with_capacity(offers.len().saturating_add(1));
             for shown in offers {
                 out.extend(self.action_value(shown, Some(target))?);
             }
