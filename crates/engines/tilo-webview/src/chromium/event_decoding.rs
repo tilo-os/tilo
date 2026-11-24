@@ -350,6 +350,15 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
             .is_some_and(|object| object.len() == if value.get("tab").is_some() { 2 } else { 1 }),
         "permission_prompt" => valid_id(value) && text("origin") && text("permissions"),
         "download_prompt" => valid_id(value) && text("url") && text("name"),
+        "download_request" => {
+            valid_id(value)
+                && value.get("tab").is_some()
+                && text("url")
+                && text("name")
+                && text("referrer")
+                && text("cookies")
+                && text("user_agent")
+        }
         "download" => {
             valid_id(value)
                 && text("path")

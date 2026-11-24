@@ -27,6 +27,8 @@
 use std::ffi::c_void;
 use std::fmt;
 
+pub mod kept;
+
 /// Why an engine library's entry could not be reached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadError {
@@ -270,6 +272,12 @@ pub struct Device {
     moment: fn(*mut c_void) -> Result<(String, i64), String>,
     keep_content: fn(*mut c_void, &str, &str, &[u8]) -> Result<File, String>,
     read: fn(*mut c_void, &str) -> Result<Vec<u8>, String>,
+    redeem: fn(*mut c_void, &str) -> Option<String>,
+}
+
+/// A device with nothing to give holds no handed-over context.
+fn no_redeem(_context: *mut c_void, _handle: &str) -> Option<String> {
+    None
 }
 
 /// A clock a device with nothing to give has.
@@ -302,6 +310,7 @@ impl Device {
             moment: no_moment,
             keep_content: no_keep_content,
             read: no_read,
+            redeem: no_redeem,
         }
     }
 
@@ -318,7 +327,23 @@ impl Device {
             moment,
             keep_content,
             read,
+            redeem: no_redeem,
         }
+    }
+
+    /// This device, redeeming a context a window of its process handed over with `redeem`
+    /// ([`kept`]).
+    #[must_use]
+    pub fn redeeming(mut self, redeem: fn(*mut c_void, &str) -> Option<String>) -> Self {
+        self.redeem = redeem;
+        self
+    }
+
+    /// The context a window of this process kept under `handle`, once: `None` when it was
+    /// redeemed already, its window closed, or no window here kept it.
+    #[must_use]
+    pub fn redeem(&self, handle: &str) -> Option<String> {
+        (self.redeem)(self.context, handle)
     }
 
     /// The person's clock: the date they read as today, `YYYY-MM-DD`, and the

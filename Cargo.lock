@@ -18884,6 +18884,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "serde_json",
+ "tilo-engine-loader",
  "tilo-webview",
  "workspace-hack",
 ]

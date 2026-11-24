@@ -2703,9 +2703,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
         | WebViewCommand::AnswerDeparture { id, .. }
-        | WebViewCommand::AnswerDownload { id, .. }
-        | WebViewCommand::CancelNativeDownload { id }
-        | WebViewCommand::RetryDownload { id } => *id > 0 && i32::try_from(*id).is_ok(),
+        | WebViewCommand::AnswerDownload { id, .. } => *id > 0 && i32::try_from(*id).is_ok(),
         WebViewCommand::Navigate(url) => url.len() <= 65536,
         WebViewCommand::StartDownload { uri } => {
             uri.len() <= 8192
@@ -2960,6 +2958,14 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             path: value["path"].as_str()?.into(),
             name: value["name"].as_str()?.into(),
             message: value["message"].as_str()?.into(),
+        },
+        "download_request" => WebViewEvent::DownloadRequest {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            url: value["url"].as_str()?.into(),
+            name: value["name"].as_str()?.into(),
+            referrer: value["referrer"].as_str()?.into(),
+            cookies: value["cookies"].as_str()?.into(),
+            user_agent: value["user_agent"].as_str()?.into(),
         },
         "download_prompt" => WebViewEvent::NativeDownloadRequested {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
@@ -3339,9 +3345,6 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::AnswerClipboardRead { request_id, text } => {
             page_clipboard::answer(request_id, text.as_deref())?
         }
-        WebViewCommand::CancelNativeDownload { id } => json!({"op":"download_cancel","id":id}),
-        WebViewCommand::RetryDownload { id } => json!({"op":"download_retry","id":id}),
-        WebViewCommand::CancelAllDownloads => json!({"op":"download_cancel_all"}),
         WebViewCommand::SetNativeFilterRules { rules, enabled } => {
             json!({"op":"filter_rules","rules":&*rules,"enabled":enabled})
         }

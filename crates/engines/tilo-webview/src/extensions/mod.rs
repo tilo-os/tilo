@@ -634,7 +634,9 @@ fn parse_manifest(
         version,
         manifest_version,
         description,
-        side_panel: permissions.iter().any(|permission| permission == "sidePanel"),
+        side_panel: permissions
+            .iter()
+            .any(|permission| permission == "sidePanel"),
         keyword: keyword_of(&value),
         permissions,
         path: PathBuf::new(),
@@ -647,11 +649,7 @@ const MAX_KEYWORD_CHARS: usize = 64;
 /// The manifest's `omnibox.keyword`, when it is one a person can type: one word, without
 /// spaces, as Chrome takes it.
 fn keyword_of(manifest: &serde_json::Value) -> Option<String> {
-    let keyword = manifest
-        .get("omnibox")?
-        .get("keyword")?
-        .as_str()?
-        .trim();
+    let keyword = manifest.get("omnibox")?.get("keyword")?.as_str()?.trim();
     (!keyword.is_empty()
         && keyword.chars().count() <= MAX_KEYWORD_CHARS
         && !keyword.chars().any(char::is_whitespace)
@@ -819,7 +817,10 @@ mod tests {
             is_approved(&extension),
             "installing from the store turns it on"
         );
-        assert_eq!(approved_paths(root.path()), [extension.path.clone()]);
+        assert_eq!(
+            approved_paths(root.path()),
+            std::slice::from_ref(&extension.path)
+        );
 
         // Nothing newer: the store answers with no package, and what is installed stays.
         let current = |_: &str, installed: Option<&str>| {

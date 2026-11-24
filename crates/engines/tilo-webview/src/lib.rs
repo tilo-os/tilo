@@ -1023,13 +1023,6 @@ pub enum WebViewCommand {
         id: u32,
         leaving: Leaving,
     },
-    CancelNativeDownload {
-        id: u32,
-    },
-    RetryDownload {
-        id: u32,
-    },
-    CancelAllDownloads,
     StartDownload {
         uri: String,
     },
@@ -1218,6 +1211,18 @@ pub enum WebViewEvent {
         id: u32,
         url: String,
         name: String,
+    },
+    /// The download `id` the person saved, handed over by the tab that offered it instead of
+    /// saved by the engine: what its request carried, for the app's own download to fetch it
+    /// with. The site's cookies are a secret of the page's: the window keeps them in its process
+    /// and they never enter a record.
+    DownloadRequest {
+        id: u32,
+        url: String,
+        name: String,
+        referrer: String,
+        cookies: String,
+        user_agent: String,
     },
     DownloadUpdated {
         id: u32,

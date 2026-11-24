@@ -13,7 +13,7 @@ mod logins;
 pub mod omnibox;
 mod prompts;
 
-pub use asks::{Asks, Download, ExtensionButton, ExtensionNotice, Menu};
+pub use asks::{Asks, ExtensionButton, ExtensionNotice, Menu};
 pub use logins::{Answered, LoginAsk, LoginVault, VaultLogin};
 pub use omnibox::Addressed;
 pub use prompts::{Prompt, PromptChange, PromptKey, PromptKind, Prompts};
@@ -76,13 +76,13 @@ pub struct PageSession {
     /// The page's file choosers a person's click opened, waiting for the host's picker: the
     /// window answers each and the page is never left waiting on one.
     choosers: Vec<FileChooser>,
-    /// What the page says of itself that the app's own record carries (a download moving, the
+    /// What the page says of itself that the app's own record carries (a download saved, the
     /// pages it can go to), for the window to hand the app as its calls: the record moves while
     /// the person looks.
     notes: Vec<String>,
-    /// What each download last said, so a moving one is told at each tenth it reaches rather
-    /// than at every event.
-    download_steps: HashMap<u32, (String, u64)>,
+    /// The number this window keeps a download's request under ([`tilo_engine_loader::request`]),
+    /// so what it never handed over goes when it closes.
+    keeper: u64,
     /// The engine's number for the next credential action.
     credential_next: u32,
     /// The engine's number for the next ask about the video the page shows.
@@ -127,7 +127,7 @@ impl PageSession {
             prompts: Prompts::default(),
             choosers: Vec::new(),
             notes: Vec::new(),
-            download_steps: HashMap::new(),
+            keeper: tilo_engine_loader::kept::owner(),
             credential_next: 0,
             media_next: 0,
             login_waiting: None,
@@ -223,34 +223,25 @@ impl PageSession {
                     self.choosers.retain(|chooser| chooser.id != *id);
                     continue;
                 }
-                // A download moving, and the pages the page can go to, are the app's record's:
-                // the window hands them to the app as its calls.
-                WebViewEvent::DownloadUpdated {
-                    id,
-                    state,
-                    name,
+                // A download the person saved is the app's own to fetch: the window keeps what
+                // its request carried in this process, and the app's call names only the handle
+                // the download redeems once as it starts. Cookies never enter a record.
+                WebViewEvent::DownloadRequest {
                     url,
-                    path,
-                    retryable,
-                    received,
-                    total,
-                    error,
+                    name,
+                    referrer,
+                    cookies,
+                    user_agent,
+                    ..
                 } => {
-                    let step = received.saturating_mul(10).checked_div(*total).unwrap_or(0);
-                    let said = (state.clone(), step);
-                    if self.download_steps.insert(*id, said.clone()) != Some(said) {
-                        self.notes.push(codec::download_note(codec::DownloadNote {
-                            id: *id,
-                            state: state.as_str(),
-                            name: name.as_str(),
-                            url: url.as_str(),
-                            path: path.as_str(),
-                            retryable: *retryable,
-                            received: *received,
-                            total: *total,
-                            error: error.as_str(),
-                        }));
-                    }
+                    let context = serde_json::json!({
+                        "referrer": referrer,
+                        "cookies": cookies,
+                        "user_agent": user_agent,
+                    });
+                    let request = tilo_engine_loader::kept::keep(self.keeper, context.to_string());
+                    self.notes.push(codec::download_note(url, name, &request));
+                    continue;
                 }
                 // The video the page shows appeared or went with its page: the app's record
                 // carries what it offers to float, and it moves while the person looks.
@@ -417,12 +408,10 @@ impl PageSession {
     fn poll_quiet_sign_ins(&mut self) {
         let mut kept = Vec::with_capacity(self.quiet_sign_ins.len());
         for engine in self.quiet_sign_ins.drain(..) {
-            let closed = engine.drain_events().iter().any(|event| {
-                matches!(
-                    event,
-                    WebViewEvent::TabClosed | WebViewEvent::TabDetached
-                )
-            });
+            let closed = engine
+                .drain_events()
+                .iter()
+                .any(|event| matches!(event, WebViewEvent::TabClosed | WebViewEvent::TabDetached));
             if !closed {
                 kept.push(engine);
             }
@@ -549,13 +538,12 @@ impl PageSession {
     /// The person pressed Enter, or chose a row: the extension hears what it was given.
     pub fn address_entered(&mut self, text: &str) {
         if let Some(id) = self.omnibox.session_id() {
-            self.engine
-                .send(WebViewCommand::ExtensionOmnibox {
-                    id,
-                    input: tilo_webview::OmniboxInput::Entered {
-                        text: text.to_owned(),
-                    },
-                });
+            self.engine.send(WebViewCommand::ExtensionOmnibox {
+                id,
+                input: tilo_webview::OmniboxInput::Entered {
+                    text: text.to_owned(),
+                },
+            });
         }
         self.omnibox.entered(text);
         self.note_omnibox();
@@ -622,7 +610,7 @@ impl PageSession {
     }
 
     /// What the page said of itself since the window last took it, oldest first, each encoded
-    /// for the app (`ToApp::PagePrompt`): a download moving, the pages it can go to.
+    /// for the app (`ToApp::PagePrompt`): a download saved, the pages it can go to.
     pub fn notes(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notes)
     }
@@ -909,6 +897,8 @@ impl PageSession {
 
 impl Drop for PageSession {
     fn drop(&mut self) {
+        // A download the window handed over and the app never started can no longer start.
+        tilo_engine_loader::kept::forget(self.keeper);
         // The engine's own supervisor removes a private root once its child has exited; a
         // window that closed before one started leaves the root to this.
         if let Some(root) = self.private_root.take() {
@@ -1634,12 +1624,12 @@ mod tests {
         let tabs = test.created_tabs();
         assert_eq!(tabs.len(), 1, "the sign-in page is a page of its own");
         assert!(
-            tabs[0].commands().contains(
-                &WebViewCommand::ExtensionSignInPanel {
+            tabs[0]
+                .commands()
+                .contains(&WebViewCommand::ExtensionSignInPanel {
                     id: "abcdefghijklmnopabcdefghijklmnop".to_owned(),
                     flow: 3,
-                }
-            ),
+                }),
             "the host watches the page for where the sign-in ends: {:?}",
             tabs[0].commands()
         );
@@ -1648,7 +1638,10 @@ mod tests {
 
         tabs[0].push_event(WebViewEvent::TabClosed);
         session.poll();
-        assert!(session.panel_engine().is_none(), "the window shows it no more");
+        assert!(
+            session.panel_engine().is_none(),
+            "the window shows it no more"
+        );
         assert_eq!(note_of(&session.notes())["open"], false);
     }
 
@@ -1679,7 +1672,12 @@ mod tests {
             session.panel_engine().is_none(),
             "nobody is shown it, and the notes say nothing of a panel"
         );
-        assert!(session.notes().iter().all(|note| !note.contains("\"panel\"")));
+        assert!(
+            session
+                .notes()
+                .iter()
+                .all(|note| !note.contains("\"panel\""))
+        );
     }
 
     /// The address hears an extension's keyword: the extension hears the person start and each
@@ -1736,7 +1734,10 @@ mod tests {
         let rows: serde_json::Value =
             serde_json::from_str(note["rows"].as_str().expect("rows as text"))
                 .expect("rows are JSON");
-        assert_eq!(rows[0]["title"], "Look up ca", "Enter does the default suggestion");
+        assert_eq!(
+            rows[0]["title"], "Look up ca",
+            "Enter does the default suggestion"
+        );
         assert_eq!(rows[0]["content"], "ca");
         assert_eq!(rows[1]["title"], "cat & more");
         assert_eq!(rows[1]["content"], "cat");
@@ -1754,7 +1755,8 @@ mod tests {
             test.commands()
         );
         assert_eq!(
-            note_of(&session.notes())["id"], "",
+            note_of(&session.notes())["id"],
+            "",
             "the address addresses no extension once Enter took it"
         );
 

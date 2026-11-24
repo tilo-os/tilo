@@ -10,6 +10,7 @@ mod cases {
     use std::rc::Rc;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::files::{Entry, FileTarget, FilesHost};
+    use tilolang_runtime::host_work::{EngineHost, Push};
     use tilolang_runtime::page::PageHost;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, Value, ViewInstance,
@@ -132,6 +133,69 @@ mod cases {
     struct Device {
         content: Rc<RefCell<std::collections::HashMap<String, Vec<u8>>>>,
         file: Rc<RefCell<Option<FileValue>>>,
+        /// The downloads the app started, as the engine was asked: the op and its input.
+        started: Rc<RefCell<Vec<(String, Json)>>>,
+        /// Where each job stands, as the engine tells it, by the job's id.
+        jobs: Rc<RefCell<std::collections::HashMap<String, Json>>>,
+        /// The jobs the app stopped, in order.
+        cancelled: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl Device {
+        /// The job `job` now stands as `state` says.
+        fn job_stands(&self, job: &str, state: Json) {
+            let mut standing = json!({"state": "running", "done": 0, "total": 0, "path": "",
+                "name": "", "error": ""});
+            for (field, value) in state.as_object().expect("a job's fields") {
+                standing[field] = value.clone();
+            }
+            self.jobs.borrow_mut().insert(job.to_owned(), standing);
+        }
+    }
+
+    // The device's engine, as the Browser's downloads reach it: each start is a job of its own.
+    impl EngineHost for Device {
+        fn call(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
+            Err(format!("`{op}` is no op this device answers"))
+        }
+
+        fn start(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+            if op != "download" {
+                return Err(format!("`{op}` is no op this device starts"));
+            }
+            let mut started = self.started.borrow_mut();
+            started.push((
+                op.to_owned(),
+                serde_json::from_str(input).expect("the ask is JSON"),
+            ));
+            let job = format!("browser-{}", started.len());
+            drop(started);
+            self.job_stands(&job, json!({}));
+            Ok(json!({ "job": job }).to_string())
+        }
+
+        fn stream(
+            &self,
+            _app: &str,
+            _op: &str,
+            _input: &str,
+            _push: std::sync::Arc<dyn Push>,
+        ) -> Result<String, String> {
+            Err("this device shows no moving picture".to_owned())
+        }
+
+        fn status(&self, job: &str) -> Result<String, String> {
+            self.jobs
+                .borrow()
+                .get(job)
+                .map(Json::to_string)
+                .ok_or_else(|| format!("no job {job}"))
+        }
+
+        fn cancel(&self, job: &str) -> bool {
+            self.cancelled.borrow_mut().push(job.to_owned());
+            true
+        }
     }
 
     impl BlobHost for Device {
@@ -194,6 +258,7 @@ mod cases {
             rt.set_device_files(files.clone());
             let device = Device::default();
             rt.set_blobs(device.clone());
+            rt.set_engine(device.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             // The Browser shows where a download stands by asking Files, whose own action knows
             // the device's files, and prints a page by asking Print Centre, which has the
@@ -359,81 +424,154 @@ mod cases {
         assert_eq!(b.text(&b.opened, "find_text"), "");
     }
 
+    /// A download the person saved in a page is the Browser's own job: the call names the
+    /// handle the window keeps the request under (never the site's cookies), the row reads how
+    /// far the job has come, and Cancel and Cancel every download stop the job.
     #[test]
-    fn a_download_the_page_starts_is_read_back_and_what_the_person_does_reaches_the_page() {
+    fn a_saved_download_is_a_job_the_row_follows_and_cancel_stops() {
         let b = Browser::new();
         b.page(
             "download",
-            &[("url", Value::text("https://example.org/report.pdf"))],
+            &[
+                ("url", Value::text("https://example.org/report.pdf")),
+                ("name", Value::text("report.pdf")),
+                ("request", Value::text("0f3c")),
+            ],
         );
-        assert_eq!(b.page.ops(), ["start_download"]);
+        let started = b.device.started.borrow().clone();
         assert_eq!(
-            b.page.last()["url"].as_str(),
-            Some("https://example.org/report.pdf")
+            started,
+            [(
+                "download".to_owned(),
+                json!({"url": "https://example.org/report.pdf", "name": "report.pdf",
+                    "request": "0f3c"})
+            )],
+            "the engine is asked with the handle alone"
+        );
+        assert!(
+            b.page.ops().is_empty(),
+            "the page's engine fetches nothing: {:?}",
+            b.page.ops()
         );
 
-        // The engine's next report of itself: the transfer under way, two of its eight kilobytes.
-        b.page.answer_asks(json!({
-            "downloads": [{
-                "id": 4,
-                "state": "downloading",
-                "name": "report.pdf",
-                "url": "https://example.org/report.pdf",
-                "path": "",
-                "retryable": false,
-                "received": 2048,
-                "total": 8192,
-                "error": "",
-            }],
-        }));
-        b.page("refresh_page", &[]);
+        b.device
+            .job_stands("browser-1", json!({"done": 2048, "total": 8192}));
         let view = b.page_view();
         assert_eq!(row_secondary(&view, "report.pdf"), "2.0 KB of 8.1 KB");
+        let bar = of_kind(view.tree(), "ui.ProgressBar");
+        assert_eq!(
+            bar.len(),
+            1,
+            "a running download of known size shows how far it is"
+        );
 
         let cancel = button_key(&view, "Cancel");
         view.fire(&cancel, "press").unwrap();
-        assert_eq!(
-            b.page.ops().last().map(String::as_str),
-            Some("cancel_download")
-        );
-        assert_eq!(b.page.last()["id"].as_i64(), Some(4));
+        assert_eq!(b.device.cancelled.borrow().as_slice(), ["browser-1"]);
 
-        // Cancel every download is the one call that stops all of them.
-        let view = b.page_view();
-        let all = button_key(&view, "Cancel every download");
-        view.fire(&all, "press").unwrap();
+        let all = button_key(&b.page_view(), "Cancel every download");
+        b.page_view().fire(&all, "press").unwrap();
         assert_eq!(
-            b.page.ops().last().map(String::as_str),
-            Some("cancel_all_downloads")
+            b.device.cancelled.borrow().as_slice(),
+            ["browser-1", "browser-1"],
+            "Cancel every download stops each download's job"
         );
     }
 
+    /// A download that failed says why in the job's words, and Retry starts a new job that the
+    /// download keeps.
     #[test]
-    fn a_failed_download_offers_a_retry_that_names_it() {
+    fn a_failed_download_says_why_and_a_retry_is_a_new_job() {
         let b = Browser::new();
-        b.page.answer_asks(json!({
-            "downloads": [{
-                "id": 9,
-                "state": "failed",
-                "name": "map.pdf",
-                "url": "https://example.org/map.pdf",
-                "path": "",
-                "retryable": true,
-                "received": 0,
-                "total": 0,
-                "error": "The site didn't answer",
-            }],
-        }));
-        b.page("refresh_page", &[]);
+        b.page(
+            "download",
+            &[("url", Value::text("https://example.org/files/map.pdf"))],
+        );
+        b.device.job_stands(
+            "browser-1",
+            json!({"state": "failed", "error": "example.org no longer has this file (404)"}),
+        );
         let view = b.page_view();
-        assert_eq!(row_secondary(&view, "map.pdf"), "The site didn't answer");
+        assert_eq!(
+            row_secondary(&view, "map.pdf"),
+            "example.org no longer has this file (404)",
+            "a typed address is named by its last part"
+        );
         let retry = button_key(&view, "Retry");
         view.fire(&retry, "press").unwrap();
+        let started = b.device.started.borrow().clone();
+        assert_eq!(started.len(), 2, "a retry starts the download again");
+        assert_eq!(started[1].1["url"], "https://example.org/files/map.pdf");
+        let downloads = b.rt.project(&b.read(&b.root, "downloads"));
         assert_eq!(
-            b.page.ops().last().map(String::as_str),
-            Some("retry_download")
+            downloads["items"][0]["fields"]["job"].as_str(),
+            Some("browser-2"),
+            "the download keeps its new job"
         );
-        assert_eq!(b.page.last()["id"].as_i64(), Some(9));
+        assert_eq!(downloads["items"].as_array().map(Vec::len), Some(1));
+    }
+
+    /// A finished download offers Open and Show in Files, at the path its job saved it to.
+    #[test]
+    fn a_finished_download_opens_where_its_job_saved_it() {
+        let b = Browser::new();
+        b.page(
+            "download",
+            &[
+                ("url", Value::text("https://example.org/r?id=3")),
+                ("name", Value::text("report.pdf")),
+            ],
+        );
+        b.device.job_stands(
+            "browser-1",
+            json!({"state": "done", "done": 8192, "total": 8192,
+                "path": "/home/ada/Downloads/report 2.pdf", "name": "report 2.pdf"}),
+        );
+        let view = b.page_view();
+        assert_eq!(
+            row_secondary(&view, "report 2.pdf"),
+            "Saved to /home/ada/Downloads/report 2.pdf"
+        );
+        assert!(
+            plain_button(&view, "Cancel").is_none(),
+            "a finished download has nothing to stop"
+        );
+        let open = button_key(&view, "Open");
+        view.fire(&open, "press").unwrap();
+        assert_eq!(
+            b.files.opened.borrow().as_slice(),
+            ["/home/ada/Downloads/report 2.pdf"]
+        );
+        assert!(plain_button(&view, "Show in Files").is_some());
+    }
+
+    /// A download is the Browser's, not its page's: another window shows it, still going.
+    #[test]
+    fn a_download_outlives_the_page_it_came_from() {
+        let b = Browser::new();
+        b.page(
+            "download",
+            &[
+                ("url", Value::text("https://example.org/big.iso")),
+                ("name", Value::text("big.iso")),
+                ("request", Value::text("77aa")),
+            ],
+        );
+        b.device
+            .job_stands("browser-1", json!({"done": 1_000_000, "total": 0}));
+        let made = Browser::call(
+            &b.app,
+            &b.rt,
+            "new_page",
+            &[("b", Value::resource(&b.root))],
+        )
+        .expect("another window opens");
+        let other = b.view("page_view", vec![Value::resource(&returned_ref(made))]);
+        assert_eq!(row_secondary(&other, "big.iso"), "1.0 MB downloaded");
+        assert!(
+            plain_button(&other, "Cancel").is_some(),
+            "the other window can stop it"
+        );
     }
 
     #[test]
@@ -1720,37 +1858,11 @@ mod cases {
         );
     }
 
-    /// What the window hands over while a transfer moves and when the page's history is read is
-    /// written into the same page record the window draws, so the view moves while a person looks.
+    /// What the window hands over when the page's history is read is written into the same page
+    /// record the window draws, so the view moves while a person looks.
     #[test]
-    fn a_moving_download_and_the_pages_it_can_go_to_reach_the_record() {
+    fn the_pages_it_can_go_to_reach_the_record() {
         let b = Browser::new();
-        let download = |received: i64| {
-            vec![
-                ("id", Value::Int(4)),
-                ("state", Value::text("downloading")),
-                ("name", Value::text("report.pdf")),
-                ("url", Value::text("https://example.org/report.pdf")),
-                ("path", Value::text("")),
-                ("retryable", Value::Bool(false)),
-                ("received", Value::Int(received)),
-                ("total", Value::Int(8192)),
-                ("error", Value::text("")),
-            ]
-        };
-        b.page("update_download", &download(2048));
-        assert_eq!(
-            row_secondary(&b.page_view(), "report.pdf"),
-            "2.0 KB of 8.1 KB",
-            "the record moves with the transfer"
-        );
-        b.page("update_download", &download(4096));
-        assert_eq!(
-            row_secondary(&b.page_view(), "report.pdf"),
-            "4.0 KB of 8.1 KB",
-            "one download, moved"
-        );
-
         b.page(
             "remember_history",
             &[

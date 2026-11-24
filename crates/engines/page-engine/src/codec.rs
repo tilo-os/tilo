@@ -415,7 +415,10 @@ pub fn decode(request: &str) -> Result<Ask, String> {
         "address_typed" => {
             let typed = bounded_text(&value, "text", MAX_OMNIBOX_TEXT)?;
             let extension = text(&value, "extension");
-            if extension.as_ref().is_some_and(|id| id.is_empty() || id.len() > MAX_EXTENSION_ID) {
+            if extension
+                .as_ref()
+                .is_some_and(|id| id.is_empty() || id.len() > MAX_EXTENSION_ID)
+            {
                 return Err("an extension is named by its identifier".to_owned());
             }
             Ask::AddressTyped {
@@ -439,11 +442,8 @@ pub fn decode(request: &str) -> Result<Ask, String> {
             origin: text(&value, "origin").unwrap_or_default(),
             ask: credential(&value)?,
         },
-        // What the page downloads: the engine's own transfers, which the app starts, answers,
-        // stops and resumes by the id the engine gave them.
-        "start_download" => Ask::Command(WebViewCommand::StartDownload {
-            uri: text(&value, "url").unwrap_or_default(),
-        }),
+        // The person's answer to a download the page offered: a saved one is handed to the
+        // app, which fetches it as a job of its own.
         "answer_download" => Ask::Command(WebViewCommand::AnswerDownload {
             id: integer(&value, "id").unwrap_or_default(),
             leaving: if flag(&value, "allow") {
@@ -452,13 +452,6 @@ pub fn decode(request: &str) -> Result<Ask, String> {
                 tilo_webview::Leaving::Kept
             },
         }),
-        "cancel_download" => Ask::Command(WebViewCommand::CancelNativeDownload {
-            id: integer(&value, "id").unwrap_or_default(),
-        }),
-        "retry_download" => Ask::Command(WebViewCommand::RetryDownload {
-            id: integer(&value, "id").unwrap_or_default(),
-        }),
-        "cancel_all_downloads" => Ask::Command(WebViewCommand::CancelAllDownloads),
         other => return Err(format!("a page request names no operation {other:?}")),
     })
 }
@@ -566,23 +559,6 @@ pub fn asks_json(asks: &Asks) -> String {
     let find = asks
         .find
         .map(|(active, count)| serde_json::json!({"active": active, "count": count}));
-    let downloads: Vec<serde_json::Value> = asks
-        .downloads
-        .iter()
-        .map(|download| {
-            serde_json::json!({
-                "id": download.id,
-                "state": &download.state,
-                "name": &download.name,
-                "url": &download.url,
-                "path": &download.path,
-                "retryable": download.retryable,
-                "received": download.received,
-                "total": download.total,
-                "error": &download.error,
-            })
-        })
-        .collect();
     serde_json::json!({
         "dialog": dialog,
         "sign_in": sign_in,
@@ -595,7 +571,6 @@ pub fn asks_json(asks: &Asks) -> String {
         "progress": asks.progress,
         "title": &asks.title,
         "loading": asks.loading,
-        "downloads": downloads,
         "muted": asks.muted,
         "media": asks.media.as_ref().map(|media| {
             serde_json::json!({
@@ -916,38 +891,13 @@ pub fn omnibox_note(state: Option<&crate::omnibox::State>) -> String {
     }
 }
 
-/// What a page said of one of its downloads as it moves, for the window to hand the app as its
-/// call: the transfer's id, how it stands, what it is called and where it comes from and went,
-/// whether it can be retried, how far it has come, and why it failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DownloadNote<'a> {
-    pub id: u32,
-    pub state: &'a str,
-    pub name: &'a str,
-    pub url: &'a str,
-    pub path: &'a str,
-    pub retryable: bool,
-    pub received: u64,
-    pub total: u64,
-    pub error: &'a str,
-}
-
-/// The note a download's report becomes.
+/// A download the person saved, for the window to hand the app as its call: where it comes
+/// from, the name the page suggested, and the handle the window keeps its request's context
+/// under, which the app's download redeems once.
 #[must_use]
-pub fn download_note(note: DownloadNote<'_>) -> String {
-    serde_json::json!({
-        "note": "download",
-        "id": note.id,
-        "state": note.state,
-        "name": note.name,
-        "url": note.url,
-        "path": note.path,
-        "retryable": note.retryable,
-        "received": note.received,
-        "total": note.total,
-        "error": note.error,
-    })
-    .to_string()
+pub fn download_note(url: &str, name: &str, request: &str) -> String {
+    serde_json::json!({"note": "download", "url": url, "name": name, "request": request})
+        .to_string()
 }
 
 /// A page the page opened in a window of its own (`window.open`, a link that names a new tab),

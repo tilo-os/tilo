@@ -48,6 +48,10 @@ class Downloads final : public CefDownloadHandler {
     return std::any_of(transfers_.begin(),transfers_.end(),[tab](const auto& entry){return entry.second.owner==tab && entry.second.approved;});
   }
   static std::string FileName(std::string name) {return DownloadFileName(std::move(name));}
+  // Where a saved download goes instead of Chromium's own transfer: the tab that offered it
+  // hands the app its address, its name, and what its request carried.
+  using Fetch=std::function<void(int owner,int id,const std::string& url,const std::string& name)>;
+  void SetFetch(Fetch fetch) {fetch_=std::move(fetch);}
   // An extension asked for `url` to be downloaded (`chrome.downloads`), on
   // `owner`'s page, under `name` when it is not empty. The download it
   // starts asks the person as any other does; `done` learns its id once it
@@ -120,24 +124,11 @@ class Downloads final : public CefDownloadHandler {
     auto it=transfers_.find(id);if(it==transfers_.end() || it->second.approved) return;
     if(it->second.held) {it->second.held=false;TellHold(it->second,HoldEnding(allow,reason),false,{});}
     if(!allow) { CancelDownload(id);return; }
-    std::error_code ec;std::filesystem::create_directories(downloads_,ec);
-    // A download must never fill the disk; refuse it before writing a byte.
-    if(!ec) {
-      const auto& t=it->second;
-      const uint64_t remaining=t.total>t.received?static_cast<uint64_t>(t.total-t.received):0;
-      if(auto free=tilo::AvailableBytes(downloads_)) {
-        auto why=tilo::SpaceRefusal(remaining,*free);
-        if(!why.empty()) { Finish(id,"failed",why);return; }
-      }
-    }
-    // mkdtemp atomically reserves a private destination. Untrusted suggested
-    // names cannot traverse or overwrite an existing file, even on repetition.
-    std::string directory=downloads_+"/tilo-download-XXXXXX";
-    if(ec || !mkdtemp(directory.data())) { Finish(id,"failed","Cannot create download directory");return; }
-    it->second.approved=true;
-    auto callback=it->second.before;it->second.before=nullptr;
-    callback->Continue(directory+"/"+it->second.name,false);
-    Changed();
+    // Chromium saves nothing: the Browser's own download fetches the file, as a job that
+    // outlives this tab, with what the page's request would have carried.
+    const int owner=it->second.owner;const std::string url=it->second.url,name=it->second.name;
+    CancelDownload(id);
+    if(fetch_) fetch_(owner,id,url,name);
   }
   void CancelDownload(int id) {
     auto it=transfers_.find(id);if(it==transfers_.end()) return;
@@ -211,10 +202,6 @@ class Downloads final : public CefDownloadHandler {
   static std::string InterruptMessage(cef_download_interrupt_reason_t reason) {
     if(reason==CEF_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE) return "Not enough space to finish the download";
     return "Chromium interrupted download ("+std::to_string(reason)+")";
-  }
-  void Retry(int id,CefRefPtr<CefBrowser> browser) {
-    auto found=history_.find(id);if(!accepting_ || !browser || found==history_.end() || !found->second.retryable) return;
-    browser->GetHost()->StartDownload(found->second.url);
   }
   void CancelAll() {
     accepting_=false;
@@ -308,6 +295,7 @@ class Downloads final : public CefDownloadHandler {
   std::function<int(CefRefPtr<CefBrowser>)> owner_;
   std::function<bool(int)> eligible_,can_reserve_;
   std::function<void(int,bool)> owner_busy_;std::function<void(int)> owner_idle_;std::function<void()> changed_;std::function<int64_t(int)> hold_wait_ms_;NoteHold note_hold_;
+  Fetch fetch_;
   bool accepting_=true;
   DownloadSlots slots_;std::map<int,Transfer> transfers_,early_;std::map<int,RetryRecord> history_;std::set<int> terminal_;std::deque<int> terminal_order_;
   DownloadProvenance provenance_;

@@ -3,32 +3,25 @@ use std::sync::mpsc;
 
 use test_http::{Reply, Responder};
 
+use tilo_engine_loader::kept;
+
 use super::{Ask, Move, Stop, run};
 
-/// A download of `url` as a page hands it over, named `name`.
-fn ask(url: &str, name: &str) -> Ask {
-    Ask {
-        url: url.to_owned(),
-        name: name.to_owned(),
-        ..Ask::default()
-    }
+/// What an app asks to download `url` as, named `name`.
+fn ask(url: &str, name: &str) -> serde_json::Value {
+    serde_json::json!({ "url": url, "name": name })
 }
 
-/// Every move `ask` makes into `folder`, the last one being how it ended.
-fn moves(ask: &Ask, folder: &Path) -> Vec<Move> {
-    let (_, url) = Ask::read(
-        &serde_json::to_string(&serde_json::json!({
-            "url": ask.url,
-            "name": ask.name,
-            "referrer": ask.referrer,
-            "cookies": ask.cookies,
-            "user_agent": ask.user_agent,
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+/// The ask `input` says, its context redeemed as the engine redeems it.
+fn read(input: &serde_json::Value) -> Result<(Ask, tilo_net::Url), String> {
+    Ask::read(&input.to_string(), kept::redeem)
+}
+
+/// Every move `input` makes into `folder`, the last one being how it ended.
+fn moves(input: &serde_json::Value, folder: &Path) -> Vec<Move> {
+    let (ask, url) = read(input).unwrap();
     let mut told = Vec::new();
-    let ended = run(ask, &url, folder, &Stop::default(), &mut |moved| {
+    let ended = run(&ask, &url, folder, &Stop::default(), &mut |moved| {
         told.push(moved.clone());
     });
     assert_eq!(
@@ -58,9 +51,18 @@ fn a_download_saves_the_file_and_tells_its_progress_in_steps() {
         &format!("{}/files/report.bin", server.url()),
         "Quarterly report.pdf",
     );
-    asked.cookies = "session=abc; theme=dark".to_owned();
-    asked.referrer = "https://example.com/reports".to_owned();
-    asked.user_agent = "Tilo Browser".to_owned();
+    // The page's window keeps what its request carried; the app's ask holds only the handle.
+    let window = kept::owner();
+    asked["request"] = kept::keep(
+        window,
+        serde_json::json!({
+            "cookies": "session=abc; theme=dark",
+            "referrer": "https://example.com/reports",
+            "user_agent": "Tilo Browser",
+        })
+        .to_string(),
+    )
+    .into();
 
     let told = moves(&asked, folder.path());
 
@@ -215,8 +217,7 @@ fn a_stopped_download_ends_cancelled_and_removes_what_it_saved() {
         }
     });
     let folder = tempfile::tempdir().unwrap();
-    let asked = ask(&format!("{}/big.iso", server.url()), "big.iso");
-    let (_, url) = Ask::read(&format!(r#"{{"url":"{}/big.iso"}}"#, server.url())).unwrap();
+    let (asked, url) = read(&ask(&format!("{}/big.iso", server.url()), "big.iso")).unwrap();
     let stop = Stop::default();
     let (sender, receiver) = mpsc::channel();
     let running = {
@@ -305,9 +306,39 @@ fn only_a_web_address_is_downloaded() {
         r#"{"url":"not an address"}"#,
         "{}",
     ] {
-        assert!(Ask::read(input).is_err(), "{input}");
+        assert!(Ask::read(input, kept::redeem).is_err(), "{input}");
     }
-    let (ask, url) = Ask::read(r#"{"url":" https://example.com/a.zip ","name":"a.zip"}"#).unwrap();
+    let (ask, url) = read(&ask(" https://example.com/a.zip ", "a.zip")).unwrap();
     assert_eq!(url.as_str(), "https://example.com/a.zip");
     assert_eq!(ask.name, "a.zip");
+}
+
+#[test]
+fn a_pages_cookies_come_only_from_its_window_and_only_once() {
+    let server = Responder::start(vec![Reply::status(200).body(b"one".to_vec())]);
+    let folder = tempfile::tempdir().unwrap();
+    // An ask that writes cookies itself carries none: what an app writes a record may keep.
+    let mut forged = ask(&format!("{}/a", server.url()), "a.txt");
+    forged["cookies"] = "session=stolen".into();
+    let told = moves(&forged, folder.path());
+    assert_eq!(told.last().unwrap().state(), "done");
+    assert_eq!(server.next_request().header("cookie"), None);
+
+    let window = kept::owner();
+    let mut handed = ask(&format!("{}/b", server.url()), "b.txt");
+    handed["request"] = kept::keep(window, r#"{"cookies":"session=abc"}"#.to_owned()).into();
+    assert!(
+        read(&handed).is_ok(),
+        "the first start redeems the page's request"
+    );
+    let again = read(&handed).unwrap_err();
+    assert!(
+        again.contains("has closed"),
+        "a handle is good once: {again}"
+    );
+
+    let mut closed = ask(&format!("{}/c", server.url()), "c.txt");
+    closed["request"] = kept::keep(window, r#"{"cookies":"session=abc"}"#.to_owned()).into();
+    kept::forget(window);
+    assert!(read(&closed).is_err(), "a closed window's request is gone");
 }

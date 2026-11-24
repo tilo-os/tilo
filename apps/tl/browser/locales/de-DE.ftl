@@ -1104,8 +1104,6 @@ d-og3g2nds = Die Seite fragen
 
 d-og3g2nds-request = Anfrage
 
-d-o2occ235 = Downloads
-    .doc = Die Dateien, die die Seite herunterlädt, wie das Fenster sie zuletzt gelesen hat: Zustand des Motors, nie der eigene Eintrag der Seite.
 
 d-cjw2xcfs = Download
     .noun = { $count ->
@@ -1114,28 +1112,16 @@ d-cjw2xcfs = Download
     }
     .doc = Eine Datei, die eine Seite herunterlädt: woher sie kommt, wohin sie ging und wie weit sie ist.
 
-d-anfisgsq = Übertragung
-    .doc = Die Nummer des Motors für die Übertragung, die nennt, was die Person mit ihr tut.
 
-d-in525zqp = Zustand
-    .doc = `awaiting`, `downloading`, `completed`, `failed` oder `cancelled`.
 
 d-wz6wi2p3 = Name
 
 d-z4gzfvzw = URL
 
-d-feka5n4y = Pfad
-    .doc = Wohin sie gespeichert wurde, sobald sie vollständig ist.
 
-d-kubpqqew = Wiederholbar
-    .doc = Ob der Motor sie nach einem Fehler erneut starten kann.
 
-d-cokrfftg = Empfangen
-    .doc = Wie viele Bytes angekommen sind, von wie vielen der Motor weiß: keine, wenn er es nicht weiß.
 
-d-pbavpdyk = Gesamt
 
-d-wfaksaa6 = Fehler
 
 d-ntpmcicu = Antworten
     .doc = Womit jede Frage eines Formulars beantwortet wird, nach dem Namen der Frage.
@@ -1171,20 +1157,15 @@ d-jzj2zsuv-id = Id
 d-jzj2zsuv-name = Name
 
 d-6a4m4f4s = Adresse herunterladen
-    .doc = Speichert, was eine Adresse liefert, in den Downloads des Browsers.
+    .doc = Lädt herunter, was eine Adresse liefert, in die Downloads der Person, als eigenen Auftrag des Browsers, der weiterläuft, wenn das Fenster schließt.
     .w-type-the-address-to-download = Gib die Adresse zum Herunterladen ein
+    .w-downloading = { $called } wird heruntergeladen
 d-6a4m4f4s-url = URL
+d-6a4m4f4s-name = Name
+d-6a4m4f4s-request = Anfrage
 
-d-boafhtzg = Download abbrechen
-    .doc = Hält einen laufenden Download an.
-d-boafhtzg-d = D
 
-d-dmiputmu = Download wiederholen
-    .doc = Startet einen fehlgeschlagenen Download von vorn.
-d-dmiputmu-d = D
 
-d-boev3sbj = Alle Downloads abbrechen
-    .doc = Hält alle Downloads dieser Seite an.
 
 d-trhtau5i = Der Erweiterung erlauben
     .doc = Gibt einer Erweiterung den zusätzlichen Zugriff, um den sie gebeten hat.
@@ -1248,6 +1229,7 @@ d-6w4zu5de = Downloadzeile
     .w-retry = Wiederholen
     .w-open = Öffnen
     .w-show-in-files = In Dateien anzeigen
+    .w-not-on-this-device = Nicht auf diesem Gerät
 
 d-eg4w4fow = Stumm
     .doc = Ob der Ton der Seite stummgeschaltet ist.
@@ -1378,17 +1360,6 @@ d-k3vqdvsp-path = Pfad
 d-rllv4b5a = Entwicklerwerkzeuge
     .doc = Öffnet die Entwicklerwerkzeuge des Motors für diese Seite: ihre Konsole, ihre Elemente und ihr Netzwerk.
 
-d-3xz2iwbw = Download aktualisieren
-    .doc = Schreibt, was die Seite zuletzt über einen ihrer Downloads gesagt hat, in den Eintrag der Seite, wie ihr Fenster es weitergibt, während die Übertragung läuft. Das Fenster ruft sie auf, nie eine Person, ein Agent oder ein Skript.
-d-3xz2iwbw-id = Id
-d-3xz2iwbw-state = Zustand
-d-3xz2iwbw-name = Name
-d-3xz2iwbw-url = URL
-d-3xz2iwbw-path = Pfad
-d-3xz2iwbw-retryable = Wiederholbar
-d-3xz2iwbw-received = Empfangen
-d-3xz2iwbw-total = Gesamt
-d-3xz2iwbw-error = Fehler
 
 d-7roz5txv = Verlauf merken
     .doc = Schreibt die Seiten, zu denen die Seite in eine Richtung gehen kann, in ihren Eintrag, wie ihr Fenster sie weitergibt: was das Menü dann neben Zurück und Vorwärts anbietet.
@@ -1802,14 +1773,12 @@ d-wzylglss = Benannte Erweiterung
     .w-extension = Erweiterung
 
 d-cyhcwuuf = Downloadzeile
-    .w-of = { $received } von { $total }
-    .w-downloaded = { $received } heruntergeladen
-    .w-waiting-for-where-to-save-it = Wartet darauf, wohin es gespeichert wird
-    .w-download-complete = Download abgeschlossen
+    .w-of = { $done } von { $total }
+    .w-downloaded = { $done } heruntergeladen
     .w-saved-to = Gespeichert in { $path }
     .w-the-download-failed = Der Download ist fehlgeschlagen
     .w-cancelled = Abgebrochen
-    .w-unknown-state = Unbekannter Zustand
+    .w-waiting-to-start = Wartet auf den Start
 
 d-mbgqkffs = Adressangebot
     .doc = Die Erweiterungsseite, die das Fenster der Seite neben dieser zeigt, wie es sie zuletzt meldete: die Seitenleiste der Erweiterung oder die Seite, auf der sie die Person anmelden wollte.
@@ -1987,3 +1956,61 @@ d-5vnoo4xz = Größenangabe
 
 d-azjhqpod = Herkunft von
     .w-https = https
+
+d-mhf455xb = Auftrag
+    .doc = Der Auftrag, der sie holt: ein erneuter Versuch startet einen anderen, den der Download stattdessen behält.
+
+d-dnspz2y2 = Downloadauftrag
+    .doc = Wo der Auftrag eines Downloads steht, wie der Auftrag es sagt: `running`, `done`, `failed` oder `cancelled`, wie viele Bytes von wie vielen (0, solange die Größe unbekannt ist), wo und unter welchem Namen er gespeichert wurde und warum er fehlschlug.
+    .noun = { $count ->
+        [one] Downloadauftrag
+       *[other] Downloadaufträge
+    }
+
+d-q5gkqwpu = Zustand
+
+d-sr3wciux = Erledigt
+
+d-r5unqai3 = Gesamt
+
+d-fmdfhyux = Pfad
+
+d-ba6qps55 = Name
+
+d-zmyv6bxj = Fehler
+
+d-dnspz2y2-filter-done = Erledigt
+
+d-dnspz2y2-filter-total = Gesamt
+
+d-jhemj4x6 = Downloadanfrage
+    .doc = Was der Browser seine Engine herunterladen lässt: die Adresse, den Namen, den die Seite vorschlug, und das Kennzeichen, unter dem das Fenster der Seite den Kontext der Anfrage aufbewahrt (die Cookies der Website reisen nie in einem Aufruf).
+    .noun = { $count ->
+        [one] Downloadanfrage
+       *[other] Downloadanfragen
+    }
+
+d-3dy7bucf = URL
+
+d-ova5zveb = Name
+
+d-e7uolvpg = Anfrage
+
+d-3gaxygjd = Downloads
+    .doc = Die Dateien, die aus jedem Fenster heruntergeladen wurden, die neueste zuletzt: jede überdauert die Seite, von der sie kam.
+
+d-vgktij3z = Download abbrechen
+    .doc = Stoppt einen laufenden Download: was er bisher gespeichert hat, wird entfernt.
+    .w-the-download-has-not-started = Der Download hat noch nicht begonnen
+    .w-cancelled = { $name } abgebrochen
+    .w-is-no-longer-downloading = { $name } wird nicht mehr heruntergeladen
+
+d-7jfn5jgm = Download wiederholen
+    .doc = Startet einen fehlgeschlagenen oder abgebrochenen Download erneut von vorn.
+    .w-downloading = { $name } wird heruntergeladen
+
+d-ntj7w6gz = Alle Downloads abbrechen
+    .doc = Stoppt jeden laufenden Download, aus jedem Fenster.
+    .w-every-download-was-stopped = Alle Downloads wurden gestoppt
+
+d-zhto4tgr = Download abbrechen~present

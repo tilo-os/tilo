@@ -233,6 +233,13 @@ fn device(context: &Context<'_>) -> Device {
         keep_content,
         read,
     )
+    .redeeming(redeem)
+}
+
+/// A request's context a window of this process handed over for a job to start with: the
+/// window's own, kept in this process and never in a record.
+fn redeem(_context: *mut c_void, handle: &str) -> Option<String> {
+    tilo_engine_loader::kept::redeem(handle)
 }
 
 /// The `Context` behind a callback's pointer. The pointer names the context for the call that

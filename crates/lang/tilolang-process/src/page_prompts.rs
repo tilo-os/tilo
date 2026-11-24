@@ -74,7 +74,7 @@ fn call_of(kind: &str, id: u32, facts: &serde_json::Value) -> Option<(&'static s
     })
 }
 
-/// What the page said of itself (a download moving, the pages it can go to), raised as the
+/// What the page said of itself (a download the person saved, the pages it can go to), raised as the
 /// app's call of its own action: the kind names the action and the note's other fields are its
 /// arguments. `true` when it said anything this reads.
 fn note(
@@ -84,7 +84,7 @@ fn note(
     mut send: impl FnMut(CollabRequest) -> bool,
 ) -> bool {
     let action = match kind {
-        "download" => "update_download",
+        "download" => "download",
         "history" => "remember_history",
         "open" => "open_from_page",
         "credential" => "remember_credential",
@@ -373,11 +373,10 @@ mod tests {
     /// What the page says of itself is the app's own action on it, run at once with the note's
     /// fields as its arguments.
     #[test]
-    fn a_download_moving_is_the_apps_own_update_on_the_page() {
+    fn a_saved_download_is_the_apps_own_download_from_the_page() {
         let mut prompts = PagePrompts::default();
-        let note = serde_json::json!({"note": "download", "id": 4, "state": "downloading",
-            "name": "report.pdf", "url": "https://example.org/report.pdf", "path": "",
-            "retryable": false, "received": 2048, "total": 8192, "error": ""});
+        let note = serde_json::json!({"note": "download", "name": "report.pdf",
+            "url": "https://example.org/report.pdf", "request": "0f3c"});
         let mut sent = Vec::new();
         assert!(prompts.take(
             note.to_string().as_bytes(),
@@ -397,14 +396,18 @@ mod tests {
             panic!("one call: {sent:?}");
         };
         assert_eq!(request.target.address.resource, PAGE);
-        assert_eq!(request.target.address.action, "update_download");
+        assert_eq!(request.target.address.action, "download");
         assert!(request.confirmation.is_none(), "a note is no question");
         let InvokeArgument::Json(arguments) = &request.argument else {
             panic!("arguments as JSON");
         };
-        assert_eq!(arguments["id"], 4);
-        assert_eq!(arguments["received"], 2048);
+        assert_eq!(arguments["url"], "https://example.org/report.pdf");
         assert_eq!(arguments["name"], "report.pdf");
+        assert_eq!(
+            arguments["request"], "0f3c",
+            "the call names the request's handle only"
+        );
+        assert!(arguments.get("cookies").is_none());
         assert!(
             arguments.get("note").is_none(),
             "the kind is the action, not an argument"

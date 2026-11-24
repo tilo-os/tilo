@@ -16,10 +16,39 @@ use crate::download::{self, Ask, Move, Stop};
 /// The one app this engine answers.
 pub const APP: &str = "so.tilo.browser";
 
-/// One download in flight: how to stop it, and the last move it told.
+/// One download this process started: how to stop it, and where it stands.
 struct Running {
     stop: Stop,
-    last: Mutex<(String, String)>,
+    standing: Mutex<Standing>,
+}
+
+/// Where a download stands, as its moves told it: every field, whichever move told it last.
+#[derive(Clone, serde::Serialize)]
+struct Standing {
+    state: &'static str,
+    done: u64,
+    total: u64,
+    path: String,
+    name: String,
+    error: String,
+}
+
+impl Standing {
+    fn moved(&mut self, moved: &Move) {
+        self.state = moved.state();
+        match moved {
+            Move::Running { done, total } => {
+                self.done = *done;
+                self.total = *total;
+            }
+            Move::Done { path, name } => {
+                self.path = path.to_string_lossy().into_owned();
+                self.name.clone_from(name);
+            }
+            Move::Failed { error } => self.error.clone_from(error),
+            Move::Cancelled => {}
+        }
+    }
 }
 
 fn jobs() -> &'static Mutex<BTreeMap<String, Arc<Running>>> {
@@ -37,38 +66,43 @@ fn call(_device: &Device, op: &str, _input: &str) -> Result<String, String> {
 /// # Errors
 ///
 /// An op that is no download, an ask that names no web address, or a device with no Downloads.
-fn start(_device: &Device, job: &str, op: &str, input: &str, sink: &JobSink) -> Result<(), String> {
+fn start(device: &Device, job: &str, op: &str, input: &str, sink: &JobSink) -> Result<(), String> {
     if op != "download" {
         return Err(format!("`{op}` is no op this device runs for {APP}"));
     }
-    let (ask, url) = Ask::read(input)?;
+    let (ask, url) = Ask::read(input, |handle| device.redeem(handle))?;
     let folder = tilo_paths::download_dir()
         .ok_or_else(|| "This device has no Downloads folder".to_owned())?;
     let running = Arc::new(Running {
         stop: Stop::default(),
-        last: Mutex::new(("running".to_owned(), r#"{"done":0,"total":0}"#.to_owned())),
+        standing: Mutex::new(Standing {
+            state: "running",
+            done: 0,
+            total: 0,
+            path: String::new(),
+            name: String::new(),
+            error: String::new(),
+        }),
     });
     jobs()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .insert(job.to_owned(), Arc::clone(&running));
-    let id = job.to_owned();
     // The sink stays the host's to read until the job tells it an ending move.
     let sink = *sink;
     let spawned = std::thread::Builder::new()
         .name("browser-download".into())
         .spawn(move || {
             let mut tell = |moved: &Move| {
-                let detail = moved.detail();
-                *running.last.lock().unwrap_or_else(PoisonError::into_inner) =
-                    (moved.state().to_owned(), detail.clone());
-                sink.moved(moved.state(), &detail);
+                running
+                    .standing
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .moved(moved);
+                sink.moved(moved.state(), &moved.detail());
             };
+            // The download stays known once it ended, so where it stands can still be read.
             download::run(&ask, &url, &folder, &running.stop, &mut tell);
-            jobs()
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&id);
         });
     if let Err(error) = spawned {
         jobs()
@@ -80,27 +114,24 @@ fn start(_device: &Device, job: &str, op: &str, input: &str, sink: &JobSink) -> 
     Ok(())
 }
 
-/// Where a download stands, as its last move said.
+/// Where a download stands: every field, as its moves told them.
 ///
 /// # Errors
 ///
-/// No such download runs on this device.
+/// No such download was started in this process.
 fn status(_device: &Device, job: &str) -> Result<String, String> {
     let running = jobs()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(job)
         .cloned()
-        .ok_or_else(|| format!("no download `{job}` runs on this device"))?;
-    let (state, detail) = running
-        .last
+        .ok_or_else(|| format!("no download `{job}` was started here"))?;
+    let standing = running
+        .standing
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
-    let mut said: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&detail).unwrap_or_default();
-    said.insert("state".to_owned(), state.into());
-    Ok(serde_json::Value::Object(said).to_string())
+    serde_json::to_string(&standing).map_err(|error| error.to_string())
 }
 
 /// Stop a download: false when it is not this engine's or it had ended.
@@ -111,8 +142,16 @@ fn cancel(_device: &Device, job: &str) -> bool {
         .get(job)
         .cloned();
     running.is_some_and(|running| {
-        running.stop.stop();
-        true
+        let going = running
+            .standing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .state
+            == "running";
+        if going {
+            running.stop.stop();
+        }
+        going
     })
 }
 
@@ -169,7 +208,7 @@ pub fn self_check() -> Result<String, String> {
         std::env::temp_dir().join(format!("tilo-browser-engine-check-{}", std::process::id()));
     let input =
         serde_json::json!({ "url": format!("http://127.0.0.1:{port}/check.txt") }).to_string();
-    let (ask, url) = Ask::read(&input)?;
+    let (ask, url) = Ask::read(&input, |_| None)?;
     let ended = download::run(&ask, &url, &folder, &Stop::default(), &mut |_| {});
     let _ = server.join();
     let read = match &ended {

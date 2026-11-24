@@ -383,7 +383,11 @@ mod tests {
         assert_eq!(rows(&omnibox), None);
         omnibox.typed("kw ", Some(&kw), &shared);
         assert_eq!(rows(&omnibox), Some(vec![pair("kw finder", "")]));
-        omnibox.typed("kw ca", Some(&addressed(&kw.id, "kw finder", "ca")), &shared);
+        omnibox.typed(
+            "kw ca",
+            Some(&addressed(&kw.id, "kw finder", "ca")),
+            &shared,
+        );
         assert!(!omnibox.apply(&suggestions(1, &["old"])));
         assert!(omnibox.apply(&suggestions(2, &["cat", "ca"])));
         assert!(omnibox.apply(&WebViewEvent::ExtensionOmniboxDefault {
@@ -402,9 +406,17 @@ mod tests {
         omnibox.entered("kw ca");
         assert_eq!(rows(&omnibox), None);
         let before = told(&engine).len();
-        assert!(!omnibox.typed("kw ca", Some(&addressed(&kw.id, "kw finder", "ca")), &shared));
+        assert!(!omnibox.typed(
+            "kw ca",
+            Some(&addressed(&kw.id, "kw finder", "ca")),
+            &shared
+        ));
         assert_eq!(told(&engine).len(), before);
-        assert!(omnibox.typed("kw cat", Some(&addressed(&kw.id, "kw finder", "cat")), &shared));
+        assert!(omnibox.typed(
+            "kw cat",
+            Some(&addressed(&kw.id, "kw finder", "cat")),
+            &shared
+        ));
         assert_eq!(
             told(&engine)[before],
             (kw.id.clone(), OmniboxInput::Started)

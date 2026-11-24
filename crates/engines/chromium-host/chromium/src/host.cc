@@ -274,6 +274,29 @@ double Number(CefRefPtr<CefDictionaryValue> d,const char* key) {
   return d->GetType(key)==VTYPE_DOUBLE ? d->GetDouble(key) : d->GetInt(key);
 }
 class Client;
+// The cookies a tab's site sets for a download's address, HttpOnly ones included, handed to
+// the tab's window with the download once the jar has been read: the window keeps them in its
+// own process for the Browser's download to fetch the file with.
+class DownloadRequest final : public CefCookieVisitor {
+ public:
+  DownloadRequest(int tab,int id,std::string url,std::string name,std::string referrer)
+      :tab_(tab),id_(id),url_(std::move(url)),name_(std::move(name)),referrer_(std::move(referrer)) {}
+  ~DownloadRequest() override;
+  bool Visit(const CefCookie& cookie,int,int,bool&) override {
+    if(!cookies_.empty())cookies_+="; ";
+    cookies_+=CefString(&cookie.name).ToString()+"="+CefString(&cookie.value).ToString();
+    return true;
+  }
+ private:
+  int tab_,id_;std::string url_,name_,referrer_,cookies_;
+  IMPLEMENT_REFCOUNTING(DownloadRequest);
+};
+// Told once every cookie was visited, or at once when the jar holds none for the address.
+DownloadRequest::~DownloadRequest() {
+  auto d=CefDictionaryValue::Create();d->SetInt("tab",tab_);d->SetInt("id",id_);
+  d->SetString("url",url_);d->SetString("name",name_);d->SetString("referrer",referrer_);
+  d->SetString("cookies",cookies_);d->SetString("user_agent","");Event("download_request",d);
+}
 class FaviconDownload final : public CefDownloadImageCallback {
  public:
   FaviconDownload(int tab,uint64_t generation,std::string page):tab_(tab),generation_(generation),page_(std::move(page)) {}
@@ -2467,9 +2490,6 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   const auto reason=[&]{return d->GetType("reason")==VTYPE_STRING?d->GetString("reason").ToString():std::string();};
   if(op=="download_answer") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"),reason());return; }
   if(op=="departure_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow"),reason()); return; }
-  if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
-  if(op=="download_cancel_all") {downloads->CancelAll();return;}
-  if(op=="download_retry") {auto found=clients.find(id);if(found!=clients.end() && found->second->accepts_downloads())downloads->Retry(d->GetInt("id"),found->second->browser_);return;}
   if(op=="resize") TraceGeometry("resize-dispatch",id,d->GetInt("width"),d->GetInt("height"),Number(d,"scale_factor"));
   auto found=clients.find(id);if(found!=clients.end()) found->second->Command(d);
 }
@@ -2614,6 +2634,16 @@ class App final : public CefApp,public CefBrowserProcessHandler {
       [](int id){DownloadOwnerIdle(id);},
       []{PublishDownloadRuntime();},
       [](int id){auto found=clients.find(id);return found!=clients.end()?found->second->HoldWaitMs():int64_t{0};},note_hold);
+    // A saved download goes to the tab's window with its site's cookies; a tab that closed
+    // meanwhile has no window to take it.
+    downloads->SetFetch([](int owner,int id,const std::string& url,const std::string& name){
+      auto found=clients.find(owner);if(found==clients.end() || !found->second->browser_)return;
+      auto browser=found->second->browser_;
+      CefRefPtr<DownloadRequest> request=new DownloadRequest(owner,id,url,name,browser->GetMainFrame()->GetURL().ToString());
+      auto jar=browser->GetHost()->GetRequestContext()->GetCookieManager(nullptr);
+      // A jar that cannot be read hands the download over without cookies, as it releases the visitor.
+      if(jar)jar->VisitUrlCookies(url,true,request);
+    });
     CreateTab(1);PublishDownloadRuntime();if(clients.empty()) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);
@@ -2802,7 +2832,6 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="stop_find") return true;
   if(op=="exit_fullscreen") return no_payload();
   if(op=="zoom") return number("level") && Number(d,"level")>=-5 && Number(d,"level")<=9;
-  if(op=="download_cancel" || op=="download_retry") return type("id",VTYPE_INT) && d->GetInt("id")>0;
   if(op=="modifiers") return type("ctrl",VTYPE_BOOL) && type("shift",VTYPE_BOOL) && type("alt",VTYPE_BOOL) && type("meta",VTYPE_BOOL);
   if(op=="focus") return type("focused",VTYPE_BOOL);
   if(op=="resize") return type("width",VTYPE_INT) && type("height",VTYPE_INT) && number("scale_factor");
@@ -3187,7 +3216,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id")return false;
     return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0;
   }
-  return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="download_cancel_all" || op=="shutdown";
+  return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="shutdown";
 }
 void DevToolsReply(int tab,int request_id,bool ok,const std::string& body) {
   auto d=CefDictionaryValue::Create();d->SetInt("tab",tab);d->SetInt("request_id",request_id);d->SetBool("ok",ok);d->SetString("body",body);Event("devtools_result",d);
