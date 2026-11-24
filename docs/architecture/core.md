@@ -1222,7 +1222,11 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   still names the caller, and every projection shows the declared effects.
   A device placed for one record alone, such as a hosted Browser's environment,
   carries that confinement in its certificate: the placing host, for the person,
-  certifies it for that one record, short-lived and refused once stopped. Every
+  certifies it for that one record, short-lived and refused once stopped. The
+  host signs with its own device key: as one of the person's devices, or under
+  a placement grant the person gave that device for named records, revoked like
+  any grant. No separate key signs in the person's place, and a host with
+  neither refuses to place. Every
   replica admits its writes to that record and nothing else, with no member row
   and no keys, and history names the person. It never enters a workspace or
   redeems an invitation.
