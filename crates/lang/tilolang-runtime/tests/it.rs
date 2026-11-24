@@ -28,6 +28,8 @@ mod e2e_abi;
 mod e2e_api_tester;
 #[path = "e2e_apps.rs"]
 mod e2e_apps;
+#[path = "e2e_backups.rs"]
+mod e2e_backups;
 #[path = "e2e_blocks.rs"]
 mod e2e_blocks;
 #[path = "e2e_calculator.rs"]

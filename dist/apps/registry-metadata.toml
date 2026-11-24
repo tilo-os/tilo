@@ -7,8 +7,6 @@
 description = "See what changed in a workspace while you were away, who changed it, and replay or undo it."
 [apps.assistant]
 description = "Talk to your assistant in one main chat, follow its sub-agents and tasks, and see what it runs on."
-[apps.backups]
-description = "Protect important work with clear, restorable backups."
 [apps.browser]
 description = "Browse the web with built-in ad blocking, private windows, and Chrome extensions."
 [apps.calculator]

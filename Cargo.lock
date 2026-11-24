@@ -964,51 +964,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "backups"
-version = "0.1.0"
-dependencies = [
- "backups-model",
- "hex",
- "host-fs",
- "jiff",
- "runtime-dylib",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-history",
- "tilo-settings-model",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "walkdir",
- "workspace-hack",
-]
-
-[[package]]
-name = "backups-model"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "serde_json",
- "tilo-paths",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
-name = "backups-model-wasm"
-version = "0.1.0"
-dependencies = [
- "backups-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "bao-tree"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -16062,6 +16017,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-backups-engine"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "host-fs",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "walkdir",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-bluetooth-agent"
 version = "0.1.0"
 dependencies = [
@@ -18627,7 +18596,6 @@ name = "tilo-models-wasm"
 version = "0.1.0"
 dependencies = [
  "assistant-model-wasm",
- "backups-model-wasm",
  "camera-model-wasm",
  "console-model-wasm",
  "diffmerge-model-wasm",
@@ -22430,6 +22398,7 @@ dependencies = [
  "tilo-app-window",
  "tilo-archive",
  "tilo-automerge-fork",
+ "tilo-backups-engine",
  "tilo-canvas-engine",
  "tilo-capture",
  "tilo-clipboard",
@@ -26522,9 +26491,6 @@ dependencies = [
  "az",
  "backon",
  "backtrace",
- "backups",
- "backups-model",
- "backups-model-wasm",
  "bao-tree",
  "base16ct 0.2.0",
  "base16ct 1.0.0",

@@ -1476,7 +1476,7 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "What the person labelled it with when they made it (`customer_id` →\n`cus_8121`), read by their own keys alone."
+            "description": "What the person labelled it with when they made it (`customer_id` \u2192\n`cus_8121`), read by their own keys alone."
           },
           "unattended": {
             "type": "boolean",
@@ -1710,7 +1710,7 @@
               "string",
               "null"
             ],
-            "description": "The invocation: what `…/invocations/{invocation}` follows."
+            "description": "The invocation: what `\u2026/invocations/{invocation}` follows."
           },
           "path": {
             "type": [
@@ -2040,7 +2040,7 @@
           "tool_choice",
           "max_output_tokens"
         ],
-        "description": "One turn asked of the person's own model, which the server that keeps\ntheir workspace asks with the key their vault keeps there: the\nconversation as the model service takes it. The answer streams as\nserver-sent events: `text` and `reasoning` each carry `{\"text\": …}`, what\nthe model wrote since the event before; `answer` ends the stream with the\nwhole turn, `{\"Ok\": {\"message\", \"stop_reason\", \"usage\"}}` or\n`{\"Err\": {\"kind\", \"message\"}}`, the kind telling a caller what to do\n(`no_provider`: none set up yet; `authentication`: no key kept); `error`\nends it with a refusal of the API's own shape."
+        "description": "One turn asked of the person's own model, which the server that keeps\ntheir workspace asks with the key their vault keeps there: the\nconversation as the model service takes it. The answer streams as\nserver-sent events: `text` and `reasoning` each carry `{\"text\": \u2026}`, what\nthe model wrote since the event before; `answer` ends the stream with the\nwhole turn, `{\"Ok\": {\"message\", \"stop_reason\", \"usage\"}}` or\n`{\"Err\": {\"kind\", \"message\"}}`, the kind telling a caller what to do\n(`no_provider`: none set up yet; `authentication`: no key kept); `error`\nends it with a refusal of the API's own shape."
       },
       "tilo.workspace.agent.create-agent.Arguments": {
         "type": "object",
@@ -2419,18 +2419,6 @@
         },
         "required": [
           "agent"
-        ],
-        "description": ""
-      },
-      "backups.workspace.verify.Arguments": {
-        "type": "object",
-        "properties": {
-          "snapshot_id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "snapshot_id"
         ],
         "description": ""
       },
@@ -29484,7 +29472,7 @@
         "required": [
           "from"
         ],
-        "description": "Takes in a message that reached the workspace from outside its accounts' servers: one moved\nin from another mail program (`tilo migrate`), or handed over through the API. It is kept\nwith the mail held outside the accounts, in the conversation it belongs to (`conversation`,\nthe Message-ID the conversation began with) and the folder it was in, read or not. `from` is\nthe sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the\ncontent reference of the message as it was sent, less its large parts: `parts` says where\neach of those stands in it and which pieces of content it is in, one JSON text each\n(`{\"at\": 120, \"size\": 4096, \"pieces\": [\"tilo.content:…\"]}`). `attachments` are the files it\ncarries, each content the workspace holds. A message already held under its Message-ID is\nanswered as it is, so delivering it again keeps it once."
+        "description": "Takes in a message that reached the workspace from outside its accounts' servers: one moved\nin from another mail program (`tilo migrate`), or handed over through the API. It is kept\nwith the mail held outside the accounts, in the conversation it belongs to (`conversation`,\nthe Message-ID the conversation began with) and the folder it was in, read or not. `from` is\nthe sender as a header writes it (`Ada Lovelace <ada@example.com>`), and `original` the\ncontent reference of the message as it was sent, less its large parts: `parts` says where\neach of those stands in it and which pieces of content it is in, one JSON text each\n(`{\"at\": 120, \"size\": 4096, \"pieces\": [\"tilo.content:\u2026\"]}`). `attachments` are the files it\ncarries, each content the workspace holds. A message already held under its Message-ID is\nanswered as it is, so delivering it again keeps it once."
       },
       "tl.so.tilo.mail.Mail.open_message_file.Arguments": {
         "type": "object",
@@ -30991,7 +30979,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a\npicture is one zip — `Q3 plan.md` and `Q3 plan/images/fox.png` — because Markdown reaches a\npicture by a path and by nothing else; a note of words alone is that Markdown itself."
+        "description": "A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a\npicture is one zip \u2014 `Q3 plan.md` and `Q3 plan/images/fox.png` \u2014 because Markdown reaches a\npicture by a path and by nothing else; a note of words alone is that Markdown itself."
       },
       "tl.so.tilo.notes.Notebook.$create.Arguments": {
         "type": "object",
@@ -31109,7 +31097,7 @@
           }
         },
         "required": [],
-        "description": "Starts a note titled `title` and saying `body` (Markdown) when the caller knows them already.\nStarted from the notebook both are empty: what is typed first names it. It stands under\n`parent` (at the top of the tree when none) and — where a caller names the note it belongs\nafter (`after`) — at that place among the notes there; without one it comes after the notes\nalready under `parent`, never at the foot of a tree it does not stand in."
+        "description": "Starts a note titled `title` and saying `body` (Markdown) when the caller knows them already.\nStarted from the notebook both are empty: what is typed first names it. It stands under\n`parent` (at the top of the tree when none) and \u2014 where a caller names the note it belongs\nafter (`after`) \u2014 at that place among the notes there; without one it comes after the notes\nalready under `parent`, never at the foot of a tree it does not stand in."
       },
       "tl.so.tilo.notes.Notebook.move_to.Arguments": {
         "type": "object",
@@ -31561,7 +31549,7 @@
         "required": [
           "file"
         ],
-        "description": "Imports a Markdown file as a note, or opens the note that file already made: a note keeps the\naddress of the file it came from, so importing the same file twice makes one note. The note\nstands under the note of the folder its file's path names — `Q3 plan/Ideas.md` under\n`Q3 plan.md` — and at the top of the tree when its path names no folder. Its title is the\ndocument's first heading, or the file's name; the heading it says the title with is not said\nagain in its body."
+        "description": "Imports a Markdown file as a note, or opens the note that file already made: a note keeps the\naddress of the file it came from, so importing the same file twice makes one note. The note\nstands under the note of the folder its file's path names \u2014 `Q3 plan/Ideas.md` under\n`Q3 plan.md` \u2014 and at the top of the tree when its path names no folder. Its title is the\ndocument's first heading, or the file's name; the heading it says the title with is not said\nagain in its body."
       },
       "tl.so.tilo.notes.Notebook.import_page.Arguments": {
         "type": "object",
@@ -31615,7 +31603,7 @@
           "title",
           "markdown"
         ],
-        "description": "Imports a note given as words rather than a file: its title, its body as Markdown, the\npictures it shows and the notes its links lead to. A caller holding a page as text — a\nscript, an agent, a migration — makes the note without writing a file first: `pictures` are\nthe files the body names as `![alt](name)`, each by the name it came in as, which the note\nkeeps so an export writes it beside the note again; `links` names, by the path a link leads\nto, the note it opens. The note stands at the top of the tree."
+        "description": "Imports a note given as words rather than a file: its title, its body as Markdown, the\npictures it shows and the notes its links lead to. A caller holding a page as text \u2014 a\nscript, an agent, a migration \u2014 makes the note without writing a file first: `pictures` are\nthe files the body names as `![alt](name)`, each by the name it came in as, which the note\nkeeps so an export writes it beside the note again; `links` names, by the path a link leads\nto, the note it opens. The note stands at the top of the tree."
       },
       "tl.so.tilo.notes.Notebook.import_archive.Arguments": {
         "type": "object",
@@ -33036,7 +33024,7 @@
           "item",
           "position"
         ],
-        "description": "Puts a dock item at `position`, counted from the leading edge: what a drag that names a\nplace gives. An item the person's document does not hold yet — an app running on the dock\nthat they never pinned, which the dock drew from the shell — is pinned where it lands, so\nmoving an app they already run keeps it on the dock after it closes."
+        "description": "Puts a dock item at `position`, counted from the leading edge: what a drag that names a\nplace gives. An item the person's document does not hold yet \u2014 an app running on the dock\nthat they never pinned, which the dock drew from the shell \u2014 is pinned where it lands, so\nmoving an app they already run keeps it on the dock after it closes."
       },
       "tl.so.tilo.shell.Shell.pin.Arguments": {
         "type": "object",
@@ -33118,7 +33106,7 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": "The style's own settings, and the two ways of changing a style (`docs/designs/app-language/\nshell.md` §6): without an agent, in the one place a person's settings live, and with an agent,\nby the same actions the person's controls run.\n\nEvery setting here is plain tilolang state with a default (`chrome.tl`'s `Shell` document), so\na person who never touches it gets the style as it ships, and the values live in the\nlayout's own document, synced with the person's devices, with history and undo.\n\nEach setting is one action, so an agent — the canvas conversation or the REPL — changes it\nwith the same call a press does, attributed and undoable: `shell.set_dock_edge(shell.shell,\nedge: shell.Edge.left)`. The style's settings stand over the shell (`style_panel`), opened by\nthe bar's style menu (`style_menu`, `strips.tl`): a person changes the shell they look at\nwithout leaving it, as `shell.md` §6 asks.\n\nOpens the chosen style's settings over the shell: what the bar's style menu's entry runs, and\nwhat the REPL or the canvas agent calls too."
+        "description": "The style's own settings, and the two ways of changing a style (`docs/designs/app-language/\nshell.md` \u00a76): without an agent, in the one place a person's settings live, and with an agent,\nby the same actions the person's controls run.\n\nEvery setting here is plain tilolang state with a default (`chrome.tl`'s `Shell` document), so\na person who never touches it gets the style as it ships, and the values live in the\nlayout's own document, synced with the person's devices, with history and undo.\n\nEach setting is one action, so an agent \u2014 the canvas conversation or the REPL \u2014 changes it\nwith the same call a press does, attributed and undoable: `shell.set_dock_edge(shell.shell,\nedge: shell.Edge.left)`. The style's settings stand over the shell (`style_panel`), opened by\nthe bar's style menu (`style_menu`, `strips.tl`): a person changes the shell they look at\nwithout leaving it, as `shell.md` \u00a76 asks.\n\nOpens the chosen style's settings over the shell: what the bar's style menu's entry runs, and\nwhat the REPL or the canvas agent calls too."
       },
       "tl.so.tilo.shell.Shell.close_style_settings.Arguments": {
         "type": "object",
@@ -33408,7 +33396,7 @@
           "strip",
           "text"
         ],
-        "description": "Adds a place showing a search for `text` to `strip`, with the two matches the notes app\nanswered, and returns the place's key: the state a place stands in until the person chooses\none of the resources it found (shell.md §8)."
+        "description": "Adds a place showing a search for `text` to `strip`, with the two matches the notes app\nanswered, and returns the place's key: the state a place stands in until the person chooses\none of the resources it found (shell.md \u00a78)."
       },
       "tl.so.tilo.shell.Layout.tab_place_here.Arguments": {
         "type": "object",
@@ -33482,7 +33470,7 @@
           "s",
           "target"
         ],
-        "description": "Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags\none window's bar onto another's to make its tabs, and the window's menu's \"Move into … as a\ntab\" runs the same arranging action. The place lands after the strip's other tabs and\ncomes to the front of them, so the window shows what was dropped on it. A place already in\nthis strip is only brought to the front, so dropping a window on itself raises it rather than\nopening a second place. The strip comes forward with it."
+        "description": "Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags\none window's bar onto another's to make its tabs, and the window's menu's \"Move into \u2026 as a\ntab\" runs the same arranging action. The place lands after the strip's other tabs and\ncomes to the front of them, so the window shows what was dropped on it. A place already in\nthis strip is only brought to the front, so dropping a window on itself raises it rather than\nopening a second place. The strip comes forward with it."
       },
       "tl.so.tilo.shell.Layout.reorder_place.Arguments": {
         "type": "object",
@@ -34078,7 +34066,7 @@
           "key",
           "size"
         ],
-        "description": "Keeps how tall the hugging place `key` is drawn now, `size` carrying its height in canvas\npixels as the map lays it out: the free area under it on the canvas is what the person sees\nthere (canvas.md §1, §7), though the place could grow into it. View state the person's own\ncanvas reports, never a step of arranging: Undo leaves it alone."
+        "description": "Keeps how tall the hugging place `key` is drawn now, `size` carrying its height in canvas\npixels as the map lays it out: the free area under it on the canvas is what the person sees\nthere (canvas.md \u00a71, \u00a77), though the place could grow into it. View state the person's own\ncanvas reports, never a step of arranging: Undo leaves it alone."
       },
       "tl.so.tilo.shell.place_dropped.Arguments": {
         "type": "object",
@@ -34126,7 +34114,7 @@
           "target",
           "at"
         ],
-        "description": "Puts a resource dropped on the canvas where it was let go. A place that already stands on the\ncanvas — the place whose handle was dragged — moves to the point it was let go at, through\nits own `position` action, so a drag that ends on the canvas moves the place and never stands\na second one. Any other resource — a message's attachment, a search hit, a row of another\nview — is placed at that point through the system's own `place`, which is what an agent's\n`place_at` runs. Either is one arranging step of the person's, attributed and undoable."
+        "description": "Puts a resource dropped on the canvas where it was let go. A place that already stands on the\ncanvas \u2014 the place whose handle was dragged \u2014 moves to the point it was let go at, through\nits own `position` action, so a drag that ends on the canvas moves the place and never stands\na second one. Any other resource \u2014 a message's attachment, a search hit, a row of another\nview \u2014 is placed at that point through the system's own `place`, which is what an agent's\n`place_at` runs. Either is one arranging step of the person's, attributed and undoable."
       },
       "tl.so.tilo.shell.open_first.Arguments": {
         "type": "object",
@@ -34236,7 +34224,7 @@
           "place",
           "found"
         ],
-        "description": "Show `found` in the place `place` while it shows a query: the same place, now the found\nresource (shell.md §8)."
+        "description": "Show `found` in the place `place` while it shows a query: the same place, now the found\nresource (shell.md \u00a78)."
       },
       "tl.so.tilo.shell.query_retry.Arguments": {
         "type": "object",
@@ -36999,7 +36987,7 @@
       "key": {
         "type": "http",
         "scheme": "bearer",
-        "description": "A key of the person's: `tilo_sk_…`"
+        "description": "A key of the person's: `tilo_sk_\u2026`"
       }
     },
     "parameters": {
@@ -37127,12 +37115,6 @@
       "resource": "tilo.workspace.agent",
       "action": "set-sub-agent-limits",
       "arguments": "#/components/schemas/tilo.workspace.agent.set-sub-agent-limits.Arguments"
-    },
-    {
-      "app": "so.tilo.backups",
-      "resource": "backups.workspace",
-      "action": "verify",
-      "arguments": "#/components/schemas/backups.workspace.verify.Arguments"
     },
     {
       "app": "so.tilo.browser",

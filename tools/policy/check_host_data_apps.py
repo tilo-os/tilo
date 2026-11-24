@@ -31,7 +31,6 @@ PLANS = Path("tools/screenshots")
 # Apps whose manifest grants them the machine but that show only what the
 # person opens in them, never the machine by themselves.
 EXCEPTIONS = {
-    "backups": "shows the backup location the person chose, nothing until then",
     "code-editor": "shows the project the person opens, nothing until then",
 }
 

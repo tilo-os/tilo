@@ -1,3 +1,0 @@
-## Resources
-
-backups-workspace = Sicherungen

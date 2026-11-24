@@ -731,6 +731,7 @@ impl Platform for HostPlatform {
             if app == crate::print_centre_engine::APP {
                 return crate::print_centre_engine::call(self, app, op, input);
             }
+            crate::backups_engine::register();
             crate::feed_engine::register();
             crate::weather_engine::register();
         }
@@ -756,6 +757,7 @@ impl Platform for HostPlatform {
             if app == crate::print_centre_engine::APP {
                 return crate::print_centre_engine::start(self, app, op, input);
             }
+            crate::backups_engine::register();
             crate::feed_engine::register();
             crate::weather_engine::register();
         }
@@ -787,6 +789,7 @@ impl Platform for HostPlatform {
     fn engine_status(&self, job: &str) -> Result<String, String> {
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
+            crate::backups_engine::register();
             crate::feed_engine::register();
             crate::weather_engine::register();
             if let Ok(status) = tilo_api_client::status(job)
@@ -806,6 +809,7 @@ impl Platform for HostPlatform {
     fn engine_cancel(&self, job: &str) -> bool {
         #[cfg(any(target_os = "linux", all(target_os = "macos", target_arch = "aarch64")))]
         {
+            crate::backups_engine::register();
             crate::feed_engine::register();
             crate::weather_engine::register();
             if tilo_api_client::cancel(job)

@@ -87,9 +87,6 @@ doc = false
 "az-1_3_0" = { package = "az", version = "^1.3.0", default-features = false, features = [] }
 "backon-1_6_0" = { package = "backon", version = "^1.6.0", default-features = false, features = ["default", "gloo-timers-sleep", "std", "std-blocking-sleep", "tokio", "tokio-sleep"] }
 "backtrace-0_3_76" = { package = "backtrace", version = "^0.3.76", default-features = false, features = ["default", "std"] }
-"backups" = { path = "../../apps/backups", default-features = false, features = [] }
-"backups-model" = { path = "../../apps/backups-model", default-features = false, features = [] }
-"backups-model-wasm" = { path = "../../apps/backups-model-wasm", default-features = false, features = [] }
 "bao-tree-0_16_0" = { package = "bao-tree", version = "^0.16.0", default-features = false, features = ["experimental-mixed", "fs", "serde", "tokio_fsm", "validate"] }
 "base16ct-0_2_0" = { package = "base16ct", version = "^0.2.0", default-features = false, features = ["alloc"] }
 "base16ct-1_0_0" = { package = "base16ct", version = "^1.0.0", default-features = false, features = ["alloc"] }
@@ -2866,9 +2863,6 @@ doc = false
 "az-1_3_0" = { package = "az", version = "^1.3.0", default-features = false, features = [] }
 "backon-1_6_0" = { package = "backon", version = "^1.6.0", default-features = false, features = ["default", "gloo-timers-sleep", "std", "std-blocking-sleep", "tokio", "tokio-sleep"] }
 "backtrace-0_3_76" = { package = "backtrace", version = "^0.3.76", default-features = false, features = ["default", "std"] }
-"backups" = { path = "../../apps/backups", default-features = false, features = [] }
-"backups-model" = { path = "../../apps/backups-model", default-features = false, features = [] }
-"backups-model-wasm" = { path = "../../apps/backups-model-wasm", default-features = false, features = [] }
 "bao-tree-0_16_0" = { package = "bao-tree", version = "^0.16.0", default-features = false, features = ["experimental-mixed", "fs", "serde", "tokio_fsm", "validate"] }
 "base16ct-0_2_0" = { package = "base16ct", version = "^0.2.0", default-features = false, features = ["alloc"] }
 "base16ct-1_0_0" = { package = "base16ct", version = "^1.0.0", default-features = false, features = ["alloc"] }

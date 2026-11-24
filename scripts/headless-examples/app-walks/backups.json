@@ -1,0 +1,79 @@
+{
+  "app": "backups",
+  "said": "Backups",
+  "family": "backups",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.backups",
+    "package": "backups"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Backups on an empty workspace",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "setup",
+      "said": "A first run asks for a folder to protect",
+      "ops": {
+        "tl": [
+          {
+            "wait_for": "Set up Backups"
+          },
+          {
+            "wait_for": "Choose a folder to protect and where its snapshots go."
+          }
+        ]
+      }
+    },
+    {
+      "id": "picker",
+      "said": "Choosing the folder opens the folder picker",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Choose the folder to protect"
+            ]
+          },
+          {
+            "wait_for": "Use this folder"
+          },
+          {
+            "wait_for": "Folders"
+          }
+        ]
+      }
+    },
+    {
+      "id": "leave",
+      "said": "The picker can be left without changing anything",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "Cancel"
+            ]
+          },
+          {
+            "wait_for": "Set up Backups"
+          }
+        ]
+      }
+    }
+  ]
+}

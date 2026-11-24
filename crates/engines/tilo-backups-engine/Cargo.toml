@@ -1,0 +1,27 @@
+[package]
+name = "tilo-backups-engine"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Keeps the snapshots a Backups app asks for: a checksummed copy of a folder, verified, restored atomically and pruned by a retention policy."
+
+[dependencies]
+# The device's own file system: paths, modes and symbolic links.
+host-fs = { path = "../../core/host-fs" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

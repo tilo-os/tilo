@@ -194,7 +194,7 @@ pub fn create_snapshot(
     let (source, destination) = validate_paths(source, destination)?;
     let snapshots = prepare_repository(&destination)?.join(SNAPSHOTS_DIR);
     fs::create_dir_all(&snapshots)?;
-    let now = ui::time::try_unix_now()
+    let now = unix_now()
         .ok_or_else(|| BackupError::InvalidSnapshot("System clock is before 1970".into()))?;
     let mut suffix = 0_u32;
     let (id, stage, final_path) = loop {
@@ -876,11 +876,12 @@ fn create_symlink(target: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The local civil time `unix_seconds` names, when it is a representable instant.
-fn local_time(unix_seconds: u64) -> Option<jiff::civil::DateTime> {
-    let seconds = i64::try_from(unix_seconds).ok()?;
-    let utc = jiff::Timestamp::from_second(seconds).ok()?;
-    Some(utc.to_zoned(jiff::tz::TimeZone::system()).datetime())
+/// The seconds since 1970 now, as the device's clock says.
+fn unix_now() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_secs())
 }
 /// Project a real local repository into the dashboard model.
 #[must_use]
@@ -898,22 +899,21 @@ pub fn catalog_from_local(
         || destination.to_string_lossy().into_owned(),
         |name| name.to_string_lossy().into_owned(),
     );
-    let now = ui::clock::local_now().datetime();
     let snapshots = manifests
         .iter()
         .map(|manifest| Snapshot {
             id: manifest.id.clone(),
             source_id: "local-source".into(),
             dest_id: "local-destination".into(),
-            taken: local_time(manifest.created_unix_seconds).unwrap_or(now),
-            label: None,
+            taken_unix_seconds: manifest.created_unix_seconds,
+            label: String::new(),
             kind: SnapType::Unknown,
             retention: Retention::Unknown,
             size_bytes: manifest.bytes,
             delta_bytes: manifest.bytes,
             files_changed: manifest.files.min(u64::from(u32::MAX)) as u32,
             status: SnapStatus::Complete,
-            failure: None,
+            failure: String::new(),
             files: manifest
                 .entries
                 .iter()
@@ -924,7 +924,11 @@ pub fn catalog_from_local(
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default(),
-                    size: matches!(entry.kind, EntryKind::File).then_some(entry.size),
+                    size: if matches!(entry.kind, EntryKind::File) {
+                        entry.size
+                    } else {
+                        0
+                    },
                     is_dir: matches!(entry.kind, EntryKind::Directory),
                 })
                 .collect(),
@@ -947,7 +951,7 @@ pub fn catalog_from_local(
             name: destination_label,
             kind: DestKind::LocalFolder,
             used_bytes: used,
-            total_bytes: None,
+            total_bytes: 0,
             encrypted: false,
             health: Health::Unknown,
         }],

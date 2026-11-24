@@ -7122,7 +7122,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["activity", "api-tester", "apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "code-editor", "containers", "db-client", "devices", "disks", "displays-across-devices", "file-explorer", "git-client", "hex-editor", "monitor", "music", "notes", "passwords", "print-centre", "scratchpad", "settings", "shell", "snippets", "store", "tube", "video-player", "weather"]
+app = ["activity", "api-tester", "apps", "backups", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "code-editor", "containers", "db-client", "devices", "disks", "displays-across-devices", "file-explorer", "git-client", "hex-editor", "monitor", "music", "notes", "passwords", "print-centre", "scratchpad", "settings", "shell", "snippets", "store", "tube", "video-player", "weather"]
 
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the
 # frame that shows its window: the cold open and each open after a quit, as the walks of the apps

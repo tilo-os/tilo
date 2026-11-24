@@ -17,7 +17,6 @@
 export * as activity from "./activity.ts";
 export * as apiTester from "./api_tester.ts";
 export * as assistant from "./assistant.ts";
-export * as backups from "./backups.ts";
 export * as browser from "./browser.ts";
 export * as calculator from "./calculator.ts";
 export * as calendar from "./calendar.ts";
