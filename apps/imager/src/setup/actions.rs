@@ -2,8 +2,8 @@
 //! rows it publishes.
 
 use tilo_actions::ResourcePresentation;
-use ui::framework::{EffectStatus, LiveRow};
-use ui::tilo_resource::{self, ActionRef, Effect, RowBindings};
+use tilo_resource::{self, ActionRef, Effect, RowBindings};
+use tilo_resource::{EffectStatus, LiveRow};
 
 pub const SETUP_ROW_ID: &str = "imager.setup";
 

@@ -1,10 +1,9 @@
 use super::visual_tests::control;
 use super::*;
-use crate::resource::ImagerShell;
-use ui::framework::testing::TestApp;
+use crate::hosting::testing::TestHost;
 
-fn fixture() -> TestApp<ImagerShell> {
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+fn fixture() -> TestHost {
+    let mut app = TestHost::launched(&["--setup"]);
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.error = None;
@@ -21,14 +20,14 @@ fn fixture() -> TestApp<ImagerShell> {
     app
 }
 
-fn focus(app: &mut TestApp<ImagerShell>, id: &str) {
+fn focus(app: &mut TestHost, id: &str) {
     app.harness()
         .perform_named(id, &ui::a11y::Action::Focus)
         .unwrap();
     app.settle();
 }
 
-fn check(app: &mut TestApp<ImagerShell>, password: bool, confirmation: bool, enabled: bool) {
+fn check(app: &mut TestHost, password: bool, confirmation: bool, enabled: bool) {
     app.with_widget::<InstallerPreview, _>(|preview| {
         for (id, invalid) in [
             ("installer.password", password),

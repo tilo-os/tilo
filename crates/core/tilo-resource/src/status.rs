@@ -2,8 +2,8 @@
 //! callers right now: unavailable while the engine is offline, labelled
 //! differently while recording, saying what it does on one row.
 
+use crate::ActionRef;
 use tilo_actions::{ActionKind, ActionParam, ActionSpec, Availability};
-use tilo_resource::ActionRef;
 
 /// What an effect, or one of the resource's own actions, looks like to
 /// callers right now, when it differs from its declaration: unavailable
@@ -249,7 +249,7 @@ impl EffectStatus {
     /// the resource its view publishes: the effect is offered as the status
     /// says on that entity's published actions alone (a process that is a
     /// system service cannot be ended), served by
-    /// [`Publishes::row_status`](super::Publishes::row_status).
+    /// a publisher's row status.
     #[must_use]
     pub fn on(mut self, item: impl Into<String>) -> Self {
         self.item = Some(item.into());
@@ -306,12 +306,13 @@ impl EffectStatus {
 
     /// The item or row this status is about, when it is about one rather
     /// than the published resource.
-    pub(crate) fn item(&self) -> Option<&str> {
+    #[must_use]
+    pub fn item(&self) -> Option<&str> {
         self.item.as_deref()
     }
 
     /// Show `spec` as this status says it is right now.
-    pub(crate) fn overlay(&self, spec: &mut ActionSpec) {
+    pub fn overlay(&self, spec: &mut ActionSpec) {
         if let Some(availability) = &self.availability {
             spec.type_mut().contract.availability = availability.clone();
         }
@@ -335,13 +336,41 @@ impl EffectStatus {
     }
 }
 
+/// Lay `statuses` over `resource`'s own actions, each by its id.
+pub fn apply_statuses(resource: &mut tilo_actions::ResourceSpec, statuses: &[EffectStatus]) {
+    for status in statuses {
+        for spec in resource
+            .actions
+            .iter_mut()
+            .filter(|spec| spec.id == status.id())
+        {
+            status.overlay(spec);
+        }
+    }
+}
+
+/// Lay what a publisher says of each row's effects over `rows`, the rows
+/// nested beneath them included.
+pub fn apply_row_statuses(
+    rows: &mut [tilo_actions::ResourceSpec],
+    statuses: &dyn Fn(&str) -> Vec<EffectStatus>,
+) {
+    for row in rows {
+        let said = statuses(row.id.as_str());
+        if !said.is_empty() {
+            apply_statuses(row, &said);
+        }
+        apply_row_statuses(&mut row.children, statuses);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::EffectStatus;
-    use tilo_resource::Effect as _;
+    use crate::Effect as _;
 
     /// A send to one device: what a row's status narrows per entity.
-    #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+    #[derive(Clone, Debug, PartialEq, Eq, crate::Effect)]
     #[effect(operation = "test.status.view", catalogue = "tests/locales")]
     enum StatusEffect {
         /// Send

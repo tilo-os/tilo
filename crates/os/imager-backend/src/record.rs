@@ -6,7 +6,22 @@ use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
 
 /// Read all of `reader`, refusing it with `exceeded` when it holds more than
 /// `limit` bytes.
-pub use tilo_migrate::bounded::{read_bounded, read_bounded_string};
+///
+/// # Errors
+/// The reader's own error, or `exceeded()` when the bound is crossed.
+pub fn read_bounded(
+    reader: impl io::Read,
+    limit: u64,
+    exceeded: impl FnOnce() -> io::Error,
+) -> io::Result<Vec<u8>> {
+    tilo_files::read_from(reader, limit).map_err(|error| {
+        if error.kind() == io::ErrorKind::FileTooLarge {
+            exceeded()
+        } else {
+            error
+        }
+    })
+}
 
 /// Whether `value` spells a lowercase 64-character SHA-256 digest.
 pub fn is_hex_sha256(value: &str) -> bool {

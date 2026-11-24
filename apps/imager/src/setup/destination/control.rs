@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use ui::tilo_resource::Effect as _;
+use tilo_resource::Effect as _;
 
 use super::effects::DestinationEffect;
 

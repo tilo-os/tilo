@@ -5,7 +5,7 @@
 //! list before entering the production action handler.
 
 use super::InstallerPreviewEffect;
-use ui::tilo_resource::Effect as _;
+use tilo_resource::Effect as _;
 
 pub(super) fn admits(effect: &InstallerPreviewEffect) -> bool {
     admits_id(effect.id())

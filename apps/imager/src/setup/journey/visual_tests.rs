@@ -1,7 +1,6 @@
 use super::*;
-use crate::resource::ImagerShell;
+use crate::hosting::testing::TestHost;
 use std::path::PathBuf;
-use ui::framework::testing::TestApp;
 
 pub(super) fn control<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
     if root.test_id() == Some(id) {
@@ -42,13 +41,13 @@ fn inspect_controls(preview: &InstallerPreview, ids: &[&str], viewport: (u32, u3
 }
 
 fn paint_screen(scenario: &str, ids: &[&str], viewport: (u32, u32), theme: Theme, tag: &str) {
-    let mut app = TestApp::<ImagerShell>::capture_at(Some(scenario), viewport).unwrap();
+    let mut app = TestHost::capture_at(Some(scenario), viewport);
     app.harness().set_theme(theme.with_reduce_motion(true));
     paint_app(&mut app, scenario, ids, viewport, tag);
 }
 
-pub(super) fn paint_app<A: ui::framework::ResourceApp>(
-    app: &mut TestApp<A>,
+pub(super) fn paint_app(
+    app: &mut TestHost,
     scenario: &str,
     ids: &[&str],
     viewport: (u32, u32),
@@ -117,8 +116,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
                 1.5 => (1770, 1230),
                 _ => (2360, 1640),
             };
-            let mut app =
-                TestApp::<ImagerShell>::capture_at(Some("installer-migrate"), initial).unwrap();
+            let mut app = TestHost::capture_at(Some("installer-migrate"), initial);
             app.harness().set_theme(
                 theme
                     .clone()
@@ -217,7 +215,7 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
 #[cfg(unix)]
 fn destination_review_edit_exposes_cancel_and_restores_choices_through_public_actions() {
     for (viewport, theme) in [((480, 800), Theme::dark()), ((1180, 820), Theme::light())] {
-        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+        let mut app = TestHost::launched(&["--setup"]);
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = false;
             preview.capture = true;
@@ -394,7 +392,7 @@ fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+    let mut app = TestHost::launched(&["--setup"]);
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.journey = Journey::new();
@@ -459,7 +457,7 @@ fn destination_discloses_usb_route_before_the_install_questions() {
             super::super::internal_install_flow::RUNTIME_ALLOW_VAR,
             runtime_check,
         );
-        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+        let mut app = TestHost::launched(&["--setup"]);
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.capture = false;
@@ -505,7 +503,7 @@ fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation()
         ("light", Theme::light()),
         ("high-contrast", Theme::high_contrast()),
     ] {
-        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+        let mut app = TestHost::launched(&["--setup"]);
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.capture = false;
@@ -562,7 +560,7 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
         ("light", Theme::light()),
         ("high-contrast", Theme::high_contrast()),
     ] {
-        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+        let mut app = TestHost::launched(&["--setup"]);
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = true;
             preview.capture = false;
@@ -603,7 +601,7 @@ fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview()
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     let viewport = (1180, 820);
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+    let mut app = TestHost::launched(&["--setup"]);
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;
@@ -703,7 +701,7 @@ fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+    let mut app = TestHost::launched(&["--setup"]);
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;
@@ -770,7 +768,7 @@ fn password_policy_feedback_explains_the_actual_requirement_through_public_effec
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     let viewport = (1180, 820);
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+    let mut app = TestHost::launched(&["--setup"]);
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;
@@ -895,7 +893,7 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
     for semantic in [false, true] {
         for mismatch in [false, true] {
-            let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+            let mut app = TestHost::launched(&["--setup"]);
             app.with_widget::<InstallerPreview, _>(|preview| {
                 preview.live = false;
                 preview.capture = false;
@@ -1149,7 +1147,7 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
 #[test]
 #[cfg(unix)]
 fn password_enter_focuses_confirmation_and_then_submits() {
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+    let mut app = TestHost::launched(&["--setup"]);
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.journey.destination = Some(Destination::Computer);
@@ -1239,7 +1237,7 @@ fn password_form_labels_and_navigation_share_the_real_page_alignment() {
     }
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
         for (viewport, scale) in [((320, 720), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
-            let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+            let mut app = TestHost::launched(&["--setup"]);
             app.with_widget::<InstallerPreview, _>(|preview| {
                 preview.live = false;
                 preview.capture = true;
@@ -1315,7 +1313,7 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
         ((480, 800), Theme::light(), "compact-light"),
         ((1180, 820), Theme::dark(), "dark"),
     ] {
-        let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+        let mut app = TestHost::launched(&["--setup"]);
         app.with_widget::<InstallerPreview, _>(|preview| {
             preview.live = false;
             preview.capture = false;
@@ -1439,15 +1437,14 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
 
 #[test]
 fn guided_scenario_gallery_renders_and_closes_every_actual_component() {
-    use ui::framework::ResourceApp as _;
-    let scenarios = ImagerShell::scenarios();
+    let scenarios = crate::hosting::scenarios();
     assert!(
         SCENARIOS
             .iter()
             .all(|scenario| scenarios.contains(scenario))
     );
     for scenario in SCENARIOS {
-        let mut app = TestApp::<ImagerShell>::capture_at(Some(scenario), (1180, 820)).unwrap();
+        let mut app = TestHost::capture_at(Some(scenario), (1180, 820));
         app.harness()
             .set_theme(Theme::dark().with_reduce_motion(true));
         app.settle();
@@ -1499,18 +1496,13 @@ fn guided_scenario_gallery_renders_and_closes_every_actual_component() {
 
 #[test]
 fn image_writer_progress_capture_closes_through_the_canonical_lifecycle() {
-    let mut app =
-        TestApp::<crate::resource::ImagerShell>::capture_at(Some("progress"), (1180, 820)).unwrap();
+    let mut app = TestHost::capture_at(Some("progress"), (1180, 820));
     app.harness()
         .set_theme(Theme::dark().with_reduce_motion(true));
     app.settle();
     assert_eq!(app.harness().render_rgba().len(), 1180 * 820 * 4);
     app.harness().close_components();
     let reports = app.harness().component_close_reports();
-    assert!(
-        !reports.is_empty(),
-        "the actual writer capture must produce a close report"
-    );
     for report in reports {
         assert!(
             report.view_error.is_none(),

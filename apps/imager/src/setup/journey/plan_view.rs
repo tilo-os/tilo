@@ -2,7 +2,7 @@
 //! shared segmented strip, the computer's name, and the values the review
 //! takes from the plan.
 use ui::widget::toggle_group::Press as SegmentPress;
-use ui::widget::{ActionEmitter, Segment, ToggleGroup};
+use ui::widget::{Segment, ToggleGroup};
 
 use super::*;
 
@@ -157,14 +157,10 @@ impl InstallerPreview {
                 let effect = InstallerPreviewEffect::ChoosePreview {
                     choice: (*key).to_string(),
                 };
-                match self
-                    .actions
-                    .as_ref()
-                    .and_then(|actions| actions.effect(&effect))
-                {
-                    Some(binding) => SegmentPress::Action(ActionEmitter::new(binding)),
-                    None => SegmentPress::Nothing,
-                }
+                let commands = self.commands.clone();
+                SegmentPress::View(Box::new(move || {
+                    commands.borrow_mut().push(effect.clone());
+                }))
             })
             .collect();
         strip.set_presses(presses);

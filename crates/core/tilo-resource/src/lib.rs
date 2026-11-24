@@ -160,6 +160,7 @@ pub mod search_index;
 pub mod shape;
 pub mod share;
 pub mod sort;
+pub mod status;
 pub mod storage;
 pub mod stored_items;
 pub mod surface;
@@ -226,6 +227,7 @@ pub use resource::{
 pub use row::{Handle, LiveRow, RowBindings, typed_resource};
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};
+pub use status::EffectStatus;
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use surface::Surface;
 pub use text::{PlainText, TextEdit};

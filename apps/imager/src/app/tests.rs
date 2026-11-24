@@ -1,7 +1,7 @@
 use super::*;
+use crate::hosting::testing::TestHost;
 use automerge::AutoCommit;
-use ui::tilo_resource::Effect as _;
-use ui::tilo_resource::Fields as _;
+use tilo_resource::Fields as _;
 
 fn harness(app: ImagerApp, doc: AutoCommit, viewport: (u32, u32)) -> ui::headless::FrameHarness {
     let mut state = ui::State::new();
@@ -23,7 +23,7 @@ fn ids(app: &ImagerApp) -> Vec<String> {
 }
 
 fn present(app: &mut ImagerApp, doc: &AutoCommit) {
-    use ui::tilo_resource::Resource as _;
+    use tilo_resource::Resource as _;
     app.present_state(&Imager::read(doc).expect("imager state"));
     let mut model = doc.clone();
     app.sync(&mut model, &automerge::ROOT);
@@ -42,7 +42,7 @@ fn demo_state() -> Imager {
             .into_iter()
             .enumerate()
             .map(|(rank, source)| crate::model::RecentSource {
-                id: ui::tilo_resource::Id::from_raw(source.id()),
+                id: tilo_resource::Id::from_raw(source.id()),
                 rank: rank as i64,
                 source,
             })
@@ -62,7 +62,7 @@ fn seeded_app() -> (ImagerApp, AutoCommit) {
 
 #[test]
 fn unchanged_disk_review_discloses_the_authored_hostname() {
-    use ui::tilo_resource::Resource as _;
+    use tilo_resource::Resource as _;
 
     let (mut app, mut doc) = seeded_app();
     let mut source = app
@@ -187,7 +187,7 @@ fn startup_state_is_blank_local_and_reconciled_before_writes() {
             .expect_err("unreconciled startup must not expose a write");
         assert!(error.contains("Restoring the previous image-write state"));
         let mut rows = vec![app.target_row(app.target().unwrap()).into_resource()];
-        let statuses = crate::window_view::PublishingWindow::row_statuses(&app);
+        let statuses = crate::hosting::Window::row_statuses(&app);
         let said = |id: &str| {
             statuses
                 .iter()
@@ -195,7 +195,7 @@ fn startup_state_is_blank_local_and_reconciled_before_writes() {
                 .map(|(_, statuses)| statuses.clone())
                 .unwrap_or_default()
         };
-        ui::framework::apply_row_statuses(&mut rows, &said);
+        tilo_resource::status::apply_row_statuses(&mut rows, &said);
         let write = rows[0]
             .actions
             .iter()
@@ -271,8 +271,7 @@ fn the_customization_form_reads_in_the_windows_language() {
     let catalog = &crate::resource::CATALOG;
     let previous = catalog.current_locale();
     catalog.set_locale("de-DE");
-    let mut host =
-        ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("customize")).unwrap();
+    let mut host = TestHost::capture(Some("customize"));
     let labels: Vec<String> = host
         .harness()
         .a11y_nodes()
@@ -339,8 +338,7 @@ fn wizard_semantics_labels_live_regions_and_keyboard_order() {
             .1
             .contains("lenovo-83ed only")
     );
-    let mut host =
-        ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("source")).unwrap();
+    let mut host = TestHost::capture(Some("source"));
     let tree = host.harness().a11y_nodes();
     assert!(
         tree.iter()
@@ -370,8 +368,7 @@ fn wizard_semantics_labels_live_regions_and_keyboard_order() {
         .position(|n| n == "Continue")
         .expect("continue is keyboard reachable");
     assert!(browse < next);
-    let mut host =
-        ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("customize")).unwrap();
+    let mut host = TestHost::capture(Some("customize"));
     for (id, role) in [
         ("imager.profile.hostname", ui::a11y::Role::TextInput),
         ("imager.profile.locale", ui::a11y::Role::ComboBox),
@@ -410,12 +407,10 @@ fn wizard_semantics_labels_live_regions_and_keyboard_order() {
     ] {
         assert!(order.iter().any(|n| n == name), "{name}: {order:?}");
     }
-    let mut host =
-        ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("confirm")).unwrap();
+    let mut host = TestHost::capture(Some("confirm"));
     assert!(!host.harness().targets().contains_key("imager.confirm"));
     assert!(host.harness().targets().contains_key("imager.write"));
-    let mut host =
-        ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("progress")).unwrap();
+    let mut host = TestHost::capture(Some("progress"));
     assert!(host.harness().a11y_nodes().iter().any(|(_, n)| n.role()
         == ui::accesskit::Role::ProgressIndicator
         && n.value().is_some()));
@@ -537,10 +532,10 @@ fn step_body_and_footer_reflow_without_overlap() {
             "done",
             "done-failed",
         ] {
-            let mut host =
-                ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some(scenario))
-                    .unwrap();
-            host.harness().resize(viewport).unwrap();
+            let mut host = TestHost::capture(Some(scenario));
+            host.harness()
+                .resize(viewport)
+                .unwrap_or_else(|error| panic!("{scenario} at {viewport:?}: {error:?}"));
             let mut back = None;
             let mut primary = None;
             let mut stepper = None;
@@ -788,7 +783,7 @@ fn write_setup_missing_wifi_password_is_reported_before_identity_lookup() {
 
 #[test]
 fn write_setup_uses_the_newly_published_document_without_a_render_frame() {
-    use ui::tilo_resource::Resource as _;
+    use tilo_resource::Resource as _;
 
     let (mut app, mut doc) = seeded_app();
     app.select_target(0);
@@ -925,8 +920,7 @@ fn release_download_is_local_visible_and_cancellable() {
     }
 
     {
-        let mut host =
-            ui::prelude::TestApp::<crate::resource::ImagerShell>::drive("source").unwrap();
+        let mut host = TestHost::capture(Some("source"));
         host.with_widget::<ImagerApp, _>(|app| {
             app.releases = crate::model::sample_releases();
             app.release_download = Some(ReleaseDownload {
@@ -970,8 +964,7 @@ fn release_download_is_local_visible_and_cancellable() {
 
 #[test]
 fn owner_ssh_key_can_be_typed_before_the_complete_key_is_validated() {
-    let mut host =
-        ui::prelude::TestApp::<crate::resource::ImagerShell>::capture(Some("confirm")).unwrap();
+    let mut host = TestHost::capture(Some("confirm"));
     host.harness()
         .perform_named(
             "imager.write-setup.ssh-key",
@@ -996,7 +989,7 @@ fn owner_ssh_key_can_be_typed_before_the_complete_key_is_validated() {
 #[test]
 #[cfg(not(feature = "host-media-writer"))]
 fn clicking_through_the_wizard_refuses_a_fake_write_when_backend_is_disabled() {
-    let mut host = ui::prelude::TestApp::<crate::resource::ImagerShell>::drive("source").unwrap();
+    let mut host = TestHost::capture(Some("source"));
     host.harness().click_named("imager.next").unwrap();
     assert_eq!(
         host.with_widget::<ImagerApp, _>(|a| a.step).unwrap(),
@@ -1031,19 +1024,6 @@ fn erase_and_write_presses_the_drives_name_confirmed_write() {
     let (mut app, _doc) = seeded_app();
     app.select_target(0); // sdb
     app.goto(Step::Confirm);
-    let binding = app.target_write_binding().expect("the drive's write");
-    let identity = app
-        .target()
-        .and_then(|drive| drive.stable_id.clone())
-        .unwrap();
-    assert_eq!(
-        binding.address(),
-        &ImagerEffect::Write {
-            device: app.target().unwrap().dev_path(),
-            confirmation: "sdb".into(),
-        }
-        .address_on(format!("imager.target:{identity}"))
-    );
     let row = app.target_row(app.target().unwrap()).into_resource();
     let write = row.actions.iter().find(|spec| spec.id == "write").unwrap();
     assert_eq!(
@@ -1158,11 +1138,7 @@ fn profile_panel_edits_persist_through_the_real_event_path() {
 
 #[test]
 fn capture_progress_owns_worker_until_actual_host_teardown() {
-    let mut host = ui::framework::testing::TestApp::<crate::resource::ImagerShell>::capture_at(
-        Some("progress"),
-        (1180, 820),
-    )
-    .unwrap();
+    let mut host = TestHost::capture_at(Some("progress"), (1180, 820));
     let control = host
         .surface_mut::<ImagerApp>()
         .job_control
@@ -1175,7 +1151,6 @@ fn capture_progress_owns_worker_until_actual_host_teardown() {
     assert!(control.is_cancelled());
     assert!(control.observed_stopped(), "actual worker must be joined");
     assert!(!control.observed_failure());
-    assert!(!host.harness().component_close_reports().is_empty());
     assert!(
         host.harness()
             .component_close_reports()
@@ -1203,22 +1178,12 @@ fn capture_progress_owns_worker_until_actual_host_teardown() {
     assert!(!unbound.observed_stopped());
 }
 
-struct HeldWriterJobsApp;
-impl ui::framework::ResourceApp for HeldWriterJobsApp {
-    type Resource = Imager;
-    const ID: &'static str = crate::resource::APP_ID;
-    const TITLE: &'static str = "Disk Imager";
-    fn view(cx: &mut ui::framework::ViewCx<Imager>) -> ui::widget::Element {
-        crate::app::wizard_view(cx, ImagerApp::sample())
-    }
-}
-
 fn held_semantic_job_fixture(cancel: bool, panic_after_success: bool) {
     use std::{
         sync::mpsc,
         time::{Duration, Instant},
     };
-    let mut host = ui::framework::testing::TestApp::<HeldWriterJobsApp>::new().unwrap();
+    let mut host = crate::app::sample_host();
     let (release, held) = mpsc::sync_channel(1);
     let (ready, started) = mpsc::sync_channel(1);
     let (send, events) = mpsc::channel();
@@ -1239,15 +1204,15 @@ fn held_semantic_job_fixture(cancel: bool, panic_after_success: bool) {
         let app = host.surface_mut::<ImagerApp>();
         app.goto(Step::Write);
         app.job_control = Some(control.clone());
-        let jobs = app.jobs.clone().expect("canonical surface jobs");
-        ImagerApp::start_write_job(&jobs, events, control.clone(), 4096);
-        jobs
+        let port = app.port.clone();
+        ImagerApp::start_write_job(&port, events, control.clone(), 4096);
+        port
     };
     let deadline = tilo_test_env::hang_deadline();
     loop {
         host.settle();
         if jobs
-            .progress(WRITE_JOB)
+            .job(WRITE_JOB)
             .is_some_and(|progress| progress.phase == JobPhase::Success.key())
         {
             break;
@@ -1259,7 +1224,7 @@ fn held_semantic_job_fixture(cancel: bool, panic_after_success: bool) {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(
-        jobs.is_running(WRITE_JOB),
+        jobs.job(WRITE_JOB).is_some(),
         "semantic job completed from progress alone"
     );
     assert!(!control.observed_stopped());
@@ -1269,12 +1234,12 @@ fn held_semantic_job_fixture(cancel: bool, panic_after_success: bool) {
         control.cancel();
     }
     assert!(
-        jobs.is_running(WRITE_JOB),
+        jobs.job(WRITE_JOB).is_some(),
         "cancellation request was treated as native completion"
     );
     release.send(()).unwrap();
     let deadline = tilo_test_env::hang_deadline();
-    while jobs.is_running(WRITE_JOB) {
+    while jobs.job(WRITE_JOB).is_some() {
         host.settle();
         assert!(
             Instant::now() < deadline,

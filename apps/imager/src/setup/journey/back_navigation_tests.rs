@@ -1,8 +1,7 @@
 use super::*;
-use crate::resource::ImagerShell;
-use ui::framework::testing::TestApp;
+use crate::hosting::testing::TestHost;
 
-type App = TestApp<ImagerShell>;
+type App = TestHost;
 
 fn effect(app: &mut App, effect: InstallerPreviewEffect) {
     app.effect(&effect)
@@ -27,7 +26,7 @@ fn state(app: &mut App) -> serde_json::Value {
 }
 
 fn preview() -> App {
-    let mut app = App::launched(&["--setup"]).unwrap();
+    let mut app = App::launched(&["--setup"]);
     // Keep discovery out of navigation tests. Every screen is still reached
     // through the production action route, not a page fixture.
     app.with_widget::<InstallerPreview, _>(|view| {

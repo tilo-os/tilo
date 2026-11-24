@@ -1,10 +1,9 @@
 //! The setup collected on the Confirm step and written with the image.
 
-use ui::framework::Actions;
 use ui::local_state::LocalState;
-use ui::tilo_actions::ActionBinding;
 use ui::widget::{Field, Form, FormSection, TextInput, TextInputKind, Toggle};
 
+use crate::hosting::{Presses, Store};
 use crate::model::InstallProfile;
 use crate::resource::{Imager, ImagerEffect};
 
@@ -41,26 +40,43 @@ impl SetupField {
         }
     }
 
-    fn binding(self, actions: &Actions<Imager>) -> Option<ActionBinding<String>> {
+    /// What typing `value` into the field does: edit the profile, or hand the Wi-Fi password to
+    /// the window, which keeps it out of the resource.
+    fn typed(self, value: &str, bound: &Bound) {
         let profile = Imager::paths().profile;
-        match self {
-            Self::WifiSsid => {
-                actions.edit_binding(profile.wifi_ssid, |path, value| path.replace(value))
+        let edited = match self {
+            Self::WifiSsid => bound
+                .store
+                .edit(&profile.wifi_ssid.replace(value.to_owned())),
+            Self::DeviceLabel => bound
+                .store
+                .edit(&profile.device_label.replace(value.to_owned())),
+            Self::WifiPsk => {
+                bound.presses.press(ImagerEffect::SetWifiPsk {
+                    value: value.to_owned(),
+                });
+                Ok(())
             }
-            Self::DeviceLabel => {
-                actions.edit_binding(profile.device_label, |path, value| path.replace(value))
-            }
-            Self::WifiPsk => actions.effect_binding(ImagerEffect::SET_WIFI_PSK),
-            Self::SshKey => None,
+            Self::SshKey => Ok(()),
+        };
+        if let Err(reason) = edited {
+            ui::control_notice::say_in_window(&reason);
         }
     }
+}
+
+/// What the form's fields change: the resource's profile, and the window's own effects.
+#[derive(Clone)]
+pub(crate) struct Bound {
+    pub store: Store,
+    pub presses: Presses<ImagerEffect>,
 }
 
 fn text_field(
     field: SetupField,
     value: &str,
     kind: TextInputKind,
-    actions: Option<&Actions<Imager>>,
+    bound: Option<&Bound>,
     ssh_public_key: &LocalState<String>,
 ) -> Field {
     let mut input = if field == SetupField::SshKey {
@@ -70,8 +86,9 @@ fn text_field(
     }
     .with_id(field.id())
     .with_kind(kind);
-    if let Some(binding) = actions.and_then(|actions| field.binding(actions)) {
-        input = input.on_action(binding);
+    if let Some(bound) = bound.filter(|_| field != SetupField::SshKey) {
+        let bound = bound.clone();
+        input = input.on_change(move |value| field.typed(value, &bound));
     }
     if field == SetupField::WifiPsk {
         input = input.with_secret(true);
@@ -83,14 +100,18 @@ pub(crate) fn form(
     profile: &InstallProfile,
     wifi_psk: &str,
     ssh_public_key: &LocalState<String>,
-    actions: Option<&Actions<Imager>>,
+    bound: Option<&Bound>,
 ) -> Form {
     let mut enroll = Toggle::from_state(&LocalState::new(profile.enroll_local_identity))
         .with_id("imager.write-setup.enroll");
-    if let Some(binding) = actions
-        .and_then(|actions| actions.field_binding(Imager::paths().profile.enroll_local_identity))
-    {
-        enroll = enroll.on_action(binding);
+    if let Some(bound) = bound {
+        let store = bound.store.clone();
+        enroll = enroll.on_choose("imager.write-setup.enroll", move |enrolled| {
+            let edit = Imager::paths().profile.enroll_local_identity.set(enrolled);
+            if let Err(reason) = store.edit(&edit) {
+                ui::control_notice::say_in_window(&reason);
+            }
+        });
     }
     Form::new().section(
         FormSection::new(crate::resource::CATALOG.t("imager-profile-section-network-identity"))
@@ -98,28 +119,28 @@ pub(crate) fn form(
                 SetupField::WifiSsid,
                 &profile.wifi_ssid,
                 TextInputKind::Name,
-                actions,
+                bound,
                 ssh_public_key,
             ))
             .field(text_field(
                 SetupField::WifiPsk,
                 wifi_psk,
                 TextInputKind::Password,
-                actions,
+                bound,
                 ssh_public_key,
             ))
             .field(text_field(
                 SetupField::SshKey,
                 "",
                 TextInputKind::Name,
-                actions,
+                bound,
                 ssh_public_key,
             ))
             .field(text_field(
                 SetupField::DeviceLabel,
                 &profile.device_label,
                 TextInputKind::Name,
-                actions,
+                bound,
                 ssh_public_key,
             ))
             .field(

@@ -1,7 +1,7 @@
 use crate::model as after;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use ui::tilo_resource::{Id, Identified, JsonSchema, Model, Path};
+use tilo_resource::{Id, Identified, JsonSchema, Model, Path};
 
 fn wire<T: Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap()

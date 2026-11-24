@@ -2,8 +2,8 @@
 use super::actions::SetupEffect;
 use super::desktop_flow::{DesktopFlow, DesktopFlowState};
 use tilo_actions::ResourcePresentation;
-use ui::framework::{EffectStatus, LiveRow};
-use ui::tilo_resource::{self, ActionRef, RowBindings};
+use tilo_resource::{self, ActionRef, RowBindings};
+use tilo_resource::{EffectStatus, LiveRow};
 
 /// The Desktop preparation journey, as guided setup publishes it: a row
 /// offering to install, cancel or recheck what the projection says.

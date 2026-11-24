@@ -68,13 +68,13 @@ fn journey_fixture() -> SetupApp {
     );
     setup
 }
-fn journey_phase(app: &mut TestApp<SetupFlow>) -> serde_json::Value {
+fn journey_phase(app: &mut TestHost) -> serde_json::Value {
     app.effect(&SetupEffect::ReadDesktopStatus)
         .unwrap()
         .value
         .unwrap()
 }
-fn journey_review(app: &mut TestApp<SetupFlow>) {
+fn journey_review(app: &mut TestHost) {
     app.with_widget::<SetupApp, _>(|setup| review(setup, Experience::Desktop))
         .unwrap();
     app.settle();

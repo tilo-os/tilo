@@ -10,11 +10,11 @@ use super::*;
 use crate::setup::destination::effects::{DestinationEffect, STORAGE, reviewed_digest};
 use automerge::AutoCommit;
 use imager_backend::destination::disks::LINUX_FILESYSTEM_GUID;
+use tilo_resource::Effect as _;
 use ui::tilo_actions::remote::{
     CatalogueQuery, CatalogueRow, Confirmation, InvokeRequest, ReceiptStatus, RemoteActionFrame,
     RemoteActionMessage, RemoteActionTarget, frame_line,
 };
-use ui::tilo_resource::Effect as _;
 
 mod capacity_tests;
 mod method_intent_tests;
@@ -320,7 +320,7 @@ tilo_test_env::scenario! {
                 let resources: Vec<tilo_actions::ResourceSpec> = app
                     .published()
                     .into_iter()
-                    .map(ui::framework::LiveRow::into_resource)
+                    .map(tilo_resource::LiveRow::into_resource)
                     .collect();
                 let violations = tilo_actions::validate_surface(
                     &resources,

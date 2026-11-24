@@ -55,20 +55,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return planned.install();
     }
     LIVE_INSTALLER.store(true, std::sync::atomic::Ordering::Relaxed);
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(code) = ui::framework::run_helper::<crate::resource::ImagerShell>(&args) {
-        #[allow(
-            clippy::exit,
-            reason = "a helper the installer runs ends the process with its own exit code"
-        )]
-        std::process::exit(code);
-    }
     // The live installer is the device's own program, run before any person has a certificate
-    // here: like the greeter, it attaches to no person's runtime, and the device's daemon founds
-    // no identity for it.
-    ui::launch::run_or_exit(
-        &ui::framework::launch_spec::<crate::resource::ImagerShell>().runtime_attachment(|_| false),
-    );
+    // here: like the greeter, it is no person's window, and serves its console itself.
+    crate::hosting::run();
     Ok(())
 }
 
@@ -98,19 +87,28 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "destination-failed-recovery",
 ];
 
-pub(crate) fn view(cx: &mut ui::framework::ViewCx<crate::resource::Imager>) -> ui::widget::Element {
+/// The installer's window: live on the medium, woken through `wake`, or a scenario's shot.
+pub(crate) fn window(
+    wake: &ui::WakeHandle,
+    opened: crate::hosting::Opened<'_>,
+) -> ui::widget::Element {
     #[cfg(test)]
     {
         if let Some(app) = installer_app::host_journeys_tests::armed_window() {
-            return crate::window_view::window_view(cx, app, InstallerApp::effect);
+            return Box::new(app);
         }
     }
-    let app = if cx.mode().is_live() {
-        let mut app = InstallerApp::new();
-        app.attach_live(cx.waker());
-        app
-    } else {
-        InstallerApp::for_shot(Step::Keyboard)
-    };
-    crate::window_view::window_view(cx, app, InstallerApp::effect)
+    match opened {
+        crate::hosting::Opened::Live { .. } => {
+            let mut app = InstallerApp::new();
+            app.attach_live(wake.clone());
+            Box::new(app)
+        }
+        crate::hosting::Opened::Shot(scenario) => Box::new(
+            scenario
+                .and_then(|name| name.strip_prefix("destination-"))
+                .and_then(InstallerApp::for_scenario)
+                .unwrap_or_else(|| InstallerApp::for_shot(Step::Keyboard)),
+        ),
+    }
 }

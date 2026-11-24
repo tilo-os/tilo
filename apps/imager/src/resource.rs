@@ -1,12 +1,8 @@
 //! The imager's resource: the image a person reviews, the images reviewed before
 //! it, and the write.
 
-use ui::framework::{Fixture, Helper, ResourceApp, ViewCx};
-use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, Availability, Effect, Id, Invoke, Keyed, Model, resource};
-use ui::widget::Element;
+use tilo_resource::{self, Availability, Effect, Id, Invoke, Keyed, Model, resource};
 
-use crate::app::ImagerApp;
 use crate::model::{InstallProfile, RecentSource, Source};
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE"]);
@@ -196,13 +192,13 @@ impl ImagerEffect {
 
 /// The write of an image to a drive, as Imager publishes it: a row of the
 /// `imager.job` type, offering its status.
-#[derive(ui::tilo_resource::Row)]
+#[derive(tilo_resource::Row)]
 #[row(kind = "imager.job", label = "Image write", effects = ImagerEffect)]
 pub struct ImageWrite;
 
 /// Tilo's installer download, as Imager publishes it: a row offering to
 /// cancel what was verified for resume.
-#[derive(ui::tilo_resource::Row)]
+#[derive(tilo_resource::Row)]
 #[row(
     kind = "imager.download",
     label = "Installer download",
@@ -212,70 +208,9 @@ pub struct InstallerDownload;
 
 /// One removable drive an image may be written to, as Imager publishes it:
 /// a row offering to choose it and to write to it.
-#[derive(ui::tilo_resource::Row)]
+#[derive(tilo_resource::Row)]
 #[row(kind = "imager.target", label = "Drive", effects = ImagerEffect)]
 pub struct TargetDriveRow;
-
-pub struct ImagerShell;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Flow {
-    Wizard,
-    #[cfg(feature = "installation")]
-    Setup,
-    #[cfg(feature = "destination")]
-    Destination,
-}
-
-impl Flow {
-    fn of_scenario(scenario: Option<&str>) -> Self {
-        match scenario {
-            #[cfg(feature = "installation")]
-            Some(name) if name.starts_with("installer-") => Self::Setup,
-            #[cfg(feature = "destination")]
-            Some(name) if name.starts_with("destination-") => Self::Destination,
-            _ => Self::Wizard,
-        }
-    }
-
-    fn launched(cx: &ViewCx<Imager>) -> Self {
-        #[cfg(feature = "destination")]
-        if crate::setup::destination::launched() || cx.launch_flag("--destination") {
-            return Self::Destination;
-        }
-        #[cfg(feature = "installation")]
-        if cx.launch_flag("--setup") || cx.launch_flag("--demo") {
-            return Self::Setup;
-        }
-        #[cfg(not(feature = "installation"))]
-        let _ = cx;
-        Self::Wizard
-    }
-}
-
-const WIZARD_SCENARIOS: &[&str] = &[
-    "source",
-    "source-empty",
-    "drive",
-    "drive-empty",
-    "drive-internal",
-    "customize",
-    "customize-timezone-open",
-    "export",
-    "confirm",
-    "progress",
-    "done",
-    "done-failed",
-];
-
-static SCENARIOS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
-    let scenarios = WIZARD_SCENARIOS.iter();
-    #[cfg(feature = "installation")]
-    let scenarios = scenarios.chain(crate::setup::journey::SCENARIOS);
-    #[cfg(feature = "destination")]
-    let scenarios = scenarios.chain(crate::setup::destination::SCENARIOS);
-    scenarios.copied().collect()
-});
 
 fn sample_iso() -> Source {
     Source {
@@ -301,104 +236,40 @@ fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
 /// first-party app of a workspace and has no entry in the app catalogue.
 pub const APP_ID: &str = "so.tilo.imager";
 
-impl ResourceApp for ImagerShell {
-    type Resource = Imager;
-    const ID: &'static str = crate::resource::APP_ID;
-    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
-    const TITLE: &'static str = "Tilo Installer";
-    const TITLE_KEY: &'static str = "installer-app-title";
-    const ICON: Option<&'static str> = Some("imager");
-    #[cfg(all(feature = "installation", feature = "destination"))]
-    const FLAGS: &'static [&'static str] = &["--setup", "--demo", "--destination"];
-    #[cfg(all(feature = "installation", not(feature = "destination")))]
-    const FLAGS: &'static [&'static str] = &["--setup", "--demo"];
-    #[cfg(all(not(feature = "installation"), feature = "destination"))]
-    const FLAGS: &'static [&'static str] = &["--destination"];
-    #[cfg(not(any(feature = "installation", feature = "destination")))]
-    const FLAGS: &'static [&'static str] = &[];
-    const ATTACHES_RUNTIME: bool = ui::collaboration::SESSION_RUNTIME_SUPPORTED;
-
-    fn helpers() -> &'static [Helper] {
-        crate::helpers::HELPERS
-    }
-
-    fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
-    }
-
-    fn scenarios() -> &'static [&'static str] {
-        &SCENARIOS
-    }
-
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1180, 820)
-    }
-
-    fn fixture(fixture: &mut Fixture<Imager>) {
-        let flow = Flow::of_scenario(fixture.scenario());
-        fixture.provide(flow);
-    }
-
-    fn scenario(name: Option<&str>) -> Vec<Invoke<Imager>> {
-        let mut history = crate::model::sample_recent_sources();
-        history.reverse();
-        match name {
-            Some("source-empty") => Vec::new(),
-            Some("drive-empty") => review(&[sample_iso()]),
-            Some("drive-internal") => review(&[crate::model::sample_source()]),
-            Some("drive") => {
-                history.extend([crate::model::sample_source(), sample_iso()]);
-                review(&history)
-            }
-            name if Flow::of_scenario(name) == Flow::Wizard => {
-                history.push(crate::model::sample_source());
-                review(&history)
-            }
-            _ => Vec::new(),
+/// What a scenario's shot shows in the resource: the images reviewed before, and the one
+/// reviewed now.
+pub(crate) fn scenario(name: Option<&str>) -> Vec<Invoke<Imager>> {
+    let mut history = crate::model::sample_recent_sources();
+    history.reverse();
+    match name {
+        Some("source-empty") => Vec::new(),
+        Some("drive-empty") => review(&[sample_iso()]),
+        Some("drive-internal") => review(&[crate::model::sample_source()]),
+        Some("drive") => {
+            history.extend([crate::model::sample_source(), sample_iso()]);
+            review(&history)
         }
-    }
-
-    fn view(cx: &mut ViewCx<Imager>) -> Element {
-        let flow = cx
-            .fixture::<Flow>()
-            .map_or_else(|| Flow::launched(cx), |flow| *flow);
-        match flow {
-            Flow::Wizard => crate::app::wizard_view(cx, ImagerApp::new()),
-            #[cfg(feature = "installation")]
-            Flow::Setup => crate::setup::journey::view(cx),
-            #[cfg(feature = "destination")]
-            Flow::Destination => crate::setup::destination::view(cx),
+        name if crate::hosting::Flow::of_scenario(name) == crate::hosting::Flow::Wizard => {
+            history.push(crate::model::sample_source());
+            review(&history)
         }
+        _ => Vec::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_resource::Resource as _;
+    use tilo_resource::Resource as _;
 
-    struct SampleImager;
+    use crate::app::ImagerApp;
+    use crate::hosting::testing::TestHost;
 
-    impl ResourceApp for SampleImager {
-        type Resource = Imager;
-        const ID: &'static str = crate::resource::APP_ID;
-        const TITLE: &'static str = "Disk Imager";
-
-        fn view(cx: &mut ViewCx<Imager>) -> Element {
-            Box::new(
-                ui::widget::Column::new()
-                    .with_no_padding()
-                    .push(crate::app::wizard_view(cx, ImagerApp::sample())),
-            )
-        }
-    }
-
-    fn customizing() -> ui::framework::testing::TestApp<SampleImager> {
-        let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
+    fn customizing() -> TestHost {
+        let mut app = crate::app::sample_host();
         app.invoke(Imager::SELECT_SOURCE.with(crate::model::sample_source()))
             .unwrap();
-        app.harness()
-            .with_widget_mut(|wizard: &mut ImagerApp| wizard.show_customize_for_test())
+        app.with_widget(|wizard: &mut ImagerApp| wizard.show_customize_for_test())
             .expect("the hosted wizard");
         app
     }
@@ -429,7 +300,7 @@ mod tests {
                 assert!(
                     matches!(
                         &error,
-                        ui::tilo_resource::EffectDecodeError::Argument { source, .. }
+                        tilo_resource::EffectDecodeError::Argument { source, .. }
                             if source.to_string().contains("absolute")
                     ),
                     "{error}"
@@ -446,7 +317,7 @@ mod tests {
 
             let mut app = customizing();
             let perform =
-                |app: &mut ui::framework::testing::TestApp<SampleImager>, target: &str, value: &str| {
+                |app: &mut TestHost, target: &str, value: &str| {
                     let id = target.replace(':', ".");
                     app.harness()
                         .perform_named(&id, &AccessAction::SetValue(value.into()))
@@ -489,7 +360,7 @@ mod tests {
             app.merge_peer_edit(|doc| {
                 let mut peer = Imager::read(doc).unwrap();
                 peer.clear_source();
-                ui::tilo_resource::Fields::write_fields(&peer, doc, &automerge::ROOT).unwrap();
+                tilo_resource::Fields::write_fields(&peer, doc, &automerge::ROOT).unwrap();
                 let profile = Imager::paths().profile;
                 for edit in [
                     profile.wifi_ssid.replace("lab"),
@@ -498,9 +369,7 @@ mod tests {
                     edit.apply_local(doc).unwrap();
                 }
             });
-            let shown = app
-                .harness()
-                .with_widget_mut(|wizard: &mut ImagerApp| {
+            let shown = app.with_widget(|wizard: &mut ImagerApp| {
                     (
                         wizard.resource_source().cloned(),
                         wizard.profile_for_test().wifi_ssid.clone(),
@@ -517,8 +386,7 @@ mod tests {
             let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA owner@example";
             app.effect(&ImagerEffect::SetSshKey { value: key.into() })
                 .unwrap();
-            app.harness()
-                .with_widget_mut(|wizard: &mut ImagerApp| {
+            app.with_widget(|wizard: &mut ImagerApp| {
                     assert_eq!(wizard.ssh_key_for_test(), key);
                 })
                 .expect("the hosted wizard");
@@ -528,8 +396,7 @@ mod tests {
                 })
                 .is_err()
             );
-            app.harness()
-                .with_widget_mut(|wizard: &mut ImagerApp| {
+            app.with_widget(|wizard: &mut ImagerApp| {
                     assert_eq!(
                         wizard.ssh_key_for_test(),
                         key,
@@ -740,7 +607,7 @@ mod tests {
     #[test]
     fn one_tree_holds_the_profile_actions_effects_drives_and_job() {
         let mut app = customizing();
-        let resources = app.harness().resources();
+        let resources = vec![app.published()];
         let root = find(&resources, Imager::KIND).expect("the imager resource");
         let root_ids = ids(root);
         for id in [
@@ -800,7 +667,7 @@ mod tests {
 
         phase effects_choose_drives_report_status_and_export_the_plan;
         {
-            let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
+            let mut app = crate::app::sample_host();
             app.invoke(Imager::SELECT_SOURCE.with(crate::model::sample_source()))
                 .unwrap();
             assert!(
@@ -863,7 +730,7 @@ mod tests {
             std::fs::write(&image, b"an image for the chooser test").unwrap();
             let (services, recorder) = ui::process::ProcessServices::recording();
             let _host = ui::process::enter(&services);
-            let mut app = ui::framework::testing::TestApp::<SampleImager>::new().unwrap();
+            let mut app = crate::app::sample_host();
             recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(image));
             app.effect(&ImagerEffect::ChooseImage).unwrap();
             app.settle();
@@ -881,7 +748,7 @@ mod tests {
         phase a_drive_rows_write_chooses_that_drive_and_still_needs_its_name;
         {
             let mut app = customizing();
-            let resources = app.harness().resources();
+            let resources = vec![app.published()];
             let drive = find(&resources, "imager.target:demo-sandisk-ultra").unwrap();
             let write = drive
                 .actions
@@ -899,14 +766,28 @@ mod tests {
                     "no privileged writer in tests"
                 );
             }
-            assert!(matches!(
-                app.call_on(
-                    "imager.target:demo-sandisk-ultra",
-                    "write",
-                    serde_json::json!({})
-                ),
-                Err(ui::tilo_actions::ApiError::ConfirmationRequired)
-            ));
+            let unconfirmed = app.call_on(
+                "imager.target:demo-sandisk-ultra",
+                "write",
+                serde_json::json!({}),
+            );
+            if cfg!(feature = "host-media-writer") {
+                assert!(
+                    matches!(
+                        unconfirmed,
+                        Err(ui::tilo_actions::ApiError::ConfirmationRequired)
+                    ),
+                    "a write erases the drive only once its name is typed: {unconfirmed:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        unconfirmed,
+                        Err(ui::tilo_actions::ApiError::Unavailable { .. })
+                    ),
+                    "a build without the writer refuses the write: {unconfirmed:?}"
+                );
+            }
 
             let device = |name: &str| {
                 crate::model::sample_targets()
@@ -915,9 +796,7 @@ mod tests {
                     .unwrap()
                     .dev_path()
             };
-            let chosen = app
-                .harness()
-                .with_widget_mut(|wizard: &mut ImagerApp| {
+            let chosen = app.with_widget(|wizard: &mut ImagerApp| {
                     wizard.forget_target_for_test();
                     wizard.choose_for_write(&device("sdb"));
                     let sdb = wizard.target().map(|target| target.name.clone());
@@ -937,16 +816,14 @@ mod tests {
     #[test]
     fn every_scenario_captures_its_flow_without_touching_the_machine() {
         for scenario in
-            std::iter::once(None).chain(ImagerShell::scenarios().iter().copied().map(Some))
+            std::iter::once(None).chain(crate::hosting::scenarios().into_iter().map(Some))
         {
-            let mut app = ui::framework::testing::TestApp::<ImagerShell>::capture(scenario)
-                .unwrap_or_else(|error| panic!("{scenario:?}: {error}"));
+            let mut app = TestHost::capture(scenario);
             let inspection = app.harness().inspection_json().unwrap();
             assert!(!inspection.is_empty(), "{scenario:?}");
         }
 
-        let mut drive =
-            ui::framework::testing::TestApp::<ImagerShell>::capture(Some("drive")).unwrap();
+        let mut drive = TestHost::capture(Some("drive"));
         assert_eq!(
             drive.state().source.map(|source| source.name),
             Some("Fedora-Workstation-Live-42.iso".to_owned()),
@@ -966,8 +843,7 @@ mod tests {
                 ["Tilo 1.0", "Hostname", "Preview embedded setup"],
             ),
         ] {
-            let mut app =
-                ui::framework::testing::TestApp::<ImagerShell>::capture(Some(scenario)).unwrap();
+            let mut app = TestHost::capture(Some(scenario));
             assert_eq!(
                 app.state().source.map(|source| source.name),
                 Some("Tilo 1.0".to_owned()),
@@ -982,8 +858,7 @@ mod tests {
                 "{scenario} recognises the Tilo image"
             );
         }
-        let mut empty =
-            ui::framework::testing::TestApp::<ImagerShell>::capture(Some("source-empty")).unwrap();
+        let mut empty = TestHost::capture(Some("source-empty"));
         assert!(empty.state().source.is_none());
         assert!(!empty.harness().inspection_json().unwrap().contains("sdb"));
     }
@@ -991,23 +866,24 @@ mod tests {
     #[test]
     #[cfg(feature = "installation")]
     fn launch_switches_choose_the_flow() {
-        let mut setup =
-            ui::framework::testing::TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+        let mut setup = TestHost::launched(&["--setup"]);
         let read = crate::setup::journey::InstallerPreviewEffect::ReadPreview;
         let page = setup.effect(&read).unwrap().value.unwrap()["page"].clone();
         assert_eq!(
             page, "destination",
             "the guided setup starts at its destination"
         );
-        assert!(find(&setup.harness().resources(), "imager.job").is_none());
+        assert!(find(&[setup.published()], "imager.job").is_none());
     }
 
     #[test]
     #[cfg(not(any(feature = "installation", feature = "destination")))]
     fn without_the_installation_the_imager_is_the_write_wizard() {
-        assert!(<ImagerShell as ResourceApp>::FLAGS.is_empty());
-        assert_eq!(<ImagerShell as ResourceApp>::scenarios(), WIZARD_SCENARIOS);
-        assert_eq!(Flow::of_scenario(Some("installer-welcome")), Flow::Wizard);
+        assert_eq!(crate::hosting::scenarios(), crate::app::SCENARIOS);
+        assert_eq!(
+            crate::hosting::Flow::of_scenario(Some("installer-welcome")),
+            crate::hosting::Flow::Wizard
+        );
     }
 }
 

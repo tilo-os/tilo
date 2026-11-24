@@ -22,7 +22,6 @@ mod model;
 #[cfg(test)]
 mod password_validation_tests;
 mod plan_view;
-mod retained_preview;
 mod storage;
 mod target;
 #[cfg(test)]
@@ -37,14 +36,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::window_view::{Published, PublishingWindow};
+use crate::hosting::{EffectAnswer, EffectCx, Effected, Hosted, Opened, Port, Store};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::framework::{
-    ActionControl, Actions, EffectAnswer, EffectCx, EffectStatus, Effected, ViewCx,
-};
+use tilo_resource::EffectStatus;
+use tilo_resource::{self, AbsolutePath, ActionRef, Effect};
 use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::tilo_resource::{self, AbsolutePath, ActionRef, Binds, Effect};
 
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
@@ -183,49 +180,51 @@ fn queue_continue(commands: &Commands) {
     }
 }
 
-pub(super) fn submits(
-    actions: Option<&Actions<Imager>>,
+/// `input`, continuing the page when the person presses Enter in it.
+pub(super) fn submits(commands: &Commands, input: TextInput) -> TextInput {
+    let commands = commands.clone();
+    input.on_submit(move |_| queue_continue(&commands))
+}
+
+/// `input`, running the effect `effect` makes of each value the person types.
+pub(super) fn changes(
+    commands: &Commands,
     input: TextInput,
-    effect: impl Binds<InstallerPreviewEffect, String>,
+    effect: impl Fn(String) -> InstallerPreviewEffect + 'static,
 ) -> TextInput {
-    match actions.and_then(|actions| actions.effect_binding(effect)) {
-        Some(binding) => input.on_submit_action(binding),
-        None => input.with_enter_submits(true),
+    let commands = commands.clone();
+    input.on_change(move |value| commands.borrow_mut().push(effect(value.to_owned())))
+}
+
+/// The guided setup's window on `store`: the preview, and the USB media writer it hands the
+/// reviewed names to. Each keeps what it shows while the other one does.
+pub(crate) fn window(store: &Store, wake: &ui::WakeHandle, opened: Opened<'_>) -> Box<dyn Widget> {
+    let media = ui::LocalState::new(false);
+    let (store, wake) = (store.clone(), wake.clone());
+    let preview_media = media.clone();
+    let opened_live = opened.is_live();
+    let mut preview = Some(InstallerPreview {
+        media: Some(preview_media),
+        port: Port::new(store.clone(), wake.clone()),
+        ..InstallerPreview::default()
+    });
+    if let Some(preview) = &mut preview {
+        preview.attach(opened);
     }
-}
-
-pub(super) fn continues() -> impl Binds<InstallerPreviewEffect, String> {
-    InstallerPreviewEffect::CONTINUE_PREVIEW.map(|_: String| ())
-}
-
-pub(super) fn bound<I: 'static, C: ActionControl<I>>(
-    actions: Option<&Actions<Imager>>,
-    control: C,
-    effect: impl Binds<InstallerPreviewEffect, I>,
-) -> C {
-    match actions {
-        Some(actions) => actions.bind_effect(control, effect),
-        None => control,
-    }
-}
-
-pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
-    let media = cx.local(false);
-    let suspended = Rc::new(RefCell::new(None::<InstallerPreview>));
-    let shown = media.clone();
-    cx.switch(&shown, move |cx, showing_media| {
-        if *showing_media {
-            crate::app::wizard_view(cx, crate::app::ImagerApp::new())
-        } else {
-            let previous = suspended.borrow_mut().take();
-            let returned = previous.is_some();
-            let preview = previous.unwrap_or_else(|| InstallerPreview {
-                media: Some(media.clone()),
-                ..InstallerPreview::default()
-            });
-            retained_preview::view(cx, preview, &suspended, returned)
-        }
-    })
+    Box::new(ui::widget::Switch::from_state(
+        &media,
+        |showing: &bool| *showing,
+        move |showing: &bool| -> ui::widget::Element {
+            if *showing {
+                crate::app::media_writer(Port::new(store.clone(), wake.clone()), opened_live)
+            } else {
+                match preview.take() {
+                    Some(preview) => Box::new(Hosted(preview)),
+                    None => unreachable!("the switch keeps the preview it built"),
+                }
+            }
+        },
+    ))
 }
 
 /// The plan an "on another computer" preparation made, the computers this
@@ -282,9 +281,7 @@ pub struct InstallerPreview {
     live: bool,
     demo: bool,
     media: Option<ui::LocalState<bool>>,
-    dispatcher: Option<ui::framework::Dispatcher<Imager>>,
-    actions: Option<Actions<Imager>>,
-    published: Rc<RefCell<Published>>,
+    port: Port<InstallerPreview>,
 }
 
 impl Default for InstallerPreview {
@@ -312,8 +309,7 @@ impl Default for InstallerPreview {
             live: false,
             demo: false,
             media: None,
-            dispatcher: None,
-            actions: None,
+            port: Port::detached(),
             journey,
             machine: Machine::default(),
             linux: cfg!(target_os = "linux"),
@@ -329,7 +325,6 @@ impl Default for InstallerPreview {
             password_next_focus: Rc::default(),
             password_touched: [false; 2],
             password_focused: None,
-            published: Rc::default(),
         }
     }
 }
@@ -781,7 +776,7 @@ impl InstallerPreview {
                 if page == Page::Review
                     && self.live
                     && self.journey.destination == Some(Destination::Desktop)
-                    && self.direct.context.is_some() =>
+                    && self.live =>
             {
                 self.desktop_review_pending = true;
             }
@@ -846,7 +841,7 @@ impl InstallerPreview {
                 let live = self.live;
                 let demo = self.demo;
                 let media = self.media.clone();
-                let dispatcher = self.dispatcher.clone();
+                let port = self.port.clone();
                 let last_frame = self.last_frame.take();
                 *self = Self::default();
                 self.last_frame = last_frame;
@@ -856,7 +851,7 @@ impl InstallerPreview {
                 self.live = live;
                 self.demo = demo;
                 self.media = media;
-                self.dispatcher = dispatcher;
+                self.port = port;
                 return Ok(());
             }
             InstallerPreviewEffect::SetTargetIdentityField { field, value }
@@ -942,15 +937,18 @@ impl InstallerPreview {
     /// Hand the reviewed names to the USB media writer and show it. Choosing
     /// and confirming a drive happens there.
     fn open_media_writer(&mut self) -> Result<(), &'static str> {
-        let (Some(media), Some(dispatcher)) = (&self.media, &self.dispatcher) else {
+        let Some(media) = self.media.as_ref().filter(|_| self.live) else {
             return Err("installer-preview-storage-unavailable");
         };
-        dispatcher.submit(
-            Imager::paths()
-                .profile
-                .device_label
-                .replace(self.journey.device_name.clone()),
-        );
+        self.port
+            .store()
+            .edit(
+                &Imager::paths()
+                    .profile
+                    .device_label
+                    .replace(self.journey.device_name.clone()),
+            )
+            .map_err(|_| "installer-preview-storage-unavailable")?;
         media.set(true);
         self.error = None;
         self.dirty = true;
@@ -1071,7 +1069,7 @@ impl InstallerPreview {
     fn usb_backend_available(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
-            self.dispatcher.is_some() && self.media.is_some()
+            self.live && self.media.is_some()
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -1110,14 +1108,6 @@ impl InstallerPreview {
             self.journey.history.retain(|page| *page != Page::Storage);
         }
         Ok(())
-    }
-
-    fn bound<I: 'static, C: ActionControl<I>>(
-        &self,
-        control: C,
-        effect: impl Binds<InstallerPreviewEffect, I>,
-    ) -> C {
-        bound(self.actions.as_ref(), control, effect)
     }
 
     fn choice(&self, key: &str, selected: bool) -> Card {
@@ -1178,15 +1168,14 @@ impl InstallerPreview {
         let card = Card::new(Box::new(contents))
             .with_accessible_name(format!("{title}. {description}"))
             .selected(selected);
-        let effect = InstallerPreviewEffect::ChooseAndContinuePreview { choice };
-        match self
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.effect(&effect))
-        {
-            Some(binding) => card.on_action(format!("installer.choice.{key}"), binding),
-            None => card,
-        }
+        let commands = self.commands.clone();
+        card.on_activate(format!("installer.choice.{key}"), move || {
+            commands
+                .borrow_mut()
+                .push(InstallerPreviewEffect::ChooseAndContinuePreview {
+                    choice: choice.clone(),
+                });
+        })
     }
 
     fn track_password_focus(&mut self) -> bool {
@@ -1338,17 +1327,19 @@ impl InstallerPreview {
             _ => 3,
         };
         self.field_values[index].set(value.to_string());
-        let input = self.bound(
+        let set: fn(String) -> InstallerPreviewEffect = match key {
+            "ticket" => |ticket| InstallerPreviewEffect::SetMigrateTicket { ticket },
+            "device-name" => |value| InstallerPreviewEffect::SetPreviewDeviceName { value },
+            "password" => |value| InstallerPreviewEffect::SetPreviewPassword { value },
+            _ => |value| InstallerPreviewEffect::SetPreviewConfirmation { value },
+        };
+        let input = changes(
+            &self.commands,
             TextInput::from_state(&self.field_values[index])
                 .with_id(&format!("installer.{key}"))
                 .with_kind(kind)
                 .with_secret(kind == TextInputKind::Password),
-            match key {
-                "ticket" => InstallerPreviewEffect::SET_MIGRATE_TICKET,
-                "device-name" => InstallerPreviewEffect::SET_PREVIEW_DEVICE_NAME,
-                "password" => InstallerPreviewEffect::SET_PREVIEW_PASSWORD,
-                _ => InstallerPreviewEffect::SET_PREVIEW_CONFIRMATION,
-            },
+            set,
         );
         let input = if key == "ticket" {
             let commands = self.commands.clone();
@@ -1366,7 +1357,7 @@ impl InstallerPreview {
                 }
             })
         } else if submit_enabled && self.password_continue_enabled() {
-            submits(self.actions.as_ref(), input, continues())
+            submits(&self.commands, input)
         } else if submit_enabled {
             let commands = self.commands.clone();
             input.on_submit(move |_| {
@@ -1389,12 +1380,6 @@ impl InstallerPreview {
 }
 
 impl InstallerPreview {
-    fn reattach_after_media(&mut self, cx: &ViewCx<Imager>) {
-        self.actions = Some(cx.actions());
-        self.direct.context = Some(cx.mounts());
-        self.dispatcher = Some(cx.dispatcher());
-        self.dirty = true;
-    }
     fn answer_preview(&mut self, effect: InstallerPreviewEffect) -> EffectAnswer {
         self.drain();
         let submitted = matches!(
@@ -1437,9 +1422,23 @@ impl InstallerPreview {
     }
 }
 
-impl PublishingWindow for InstallerPreview {
-    fn published(&self) -> &Rc<RefCell<Published>> {
-        &self.published
+impl crate::hosting::Window for InstallerPreview {
+    type Effect = InstallerPreviewEffect;
+
+    fn port(&self) -> &Port<Self> {
+        &self.port
+    }
+
+    fn effect(
+        &mut self,
+        effect: InstallerPreviewEffect,
+        _cx: &mut EffectCx<'_, Self>,
+    ) -> EffectAnswer {
+        self.answer_preview(effect)
+    }
+
+    fn state(&self) -> serde_json::Value {
+        self.journey.status()
     }
 
     fn present(&mut self, state: &Imager) {
@@ -1464,21 +1463,21 @@ impl PublishingWindow for InstallerPreview {
 }
 
 impl InstallerPreview {
-    fn attach_view(&mut self, cx: &ViewCx<Imager>) {
-        self.actions = Some(cx.actions());
-        if cx.launch_flag("--demo") {
-            self.stage(Some("installer-destination"));
-            self.demo = true;
-            return;
+    /// Take up how the window is opened: the demo stages its walk; a live preview reaches this
+    /// computer and the person's planned computers; a shot stages its scenario.
+    fn attach(&mut self, opened: Opened<'_>) {
+        match opened {
+            Opened::Live { demo: true } => {
+                self.stage(Some("installer-destination"));
+                self.demo = true;
+            }
+            Opened::Live { demo: false } => {
+                self.live = true;
+                self.machine.listing = Some(machine::waiting());
+                self.dirty = true;
+            }
+            Opened::Shot(scenario) => self.stage(scenario),
         }
-        if !cx.mode().is_live() {
-            return;
-        }
-        self.live = true;
-        self.machine.listing = Some(machine::waiting());
-        self.direct.context = Some(cx.mounts());
-        self.dispatcher = Some(cx.dispatcher());
-        self.dirty = true;
     }
     fn stage(&mut self, scenario: Option<&str>) {
         let Some(scenario) = scenario else {
@@ -1506,13 +1505,6 @@ impl InstallerPreview {
             self.machine.waiting = machine::examples();
         }
         self.dirty = true;
-    }
-    fn effect(
-        &mut self,
-        effect: InstallerPreviewEffect,
-        _cx: &mut EffectCx<Imager>,
-    ) -> EffectAnswer {
-        self.answer_preview(effect)
     }
     fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
@@ -1626,19 +1618,13 @@ impl Widget for InstallerPreview {
         Some(self)
     }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.follow_document();
-        let staged = self.published.borrow_mut().take_staged();
-        if let Some(crate::window_view::Staged(scenario)) = staged {
-            self.stage(scenario.as_deref());
-        }
         self.drain();
         if let Some(child) = &mut self.composed {
             child.sync(state, path);
         }
-        self.publish();
     }
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let changed = self.drain() || self.published.borrow().staging();
+        let changed = self.drain();
         self.composed
             .as_mut()
             .is_some_and(|child| child.update(state, path))

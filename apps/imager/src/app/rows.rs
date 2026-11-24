@@ -1,8 +1,8 @@
 //! The removable drives an image may be written to, as rows of the declared
 //! `imager.target` type.
 
-use ui::framework::{EffectStatus, LiveRow};
-use ui::tilo_resource::RowBindings;
+use tilo_resource::RowBindings;
+use tilo_resource::{EffectStatus, LiveRow};
 
 use crate::app::ImagerApp;
 use crate::model::TargetDrive;

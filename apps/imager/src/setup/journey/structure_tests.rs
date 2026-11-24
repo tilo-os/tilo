@@ -1,5 +1,6 @@
 //! Retained layout maps must be retired when a nested surface replaces controls.
 use super::*;
+use crate::hosting::testing::TestHost;
 
 struct ReplacingChild {
     child: Box<dyn Widget>,
@@ -106,8 +107,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn native_handoff_report_is_independent_of_page_composition() {
-    use ui::framework::testing::TestApp;
-    let mut app = TestApp::<crate::resource::ImagerShell>::launched(&["--setup"]).unwrap();
+    let mut app = TestHost::launched(&["--setup"]);
     app.settle();
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview

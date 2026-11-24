@@ -7,7 +7,7 @@ publish = false
 license.workspace = true
 
 [features]
-test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env", "tilo-migrate/test-support"]
+test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env"]
 flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]
 # The guided setup's destination side on the live installer medium
 # (`destination`): disks, the privileged install, network, power and the
@@ -26,8 +26,6 @@ tilo-unlock-protocol = { path = "../tilo-unlock-protocol" }
 tilo-test-env = { path = "../../../tools/test-env", optional = true }
 tempfile.workspace = true
 base64.workspace = true
-# The bounded reads it shares with the migration engine.
-tilo-migrate = { path = "../../import/migrate" }
 zeroize.workspace = true
 block-devices = { path = "../block-devices" }
 bounded-command = { path = "../../platform/bounded-command" }
@@ -69,8 +67,6 @@ tilo-files = { path = "../../platform/tilo-files" }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_Power", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
-# The destination namespace checks recognise the fixture roots the tests build in.
-tilo-migrate = { path = "../../import/migrate", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

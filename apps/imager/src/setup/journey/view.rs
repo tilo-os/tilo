@@ -85,9 +85,7 @@ impl InstallerPreview {
                 body = body.push(Box::new(self.migrate_content()));
             }
             Page::Target => {
-                body = body.push(Box::new(
-                    self.target.page(&self.commands, self.actions.as_ref()),
-                ));
+                body = body.push(Box::new(self.target.page(&self.commands)));
             }
             Page::Password => {
                 // The walk through the setup never reaches this page: the normal

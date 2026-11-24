@@ -52,8 +52,8 @@
 //! the write and its read-back. Writing is guarded twice: the host's typed
 //! confirmation, then the platform authenticating a short-lived helper.
 //!
-//! [`ImagerShell`] is the app: this wizard plus the guided setup (`--setup`),
-//! over one resource.
+//! [`run`] is the program: this wizard, the guided setup (`--setup`) and, on the live
+//! medium, the installer, over one resource.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -79,12 +79,12 @@ pub mod customize_image;
 pub mod handoff;
 mod helpers;
 mod host;
+mod hosting;
 pub mod model;
 mod page;
 pub mod release;
 pub mod resource;
 pub mod setup;
-mod window_view;
 pub mod write;
 pub mod write_setup;
 
@@ -93,6 +93,11 @@ pub use model::{
     Action, Filesystem, InstallProfile, Source, SourceKind, Step, TargetDrive, TargetKind,
 };
 
-pub use resource::{Imager, ImagerShell};
+pub use resource::Imager;
+
+/// Run the installer's binary: one of the helpers it also is, a shot, or its window.
+pub fn run() {
+    hosting::run();
+}
 
 pub mod export_dialog;

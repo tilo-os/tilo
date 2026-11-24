@@ -2,9 +2,8 @@
 //! left open, the values the review shows, and the computers already planned.
 
 use super::*;
-use crate::resource::ImagerShell;
+use crate::hosting::testing::TestHost;
 use install_profile_model::plan::Token;
-use ui::framework::testing::TestApp;
 
 fn token() -> Token {
     Token {
@@ -140,7 +139,7 @@ fn the_plan_screens_paint_at_desktop_and_narrow_widths() {
         ("installer-plan-waiting", &[][..]),
     ] {
         for (viewport, tag) in [((1180, 2200), "desktop"), ((420, 2600), "narrow")] {
-            let mut app = TestApp::<ImagerShell>::capture_at(Some(scenario), viewport).unwrap();
+            let mut app = TestHost::capture_at(Some(scenario), viewport);
             app.harness()
                 .set_theme(Theme::dark().with_reduce_motion(true));
             visual_tests::paint_app(&mut app, scenario, ids, viewport, tag);
@@ -155,7 +154,7 @@ tilo_test_env::scenario! {
     phase the_plan_row_shows_the_value_it_takes;
     {
         let mut app =
-            TestApp::<ImagerShell>::capture_at(Some("installer-plan-review"), (1180, 820)).unwrap();
+            TestHost::capture_at(Some("installer-plan-review"), (1180, 820));
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
             let plan = &preview.journey.plan;
@@ -212,7 +211,7 @@ tilo_test_env::scenario! {
     phase a_made_plan_names_the_code_and_how_it_travels;
     {
         let mut app =
-            TestApp::<ImagerShell>::capture_at(Some("installer-plan-ready"), (1180, 820)).unwrap();
+            TestHost::capture_at(Some("installer-plan-ready"), (1180, 820));
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
             let created = preview.machine.created.as_ref().unwrap();
@@ -232,7 +231,7 @@ tilo_test_env::scenario! {
     phase waiting_computers_show_what_they_still_ask;
     {
         let mut app =
-            TestApp::<ImagerShell>::capture_at(Some("installer-plan-waiting"), (1180, 820)).unwrap();
+            TestHost::capture_at(Some("installer-plan-waiting"), (1180, 820));
         app.settle();
         app.with_widget::<InstallerPreview, _>(|preview| {
             assert_eq!(preview.machine.waiting.len(), 2);

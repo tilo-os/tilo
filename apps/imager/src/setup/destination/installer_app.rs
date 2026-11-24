@@ -51,7 +51,7 @@ use imager_backend::destination::network::{
 use imager_backend::destination::power_readiness::current_insufficient_battery_percent;
 use imager_backend::destination::probes;
 
-mod console;
+pub(crate) mod console;
 #[cfg(test)]
 mod language_tests;
 mod surface;
@@ -515,7 +515,6 @@ pub struct InstallerApp {
     viewport_offset: Rc<Cell<(f32, f32)>>,
     backend: Arc<dyn InstallBackend>,
     console: Option<imager_backend::destination::console::ConsoleServer>,
-    published: Rc<std::cell::RefCell<crate::window_view::Published>>,
 
     dirty: bool,
 }
@@ -689,7 +688,6 @@ impl InstallerApp {
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
             backend: Arc::new(SystemBackend),
             console: None,
-            published: Rc::default(),
         }
     }
 
@@ -3505,10 +3503,6 @@ impl InstallerApp {
 impl Widget for InstallerApp {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         self.dirty = true;
-        let staged = self.published.borrow_mut().take_staged();
-        if let Some(crate::window_view::Staged(scenario)) = staged {
-            self.stage(scenario.as_deref());
-        }
         if self.recovery_key_copy.failed() {
             self.recovery_key_copied = false;
             self.dirty_structure = true;
@@ -3522,11 +3516,10 @@ impl Widget for InstallerApp {
             self.dirty_structure = true;
         }
         self.composed.sync(state, root);
-        crate::window_view::PublishingWindow::publish(self);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let mut changed = self.published.borrow().staging();
+        let mut changed = false;
         for child in self.children_mut() {
             changed |= child.update(state, path);
         }
@@ -3691,46 +3684,6 @@ impl InstallerApp {
         console.serve_discovered(Arc::new(move || wake.post(CONSOLE_WAKE.to_owned())));
         self.mailbox = Some(mailbox);
         self.console = Some(console);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(mut app) = scenario
-            .and_then(|name| name.strip_prefix("destination-"))
-            .and_then(Self::for_scenario)
-        {
-            app.published = Rc::clone(&self.published);
-            *self = app;
-        }
-    }
-
-    pub(crate) fn effect(
-        &mut self,
-        effect: DestinationEffect,
-        _cx: &mut ui::framework::EffectCx<crate::resource::Imager>,
-    ) -> ui::framework::EffectAnswer {
-        let output = self.apply(effect)?;
-        Ok(output.value.map_or_else(
-            ui::framework::Effected::done,
-            ui::framework::Effected::value,
-        ))
-    }
-}
-
-impl crate::window_view::PublishingWindow for InstallerApp {
-    fn published(&self) -> &Rc<std::cell::RefCell<crate::window_view::Published>> {
-        &self.published
-    }
-
-    fn rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.published_rows()
-    }
-
-    fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
-        self.effect_statuses()
-    }
-
-    fn row_statuses(&self) -> Vec<(String, Vec<ui::framework::EffectStatus>)> {
-        InstallerApp::row_statuses(self)
     }
 }
 

@@ -563,7 +563,6 @@ installer-review-allocation = { $size } GiB für Tilo.
 installer-review-unallocated = Verwendet nicht zugewiesenen Speicherplatz; die Partition deines aktuellen Systems bleibt unverändert.
 installer-review-resize = Die Partition deines aktuellen Systems wird von { $before } auf { $after } verkleinert. Ihre Dateien bleiben, wo sie sind.
 installer-review-not-ready = Schließe deine Einrichtungsauswahl ab, bevor du die Installation prüfst.
-installer-review-context-pending = Die Installation ist in diesem Fenster nicht bereit. Öffne die Einrichtung erneut, um fortzufahren.
 installer-review-storage-pending = Der Speicher ist nicht bereit. Bearbeite „Platz für Tilo“ und prüfe die Kapazität erneut.
 installer-review-storage-shortfall = Tilo braucht { $needed }; verfügbar sind { $available }. Bearbeite „Platz für Tilo“, um die Kapazität zu prüfen.
 installer-preview-storage-size-range = Tilo braucht mindestens { $min } GiB. Bis zu { $max } GiB sind verfügbar.
@@ -1103,3 +1102,24 @@ imager-write-plan-set-ssh-key = SSH-Schlüssel des Besitzers festlegen
 imager-write-plan-set-wifi-psk = WLAN-Passwort festlegen
 imager-write-plan-status = Schreibstatus anzeigen
 imager-write-plan-write = Laufwerk löschen und Abbild schreiben
+
+## History: what changed in the imager's document
+imager-select-source = Das zu schreibende Abbild ausgewählt
+imager-clear-source = Das zu schreibende Abbild entfernt
+imager-install-profile-hostname = Den Hostnamen geändert
+imager-install-profile-locale = Das Gebietsschema geändert
+imager-install-profile-keyboard = Die Tastaturbelegung geändert
+imager-install-profile-timezone = Die Zeitzone geändert
+imager-install-profile-filesystem = Das Dateisystem auf { $new ->
+    [btrfs] Btrfs
+    [ext4] Ext4
+   *[xfs] XFS
+}
+imager-install-profile-wifi-ssid = Das WLAN geändert
+imager-install-profile-device-label = Den Namen des neuen Geräts geändert
+imager-install-profile-enroll-local-identity = { $new ->
+    [true] Gewählt, das neue Gerät einzurichten
+   *[false] Gewählt, das neue Gerät nicht einzurichten
+}
+imager-user-account-full-name = Den vollständigen Namen des ersten Benutzers geändert
+imager-user-account-username = Den Benutzernamen des ersten Benutzers geändert

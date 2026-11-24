@@ -1,11 +1,9 @@
 //! The direct route: Full Tilo installed beside the system the person is using.
-use super::{Destination, Imager, InstallerPreview, InstallerPreviewEffect, Page};
+use super::{Destination, InstallerPreview, InstallerPreviewEffect, Page};
 use crate::setup::staging;
-use ui::framework::Mounts;
 use ui::widget::{ButtonRole, Row};
 
 pub(super) struct Direct {
-    pub context: Option<Mounts<Imager>>,
     pub active: bool,
     pub navigation: ui::LocalState<bool>,
 }
@@ -13,7 +11,6 @@ pub(super) struct Direct {
 impl Default for Direct {
     fn default() -> Self {
         Self {
-            context: None,
             active: false,
             navigation: ui::LocalState::new(false),
         }
@@ -48,8 +45,6 @@ impl InstallerPreview {
             || self.journey.destination != Some(Destination::Computer)
         {
             "installer-review-not-ready"
-        } else if self.direct.context.is_none() {
-            "installer-review-context-pending"
         } else if !crate::setup::internal_install_flow::live_install_allowed() {
             "installer-preview-storage-release-blocked"
         } else {
@@ -175,12 +170,7 @@ impl InstallerPreview {
             })
             .map_err(|_| "installer-preview-direct-review-unavailable")?;
         let navigation = child.guided_navigation_guard();
-        let context = self
-            .direct
-            .context
-            .as_ref()
-            .ok_or("installer-preview-storage-unavailable")?;
-        let child = context.mount(|cx| crate::setup::view::setup_window(cx, child))?;
+        let child = crate::setup::view::setup_window(child, self.port.child(), self.live);
         let back = self
             .button(
                 "installer.back",
@@ -311,7 +301,7 @@ mod tests {
             );
             assert_eq!(
                 preview.direct_blocker(),
-                Some(t("installer-review-context-pending"))
+                Some(t("installer-review-storage-pending"))
             );
             let blocker = control(root.as_ref(), "installer.review.blocker")
                 .unwrap()
@@ -319,7 +309,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 blocker.name.as_deref(),
-                Some(t("installer-review-context-pending").as_str())
+                Some(t("installer-review-storage-pending").as_str())
             );
             assert!(control(root.as_ref(), "installer.review.storage").is_some());
             preview.journey.edit("devices").unwrap();

@@ -785,7 +785,6 @@ installer-review-allocation = { $size } GiB for Tilo.
 installer-review-unallocated = Uses unallocated space; your current system’s partition stays unchanged.
 installer-review-resize = Your current system’s partition will shrink from { $before } to { $after }. Its files stay in place.
 installer-review-not-ready = Finish your setup choices before reviewing installation.
-installer-review-context-pending = Installation is not ready in this window. Reopen setup to continue.
 installer-review-storage-pending = Storage is not ready. Edit Space for Tilo and check capacity again.
 installer-review-storage-shortfall = Tilo needs { $needed }; { $available } is available. Edit Space for Tilo to review capacity.
 
@@ -1379,3 +1378,24 @@ imager-write-plan-set-ssh-key = Set the owner's SSH key
 imager-write-plan-set-wifi-psk = Set Wi-Fi password
 imager-write-plan-status = Show write status
 imager-write-plan-write = Erase drive and write image
+
+## History: what changed in the imager's document
+imager-select-source = Chose the image to write
+imager-clear-source = Cleared the image to write
+imager-install-profile-hostname = Changed the hostname
+imager-install-profile-locale = Changed the locale
+imager-install-profile-keyboard = Changed the keyboard layout
+imager-install-profile-timezone = Changed the time zone
+imager-install-profile-filesystem = Set the filesystem to { $new ->
+    [btrfs] Btrfs
+    [ext4] Ext4
+   *[xfs] XFS
+}
+imager-install-profile-wifi-ssid = Changed the Wi-Fi network
+imager-install-profile-device-label = Changed the new device's name
+imager-install-profile-enroll-local-identity = { $new ->
+    [true] Chose to enroll the new device
+   *[false] Chose not to enroll the new device
+}
+imager-user-account-full-name = Changed the first user's full name
+imager-user-account-username = Changed the first user's username

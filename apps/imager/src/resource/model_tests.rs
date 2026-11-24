@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::model::{Filesystem, SourceKind, sample_recent_sources, sample_source};
-use ui::tilo_resource::{Edit, Replica, Resource as _};
+use tilo_resource::{Edit, Replica};
 
 fn edit(imager: &mut Replica<Imager>, edit: &Edit<Imager>) -> Result<(), String> {
     let invoke = Invoke::edit(edit).map_err(|error| error.to_string())?;
@@ -73,8 +73,8 @@ tilo_test_env::scenario! {
         let mut local = imager.state().unwrap();
         local.profile.user.password = "hunter22".into();
         local.profile.encryption_passphrase = "correct horse".into();
-        let mut doc = ui::tilo_resource::Doc::new();
-        ui::tilo_resource::Fields::write_fields(&local, &mut doc, &automerge::ROOT).unwrap();
+        let mut doc = tilo_resource::Doc::new();
+        tilo_resource::Fields::write_fields(&local, &mut doc, &automerge::ROOT).unwrap();
         let saved = String::from_utf8_lossy(&doc.save()).into_owned();
         assert!(
             !saved.contains("hunter22") && !saved.contains("correct horse"),
@@ -152,20 +152,8 @@ tilo_test_env::scenario! {
 
     phase an_agents_changes_render_as_the_apps_sentences;
     {
-        use ui::tilo_actions::ActionInvoker;
-
-        let mut app = ui::framework::testing::TestApp::<ImagerShell>::new().unwrap();
-        let agent = ActionInvoker::agent("claude")
-            .acting_for("ada");
-        let kind = Imager::KIND;
-        let source = serde_json::to_value(sample_source()).unwrap();
-        app.call_by(
-            agent.clone(),
-            kind,
-            "select-source",
-            serde_json::json!({ "source": source }),
-        )
-        .unwrap();
+        let mut imager = Replica::<Imager>::new().as_agent_for("claude", "ada");
+        review(&mut imager, &sample_source());
         let profile = Imager::paths().profile;
         for change in [
             profile.hostname.replace("lab01"),
@@ -173,25 +161,18 @@ tilo_test_env::scenario! {
             profile.filesystem.set(Filesystem::Ext4),
             profile.enroll_local_identity.set(true),
         ] {
-            app.call_by(
-                agent.clone(),
-                kind,
-                "field-edit",
-                serde_json::json!({ "edit": change }),
-            )
-            .unwrap();
+            edit(&mut imager, &change).unwrap();
         }
-        app.call_by(agent, kind, "clear-source", serde_json::json!({}))
-            .unwrap();
-        let state = app.state();
+        imager.apply(Imager::CLEAR_SOURCE.invoke()).unwrap();
+        let state = imager.state().unwrap();
         assert_eq!(
             (state.profile.hostname.as_str(), state.source.is_none()),
             ("lab01", true)
         );
 
-        let entries: Vec<_> = app
-            .history()
+        let entries: Vec<_> = tilo_resource::history::versions(imager.doc_mut())
             .into_iter()
+            .filter_map(|version| version.context)
             .filter(|entry| {
                 entry
                     .invoker
@@ -199,7 +180,12 @@ tilo_test_env::scenario! {
                     .is_some_and(|invoker| invoker.acting.agent_id() == Some("claude"))
             })
             .collect();
-        let sentences = app.sentences(&entries);
+        let source = CATALOG.source();
+        let catalogue = tilo_history::Catalogue::new("en-US", &Vec::from_iter(source));
+        let reader = tilo_history::Reader::new("en-US")
+            .with_app(&catalogue)
+            .with_labels(&ui::history_source::sentence::ThreadLabels);
+        let sentences: Vec<String> = entries.iter().map(|entry| reader.sentence(entry)).collect();
         assert_eq!(
             sentences,
             [

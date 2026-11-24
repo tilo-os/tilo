@@ -1,7 +1,27 @@
 //! The helpers this binary also runs before the app starts: the privileged writer and
 //! the staging helper.
 
-use ui::framework::Helper;
+/// One of the helpers the binary also is: it answers `Some(exit code)` for a command line that
+/// is its own, `None` for any other.
+pub(crate) struct Helper {
+    pub run: fn(&[String]) -> Result<Option<i32>, String>,
+}
+
+/// Run the first helper `args` is for, answering the exit code the process ends with; `None`
+/// when the command line is the installer's own.
+pub(crate) fn run(args: &[String]) -> Option<i32> {
+    for helper in HELPERS {
+        match (helper.run)(args) {
+            Ok(None) => {}
+            Ok(Some(code)) => return Some(code),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return Some(1);
+            }
+        }
+    }
+    None
+}
 
 #[cfg(feature = "installation")]
 pub(crate) const HELPERS: &[Helper] = &[
@@ -85,32 +105,31 @@ mod tests {
 
     #[test]
     fn helpers_answer_only_their_own_command_lines() {
-        use crate::resource::ImagerShell;
         assert_eq!(
-            ui::framework::run_helper::<ImagerShell>(&args(&["--tilo-package-smoke"])),
+            super::run(&args(&["--tilo-package-smoke"])),
             Some(0),
             "the packaging probe ends before the app starts"
         );
         #[cfg(feature = "installation")]
         assert_eq!(
-            ui::framework::run_helper::<ImagerShell>(&args(&["--tilo-final-bootnext"])),
+            super::run(&args(&["--tilo-final-bootnext"])),
             Some(1),
             "a helper's refused command line ends the process with 1"
         );
         #[cfg(not(feature = "installation"))]
         assert_eq!(
-            ui::framework::run_helper::<ImagerShell>(&args(&["--tilo-final-bootnext"])),
+            super::run(&args(&["--tilo-final-bootnext"])),
             None,
             "the Tilo app is no staging helper"
         );
         assert_eq!(
-            ui::framework::run_helper::<ImagerShell>(&args(&["--customize-image"])),
+            super::run(&args(&["--customize-image"])),
             Some(1),
             "an incomplete customization is refused before GUI startup"
         );
         for app in [&[][..], &["--setup"]] {
             assert_eq!(
-                ui::framework::run_helper::<ImagerShell>(&args(app)),
+                super::run(&args(app)),
                 None,
                 "the app's own command line starts the app"
             );

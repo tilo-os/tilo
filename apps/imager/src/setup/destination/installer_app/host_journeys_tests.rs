@@ -19,12 +19,11 @@ use serde_json::{Value, json};
 
 use super::surface_tests::{FakeBackend, KEY};
 use super::*;
-use crate::resource::ImagerShell;
+use crate::hosting::testing::TestHost;
 use crate::setup::destination::effects::{REVIEW, STORAGE};
 use imager_backend::destination::network::{NetworkBackend, WifiNetworkInfo, WifiSecurity};
-use ui::framework::testing::TestApp;
 
-type App = TestApp<ImagerShell>;
+type App = TestHost;
 
 /// A strong account passphrase, as the installer asks for one.
 const ACCOUNT: &str = "correct horse battery staple";
@@ -173,7 +172,7 @@ fn installer(backend: Arc<FakeBackend>, network: Arc<RecordedNetwork>) -> Instal
 /// Arm `app` and launch the installer window over it.
 fn opened(app: InstallerApp) -> App {
     arm(app);
-    TestApp::<ImagerShell>::launched(&["--destination"]).unwrap()
+    TestHost::launched(&["--destination"])
 }
 
 /// What the installer shows now: its published state.

@@ -153,8 +153,15 @@ impl LaunchArgs {
     /// yet takes the standard capture options, plus its own capture-only `options`.
     #[cfg(feature = "native")]
     pub fn from_env(options: &[&str]) -> Result<Self, LaunchError> {
+        Self::from_env_with(&[], options)
+    }
+
+    /// [`Self::from_env`] for a binary whose live launch also takes its own switches `flags`
+    /// (the installer's `--setup`).
+    #[cfg(feature = "native")]
+    pub fn from_env_with(flags: &[&str], options: &[&str]) -> Result<Self, LaunchError> {
         let args: Vec<String> = std::env::args().collect();
-        parse_args_extended(&args, &[], options, &[], &[], 0)
+        parse_args_extended(&args, flags, options, &[], &[], 0)
     }
 }
 

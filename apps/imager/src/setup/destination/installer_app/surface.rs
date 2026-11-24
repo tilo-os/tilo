@@ -2,11 +2,11 @@
 //! cannot run now.
 
 use serde_json::{Map, Value};
-use ui::framework::{EffectStatus, LiveRow};
+use tilo_resource::Effect as _;
+use tilo_resource::LiveRow;
+use tilo_resource::RowBindings;
 use ui::i18n::ArgValue;
 use ui::tilo_actions::{ActionOutput, ResourcePresentation};
-use ui::tilo_resource::Effect as _;
-use ui::tilo_resource::RowBindings;
 use zeroize::Zeroizing;
 
 use super::{
@@ -106,7 +106,7 @@ impl ItemKind {
 }
 
 struct Guidance;
-impl ui::tilo_resource::words::RowType for Guidance {
+impl tilo_resource::words::RowType for Guidance {
     const KIND: &'static str = "installer.guidance";
     const LABEL: &'static str = "Guidance";
 }
@@ -281,25 +281,6 @@ impl InstallerApp {
         }
     }
 
-    pub(super) fn effect_statuses(&self) -> Vec<EffectStatus> {
-        self.checks()
-            .into_iter()
-            .filter_map(|check| {
-                let label = check.label;
-                let status = match check.blocked {
-                    Some((code, reason)) => {
-                        EffectStatus::unavailable(reference(check.id), code, reason)
-                    }
-                    None => EffectStatus::labelled(reference(check.id), label.clone()?),
-                };
-                Some(match label {
-                    Some(label) => status.with_label(label),
-                    None => status,
-                })
-            })
-            .collect()
-    }
-
     pub(super) fn published_rows(&self) -> Vec<LiveRow> {
         let alongside = self.install_method == InstallMethod::Alongside;
         self.items()
@@ -385,39 +366,6 @@ impl InstallerApp {
                     item.id.clone(),
                     vec![(choice.effect.id(), *code, reason.clone())],
                 ));
-            }
-        }
-        by_row
-    }
-
-    /// The row statuses that carry [`Self::refusals`] into the published
-    /// tree, and the review's own description.
-    pub(crate) fn row_statuses(&self) -> Vec<(String, Vec<EffectStatus>)> {
-        let mut by_row: Vec<(String, Vec<EffectStatus>)> = self
-            .refusals()
-            .into_iter()
-            .map(|(row, refusals)| {
-                (
-                    row,
-                    refusals
-                        .into_iter()
-                        .map(|(id, code, reason)| {
-                            EffectStatus::unavailable(reference(id), code, reason)
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
-        for item in self.items() {
-            if let Some(choice) = &item.choice
-                && let Some(description) = &choice.description
-            {
-                let status =
-                    EffectStatus::described(reference(choice.effect.id()), description.clone());
-                match by_row.iter_mut().find(|(row, _)| *row == item.id) {
-                    Some((_, statuses)) => statuses.push(status),
-                    None => by_row.push((item.id.clone(), vec![status])),
-                }
             }
         }
         by_row

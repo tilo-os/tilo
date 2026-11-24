@@ -1,9 +1,9 @@
 //! The customization page's fields, over the install profile they edit.
 
-use ui::framework::Actions;
 use ui::local_state::LocalState;
 use ui::widget::{Dropdown, Field, Form, FormSection, TextInput};
 
+use crate::hosting::Store;
 use crate::model::{Filesystem, InstallProfile};
 use crate::resource::CATALOG;
 use crate::resource::Imager;
@@ -160,7 +160,7 @@ pub(crate) fn profile_value(field: CzField, value: &str) -> Option<String> {
     }
 }
 
-fn text_path(field: CzField) -> Option<ui::tilo_resource::Path<Imager, String>> {
+fn text_path(field: CzField) -> Option<tilo_resource::Path<Imager, String>> {
     let profile = Imager::paths().profile;
     Some(match field {
         CzField::Hostname => profile.hostname,
@@ -173,7 +173,7 @@ fn text_path(field: CzField) -> Option<ui::tilo_resource::Path<Imager, String>> 
     })
 }
 
-pub(crate) fn field_edit(field: CzField, value: String) -> Option<ui::tilo_resource::Edit<Imager>> {
+pub(crate) fn field_edit(field: CzField, value: String) -> Option<tilo_resource::Edit<Imager>> {
     match text_path(field) {
         Some(path) => Some(path.replace(value)),
         None => Filesystem::from_key(&value)
@@ -181,34 +181,23 @@ pub(crate) fn field_edit(field: CzField, value: String) -> Option<ui::tilo_resou
     }
 }
 
-fn field_binding(
-    field: CzField,
-    actions: Option<&Actions<Imager>>,
-) -> Option<ui::tilo_actions::ActionBinding<String>> {
-    let actions = actions?;
-    let edit = move |shown: String| {
-        profile_value(field, &shown)
-            .and_then(|value| field_edit(field, value))
-            .ok_or_else(|| field.choose_message())
-    };
-    match text_path(field) {
-        Some(path) => actions.edit_binding_with(path, move |_, shown: String| edit(shown)),
-        None => actions.edit_binding_with(Imager::paths().profile.filesystem, move |_, shown| {
-            edit(shown)
-        }),
+/// What choosing or typing `shown` into `field` does: edit the profile, or say why it cannot.
+fn chosen(field: CzField, shown: &str, store: &Store) {
+    let edited = profile_value(field, shown)
+        .and_then(|value| field_edit(field, value))
+        .ok_or_else(|| field.choose_message())
+        .and_then(|edit| store.edit(&edit));
+    if let Err(reason) = edited {
+        ui::control_notice::say_in_window(&reason);
     }
 }
 
-fn text_field(
-    profile: &InstallProfile,
-    field: CzField,
-    actions: Option<&Actions<Imager>>,
-) -> Field {
+fn text_field(profile: &InstallProfile, field: CzField, store: Option<&Store>) -> Field {
     let input = TextInput::local()
         .with_id(&field.id())
         .with_initial_value(&shown_value(profile, field));
-    let input = match field_binding(field, actions) {
-        Some(binding) => input.on_action(binding),
+    let input = match store.cloned() {
+        Some(store) => input.on_change(move |shown| chosen(field, shown, &store)),
         None => input,
     };
     let control = if field == CzField::Username {
@@ -229,7 +218,7 @@ fn choice_field(
     profile: &InstallProfile,
     field: CzField,
     options: Vec<String>,
-    actions: Option<&Actions<Imager>>,
+    store: Option<&Store>,
     open: bool,
 ) -> Field {
     let shown = shown_value(profile, field);
@@ -238,8 +227,8 @@ fn choice_field(
     let mut choice = Dropdown::from_state(options, &state)
         .with_id(&field.id())
         .with_accessible_name(field.label());
-    if let Some(binding) = field_binding(field, actions) {
-        choice = choice.on_action(binding);
+    if let Some(store) = store.cloned() {
+        choice = choice.on_change(move |shown| chosen(field, shown, &store));
     }
     if open {
         choice = choice.open();
@@ -252,11 +241,7 @@ fn choice_field(
     }
 }
 
-pub(crate) fn form(
-    profile: &InstallProfile,
-    actions: Option<&Actions<Imager>>,
-    timezone_open: bool,
-) -> Form {
+pub(crate) fn form(profile: &InstallProfile, store: Option<&Store>, timezone_open: bool) -> Form {
     let keyboards = KEYBOARDS
         .iter()
         .map(|(label, _)| (*label).to_string())
@@ -271,9 +256,9 @@ pub(crate) fn form(
     Form::new()
         .section(
             FormSection::new(CATALOG.t("imager-profile-section-identity"))
-                .field(text_field(profile, CzField::Hostname, actions))
-                .field(text_field(profile, CzField::FullName, actions))
-                .field(text_field(profile, CzField::Username, actions)),
+                .field(text_field(profile, CzField::Hostname, store))
+                .field(text_field(profile, CzField::FullName, store))
+                .field(text_field(profile, CzField::Username, store)),
         )
         .section(
             FormSection::new(CATALOG.t("imager-profile-section-region"))
@@ -281,27 +266,27 @@ pub(crate) fn form(
                     profile,
                     CzField::Timezone,
                     timezones(),
-                    actions,
+                    store,
                     timezone_open,
                 ))
                 .field(choice_field(
                     profile,
                     CzField::Locale,
                     locales,
-                    actions,
+                    store,
                     false,
                 ))
                 .field(choice_field(
                     profile,
                     CzField::Keyboard,
                     keyboards,
-                    actions,
+                    store,
                     false,
                 )),
         )
         .section(
             FormSection::new(CATALOG.t("imager-profile-section-storage")).field(
-                choice_field(profile, CzField::Filesystem, filesystems, actions, false)
+                choice_field(profile, CzField::Filesystem, filesystems, store, false)
                     .with_help(crate::setup::strings::t("imager-filesystem-help")),
             ),
         )

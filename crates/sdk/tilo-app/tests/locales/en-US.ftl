@@ -1,8 +1,5 @@
 # The words of the declarations in this crate's tests.
 
-## crates/sdk/tilo-app/src/framework/status.rs
-test-status-view-send = Send
-
 ## crates/sdk/tilo-app/src/framework/bar_actions_tests.rs
 test-bar-counter-view-zoom-in = Zoom in
 test-bar-counter = Counter

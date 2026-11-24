@@ -1,6 +1,6 @@
 //! What the installer on the live medium offers its window: one effect per choice.
 
-use ui::tilo_resource::{self, Effect};
+use tilo_resource::{self, Effect};
 
 pub const PROVIDER: &str = "installer";
 

@@ -382,14 +382,10 @@ impl Target {
         })
     }
 
-    pub(super) fn page(
-        &self,
-        commands: &Commands,
-        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
-    ) -> Column {
+    pub(super) fn page(&self, commands: &Commands) -> Column {
         let mut body = page::stack().with_rhythm(Rhythm::Sibling);
         if self.report.is_none() {
-            body = body.push(Box::new(self.identity_section(commands, actions)));
+            body = body.push(Box::new(self.identity_section(commands)));
         }
         if let Some(report) = self.effective_report() {
             for section in crate::setup::view::another_computer_report_sections(&report) {
@@ -408,25 +404,22 @@ impl Target {
         body.push(Box::new(self.destination_check_section()))
     }
 
-    fn identity_section(
-        &self,
-        commands: &Commands,
-        actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
-    ) -> Section {
+    fn identity_section(&self, commands: &Commands) -> Section {
         let mut rows: Vec<Box<dyn Widget>> = Vec::new();
         for (field, id) in FIELD_IDS {
             let field_name = field;
             let input = super::submits(
-                actions,
-                super::bound(
-                    actions,
+                commands,
+                super::changes(
+                    commands,
                     TextInput::from_state(self.field_state(field))
                         .with_id(id)
                         .with_kind(TextInputKind::Name),
-                    InstallerPreviewEffect::SET_TARGET_IDENTITY_FIELD
-                        .map(move |value: String| (field.to_owned(), value)),
+                    move |value| InstallerPreviewEffect::SetTargetIdentityField {
+                        field: field.to_owned(),
+                        value,
+                    },
                 ),
-                super::continues(),
             );
             let field = Field::new(self.field_label(field), input)
                 .with_label_placement(Some(LabelPlacement::Above));

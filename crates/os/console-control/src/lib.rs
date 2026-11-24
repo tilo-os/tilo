@@ -21,7 +21,7 @@
 
 pub mod server;
 
-pub use server::{Asked, ConsoleApp, ConsoleServer, Endpoint, VIRTIO_PORT};
+pub use server::{Asked, ConsoleApp, ConsoleServer, Endpoint, VIRTIO_PORT, admit_to};
 
 /// The composefs digest this system booted, from the kernel command line.
 /// A console app reports it in its state, so a caller can check that a

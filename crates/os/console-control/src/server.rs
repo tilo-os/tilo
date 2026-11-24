@@ -149,7 +149,23 @@ impl Asked {
 
 /// `request` admitted against what `app` publishes now ([`api::admit`]).
 fn admit(app: &impl ConsoleApp, request: &InvokeRequest) -> Result<EncodedAction, ActionCallError> {
-    if request.target.provider != app.provider() {
+    admit_to(app.provider(), &app.published(), request)
+}
+
+/// `request` admitted against `published`, the resources `provider` publishes now
+/// ([`api::admit`]): what an app that answers [`Asked::Invoke`] itself, later than at once,
+/// checks before it runs the action.
+///
+/// # Errors
+///
+/// Why the request does not admit: another provider's, an action nobody publishes, arguments
+/// that are not a JSON object or do not fit.
+pub fn admit_to(
+    provider: &str,
+    published: &[ResourceSpec],
+    request: &InvokeRequest,
+) -> Result<EncodedAction, ActionCallError> {
+    if request.target.provider != provider {
         return Err(ActionCallError::UnknownAction);
     }
     let arguments = match &request.argument {
@@ -162,7 +178,7 @@ fn admit(app: &impl ConsoleApp, request: &InvokeRequest) -> Result<EncodedAction
         }
     };
     api::admit(
-        &app.published(),
+        published,
         &request.target.address,
         &arguments,
         request.confirmation.as_ref(),

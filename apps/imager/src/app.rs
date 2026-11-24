@@ -27,6 +27,7 @@ use ui::widget::{
 };
 
 use crate::export_dialog::ExportDialog;
+use crate::hosting::{EffectAnswer, EffectCx, Effected, JobProgress, Opened, Port, Reply, Store};
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive,
     TargetDriveIcon, TargetName, TiloRelease, fmt_eta, fmt_rate, fmt_size,
@@ -35,10 +36,7 @@ use crate::page::{self, Frame};
 use crate::resource::CATALOG;
 use crate::resource::{ImageWrite, Imager, ImagerEffect, InstallerDownload};
 use crate::write::{JobControl, WriteRequest, spawn_job};
-use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
-    LiveRow, RunMode,
-};
+use tilo_resource::{EffectStatus, LiveRow};
 use ui::widget::DrawChild;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -47,7 +45,6 @@ pub(crate) enum Command {
     Dropped(PathBuf),
     Release(usize),
     Recent(usize),
-    Rescan,
     Back,
     Station(usize),
     Next,
@@ -88,9 +85,8 @@ pub struct ImagerApp {
     close_requested: bool,
     close_intent: bool,
     write_mark: Option<(u64, ui::time::Instant)>,
-    write_reply: Option<EffectReply>,
+    write_reply: Option<Reply>,
     release_download: Option<ReleaseDownload>,
-    jobs: Option<Jobs<Imager>>,
     export_dialog: ExportDialog,
     export_after_sync: bool,
     shot_confirmation_ready: bool,
@@ -103,12 +99,12 @@ pub struct ImagerApp {
     structure_dirty: bool,
     commands: Commands,
     scroll: Rc<Cell<(f32, f32)>>,
-    dispatcher: Option<Dispatcher<Imager>>,
-    control_actions: Option<ui::framework::Actions<Imager>>,
+    port: Port<ImagerApp>,
+    /// The scenario a shot shows, staged once the window first shows the resource.
+    shot: Option<String>,
     live: bool,
     reaches_machine: bool,
     dirty: bool,
-    published: Rc<RefCell<crate::window_view::Published>>,
 }
 
 impl Default for ImagerApp {
@@ -153,7 +149,6 @@ impl ImagerApp {
             write_mark: None,
             write_reply: None,
             release_download: None,
-            jobs: None,
             export_dialog: ExportDialog::new(),
             export_after_sync: false,
             shot_confirmation_ready: false,
@@ -166,11 +161,10 @@ impl ImagerApp {
             structure_dirty: true,
             commands: Rc::new(RefCell::new(Vec::new())),
             scroll: Rc::new(Cell::new((0.0, 0.0))),
-            dispatcher: None,
-            control_actions: None,
+            port: Port::detached(),
+            shot: None,
             live: false,
             reaches_machine: true,
-            published: Rc::default(),
         }
     }
 
@@ -273,15 +267,22 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: Dispatcher<Imager>,
-        jobs: Jobs<Imager>,
-        mode: RunMode,
-    ) {
-        self.dispatcher = Some(dispatcher);
-        self.jobs = Some(jobs);
-        self.live = self.reaches_machine && mode.is_live();
+    /// The writer on `port`, as `opened` says: reaching this computer's drives when live.
+    pub(crate) fn opened(port: Port<Self>, opened: Opened<'_>) -> Self {
+        let mut app = Self::new();
+        app.port = port;
+        app.attach(opened);
+        app
+    }
+
+    /// Take up how the window is opened: a live writer reaches this computer's drives; a shot
+    /// stages its scenario.
+    pub(crate) fn attach(&mut self, opened: Opened<'_>) {
+        self.live = self.reaches_machine && opened.is_live();
+        if let Opened::Shot(scenario) = opened {
+            self.shot = Some(scenario.unwrap_or("source").to_owned());
+        }
+        self.dirty = true;
     }
 
     pub fn seed_local_shot_state(&mut self, scenario: &str) {
@@ -418,20 +419,9 @@ fn target_name(release: &TiloRelease) -> String {
 }
 
 impl ImagerApp {
-    fn bind_effect<C: ui::framework::ActionControl<()>>(
-        &self,
-        control: C,
-        effect: &ImagerEffect,
-    ) -> C {
-        match &self.control_actions {
-            Some(actions) => actions.bind_effect_invocation(control, effect),
-            None => control,
-        }
-    }
-
-    pub(crate) fn attach_control_actions(&mut self, actions: ui::framework::Actions<Imager>) {
-        self.control_actions = Some(actions);
-        self.dirty = true;
+    /// A closure for a control's press that runs `effect`.
+    fn presses(&self, effect: ImagerEffect) -> impl Fn() + use<> {
+        self.port.presses().on(effect)
     }
 
     fn button(&self, id: &str, key: &str, command: Command) -> Button {
@@ -576,10 +566,16 @@ impl ImagerApp {
                             )
                         },
                     ));
-                match self.target_write_binding() {
-                    Some(binding) => write.on_action(binding).with_enabled(
-                        self.can_advance(Step::Confirm) || self.shot_confirmation_ready,
-                    ),
+                // The Confirm step is the confirmation: the write names the drive it erases.
+                match self.target() {
+                    Some(drive) => write
+                        .on_click(self.presses(ImagerEffect::Write {
+                            device: drive.dev_path(),
+                            confirmation: drive.name.clone(),
+                        }))
+                        .with_enabled(
+                            self.can_advance(Step::Confirm) || self.shot_confirmation_ready,
+                        ),
                     None => write.with_enabled(false),
                 }
             }
@@ -796,19 +792,16 @@ impl ImagerApp {
         .checked(self.release_selected(index))
         .with_enabled(self.release_download.is_none() || downloading);
         row = if downloading {
-            self.bind_effect(row, &ImagerEffect::CancelDownload)
+            row.on_activate(self.presses(ImagerEffect::CancelDownload))
+                .action(
+                    Icon::X,
+                    CATALOG.t("imager-release-cancel"),
+                    self.presses(ImagerEffect::CancelDownload),
+                )
         } else {
             let sink = Rc::clone(&self.commands);
             row.on_activate(move || sink.borrow_mut().push(Command::Release(index)))
         };
-        if downloading
-            && let Some(cancel) = self
-                .control_actions
-                .as_ref()
-                .and_then(|actions| actions.effect(&ImagerEffect::CancelDownload))
-        {
-            row = row.action_binding(Icon::X, CATALOG.t("imager-release-cancel"), cancel);
-        }
         Some(Box::new(row))
     }
 
@@ -857,12 +850,9 @@ impl ImagerApp {
                     .meta(fmt_size(drive.size))
                     .selected(self.selected == Some(index))
                     .checked(self.selected == Some(index));
-                let row = self.bind_effect(
-                    row,
-                    &ImagerEffect::ChooseDrive {
-                        drive: drive.name.clone(),
-                    },
-                );
+                let row = row.on_activate(self.presses(ImagerEffect::ChooseDrive {
+                    drive: drive.name.clone(),
+                }));
                 Box::new(row) as Box<dyn Widget>
             })
             .collect();
@@ -880,19 +870,13 @@ impl ImagerApp {
                 .with_role(TextRole::Caption),
             ));
         }
-        if let Some(binding) = self
-            .control_actions
-            .as_ref()
-            .and_then(|actions| actions.effect(&ImagerEffect::ExportConfig))
-        {
-            body = body.push(Box::new(
-                Button::new(
-                    "imager.export-config",
-                    &CATALOG.t("imager-preview-embedded"),
-                )
-                .on_action(binding),
-            ));
-        }
+        body = body.push(Box::new(
+            Button::new(
+                "imager.export-config",
+                &CATALOG.t("imager-preview-embedded"),
+            )
+            .on_click(self.presses(ImagerEffect::ExportConfig)),
+        ));
         if !self.needs_manual_customization() {
             return body.push(Box::new(
                 Text::new(&crate::setup::strings::t("imager-plain-body")).dimmed(),
@@ -900,7 +884,7 @@ impl ImagerApp {
         }
         body.push(page::form_block(crate::customize::form(
             &self.profile,
-            self.control_actions.as_ref(),
+            Some(self.port.store()),
             self.shot_timezone_open,
         )))
     }
@@ -974,11 +958,6 @@ impl ImagerApp {
         (title, message)
     }
 
-    fn target_write_binding(&self) -> Option<tilo_actions::ActionBinding<()>> {
-        let row = self.target_row(self.target()?);
-        tilo_actions::ActionBinding::static_json_for(&row, "write", serde_json::Map::new()).ok()
-    }
-
     fn confirm_body(&self) -> Column {
         let title_key = match self.action {
             Action::Install => "imager-page-review-install",
@@ -996,7 +975,10 @@ impl ImagerApp {
                 &self.profile,
                 &self.wifi_psk,
                 &self.ssh_public_key,
-                self.control_actions.as_ref(),
+                Some(&crate::write_setup::Bound {
+                    store: self.port.store().clone(),
+                    presses: self.port.presses(),
+                }),
             )));
         }
         let (warning, consequence) = self.confirm_warning();
@@ -1187,9 +1169,9 @@ impl ImagerApp {
     fn writer(&self) -> crate::write::WriteBackend {
         crate::write::WriteBackend::for_window(self.live)
     }
-    fn submit(&self, submit: impl ui::framework::Submit<Imager>) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.submit(submit);
+    fn submit(&mut self, invoke: tilo_resource::Invoke<Imager>) {
+        if let Err(reason) = self.port.store().apply(invoke) {
+            self.fail(&reason);
         }
     }
     fn select_source(&mut self, src: &Source) {
@@ -1239,42 +1221,30 @@ impl ImagerApp {
             self.set_status("A Tilo installer download is already in progress.");
             return;
         }
-        let Some(jobs) = self.jobs.clone() else {
-            self.set_status("Tilo installers download in a window someone uses.");
-            return;
-        };
         self.set_status(&format!(
             "Downloading and verifying {}…",
             release.display_name()
         ));
         let control = crate::release::DownloadControl::default();
         let worker = control.clone();
-        jobs.start::<Self>(RELEASE_DOWNLOAD, move |cx| {
-            Ok(cx.thread(
-                move |progress| {
-                    crate::release::verified_image_observed(&release, &worker, &mut |event| {
-                        if progress.is_cancelled() {
-                            worker.cancel();
-                        }
-                        match event {
-                            crate::release::DownloadEvent::Downloading { received, total } => {
-                                progress.report("downloading", Some(received), Some(total));
-                            }
-                            crate::release::DownloadEvent::Verifying => {
-                                progress.report("verifying", None, None);
-                            }
-                            crate::release::DownloadEvent::Expanding { written, total } => {
-                                progress.report("preparing image", Some(written), Some(total));
-                            }
-                        }
-                    })
-                },
-                |app: &mut Self, result, _| {
-                    app.finish_release_download(result);
-                    Ok(Effected::done())
-                },
-            ))
-        });
+        self.port.start_job(
+            RELEASE_DOWNLOAD,
+            move |progress| {
+                crate::release::verified_image_observed(&release, &worker, &mut |event| match event
+                {
+                    crate::release::DownloadEvent::Downloading { received, total } => {
+                        progress.report("downloading", Some(received), Some(total));
+                    }
+                    crate::release::DownloadEvent::Verifying => {
+                        progress.report("verifying", None, None);
+                    }
+                    crate::release::DownloadEvent::Expanding { written, total } => {
+                        progress.report("preparing image", Some(written), Some(total));
+                    }
+                })
+            },
+            |app: &mut Self, result| app.finish_release_download(result),
+        );
         self.release_download = Some(ReleaseDownload { index, control });
     }
     fn cancel_release_download(&mut self) -> Result<(), String> {
@@ -1289,7 +1259,7 @@ impl ImagerApp {
         Ok(())
     }
     fn release_progress(&self) -> Option<JobProgress> {
-        self.jobs.as_ref()?.progress(RELEASE_DOWNLOAD)
+        self.port.job(RELEASE_DOWNLOAD)
     }
     fn download_status(progress: &JobProgress) -> String {
         match progress.phase.as_str() {
@@ -1532,10 +1502,10 @@ impl ImagerApp {
         };
         match start {
             crate::write::JobStart::Started => {
-                let (Some(rx), Some(control), Some(jobs)) = (rx, control, self.jobs.clone()) else {
+                let (Some(rx), Some(control)) = (rx, control) else {
                     return refuse("The writer could not start in this window.".into());
                 };
-                Self::start_write_job(&jobs, rx, control.clone(), src_size);
+                Self::start_write_job(&self.port, rx, control.clone(), src_size);
                 self.job_control = Some(control);
                 self.write_mark = None;
                 self.progress = Progress {
@@ -1582,13 +1552,13 @@ impl ImagerApp {
         Ok(())
     }
     fn start_write_job(
-        jobs: &Jobs<Imager>,
+        port: &Port<Self>,
         events: std::sync::mpsc::Receiver<Progress>,
         control: JobControl,
         size: u64,
     ) {
-        // The guard exists before the future is first polled: cancelling a
-        // newly scheduled canonical job must also cancel its native writer.
+        // The guard exists before the worker first runs: a job dropped before it is polled must
+        // also cancel its native writer.
         struct WriteJobOwnership(JobControl);
         impl Drop for WriteJobOwnership {
             fn drop(&mut self) {
@@ -1597,63 +1567,50 @@ impl ImagerApp {
                 }
             }
         }
-        jobs.start::<Self>(WRITE_JOB, move |cx| {
-            Ok(cx.spawn(
-                move |progress| {
-                    let ownership = WriteJobOwnership(control);
-                    async move {
-                        let mut last = None;
-                        let mut ended = false;
-                        let mut disconnected = false;
+        let ownership = WriteJobOwnership(control);
+        port.start_job(
+            WRITE_JOB,
+            move |progress| {
+                let mut last = None;
+                let mut ended = false;
+                let mut disconnected = false;
+                loop {
+                    if !ended && !disconnected {
                         loop {
-                            if progress.is_cancelled() {
-                                ownership.0.cancel();
-                            }
-                            // std receivers are polled, never waited on by the UI or
-                            // the bounded blocking pool. Limit each runtime turn.
-                            if !ended && !disconnected {
-                                for _ in 0..64 {
-                                    let event = match events.try_recv() {
-                                        Ok(event) => event,
-                                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                            disconnected = true;
-                                            break;
-                                        }
-                                    };
-                                    let fraction = match event.phase {
-                                        JobPhase::Verifying => event.verify_frac,
-                                        _ => event.write_frac,
-                                    };
-                                    progress.report(
-                                        event.phase.key(),
-                                        Some((fraction.clamp(0.0, 1.0) * size as f64) as u64),
-                                        Some(size),
-                                    );
-                                    ended =
-                                        matches!(event.phase, JobPhase::Success | JobPhase::Failed);
-                                    last = Some(event);
-                                    if ended {
-                                        break;
-                                    }
+                            let event = match events.try_recv() {
+                                Ok(event) => event,
+                                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    disconnected = true;
+                                    break;
                                 }
+                            };
+                            let fraction = match event.phase {
+                                JobPhase::Verifying => event.verify_frac,
+                                _ => event.write_frac,
+                            };
+                            progress.report(
+                                event.phase.key(),
+                                Some((fraction.clamp(0.0, 1.0) * size as f64) as u64),
+                                Some(size),
+                            );
+                            ended = matches!(event.phase, JobPhase::Success | JobPhase::Failed);
+                            last = Some(event);
+                            if ended {
+                                break;
                             }
-                            // Progress is not completion. The canonical job only
-                            // delivers its callback after the same native stop proof
-                            // that guards UI state and close.
-                            if (ended || disconnected) && ownership.0.observed_stopped() {
-                                return last;
-                            }
-                            ui::rt::sleep(std::time::Duration::from_millis(25)).await;
                         }
                     }
-                },
-                |app: &mut Self, last, _| {
-                    app.finish_write(last);
-                    Ok(Effected::done())
-                },
-            ))
-        });
+                    // Progress is not completion: the job ends only after the same native stop
+                    // proof that guards the window's state and its close.
+                    if (ended || disconnected) && ownership.0.observed_stopped() {
+                        return last;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+            },
+            |app: &mut Self, last| app.finish_write(last),
+        );
     }
     fn drain_job(&mut self) {
         if self
@@ -1665,28 +1622,10 @@ impl ImagerApp {
             self.finish_write(last.progress);
         }
 
-        if self
-            .write_reply
-            .as_ref()
-            .is_some_and(EffectReply::is_cancelled)
-            && self
-                .job_control
-                .as_ref()
-                .is_some_and(|control| !control.is_cancelled())
-        {
-            let _ = self.cancel_write();
-        }
-        let Some(progress) = self.jobs.as_ref().and_then(|jobs| jobs.progress(WRITE_JOB)) else {
+        let Some(progress) = self.port.job(WRITE_JOB) else {
             return;
         };
         self.follow_write(&progress, ui::time::now());
-        if let Some(reply) = &self.write_reply {
-            reply.progress().report(
-                self.progress.phase.key(),
-                Some((self.progress.overall().clamp(0.0, 1.0) * 1000.0) as u64),
-                Some(1000),
-            );
-        }
     }
     fn follow_write(&mut self, progress: &JobProgress, at: ui::time::Instant) {
         let phase = JobPhase::from_key(&progress.phase);
@@ -1908,7 +1847,7 @@ impl ImagerApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: ImagerEffect,
-        cx: &mut EffectCx<Imager, Self>,
+        cx: &mut EffectCx<'_, Self>,
     ) -> EffectAnswer {
         match effect {
             ImagerEffect::Write {
@@ -1930,7 +1869,7 @@ impl ImagerApp {
                 ssh_keys_file,
                 home_files,
             } => {
-                let path = |path: ui::tilo_resource::AbsolutePath| path.to_string_lossy();
+                let path = |path: tilo_resource::AbsolutePath| path.to_string_lossy();
                 let mut args = vec!["imager".into(), "--customize-image".into(), path(image)];
                 for (flag, value) in [
                     ("--hostname", hostname),
@@ -2075,9 +2014,23 @@ impl ImagerApp {
     }
 }
 
-impl crate::window_view::PublishingWindow for ImagerApp {
-    fn published(&self) -> &Rc<RefCell<crate::window_view::Published>> {
-        &self.published
+impl crate::hosting::Window for ImagerApp {
+    type Effect = ImagerEffect;
+
+    fn port(&self) -> &Port<Self> {
+        &self.port
+    }
+
+    fn effect(&mut self, effect: ImagerEffect, cx: &mut EffectCx<'_, Self>) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    fn refused(&mut self, reason: &str) {
+        self.fail(reason);
+    }
+
+    fn state(&self) -> serde_json::Value {
+        self.status_value()
     }
 
     fn rows(&self) -> Vec<LiveRow> {
@@ -2097,14 +2050,50 @@ impl crate::window_view::PublishingWindow for ImagerApp {
     }
 }
 
-pub(crate) fn wizard_view(
-    cx: &ui::framework::ViewCx<Imager>,
-    mut app: ImagerApp,
-) -> ui::widget::Element {
-    app.attach_control_actions(cx.actions());
-    app.attach_framework(cx.dispatcher(), cx.window_jobs::<ImagerApp>(), cx.mode());
-    crate::window_view::hosting_window_view(cx, app, ImagerApp::answer_effect)
+/// The image writer's window on `store`, as `opened` says.
+pub(crate) fn window(store: &Store, wake: &ui::WakeHandle, opened: Opened<'_>) -> Box<dyn Widget> {
+    Box::new(crate::hosting::Hosted(ImagerApp::opened(
+        Port::new(store.clone(), wake.clone()),
+        opened,
+    )))
 }
+
+/// The USB media writer the guided setup hands its reviewed names to: live when the setup is.
+#[cfg(feature = "installation")]
+pub(crate) fn media_writer(port: Port<ImagerApp>, live: bool) -> Box<dyn Widget> {
+    let mut app = ImagerApp::new();
+    app.port = port;
+    app.live = app.reaches_machine && live;
+    app.dirty = true;
+    Box::new(crate::hosting::Hosted(app))
+}
+
+/// The sample image writer a test opens, as a person opens it.
+#[cfg(test)]
+pub(crate) fn sample_host() -> crate::hosting::testing::TestHost {
+    crate::hosting::testing::TestHost::hosting(|store, wake| {
+        let mut app = ImagerApp::sample();
+        app.port = Port::new(store.clone(), wake.clone());
+        app.attach(Opened::Live { demo: false });
+        Box::new(crate::hosting::Hosted(app))
+    })
+}
+
+/// The scenarios a shot of the image writer shows.
+pub(crate) const SCENARIOS: &[&str] = &[
+    "source",
+    "source-empty",
+    "drive",
+    "drive-empty",
+    "drive-internal",
+    "customize",
+    "customize-timezone-open",
+    "export",
+    "confirm",
+    "progress",
+    "done",
+    "done-failed",
+];
 
 impl ImagerApp {
     fn go_to_station(&mut self, index: usize) {
@@ -2120,9 +2109,7 @@ impl ImagerApp {
     fn apply_command(&mut self, command: Command) {
         match command {
             Command::PickFile => {
-                if let Some(dispatcher) = &self.dispatcher {
-                    dispatcher.effect(&ImagerEffect::ChooseImage);
-                }
+                self.port.presses().press(ImagerEffect::ChooseImage);
             }
             Command::Dropped(path) => match imager_backend::probe::inspect_source(&path) {
                 Some(source) => self.select_source(&source),
@@ -2143,9 +2130,6 @@ impl ImagerApp {
                 if let Some(source) = self.recent.get(index).cloned() {
                     self.select_source(&source)
                 }
-            }
-            Command::Rescan => {
-                self.do_rescan();
             }
             Command::Back => self.back(),
             Command::Station(index) => self.go_to_station(index),
@@ -2235,10 +2219,8 @@ impl Widget for ImagerApp {
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.dirty = true;
-        crate::window_view::PublishingWindow::follow_document(self);
-        let staged = self.published.borrow_mut().take_staged();
-        if let Some(crate::window_view::Staged(scenario)) = staged {
-            self.stage_scenario(scenario.as_deref().unwrap_or("source"));
+        if let Some(scenario) = self.shot.take() {
+            self.stage_scenario(&scenario);
         }
         self.take_window_toolbar_events();
         if !self.seeded {
@@ -2284,7 +2266,6 @@ impl Widget for ImagerApp {
         self.declare_window_toolbar();
         self.composed.sync(_state, _path);
         self.dirty = true;
-        crate::window_view::PublishingWindow::publish(self);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -2298,7 +2279,7 @@ impl Widget for ImagerApp {
             .composed
             .element_mut()
             .is_some_and(|view| view.update(state, path));
-        changed || asked || self.published.borrow().staging()
+        changed || asked
     }
 
     fn build_layout(

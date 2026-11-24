@@ -8,7 +8,6 @@ impl InstallerPreview {
         if !self.live
             || self.journey.page != Page::Review
             || self.journey.destination != Some(Destination::Desktop)
-            || self.direct.context.is_none()
             || self.busy()
         {
             return Err("installer-desktop-unavailable");
@@ -22,7 +21,6 @@ impl InstallerPreview {
             || !self.full_os_host
             || self.journey.page != Page::Destination
             || self.journey.destination != Some(Destination::Computer)
-            || self.direct.context.is_none()
         {
             return Err("installer-review-installation-unavailable");
         }
@@ -104,12 +102,7 @@ impl InstallerPreview {
         child: crate::setup::view::SetupApp,
     ) -> Result<(), &'static str> {
         let navigation = child.guided_navigation_guard();
-        let context = self
-            .direct
-            .context
-            .as_ref()
-            .ok_or("installer-desktop-unavailable")?;
-        let child = context.mount(|cx| crate::setup::view::setup_window(cx, child))?;
+        let child = crate::setup::view::setup_window(child, self.port.child(), self.live);
         let back = self
             .button(
                 "installer.back",

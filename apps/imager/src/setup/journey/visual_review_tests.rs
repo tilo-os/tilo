@@ -1,8 +1,7 @@
 //! Development-only raster evidence from the production renderer and action path.
 
 use super::*;
-use crate::resource::ImagerShell;
-use ui::framework::testing::TestApp;
+use crate::hosting::testing::TestHost;
 
 pub(super) fn evidence(harness: &mut ui::headless::FrameHarness, name: &str) {
     let Some(directory) = std::env::var_os("TILO_UI_SCREENSHOT_DIR") else {
@@ -48,15 +47,17 @@ pub(super) fn evidence(harness: &mut ui::headless::FrameHarness, name: &str) {
             image_geometry(child, metadata);
         }
     }
-    if let Some(preview) = harness.widget_mut::<InstallerPreview>() {
+    if let Some(preview) =
+        crate::hosting::testing::find::<InstallerPreview>(harness.root_widget_mut())
+    {
         image_geometry(preview, &mut metadata);
     }
     std::fs::write(directory.join(format!("{name}.txt")), metadata).unwrap();
     eprintln!("current raster evidence: {name}");
 }
 
-fn fixture(viewport: (u32, u32), theme: Theme) -> TestApp<ImagerShell> {
-    let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
+fn fixture(viewport: (u32, u32), theme: Theme) -> TestHost {
+    let mut app = TestHost::launched(&["--setup"]);
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview.live = false;
         preview.capture = false;

@@ -7,7 +7,7 @@ use tilo_actions::ApiError;
 
 /// A setup mounted in the host, with the fake platform and its release server.
 struct Hosted {
-    app: TestApp<SetupFlow>,
+    app: TestHost,
     fakes: install_flow::tests::Fakes,
     server: Server,
     bytes: Vec<u8>,
@@ -91,25 +91,25 @@ fn setup_fixture_in(
 
 /// What the setup publishes right now, read the way the palette or an agent
 /// reads it.
-fn setup_value(app: &mut TestApp<SetupFlow>) -> serde_json::Value {
+fn setup_value(app: &mut TestHost) -> serde_json::Value {
     app.effect(&SetupEffect::ReadSetupStatus)
         .expect("the setup answers its status")
         .value
         .expect("the setup status is a projection")
 }
 
-fn internal_value(app: &mut TestApp<SetupFlow>) -> serde_json::Value {
+fn internal_value(app: &mut TestHost) -> serde_json::Value {
     setup_value(app)["internal"].clone()
 }
 
-fn download_phase(app: &mut TestApp<SetupFlow>) -> String {
+fn download_phase(app: &mut TestHost) -> String {
     internal_value(app)["download"]
         .as_str()
         .unwrap_or_default()
         .to_owned()
 }
 
-fn download_failure(app: &mut TestApp<SetupFlow>) -> Option<String> {
+fn download_failure(app: &mut TestHost) -> Option<String> {
     app.with_widget::<SetupApp, _>(|setup| {
         setup
             .internal_download_flow
@@ -119,7 +119,7 @@ fn download_failure(app: &mut TestApp<SetupFlow>) -> Option<String> {
     .flatten()
 }
 
-fn wait_download(app: &mut TestApp<SetupFlow>, wanted: &[&str]) {
+fn wait_download(app: &mut TestHost, wanted: &[&str]) {
     tilo_test_env::wait_until(format!("the download to be one of {wanted:?}"), || {
         let phase = download_phase(app);
         assert!(
@@ -131,7 +131,7 @@ fn wait_download(app: &mut TestApp<SetupFlow>, wanted: &[&str]) {
     });
 }
 
-fn wait_run(app: &mut TestApp<SetupFlow>, wanted: &str) {
+fn wait_run(app: &mut TestHost, wanted: &str) {
     tilo_test_env::wait_until(format!("the installer run to be {wanted}"), || {
         internal_value(app)["run"].as_str() == Some(wanted)
     });
@@ -141,7 +141,7 @@ fn wait_run(app: &mut TestApp<SetupFlow>, wanted: &str) {
 /// offers them: the row binds the reviewed digest and the pending operation,
 /// so the caller names the command alone.
 fn internal_effect(
-    app: &mut TestApp<SetupFlow>,
+    app: &mut TestHost,
     effect: &SetupEffect,
 ) -> Result<tilo_actions::ActionOutput, ApiError> {
     app.effect_on("imager.setup.internal", effect)

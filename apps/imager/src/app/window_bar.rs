@@ -3,7 +3,7 @@
 
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 
-use super::{Command, ImagerApp};
+use super::ImagerApp;
 use crate::model::Step;
 use crate::resource::ImagerEffect;
 
@@ -32,10 +32,7 @@ impl ImagerApp {
             if id != RESCAN {
                 continue;
             }
-            match &self.dispatcher {
-                Some(dispatcher) => dispatcher.effect(&ImagerEffect::Rescan),
-                None => self.commands.borrow_mut().push(Command::Rescan),
-            }
+            self.port.presses().press(ImagerEffect::Rescan);
         }
         asked
     }
@@ -49,23 +46,11 @@ impl ImagerApp {
 mod tests {
     use super::*;
     use crate::model::Step;
-    use crate::resource::Imager;
-    use ui::prelude::TestApp;
 
-    struct SampleImager;
+    use crate::hosting::testing::TestHost;
 
-    impl ui::framework::ResourceApp for SampleImager {
-        type Resource = Imager;
-        const ID: &'static str = crate::resource::APP_ID;
-        const TITLE: &'static str = "Tilo Installer";
-
-        fn view(cx: &mut ui::framework::ViewCx<Imager>) -> ui::widget::Element {
-            crate::app::wizard_view(cx, ImagerApp::sample())
-        }
-    }
-
-    fn at(step: Step) -> TestApp<SampleImager> {
-        let mut host = TestApp::<SampleImager>::new().expect("the imager opens");
+    fn at(step: Step) -> TestHost {
+        let mut host = crate::app::sample_host();
         host.harness().present_in_window_bar();
         host.with_widget::<ImagerApp, _>(|app| {
             app.selected = Some(0);

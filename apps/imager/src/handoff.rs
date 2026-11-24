@@ -305,21 +305,6 @@ fn stage_identity_ticket(
     Err("This machine cannot give the image a ticket to join with.".into())
 }
 
-/// A Linux account name the image's home directory is made under.
-#[cfg(unix)]
-fn safe_account_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= 32
-        && bytes
-            .first()
-            .is_some_and(|byte| matches!(byte, b'a'..=b'z' | b'_'))
-        && bytes
-            .iter()
-            .skip(1)
-            .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
-}
-
 fn write_install_purpose(root: &Path, profile: &InstallProfile) -> Result<(), String> {
     if !install_profile_model::valid_purpose(&profile.purpose) {
         return Err("Invalid installation purpose.".into());
@@ -699,9 +684,9 @@ mod tests {
         let profile = InstallProfile {
             enroll_local_identity: true,
             device_label: "Box".into(),
-            user: install_profile_model::UserAccount {
+            user: install_profile_model::media::UserAccount {
                 username: "ada".into(),
-                ..install_profile_model::UserAccount::default()
+                ..install_profile_model::media::UserAccount::default()
             },
             ..InstallProfile::default()
         };

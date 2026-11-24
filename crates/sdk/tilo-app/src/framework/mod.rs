@@ -371,7 +371,6 @@ mod section;
 mod settings;
 mod share_link;
 mod stage;
-mod status;
 mod surface;
 mod switch;
 // The test hosts discover native presentation, which the browser has not got.

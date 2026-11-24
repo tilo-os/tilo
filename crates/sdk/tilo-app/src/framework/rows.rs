@@ -176,38 +176,7 @@ pub(crate) fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec>
     })
 }
 
-/// The actions `row` adds to the published child of its id, each with the
-/// statuses `statuses` say of it now laid over: a row's effect the live state
-/// makes unavailable stays off the palette, agents and the API with its
-/// reason.
-pub fn apply_statuses(resource: &mut ResourceSpec, statuses: &[crate::framework::EffectStatus]) {
-    for status in statuses {
-        for spec in resource
-            .actions
-            .iter_mut()
-            .filter(|spec| spec.id == status.id())
-        {
-            status.overlay(spec);
-        }
-    }
-}
-
-/// Lay what the surface says of each row's effects over `rows`, the rows
-/// nested beneath them included: the operation every publication performs
-/// with [`Publishes::row_status`](super::Publishes::row_status), for a tree
-/// published outside one (a test's, a report's).
-pub fn apply_row_statuses(
-    rows: &mut [ResourceSpec],
-    statuses: &dyn Fn(&str) -> Vec<crate::framework::EffectStatus>,
-) {
-    for row in rows {
-        let said = statuses(row.id.as_str());
-        if !said.is_empty() {
-            apply_statuses(row, &said);
-        }
-        apply_row_statuses(&mut row.children, statuses);
-    }
-}
+pub use tilo_resource::status::{apply_row_statuses, apply_statuses};
 
 #[cfg(test)]
 mod tests {

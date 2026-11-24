@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
         catalog.set_locale("de-DE");
         let mut app = supported_fixture();
         review(&mut app, Experience::FullOs);
-        let harness = FrameHarness::new(ui::State::new(), Box::new(app), (960, 720));
+        let harness = FrameHarness::new(ui::State::new(), Box::new(crate::hosting::Hosted(app)), (960, 720));
         let labels: Vec<String> = harness
             .a11y_nodes()
             .into_iter()

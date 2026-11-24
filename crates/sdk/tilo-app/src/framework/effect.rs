@@ -1304,7 +1304,7 @@ impl JobQueue {
     }
 }
 
-pub use super::status::EffectStatus;
+pub use tilo_resource::status::EffectStatus;
 
 /// The specs last built for one vocabulary, as callers saw them then: the
 /// locale and statuses they were built at, kept so a publication that finds

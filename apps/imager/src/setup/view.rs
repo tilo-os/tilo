@@ -33,11 +33,11 @@ use super::model::{Capabilities, Experience, HostOs};
 use super::staging::helper::Action as HelperAction;
 use crate::page::{self, Frame, stack};
 use crate::resource::CATALOG;
-use crate::resource::Imager;
-use crate::window_view::{Published, PublishingWindow};
+
+use crate::hosting::{EffectAnswer, EffectCx, Effected, Hosted, Port};
 use imager_backend::support_report::SupportReport;
+use tilo_resource::{EffectStatus, LiveRow};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ViewCx};
 
 /// Display facts only; final installation still reprobes through the native helper.
 #[derive(Clone)]
@@ -106,8 +106,7 @@ pub struct SetupApp {
     status_is_error: bool,
     composed: ui::widget::Composed,
     starts_when_live: bool,
-    actions: Option<ui::framework::Actions<Imager>>,
-    published: Rc<RefCell<Published>>,
+    port: Port<SetupApp>,
     guided_navigation: LocalState<bool>,
     desktop_only: bool,
     full_os_check: Option<LocalState<Option<FullOsCheck>>>,
@@ -333,8 +332,7 @@ impl SetupApp {
             status_is_error: false,
             composed: ui::widget::Composed::default(),
             starts_when_live: false,
-            actions: None,
-            published: Rc::default(),
+            port: Port::detached(),
             guided_navigation: LocalState::new(false),
             desktop_only: false,
             full_os_check: None,
@@ -698,11 +696,10 @@ impl SetupApp {
             SetupCommand::RetryDesktop => Some(SetupEffect::RecheckDesktop),
             _ => None,
         };
-        if let (Some(actions), Some(effect)) = (&self.actions, effect) {
-            return actions.bind_effect_invocation(
-                Button::new(id, &label).control_size(ControlSize::Regular),
-                &effect,
-            );
+        if let Some(effect) = effect {
+            return Button::new(id, &label)
+                .control_size(ControlSize::Regular)
+                .on_click(self.port.presses().on(effect));
         }
         let sink = Rc::clone(&self.commands);
         Button::new(id, &label)
@@ -1985,7 +1982,6 @@ impl Widget for SetupApp {
         self.poll_background();
         self.drain_commands();
         self.composed.sync(state, path);
-        self.publish();
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
@@ -2043,23 +2039,28 @@ impl Widget for SetupApp {
     }
 }
 
-impl SetupApp {
-    fn effect(&mut self, effect: SetupEffect, _cx: &mut EffectCx<Imager>) -> EffectAnswer {
-        self.answer(effect).map(Effected::value)
-    }
-}
-
-pub(crate) fn setup_window(cx: &ViewCx<Imager>, mut app: SetupApp) -> ui::widget::Element {
-    app.actions = Some(cx.actions());
-    if cx.mode().is_live() && app.starts_when_live {
+/// `app` as a window the guided setup shows on `port`: started when the setup is live.
+pub(crate) fn setup_window(
+    mut app: SetupApp,
+    port: Port<SetupApp>,
+    live: bool,
+) -> ui::widget::Element {
+    app.port = port;
+    if live && app.starts_when_live {
         app.start_live();
     }
-    crate::window_view::window_view(cx, app, SetupApp::effect)
+    Box::new(Hosted(app))
 }
 
-impl PublishingWindow for SetupApp {
-    fn published(&self) -> &Rc<RefCell<Published>> {
-        &self.published
+impl crate::hosting::Window for SetupApp {
+    type Effect = SetupEffect;
+
+    fn port(&self) -> &Port<Self> {
+        &self.port
+    }
+
+    fn effect(&mut self, effect: SetupEffect, _cx: &mut EffectCx<'_, Self>) -> EffectAnswer {
+        self.answer(effect).map(Effected::value)
     }
 
     fn statuses(&self) -> Vec<EffectStatus> {
@@ -2098,14 +2099,13 @@ mod tests {
         mpsc,
     };
 
+    use tilo_resource::Effect;
     use ui::a11y::Action;
-    use ui::framework::ResourceApp;
-    use ui::framework::testing::TestApp;
-    use ui::tilo_resource::Effect;
 
     use ui::headless::{FrameHarness, SemanticExpectation};
 
     use super::*;
+    use crate::hosting::testing::TestHost;
     use crate::setup::actions::SETUP_ROW_ID;
     use crate::setup::internal_bundle;
     use crate::setup::internal_cache::coordinator::{Phase as InternalPhase, Worker};
@@ -2248,7 +2248,11 @@ mod tests {
             );
             assert!(invoke_internal(&mut app, "install-internal").is_err());
             assert_eq!(app.internal_install.run_state(), &RunState::Idle);
-            let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (960, 720));
+            let mut harness = FrameHarness::new(
+                ui::State::new(),
+                Box::new(crate::hosting::Hosted(app)),
+                (960, 720),
+            );
 
             harness
                 .expect(
@@ -2518,7 +2522,11 @@ mod tests {
                 });
             app.desktop_flow.start_check().unwrap();
             assert!(app.poll_background());
-            let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+            let mut harness = FrameHarness::new(
+                ui::State::new(),
+                Box::new(crate::hosting::Hosted(app)),
+                (640, 640),
+            );
 
             harness
                 .expect(&SemanticExpectation::named("setup.retry-desktop").enabled(true))
@@ -2532,7 +2540,11 @@ mod tests {
         {
             let mut app = supported_fixture();
             review(&mut app, Experience::Desktop);
-            let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+            let mut harness = FrameHarness::new(
+                ui::State::new(),
+                Box::new(crate::hosting::Hosted(app)),
+                (640, 640),
+            );
 
             harness
                 .expect(
@@ -2594,7 +2606,11 @@ mod tests {
 
             assert!(app.poll_background());
             assert_eq!(app.status, expected);
-            let harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+            let harness = FrameHarness::new(
+                ui::State::new(),
+                Box::new(crate::hosting::Hosted(app)),
+                (640, 640),
+            );
             assert!(
                 harness
                     .a11y_node_named("Tilo Desktop is installed")
@@ -2603,29 +2619,10 @@ mod tests {
         }
     }
 
-    thread_local! {
-        static NEXT_SETUP: std::cell::RefCell<Option<SetupApp>> =
-            const { std::cell::RefCell::new(None) };
-    }
-
-    struct SetupFlow;
-
-    impl ResourceApp for SetupFlow {
-        type Resource = Imager;
-        const ID: &'static str = crate::resource::APP_ID;
-        const TITLE: &'static str = "Disk Imager";
-
-        fn view(cx: &mut ui::framework::ViewCx<Imager>) -> ui::widget::Element {
-            let setup = NEXT_SETUP
-                .with(|next| next.borrow_mut().take())
-                .expect("a setup to mount");
-            setup_window(cx, setup)
-        }
-    }
-
-    fn launch(setup: SetupApp) -> TestApp<SetupFlow> {
-        NEXT_SETUP.with(|next| *next.borrow_mut() = Some(setup));
-        TestApp::<SetupFlow>::new().unwrap()
+    fn launch(setup: SetupApp) -> TestHost {
+        TestHost::hosting(|store, wake| {
+            setup_window(setup, Port::new(store.clone(), wake.clone()), true)
+        })
     }
 
     fn find_row(
@@ -2642,7 +2639,7 @@ mod tests {
     }
 
     fn setup_resource(app: &SetupApp) -> tilo_actions::ResourceSpec {
-        let mut root = app.rows().remove(0).into_resource();
+        let mut root = crate::hosting::Window::rows(app).remove(0).into_resource();
         let blocked = super::super::actions::blocked(&app.setup_projection());
         root.actions = SetupEffect::specs()
             .into_iter()
@@ -2795,7 +2792,7 @@ mod tests {
                 .is_err()
         );
         assert!(fixture.fakes.launches.lock().unwrap().is_empty());
-        let root = find_row(&window.harness().resources(), SETUP_ROW_ID).unwrap();
+        let root = find_row(&[window.published()], SETUP_ROW_ID).unwrap();
         let internal = child_resource(&root, "imager.setup.internal");
         window
             .call_on(
