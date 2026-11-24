@@ -1232,9 +1232,9 @@ pub(crate) mod entry_tests {
         )
         .await;
         let wanted = tilo_action_policy::ContentPolicy {
-            file_bytes: 4_096,
-            member_bytes: 8_192,
-            hourly_bytes: 16_384,
+            file_bytes: Some(4_096),
+            member_bytes: Some(8_192),
+            hourly_bytes: Some(16_384),
         };
         assert_eq!(policy["file_bytes"], 4_096);
         assert_eq!(policy["member_bytes"], 8_192);

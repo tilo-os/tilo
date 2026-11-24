@@ -1,7 +1,8 @@
 /// The limits this workspace's owners set on what members post there: the largest file a host
 /// keeps, and what one member's files may take, now and in any hour. Every host of the workspace
 /// keeps to them; a limit changed once applies on every host, and the content it refused is no
-/// longer refused once it allows it.
+/// longer refused once it allows it. A limit nobody set is no limit: the workspace's folders are
+/// its storage, and a person's own 3 GB folder reaches their own server whole.
 view content_pane() {
     let owner = (invoker.role() ?? "") == "owner"
     state editing: Bool = false
@@ -16,7 +17,7 @@ view content_pane() {
         )
         setting("Largest file", "A bigger file is not kept by the host") {
             row(gap: .related, align: .center) {
-                ui.Text(std.mib(workspace.content.file_bytes), role: .label)
+                ui.Text(limit_text(workspace.content.file_bytes), role: .label)
                 if owner {
                     ui.Button("Change") {
                         on press: set(file_mib, workspace.content.file_bytes.to_float() / 1048576.0)
@@ -38,10 +39,10 @@ view content_pane() {
             }
         }
         setting("One member's files", "What one member's files may take together") {
-            ui.Text(std.mib(workspace.content.member_bytes), role: .label)
+            ui.Text(limit_text(workspace.content.member_bytes), role: .label)
         }
         setting("One member an hour", "What one member may post in any hour") {
-            ui.Text(std.mib(workspace.content.hourly_bytes), role: .label)
+            ui.Text(limit_text(workspace.content.hourly_bytes), role: .label)
         }
         if not owner {
             ui.StatusLine("Only the workspace's owners can change these.", status: .idle)
@@ -53,7 +54,7 @@ view content_pane() {
                 ui.NumberInput(
                     bind: file_mib,
                     label: "Largest file",
-                    min: 1.0,
+                    min: 0.0,
                     max: 4096.0,
                     step: 5.0,
                     suffix: "MiB",
@@ -61,7 +62,7 @@ view content_pane() {
                 ui.NumberInput(
                     bind: member_mib,
                     label: "One member's files",
-                    min: 1.0,
+                    min: 0.0,
                     max: 65536.0,
                     step: 50.0,
                     suffix: "MiB",
@@ -69,7 +70,7 @@ view content_pane() {
                 ui.NumberInput(
                     bind: hourly_mib,
                     label: "One member an hour",
-                    min: 1.0,
+                    min: 0.0,
                     max: 65536.0,
                     step: 50.0,
                     suffix: "MiB",
@@ -92,6 +93,11 @@ view content_pane() {
             }
         }
     }
+}
+
+/// The limit `bytes` names as a person reads it: a size, or none at all.
+fn limit_text(bytes: Int) -> Text {
+    if bytes == 0 { "No limit" } else { std.mib(bytes) }
 }
 
 /// `mib` whole mebibytes as bytes, which is what the workspace's limits are set in.

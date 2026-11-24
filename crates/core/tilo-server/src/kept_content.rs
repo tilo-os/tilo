@@ -136,8 +136,9 @@ const HOUR_MS: u64 = 3_600_000;
 /// own policy, and what its person lets it keep for one workspace.
 #[derive(Clone, Debug)]
 struct Limits {
-    /// Bytes of kept content each workspace may take.
-    workspace_bytes: u64,
+    /// Bytes of kept content each workspace may take; `None` when its person
+    /// set no budget, which is no limit of its own.
+    workspace_bytes: Option<u64>,
     /// The policy each governed workspace set, by workspace; the default for
     /// one whose owners set none.
     policies: BTreeMap<String, ContentPolicy>,
@@ -147,7 +148,7 @@ struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            workspace_bytes: tilo_action_policy::content::DEFAULT_WORKSPACE_BYTES,
+            workspace_bytes: None,
             policies: BTreeMap::new(),
             read: None,
         }
@@ -516,10 +517,12 @@ impl KeptContent {
         {
             return;
         }
+        // A host's budget is its person's alone: no entry sets none, and no
+        // size is compiled in.
         let workspace_bytes = crate::servers::read(&self.workspaces)
             .await
-            .map(|servers| servers.kept_bytes_of(&self.device))
-            .unwrap_or(tilo_action_policy::content::DEFAULT_WORKSPACE_BYTES);
+            .ok()
+            .and_then(|servers| servers.kept_bytes_of(&self.device));
         let mut policies = BTreeMap::new();
         for summary in self.workspaces.list().await {
             if let Some(policy) = self.workspaces.content_policy(&summary.workspace).await {
@@ -562,20 +565,28 @@ impl KeptContent {
         bytes: u64,
         now: u64,
     ) -> Option<(ContentLimit, u64)> {
-        if !limits.allows(ContentLimit::File, bytes) {
-            return Some((ContentLimit::File, limits.file_bytes));
+        if let Some(file_bytes) = limits.file_bytes
+            && bytes > file_bytes
+        {
+            return Some((ContentLimit::File, file_bytes));
         }
         let member_taken = state.taken.entry(workspace.to_owned()).or_default();
         let taken = member_taken.entry(*member).or_default();
-        if taken.kept.saturating_add(bytes) > limits.member_bytes {
-            return Some((ContentLimit::Member, limits.member_bytes));
+        if let Some(member_bytes) = limits.member_bytes
+            && taken.kept.saturating_add(bytes) > member_bytes
+        {
+            return Some((ContentLimit::Member, member_bytes));
         }
-        if taken.within_hour(now).saturating_add(bytes) > limits.hourly_bytes {
-            return Some((ContentLimit::Hourly, limits.hourly_bytes));
+        if let Some(hourly_bytes) = limits.hourly_bytes
+            && taken.within_hour(now).saturating_add(bytes) > hourly_bytes
+        {
+            return Some((ContentLimit::Hourly, hourly_bytes));
         }
         let kept = state.kept_bytes.get(workspace).copied().unwrap_or(0);
-        if kept.saturating_add(bytes) > limits.workspace_bytes {
-            return Some((ContentLimit::Workspace, limits.workspace_bytes));
+        if let Some(workspace_bytes) = limits.workspace_bytes
+            && kept.saturating_add(bytes) > workspace_bytes
+        {
+            return Some((ContentLimit::Workspace, workspace_bytes));
         }
         None
     }
@@ -1177,7 +1188,10 @@ impl ContentKeeper for KeptContent {
                 // poster answers again.
                 state.refused.remove(&key);
             }
-            if total > limits.file_bytes && state.wants.expects(&self.device, frame) {
+            if let Some(file_bytes) = limits.file_bytes
+                && total > file_bytes
+                && state.wants.expects(&self.device, frame)
+            {
                 Self::refuse(
                     &mut state,
                     workspace,
@@ -1187,7 +1201,7 @@ impl ContentKeeper for KeptContent {
                     from,
                     total,
                     ContentLimit::File,
-                    limits.file_bytes,
+                    file_bytes,
                 );
                 return;
             }

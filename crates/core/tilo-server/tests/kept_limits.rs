@@ -201,9 +201,9 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         &host_cert,
         &workspace,
         ContentPolicy {
-            file_bytes: 1_000,
-            member_bytes: 1_500,
-            hourly_bytes: 5_000,
+            file_bytes: Some(1_000),
+            member_bytes: Some(1_500),
+            hourly_bytes: Some(5_000),
         },
     )
     .await;
@@ -259,9 +259,9 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         &host_cert,
         &workspace,
         ContentPolicy {
-            file_bytes: 1_000,
-            member_bytes: 5_000,
-            hourly_bytes: 5_000,
+            file_bytes: Some(1_000),
+            member_bytes: Some(5_000),
+            hourly_bytes: Some(5_000),
         },
     )
     .await;
@@ -303,9 +303,9 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         &host_cert,
         &workspace,
         ContentPolicy {
-            file_bytes: 1_000,
-            member_bytes: 5_000,
-            hourly_bytes: 1_500,
+            file_bytes: Some(1_000),
+            member_bytes: Some(5_000),
+            hourly_bytes: Some(1_500),
         },
     )
     .await;
@@ -343,9 +343,9 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         &host_cert,
         &workspace,
         ContentPolicy {
-            file_bytes: 5_000,
-            member_bytes: 5_000,
-            hourly_bytes: 5_000,
+            file_bytes: Some(5_000),
+            member_bytes: Some(5_000),
+            hourly_bytes: Some(5_000),
         },
     )
     .await;
@@ -371,6 +371,119 @@ async fn a_members_share_a_files_size_and_the_hourly_intake_bound_what_the_host_
         refused.is_empty(),
         "every refusal was reconsidered once its limit was raised: {refused:?}"
     );
+
+    keeping.abort();
+    host.shutdown().await;
+}
+
+/// A workspace folder is cloud storage: a member's own folder reaches their
+/// own server whole when nobody set a limit — no size is compiled in per file,
+/// per member or per hour. The folder is larger than every size the defaults
+/// stopped (25 MiB a file, 250 MiB a member and an hour), and the policy's own
+/// tests cover that no size at all bounds it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: a whole folder is posted and streamed to the host piece by piece"
+)]
+async fn with_no_policy_a_members_own_folder_reaches_their_own_server_whole() {
+    /// The folder's size: files of the largest size a content address is asked
+    /// for whole, adding up to more than every size the defaults stopped.
+    const FILES: usize = 7;
+    const FILE_BYTES: usize = 64 * 1024 * 1024;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (root, host_cert) = governor();
+    let host = test_host(scratch.path(), &root, &host_cert).await;
+    let workspaces = host.workspaces().clone();
+    let summary = workspaces.create("Lounge").await.unwrap();
+    let workspace = summary.workspace.clone();
+    let host_device = host_cert.device_public_key;
+
+    if let Some(Err(error)) = workspaces
+        .own_route_keys(
+            &DocumentRoute {
+                app_id: CHAT.into(),
+                cluster_id: workspace.clone(),
+                document: String::new(),
+            },
+            true,
+        )
+        .await
+    {
+        panic!("the record's channel is not founded here: {error}");
+    }
+
+    // The folder, one file at a time: each has its own bytes, so each is its
+    // own content.
+    let mut folder = Vec::with_capacity(FILES);
+    for file in 0..FILES {
+        let bytes = vec![u8::try_from(file).unwrap_or(0); FILE_BYTES];
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        folder.push(hash);
+    }
+    workspaces
+        .author_workspace_document(
+            &workspace,
+            &host_cert,
+            (CHAT, ""),
+            |doc| -> Result<(), String> {
+                for hash in &folder {
+                    post_into(doc, hash);
+                }
+                Ok(())
+            },
+        )
+        .await
+        .expect("the folder's messages reach the workspace");
+
+    let content = tilo_server::content::stores(scratch.path());
+    workspaces.serve_content(Arc::new(tilo_server::content::StoresContent(Arc::clone(
+        &content,
+    ))));
+    let kept = KeptContent::new(workspaces.clone(), Arc::clone(&content));
+    let keeping = tokio::spawn(Arc::clone(&kept).keep_content());
+
+    // Nobody set a limit: no policy on the workspace, no budget on the host's
+    // entry among its person's servers.
+    let ada = [3_u8; 32];
+    tilo_test_env::within("the host keeps a 3 GiB folder whole", async {
+        for (file, hash) in folder.iter().enumerate() {
+            let bytes = vec![u8::try_from(file).unwrap_or(0); FILE_BYTES];
+            let mut sent = 0_usize;
+            loop {
+                if content.get(&workspace).is_ok_and(|store| store.has(hash)) {
+                    break;
+                }
+                // A piece the host did not ask for yet is dropped and sent
+                // again: the same bytes, the same address.
+                let from = if sent >= bytes.len() { 0 } else { sent };
+                let end = (from + neighbour_wire::content::PIECE_BYTES).min(bytes.len());
+                let frame = postcard::to_allocvec(&NeighbourMsg::DocumentContentPiece {
+                    responder: neighbour_wire::peer_handle(&ada),
+                    requester: neighbour_wire::peer_handle(&host_device),
+                    app_id: CHAT.into(),
+                    cluster_id: workspace.clone(),
+                    hash: hash.clone(),
+                    total: u64::try_from(bytes.len()).unwrap(),
+                    offset: u64::try_from(from).unwrap(),
+                    bytes: bytes[from..end].to_vec(),
+                })
+                .unwrap();
+                workspaces.content_for_host(&workspace, ada, &frame);
+                sent = end;
+                assert!(
+                    kept.refusals(&workspace)
+                        .await
+                        .iter()
+                        .all(|refusal| refusal.hash != *hash),
+                    "a file of the member's own folder was refused"
+                );
+                tokio::task::yield_now().await;
+            }
+        }
+    })
+    .await;
 
     keeping.abort();
     host.shutdown().await;

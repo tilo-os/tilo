@@ -772,11 +772,19 @@ fn person_params() -> Vec<ActionParam> {
 
 /// A workspace's content policy as its reading and its settling answer it.
 fn content_policy_json(policy: &tilo_action_policy::ContentPolicy) -> Value {
+    // A limit nobody set is no limit, which a reader shows as 0: the same as
+    // what its setter writes to lift one.
     json!({
-        "file_bytes": policy.file_bytes,
-        "member_bytes": policy.member_bytes,
-        "hourly_bytes": policy.hourly_bytes,
+        "file_bytes": policy.file_bytes.unwrap_or(0),
+        "member_bytes": policy.member_bytes.unwrap_or(0),
+        "hourly_bytes": policy.hourly_bytes.unwrap_or(0),
     })
+}
+
+/// The limit a caller names: a size, or 0 for no limit at all. `None` when
+/// they named none, which leaves the limit as it is.
+fn named_limit(named: Option<u64>) -> Option<Option<u64>> {
+    named.map(|bytes| (bytes > 0).then_some(bytes))
 }
 
 /// The limits a workspace's owners set on what members post there, each one
@@ -3432,17 +3440,10 @@ impl Workspaces {
             return Ok(content_policy_json(&current));
         }
         let policy = tilo_action_policy::ContentPolicy {
-            file_bytes: call
-                .args
-                .integer("file_bytes")?
-                .unwrap_or(current.file_bytes),
-            member_bytes: call
-                .args
-                .integer("member_bytes")?
+            file_bytes: named_limit(call.args.integer("file_bytes")?).unwrap_or(current.file_bytes),
+            member_bytes: named_limit(call.args.integer("member_bytes")?)
                 .unwrap_or(current.member_bytes),
-            hourly_bytes: call
-                .args
-                .integer("hourly_bytes")?
+            hourly_bytes: named_limit(call.args.integer("hourly_bytes")?)
                 .unwrap_or(current.hourly_bytes),
         };
         let settled = self
