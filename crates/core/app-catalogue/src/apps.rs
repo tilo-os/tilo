@@ -683,7 +683,11 @@ mod tests {
             Some("so.tilo.notes")
         );
         assert_eq!(app.display_name, "Notes (dev build)");
-        assert_eq!(app.name_for("de"), "Notizen (dev build)", "a localized name says so too");
+        assert_eq!(
+            app.name_for("de"),
+            "Notizen (dev build)",
+            "a localized name says so too"
+        );
     }
 
     /// A package that names itself by region (`de-DE`, as a tilolang app's catalogue does) reads

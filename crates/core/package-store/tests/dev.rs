@@ -3,7 +3,7 @@
 
 use package_store::Catalog;
 use package_store::installer;
-use tilo_app_package::{Manifest, SigningIdentity, SignedRoot, pack};
+use tilo_app_package::{Manifest, SignedRoot, SigningIdentity, pack};
 
 fn scratch() -> tempfile::TempDir {
     tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
@@ -82,14 +82,8 @@ fn a_dev_build_installs_under_its_own_id() {
     let manifest = dev_manifest(&identity, of);
     let bytes = tapp(&identity, &manifest, false);
     let (store, catalog) = store(dir.path());
-    let report = installer::install_dev(
-        &store,
-        &catalog,
-        &bytes,
-        &identity,
-        "dev.tapp",
-    )
-    .expect("the device installs the build it made");
+    let report = installer::install_dev(&store, &catalog, &bytes, &identity, "dev.tapp")
+        .expect("the device installs the build it made");
     let id = report.selected.as_ref().unwrap().id.clone();
     assert_eq!(
         id,
@@ -107,16 +101,14 @@ fn a_dev_build_another_device_signed_is_refused() {
     let dir = scratch();
     let this_device = SigningIdentity::from_seed(&[7; 32]);
     let another = SigningIdentity::from_seed(&[9; 32]);
-    let bytes = tapp(&another, &dev_manifest(&another, "org.example.notes"), false);
+    let bytes = tapp(
+        &another,
+        &dev_manifest(&another, "org.example.notes"),
+        false,
+    );
     let (store, catalog) = store(dir.path());
-    let refused = installer::install_dev(
-        &store,
-        &catalog,
-        &bytes,
-        &this_device,
-        "dev.tapp",
-    )
-    .unwrap_err();
+    let refused =
+        installer::install_dev(&store, &catalog, &bytes, &this_device, "dev.tapp").unwrap_err();
     match refused {
         installer::Error::Policy(said) => assert!(
             said.contains("another device"),
@@ -134,16 +126,14 @@ fn a_dev_build_another_device_signed_is_refused() {
 fn an_unsigned_dev_build_is_refused() {
     let dir = scratch();
     let identity = SigningIdentity::from_seed(&[7; 32]);
-    let bytes = tapp(&identity, &dev_manifest(&identity, "org.example.notes"), true);
-    let (store, catalog) = store(dir.path());
-    let refused = installer::install_dev(
-        &store,
-        &catalog,
-        &bytes,
+    let bytes = tapp(
         &identity,
-        "dev.tapp",
-    )
-    .unwrap_err();
+        &dev_manifest(&identity, "org.example.notes"),
+        true,
+    );
+    let (store, catalog) = store(dir.path());
+    let refused =
+        installer::install_dev(&store, &catalog, &bytes, &identity, "dev.tapp").unwrap_err();
     match refused {
         installer::Error::Policy(said) => assert!(
             said.contains("no signature this device made"),
@@ -184,14 +174,8 @@ type = "gui"
     .unwrap();
     let bytes = tapp(&identity, &manifest, false);
     let (store, catalog) = store(dir.path());
-    let refused = installer::install_dev(
-        &store,
-        &catalog,
-        &bytes,
-        &identity,
-        "dev.tapp",
-    )
-    .unwrap_err();
+    let refused =
+        installer::install_dev(&store, &catalog, &bytes, &identity, "dev.tapp").unwrap_err();
     assert!(
         matches!(&refused, installer::Error::Policy(said) if said.contains("names no device")),
         "an unmarked package is no dev build: {refused:?}"

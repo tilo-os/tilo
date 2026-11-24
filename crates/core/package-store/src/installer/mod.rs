@@ -607,10 +607,7 @@ pub fn install_dev(
     // The store reads a candidate from a file: write the very package the device signed there.
     let tmp = store.layout().tmp();
     std::fs::create_dir_all(&tmp)?;
-    let path = tmp.join(format!(
-        "dev-{id}-{}.tapp",
-        std::process::id()
-    ));
+    let path = tmp.join(format!("dev-{id}-{}.tapp", std::process::id()));
     tilo_app_package::tapp::write_file(
         &path,
         &tapp.meta,

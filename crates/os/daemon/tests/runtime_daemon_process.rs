@@ -63,10 +63,13 @@ fn launcher_binary() -> Option<PathBuf> {
         .filter(|path| path.is_file())
         .or(beside)
         .or_else(|| {
-            ["/usr/libexec/tilo/tilo-launcher", "/usr/libexec/tilo-launcher"]
-                .into_iter()
-                .map(PathBuf::from)
-                .find(|path| path.is_file())
+            [
+                "/usr/libexec/tilo/tilo-launcher",
+                "/usr/libexec/tilo-launcher",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|path| path.is_file())
         })
 }
 /// A profile named apart, and the daemon serving it: started by the test that owns the profile,
@@ -374,8 +377,7 @@ fn launches_reuse_the_one_daemon_which_recovers_a_stale_socket() -> Result<()> {
             "an app this computer has not installed started"
         );
         ensure!(
-            String::from_utf8_lossy(&refused.stderr)
-                .contains("is not installed on this computer"),
+            String::from_utf8_lossy(&refused.stderr).contains("is not installed on this computer"),
             "a launch must say the app is not installed: {}",
             String::from_utf8_lossy(&refused.stderr)
         );
@@ -646,7 +648,13 @@ fn a_program_that_attaches_without_a_launch_is_refused_and_told_how_to_run() -> 
     );
     let mut command = Command::new(std::env::current_exe()?);
     command
-        .args(["--exact", name.as_str(), "--nocapture", "--test-threads", "1"])
+        .args([
+            "--exact",
+            name.as_str(),
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
         .env(ATTACHED, &file)
         .env(WORKSPACE, &workspace)
         .env("TILO_RUNTIME_PROFILE", profile.path())
@@ -693,7 +701,10 @@ fn dev_app_build(
 ) -> Result<PathBuf> {
     let dir = profile.join(format!("dev-app-{}", app.replace('.', "-")));
     std::fs::create_dir_all(&dir)?;
-    std::fs::copy(tilo_test_env::package_binary!("tilo-sdk-app"), dir.join("app"))?;
+    std::fs::copy(
+        tilo_test_env::package_binary!("tilo-sdk-app"),
+        dir.join("app"),
+    )?;
     std::fs::write(dir.join("tilo-app-lifetime-ms"), format!("{lifetime_ms}\n"))?;
     if spawn_child {
         std::fs::write(dir.join("tilo-app-spawn-child"), b"")?;
@@ -743,20 +754,16 @@ fn install_dev(profile: &Path, dir: &Path, app: &str) -> Result<String> {
     let keys = tilo_device_identity::persist::IdentityPaths::under(profile.join("identity"));
     let device = tilo_device_identity::persist::load_device_key(&keys)
         .context("the profile's device key")?;
-    let payload = [
-        "app",
-        "tilo-app-lifetime-ms",
-        "tilo-app-spawn-child",
-    ]
-    .into_iter()
-    .filter(|name| dir.join(name).is_file())
-    .map(|name| package_actions::HostFile {
-        path: name.to_owned(),
-        file: package_actions::Uploaded {
-            source: dir.join(name).display().to_string(),
-        },
-    })
-    .collect();
+    let payload = ["app", "tilo-app-lifetime-ms", "tilo-app-spawn-child"]
+        .into_iter()
+        .filter(|name| dir.join(name).is_file())
+        .map(|name| package_actions::HostFile {
+            path: name.to_owned(),
+            file: package_actions::Uploaded {
+                source: dir.join(name).display().to_string(),
+            },
+        })
+        .collect();
     let report = package_actions::device::change_at(
         &profile.join("native.sock"),
         &package_actions::Change::InstallDev {
@@ -767,10 +774,7 @@ fn install_dev(profile: &Path, dir: &Path, app: &str) -> Result<String> {
         },
     )
     .map_err(anyhow::Error::msg)?;
-    ensure!(
-        !report.lines.is_empty(),
-        "the device installed nothing"
-    );
+    ensure!(!report.lines.is_empty(), "the device installed nothing");
     Ok(tilo_app_package::dev_app_id(
         app,
         &device.verifying_key().to_bytes(),
@@ -843,7 +847,12 @@ fn independent_sdk_apps_late_join_and_one_ends_while_the_other_runs() -> Result<
     profile.start_with_launcher()?;
     profile.found()?;
     let first = dev_app_build(profile.path(), "dev.tilo.independent-first", 8_000, false)?;
-    let second = dev_app_build(profile.path(), "dev.tilo.independent-second", 120_000, false)?;
+    let second = dev_app_build(
+        profile.path(),
+        "dev.tilo.independent-second",
+        120_000,
+        false,
+    )?;
     let first_id = install_dev(profile.path(), &first, "dev.tilo.independent-first")?;
     let second_id = install_dev(profile.path(), &second, "dev.tilo.independent-second")?;
     start_app(profile.path(), &first_id)?;

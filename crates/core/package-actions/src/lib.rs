@@ -707,9 +707,11 @@ pub fn dev_build_admitted(
     if personal && caller.is_system() {
         return Ok(());
     }
-    Err("a development build is installed by the person on this device's own daemon \
+    Err(
+        "a development build is installed by the person on this device's own daemon \
          connection, never by a key, a visitor, an agent or the system"
-        .into())
+            .into(),
+    )
 }
 
 /// Mark `manifest`'s app as this device's development build, pack and sign it with `device`, and
@@ -743,7 +745,8 @@ fn dev_build(
         fs::create_dir_all(&dir)?;
         for file in payload {
             let relative = Path::new(&file.path);
-            if !tilo_app_package::is_safe_path(&file.path) || relative == Path::new("tilo-app.toml") {
+            if !tilo_app_package::is_safe_path(&file.path) || relative == Path::new("tilo-app.toml")
+            {
                 return Err(Error::Policy(format!(
                     "{} is not a payload path",
                     file.path

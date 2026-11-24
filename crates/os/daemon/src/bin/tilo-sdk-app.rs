@@ -58,7 +58,8 @@ fn main() -> std::process::ExitCode {
 /// (`tilo-app-spawn-child`): the child is this program again, told it is the child, so it spawns
 /// no third.
 fn spawn_child() -> Option<std::process::Child> {
-    if std::env::var_os("TILO_SDK_APP_CHILD").is_some() || beside("tilo-app-spawn-child").is_none() {
+    if std::env::var_os("TILO_SDK_APP_CHILD").is_some() || beside("tilo-app-spawn-child").is_none()
+    {
         return None;
     }
     let program = std::env::current_exe().ok()?;
