@@ -5,22 +5,10 @@
 use std::collections::{HashMap, HashSet};
 
 use automerge::{Automerge, ChangeHash, ROOT};
-use serde::{Deserialize, Serialize};
+use collab_types::store::{Indexed, PastChild};
 
 use super::{HELD, Store, content_id, read_as_of};
 use crate::admit::Stamp;
-use crate::index::Indexed;
-
-/// One resource nested in a parent, as it stood at a version ([`Store::children_at`]).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PastChild {
-    pub kind: String,
-    pub id: String,
-    /// Its place, its parent and its indexed fields then.
-    pub indexed: Indexed,
-    /// Its content then; `None` where it held none.
-    pub content: Option<serde_json::Value>,
-}
 
 /// Where one version stands among the changes of every document: the change itself, and the
 /// moment its writer stamped it with ([`Stamp::moment`]).

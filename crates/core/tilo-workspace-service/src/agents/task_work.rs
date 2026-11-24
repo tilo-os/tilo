@@ -109,9 +109,9 @@ impl Work {
     }
 
     /// The work the resource `held` of [`WORK`] keeps, as the store's index holds it.
-    fn of(held: &tilo_resource_store::Indexed) -> Self {
+    fn of(held: &collab_types::store::Indexed) -> Self {
         let number = |field: &str| match held.scalar(field) {
-            tilo_resource_store::Value::Int(number) => u64::try_from(number).ok(),
+            collab_types::store::Value::Int(number) => u64::try_from(number).ok(),
             _ => None,
         };
         let text = |field: &str| {
@@ -130,7 +130,7 @@ impl Work {
             sessions: number("sessions").unwrap_or_default(),
             interrupted: !matches!(
                 held.scalar("session_since"),
-                tilo_resource_store::Value::Null
+                collab_types::store::Value::Null
             ),
             lost: number("lost").unwrap_or_default(),
         }
@@ -641,11 +641,11 @@ pub struct Held {
 }
 
 impl Held {
-    fn of(id: String, held: &tilo_resource_store::Indexed) -> Self {
+    fn of(id: String, held: &collab_types::store::Indexed) -> Self {
         let text = |field: &str| held.scalar(field).as_text().map(str::to_owned);
         Self {
             number: match held.scalar("number") {
-                tilo_resource_store::Value::Int(number) => u64::try_from(number).unwrap_or(0),
+                collab_types::store::Value::Int(number) => u64::try_from(number).unwrap_or(0),
                 _ => 0,
             },
             title: text("title").unwrap_or_default(),
@@ -725,9 +725,9 @@ impl Held {
 pub(super) async fn tasks(
     workspaces: &Workspaces,
     workspace: &str,
-    filters: Vec<tilo_resource_store::Filter>,
+    filters: Vec<collab_types::store::Filter>,
 ) -> Result<Vec<Held>, String> {
-    let mut query = tilo_resource_store::Query::of(triggered::TASK, 500);
+    let mut query = collab_types::store::Query::of(triggered::TASK, 500);
     query.filters = filters;
     Ok(workspaces
         .store_found(workspace, query)

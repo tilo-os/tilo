@@ -9,9 +9,10 @@ use tilo_actions::surface::ReaderRule;
 use tilo_actions::{Actor, MemberId, PersonId};
 
 use super::{Store, StoreError};
-use crate::admit::{Refusal, Touched};
-use crate::value::{Cell, Value};
-use crate::wire::Command;
+use crate::admit::Refusal;
+use collab_types::store::wire::Command;
+use collab_types::store::{Cell, Value};
+use collab_types::touch::Touched;
 
 /// The workspace's one read decision, as the store asks it when it places a record whose type
 /// names its readers by a field: who of the actors that field names reads the record, and the

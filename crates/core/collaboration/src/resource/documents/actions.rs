@@ -11,7 +11,7 @@ use automerge::transaction::Transactable as _;
 
 use super::{ResourceRefusal, WorkspaceNotices};
 use crate::state::WritingActors;
-use tilo_resource_store::history::UndoLog;
+use collab_types::history::UndoLog;
 
 /// The part of a resource's action state a toolkit keeps: the action it has open on the resource and
 /// what it answered of its history. The store never reads it; it closes the open action through it

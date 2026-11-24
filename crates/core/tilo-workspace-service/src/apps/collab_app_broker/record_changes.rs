@@ -11,7 +11,7 @@
 )]
 use super::*;
 
-use tilo_resource_store::wire::{Bytes, Command, Reply};
+use collab_types::store::wire::{Bytes, Command, Reply};
 
 /// The runs of each record's change still to come on one channel, by the record they name.
 pub(super) type RecordRuns = RefCell<std::collections::HashMap<Option<String>, Vec<u8>>>;

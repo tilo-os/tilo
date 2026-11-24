@@ -39,7 +39,7 @@ impl ResourceStore {
     pub fn with_history_or_why<R>(
         &self,
         id: &DocumentId,
-        f: impl FnOnce(&mut AutoCommit, &mut tilo_resource_store::history::UndoLog) -> R,
+        f: impl FnOnce(&mut AutoCommit, &mut collab_types::history::UndoLog) -> R,
     ) -> Result<R, HistoryUnavailable> {
         let mut f = Some(f);
         let mut out = None;
@@ -57,7 +57,7 @@ impl ResourceStore {
     fn with_history_or_why_with(
         &self,
         id: &DocumentId,
-        f: &mut dyn FnMut(&mut AutoCommit, &mut tilo_resource_store::history::UndoLog),
+        f: &mut dyn FnMut(&mut AutoCommit, &mut collab_types::history::UndoLog),
     ) -> Result<(), HistoryUnavailable> {
         let mut set = self
             .try_set_mut()

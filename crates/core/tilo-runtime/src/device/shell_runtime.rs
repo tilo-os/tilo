@@ -31,7 +31,7 @@ use tilo_actions::{
     ActionAddress, ActionDescriptor, ActionParam, InvocationId, InvocationUpdate, ParamType,
 };
 use tilo_device_identity::login::{OPEN_TERMINAL, PROVIDER, RESOURCE, TERMINAL_RECORDS};
-use tilo_resource_store::wire::Command;
+use collab_types::store::wire::Command;
 use tilo_workspace_service::workspaces::{Workspaces, standing};
 
 use super::ticket::{failed_as, succeeded};

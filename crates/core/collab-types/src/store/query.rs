@@ -2,13 +2,13 @@
 
 use std::ops::Bound;
 
-use crate::index::Indexed;
-use crate::value::{Cell, Value};
+use super::Indexed;
+use super::{Cell, Value};
 
-/// A page of a kind's resources. See the crate docs.
+/// A page of a kind's resources, as the store's index reads it ([`super`]).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Query {
-    /// The kind ([`crate::Type::name`]).
+    /// The kind, as its type names it.
     pub kind: String,
     /// What every resource shown holds; all of them.
     pub filters: Vec<Filter>,
@@ -118,7 +118,7 @@ impl Filter {
             Self::Present(field) => match stored.fields.get(field) {
                 Some(Cell::One(value)) => *value != Value::Null,
                 Some(Cell::Set(_)) => true,
-                None => field == crate::index::PARENT && stored.parent.is_some(),
+                None => field == super::PARENT && stored.parent.is_some(),
             },
             Self::Not(filter) => !filter.holds(stored),
             Self::Any(filters) => filters.iter().any(|filter| filter.holds(stored)),
@@ -136,7 +136,7 @@ pub(crate) fn within(value: &Value, from: &Bound<Value>, to: &Bound<Value>) -> b
 }
 
 /// Whether `value` lies beyond the upper bound `to`.
-pub(crate) fn past(value: &Value, to: &Bound<Value>) -> bool {
+pub fn past(value: &Value, to: &Bound<Value>) -> bool {
     match to {
         Bound::Included(to) => value > to,
         Bound::Excluded(to) => value >= to,
@@ -229,12 +229,12 @@ impl Order {
 
     /// Whether only a sort of each stretch of resources alike in `by` answers this order, not one
     /// of the index's orders as it stands.
-    pub(crate) fn is_composite(&self) -> bool {
+    pub fn is_composite(&self) -> bool {
         self.absent.is_some() || !self.then.is_empty()
     }
 
     /// How `a` and `b`, two values of a field this order sorts by `descending` or not, compare.
-    pub(crate) fn compare(&self, a: &Value, b: &Value, descending: bool) -> std::cmp::Ordering {
+    pub fn compare(&self, a: &Value, b: &Value, descending: bool) -> std::cmp::Ordering {
         use std::cmp::Ordering;
         let placed = |first: bool| match (self.absent, first) {
             (Some(Absent::First), true) | (Some(Absent::Last), false) => Ordering::Less,
@@ -271,11 +271,11 @@ pub enum Sort {
 /// left.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Cursor {
-    pub(crate) key: Value,
-    pub(crate) place: Value,
-    pub(crate) id: String,
+    pub key: Value,
+    pub place: Value,
+    pub id: String,
     /// What the resource holds of each field of the order's `then`.
-    pub(crate) rest: Vec<Value>,
+    pub rest: Vec<Value>,
 }
 
 /// One page of a [`Query`].

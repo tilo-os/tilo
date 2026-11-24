@@ -7,90 +7,11 @@ use std::sync::Arc;
 
 use automerge::ChangeHash;
 
-use crate::query::{Absent, Cursor, Filter, Order, Page, Query, Sort, past};
+use collab_types::store::{
+    Absent, Cell, Cursor, Filter, Indexed, Order, Page, Query, Sort, Value, past,
+};
+
 use crate::ranked::Ranked;
-use crate::value::{Cell, Value};
-
-/// The field a resource's parent is indexed under: a filter `Is(PARENT, parent)` lists the
-/// resources nested in one resource.
-pub const PARENT: &str = "$parent";
-
-/// What the index holds of one resource.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Indexed {
-    /// The document the resource is stored in: where a read of what the index does not hold goes.
-    /// The store's own: it never leaves the device.
-    #[serde(skip)]
-    pub doc: String,
-    /// The resource it is nested in; `None` for a resource at the top of the workspace.
-    pub parent: Option<String>,
-    /// Its place among its parent's resources of its kind; `None` for a kind without one.
-    pub order: Option<String>,
-    /// Each indexed field it holds, by name.
-    pub fields: BTreeMap<String, Cell>,
-}
-
-impl Indexed {
-    /// The scalar field `field` holds; [`Value::Null`] when it holds none.
-    #[must_use]
-    pub fn scalar(&self, field: &str) -> Value {
-        if field == PARENT {
-            return self.parent.clone().map_or(Value::Null, Value::Text);
-        }
-        self.fields
-            .get(field)
-            .and_then(Cell::one)
-            .cloned()
-            .unwrap_or(Value::Null)
-    }
-
-    /// Where the resource stands in `sort`: what it sorts by, then its place. A field it does
-    /// not hold sorts as [`Value::Null`], as a filter reads it; a set is no order.
-    fn key(&self, sort: &Sort) -> Option<(Value, Value)> {
-        match sort {
-            Sort::Position => Some((position(self), Value::Null)),
-            Sort::Field(field) if field == PARENT => Some((self.scalar(PARENT), position(self))),
-            Sort::Field(field) => {
-                let value = match self.fields.get(field) {
-                    Some(Cell::Set(_)) => return None,
-                    Some(cell) => cell.one()?.clone(),
-                    None => Value::Null,
-                };
-                Some((value, position(self)))
-            }
-        }
-    }
-
-    /// Whether the resource holds nothing in the scalar field `field`: it is listed under
-    /// [`Value::Null`] there.
-    fn lacks(&self, field: &str) -> bool {
-        if field == PARENT {
-            return self.parent.is_none();
-        }
-        !self.fields.contains_key(field)
-    }
-
-    /// Each value the resource is listed under in the index of `field`.
-    fn indexed(&self) -> impl Iterator<Item = (&str, Value)> {
-        let parent = self
-            .parent
-            .as_ref()
-            .map(|parent| (PARENT, Value::Text(parent.clone())));
-        parent
-            .into_iter()
-            .chain(self.fields.iter().flat_map(|(field, cell)| {
-                let values: Vec<Value> = match cell {
-                    Cell::One(value) => vec![value.clone()],
-                    Cell::Set(members) => members.iter().cloned().collect(),
-                };
-                values.into_iter().map(move |value| (field.as_str(), value))
-            }))
-    }
-}
-
-fn position(stored: &Indexed) -> Value {
-    stored.order.clone().map_or(Value::Null, Value::Text)
-}
 
 /// One resource a commit changed.
 #[derive(Clone, Debug, PartialEq)]
@@ -303,7 +224,7 @@ impl Table {
 
     fn insert(&mut self, id: &str, stored: Indexed) {
         self.unlink(id);
-        let place = position(&stored);
+        let place = stored.place();
         self.by_position
             .insert((place.clone(), Value::Null, id.to_owned()));
         for (field, cell) in &stored.fields {
@@ -323,7 +244,7 @@ impl Table {
             let mut entries = Ranked::default();
             for (other, row) in &self.rows {
                 if other != id && row.lacks(&field) {
-                    entries.insert((Value::Null, position(row), other.clone()));
+                    entries.insert((Value::Null, row.place(), other.clone()));
                 }
             }
             self.by_field.insert(field, entries);
@@ -365,7 +286,7 @@ impl Table {
                 listing.keys.remove(&key);
             }
         }
-        let place = position(stored);
+        let place = stored.place();
         let lacked = self.lacked(stored);
         let mut key = (place.clone(), Value::Null, id.to_owned());
         self.by_position.remove(&key);

@@ -316,7 +316,7 @@ pub enum Service {
     /// A `tilo_actions::remote::RemoteActionFrame` the app sends another
     /// app's action -> the frame that answers it.
     RemoteAction,
-    /// A `tilo_resource_store::wire::Command` -> its `Reply`, JSON: the app's resources, written
+    /// A `collab_types::store::wire::Command` -> its `Reply`, JSON: the app's resources, written
     /// and read in the device's one store.
     Resources,
 }
@@ -386,7 +386,7 @@ pub enum Topic {
     /// A workspace control session with `target_device`, open while the
     /// subscription lives; input goes in [`Operation::ControlInput`].
     WorkspaceControl { target_device: [u8; 32] },
-    /// A query of the app's resources held open (`tilo_resource_store::Query`,
+    /// A query of the app's resources held open (`collab_types::store::Query`,
     /// JSON): its first page, then each page a change makes different.
     Resources(Vec<u8>),
     /// What the host says of these actions a window shows, as the person at this endpoint would
@@ -469,7 +469,7 @@ pub enum Event {
         reading: Option<Vec<u8>>,
     },
     /// A page of a query held open ([`Topic::Resources`]), as
-    /// `tilo_resource_store::Page` JSON.
+    /// `collab_types::store::Page` JSON.
     Resources(Vec<u8>),
     /// What the host says of the actions a [`Topic::ShownActions`] names.
     ShownActions(Vec<crate::shown_actions::ActionDecision>),

@@ -19,10 +19,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
+use collab_types::history::Version;
+use collab_types::store::Resource;
+use collab_types::store::wire::{Command, Edit, Reply};
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
-use tilo_resource_store::wire::{Command, Edit, Reply};
-use tilo_resource_store::{Resource, Stamp, Version};
+use tilo_resource_store::Stamp;
 
 use settings_store::placement::{self, Address, Holder};
 use settings_store::workspace::verb;

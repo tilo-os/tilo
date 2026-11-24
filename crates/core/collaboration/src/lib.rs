@@ -99,7 +99,6 @@
 
 pub mod action_directory;
 pub mod document;
-pub mod history;
 mod incoming;
 pub use incoming::Incoming;
 pub mod invocation_scope;
@@ -428,7 +427,7 @@ pub enum CollabRequest {
     /// The app's own changes of the route's record: the record whole (every
     /// change it holds, for a record's first write) or the changes since what
     /// the store last took. The device's store takes them as the app's
-    /// changes (`tilo_resource_store::wire::Command::RecordChange`) and signs
+    /// changes (`collab_types::store::wire::Command::RecordChange`) and signs
     /// them itself.
     Document {
         mutation: DocumentMutation,
@@ -538,7 +537,7 @@ pub enum CollabRequest {
     },
     /// Write or read this app's resources in the device's one store, which answers with
     /// [`CollabEvent::ResourceCommandResult`]. The app holds no store of its own; the command is
-    /// in the store's encoding (`tilo_resource_store::wire::Command`), which the connection
+    /// in the store's encoding (`collab_types::store::wire::Command`), which the connection
     /// carries as bytes.
     ResourceCommand {
         request_id: u64,

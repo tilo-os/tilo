@@ -46,22 +46,20 @@ use automerge::{
     ScalarValue, Value as AmValue,
 };
 
+use collab_types::store::{Cell, Filter, Indexed, Page, Query, Resource, Value};
+use collab_types::touch::READERS;
+
 use crate::admit::{Admit, Proposal, Received, Refusal, Stamp};
-use crate::index::{Change, Commit, CommitHook as _, Index, Indexed};
-use crate::query::{Filter, Page, Query};
+use crate::index::{Change, Commit, CommitHook as _, Index};
 use crate::schema::Schema;
-use crate::value::{Cell, Value};
 
 mod past;
 mod readers;
-pub use past::PastChild;
 pub use readers::RecordReader;
 
 /// The most resources one document holds before the next one starts.
 pub const DOCUMENT_LIMIT: usize = 4096;
 
-/// The key at a document's root that names who reads it: fixed when the document is placed.
-pub(crate) const READERS: &str = "w";
 /// What a resource's key at the document's root starts with: each resource is a key of the root
 /// of its own, so two devices starting one document both keep what they wrote.
 const HELD: &str = collab_types::claim::STORE_RECORD;
@@ -168,18 +166,6 @@ impl From<automerge::AutomergeError> for StoreError {
     }
 }
 
-/// A resource as a write gives it: who may read it, where it is nested, its place, its indexed
-/// fields.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Resource {
-    /// Its reader set: whatever names who may read it, which also picks the key of the
-    /// document it is placed in.
-    pub readers: String,
-    pub parent: Option<String>,
-    pub order: Option<String>,
-    pub fields: BTreeMap<String, Cell>,
-}
-
 /// Where a removed resource was: the document it was last in, and its parent then.
 #[derive(Clone, Debug)]
 struct Removed {
@@ -248,7 +234,7 @@ pub struct Store {
     /// as made from it is in.
     made_from: HashMap<String, BTreeSet<String>>,
     /// Per document, the versions of each resource in it, read as far as its changes go.
-    touches: std::sync::Mutex<HashMap<String, crate::history::Touches>>,
+    touches: std::sync::Mutex<HashMap<String, collab_types::history::Touches>>,
     /// Per resource, the time of the latest change that made a resource in it or removed one
     /// from it: a change of it too, which its [`UPDATED`] reflects without reading the
     /// history of what it holds.
@@ -433,7 +419,7 @@ impl Store {
         let made_live = versions
             .iter()
             .filter(|version| {
-                version.kind == crate::history::VersionKind::Made
+                version.kind == collab_types::history::VersionKind::Made
                     || version
                         .fields
                         .iter()
@@ -778,7 +764,7 @@ impl Store {
             .versions_of(id)?
             .iter()
             .rev()
-            .find(|version| version.kind == crate::history::VersionKind::Removed)?
+            .find(|version| version.kind == collab_types::history::VersionKind::Removed)?
             .stamp
             .as_ref()
             .map(|stamp| stamp.at.clone());
@@ -797,9 +783,9 @@ impl Store {
             .touches
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut made: Option<&crate::history::Version> = None;
-        let mut last: Option<&crate::history::Version> = None;
-        let mut changed: BTreeMap<&str, &crate::history::Version> = BTreeMap::new();
+        let mut made: Option<&collab_types::history::Version> = None;
+        let mut last: Option<&collab_types::history::Version> = None;
+        let mut changed: BTreeMap<&str, &collab_types::history::Version> = BTreeMap::new();
         let content = content_id(readers, kind, id);
         for doc in [doc_id, content.as_str()] {
             if let Some(held) = self.docs.get(doc) {
@@ -818,10 +804,10 @@ impl Store {
                 {
                     continue;
                 }
-                let newer = |held: Option<&crate::history::Version>| {
+                let newer = |held: Option<&collab_types::history::Version>| {
                     held.is_none_or(|held| held.order() <= version.order())
                 };
-                if version.kind == crate::history::VersionKind::Made && made.is_none() {
+                if version.kind == collab_types::history::VersionKind::Made && made.is_none() {
                     made = Some(version);
                 }
                 if newer(last) {
@@ -836,7 +822,7 @@ impl Store {
                 }
             }
         }
-        let at = |version: &crate::history::Version| {
+        let at = |version: &collab_types::history::Version| {
             Cell::One(Value::Text(
                 version
                     .stamp
@@ -1100,14 +1086,15 @@ impl Store {
         // The resources first, then their contents: a resource the undo puts back holds its
         // content again, and the content of one it removes goes with it.
         let mut docs: Vec<String> = self.index.documents().map(str::to_owned).collect();
-        docs.sort_by_key(|doc| crate::admit::content_resource(doc).is_some());
+        docs.sort_by_key(|doc| collab_types::touch::content_resource(doc).is_some());
         let mut written = Vec::new();
         for doc_id in docs {
             let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
             let Some(doc) = self.existing(&doc_id)? else {
                 continue;
             };
-            let Some(change) = crate::history::revert::revert_stamped(doc, invocation, stamp)?
+            let Some(change) =
+                collab_types::history::revert::revert_stamped(doc, invocation, stamp)?
             else {
                 continue;
             };
@@ -1534,7 +1521,7 @@ impl Store {
     /// or removed it, or changed its content, as its action stamped it. One whose document is
     /// not in memory has none.
     #[must_use]
-    pub fn versions(&self, kind: &str, id: &str) -> Vec<crate::history::Version> {
+    pub fn versions(&self, kind: &str, id: &str) -> Vec<collab_types::history::Version> {
         let mut touches = self
             .touches
             .lock()
@@ -1546,19 +1533,24 @@ impl Store {
     /// it is picked from are not sent, so a resource whose history names thousands of nested
     /// resources (a root, through each change that put items in it) answers with the one.
     #[must_use]
-    pub fn version_end(&self, kind: &str, id: &str, last: bool) -> Option<crate::history::Version> {
+    pub fn version_end(
+        &self,
+        kind: &str,
+        id: &str,
+        last: bool,
+    ) -> Option<collab_types::history::Version> {
         let mut touches = self
             .touches
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (held, readers) = self.placed(kind, id)?;
-        let order = |version: &crate::history::Version| {
+        let order = |version: &collab_types::history::Version| {
             (
                 version.stamp.as_ref().map_or(0, |stamp| stamp.moment),
                 version.op,
             )
         };
-        let mut ends: Vec<crate::history::Version> = Vec::new();
+        let mut ends: Vec<collab_types::history::Version> = Vec::new();
         let content = content_id(&readers, kind, id);
         for doc_id in [&held, &content] {
             if let Some(doc) = self.docs.get(doc_id) {
@@ -1599,13 +1591,13 @@ impl Store {
         } else {
             ends.into_iter().min_by_key(|version| {
                 (
-                    version.kind != crate::history::VersionKind::Made,
+                    version.kind != collab_types::history::VersionKind::Made,
                     order(version),
                 )
             })
         }?;
         if last
-            && end.kind == crate::history::VersionKind::Removed
+            && end.kind == collab_types::history::VersionKind::Removed
             && let Some(removed) = self.removed.get(&(kind.to_owned(), id.to_owned()))
         {
             end.parent.clone_from(&removed.parent);
@@ -1616,10 +1608,10 @@ impl Store {
     /// [`Self::versions`], with the cache of what each document's changes touched at hand.
     fn versions_unlocked(
         &self,
-        touches: &mut HashMap<String, crate::history::Touches>,
+        touches: &mut HashMap<String, collab_types::history::Touches>,
         kind: &str,
         id: &str,
-    ) -> Vec<crate::history::Version> {
+    ) -> Vec<collab_types::history::Version> {
         let mut versions = Vec::new();
         let Some((held, readers)) = self.placed(kind, id) else {
             return versions;
@@ -1663,7 +1655,7 @@ impl Store {
             && let Some(last) = versions
                 .iter_mut()
                 .rev()
-                .find(|version| version.kind == crate::history::VersionKind::Removed)
+                .find(|version| version.kind == collab_types::history::VersionKind::Removed)
         {
             last.parent.clone_from(&removed.parent);
         }
@@ -1680,7 +1672,7 @@ impl Store {
         &mut self,
         kind: &str,
         id: &str,
-    ) -> Result<Vec<crate::history::Version>, StoreError> {
+    ) -> Result<Vec<collab_types::history::Version>, StoreError> {
         self.read_back_history(kind, id)?;
         Ok(self.versions(kind, id))
     }
@@ -1710,7 +1702,7 @@ impl Store {
         kind: &str,
         id: &str,
         last: bool,
-    ) -> Result<Option<crate::history::Version>, StoreError> {
+    ) -> Result<Option<collab_types::history::Version>, StoreError> {
         self.read_back_history(kind, id)?;
         Ok(self.version_end(kind, id, last))
     }
@@ -1730,16 +1722,16 @@ impl Store {
         within: &str,
         limit: usize,
         may_read: &dyn Fn(&str) -> bool,
-    ) -> (Vec<(String, String, crate::history::Version)>, bool) {
+    ) -> (Vec<(String, String, collab_types::history::Version)>, bool) {
         let prefix = format!("{within}/");
         let under = |id: &str| id == within || id.starts_with(&prefix);
-        let order = |version: &crate::history::Version| {
+        let order = |version: &collab_types::history::Version| {
             (
                 version.stamp.as_ref().map_or(0, |stamp| stamp.moment),
                 version.op,
             )
         };
-        let mut newest: Vec<(String, String, crate::history::Version)> = Vec::new();
+        let mut newest: Vec<(String, String, collab_types::history::Version)> = Vec::new();
         let mut touches = self
             .touches
             .lock()
@@ -1757,7 +1749,7 @@ impl Store {
                 && let Some(readers) = self.index.readers(doc_id)
             {
                 let content = content_id(readers, &kind, within);
-                let mut last: Option<crate::history::Version> = None;
+                let mut last: Option<collab_types::history::Version> = None;
                 for doc in [doc_id, content.as_str()] {
                     let Some(held) = self.docs.get(doc) else {
                         continue;
@@ -1892,17 +1884,17 @@ impl Store {
     /// resource it touched, by kind and id: what a review of that work lists. Reads only the
     /// documents a change of the group is in.
     #[must_use]
-    pub fn grouped(&self, group: &str) -> Vec<(String, String, crate::history::Version)> {
+    pub fn grouped(&self, group: &str) -> Vec<(String, String, collab_types::history::Version)> {
         let mut out = self.stamped(self.groups.get(group), &|stamp| {
             stamp.group.as_ref().is_some_and(|held| held.id == group)
         });
         // A resource made in or removed from another changed that one too: its collection.
-        let mut holders: Vec<(String, String, crate::history::Version)> = Vec::new();
+        let mut holders: Vec<(String, String, collab_types::history::Version)> = Vec::new();
         for (kind, id, version) in &out {
             let made = match version.kind {
-                crate::history::VersionKind::Made => true,
-                crate::history::VersionKind::Removed => false,
-                crate::history::VersionKind::Changed => continue,
+                collab_types::history::VersionKind::Made => true,
+                collab_types::history::VersionKind::Removed => false,
+                collab_types::history::VersionKind::Changed => continue,
             };
             if version.content {
                 continue;
@@ -1927,7 +1919,7 @@ impl Store {
             let Some(parent_kind) = parent_kind else {
                 continue;
             };
-            let nested = crate::history::Nested {
+            let nested = collab_types::history::Nested {
                 kind: kind.clone(),
                 id: id.clone(),
                 made,
@@ -1941,9 +1933,9 @@ impl Store {
             holders.push((
                 parent_kind,
                 parent,
-                crate::history::Version {
+                collab_types::history::Version {
                     stamp: version.stamp.clone(),
-                    kind: crate::history::VersionKind::Changed,
+                    kind: collab_types::history::VersionKind::Changed,
                     fields: Vec::new(),
                     content: false,
                     change: version.change.clone(),
@@ -1961,16 +1953,16 @@ impl Store {
     /// ([`Stamp::from`]), by kind and id: what was made from it, wherever it was placed.
     #[must_use]
     pub fn made_from(&self, id: &str) -> Vec<(String, String)> {
-        let mut made: Vec<(String, String, crate::history::Version)> = self
+        let mut made: Vec<(String, String, collab_types::history::Version)> = self
             .stamped(self.made_from.get(id), &|stamp| {
                 stamp.from.as_ref().is_some_and(|from| from.id == id)
             })
             .into_iter()
-            .filter(|(_, _, version)| version.kind == crate::history::VersionKind::Made)
+            .filter(|(_, _, version)| version.kind == collab_types::history::VersionKind::Made)
             .collect();
         // In the order they were made.
         made.sort_by(|(_, _, a), (_, _, b)| {
-            let at = |version: &crate::history::Version| {
+            let at = |version: &collab_types::history::Version| {
                 version
                     .stamp
                     .as_ref()
@@ -1994,14 +1986,14 @@ impl Store {
         &self,
         docs: Option<&BTreeSet<String>>,
         stamped: &dyn Fn(&Stamp) -> bool,
-    ) -> Vec<(String, String, crate::history::Version)> {
+    ) -> Vec<(String, String, collab_types::history::Version)> {
         let mut out = Vec::new();
         for doc_id in docs.into_iter().flatten() {
             let Some(doc) = self.docs.get(doc_id) else {
                 continue;
             };
-            let content = crate::admit::content_resource(doc_id);
-            for (version, id) in crate::history::stamped(doc, doc_id, stamped) {
+            let content = collab_types::touch::content_resource(doc_id);
+            for (version, id) in collab_types::history::stamped(doc, doc_id, stamped) {
                 let kind = match &content {
                     Some((kind, _)) => Some(kind.clone()),
                     None => self.index.kind_of(&id, doc_id).or_else(|| {
@@ -2196,7 +2188,7 @@ impl Store {
             self.schema.types.is_empty() && schema.is_none_or(|schema| schema.types.is_empty());
         let doc = self.doc(doc_id).map_err(|_| Refusal::Unplaced)?;
         let (touched, writes) =
-            crate::admit::touched(doc, doc_id, &received.change).ok_or(Refusal::Unplaced)?;
+            collab_types::touch::touched(doc, doc_id, &received.change).ok_or(Refusal::Unplaced)?;
         // A document's reader set is the one it was placed by, whoever writes it.
         if touched
             .readers
@@ -2829,16 +2821,7 @@ impl Held {
     }
 }
 
-/// What restoring some resources to a version would change, as a person reviews it before they
-/// restore: the heads of every document it reads, and the resources that differ.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Review {
-    /// The heads, each a full change hash, of every document the restore writes, sorted: a
-    /// restore of this review is refused once any of them moved.
-    pub live: Vec<String>,
-    /// The ids of the resources that differ from the version, sorted.
-    pub differing: Vec<String>,
-}
+pub use collab_types::store::Review;
 
 impl Store {
     /// Names the version the resource `id` of `kind` stands at now `name`, as `stamp`: a change

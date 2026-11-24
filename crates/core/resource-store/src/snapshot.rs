@@ -4,7 +4,7 @@ use automerge::ChangeHash;
 use serde::{Deserialize, Serialize};
 
 use crate::index::{Change, Index};
-use crate::value::Cell;
+use collab_types::store::Cell;
 
 /// The layout of a snapshot: one of another is never read, and the document is loaded instead.
 const FORMAT: u32 = 1;

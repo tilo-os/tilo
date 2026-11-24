@@ -55,7 +55,7 @@ fn terminals_environments_round_trip_through_ush_at_the_daemon() {
         assert!(records.load("dev").unwrap().is_none());
 
         // Nothing of the workspace but Terminal's records is read or written.
-        let query = tilo_resource_store::wire::Command::Query(tilo_resource_store::Query::of(
+        let query = collab_types::store::wire::Command::Query(collab_types::store::Query::of(
             "notes.note",
             10,
         ));

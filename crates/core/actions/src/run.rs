@@ -19,7 +19,7 @@
 //!
 //! Typing into a field is the other run History reads: it lists a person's
 //! words in one field as one row, while undo keeps a step per word
-//! (`tilo_resource_store::history::typing`). It uses the same pause.
+//! (`collab_types::history::typing`). It uses the same pause.
 
 use crate::action::{ActionId, Doc};
 use crate::context::ActionContext;

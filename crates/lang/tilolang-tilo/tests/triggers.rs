@@ -400,11 +400,11 @@ struct Turns {
 impl tilolang_tilo::resources::Port for Turns {
     fn command(
         &self,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         match command {
-            tilo_resource_store::wire::Command::Turn { answer: None, .. } => {
-                Ok(tilo_resource_store::wire::Reply::Turn(self.turn.clone()))
+            collab_types::store::wire::Command::Turn { answer: None, .. } => {
+                Ok(collab_types::store::wire::Reply::Turn(self.turn.clone()))
             }
             other => self.store.command(other),
         }

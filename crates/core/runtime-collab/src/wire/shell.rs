@@ -190,7 +190,7 @@ pub enum ShellCall {
     /// The documents the device took a write to since this connection last asked, waited for
     /// until there is one: the device's own writes, its apps' and every other device's alike.
     Writes,
-    /// Run a resource store command (`tilo_resource_store::wire::Command` JSON) on `app`'s
+    /// Run a resource store command (`collab_types::store::wire::Command` JSON) on `app`'s
     /// resources in `workspace`, as the device's person: what an app the shell runs in its own
     /// process reads and writes its resources with.
     Resources {
@@ -495,7 +495,7 @@ pub enum ShellReply {
     /// A [`ShellCall::Join`]: the call's channel and the generation of its rule, or why the call
     /// does not take this device. A [`ShellCall::Leave`] is answered `Ok(None)`.
     Joined(Result<Option<(String, u64)>, String>),
-    /// A [`ShellCall::Resources`]: the store's `tilo_resource_store::wire::Reply` as JSON, or why
+    /// A [`ShellCall::Resources`]: the store's `collab_types::store::wire::Reply` as JSON, or why
     /// the command was not run.
     Resources(Result<String, String>),
     /// A [`ShellCall::Vault`]: what the call is answered with, or why it was refused.

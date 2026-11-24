@@ -18,6 +18,7 @@ tilo-notify = { version = "0.1.0", path = "../../platform/tilo-notify" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 # The deadlines are records of the workspace, written and read as its store's commands.
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-resource-store = { path = "../../core/resource-store" }
 blake3.workspace = true
 jiff.workspace = true

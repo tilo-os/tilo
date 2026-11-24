@@ -20,7 +20,7 @@ use automerge::{AutoCommit, ChangeHash, ScalarValue};
 use tilo_actions::{ActionContext, ActionId, Did, HistoryOp};
 use tilo_resource::history::Version;
 
-use collab_types::MemberId;
+use crate::MemberId;
 
 use crate::history::authors;
 use crate::history::steps::{self, UNDONE_KEY};

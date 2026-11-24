@@ -32,13 +32,13 @@ use automerge::{AutoCommit, ObjType, ReadDoc, Value};
 use crate::history_source::authors::AuthorDirectory;
 use crate::widget::history::HistoryEntryId;
 use crate::widget::history_group::{GroupNameRequest, NamedRange};
-pub use collaboration::history::{GROUPS_KEY, is_group_marker};
+pub use collab_types::history::{GROUPS_KEY, is_group_marker};
 use tilo_automerge::read::int_at;
 
 /// A version name is a label, not a paragraph; past this it stops fitting
 /// anywhere it is rendered and starts being a way to make another user's
 /// timeline unreadable.
-pub const MAX_LABEL_LEN: usize = collaboration::history::MAX_RUN_NAME;
+pub const MAX_LABEL_LEN: usize = collab_types::history::MAX_RUN_NAME;
 
 /// The `by` of a name a model wrote, in place of a person's actor hex. A
 /// generated name is the document's guess at what a run of changes was: it is
@@ -129,7 +129,7 @@ pub fn name_range_by(
     by: &str,
 ) -> String {
     let end = end.map(HistoryEntryId::hex);
-    collaboration::history::name_run(
+    collab_types::history::name_run(
         doc,
         (&HistoryEntryId::hex(start), end.as_deref()),
         label,

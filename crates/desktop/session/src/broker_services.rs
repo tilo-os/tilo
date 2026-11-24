@@ -26,8 +26,8 @@ pub(crate) async fn daemon_resource_command(
     shell: &tilo_session_client::daemon_documents::DaemonShell,
     workspace: String,
     app: String,
-    command: &tilo_resource_store::wire::Command,
-) -> Result<tilo_resource_store::wire::Reply, String> {
+    command: &collab_types::store::wire::Command,
+) -> Result<collab_types::store::wire::Reply, String> {
     use runtime_collab::wire::shell::{ShellCall, ShellReply};
     let command = serde_json::to_string(command)
         .map_err(|error| format!("a resource command does not encode: {error}"))?;

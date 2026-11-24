@@ -14,7 +14,7 @@
 //!   offers an action directory on the connection too, answering it from what it published
 //!   ([`PublishedDirectory`]): what makes the instance one the API and agents can browse.
 //! - **What every app publishes:** on its app's resource the instance publishes the history
-//!   verbs (Undo, Redo, History, ...: `tilo_resource_store::history::verbs`), `read`
+//!   verbs (Undo, Redo, History, ...: `collab_types::history::verbs`), `read`
 //!   (`tilo_resource::read`) and, where it shows a window, "Show this window"
 //!   (`tilo_actions::remote::activate_spec`), and answers them as a framework app does: undo and
 //!   redo through the store, `read` through the runtime, and "Show this window" by asking its
@@ -32,6 +32,7 @@ use std::sync::Arc;
 
 use crate::connection::Connection;
 use crate::personal::PersonalDocument;
+use collab_types::history::verbs::{EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::action_directory::PublishedDirectory;
 use collaboration::{CollabEvent, CollabRequest, SurfaceDelta, SurfacePublication};
 use runtime_portal::process_link::Shows;
@@ -41,7 +42,6 @@ use tilo_actions::{
 };
 use tilo_render_protocol::WireError;
 use tilo_render_protocol::patch::{ToUi, Transport};
-use tilo_resource_store::history::verbs::{EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use tilolang_tilo::action::{ACTION_TYPE, DynAction};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::bundle::Bundle;
@@ -1936,7 +1936,7 @@ impl Hosted {
         let phrases = Rc::new(window_phrases(phrases, &spec, &bundle));
         // The names the session sends for the apps installed here read in the language this
         // window speaks, whatever language the workspace's people are named in.
-        tilo_resource_store::history::authors::set_names_language(&phrases.locale());
+        collab_types::history::authors::set_names_language(&phrases.locale());
         let scope = DocumentScope::of(content, &wake);
         let Opened {
             mut instance,
@@ -2205,7 +2205,7 @@ impl Hosted {
         }
         let _code = self.scope.enter();
         let locale = self.phrases.locale();
-        tilo_resource_store::history::authors::set_names_language(&locale);
+        collab_types::history::authors::set_names_language(&locale);
         // Every word is read again: the views drawn, the window's own chrome and the surface
         // published.
         self.instance.speak(locale);
@@ -3096,7 +3096,7 @@ impl Hosted {
     ) -> bool {
         if let CollabEvent::Context { apps, .. } = &event {
             // Apps installed or removed since the last frame: what views show of who made a change is published again.
-            if tilo_resource_store::history::authors::set_installed_apps(apps.clone()) {
+            if collab_types::history::authors::set_installed_apps(apps.clone()) {
                 self.instance.person_changed();
             }
             return true;
@@ -3988,7 +3988,7 @@ impl Hosted {
         if encoded.type_id == EDIT_TYPE {
             // A history verb, on the document as the invoker's own step.
             let edit: HistoryEdit =
-                tilo_resource_store::history::verbs::edit_from_payload(&encoded.payload)
+                collab_types::history::verbs::edit_from_payload(&encoded.payload)
                     .map_err(|error| Refused::new("action_invalid_arguments", error))?;
             let resources = surface.resources(Some(&shown));
             let trees = history_trees(&resources, &address)?;
@@ -4141,7 +4141,7 @@ impl Hosted {
         locale: &str,
         person: &str,
     ) -> Result<tilo_actions::ActionOutput, Refused> {
-        let view = tilo_resource_store::history::verbs::view_from_payload(payload)
+        let view = collab_types::history::verbs::view_from_payload(payload)
             .map_err(|error| Refused::new("action_invalid_arguments", error))?;
         let resources = surface.resources(Some(shown));
         let trees = history_trees(&resources, address)?;
@@ -5045,7 +5045,7 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
-    use tilo_resource_store::wire::{Bytes, Command, Reply};
+    use collab_types::store::wire::{Bytes, Command, Reply};
     use tilo_resource_store::{LocalPort, Port};
 
     use super::read_earlier;

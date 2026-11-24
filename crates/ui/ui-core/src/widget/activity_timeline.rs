@@ -2220,7 +2220,7 @@ fn author_writer_lead(author: &HistoryAuthor, label: &str, theme: &Theme) -> Chi
     let agent = match author.attribution.as_ref() {
         Some(attribution) => matches!(
             attribution.writer.as_ref(),
-            Some(fs_protocol::AttributedWriter::Agent { .. })
+            Some(collab_types::history::authors::AttributedWriter::Agent { .. })
         ),
         None => author.relation == crate::widget::history::AuthorRelation::Software,
     };

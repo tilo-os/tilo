@@ -33,8 +33,8 @@ pub use file_invite::{
     mint_bearer_file_invite, mint_file_invite,
 };
 pub use files::{
-    AttributedWriter, ContentHash, FILE_BINDING_VERSION, FIRST_TREE_CHUNK, FileActor,
-    FileBindingV1, FileDocumentError, FileDocumentId, FileNameV1, FileNodeKind, FilePropertiesV1,
+    ContentHash, FILE_BINDING_VERSION, FIRST_TREE_CHUNK, FileActor, FileBindingV1,
+    FileDocumentError, FileDocumentId, FileNameV1, FileNodeKind, FilePropertiesV1,
     MAX_FILE_NAME_BYTES, TreeChunk,
 };
 pub use projection::{

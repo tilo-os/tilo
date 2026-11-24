@@ -27,7 +27,7 @@ struct Store(Workspace);
 
 impl tilo_service::WorkspaceStore for Store {
     fn command(&self, _app: &str, command: &[u8]) -> Result<Vec<u8>, String> {
-        let command: tilo_resource_store::wire::Command =
+        let command: collab_types::store::wire::Command =
             serde_json::from_slice(command).map_err(|error| error.to_string())?;
         let reply = self.0.command(command);
         serde_json::to_vec(&reply).map_err(|error| error.to_string())

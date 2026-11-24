@@ -26,7 +26,7 @@ impl ResolveAuthor for Unnamed {
         author_coloured(
             name,
             short_id(actor_hex),
-            collab_types::presence::user_color(actor_hex),
+            crate::presence::user_color(actor_hex),
         )
     }
 }
@@ -84,7 +84,7 @@ thread_local! {
     /// process reads names in: both ride with the workspace's roster names, so a window names
     /// another app by the same feed it names people. A process no session serves names an app by
     /// the words its id makes.
-    static INSTALLED_APPS: std::cell::RefCell<(String, Option<Vec<collab_types::history::NamedApp>>)> =
+    static INSTALLED_APPS: std::cell::RefCell<(String, Option<Vec<crate::history::NamedApp>>)> =
         const { std::cell::RefCell::new((String::new(), None)) };
 }
 
@@ -104,7 +104,7 @@ pub fn set_names_language(language: &str) -> bool {
 
 /// Take the installed apps the session sent (`CollabEvent::Context`), with what each is called in
 /// every language its package names it in. Whether this thread's names changed.
-pub fn set_installed_apps(apps: Vec<collab_types::history::NamedApp>) -> bool {
+pub fn set_installed_apps(apps: Vec<crate::history::NamedApp>) -> bool {
     INSTALLED_APPS.with(|held| {
         let mut held = held.borrow_mut();
         let changed = held.1.as_ref() != Some(&apps);
@@ -222,7 +222,7 @@ pub fn actor_handle(actor_hex: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
-pub use collab_types::actors::{DEVICE_SEPARATOR, copy_writer, device_actor};
+pub use crate::actors::{DEVICE_SEPARATOR, copy_writer, device_actor};
 
 /// The actors a copy of a record writes as, to tell its changes apart: its writer, and the
 /// [`device_actor`] of any handle on it.
@@ -244,7 +244,7 @@ impl DeviceActors {
         Self {
             writer: device.to_hex_string(),
             suffix: separated,
-            device: collab_types::actors::device_part(device),
+            device: crate::actors::device_part(device),
         }
     }
 
@@ -348,6 +348,57 @@ pub struct HistoryAuthor {
     pub task: Option<String>,
 }
 
+/// What wrote a change for a person: an agent, in one of its sessions or not, a Tilo app, or a
+/// third-party program. Presentation only: it grants nothing.
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributedWriter {
+    /// An agent acting through Tilo actions, in one of its sessions or not.
+    Agent {
+        agent: String,
+        session: Option<String>,
+    },
+    /// A Tilo app acting as itself, by its id.
+    App(String),
+    /// A third-party desktop program, by its desktop id.
+    Program(String),
+}
+
+impl AttributedWriter {
+    #[must_use]
+    pub fn agent(agent: impl Into<String>) -> Self {
+        Self::Agent {
+            agent: agent.into(),
+            session: None,
+        }
+    }
+
+    /// One session of the agent `agent`.
+    #[must_use]
+    pub fn agent_session(agent: impl Into<String>, session: impl Into<String>) -> Self {
+        Self::Agent {
+            agent: agent.into(),
+            session: Some(session.into()),
+        }
+    }
+
+    /// Who acted: the agent, in its session when it has one. `None` for an
+    /// app or a program, which write as the person.
+    #[must_use]
+    pub fn acting(&self) -> Option<tilo_actions::Acting> {
+        let Self::Agent { agent, session } = self else {
+            return None;
+        };
+        let acting = tilo_actions::Acting::agent(agent.clone());
+        Some(match session {
+            Some(session) => acting.in_session(session.clone()),
+            None => acting,
+        })
+    }
+}
+
 /// An author that acted for someone: an agent's change is the agent's, on
 /// behalf of its person, in every history (an app's, the Files history, and
 /// what the history actions return).
@@ -360,7 +411,7 @@ pub struct HistoryAttribution {
     /// What wrote the change, when the device recorded a writer beside the
     /// version rather than only a delegated agent: an agent session, an app
     /// or a third-party program. The device asserts it; it grants nothing.
-    pub writer: Option<fs_protocol::AttributedWriter>,
+    pub writer: Option<AttributedWriter>,
     /// The writer's own name: the agent's, the app's or the program's.
     pub writer_label: Option<String>,
     /// The device whose session vouched for the writer, by the name its
@@ -398,11 +449,7 @@ impl HistoryAttribution {
 
     /// Record what wrote the change and the name it goes by.
     #[must_use]
-    pub fn written_by(
-        mut self,
-        writer: fs_protocol::AttributedWriter,
-        label: impl Into<String>,
-    ) -> Self {
+    pub fn written_by(mut self, writer: AttributedWriter, label: impl Into<String>) -> Self {
         self.writer = Some(writer);
         self.writer_label = Some(label.into());
         self
@@ -544,7 +591,7 @@ mod tests {
         // The session knows what each installed app is called, in every language its package
         // names it in: a reader names it so, and an app this device does not have by the words
         // its id makes — never by its id.
-        assert!(set_installed_apps(vec![collab_types::history::NamedApp {
+        assert!(set_installed_apps(vec![crate::history::NamedApp {
             id: "so.tilo.lang.today".to_owned(),
             name: "Today".to_owned(),
             names: [("de-DE".to_owned(), "Heute".to_owned())]

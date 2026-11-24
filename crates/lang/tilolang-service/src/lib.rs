@@ -25,9 +25,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use collab_types::history::verbs::{self, EDIT_TYPE, HistoryEdit, HistoryView, VIEW_TYPE};
 use serde_json::{Map, Value as Json};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
-use tilo_resource_store::history::verbs::{self, EDIT_TYPE, HistoryEdit, HistoryView, VIEW_TYPE};
 use tilo_service::{Service, Started};
 use tilolang_runtime::InvokeOutcome;
 use tilolang_runtime::store::{ChangeNote, Mutation, Scalar, Store as _, Version};
@@ -1496,8 +1496,8 @@ struct WorkspacePort {
 impl tilolang_tilo::resources::Port for WorkspacePort {
     fn command(
         &self,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         let bytes = serde_json::to_vec(&command).map_err(|error| error.to_string())?;
         let reply = self.store.command(&self.app, &bytes)?;
         serde_json::from_slice(&reply).map_err(|error| error.to_string())

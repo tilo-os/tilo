@@ -7,7 +7,7 @@ use automerge::{AutoCommit, ObjId};
 #[cfg(feature = "model")]
 use collab_types::MemberId;
 #[cfg(feature = "model")]
-use collaboration::history::{UndoEntry, UndoLog};
+use collab_types::history::{UndoEntry, UndoLog};
 #[cfg(feature = "model")]
 use collaboration::state::{DocumentFrontier, WritingActors, changes_beyond};
 #[cfg(feature = "model")]

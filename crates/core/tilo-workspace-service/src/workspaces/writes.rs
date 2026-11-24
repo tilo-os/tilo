@@ -158,9 +158,9 @@ mod tests {
 
     use automerge::transaction::Transactable as _;
     use automerge::{ReadDoc as _, Value};
+    use collab_types::store::wire::Reply;
     use ed25519_dalek::SigningKey;
     use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
-    use tilo_resource_store::wire::Reply;
     use tilo_user_identity::DeviceCapabilities;
 
     use super::super::fixtures::{

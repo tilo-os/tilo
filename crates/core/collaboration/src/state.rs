@@ -96,7 +96,7 @@ impl DocumentFrontier {
     /// and the identity service signs a change for the action that names it.
     pub fn delta(&self, doc: &mut AutoCommit, own: &WritingActors) -> Vec<u8> {
         let actor = doc.get_actor().clone();
-        let device = tilo_resource_store::history::authors::DeviceActors::of(&actor);
+        let device = collab_types::history::authors::DeviceActors::of(&actor);
         let mut bytes = Vec::new();
         for change in doc.get_changes(&self.heads) {
             let mine = change.actor_id() == &actor

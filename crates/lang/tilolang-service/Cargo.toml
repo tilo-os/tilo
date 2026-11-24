@@ -19,7 +19,7 @@ serde_json.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 # The commands a workspace's store answers, which the service's port hands on.
-tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
+collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 tracing.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -31,11 +31,12 @@ tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 [dev-dependencies]
 tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
-collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
 # The one link grammar a resource's `share-link` renders, which the page reads back.
 tilo-reference = { version = "0.1.0", path = "../../core/reference" }
 tilo-test-env = { path = "../../../tools/test-env" }
+# The fixtures shared with tilolang-tilo stand up a workspace's store.
+tilo-resource-store = { path = "../../core/resource-store" }
 # The sample mail server Mail's seed stands on, taken in through the real mail origin.
 tilolang-mail = { path = "../../integrations/tilolang-mail", default-features = false }
 

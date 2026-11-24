@@ -36,7 +36,6 @@ ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = f
 # The collaboration host the real-socket tests stand up: it speaks the collaboration wire and keeps
 # each channel's record as the device's store does, answering the store's record commands.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab" }
-tilo-resource-store = { path = "../../core/resource-store" }
 tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "macros"] }
 # The workspace policy and the person's key the co-editing test signs its moderation with.
 tilo-action-policy = { path = "../../core/action-policy" }

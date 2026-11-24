@@ -10,6 +10,44 @@
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ObjType, ROOT};
+use tilo_actions::surface::{FieldType, Surface};
+
+/// The containers at the root of `surface`'s record that its top-level fields keep their items
+/// in, by field name: a collection or map in a map, a list or set in a list, a record of its own
+/// in a map: what [`structure`] makes.
+#[must_use]
+pub fn containers(surface: &Surface) -> Vec<(String, ObjType)> {
+    let mut containers: Vec<(String, ObjType)> = surface
+        .fields
+        .iter()
+        .filter(|field| !field.path.contains('.'))
+        .filter_map(|field| {
+            let container = match &field.ty {
+                FieldType::Collection(_) | FieldType::Map(_) => ObjType::Map,
+                FieldType::List(_) | FieldType::Set(_) => ObjType::List,
+                FieldType::Named(_) if field.stored == "record" => ObjType::Map,
+                _ => return None,
+            };
+            Some((field.path.clone(), container))
+        })
+        .collect();
+    containers.sort_by(|a, b| a.0.cmp(&b.0));
+    containers.dedup_by(|a, b| a.0 == b.0);
+    containers
+}
+
+/// The containers a record of `surface`'s kind founds with: its own record's ([`containers`]),
+/// as the store reads the kind's type from the surface. A surface naming its record by its label
+/// declares no type of its kind, and an enum of its kind is no record: either founds with none.
+#[must_use]
+pub fn of_kind(surface: &Surface) -> Vec<(String, ObjType)> {
+    let named = |name: &str| surface.types.iter().find(|ty| ty.name == name);
+    let own = match named(&surface.kind) {
+        Some(ty) => !ty.is_enum(),
+        None => named(&surface.label).is_none(),
+    };
+    if own { containers(surface) } else { Vec::new() }
+}
 
 /// The derived founding of the record `id` of `kind`, whose fields keep their items in the
 /// `containers` named at its root: `None` for a kind that keeps none.

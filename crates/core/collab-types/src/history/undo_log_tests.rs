@@ -3,9 +3,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use crate::MemberId;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT};
-use collab_types::MemberId;
 
 use super::{READ, UndoLog};
 

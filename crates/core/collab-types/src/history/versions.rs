@@ -4,7 +4,7 @@
 use automerge::Automerge;
 use serde::{Deserialize, Serialize};
 
-use crate::admit::Stamp;
+use crate::stamp::Stamp;
 
 /// What one change did to a resource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,7 +61,7 @@ pub struct Nested {
 /// resource's history then costs its own versions, not every change of the document it shares
 /// with a thousand others.
 #[derive(Default)]
-pub(crate) struct Touches {
+pub struct Touches {
     /// The heads of the document as read so far.
     heads: Vec<automerge::ChangeHash>,
     by_id: std::collections::HashMap<String, Vec<Version>>,
@@ -84,7 +84,7 @@ pub(crate) struct Touches {
 impl Touches {
     /// The versions of `id`, oldest first, in the document `doc_id` as it is now: the changes
     /// it took since the last read are read first.
-    pub(crate) fn of(&mut self, doc: &Automerge, doc_id: &str, id: &str) -> Vec<Version> {
+    pub fn of(&mut self, doc: &Automerge, doc_id: &str, id: &str) -> Vec<Version> {
         self.read(doc, doc_id);
         self.by_id.get(id).cloned().unwrap_or_default()
     }
@@ -92,7 +92,7 @@ impl Touches {
     /// The versions of the resource `parent` the changes of this document made, oldest
     /// first: each change that made a resource nested in it, or removed one of `removed` (the
     /// kinds and ids of those removed from it).
-    pub(crate) fn nested(
+    pub fn nested(
         &mut self,
         doc: &Automerge,
         doc_id: &str,
@@ -145,7 +145,7 @@ impl Touches {
     /// The first of [`Self::nested`], or its last with `last`, read without building the rest:
     /// a root's versions name every item each change put in it, and one end of its history is
     /// one step and the items of that step.
-    pub(crate) fn nested_end(
+    pub fn nested_end(
         &mut self,
         doc: &Automerge,
         doc_id: &str,
@@ -205,7 +205,7 @@ impl Touches {
     /// The resources of this document by their newest version, most recent first, each with
     /// that version's place in the order and its kind when a change named it, as last read
     /// ([`Self::read`]).
-    pub(crate) fn by_newest(&self) -> impl Iterator<Item = ((u64, u64), &str, Option<&str>)> {
+    pub fn by_newest(&self) -> impl Iterator<Item = ((u64, u64), &str, Option<&str>)> {
         self.by_newest.iter().map(|(std::cmp::Reverse(at), id)| {
             let kind = self.newest_of.get(id).and_then(|(_, kind)| kind.as_deref());
             (*at, id.as_str(), kind)
@@ -213,12 +213,12 @@ impl Touches {
     }
 
     /// The versions of `id` as last read, oldest first.
-    pub(crate) fn versions_of(&self, id: &str) -> Option<&Vec<Version>> {
+    pub fn versions_of(&self, id: &str) -> Option<&Vec<Version>> {
         self.by_id.get(id)
     }
 
     /// Read the changes the document took since the last read.
-    pub(crate) fn read(&mut self, doc: &Automerge, doc_id: &str) {
+    pub fn read(&mut self, doc: &Automerge, doc_id: &str) {
         let heads = doc.get_heads();
         if heads != self.heads {
             for change in doc.get_changes(&self.heads) {
@@ -226,7 +226,7 @@ impl Touches {
                     self.by_id.entry(id).or_default().push(version);
                     continue;
                 }
-                let Some((touched, _)) = crate::admit::touched(doc, doc_id, &change) else {
+                let Some((touched, _)) = crate::touch::touched(doc, doc_id, &change) else {
                     continue;
                 };
                 let step = self.steps.len();
@@ -289,7 +289,7 @@ impl Touches {
 
 /// The versions the changes of the document `doc_id` whose stamp `stamped` admits made, oldest
 /// first, each with the id of the resource it is a version of.
-pub(crate) fn stamped(
+pub fn stamped(
     doc: &Automerge,
     doc_id: &str,
     stamped: &dyn Fn(&Stamp) -> bool,
@@ -299,7 +299,7 @@ pub(crate) fn stamped(
         if !Stamp::of(&change).is_some_and(|stamp| stamped(&stamp)) {
             continue;
         }
-        let Some((touched, _)) = crate::admit::touched(doc, doc_id, &change) else {
+        let Some((touched, _)) = crate::touch::touched(doc, doc_id, &change) else {
             continue;
         };
         for (id, touch) in &touched.resources {
@@ -316,8 +316,8 @@ pub fn touched_by(
     doc: &Automerge,
     doc_id: &str,
     change: &automerge::Change,
-) -> Option<crate::admit::Touched> {
-    crate::admit::touched(doc, doc_id, change).map(|(touched, _)| touched)
+) -> Option<crate::touch::Touched> {
+    crate::touch::touched(doc, doc_id, change).map(|(touched, _)| touched)
 }
 
 /// The resource a checkpoint names, and the version it is of it: a change with no operations,
@@ -344,7 +344,7 @@ fn checkpoint(change: &automerge::Change) -> Option<(String, Version)> {
 }
 
 /// The version `change` is of a resource it touched as `touch` says.
-fn version(change: &automerge::Change, touch: &crate::admit::Touch) -> Version {
+fn version(change: &automerge::Change, touch: &crate::touch::Touch) -> Version {
     let kind = if touch.made {
         VersionKind::Made
     } else if touch.removed {

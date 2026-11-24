@@ -348,9 +348,9 @@ impl crate::apps::services::ResourceServices for KeptRecord {
     fn command(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
-        command: tilo_resource_store::wire::Command,
+        command: collab_types::store::wire::Command,
     ) -> crate::apps::services::ResourceAnswer {
-        use tilo_resource_store::wire::{Bytes, Command, Reply};
+        use collab_types::store::wire::{Bytes, Command, Reply};
         assert_eq!(
             context.record(),
             Some("meeting-notes"),
@@ -399,7 +399,7 @@ impl crate::apps::services::ResourceServices for KeptRecord {
     fn open(
         &self,
         _: &crate::apps::services::ResourceRequestContext,
-        _: tilo_resource_store::Query,
+        _: collab_types::store::Query,
     ) -> crate::apps::services::ResourcePages {
         Box::pin(std::future::ready(Err("the record holds no query".into())))
     }
@@ -477,8 +477,8 @@ impl Endpoint {
     /// Ask the device's one store `command` on this endpoint's channel.
     async fn record(
         &mut self,
-        command: &tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        command: &collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         let channel = self.channel.clone();
         let reply = self
             .call(Operation::Command {
@@ -524,9 +524,9 @@ fn titled(on: &mut automerge::AutoCommit, title: &str) -> Vec<u8> {
 }
 
 /// A change of the route's record of `changes`, whole.
-fn change(changes: Vec<u8>) -> tilo_resource_store::wire::Command {
-    tilo_resource_store::wire::Command::RecordChange {
-        changes: tilo_resource_store::wire::Bytes(changes),
+fn change(changes: Vec<u8>) -> collab_types::store::wire::Command {
+    collab_types::store::wire::Command::RecordChange {
+        changes: collab_types::store::wire::Bytes(changes),
         more: false,
         commit: None,
         record: None,
@@ -534,8 +534,8 @@ fn change(changes: Vec<u8>) -> tilo_resource_store::wire::Command {
 }
 
 /// A read of the route's record's changes past `after`, from its first page.
-fn changes_after(after: Vec<String>) -> tilo_resource_store::wire::Command {
-    tilo_resource_store::wire::Command::RecordChanges {
+fn changes_after(after: Vec<String>) -> collab_types::store::wire::Command {
+    collab_types::store::wire::Command::RecordChanges {
         after,
         from: 0,
         record: None,
@@ -544,7 +544,7 @@ fn changes_after(after: Vec<String>) -> tilo_resource_store::wire::Command {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_change_crosses_the_wire_to_the_other_windows_on_the_record() {
-    use tilo_resource_store::wire::Reply as Store;
+    use collab_types::store::wire::Reply as Store;
     tokio::task::LocalSet::new()
         .run_until(async {
             let (workspace, _, _) = Workspace::keeping_the_record(&[4, 5]);
@@ -596,7 +596,7 @@ async fn a_change_crosses_the_wire_to_the_other_windows_on_the_record() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_late_joiner_reads_the_record_from_the_device_as_its_reader_decides() {
-    use tilo_resource_store::wire::Reply as Store;
+    use collab_types::store::wire::Reply as Store;
     tokio::task::LocalSet::new()
         .run_until(async {
             let (workspace, decides, _) = Workspace::keeping_the_record(&[6, 8]);
@@ -655,7 +655,7 @@ async fn a_late_joiner_reads_the_record_from_the_device_as_its_reader_decides() 
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_change_sent_in_runs_lands_as_one_write() {
-    use tilo_resource_store::wire::{Bytes, Command, Reply as Store};
+    use collab_types::store::wire::{Bytes, Command, Reply as Store};
     tokio::task::LocalSet::new()
         .run_until(async {
             let (workspace, _, kept) = Workspace::keeping_the_record(&[4, 5]);
@@ -756,14 +756,14 @@ async fn a_record_opens_on_the_first_call_naming_it() {
 struct CountingStore(
     Mutex<Vec<(String, String)>>,
     /// The open queries, held so their apps keep them.
-    Mutex<Vec<tokio::sync::mpsc::UnboundedSender<tilo_resource_store::Page>>>,
+    Mutex<Vec<tokio::sync::mpsc::UnboundedSender<collab_types::store::Page>>>,
 );
 
 impl crate::apps::services::ResourceServices for CountingStore {
     fn command(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
-        command: tilo_resource_store::wire::Command,
+        command: collab_types::store::wire::Command,
     ) -> crate::apps::services::ResourceAnswer {
         let mut asked = self.0.lock().unwrap();
         asked.push((
@@ -771,10 +771,10 @@ impl crate::apps::services::ResourceServices for CountingStore {
             context.workspace_id().to_owned(),
         ));
         let answer = match command {
-            tilo_resource_store::wire::Command::Count { .. } => {
-                Ok(tilo_resource_store::wire::Reply::Count(asked.len()))
+            collab_types::store::wire::Command::Count { .. } => {
+                Ok(collab_types::store::wire::Reply::Count(asked.len()))
             }
-            _ => Ok(tilo_resource_store::wire::Reply::Written),
+            _ => Ok(collab_types::store::wire::Reply::Written),
         };
         drop(asked);
         Box::pin(std::future::ready(answer))
@@ -783,11 +783,11 @@ impl crate::apps::services::ResourceServices for CountingStore {
     fn open(
         &self,
         _: &crate::apps::services::ResourceRequestContext,
-        query: tilo_resource_store::Query,
+        query: collab_types::store::Query,
     ) -> crate::apps::services::ResourcePages {
         // A first page of none, then whatever the test sends to the query's kind.
         let (pages, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let _ = pages.send(tilo_resource_store::Page::default());
+        let _ = pages.send(collab_types::store::Page::default());
         drop(query);
         self.1.lock().unwrap().push(pages);
         Box::pin(std::future::ready(Ok(receiver)))
@@ -809,7 +809,7 @@ async fn an_apps_open_query_sends_its_pages_over_its_route() {
             let mut app = workspace.endpoint(9);
             let channel = app.channel.clone();
             let query =
-                serde_json::to_vec(&tilo_resource_store::Query::of("tasks.issue", 10)).unwrap();
+                serde_json::to_vec(&collab_types::store::Query::of("tasks.issue", 10)).unwrap();
             let subscription = app
                 .send(Operation::Subscribe {
                     record: channel.clone(),
@@ -832,10 +832,10 @@ async fn an_apps_open_query_sends_its_pages_over_its_route() {
                     panic!("a page of the query arrives");
                 };
                 assert_eq!(of, subscription);
-                let page: tilo_resource_store::Page = serde_json::from_slice(&page).unwrap();
+                let page: collab_types::store::Page = serde_json::from_slice(&page).unwrap();
                 assert!(page.resources.is_empty());
                 // The store's next page, as a change would send it.
-                let sent = store.1.lock().unwrap()[0].send(tilo_resource_store::Page::default());
+                let sent = store.1.lock().unwrap()[0].send(collab_types::store::Page::default());
                 sent.unwrap();
             }
         })
@@ -845,7 +845,7 @@ async fn an_apps_open_query_sends_its_pages_over_its_route() {
 #[tokio::test(flavor = "current_thread")]
 async fn an_app_reads_through_its_certified_route_and_its_writes_are_decided_by_the_device_reader()
 {
-    use tilo_resource_store::wire::Command;
+    use collab_types::store::wire::Command;
 
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -881,8 +881,8 @@ async fn an_app_reads_through_its_certified_route_and_its_writes_are_decided_by_
             let Reply::Answer(bytes) = answer else {
                 panic!("a command is answered: {answer:?}");
             };
-            let reply: tilo_resource_store::wire::Reply = serde_json::from_slice(&bytes).unwrap();
-            assert!(matches!(reply, tilo_resource_store::wire::Reply::Count(1)));
+            let reply: collab_types::store::wire::Reply = serde_json::from_slice(&bytes).unwrap();
+            assert!(matches!(reply, collab_types::store::wire::Reply::Count(1)));
 
             let write = Command::Remove {
                 kind: "notes.note".to_owned(),

@@ -3573,7 +3573,7 @@ struct ActiveMutation {
 }
 #[cfg(feature = "model")]
 struct ActionFrame {
-    history: collaboration::history::UndoLog,
+    history: collab_types::history::UndoLog,
     state: crate::resource::ResourceActions,
     mutation: Option<ActiveMutation>,
     operations: Vec<OperationSpan>,
@@ -3903,7 +3903,7 @@ impl Drop for BoundOperation<'_> {
 
 #[cfg(feature = "model")]
 struct RestoreFrame<'a> {
-    history: &'a mut collaboration::history::UndoLog,
+    history: &'a mut collab_types::history::UndoLog,
     state: &'a mut crate::resource::ResourceActions,
     frame: FrameHandle,
 }
@@ -4933,7 +4933,7 @@ impl CallbackBinding {
                 return Err(FINISH_EDIT.to_owned());
             }
             if frame.state.part().pending.as_ref().is_some_and(|pending| {
-                !::collaboration::history::same_frontier(&pending.before, &doc.base_heads())
+                !collab_types::history::same_frontier(&pending.before, &doc.base_heads())
             }) {
                 return Err(FINISH_EDIT.to_owned());
             }
@@ -5093,7 +5093,7 @@ pub(crate) fn run_record_history_edit(
     store
         .with_action_state(&checkout.id, |doc, history, state| {
             if state.part().pending.as_ref().is_some_and(|pending| {
-                !::collaboration::history::same_frontier(&pending.before, &doc.base_heads())
+                !collab_types::history::same_frontier(&pending.before, &doc.base_heads())
             }) {
                 return Err(FINISH_EDIT.to_owned());
             }
@@ -5191,7 +5191,7 @@ pub(crate) fn defers_remote(store: &ResourceStore, checkout: &DocumentCheckout) 
 fn defers_remote_state(doc: &AutoCommit, state: &crate::resource::ResourceActions) -> bool {
     doc.pending_ops() != 0
         || state.pending().is_some_and(|pending| {
-            !::collaboration::history::same_frontier(&pending.before, &doc.base_heads())
+            !collab_types::history::same_frontier(&pending.before, &doc.base_heads())
         })
 }
 

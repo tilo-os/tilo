@@ -21,9 +21,9 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use collab_types::store::{Cell, Filter, Order, Query, Resource};
 use tilo_resource_store::{
-    Cell, Change, Commit, CommitHook as _, Filter, Index, Order, Proposal, Query, Received,
-    Resource, Stamp, Store,
+    Change, Commit, CommitHook as _, Index, Proposal, Received, Stamp, Store,
 };
 
 const KIND: &str = "Issue";

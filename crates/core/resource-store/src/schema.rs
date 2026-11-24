@@ -90,7 +90,7 @@ pub struct Type {
     /// When one is live (a track playing, a timer running): filters over its indexed fields,
     /// every one of which holds of a live resource ([`crate::Store::live`]). `None` for a type
     /// that never is.
-    pub live: Option<Vec<crate::query::Filter>>,
+    pub live: Option<Vec<collab_types::store::Filter>>,
     /// The containers at the root of a resource's content that its fields keep their items in,
     /// by field: what its derived founding makes ([`collab_types::document::founding`]).
     pub founding: Vec<(String, automerge::ObjType)>,
@@ -221,7 +221,7 @@ impl Schema {
             .or_else(|| declared.first());
         // What the surface says of when its own record is live. A condition this store cannot
         // read (one a later version wrote) leaves the type never live here rather than wrong.
-        let live: Option<Vec<crate::query::Filter>> = surface
+        let live: Option<Vec<collab_types::store::Filter>> = surface
             .live
             .as_ref()
             .and_then(|live| serde_json::from_value(live.when.clone()).ok());
@@ -235,7 +235,7 @@ impl Schema {
                 if ty.name == own_name {
                     ty_of.nested.extend(held_records(surface));
                     ty_of.live.clone_from(&live);
-                    ty_of.founding = founding(surface);
+                    ty_of.founding = collab_types::document::founding::containers(surface);
                 }
                 ty_of
             })
@@ -406,29 +406,6 @@ fn own_type(surface: &Surface) -> NamedType {
             .collect(),
         cases: Vec::new(),
     }
-}
-
-/// The containers at the root of `surface`'s record that its top-level fields keep their items
-/// in, by field name: a collection or map in a map, a list or set in a list, a record of its own
-/// in a map.
-fn founding(surface: &Surface) -> Vec<(String, automerge::ObjType)> {
-    let mut containers: Vec<(String, automerge::ObjType)> = surface
-        .fields
-        .iter()
-        .filter(|field| !field.path.contains('.'))
-        .filter_map(|field| {
-            let container = match &field.ty {
-                FieldType::Collection(_) | FieldType::Map(_) => automerge::ObjType::Map,
-                FieldType::List(_) | FieldType::Set(_) => automerge::ObjType::List,
-                FieldType::Named(_) if field.stored == "record" => automerge::ObjType::Map,
-                _ => return None,
-            };
-            Some((field.path.clone(), container))
-        })
-        .collect();
-    containers.sort_by(|a, b| a.0.cmp(&b.0));
-    containers.dedup_by(|a, b| a.0 == b.0);
-    containers
 }
 
 /// The kinds and fields a verb of `surface` writes: everything `own`, the surface's type, holds

@@ -19,11 +19,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
+use collab_types::store::wire::{Command, Reply};
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use tilo_notify::CalendarAlarm;
-use tilo_resource_store::wire::{Command, Reply};
 
 use crate::{Caller, Notification};
 
@@ -617,7 +617,7 @@ fn command(store: &dyn tilo_service::WorkspaceStore, command: &Command) -> Resul
 
 /// Every deadline the workspace `store` answers holds, read from each app's record.
 fn held_entries(store: &dyn tilo_service::WorkspaceStore) -> Result<Vec<Entry>, String> {
-    let mut query = tilo_resource_store::Query::of(RECORD_KIND, MAX_ENTRIES);
+    let mut query = collab_types::store::Query::of(RECORD_KIND, MAX_ENTRIES);
     let mut held = Vec::new();
     loop {
         let Reply::Page(page) = command(store, &Command::Query(query.clone()))? else {
@@ -625,7 +625,7 @@ fn held_entries(store: &dyn tilo_service::WorkspaceStore) -> Result<Vec<Entry>, 
         };
         for (app, record) in page.resources {
             let entries = match record.fields.get(ENTRIES_FIELD) {
-                Some(tilo_resource_store::Cell::One(tilo_resource_store::Value::Text(json))) => {
+                Some(collab_types::store::Cell::One(collab_types::store::Value::Text(json))) => {
                     serde_json::from_str::<Vec<Entry>>(json)
                         .map_err(|error| format!("the deadlines of {app} do not read: {error}"))?
                 }
@@ -656,13 +656,13 @@ fn write_record(
     person: &str,
 ) -> Result<(), String> {
     let json = serde_json::to_string(entries).map_err(|error| error.to_string())?;
-    let resource = tilo_resource_store::Resource {
+    let resource = collab_types::store::Resource {
         readers: person.to_owned(),
         parent: None,
         order: None,
         fields: BTreeMap::from([(
             ENTRIES_FIELD.to_owned(),
-            tilo_resource_store::Cell::One(tilo_resource_store::Value::Text(json)),
+            collab_types::store::Cell::One(collab_types::store::Value::Text(json)),
         )]),
     };
     let stamp = tilo_resource_store::Stamp {

@@ -18,11 +18,11 @@ use std::path::{Path, PathBuf};
 
 use automerge::ChangeHash;
 use collab_types::caps::CapOverride;
+use collab_types::store::wire::{Bytes, Command, RecordPage, RecordPages, Reply};
 use tilo_device_identity::login::TERMINAL_RECORDS;
 use tilo_device_identity::login::daemon::DeviceActions;
 use tilo_environment::{DEFAULT_NAME, DEFAULT_RECORD, Environment, is_record_key};
 use tilo_resource::{AppNamed, Doc, Invoke, Replica, Resource};
-use tilo_resource_store::wire::{Bytes, Command, Reply};
 
 use crate::images::Images;
 use crate::workspace::Confinement;
@@ -183,47 +183,33 @@ impl Records {
             .iter()
             .map(|head| ChangeHash(*head).to_string())
             .collect();
-        'answer: loop {
-            let (mut changes, mut first, mut from) = (Vec::new(), None::<Vec<String>>, 0);
-            loop {
-                let reply = self.command(&Command::RecordChanges {
-                    record: Some(record.clone()),
-                    after: after.clone(),
-                    from,
-                })?;
-                let Reply::RecordChanges {
-                    changes: page,
-                    heads,
-                    next,
-                    pending,
-                } = reply
-                else {
-                    return Err(RecordError::Store(format!(
-                        "the workspace answered a read with {reply:?}"
-                    )));
-                };
-                if pending {
+        let (mut pages, mut from) = (RecordPages::default(), 0);
+        loop {
+            let reply = self.command(&Command::RecordChanges {
+                record: Some(record.clone()),
+                after: after.clone(),
+                from,
+            })?;
+            match pages.join(reply) {
+                Ok(RecordPage::From(next)) => from = next,
+                Ok(RecordPage::Pending) => {
                     return Err(RecordError::Store(
                         "it is still on its way to this device; try again in a moment".into(),
                     ));
                 }
-                match &first {
-                    Some(first) if *first != heads => continue 'answer,
-                    Some(_) => {}
-                    None => first = Some(heads),
+                Ok(RecordPage::Done { changes, heads }) => {
+                    let heads = heads
+                        .iter()
+                        .map(|head| head.parse::<ChangeHash>().map(|head| head.0))
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| RecordError::Store("the workspace named no change".into()))?;
+                    return Ok((changes, heads));
                 }
-                changes.extend(page.0);
-                if let Some(next) = next {
-                    from = next;
-                    continue;
+                Err(reply) => {
+                    return Err(RecordError::Store(format!(
+                        "the workspace answered a read with {reply:?}"
+                    )));
                 }
-                let heads = first
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|head| head.parse::<ChangeHash>().map(|head| head.0))
-                    .collect::<Result<_, _>>()
-                    .map_err(|_| RecordError::Store("the workspace named no change".into()))?;
-                return Ok((changes, heads));
             }
         }
     }
@@ -595,9 +581,9 @@ pub mod testing {
     use tilo_files::native::socket;
 
     use automerge::AutoCommit;
+    use collab_types::store::wire::{Bytes, Command, Reply};
     use serde_json::{Value, json};
     use tilo_automerge::ApplyIncoming as _;
-    use tilo_resource_store::wire::{Bytes, Command, Reply};
 
     /// What the daemon says of a command naming no workspace.
     pub const NO_WORKSPACE: &str = "Terminal's environments and shells are a workspace's, and \

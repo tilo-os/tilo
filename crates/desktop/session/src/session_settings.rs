@@ -13,11 +13,11 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use collab_types::store::wire::{Command, Reply};
 use serde_json::{Map, Value};
 use settings_sections::workspace::{Stores, WorkspaceSettings};
 use settings_store::placement::Holder;
 use tilo_peer_state::workspace_documents::DeviceDocuments as _;
-use tilo_resource_store::wire::{Command, Reply};
 use tilo_session_client::daemon_documents::{DaemonDocuments, DaemonShell};
 
 /// How long the settings go between looks at what another device or an agent changed.

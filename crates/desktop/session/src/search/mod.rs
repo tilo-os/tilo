@@ -2349,10 +2349,10 @@ mod tests {
                 &daemon,
                 STUDIO,
                 crate::references::REFERENCES_APP,
-                tilo_resource_store::wire::Command::Put {
+                collab_types::store::wire::Command::Put {
                     kind: reference::KIND.to_owned(),
                     id: note.id(),
-                    resource: tilo_resource_store::Resource {
+                    resource: collab_types::store::Resource {
                         readers: collab_types::EVERY_MEMBER.to_owned(),
                         parent: None,
                         order: None,

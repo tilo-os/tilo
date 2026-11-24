@@ -12,9 +12,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use collaboration::{CollabEvent, CollabRequest, CollabSendError, CollaborationManager, RouteSpec};
+use collab_types::store::wire::{Command, Reply};
+use collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
 use tilo_resource_store::Port;
-use tilo_resource_store::wire::{Command, Reply};
 
 use crate::wait::Wake;
 

@@ -5,8 +5,9 @@
 //! process holds no key and signs nothing; the broker decided the caller's read already.
 
 use automerge::{Change as AmChange, ChangeHash};
-use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
-use tilo_resource_store::{Resource, Stamp};
+use collab_types::store::Resource;
+use collab_types::store::wire::{Bytes, Command, Reply};
+use tilo_resource_store::Stamp;
 
 use super::super::{GovernedWorkspace, Workspaces};
 
@@ -137,17 +138,8 @@ impl Workspaces {
             .collect();
         drop(store);
         drop(governed);
-        let start = usize::try_from(from)
-            .ok()
-            .filter(|start| *start <= changes.len())
-            .ok_or("the page starts past the record's changes")?;
-        let end = changes.len().min(start.saturating_add(RECORD_PAGE_BYTES));
-        Ok(Reply::RecordChanges {
-            changes: Bytes(changes[start..end].to_vec()),
-            heads,
-            next: (end < changes.len()).then(|| u64::try_from(end).unwrap_or(u64::MAX)),
-            pending: false,
-        })
+        Reply::record_page(&changes, heads, from)
+            .ok_or_else(|| "the page starts past the record's changes".to_owned())
     }
 
     /// The ids of `app`'s records `workspace`'s store holds: each resource of a kind the app
@@ -496,11 +488,11 @@ mod tests {
     )]
 
     use automerge::transaction::{CommitOptions, Transactable as _};
+    use collab_types::store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
     use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
     use tilo_actions::remote::Caller;
     use tilo_actions::{Actor, MemberId};
     use tilo_resource_store::Stamp;
-    use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
 
     use crate::apps::services::ResourceRequestContext;
     use crate::workspaces::fixtures::{TestHost, governor_with, test_host_holding};

@@ -18,13 +18,14 @@ mod wakeups_tests;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use collab_types::store::wire::{Command, Edit};
+use collab_types::store::{Cell, Resource, Value as StoreValue};
 use tilo_action_policy::Actor as Who;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionTarget,
 };
-use tilo_resource_store::wire::{Command, Edit};
-use tilo_resource_store::{Cell, Resource, Stamp, Value as StoreValue};
+use tilo_resource_store::Stamp;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::apps::services::ResourceRequestContext;
 use tilo_workspace_service::apps::triggers::{Firing, Runner};

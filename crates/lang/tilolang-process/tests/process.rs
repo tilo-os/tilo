@@ -436,7 +436,7 @@ fn settle(host: &mut TilolangProcess, window: &mut Window) {
 }
 
 /// The store command a request carries, when it carries one.
-fn command_of(request: &CollabRequest) -> Option<tilo_resource_store::wire::Command> {
+fn command_of(request: &CollabRequest) -> Option<collab_types::store::wire::Command> {
     match request {
         CollabRequest::ResourceCommand { command, .. } => serde_json::from_slice(command).ok(),
         _ => None,
@@ -453,9 +453,9 @@ fn writes_sent(sent: &Sent) -> usize {
 
 /// The stamp of the write `command` carries, or of the last write in its batch.
 fn stamp_of(
-    command: &tilo_resource_store::wire::Command,
+    command: &collab_types::store::wire::Command,
 ) -> Option<&tilo_resource_store::admit::Stamp> {
-    use tilo_resource_store::wire::Command;
+    use collab_types::store::wire::Command;
     match command {
         Command::Put { stamp, .. }
         | Command::Remove { stamp, .. }
@@ -470,7 +470,7 @@ fn stamp_of(
 /// carries it.
 fn last_writer(sent: &Sent) -> Option<String> {
     sent.borrow().iter().rev().find_map(|request| {
-        let command = command_of(request).filter(tilo_resource_store::wire::Command::writes)?;
+        let command = command_of(request).filter(collab_types::store::wire::Command::writes)?;
         Some(stamp_of(&command)?.invoker.clone())
     })
 }
@@ -2532,7 +2532,7 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
                 "Today",
                 "the words its id makes, before the session named it"
             );
-            tilo_resource_store::history::authors::set_names_language("de-DE");
+            collab_types::history::authors::set_names_language("de-DE");
             inbox.borrow_mut().push_back(CollabEvent::Context {
                 members: Vec::new(),
                 permissions: Vec::new(),

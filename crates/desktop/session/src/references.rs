@@ -12,9 +12,9 @@
 
 use std::sync::Arc;
 
+use collab_types::store::wire::{Command, Reply};
 use tilo_desktop_search::providers::references::{Opens, Reference};
 use tilo_resource_store::reference::{self, Named};
-use tilo_resource_store::wire::{Command, Reply};
 
 use crate::platform::records::{Changes, Reading, Watch};
 
@@ -114,7 +114,7 @@ impl References {
             Command::Put {
                 kind: reference::KIND.to_owned(),
                 id: named.id(),
-                resource: tilo_resource_store::Resource {
+                resource: collab_types::store::Resource {
                     readers: collab_types::EVERY_MEMBER.to_owned(),
                     parent: None,
                     order: None,
@@ -196,7 +196,7 @@ fn store_at(daemon: tilo_session_client::daemon_documents::DaemonShell) -> Arc<S
 fn read_references(held: &[String], store: &Store) -> Vec<(String, Reference)> {
     let mut rows = Vec::new();
     for workspace in held {
-        let mut query = tilo_resource_store::Query::of(reference::KIND, 200);
+        let mut query = collab_types::store::Query::of(reference::KIND, 200);
         loop {
             let page = match store(workspace, REFERENCES_APP, &Command::Query(query.clone())) {
                 Ok(Reply::Page(page)) => page,
@@ -248,7 +248,7 @@ fn opens(named: Named, store: &Store) -> Option<Opens> {
         title: ["title", "name"]
             .iter()
             .find_map(|field| match record.scalar(field) {
-                tilo_resource_store::Value::Text(name) if !name.trim().is_empty() => Some(name),
+                collab_types::store::Value::Text(name) if !name.trim().is_empty() => Some(name),
                 _ => None,
             })
             .unwrap_or_else(|| named.kind.clone()),
@@ -263,9 +263,9 @@ fn opens(named: Named, store: &Store) -> Option<Opens> {
 /// the app's window writes it.
 #[cfg(test)]
 pub(crate) mod testing {
+    use collab_types::store::wire::{Command, Reply};
+    use collab_types::store::{Cell, Value};
     use tilo_resource_store::reference::Named;
-    use tilo_resource_store::wire::{Command, Reply};
-    use tilo_resource_store::{Cell, Value};
 
     use crate::daemon_fixture::TestDaemon;
 
@@ -310,7 +310,7 @@ pub(crate) mod testing {
             Command::Put {
                 kind: "notes.note".to_owned(),
                 id: "groceries".to_owned(),
-                resource: tilo_resource_store::Resource {
+                resource: collab_types::store::Resource {
                     readers: collab_types::EVERY_MEMBER.to_owned(),
                     parent: None,
                     order: None,
@@ -335,8 +335,8 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
+    use collab_types::store::wire::{Command, Reply};
     use tilo_resource_store::reference;
-    use tilo_resource_store::wire::{Command, Reply};
 
     use super::testing::{NOTES, command, groceries, stamp};
     use super::{Bring, REFERENCES_APP, References};
@@ -396,7 +396,7 @@ mod tests {
             Command::Put {
                 kind: reference::KIND.to_owned(),
                 id: elsewhere.id(),
-                resource: tilo_resource_store::Resource {
+                resource: collab_types::store::Resource {
                     readers: collab_types::EVERY_MEMBER.to_owned(),
                     parent: None,
                     order: None,
@@ -428,7 +428,7 @@ mod tests {
         };
         assert_eq!(
             kept.scalar("title"),
-            tilo_resource_store::Value::Text("Groceries".to_owned()),
+            collab_types::store::Value::Text("Groceries".to_owned()),
             "as it was"
         );
     }

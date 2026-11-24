@@ -37,7 +37,7 @@ use tilo_action_policy::{MemberAccess, WorkspacePolicy};
 use tilo_actions::remote::{CataloguePage, CatalogueQuery, CatalogueRow};
 use tilo_actions::{ActionAddress, ActionContext, ActionInvoker, ActionOutput, ApiError};
 #[cfg(any(feature = "apps", feature = "agents"))]
-use tilo_resource_store::wire::{Command, Reply};
+use collab_types::store::wire::{Command, Reply};
 
 use crate::workspaces::Workspaces;
 

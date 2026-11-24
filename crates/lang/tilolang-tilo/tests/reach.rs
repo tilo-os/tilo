@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::rc::Rc;
 
-use tilo_resource_store::wire::{Command, Reach, Reply};
+use collab_types::store::wire::{Command, Reach, Reply};
 use tilolang_runtime::{Actor, UiNode, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::resources::{LocalPort, Port, ResourceStore};

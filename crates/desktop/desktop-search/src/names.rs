@@ -118,7 +118,7 @@ pub fn humanized(app_id: &str) -> String {
     if id.trim().is_empty() {
         return app_id.to_owned();
     }
-    tilo_resource_store::history::authors::app_words(id)
+    collab_types::history::authors::app_words(id)
 }
 
 #[cfg(test)]

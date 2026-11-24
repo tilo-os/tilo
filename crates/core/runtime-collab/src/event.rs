@@ -11,8 +11,10 @@
 //! its own ownership type.
 
 use crate::route::{KeyAccessState, RouteSpec};
-use collab_types::DocumentMutation;
-use collab_types::presence::{Member, PresenceKey, PresencePayload};
+use collab_types::{
+    DocumentMutation,
+    presence::{Member, PresenceKey, PresencePayload},
+};
 
 /// The payloads only an SDK endpoint can hold, which it mints itself.
 pub trait EndpointOwnership: Clone + std::fmt::Debug {
@@ -161,7 +163,7 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     /// Retired with the results above.
     RetiredNearbyTransferChanged,
     /// The store's answer to the app's resource command `request_id`, in the store's encoding
-    /// (`tilo_resource_store::wire::Reply`).
+    /// (`collab_types::store::wire::Reply`).
     ResourceCommandResult {
         request_id: u64,
         result: Result<Vec<u8>, String>,

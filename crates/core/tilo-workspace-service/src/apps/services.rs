@@ -618,7 +618,7 @@ impl ResourceRequestContext {
 
 /// The store's answer to one resource command, once it has it.
 pub type ResourceAnswer = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<tilo_resource_store::wire::Reply, String>> + Send>,
+    Box<dyn std::future::Future<Output = Result<collab_types::store::wire::Reply, String>> + Send>,
 >;
 
 /// The device's one store, as apps write and read their resources in it: an app holds no store
@@ -629,7 +629,7 @@ pub trait ResourceServices: Send + Sync {
     fn command(
         &self,
         context: &ResourceRequestContext,
-        command: tilo_resource_store::wire::Command,
+        command: collab_types::store::wire::Command,
     ) -> ResourceAnswer;
 
     /// Holds `query` open for the app `context` names: its first page, then each page a change
@@ -637,7 +637,7 @@ pub trait ResourceServices: Send + Sync {
     fn open(
         &self,
         context: &ResourceRequestContext,
-        query: tilo_resource_store::Query,
+        query: collab_types::store::Query,
     ) -> ResourcePages;
 }
 
@@ -646,7 +646,7 @@ pub type ResourcePages = std::pin::Pin<
     Box<
         dyn std::future::Future<
                 Output = Result<
-                    tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>,
+                    tokio::sync::mpsc::UnboundedReceiver<collab_types::store::Page>,
                     String,
                 >,
             >,

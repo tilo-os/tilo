@@ -360,7 +360,7 @@ impl AppBrokerState {
     ) -> Result<serde_json::Value, ActionCallError> {
         let invalid = |reason: String| ActionCallError::InvalidRequest { reason };
         let decided = self.reading_caller(caller, &address.workspace)?;
-        let command: tilo_resource_store::wire::Command = serde_json::from_value(read)
+        let command: collab_types::store::wire::Command = serde_json::from_value(read)
             .map_err(|error| invalid(format!("not a store command: {error}")))?;
         // A reader reads: what it changes goes through the app's actions, decided there.
         if command.writes() {

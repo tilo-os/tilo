@@ -661,7 +661,7 @@ enum = "FromConnector"
 reason = "the connector's half of the same connection: length-prefixed JSON, by name, never kept. `Asks` named the accounts waiting on the person's yes for Mail's Ask bar, which no longer asks"
 
 [[break]]
-file = "crates/core/resource-store/src/wire.rs"
+file = "crates/core/collab-types/src/store/wire.rs"
 enum = "Command"
 reason = "a request an app instance sends the workspace service over its port and gets answered at once; no byte of it is kept. `Leases` was its last variant, so nothing after it moves, and it read the workspace's leases for a requirement the design no longer has"
 

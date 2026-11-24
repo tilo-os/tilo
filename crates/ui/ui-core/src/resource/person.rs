@@ -423,7 +423,7 @@ impl StoredResource {
 
     fn step(
         &self,
-        step: impl FnOnce(&mut AutoCommit, &mut collaboration::history::UndoLog, &MemberId) -> bool,
+        step: impl FnOnce(&mut AutoCommit, &mut collab_types::history::UndoLog, &MemberId) -> bool,
     ) -> bool {
         let stepped = self
             .store

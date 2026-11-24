@@ -1,11 +1,13 @@
 //! A store's reads and writes of its records as the workspace's record commands carry them
-//! (`tilo_resource_store::wire::Command::RecordChanges`, `RecordChange` and `Records`): what
+//! (`collab_types::store::wire::Command::RecordChanges`, `RecordChange` and `Records`): what
 //! every [`DocumentPort`] that reaches the workspace by sending it commands reads and writes
 //! with, whichever connection carries them. A record travels in pages and runs of at most
 //! [`RECORD_PAGE_BYTES`], as a window's own record does on its route.
 
 use automerge::ChangeHash;
-use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
+use collab_types::store::wire::{
+    Bytes, Command, RECORD_PAGE_BYTES, RecordPage, RecordPages, Reply,
+};
 
 use super::{DocumentAsk, DocumentPort, DocumentRead, Written};
 
@@ -26,36 +28,18 @@ pub fn read(ask: Ask<'_>, wanted: &DocumentAsk) -> Result<DocumentRead, String> 
         .iter()
         .map(|head| ChangeHash(*head).to_string())
         .collect();
-    let (changes, heads) = 'answer: loop {
-        let (mut changes, mut first, mut from) = (Vec::new(), None::<Vec<String>>, 0);
-        loop {
-            let reply = ask(Command::RecordChanges {
-                record: Some(wanted.id.clone()),
-                after: after.clone(),
-                from,
-            })?;
-            let Reply::RecordChanges {
-                changes: page,
-                heads,
-                next,
-                pending,
-            } = reply
-            else {
-                return Err(format!("the workspace answered a read with {reply:?}"));
-            };
-            if pending {
-                return Ok(DocumentRead::Pending);
-            }
-            match &first {
-                Some(first) if *first != heads => continue 'answer,
-                Some(_) => {}
-                None => first = Some(heads),
-            }
-            changes.extend(page.0);
-            match next {
-                Some(next) => from = next,
-                None => break 'answer (changes, first.unwrap_or_default()),
-            }
+    let (mut pages, mut from) = (RecordPages::default(), 0);
+    let (changes, heads) = loop {
+        let reply = ask(Command::RecordChanges {
+            record: Some(wanted.id.clone()),
+            after: after.clone(),
+            from,
+        })?;
+        match pages.join(reply) {
+            Ok(RecordPage::From(next)) => from = next,
+            Ok(RecordPage::Pending) => return Ok(DocumentRead::Pending),
+            Ok(RecordPage::Done { changes, heads }) => break (changes, heads),
+            Err(reply) => return Err(format!("the workspace answered a read with {reply:?}")),
         }
     };
     let heads = heads

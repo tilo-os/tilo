@@ -679,7 +679,7 @@ async fn done_as(workspaces: &Workspaces, workspace: &str, device: &DeviceCert, 
 #[cfg(feature = "apps")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_migration_runs_once_across_devices_and_once_more_after_a_takeover() {
-    use tilo_resource_store::wire::{Command, Reply, Turn as Answer};
+    use collab_types::store::wire::{Command, Reply, Turn as Answer};
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();

@@ -9,7 +9,7 @@ license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "The cryptographic identifiers and wire types of workspaces and documents."
+description = "The cryptographic identifiers and wire types of workspaces and documents, the history a document keeps, and what a process asks of the resource store."
 
 [package.metadata.cargo-machete]
 # Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
@@ -65,6 +65,7 @@ tilo-resource-plain = { version = "0.1.0", path = "../resource-plain" }
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 # A name shown in a reader's language: the one rule for which language a tag is.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true

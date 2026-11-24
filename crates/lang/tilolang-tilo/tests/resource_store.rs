@@ -33,8 +33,8 @@ impl Declared {
 impl tilo_resource_store::Port for Declared {
     fn command(
         &self,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         use tilo_resource_store::wire;
         let mut store = self.0.borrow_mut();
         if !command.writes() {
@@ -49,7 +49,7 @@ impl tilo_resource_store::Port for Declared {
                 .map_err(|refusal| format!("refused: {refusal:?}"))?;
         }
         wire::write(&mut store, command).map_err(|error| error.to_string())?;
-        Ok(wire::Reply::Written)
+        Ok(collab_types::store::wire::Reply::Written)
     }
 }
 
@@ -459,19 +459,19 @@ struct Counted {
 impl tilo_resource_store::Port for Counted {
     fn command(
         &self,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         match command {
-            tilo_resource_store::wire::Command::Get { .. } => {
+            collab_types::store::wire::Command::Get { .. } => {
                 self.gets.set(self.gets.get().saturating_add(1));
             }
-            tilo_resource_store::wire::Command::VersionEnd { .. } => {
+            collab_types::store::wire::Command::VersionEnd { .. } => {
                 self.ends.set(self.ends.get().saturating_add(1));
             }
             _ => {}
         }
         let reply = tilo_resource_store::Port::command(&self.port, command)?;
-        if let tilo_resource_store::wire::Reply::Page(page) = &reply {
+        if let collab_types::store::wire::Reply::Page(page) = &reply {
             self.rows
                 .set(self.rows.get().saturating_add(page.resources.len()));
         }

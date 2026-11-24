@@ -24,8 +24,7 @@ use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
 use collab_types::is_store_document;
 #[cfg(any(feature = "apps", feature = "agents"))]
 #[cfg(any(feature = "apps", feature = "agents"))]
-use tilo_resource_store::Schema;
-use tilo_resource_store::{Admit, Received, Refusal, Store};
+use tilo_resource_store::{Admit, Received, Refusal, Schema, Store};
 
 use super::{GovernedWorkspace, Workspaces};
 
@@ -186,10 +185,10 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
 /// is sent again, as the person it is read for may read it.
 #[cfg(feature = "apps")]
 struct Opened {
-    query: tilo_resource_store::Query,
+    query: collab_types::store::Query,
     reader: String,
-    pages: tokio::sync::mpsc::UnboundedSender<tilo_resource_store::Page>,
-    shown: Vec<(String, tilo_resource_store::Indexed)>,
+    pages: tokio::sync::mpsc::UnboundedSender<collab_types::store::Page>,
+    shown: Vec<(String, collab_types::store::Indexed)>,
 }
 
 impl Resources {
@@ -466,9 +465,9 @@ impl Resources {
     #[cfg(feature = "apps")]
     fn open_query(
         &mut self,
-        query: tilo_resource_store::Query,
+        query: collab_types::store::Query,
         reader: String,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page> {
+    ) -> tokio::sync::mpsc::UnboundedReceiver<collab_types::store::Page> {
         let (pages, receiver) = tokio::sync::mpsc::unbounded_channel();
         let (watch, page) = {
             let mut store = self.store_mut();
@@ -725,8 +724,8 @@ impl GovernedWorkspace {
     /// of each ([`Store::query`]): what this device itself holds, read for its own work.
     pub(super) fn store_found(
         &mut self,
-        mut query: tilo_resource_store::Query,
-    ) -> Vec<(String, tilo_resource_store::Indexed)> {
+        mut query: collab_types::store::Query,
+    ) -> Vec<(String, collab_types::store::Indexed)> {
         let mut found = Vec::new();
         {
             let store = self.resources.store_mut();
@@ -748,7 +747,7 @@ impl GovernedWorkspace {
         &mut self,
         kind: &str,
         id: &str,
-    ) -> Option<tilo_resource_store::Indexed> {
+    ) -> Option<collab_types::store::Indexed> {
         self.resources.store_mut().get(kind, id, &|_| true).cloned()
     }
 
@@ -1088,8 +1087,8 @@ impl Workspaces {
         &self,
         workspace: &str,
         person: &str,
-        command: &tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        command: &collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         if command.writes() {
             return Err("a read of the store writes nothing".to_owned());
         }
@@ -1100,7 +1099,7 @@ impl Workspaces {
         let mut governed = state.lock().await;
         let store = governed.store_with_surfaces(&self.inner.host.surfaces);
         let answer = tilo_resource_store::wire::read(&store, command, &may_read(person.to_owned()))
-            .unwrap_or(tilo_resource_store::wire::Reply::Written);
+            .unwrap_or(collab_types::store::wire::Reply::Written);
         drop(store);
         drop(governed);
         Ok(answer)
@@ -1156,8 +1155,8 @@ impl Workspaces {
     pub async fn open_resource_query(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
-        query: tilo_resource_store::Query,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>, String> {
+        query: collab_types::store::Query,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<collab_types::store::Page>, String> {
         self.open_resources(context, query).await
     }
 
@@ -1606,8 +1605,8 @@ impl Workspaces {
         &self,
         context: &crate::apps::services::ResourceRequestContext,
         workspace: &str,
-        command: &tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        command: &collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         let reader = person_reading(context.reader());
         self.resource_read(workspace, &reader, command).await
     }
@@ -1624,8 +1623,8 @@ impl Workspaces {
         &self,
         workspace: &str,
         reader: &str,
-        command: &tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        command: &collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         if let Some(answer) = self.read_record_now(workspace, reader, command) {
             return answer;
         }
@@ -1648,8 +1647,8 @@ impl Workspaces {
         &self,
         workspace: &str,
         reader: &str,
-        command: &tilo_resource_store::wire::Command,
-    ) -> Option<Result<tilo_resource_store::wire::Reply, String>> {
+        command: &collab_types::store::wire::Command,
+    ) -> Option<Result<collab_types::store::wire::Reply, String>> {
         self.inner
             .readings
             .held(workspace)
@@ -1685,10 +1684,11 @@ impl Workspaces {
 fn read_from(
     reading: &super::readings::Reading,
     reader: &str,
-    command: &tilo_resource_store::wire::Command,
-) -> Result<tilo_resource_store::wire::Reply, String> {
+    command: &collab_types::store::wire::Command,
+) -> Result<collab_types::store::wire::Reply, String> {
+    use collab_types::store::wire::{Command, Reply};
     use tilo_lock::MutexRecover as _;
-    use tilo_resource_store::wire::{Command, Reply, read};
+    use tilo_resource_store::wire::read;
     let may_read = may_read(reader.to_owned());
     let mut store = reading.store.lock_recover();
     let answer = match command {
@@ -1718,7 +1718,7 @@ fn read_from(
             store
                 .read_children_at(parent, change, &may_read)
                 .map_err(|error| error.to_string())?
-                .map(|children| tilo_resource_store::wire::PastChildren::page(children, *from)),
+                .map(|children| collab_types::store::wire::PastChildren::page(children, *from)),
         ),
         // A review reads the documents of what it restores, wherever they are kept.
         Command::ReviewRestore { resources, change } => {
@@ -1743,9 +1743,9 @@ impl Workspaces {
         governed: &mut GovernedWorkspace,
         device: &super::MemberDevice,
         app: &str,
-        command: &tilo_resource_store::wire::Command,
+        command: &collab_types::store::wire::Command,
     ) -> Result<bool, String> {
-        let tilo_resource_store::wire::Command::Put {
+        let collab_types::store::wire::Command::Put {
             kind,
             id,
             resource,
@@ -1797,10 +1797,10 @@ impl Workspaces {
     pub async fn resource_command(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
-        mut command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        mut command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         let workspace = context.workspace_id();
-        if let tilo_resource_store::wire::Command::Turn {
+        if let collab_types::store::wire::Command::Turn {
             address,
             inputs,
             answer,
@@ -1809,10 +1809,10 @@ impl Workspaces {
             return self
                 .once_turn(workspace, context.app_id(), address, inputs, answer)
                 .await
-                .map(tilo_resource_store::wire::Reply::Turn);
+                .map(collab_types::store::wire::Reply::Turn);
         }
-        if let tilo_resource_store::wire::Command::Reach { record } = &command {
-            return Ok(tilo_resource_store::wire::Reply::Reach(self.record_reach(
+        if let collab_types::store::wire::Command::Reach { record } = &command {
+            return Ok(collab_types::store::wire::Reply::Reach(self.record_reach(
                 workspace,
                 context.app_id(),
                 record,
@@ -1823,7 +1823,7 @@ impl Workspaces {
                 .record()
                 .ok_or("this route opened no record to change")
         };
-        if let tilo_resource_store::wire::Command::RecordChanges { after, from, .. } = &command {
+        if let collab_types::store::wire::Command::RecordChanges { after, from, .. } = &command {
             return self
                 .opened_record_changes(
                     workspace,
@@ -1833,11 +1833,11 @@ impl Workspaces {
                 )
                 .await;
         }
-        if matches!(command, tilo_resource_store::wire::Command::Records) {
+        if matches!(command, collab_types::store::wire::Command::Records) {
             return self
                 .app_records(workspace, context.app_id())
                 .await
-                .map(tilo_resource_store::wire::Reply::Ids);
+                .map(collab_types::store::wire::Reply::Ids);
         }
         // The write is this device's, not a member copy a plain service does not keep: the
         // same device `record_command` signs as.
@@ -1880,7 +1880,7 @@ impl Workspaces {
                 &mut unserved,
             );
         }
-        if let tilo_resource_store::wire::Command::RecordChange {
+        if let collab_types::store::wire::Command::RecordChange {
             changes,
             more,
             commit,
@@ -1927,7 +1927,7 @@ impl Workspaces {
                     error
                 });
             }
-            return Ok(tilo_resource_store::wire::Reply::Written);
+            return Ok(collab_types::store::wire::Reply::Written);
         }
         if !writing {
             return self.read_store(context, workspace, &command).await;
@@ -1967,8 +1967,8 @@ impl Workspaces {
         workspace: &str,
         app: &str,
         reader: &str,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, RecordFailure> {
+        command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, RecordFailure> {
         let device = self.signing_device();
         if !command.writes() {
             return self
@@ -2001,9 +2001,9 @@ impl Workspaces {
         workspace: &str,
         app: &str,
         record: &str,
-    ) -> tilo_resource_store::wire::Reach {
+    ) -> collab_types::store::wire::Reach {
         let Some(workspace) = tilo_server_protocol::WorkspaceId::parse(workspace) else {
-            return tilo_resource_store::wire::Reach::default();
+            return collab_types::store::wire::Reach::default();
         };
         let reach = self.inner.store.record_reach(workspace, app, record);
         let changes = |writes: Vec<tilo_peer_state::reach::OwnWrite>| {
@@ -2013,7 +2013,7 @@ impl Workspaces {
                 .map(hex::encode)
                 .collect()
         };
-        tilo_resource_store::wire::Reach {
+        collab_types::store::wire::Reach {
             pending: changes(reach.pending),
             refused: changes(reach.refused),
         }
@@ -2040,9 +2040,9 @@ impl Workspaces {
         address: String,
         inputs: serde_json::Value,
         answer: Option<serde_json::Value>,
-    ) -> Result<tilo_resource_store::wire::Turn, String> {
+    ) -> Result<collab_types::store::wire::Turn, String> {
         use crate::work::{NotTaken, Turn};
-        use tilo_resource_store::wire::Turn as Answer;
+        use collab_types::store::wire::Turn as Answer;
         if address.split_once('/').map(|(of, _)| of) != Some(app) {
             return Err(format!(
                 "{app} runs only its own actions once, not {address}"
@@ -2078,9 +2078,9 @@ impl Workspaces {
         mut governed: tokio::sync::OwnedMutexGuard<GovernedWorkspace>,
         device: std::sync::Arc<super::MemberDevice>,
         app: &str,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
-        use tilo_resource_store::wire::Reply;
+        command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
+        use collab_types::store::wire::Reply;
         // The store's types and verbs are declared before the first write, not by a read that
         // came before it: a store nobody read yet places a write by what its surfaces name.
         drop(self.store_of(&mut governed));
@@ -2114,8 +2114,8 @@ impl Workspaces {
         app: &str,
         writes: Vec<tilo_resource_store::Written>,
         action: Option<collab_types::WorkspaceCommit>,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
-        use tilo_resource_store::wire::Reply;
+    ) -> Result<collab_types::store::wire::Reply, String> {
+        use collab_types::store::wire::Reply;
         let app = app.to_owned();
         // The store takes these writes as they are kept, unless the action has others to come.
         let whole = action.is_none();
@@ -2305,9 +2305,9 @@ impl Workspaces {
         &self,
         workspace: &str,
         app: &str,
-        command: tilo_resource_store::wire::Command,
+        command: collab_types::store::wire::Command,
         serving: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+    ) -> Result<collab_types::store::wire::Reply, String> {
         self.own_kind_command(workspace, (app, None), command, serving)
             .await
     }
@@ -2322,9 +2322,9 @@ impl Workspaces {
         &self,
         workspace: &str,
         (app, kind): (&str, Option<&str>),
-        command: tilo_resource_store::wire::Command,
+        command: collab_types::store::wire::Command,
         serving: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+    ) -> Result<collab_types::store::wire::Reply, String> {
         let device = self.member_identity()?;
         let caller = tilo_actions::remote::Caller::authenticated(
             device.cert.user_public_key,
@@ -2336,11 +2336,11 @@ impl Workspaces {
                 .serving(serving)
                 .of_kind(kind.map(str::to_owned));
         // The device's own reads and writes of an app's record name the record they are of.
-        if let tilo_resource_store::wire::Command::RecordChanges {
+        if let collab_types::store::wire::Command::RecordChanges {
             record: Some(record),
             ..
         }
-        | tilo_resource_store::wire::Command::RecordChange {
+        | collab_types::store::wire::Command::RecordChange {
             record: Some(record),
             ..
         } = &command
@@ -2362,8 +2362,8 @@ impl Workspaces {
     pub(crate) async fn open_resources(
         &self,
         context: &crate::apps::services::ResourceRequestContext,
-        query: tilo_resource_store::Query,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<tilo_resource_store::Page>, String> {
+        query: collab_types::store::Query,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<collab_types::store::Page>, String> {
         let reader = person_reading(context.reader());
         let state = self
             .workspace(context.workspace_id())
@@ -2382,14 +2382,14 @@ impl Workspaces {
 /// caller is, `person`; and the device it was written on, `device` (its key in hex and what it
 /// calls itself), which is where a resource the write makes live is live.
 fn stamp_resource_invoker(
-    command: &mut tilo_resource_store::wire::Command,
+    command: &mut collab_types::store::wire::Command,
     device: &(String, String),
     served: &dyn Fn(&str) -> Option<tilo_actions::Acting>,
     otherwise: &tilo_actions::Acting,
     person: &str,
     unserved: &mut Vec<(String, String)>,
 ) {
-    use tilo_resource_store::wire::Command;
+    use collab_types::store::wire::Command;
     let (kind, stamp) = match command {
         Command::Put { kind, stamp, .. }
         | Command::Remove { kind, stamp, .. }

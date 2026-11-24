@@ -296,13 +296,13 @@ impl JoinedChannel {
         body: &[u8],
         on_behalf_of: &[u8],
         record_runs: &super::record_changes::RecordRuns,
-    ) -> Result<super::wire::Answer<tilo_resource_store::wire::Reply>, BrokerError> {
-        if body.len() > tilo_resource_store::wire::MAX_WIRE_BYTES {
+    ) -> Result<super::wire::Answer<collab_types::store::wire::Reply>, BrokerError> {
+        if body.len() > collab_types::store::wire::MAX_WIRE_BYTES {
             return Err(BrokerError::failed(
                 "a resource command exceeds the wire bound".into(),
             ));
         }
-        let command: tilo_resource_store::wire::Command = serde_json::from_slice(body)
+        let command: collab_types::store::wire::Command = serde_json::from_slice(body)
             .map_err(|error| BrokerError::failed(format!("no resource command: {error}")))?;
         let opened = self.route();
         let current = self
@@ -321,7 +321,7 @@ impl JoinedChannel {
         }
         let Some(command) = super::record_changes::gathered(record_runs, command) else {
             return Ok(Box::pin(std::future::ready(Ok(
-                tilo_resource_store::wire::Reply::Written,
+                collab_types::store::wire::Reply::Written,
             ))));
         };
         let service = self.state.services.resources.clone().ok_or_else(|| {
@@ -340,10 +340,10 @@ impl JoinedChannel {
     async fn store_command(
         &self,
         service: std::sync::Arc<dyn crate::apps::services::ResourceServices>,
-        command: tilo_resource_store::wire::Command,
+        command: collab_types::store::wire::Command,
         current: AdmittedJoinIdentity,
         route: CrdtRoute,
-    ) -> Result<tilo_resource_store::wire::Reply, BrokerError> {
+    ) -> Result<collab_types::store::wire::Reply, BrokerError> {
         if command.writes() {
             self.may_write(&current, &route).await?;
         }
@@ -363,7 +363,7 @@ impl JoinedChannel {
         }
         if matches!(
             command,
-            tilo_resource_store::wire::Command::RecordChange { .. }
+            collab_types::store::wire::Command::RecordChange { .. }
         ) {
             context = context.refusing_founding(self.founding_refusal(&route));
         }
@@ -383,12 +383,12 @@ impl JoinedChannel {
         &self,
         body: &[u8],
     ) -> Result<crate::apps::services::ResourcePages, BrokerError> {
-        if body.len() > tilo_resource_store::wire::MAX_WIRE_BYTES {
+        if body.len() > collab_types::store::wire::MAX_WIRE_BYTES {
             return Err(BrokerError::failed(
                 "a resource query exceeds the wire bound".into(),
             ));
         }
-        let query: tilo_resource_store::Query = serde_json::from_slice(body)
+        let query: collab_types::store::Query = serde_json::from_slice(body)
             .map_err(|error| BrokerError::failed(format!("no resource query: {error}")))?;
         let route = self.route();
         let current = self

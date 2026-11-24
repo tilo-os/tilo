@@ -6,9 +6,9 @@
 //! one read for each item that moved, however long the collection is. What left is read before
 //! the write reaches the store and what came after it.
 
+use collab_types::store::wire::{Command, Reply};
+use collab_types::store::{Filter, PARENT, Query, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use tilo_resource_store::wire::{Command, Reply};
-use tilo_resource_store::{Filter, PARENT, Query, Value};
 
 use tilolang_runtime::ids::{Actor, DocId};
 use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange, Splice};

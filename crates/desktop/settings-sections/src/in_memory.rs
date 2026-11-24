@@ -7,9 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 
+use collab_types::store::wire::{Command, Reply};
 use serde_json::Value;
-use tilo_resource_store::wire::{self, Command, Reply};
-use tilo_resource_store::{Schema, Store};
+use tilo_resource_store::{Schema, Store, wire};
 
 use crate::workspace::{Stores, WorkspaceSettings};
 use settings_store::workspace::surface_json;

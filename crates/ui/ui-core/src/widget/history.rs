@@ -10,7 +10,7 @@ use collab_types::ArtifactKind;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::{ActionContext, ActionFacet};
 
-pub use collaboration::history::authors::{
+pub use collab_types::history::authors::{
     AuthorRelation, HistoryAttribution, HistoryAuthor, hue_to_rgb,
 };
 pub use tilo_resource_plain::HistoryEntryId;

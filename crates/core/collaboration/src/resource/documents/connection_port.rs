@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{LazyLock, Mutex};
 
+use collab_types::store::wire::{Command, Reply};
 use tilo_lock::MutexRecover as _;
-use tilo_resource_store::wire::{Command, Reply};
 
 use crate::time::Duration;
 

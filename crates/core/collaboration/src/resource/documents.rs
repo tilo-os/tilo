@@ -180,7 +180,7 @@ struct Parked {
     kind: ResourceType,
     /// Belongs to the record: an undo entry is a pair of change hashes in *this* document's graph,
     /// so sharing a stack would revert the wrong history.
-    history: tilo_resource_store::history::UndoLog,
+    history: collab_types::history::UndoLog,
     action_state: ResourceActions,
     /// The heads the workspace holds of it, as far as this store knows: what its next write
     /// starts after. `None` while the workspace holds none of it.
@@ -198,7 +198,7 @@ struct Parked {
 
 impl Parked {
     fn new(mut doc: AutoCommit, kind: ResourceType, stored: Option<Vec<ChangeHash>>) -> Self {
-        let history = tilo_resource_store::history::UndoLog::new(&mut doc);
+        let history = collab_types::history::UndoLog::new(&mut doc);
         Self {
             doc: Some(doc),
             kind,
@@ -323,7 +323,7 @@ pub struct ResourceSet {
     /// window's routes publishing them.
     writes: bool,
     /// What this copy of each record writes as: the device's, and its own
-    /// ([`tilo_resource_store::history::authors::copy_writer`]).
+    /// ([`collab_types::history::authors::copy_writer`]).
     writer: automerge::ActorId,
 }
 
@@ -654,7 +654,7 @@ impl ResourceSet {
     pub fn document_and_history_mut(
         &mut self,
         id: &DocumentId,
-    ) -> Option<(&mut AutoCommit, &mut tilo_resource_store::history::UndoLog)> {
+    ) -> Option<(&mut AutoCommit, &mut collab_types::history::UndoLog)> {
         let parked = self.open.get_mut(id)?;
         if let Some(doc) = parked.doc.as_mut() {
             parked
@@ -937,7 +937,7 @@ impl ResourceOwners {
             self.device
                 .as_deref()
                 .map_or_else(automerge::ActorId::random, |device| {
-                    tilo_resource_store::history::authors::copy_writer(device.as_bytes())
+                    collab_types::history::authors::copy_writer(device.as_bytes())
                 }),
         ));
         self.owners
@@ -1215,11 +1215,7 @@ impl Drop for ResourceReservation {
 struct ResourceLoan<'a> {
     store: &'a ResourceStore,
     id: &'a DocumentId,
-    parts: Option<(
-        AutoCommit,
-        tilo_resource_store::history::UndoLog,
-        ResourceActions,
-    )>,
+    parts: Option<(AutoCommit, collab_types::history::UndoLog, ResourceActions)>,
 }
 
 impl Drop for ResourceLoan<'_> {
@@ -1835,7 +1831,7 @@ impl ResourceStore {
         id: &DocumentId,
         callback: impl FnOnce(
             &mut AutoCommit,
-            &mut tilo_resource_store::history::UndoLog,
+            &mut collab_types::history::UndoLog,
             &mut ResourceActions,
         ) -> R,
     ) -> Result<R, ResourceOpenError> {
@@ -1989,7 +1985,7 @@ impl ResourceStore {
             // and a record holding two changes under one writer and sequence reads whole nowhere.
             // So the copy writes under a writer of its own from here.
             let before = doc.get_actor().clone();
-            let device = tilo_resource_store::history::authors::DeviceActors::of(&before);
+            let device = collab_types::history::authors::DeviceActors::of(&before);
             {
                 let mut writers = action_state.writers.borrow_mut();
                 writers.note(before.clone());
@@ -2091,7 +2087,7 @@ impl ResourceStore {
     pub fn with_history<R>(
         &self,
         id: &DocumentId,
-        f: impl FnOnce(&mut AutoCommit, &mut tilo_resource_store::history::UndoLog) -> R,
+        f: impl FnOnce(&mut AutoCommit, &mut collab_types::history::UndoLog) -> R,
     ) -> Option<R> {
         let mut set = self.try_set_mut().ok()?;
         let (doc, history) = set.document_and_history_mut(id)?;
@@ -2102,7 +2098,7 @@ impl ResourceStore {
     pub fn read_history<R>(
         &self,
         id: &DocumentId,
-        read: impl FnOnce(&AutoCommit, &tilo_resource_store::history::UndoLog) -> R,
+        read: impl FnOnce(&AutoCommit, &collab_types::history::UndoLog) -> R,
     ) -> Option<R> {
         let set = self.0.try_borrow().ok()?;
         set.not_lent(id).ok()?;

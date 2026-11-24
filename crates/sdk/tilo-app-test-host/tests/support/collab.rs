@@ -14,10 +14,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use collab_types::store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply as Store};
 use runtime_collab::wire::{
     Call, ContextUpdate, Event, FRAMING, HostFrame, Operation, Reply, Service, Topic,
 };
-use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply as Store};
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
 use ui_core::collaboration::CollaborationManager;

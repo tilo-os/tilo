@@ -5,7 +5,7 @@
 //! the workspace's store and is committed as this device's signed write of every document it
 //! changed; a read asks the store, which answers only what the device's person may read.
 
-use tilo_resource_store::wire::Command;
+use collab_types::store::wire::Command;
 
 use super::services::{ResourceAnswer, ResourcePages, ResourceRequestContext, ResourceServices};
 use crate::workspaces::Workspaces;
@@ -65,7 +65,7 @@ impl ResourceServices for ServiceResources {
     fn open(
         &self,
         context: &ResourceRequestContext,
-        query: tilo_resource_store::Query,
+        query: collab_types::store::Query,
     ) -> ResourcePages {
         let context = context.clone();
         let workspaces = self.workspaces.clone();

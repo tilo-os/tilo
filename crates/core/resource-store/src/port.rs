@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use crate::wire::{self, Bytes, Command, RECORD_PAGE_BYTES, Reply};
+use collab_types::store::wire::{Bytes, Command, Reply, Turn};
+
+use crate::wire;
 use crate::{Schema, Store};
 
 /// The device's store, as an app asks it. Each command is answered before the next is sent.
@@ -226,25 +228,14 @@ impl LocalPort {
             .filter_map(|head| head.parse().ok())
             .filter(|head| doc.get_change_meta_by_hash(head).is_some())
             .collect();
-        let mut changes: Vec<u8> = doc
+        let changes: Vec<u8> = doc
             .get_changes(&known)
             .iter()
             .flat_map(|change| change.raw_bytes().iter().copied())
             .collect();
-        let start = usize::try_from(from)
-            .ok()
-            .filter(|start| *start <= changes.len())
-            .ok_or("the page starts past the record's changes")?;
-        let total = changes.len();
-        let end = total.min(start.saturating_add(RECORD_PAGE_BYTES));
-        changes.truncate(end);
-        changes.drain(..start);
-        Ok(Reply::RecordChanges {
-            changes: Bytes(changes),
-            heads: doc.get_heads().iter().map(ToString::to_string).collect(),
-            next: (end < total).then(|| u64::try_from(end).unwrap_or(u64::MAX)),
-            pending: false,
-        })
+        let heads = doc.get_heads().iter().map(ToString::to_string).collect();
+        Reply::record_page(&changes, heads, from)
+            .ok_or_else(|| "the page starts past the record's changes".to_owned())
     }
 
     /// Takes `changes`, a run of this app's own changes of its record `id`: kept until the last
@@ -291,9 +282,7 @@ impl Port for LocalPort {
     fn command(&self, command: Command) -> Result<Reply, String> {
         match command {
             // A workspace on this device alone: every turn is this device's.
-            Command::Turn { answer, .. } => Ok(Reply::Turn(
-                answer.map_or(wire::Turn::Take, wire::Turn::Done),
-            )),
+            Command::Turn { answer, .. } => Ok(Reply::Turn(answer.map_or(Turn::Take, Turn::Done))),
             Command::RecordChanges {
                 record: Some(id),
                 after,

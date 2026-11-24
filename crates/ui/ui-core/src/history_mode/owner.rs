@@ -489,9 +489,9 @@ impl HistoryRun<'_> {
         doc: &mut AutoCommit,
         history: &mut crate::state::UndoLog,
         action: &dyn tilo_actions::Action,
-        instance: Option<collaboration::history::InstanceId>,
+        instance: Option<collab_types::history::InstanceId>,
     ) -> Result<bool, String> {
-        use collaboration::history::same_frontier;
+        use collab_types::history::same_frontier;
         if doc.pending_ops() != 0 {
             return Err(FINISH_EDIT.to_owned());
         }

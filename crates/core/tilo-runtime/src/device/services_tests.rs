@@ -1288,7 +1288,7 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
             ShellCall::Resources {
                 workspace: workspace.clone(),
                 app: WRITER_APP.to_owned(),
-                // `tilo_resource_store::wire::Command::Count`, as the shell sends it.
+                // `collab_types::store::wire::Command::Count`, as the shell sends it.
                 command: json!({ "Count": { "kind": WRITER_KIND, "filters": [] } }).to_string(),
             },
         )

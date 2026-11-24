@@ -800,7 +800,7 @@ mod tests {
     /// records (the person's mentions, the activity), named by the document they read it as.
     #[test]
     fn a_record_the_daemon_takes_a_change_of_reaches_the_sessions_roles() {
-        use tilo_resource_store::wire::{Command, Edit};
+        use collab_types::store::wire::{Command, Edit};
 
         use crate::references::testing::{NOTES, command, groceries, stamp};
 

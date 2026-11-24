@@ -914,7 +914,7 @@ tilo_test_env::scenario! {
                 acting: tilo_actions::Acting::agent("scout", "ada")
                     .acting_for(tilo_actions::Acting::person("ada")),
                 on_behalf_of_name: Some("ada".into()),
-                writer: Some(fs_protocol::AttributedWriter::Agent {
+                writer: Some(collab_types::history::authors::AttributedWriter::Agent {
                     agent: "scout".into(),
                     session: None,
                 }),

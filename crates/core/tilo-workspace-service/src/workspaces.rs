@@ -2241,8 +2241,8 @@ impl Workspaces {
     pub async fn store_found(
         &self,
         workspace: &str,
-        query: tilo_resource_store::Query,
-    ) -> Result<Vec<(String, tilo_resource_store::Indexed)>, String> {
+        query: collab_types::store::Query,
+    ) -> Result<Vec<(String, collab_types::store::Indexed)>, String> {
         let state = self
             .workspace(workspace)
             .await
@@ -2258,7 +2258,7 @@ impl Workspaces {
         workspace: &str,
         kind: &str,
         id: &str,
-    ) -> Option<tilo_resource_store::Indexed> {
+    ) -> Option<collab_types::store::Indexed> {
         let state = self.workspace(workspace).await.ok()?;
         state.lock().await.store_held(kind, id)
     }

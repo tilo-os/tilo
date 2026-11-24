@@ -1249,7 +1249,7 @@ fn a_long_writer_name_never_reaches_a_rows_time() {
         entry.author = HistoryAuthor::new("Ada", 120.0, "deadbeef").with_attribution(
             crate::widget::history::HistoryAttribution::new(tilo_actions::Acting::person("ada"))
                 .written_by(
-                    fs_protocol::AttributedWriter::Program("editor".into()),
+                    collab_types::history::authors::AttributedWriter::Program("editor".into()),
                     long,
                 ),
         );

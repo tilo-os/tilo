@@ -594,7 +594,7 @@ impl RecordHandle {
         Ok(reply)
     }
 
-    /// Hold `query` open in the device's one store (`tilo_resource_store::Query`, in the store's
+    /// Hold `query` open in the device's one store (`collab_types::store::Query`, in the store's
     /// encoding): its first page, then each page a write here or a member's change makes
     /// different, until the stream is dropped.
     ///
@@ -1172,7 +1172,7 @@ impl InvocationStream {
 pub struct ResourcePages(Feed);
 
 impl ResourcePages {
-    /// The next page, in the store's encoding (`tilo_resource_store::Page`).
+    /// The next page, in the store's encoding (`collab_types::store::Page`).
     pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
         match self.0.event().await? {
             Event::Resources(page) => Ok(page),

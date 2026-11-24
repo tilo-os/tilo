@@ -11,10 +11,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
-use tilo_resource_store::{
-    Cell, Change, Commit, CommitHook as _, FieldKind, Filter, Index, Order, PARENT, Query, Schema,
-    Value,
-};
+use collab_types::store::{Cell, Filter, Order, PARENT, Query, Value};
+use tilo_resource_store::{Change, Commit, CommitHook as _, FieldKind, Index, Schema};
 
 const ISSUE: &str = "Issue";
 
@@ -70,7 +68,7 @@ fn anyone(_: &str) -> bool {
     true
 }
 
-fn query(index: &Index, query: &Query) -> tilo_resource_store::Page {
+fn query(index: &Index, query: &Query) -> collab_types::store::Page {
     index.query(query, &anyone)
 }
 
@@ -203,7 +201,8 @@ fn several_values_asked_together_find_their_holders_in_either_order() {
 
 #[test]
 fn a_listing_kept_across_writes_answers_as_one_read_after_them() {
-    use tilo_resource_store::{Absent, Change};
+    use collab_types::store::Absent;
+    use tilo_resource_store::Change;
     // The index keeps a listing of several filters over hundreds of resources once it is asked
     // for, and each write moves the
     // resources it changed in or out of it. One index is asked before the writes and keeps the
@@ -461,7 +460,7 @@ fn a_row_is_found_by_its_position_and_a_position_by_its_row() {
     reason = "a full sort of every issue, written out beside the index it checks"
 )]
 fn an_order_by_several_fields_and_any_filter_pages_as_a_full_sort_would() {
-    use tilo_resource_store::Absent;
+    use collab_types::store::Absent;
     // Points repeat, so the order's later fields decide; a third of the issues hold no points.
     let mut index = Index::new();
     let mut all: Vec<(String, Value, String, String)> = Vec::new();
@@ -529,8 +528,8 @@ fn an_order_by_several_fields_and_any_filter_pages_as_a_full_sort_would() {
             _ => Value::Null,
         };
         let first = |row: &(String, Value, String, String)| match &order.by {
-            tilo_resource_store::Sort::Field(name) => field(row, name),
-            tilo_resource_store::Sort::Position => {
+            collab_types::store::Sort::Field(name) => field(row, name),
+            collab_types::store::Sort::Position => {
                 Value::from(format!("{:04}", row.0[1..].parse::<u32>().unwrap()))
             }
         };
@@ -1024,8 +1023,9 @@ fn toml_like(value: serde_json::Value) -> tilo_actions::surface::Surface {
 
 mod store {
     use super::*;
+    use collab_types::store::Resource;
     use tilo_resource_store::store::DOCUMENT_LIMIT;
-    use tilo_resource_store::{Proposal, Received, Resource, Stamp, Store, StoreError, Written};
+    use tilo_resource_store::{Proposal, Received, Stamp, Store, StoreError, Written};
 
     const MEMBERS: &str = "*";
 
@@ -1404,7 +1404,8 @@ mod store {
     /// among them.
     #[test]
     fn the_newest_versions_under_a_document_are_read_most_recent_first_a_page_at_a_time() {
-        use tilo_resource_store::wire::{Command, Reply, read};
+        use collab_types::store::wire::{Command, Reply};
+        use tilo_resource_store::wire::read;
         let mut store = issues();
         let at = |invocation: &str, moment: u64| Stamp {
             invocation: invocation.to_owned(),
@@ -1713,8 +1714,9 @@ mod store {
     /// Two devices that made a note and its body as one action, then edited its text and counter
     /// at once: `i2` here, `i3` there, each with the other's change.
     fn edited_on_two_devices() -> (Store, Store) {
+        use collab_types::store::wire::{Command, Edit};
         use serde_json::json;
-        use tilo_resource_store::wire::{Command, Edit, write};
+        use tilo_resource_store::wire::write;
 
         let mut here = issues();
         let mut there = issues();
@@ -1786,7 +1788,8 @@ mod store {
 
     /// The content of the issue `a`, as everyone may read it; `None` for any other answer.
     fn content_of(store: &Store) -> Option<serde_json::Value> {
-        use tilo_resource_store::wire::{Command, Reply, read};
+        use collab_types::store::wire::{Command, Reply};
+        use tilo_resource_store::wire::read;
         match read(
             store,
             &Command::Content {
@@ -1802,7 +1805,8 @@ mod store {
 
     #[test]
     fn the_contents_of_several_resources_read_as_one_are_each_as_read_alone() {
-        use tilo_resource_store::wire::{Command, Reply, read};
+        use collab_types::store::wire::{Command, Reply};
+        use tilo_resource_store::wire::read;
         let (here, _) = edited_on_two_devices();
         let contents = |may_read: &dyn Fn(&str) -> bool| match read(
             &here,
@@ -1831,8 +1835,9 @@ mod store {
 
     #[test]
     fn a_page_of_some_fields_holds_those_of_each_resource_the_whole_page_holds() {
-        use tilo_resource_store::Query;
-        use tilo_resource_store::wire::{Command, Reply, read};
+        use collab_types::store::Query;
+        use collab_types::store::wire::{Command, Reply};
+        use tilo_resource_store::wire::read;
         let (here, _) = edited_on_two_devices();
         let page = |command: &Command| match read(&here, command, &|_| true) {
             Some(Reply::Page(page)) => page,
@@ -1862,9 +1867,10 @@ mod store {
 
     #[test]
     fn an_apps_commands_write_content_as_one_and_read_back_its_versions() {
+        use collab_types::history::{Version, VersionKind};
+        use collab_types::store::wire::{Command, Reply};
         use serde_json::json;
-        use tilo_resource_store::wire::{Command, Reply, read};
-        use tilo_resource_store::{Version, VersionKind};
+        use tilo_resource_store::wire::read;
 
         let all = |_: &str| true;
         let (here, there) = edited_on_two_devices();
@@ -1929,8 +1935,9 @@ mod store {
     /// another device's edit made at the same time is in neither.
     #[test]
     fn a_resource_reads_as_it_stood_before_and_after_a_change() {
+        use collab_types::store::wire::{Command, Reply};
         use serde_json::json;
-        use tilo_resource_store::wire::{Command, Reply, read};
+        use tilo_resource_store::wire::read;
 
         let all = |_: &str| true;
         let (here, _) = edited_on_two_devices();
@@ -1982,8 +1989,9 @@ mod store {
 
     #[test]
     fn an_apps_undo_takes_back_only_its_own_characters_and_redo_puts_them_back() {
+        use collab_types::store::wire::Command;
         use serde_json::json;
-        use tilo_resource_store::wire::{Command, write};
+        use tilo_resource_store::wire::write;
 
         let (mut here, _) = edited_on_two_devices();
         let content = content_of;
@@ -3197,7 +3205,7 @@ mod store {
         let put = |store: &mut Store, kind: &str, id: &str, resource: Resource| {
             tilo_resource_store::wire::write(
                 store,
-                tilo_resource_store::wire::Command::Put {
+                collab_types::store::wire::Command::Put {
                     kind: kind.to_owned(),
                     id: id.to_owned(),
                     resource,
@@ -3280,7 +3288,7 @@ mod store {
 /// record commands a workspace answers.
 mod records {
     use automerge::transaction::Transactable as _;
-    use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
+    use collab_types::store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
     use tilo_resource_store::{LocalPort, Port};
 
     /// The record `id`'s changes past `after`, joined from every page, and its heads.
@@ -3383,8 +3391,9 @@ mod records {
 /// The device's store as a window that runs with no workspace holds it: a port in this process.
 mod port {
     use super::*;
-    use tilo_resource_store::wire::{Command, Reply};
-    use tilo_resource_store::{LocalPort, Port, Resource, Stamp};
+    use collab_types::store::Resource;
+    use collab_types::store::wire::{Command, Reply};
+    use tilo_resource_store::{LocalPort, Port, Stamp};
 
     /// A directory no other test here reads, beside the process's own.
     fn dir(name: &str) -> std::path::PathBuf {

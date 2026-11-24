@@ -300,41 +300,6 @@ fn valid_file_name(name: &FileNameV1) -> bool {
         }
 }
 
-/// What wrote a change for a person: an agent, in one of its sessions or not, a Tilo app, or a
-/// third-party program. Presentation only: it grants nothing.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AttributedWriter {
-    /// An agent acting through Tilo actions, in one of its sessions or not.
-    Agent {
-        agent: String,
-        session: Option<String>,
-    },
-    /// A Tilo app acting as itself, by its id.
-    App(String),
-    /// A third-party desktop program, by its desktop id.
-    Program(String),
-}
-
-impl AttributedWriter {
-    #[must_use]
-    pub fn agent(agent: impl Into<String>) -> Self {
-        Self::Agent {
-            agent: agent.into(),
-            session: None,
-        }
-    }
-
-    /// One session of the agent `agent`.
-    #[must_use]
-    pub fn agent_session(agent: impl Into<String>, session: impl Into<String>) -> Self {
-        Self::Agent {
-            agent: agent.into(),
-            session: Some(session.into()),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum FileDocumentError {
     #[error("unsupported file properties version {0}")]

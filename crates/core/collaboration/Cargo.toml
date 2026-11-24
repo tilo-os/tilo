@@ -86,8 +86,6 @@ serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
-# The device store's commands an app reads and writes its records with.
-tilo-resource-store = { version = "0.1.0", path = "../resource-store" }
 
 [dev-dependencies]
 tempfile.workspace = true

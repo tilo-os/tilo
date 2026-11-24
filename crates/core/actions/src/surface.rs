@@ -104,7 +104,7 @@ pub struct Surface {
 /// which holds of a live resource.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LiveSurface {
-    /// The store's filters (`tilo_resource_store::Filter`) as JSON: this crate does not know the
+    /// The store's filters (`collab_types::store::Filter`) as JSON: this crate does not know the
     /// store's types, and the store reads them back when it declares the kind.
     pub when: serde_json::Value,
     /// The name of the view the shell shows a live resource with.

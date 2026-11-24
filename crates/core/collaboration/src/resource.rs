@@ -185,11 +185,7 @@ pub fn content_genesis(
 ) -> Result<(), ResourceOpenError> {
     let kind = checkout.kind.as_str();
     let containers = collab_types::app_surface::resource_surface(kind)
-        .and_then(|surface| {
-            tilo_resource_store::Schema::from_surface(&surface)
-                .get(kind)
-                .map(|ty| ty.founding.clone())
-        })
+        .map(|surface| collab_types::document::founding::of_kind(&surface))
         .unwrap_or_default();
     let mut made = AutoCommit::new().with_actor(doc.get_actor().clone());
     if let Some(founding) =

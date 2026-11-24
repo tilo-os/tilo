@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use crate::schema::{Expected, Field, FieldKind, Schema, Type, Verb, Writes};
-use crate::value::{Cell, Value};
+use collab_types::store::{Cell, Value};
 
 /// The kind of a reference.
 pub const KIND: &str = "tilo.reference";

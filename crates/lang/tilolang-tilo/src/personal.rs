@@ -19,10 +19,11 @@
 //! Every write keeps one slot or one mark, as an edit of that one entry, so two devices of the
 //! person that keep different entries at once both keep theirs.
 
+use collab_types::store::Resource;
+use collab_types::store::wire::{Command, Edit, Reply};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
-use tilo_resource_store::wire::{Command, Edit, Reply};
-use tilo_resource_store::{Resource, Stamp};
+use tilo_resource_store::Stamp;
 use tilolang_runtime::ids::{Actor, MemberId};
 use tilolang_runtime::seen::SeenMark;
 use tilolang_runtime::value::Value;

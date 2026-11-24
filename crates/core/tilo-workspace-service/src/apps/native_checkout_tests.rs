@@ -285,8 +285,8 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 })),
                 _hold: None,
             });
-            let change = serde_json::to_vec(&tilo_resource_store::wire::Command::RecordChange {
-                changes: tilo_resource_store::wire::Bytes(automerge::AutoCommit::new().save()),
+            let change = serde_json::to_vec(&collab_types::store::wire::Command::RecordChange {
+                changes: collab_types::store::wire::Bytes(automerge::AutoCommit::new().save()),
                 more: false,
                 commit: None,
                 record: None,

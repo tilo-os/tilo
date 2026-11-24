@@ -1,6 +1,6 @@
 //! A route's record as the device's store keeps it. The app holds its own copy of the record
 //! and nothing else: what it changes goes to the store as its own changes
-//! (`tilo_resource_store::wire::Command::RecordChange`), and when the record changes elsewhere
+//! (`collab_types::store::wire::Command::RecordChange`), and when the record changes elsewhere
 //! the store says so on the route's context feed and the app asks for the changes it lacks
 //! (`Command::RecordChanges`), once per notice. Both travel in pages of at most
 //! [`RECORD_PAGE_BYTES`]. The store reads, decides, seals and signs; the app holds no key for
@@ -10,8 +10,10 @@ use std::str::FromStr as _;
 
 use automerge::ChangeHash;
 use collab_types::DocumentMutation;
+use collab_types::store::wire::{
+    Bytes, Command, RECORD_PAGE_BYTES, RecordPage, RecordPages, Reply,
+};
 use tilo_lock::MutexRecover as _;
-use tilo_resource_store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply};
 
 use super::{BridgeState, CollabEvent, DocumentPublicationError, InboundBridge, RouteSpec};
 
@@ -144,41 +146,21 @@ async fn read(
     frontier: &Frontier,
 ) -> Result<Option<DocumentMutation>, Read> {
     let after = frontier.heads();
-    let (changes, heads) = 'answer: loop {
-        let mut changes = Vec::new();
-        let mut first: Option<Vec<String>> = None;
-        let mut from = 0;
-        loop {
-            let command = Command::RecordChanges {
-                record: None,
-                after: after.clone(),
-                from,
-            };
-            let reply = ask(channel, &command)
-                .await
-                .map_err(|error| Read::Failed(error.to_string()))?;
-            let Reply::RecordChanges {
-                changes: page,
-                heads,
-                next,
-                pending,
-            } = reply
-            else {
-                return Err(Read::Failed(format!("the store answered {reply:?}")));
-            };
-            if pending {
-                return Err(Read::Arriving);
-            }
-            match &first {
-                Some(first) if *first != heads => continue 'answer,
-                Some(_) => {}
-                None => first = Some(heads),
-            }
-            changes.extend(page.0);
-            match next {
-                Some(next) => from = next,
-                None => break 'answer (changes, first.unwrap_or_default()),
-            }
+    let (mut pages, mut from) = (RecordPages::default(), 0);
+    let (changes, heads) = loop {
+        let command = Command::RecordChanges {
+            record: None,
+            after: after.clone(),
+            from,
+        };
+        let reply = ask(channel, &command)
+            .await
+            .map_err(|error| Read::Failed(error.to_string()))?;
+        match pages.join(reply) {
+            Ok(RecordPage::From(next)) => from = next,
+            Ok(RecordPage::Pending) => return Err(Read::Arriving),
+            Ok(RecordPage::Done { changes, heads }) => break (changes, heads),
+            Err(reply) => return Err(Read::Failed(format!("the store answered {reply:?}"))),
         }
     };
     let heads = heads

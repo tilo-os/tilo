@@ -497,7 +497,7 @@ pub fn store_events(
         }
         let (Some(stamp), Some(touched)) = (
             collab_types::Stamp::of(&change),
-            tilo_resource_store::touches(committed, record, &change),
+            collab_types::touch::touches(committed, record, &change),
         ) else {
             continue;
         };
@@ -603,22 +603,22 @@ fn with_what_it_holds(
 /// The fields of one record as the store's index holds them, as an app's own reader reads them:
 /// a set as the list of its members.
 #[cfg(feature = "agents")]
-pub(super) fn fields_of(held: &tilo_resource_store::Indexed) -> Map<String, Value> {
-    fn value(value: &tilo_resource_store::Value) -> Value {
+pub(super) fn fields_of(held: &collab_types::store::Indexed) -> Map<String, Value> {
+    fn value(value: &collab_types::store::Value) -> Value {
         match value {
-            tilo_resource_store::Value::Null => Value::Null,
-            tilo_resource_store::Value::Bool(flag) => Value::Bool(*flag),
-            tilo_resource_store::Value::Int(number) => Value::from(*number),
-            tilo_resource_store::Value::Float(number) => Value::from(*number),
-            tilo_resource_store::Value::Text(text) => Value::String(text.clone()),
+            collab_types::store::Value::Null => Value::Null,
+            collab_types::store::Value::Bool(flag) => Value::Bool(*flag),
+            collab_types::store::Value::Int(number) => Value::from(*number),
+            collab_types::store::Value::Float(number) => Value::from(*number),
+            collab_types::store::Value::Text(text) => Value::String(text.clone()),
         }
     }
     held.fields
         .iter()
         .map(|(name, cell)| {
             let value = match cell {
-                tilo_resource_store::Cell::One(one) => value(one),
-                tilo_resource_store::Cell::Set(members) => {
+                collab_types::store::Cell::One(one) => value(one),
+                collab_types::store::Cell::Set(members) => {
                     Value::Array(members.iter().map(value).collect())
                 }
             };

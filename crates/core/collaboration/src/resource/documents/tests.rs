@@ -637,12 +637,10 @@ mod undo_without_the_toolkit {
         DocumentCheckout, DocumentId, MemoryWorkspace, ResourceOwners, ResourceSaveStatus,
         ResourceType,
     };
-    use tilo_resource_store::history::UndoLog;
-    use tilo_resource_store::history::authors::{
-        HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME,
-    };
-    use tilo_resource_store::history::steps::{self, Scope};
-    use tilo_resource_store::history::words::HistoryWords;
+    use collab_types::history::UndoLog;
+    use collab_types::history::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
+    use collab_types::history::steps::{self, Scope};
+    use collab_types::history::words::HistoryWords;
 
     const PACKAGE: &str = "dev.tilo.undo-without-toolkit";
     const WORKSPACE: &str = "33333333-3333-4333-8333-333333333333";

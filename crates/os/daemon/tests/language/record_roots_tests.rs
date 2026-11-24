@@ -1,10 +1,10 @@
 //! A built-in app's root, made on a device that writes its record with no window of the app
 //! open: the language runtime the daemon links makes it, through the package the build carries.
 
+use collab_types::store::{Cell, Resource, Value, wire::Command};
 use tilo_actions::MemberId;
 use tilo_actions::remote::CatalogueQuery;
-use tilo_resource_store::wire::Command;
-use tilo_resource_store::{Cell, Resource, Stamp, Value};
+use tilo_resource_store::Stamp;
 use tilo_workspace_service::workspaces::fixtures::declare_app;
 use tilolang_workspace::records::{built_in, member, with_tl_record};
 

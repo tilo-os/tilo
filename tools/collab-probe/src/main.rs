@@ -18,11 +18,11 @@
 //! another app's route is no valid change, so only a store that admits writes there would look at it. A package whose entrypoint is the probe and that the shell launches without
 //! arguments reads the instruction from `probe-routes` in its payload (`TILO_APP_MODULE`).
 
+use collab_types::store::wire::{Bytes, Command, Reply};
 use std::process::ExitCode;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
 use tilo_identity_client::BrokerSigningIdentity;
-use tilo_resource_store::wire::{Bytes, Command, Reply};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};

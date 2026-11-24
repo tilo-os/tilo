@@ -1,4 +1,4 @@
-//! One undo, as the platform's history verb (`tilo_resource_store::history::verbs`): `undo(v)`
+//! One undo, as the platform's history verb (`collab_types::history::verbs`): `undo(v)`
 //! on a step, which the tilolang host running the instance applies to the workspace's store.
 
 use super::Session;

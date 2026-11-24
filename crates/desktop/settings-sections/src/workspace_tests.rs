@@ -2,8 +2,8 @@
 
 use std::sync::atomic::AtomicUsize;
 
+use collab_types::store::wire::{Command, Edit};
 use serde_json::json;
-use tilo_resource_store::wire::{Command, Edit};
 
 use super::*;
 use crate::in_memory::Workspaces;

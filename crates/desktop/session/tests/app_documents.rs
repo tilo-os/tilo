@@ -275,7 +275,7 @@ fn a_record_the_service_answers_late_opens_without_waiting(
     let process = process(socket, launches, (app, kind), workspace);
     let mut answers: Vec<std::time::Duration> = (0..40)
         .map(|_| {
-            let command = serde_json::to_vec(&tilo_resource_store::wire::Command::RecordChanges {
+            let command = serde_json::to_vec(&collab_types::store::wire::Command::RecordChanges {
                 record: Some(note.id.route().to_owned()),
                 after: Vec::new(),
                 from: 0,

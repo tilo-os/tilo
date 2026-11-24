@@ -24,8 +24,8 @@ use super::{Device, Write, mount, write};
 /// trigger's filter does not match, by the fields the write left it with, fires nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_write_fires_the_shortcut_watching_it_once() {
-    use tilo_resource_store::wire::Command;
-    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+    use collab_types::store::{Cell, Resource, Value, wire::Command};
+    use tilo_resource_store::Stamp;
 
     let device = Device::start("Tasks", Some("so.tilo.tasks")).await;
     let (key, cert) = (&device.key, &device.cert);
@@ -90,8 +90,8 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
 /// fires it, while the runner runs as a device runs it, with no wait for a clock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
-    use tilo_resource_store::wire::Command;
-    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+    use collab_types::store::{Cell, Resource, Value, wire::Command};
+    use tilo_resource_store::Stamp;
 
     let device = Device::start("Tasks", Some("so.tilo.tasks")).await;
     let (key, cert) = (&device.key, &device.cert);
@@ -172,8 +172,9 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
     reason = "one scenario, end to end, reads as one test"
 )]
 async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
-    use tilo_resource_store::wire::{Command, Edit};
-    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+    use collab_types::store::wire::{Command, Edit};
+    use collab_types::store::{Cell, Resource, Value};
+    use tilo_resource_store::Stamp;
     use tilo_workspace_service::agents::triggered::{MayRead, Where, unreadable};
 
     const CHAT: &str = "so.tilo.chat";
@@ -1088,9 +1089,10 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
     reason = "one scenario, end to end, reads as one test"
 )]
 async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_agents_own_write() {
+    use collab_types::store::Resource;
+    use collab_types::store::wire::{Command, Edit};
     use tilo_action_policy::{Actor as Who, MemberId};
-    use tilo_resource_store::wire::{Command, Edit};
-    use tilo_resource_store::{Resource, Stamp};
+    use tilo_resource_store::Stamp;
     use tilo_workspace_service::agents::triggered::{self, CHAT, MESSAGE, MODERATION, Where};
 
     let device = Device::start("Moderation", Some(CHAT)).await;
@@ -1350,8 +1352,9 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     use tilo_action_policy::{Actor as Who, MemberId};
-    use tilo_resource_store::wire::{Command, Edit};
-    use tilo_resource_store::{Cell, Resource, Stamp, Value};
+    use collab_types::store::wire::{Command, Edit};
+    use collab_types::store::{Cell, Resource, Value};
+    use tilo_resource_store::Stamp;
     use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
     use tilo_workspace_service::agents::triggered::{self, Where};
 

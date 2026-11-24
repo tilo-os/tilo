@@ -769,12 +769,12 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    use collab_types::store::wire::{Command, Edit, Reply};
     use tilo_action_policy::Role;
     use tilo_broker_core::route::CrdtRoute;
     use tilo_compositor::OutputConfig;
     use tilo_desktop_model::{Strip, StripId};
     use tilo_desktop_policy::Window;
-    use tilo_resource_store::wire::{Command, Edit, Reply};
     use tilo_session_core::desktop::state::banners::Banners as _;
     use tilo_session_core::desktop::state::window_menu::move_to_workspace_id;
 
@@ -1010,7 +1010,7 @@ verbs = [
                     Command::Put {
                         kind: NOTE.to_owned(),
                         id: id.as_str().to_owned(),
-                        resource: tilo_resource_store::Resource {
+                        resource: collab_types::store::Resource {
                             readers: collab_types::EVERY_MEMBER.to_owned(),
                             parent: None,
                             order: None,

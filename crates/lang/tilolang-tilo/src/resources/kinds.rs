@@ -10,8 +10,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use collab_types::store::Value;
 use serde_json::Value as Json;
-use tilo_resource_store::Value;
 use tilolang_runtime::ids::{FieldId, TypeId};
 use tilolang_runtime::meta::{FieldKind, FieldMeta, Meta, Ty, TypeKey, TypeMeta, parse_ty};
 use tilolang_runtime::store::Scalar;

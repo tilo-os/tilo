@@ -3,8 +3,8 @@
 //! lists, finds, counts and reads none of it; a reader's other device has it all; and a record
 //! whose readers change moves to the new ones, but never back from every member.
 
-use tilo_resource_store::wire::{Command, Reply};
-use tilo_resource_store::{Filter, Query};
+use collab_types::store::wire::{Command, Reply};
+use collab_types::store::{Filter, Query};
 use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::Caller;

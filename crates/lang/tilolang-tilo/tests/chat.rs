@@ -2181,11 +2181,11 @@ fn a_report_is_read_by_its_reporter_and_the_moderators_and_no_other_member() {
     let reads =
         |replica: &Replica| match replica
             .doc
-            .command(tilo_resource_store::wire::Command::Get {
+            .command(collab_types::store::wire::Command::Get {
                 kind: tilolang_tilo::meta::MetaExt::kind_of(&meta, "Report"),
                 id: report.id_string(),
             }) {
-            tilo_resource_store::wire::Reply::Resource(found) => found.is_some(),
+            collab_types::store::wire::Reply::Resource(found) => found.is_some(),
             other => panic!("a read answered {other:?}"),
         };
     assert_eq!(

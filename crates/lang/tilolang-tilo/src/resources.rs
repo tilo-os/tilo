@@ -26,12 +26,13 @@ use std::cell::{Cell as StdCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
-use serde_json::Value as Json;
-pub use tilo_resource_store::wire::Turn;
-use tilo_resource_store::wire::{Command, Edit, Reply};
-use tilo_resource_store::{
-    Absent, Cell, Cursor, Filter, Indexed, Order, PARENT, Query, Resource, Stamp, Value,
+pub use collab_types::store::wire::Turn;
+use collab_types::store::wire::{Command, Edit, Reply};
+use collab_types::store::{
+    Absent, Cell, Cursor, Filter, Indexed, Order, PARENT, Query, Resource, Value,
 };
+use serde_json::Value as Json;
+use tilo_resource_store::Stamp;
 use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{Actor, DocId, FieldId, ItemId, RunId, TypeId};
 use tilolang_runtime::meta::{FieldKind, Meta, Ty};
@@ -3751,14 +3752,14 @@ impl ResourceStore {
     fn version_of(
         &self,
         at: &str,
-        held: tilo_resource_store::Version,
+        held: collab_types::history::Version,
         entry: Option<&TypeEntry>,
     ) -> Version {
         let stamp = held.stamp.unwrap_or_default();
         let kind = match held.kind {
-            tilo_resource_store::VersionKind::Made => VersionKind::Created,
-            tilo_resource_store::VersionKind::Changed => VersionKind::Changed,
-            tilo_resource_store::VersionKind::Removed => VersionKind::Removed,
+            collab_types::history::VersionKind::Made => VersionKind::Created,
+            collab_types::history::VersionKind::Changed => VersionKind::Changed,
+            collab_types::history::VersionKind::Removed => VersionKind::Removed,
         };
         let field_id = |name: &str| -> FieldId {
             entry
@@ -3982,7 +3983,7 @@ impl ResourceStore {
     fn versions_of(
         &self,
         at: &str,
-        held: Vec<tilo_resource_store::Version>,
+        held: Vec<collab_types::history::Version>,
         entry: Option<&TypeEntry>,
     ) -> Vec<Version> {
         let mut versions: Vec<Version> = Vec::with_capacity(held.len());
@@ -4004,7 +4005,7 @@ impl ResourceStore {
             .filter(|(undo, _)| !undos.iter().any(|(_, taken)| taken == undo))
             .map(|(_, taken)| (*taken).to_owned())
             .collect();
-        let held: Vec<tilo_resource_store::Version> = held
+        let held: Vec<collab_types::history::Version> = held
             .into_iter()
             .map(|mut held| {
                 if held.stamp.as_ref().is_some_and(|stamp| {
@@ -5701,7 +5702,7 @@ impl Store for ResourceStore {
         let Reply::Grouped(held) = reply else {
             return Err(backend("a read of a run's changes answered no versions"));
         };
-        let mut by_resource: BTreeMap<String, (String, Vec<tilo_resource_store::Version>)> =
+        let mut by_resource: BTreeMap<String, (String, Vec<collab_types::history::Version>)> =
             BTreeMap::new();
         for (kind, id, version) in held {
             by_resource

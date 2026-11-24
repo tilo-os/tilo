@@ -178,7 +178,8 @@ fn a_store_with_nothing_in_it_shows_every_group_filled() {
 fn the_gallery_s_surface_admits_the_root_its_host_creates() {
     use std::collections::BTreeMap;
 
-    use tilo_resource_store::{Cell, Proposal, Received, Resource, Schema, Stamp, Store};
+    use collab_types::store::{Cell, Resource};
+    use tilo_resource_store::{Proposal, Received, Schema, Stamp, Store};
 
     let (_, packages) = Replica::new("ada", Workspace::new(), &[(GALLERY, "")]);
     let meta = &packages[0].meta;
@@ -211,7 +212,7 @@ fn the_gallery_s_surface_admits_the_root_its_host_creates() {
                 order: None,
                 fields: BTreeMap::from([(
                     field,
-                    Cell::One(tilo_resource_store::Value::from("Gallery")),
+                    Cell::One(collab_types::store::Value::from("Gallery")),
                 )]),
             },
             &making,

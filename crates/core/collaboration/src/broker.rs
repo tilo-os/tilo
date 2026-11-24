@@ -108,7 +108,7 @@ static PUBLISHED_COMMAND_BRIDGE: std::sync::OnceLock<
 /// How long a store command waits for its workspace's answer.
 const RESOURCE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Send `command`, in the store's encoding (`tilo_resource_store::wire::Command`), to the
+/// Send `command`, in the store's encoding (`collab_types::store::wire::Command`), to the
 /// workspace's one store on the route `app_id` joined to workspace `cluster`, joining it first
 /// when it has not: the store commands a window's own record goes by, for the records the process
 /// holds beside its windows'. The answer comes on the returned receiver.

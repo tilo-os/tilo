@@ -172,8 +172,8 @@ fn change(key: &str, value: &str) -> Vec<u8> {
 /// The device's store's answer to `command` about the channel's record.
 async fn ask(
     channel: &runtime_collab::RecordHandle,
-    command: &tilo_resource_store::wire::Command,
-) -> tilo_resource_store::wire::Reply {
+    command: &collab_types::store::wire::Command,
+) -> collab_types::store::wire::Reply {
     let command = serde_json::to_vec(command).expect("a store command encodes");
     let reply = channel
         .resource_command(&command)
@@ -186,8 +186,8 @@ async fn ask(
 async fn write(channel: &runtime_collab::RecordHandle, key: &str, value: &str) {
     let reply = ask(
         channel,
-        &tilo_resource_store::wire::Command::RecordChange {
-            changes: tilo_resource_store::wire::Bytes(change(key, value)),
+        &collab_types::store::wire::Command::RecordChange {
+            changes: collab_types::store::wire::Bytes(change(key, value)),
             more: false,
             commit: None,
             record: None,
@@ -195,20 +195,20 @@ async fn write(channel: &runtime_collab::RecordHandle, key: &str, value: &str) {
     )
     .await;
     assert!(
-        matches!(reply, tilo_resource_store::wire::Reply::Written),
+        matches!(reply, collab_types::store::wire::Reply::Written),
         "the session takes the app's change: {reply:?}"
     );
 }
 
 /// The record as the store holds it, every change of it read.
 async fn record(channel: &runtime_collab::RecordHandle) -> automerge::AutoCommit {
-    let tilo_resource_store::wire::Reply::RecordChanges {
+    let collab_types::store::wire::Reply::RecordChanges {
         changes,
         next: None,
         ..
     } = ask(
         channel,
-        &tilo_resource_store::wire::Command::RecordChanges {
+        &collab_types::store::wire::Command::RecordChanges {
             after: Vec::new(),
             from: 0,
             record: None,

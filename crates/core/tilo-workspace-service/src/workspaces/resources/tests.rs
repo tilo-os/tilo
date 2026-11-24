@@ -8,7 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use tilo_resource_store::{Cell, Resource, Stamp, Value};
+use collab_types::store::{Cell, Resource, Value};
+use tilo_resource_store::Stamp;
 
 /// A workspace keeps its chain as parts of its store: 26 documents, a thousand
 /// resources each. The process is killed rather than stopped, so nothing is kept as it

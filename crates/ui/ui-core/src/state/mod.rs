@@ -9,12 +9,12 @@ use automerge::transaction::Transactable as _;
 #[cfg(feature = "model")]
 use automerge::{AutoCommit, ObjId};
 #[cfg(feature = "model")]
-pub(crate) use collaboration::history::HistoryMoment;
+pub(crate) use collab_types::history::HistoryMoment;
 #[cfg(feature = "model")]
-use collaboration::history::same_frontier;
-pub use collaboration::history::{UndoEntry, UndoLog};
+use collab_types::history::same_frontier;
+pub use collab_types::history::{UndoEntry, UndoLog};
 #[cfg(feature = "model")]
-pub use collaboration::history::{write_patches, write_revert_patches, write_revert_patches_where};
+pub use collab_types::history::{write_patches, write_revert_patches, write_revert_patches_where};
 
 #[cfg(feature = "model")]
 /// What the toolkit does with an app's [`State`] beyond keeping it: merge committed history it was

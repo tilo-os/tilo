@@ -10,12 +10,11 @@ use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use collab_types::document::ResourceType;
+use collab_types::store::wire::{Command, Reply, Turn};
 use collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, DocumentMutation, PeerTransport, RouteSpec,
 };
-use tilo_resource_store::Port;
-use tilo_resource_store::Store;
-use tilo_resource_store::wire::{self, Command, Reply};
+use tilo_resource_store::{Port, Store, wire};
 
 /// What a connection sent on its own route, in the order it sent it.
 pub type Sent = Rc<RefCell<Vec<CollabRequest>>>;
@@ -60,12 +59,12 @@ impl Workspace {
                 .find(|(done, _)| *done == key)
                 .map(|(_, answer)| answer.clone());
             return Ok(Reply::Turn(match (ran, answer) {
-                (Some(ran), _) => wire::Turn::Done(ran),
+                (Some(ran), _) => Turn::Done(ran),
                 (None, Some(answer)) => {
                     self.done.borrow_mut().push((key, answer.clone()));
-                    wire::Turn::Done(answer)
+                    Turn::Done(answer)
                 }
-                (None, None) => wire::Turn::Take,
+                (None, None) => Turn::Take,
             }));
         }
         match command {

@@ -4,7 +4,7 @@
 //! and carries every page over once, each with its title and its body.
 
 use super::*;
-use tilo_resource_store::wire::Command;
+use collab_types::store::wire::Command;
 
 /// Where a workspace keeps the native notebook's record. The native app's test harness wrote it
 /// under the package's own primary id instead (`@tilo:package-primary`).
@@ -61,7 +61,7 @@ fn native_notes_kept(workspace: &tilolang_process::testing::Workspace) {
             .command(
                 Command::RecordChange {
                     record: Some(id.as_str().to_owned()),
-                    changes: tilo_resource_store::wire::Bytes(doc.save()),
+                    changes: collab_types::store::wire::Bytes(doc.save()),
                     more: false,
                     commit: None,
                 },

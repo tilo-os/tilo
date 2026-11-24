@@ -1089,7 +1089,7 @@ impl FakeHost {
     /// store does: the changes past what the reader holds, or the writer's
     /// own changes taken.
     fn resource_command(&self, channel: &FakeChannel, body: &[u8]) -> FakeAnswer {
-        use tilo_resource_store::wire::{Command, Reply as Store};
+        use collab_types::store::wire::{Command, Reply as Store};
         let command: Command = match serde_json::from_slice(body) {
             Ok(command) => command,
             Err(error) => return answered(Err(error.to_string())),
@@ -1115,9 +1115,9 @@ impl FakeHost {
                 let from = usize::try_from(from).unwrap();
                 let end = changes
                     .len()
-                    .min(from + tilo_resource_store::wire::RECORD_PAGE_BYTES);
+                    .min(from + collab_types::store::wire::RECORD_PAGE_BYTES);
                 answered(store_answer(&Store::RecordChanges {
-                    changes: tilo_resource_store::wire::Bytes(changes[from..end].to_vec()),
+                    changes: collab_types::store::wire::Bytes(changes[from..end].to_vec()),
                     heads: record
                         .doc
                         .get_heads()
@@ -1173,7 +1173,7 @@ impl FakeHost {
             for change in &changes {
                 record.take(change)?;
             }
-            store_answer(&tilo_resource_store::wire::Reply::Written)
+            store_answer(&collab_types::store::wire::Reply::Written)
         };
         let Some(hold) = hold else {
             return answered(written());
@@ -1380,7 +1380,7 @@ impl FakeHost {
 }
 
 /// `reply` as the device's store sends it.
-fn store_answer(reply: &tilo_resource_store::wire::Reply) -> Result<Reply, String> {
+fn store_answer(reply: &collab_types::store::wire::Reply) -> Result<Reply, String> {
     serde_json::to_vec(reply)
         .map(Reply::Answer)
         .map_err(|error| error.to_string())
@@ -1595,7 +1595,7 @@ fn a_large_write_under_an_action_reaches_the_store_whole() {
         doc.commit();
     }
     let bytes = doc.save_after(&[]);
-    assert!(bytes.len() > tilo_resource_store::wire::RECORD_PAGE_BYTES);
+    assert!(bytes.len() > collab_types::store::wire::RECORD_PAGE_BYTES);
     let commit = collab_types::WorkspaceCommit {
         version: collab_types::COMMIT_VERSION,
         workspace: Uuid::new_v4(),

@@ -77,8 +77,9 @@ pub fn wire_author_line(author: &wire::Author) -> String {
 pub fn writer_badge(author: &HistoryAuthor) -> Option<String> {
     let attribution = author.attribution.as_ref()?;
     match attribution.writer.as_ref()? {
-        fs_protocol::AttributedWriter::Agent { .. } => None,
-        fs_protocol::AttributedWriter::App(_) | fs_protocol::AttributedWriter::Program(_) => {
+        collab_types::history::authors::AttributedWriter::Agent { .. } => None,
+        collab_types::history::authors::AttributedWriter::App(_)
+        | collab_types::history::authors::AttributedWriter::Program(_) => {
             attribution.writer_label.clone()
         }
     }
@@ -196,7 +197,7 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     let label = attribution.writer_label.as_deref().unwrap_or_default();
     let mut parts = Vec::with_capacity(6);
     match writer {
-        fs_protocol::AttributedWriter::Agent { .. } => {
+        collab_types::history::authors::AttributedWriter::Agent { .. } => {
             parts.push(crate::i18n::widget_format("history-writer-agent", &[]));
             // The agent itself when it is the author, then the session's own title.
             if author.relation == AuthorRelation::Software {
@@ -206,13 +207,13 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
                 parts.push(format!("‘{label}’"));
             }
         }
-        fs_protocol::AttributedWriter::App(_) => {
+        collab_types::history::authors::AttributedWriter::App(_) => {
             parts.push(crate::i18n::widget_format("history-writer-app", &[]));
             if !label.trim().is_empty() {
                 parts.push(label.to_owned());
             }
         }
-        fs_protocol::AttributedWriter::Program(_) => {
+        collab_types::history::authors::AttributedWriter::Program(_) => {
             parts.push(crate::i18n::widget_format("history-writer-program", &[]));
             if !label.trim().is_empty() {
                 parts.push(label.to_owned());
@@ -270,13 +271,13 @@ fn actor_line(name: &str, for_person: Option<&str>, is_reader: bool, task: Optio
 /// verbs below the toolkit (`steps::undo`) speak in for an app.
 pub struct ThreadWords;
 
-impl collaboration::history::authors::ResolveAuthor for ThreadWords {
+impl collab_types::history::authors::ResolveAuthor for ThreadWords {
     fn resolve(&self, actor_hex: &str) -> crate::widget::history::HistoryAuthor {
         super::AuthorDirectory::default().resolve(actor_hex)
     }
 }
 
-impl collaboration::history::words::HistoryWords for ThreadWords {
+impl collab_types::history::words::HistoryWords for ThreadWords {
     fn sentence(&self, entry: &ActionContext) -> String {
         sentence(entry)
     }
@@ -285,7 +286,7 @@ impl collaboration::history::words::HistoryWords for ThreadWords {
 /// What a history row says about one change: what it did, else what its
 /// actor said they were doing. `None` when the entry says neither.
 pub fn step_summary(entry: &ActionContext) -> Option<String> {
-    collaboration::history::verbs::step_summary(entry, &ThreadWords)
+    collab_types::history::verbs::step_summary(entry, &ThreadWords)
 }
 
 /// The one thing a step acted on, apart from what it did, when its sentence says the two as

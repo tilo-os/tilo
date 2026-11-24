@@ -14,6 +14,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use collab_types::store::{Cell, Query, Value, wire::Command};
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_actions::remote::{
@@ -23,8 +24,7 @@ use tilo_actions::remote::{
 };
 use tilo_agent_session::model::PlanTurns;
 use tilo_resource::Id;
-use tilo_resource_store::wire::Command;
-use tilo_resource_store::{Cell, Query, Stamp, Value};
+use tilo_resource_store::Stamp;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
@@ -627,7 +627,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
             .resource_command(&context, Command::Query(Query::of(MESSAGE, 50)))
             .await
             .unwrap();
-        let tilo_resource_store::wire::Reply::Page(page) = page else {
+        let collab_types::store::wire::Reply::Page(page) = page else {
             panic!("a query answers a page: {page:?}");
         };
         if let Some(reply) = page
@@ -658,7 +658,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
         )
         .await
         .unwrap();
-    let tilo_resource_store::wire::Reply::Versions(versions) = versions else {
+    let collab_types::store::wire::Reply::Versions(versions) = versions else {
         panic!("the reply has a history: {versions:?}");
     };
     let made = versions

@@ -24,7 +24,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, PatchAction, ReadDoc, Value};
 
 use crate::widget::history::HistoryEntryId;
-pub use collaboration::history::{DESCRIPTIONS_KEY, is_description_marker};
+pub use collab_types::history::{DESCRIPTIONS_KEY, is_description_marker};
 
 /// A description is one short sentence; past this it is a paragraph that
 /// no row has workspace for.

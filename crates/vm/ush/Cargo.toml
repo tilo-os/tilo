@@ -57,9 +57,6 @@ tilo-resource = { path = "../../core/tilo-resource" }
 # What a `write` or `append` names by reference is kept in Tilo's content
 # store, in a directory of the environment's own.
 tilo-content = { path = "../../core/content" }
-# The record is one of Terminal's documents in its workspace's one store, read and written
-# with the store's commands, which the session carries out.
-tilo-resource-store = { path = "../../core/resource-store" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 # Images are tapp packages the package store materialises read-only.

@@ -14,11 +14,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use collab_types::store::wire::{Command, Reply};
+use collab_types::store::{Cell, Query, Resource, Value};
 use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
-use tilo_resource_store::wire::{Command, Reply};
-use tilo_resource_store::{Cell, Query, Resource, Stamp, Store, Value};
+use tilo_resource_store::{Stamp, Store};
 use tilo_workspace_service::workspaces::fixtures::ContentKeys;
 
 use tilo_actions::remote::CatalogueQuery;
@@ -963,7 +964,7 @@ async fn an_open_query_is_sent_each_page_a_write_makes_different() {
             ..Stamp::default()
         },
     };
-    let titles = |page: tilo_resource_store::Page| -> Vec<Value> {
+    let titles = |page: collab_types::store::Page| -> Vec<Value> {
         page.resources
             .iter()
             .map(|(_, held)| held.scalar("title"))

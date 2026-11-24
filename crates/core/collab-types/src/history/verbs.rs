@@ -1179,10 +1179,10 @@ fn recorded(context: &tilo_actions::ActionContext, out: &mut serde_json::Map<Str
         }
         if let (Some(name), Some(fields)) = (&invoker.name, actor.as_object_mut()) {
             let hue = invoker.acting.member_id().map_or_else(
-                || collab_types::presence::PresenceHue::of_agent(name),
-                collab_types::presence::PresenceHue::of_member,
+                || crate::presence::PresenceHue::of_agent(name),
+                crate::presence::PresenceHue::of_member,
             );
-            let (red, green, blue) = collab_types::presence::identity_rgb(hue);
+            let (red, green, blue) = crate::presence::identity_rgb(hue);
             fields.insert("name".into(), name.clone().into());
             fields.insert(
                 "colour".into(),
@@ -1315,7 +1315,7 @@ fn entry(
 fn stamped_verb(doc: &AutoCommit, version: &Version) -> Option<String> {
     let committed = doc.committed_document();
     let change = committed.get_change_by_hash(&version.hash)?;
-    let stamp = collab_types::Stamp::of(&change)?;
+    let stamp = crate::Stamp::of(&change)?;
     (!stamp.verb.is_empty()).then_some(stamp.verb)
 }
 
@@ -1332,7 +1332,7 @@ fn happened(
     use tilo_actions::remote::What;
     let committed = doc.committed_document();
     let change = committed.get_change_by_hash(&version.hash)?;
-    let touched = crate::admit::touches(committed, doc_id, &change)?;
+    let touched = crate::touch::touches(committed, doc_id, &change)?;
     let made = touched.resources.iter().find(|(_, touch)| touch.made);
     let removed = touched.resources.iter().find(|(_, touch)| touch.removed);
     let what = if made.is_some() {

@@ -7,13 +7,13 @@ mod session_tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use collab_types::store::wire::{Command, Reply};
     use serde_json::{Map, Value, json};
     use tilo_actions::remote::{
         ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
         InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, ResourceReads,
     };
     use tilo_actions::{ActionAddress, ActionInvoker, ActionOutput};
-    use tilo_resource_store::wire::{Command, Reply};
     use tilo_server_protocol::WorkspaceId;
     use tilo_workspace_service::agents::task_work::{
         Task, TaskWork, Work, task, task_id, with_place,

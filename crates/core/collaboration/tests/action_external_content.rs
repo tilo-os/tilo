@@ -12,6 +12,9 @@
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::history::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
+use collab_types::history::verbs::step_summary;
+use collab_types::history::words::HistoryWords;
 use collaboration::document_content::{ContentLink, DocumentContent};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
@@ -19,9 +22,6 @@ use tilo_actions::{
     MissingContent, Verified, dispatch_with_context, entry_of, verify_change,
 };
 use tilo_content::ContentStore;
-use tilo_resource_store::history::authors::{HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME};
-use tilo_resource_store::history::verbs::step_summary;
-use tilo_resource_store::history::words::HistoryWords;
 use tilo_rt::wake::WakeScope;
 
 const APP: &str = "so.tilo.action-external-content-test";

@@ -24,13 +24,13 @@ impl Workspace {
 
     /// Write `json` as the record of `app`'s deadlines, as another device of the person wrote it.
     fn hold(&self, app: &str, json: &str) {
-        let resource = tilo_resource_store::Resource {
+        let resource = collab_types::store::Resource {
             readers: PERSON.into(),
             fields: BTreeMap::from([(
                 ENTRIES_FIELD.to_owned(),
-                tilo_resource_store::Cell::One(json.into()),
+                collab_types::store::Cell::One(json.into()),
             )]),
-            ..tilo_resource_store::Resource::default()
+            ..collab_types::store::Resource::default()
         };
         tilo_resource_store::wire::write(
             &mut self.store.borrow_mut(),

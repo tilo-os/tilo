@@ -870,7 +870,7 @@ async fn resources(
     app: &str,
     command: &str,
 ) -> Result<String, String> {
-    let command: tilo_resource_store::wire::Command = serde_json::from_str(command)
+    let command: collab_types::store::wire::Command = serde_json::from_str(command)
         .map_err(|error| format!("the resource command does not read: {error}"))?;
     let serving = invokers(&command);
     let reply = workspaces
@@ -882,9 +882,9 @@ async fn resources(
 /// The invocations `command`'s steps were stamped as serving, with who invoked each and how, as
 /// the session recorded it.
 fn invokers(
-    command: &tilo_resource_store::wire::Command,
+    command: &collab_types::store::wire::Command,
 ) -> Vec<(tilo_actions::InvocationId, tilo_actions::Acting)> {
-    use tilo_resource_store::wire::Command;
+    use collab_types::store::wire::Command;
     let stamp = match command {
         Command::Put { stamp, .. }
         | Command::Remove { stamp, .. }

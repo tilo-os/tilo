@@ -1294,7 +1294,7 @@ mod tests {
     #[test]
     fn a_record_the_store_keeps_is_read_for_its_history_as_the_store_founded_it() {
         use crate::references::testing::{NOTES, command, groceries, stamp};
-        use tilo_resource_store::wire::{Command, Edit};
+        use collab_types::store::wire::{Command, Edit};
 
         const KITCHEN: &str = "6d1c1f36-0000-4000-8000-0000000000c1";
         let daemon = crate::daemon_fixture::TestDaemon::writing(&[KITCHEN]);

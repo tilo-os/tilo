@@ -26,10 +26,10 @@ use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, Patch, PatchAction, Prop
 
 mod text;
 
+use crate::history::HistoryEntryId;
 use crate::history::authors::{HistoryAuthor, ResolveAuthor};
 use crate::history::entry_id_from_hash;
 use crate::history::write_selected_patches;
-use collab_types::history::HistoryEntryId;
 use tilo_resource::history::is_schema_genesis;
 
 /// A contiguous run of changes, addressed by its first and last change.
@@ -830,7 +830,7 @@ pub fn revert_stamped(
         &mut working,
         &changes,
         &super::authors::Unnamed,
-        &[crate::store::READERS],
+        &[crate::touch::READERS],
     )
     .map_err(|_| automerge::AutomergeError::Fail)?;
     if !outcomes.iter().any(|outcome| outcome.wrote) {

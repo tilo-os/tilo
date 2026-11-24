@@ -139,8 +139,8 @@ struct StoreLine {
 impl Port for StoreLine {
     fn command(
         &self,
-        command: tilo_resource_store::wire::Command,
-    ) -> Result<tilo_resource_store::wire::Reply, String> {
+        command: collab_types::store::wire::Command,
+    ) -> Result<collab_types::store::wire::Reply, String> {
         let command = serde_json::to_value(&command).map_err(|error| error.to_string())?;
         let reply = self.line.ask(&json!({
             "store": {"app": self.app, "record": self.record, "command": command},
@@ -899,7 +899,7 @@ mod tests {
             });
             let read = Lines(Rc::clone(&task.line))
                 .port("app", "")
-                .command(tilo_resource_store::wire::Command::Get {
+                .command(collab_types::store::wire::Command::Get {
                     kind: "tl.so.tilo.lang.counter.Counter".to_owned(),
                     id: "root".to_owned(),
                 });

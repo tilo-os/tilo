@@ -241,8 +241,8 @@ impl Workspace {
     /// The store answering `command` as this device's person reads it.
     pub fn command(
         &self,
-        command: tilo_resource_store::wire::Command,
-    ) -> tilo_resource_store::wire::Reply {
+        command: collab_types::store::wire::Command,
+    ) -> collab_types::store::wire::Reply {
         tilolang_tilo::resources::Port::command(&*self.0, command).unwrap()
     }
 
