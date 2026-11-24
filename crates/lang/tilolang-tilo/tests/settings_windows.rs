@@ -117,7 +117,7 @@ fn labelled(tree: &UiNode, kind: &str, label: &str) -> String {
 }
 
 /// One invocation as it was sent, with its arguments by name.
-
+#[derive(Clone)]
 struct Sent(Rc<RefCell<Vec<Invocation>>>);
 
 impl Sent {
@@ -320,7 +320,7 @@ fn the_windows_card_offers_the_install_the_retry_and_the_removal() {
                 shown.contains(&"Installing it downloads 1.2 GB.".to_owned()),
                 "the size the install takes: {shown:?}"
             );
-            let sent = Rc::new(Sent::new());
+            let sent = Sent::new();
             host.runtime().set_invoker(sent.clone());
             let install = labelled(view.tree(), "ui.Button", "Install");
             view.press(&install).expect("the person installs it");
