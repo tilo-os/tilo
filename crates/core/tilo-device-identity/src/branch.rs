@@ -424,10 +424,8 @@ pub fn settle(
     let Some(machine) = machine else {
         return Ok(Settled::NoMachine);
     };
-    match fs::symlink_metadata(&paths.device_privkey) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Settled::NoDevice),
-        Err(error) => return Err(error.into()),
+    if !persist::holds_device_key(paths)? {
+        return Ok(Settled::NoDevice);
     }
     match read_record(paths)? {
         None => {
@@ -436,7 +434,7 @@ pub fn settle(
         }
         Some(recorded) if recorded.is(machine) => Ok(Settled::Same),
         Some(_) => {
-            let previous = persist::read_device_key(&paths.device_privkey)?;
+            let previous = persist::load_device_key(paths)?;
             let next = SigningKey::generate(&mut UnwrapErr(SysRng));
             let journal = Journal {
                 version: JOURNAL_VERSION,
@@ -459,7 +457,7 @@ fn rebase(
 ) -> Result<Journal, PersistError> {
     let mut from = journal.from.clone();
     from.push(journal.to);
-    if let Ok(held) = persist::read_device_key(&paths.device_privkey) {
+    if let Ok(held) = persist::load_device_key(paths) {
         from.push(held.to_bytes());
     }
     from.sort_unstable();
@@ -497,9 +495,9 @@ fn resume(
     }
     (branch.after)(Stage::Stores)?;
 
-    let held = persist::read_device_key(&paths.device_privkey).ok();
+    let held = persist::load_device_key(paths).ok();
     if held.as_ref().map(SigningKey::to_bytes) != Some(to.to_bytes()) {
-        persist::write_device_key(&paths.device_privkey, &to)?;
+        persist::replace_device_key(paths, &to)?;
     }
     (branch.after)(Stage::Key)?;
 
@@ -651,7 +649,17 @@ fn read_record(paths: &IdentityPaths) -> Result<Option<Machine>, PersistError> {
     }
 }
 
+/// The records a re-key keeps lie beside the device key file; a key the
+/// platform's store holds leaves no directory there until they make it.
+fn records_directory(paths: &IdentityPaths) -> io::Result<()> {
+    match machine_record(paths).parent() {
+        Some(parent) => fs::create_dir_all(parent),
+        None => Ok(()),
+    }
+}
+
 fn write_record(paths: &IdentityPaths, machine: &Machine) -> Result<(), PersistError> {
+    records_directory(paths)?;
     Ok(tilo_files::native::atomic::write_with_mode(
         &machine_record(paths),
         &machine.0,
@@ -696,6 +704,7 @@ fn write_journal(paths: &IdentityPaths, journal: &Journal) -> Result<(), Persist
     let bytes = Zeroizing::new(
         postcard::to_allocvec(journal).map_err(|error| invalid(&error.to_string()))?,
     );
+    records_directory(paths)?;
     Ok(tilo_files::native::atomic::write_with_mode(
         &journal_path(paths),
         &bytes,

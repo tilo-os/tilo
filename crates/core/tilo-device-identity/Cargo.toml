@@ -46,10 +46,11 @@ zeroize.workspace = true
 iroh-base = { workspace = true, features = ["key"] }
 
 # A device's key is either a group-private file read by two uids (the OS
-# layout) or, where only the user's own runtime reads it, a login Keychain
-# item; on Linux a process that read the key proves it to the Secret Service,
-# which cannot read a non-dumpable process's executable.
-[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+# layout) or, where only the user's own runtime reads it, an item in the
+# platform secret store (macOS, Android); on Linux a process that read the key
+# proves it to the Secret Service, which cannot read a non-dumpable process's
+# executable.
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))'.dependencies]
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -39,6 +39,11 @@ zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 ashpd = { workspace = true, features = ["secret"] }
 
 # The login Keychain's generic passwords.
+# The Keystore wraps the store's key, reached through the process's Java VM.
+[target.'cfg(target_os = "android")'.dependencies]
+tilo-process = { version = "0.1.0", path = "../tilo-process" }
+jni = "0.21.1"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 

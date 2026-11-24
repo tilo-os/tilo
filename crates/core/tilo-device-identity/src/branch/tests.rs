@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use ed25519_dalek::SigningKey;
 
 use super::*;
-use crate::persist::{load_or_create_device_key, read_device_key};
+use crate::persist::{DeviceKeyOwnership, load_device_key, load_or_create_device_key};
 use tilo_user_identity::cert::{DeviceCapabilities, sign_device_cert};
 
 const SOURCE: &str = "4c4c4544-0042-3510-8048-b4c04f4d3232";
@@ -90,8 +90,14 @@ impl Fixture {
     /// A machine set up on `SOURCE`, its key certified by `root`'s
     /// person as "Studio", its vault holding a secret.
     fn new(root: &SigningKey) -> Self {
+        Self::keeping_its_key(root, DeviceKeyOwnership::File)
+    }
+
+    /// [`Fixture::new`], its device key kept as `ownership` says.
+    fn keeping_its_key(root: &SigningKey, ownership: DeviceKeyOwnership) -> Self {
         let dir = tempdir();
-        let paths = IdentityPaths::under(dir.path());
+        let paths = IdentityPaths::under(dir.path()).with_device_key_ownership(ownership);
+        paths.ensure_directories().unwrap();
         let (source, _) = load_or_create_device_key(&paths).unwrap();
         let mut cert = DeviceCert {
             user_public_key: public(root),
@@ -144,7 +150,7 @@ impl Fixture {
     }
 
     fn device(&self) -> SigningKey {
-        read_device_key(&self.paths.device_privkey).unwrap()
+        load_device_key(&self.paths).unwrap()
     }
 }
 
@@ -496,4 +502,29 @@ tilo_test_env::scenario! {
         assert!(label.len() <= MAX_LABEL_BYTES);
         assert!(label.ends_with(&suffix));
     }
+}
+
+/// A device key the platform's secret store keeps re-keys there like a key
+/// file does: the branch's new key is the one the store holds, and nothing
+/// writes a key file beside it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_key_in_the_platform_store_re_keys_in_the_store() {
+    let _store = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
+    let root = SigningKey::from_bytes(&[7; 32]);
+    let fixture = Fixture::keeping_its_key(&root, DeviceKeyOwnership::PlatformStore);
+    assert!(matches!(fixture.settle(SOURCE), Settled::Same));
+
+    let result = branched(fixture.settle(BRANCH));
+    let device = fixture.device();
+    assert!(result.finished());
+    assert_ne!(public(&device), public(&fixture.source));
+    assert_eq!(result.device, public(&device));
+    assert_eq!(
+        fixture.store.open(&device).as_deref(),
+        Some("model api key")
+    );
+    assert!(!fixture.paths.device_privkey.exists());
+    assert!(matches!(fixture.settle(BRANCH), Settled::Same));
+    assert_eq!(public(&fixture.device()), public(&device));
 }

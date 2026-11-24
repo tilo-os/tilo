@@ -10,7 +10,8 @@
 //! The layout under `/var/lib/tilo/` is described in [`persist`]. A device key
 //! is either a group-private file (the OS layout, where the root filesystem
 //! daemon and the session share it) or, where only the user's own runtime
-//! reads it, an item in the login Keychain. [`persist::load_or_create_device_key`]
+//! reads it, an item in the platform's secret store (the login Keychain on macOS, the
+//! Keystore-wrapped app store on Android). [`persist::load_or_create_device_key`]
 //! is the only entry point that mints one.
 
 #![deny(rust_2018_idioms)]
@@ -19,13 +20,17 @@
 pub mod branch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod clock;
-#[cfg(target_os = "macos")]
-mod keychain;
 pub mod login;
 #[cfg(target_os = "linux")]
 pub mod nofollow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "android",
+    all(test, target_os = "linux")
+))]
+mod platform_store;
 #[cfg(unix)]
 pub mod update_lock;
 

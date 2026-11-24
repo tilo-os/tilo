@@ -45,6 +45,8 @@ use std::sync::{Arc, Mutex};
 
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "android")]
+mod android;
 mod caps;
 pub mod conformance;
 #[cfg(any(target_os = "windows", test))]
@@ -634,8 +636,20 @@ fn system_backend() -> Backend {
     Backend::Web
 }
 
+/// The app's sealed files, under a store key the Android Keystore wraps.
+#[cfg(target_os = "android")]
+fn system_backend() -> Backend {
+    static KEYSTORE: std::sync::OnceLock<Arc<dyn SecretBackend>> = std::sync::OnceLock::new();
+    Backend::Sync(
+        KEYSTORE
+            .get_or_init(|| Arc::new(android::KeystoreStore::default()))
+            .clone(),
+    )
+}
+
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "android",
     target_os = "macos",
     target_os = "windows",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -650,12 +664,14 @@ fn system_backend() -> Backend {
 /// test environment.
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "android",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
 struct UnsupportedBackend(&'static str);
 
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "android",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
 impl SecretBackend for UnsupportedBackend {

@@ -176,13 +176,12 @@ impl Files {
                 key: match self.paths.device_key_ownership {
                     DeviceKeyOwnership::File => FileStamp::of(&self.paths.device_privkey).ok()?,
                     // A key with no file has no stamp to follow.
-                    #[cfg(target_os = "macos")]
-                    DeviceKeyOwnership::Keychain => return None,
+                    #[cfg(any(target_os = "macos", target_os = "android"))]
+                    DeviceKeyOwnership::PlatformStore => return None,
                 },
                 cert: FileStamp::of(&self.paths.device_cert_for_user(&selected.user_public_key))
                     .ok()?,
-                trust: crate::sources::device_trust()
-                    .map_or(0, |trust| trust.generation()),
+                trust: crate::sources::device_trust().map_or(0, |trust| trust.generation()),
             }),
         };
         Some(CurrentDeviceStamp { registry, device })

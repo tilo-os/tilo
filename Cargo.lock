@@ -19725,7 +19725,9 @@ version = "0.1.0"
 dependencies = [
  "bounded-command",
  "hex",
+ "jni 0.21.1",
  "libc",
+ "ndk-context",
  "runtime-portal",
  "rustix 1.1.6",
  "socket2",
@@ -19748,7 +19750,6 @@ dependencies = [
  "ashpd",
  "image",
  "jni 0.21.1",
- "ndk-context",
  "tilo-clipboard",
  "tilo-clock",
  "tilo-dialogs",
@@ -20308,6 +20309,7 @@ version = "0.1.0"
 dependencies = [
  "ashpd",
  "hex",
+ "jni 0.21.1",
  "js-sys",
  "libc",
  "rustix 1.1.6",
@@ -20316,6 +20318,7 @@ dependencies = [
  "tempfile",
  "tilo-files",
  "tilo-platform-caps",
+ "tilo-process",
  "tilo-rt",
  "tilo-seal",
  "tilo-test-env",

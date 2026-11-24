@@ -245,9 +245,15 @@ pub enum DeviceKeyOwnership {
     /// layout, where the root filesystem daemon and the session share it.
     #[default]
     File,
-    /// The user's login Keychain, under this device's own app namespace.
-    #[cfg(target_os = "macos")]
-    Keychain,
+    /// The platform's secret store, under this device's own app namespace: the
+    /// login Keychain on macOS, and on Android the app's store, whose key the
+    /// Android Keystore wraps. Only the user's own runtime reads the key there.
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "android",
+        all(test, target_os = "linux")
+    ))]
+    PlatformStore,
 }
 
 /// Where a machine keeps its own identity tree.
@@ -894,19 +900,65 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
 ///
 /// # Errors
 ///
-/// As [`read_device_key`] for a key file. A Keychain that holds no key, or
-/// refuses or fails to answer, is an error: a missing device key is never
+/// As [`read_device_key`] for a key file. A platform store that holds no key,
+/// or refuses or fails to answer, is an error: a missing device key is never
 /// replaced here.
 pub fn load_device_key(paths: &IdentityPaths) -> Result<SigningKey, PersistError> {
     match paths.device_key_ownership {
         DeviceKeyOwnership::File => read_device_key(&paths.device_privkey),
-        #[cfg(target_os = "macos")]
-        DeviceKeyOwnership::Keychain => crate::keychain::load()?.ok_or_else(|| {
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "android",
+            all(test, target_os = "linux")
+        ))]
+        DeviceKeyOwnership::PlatformStore => crate::platform_store::load()?.ok_or_else(|| {
             PersistError::Io(io::Error::new(
                 io::ErrorKind::NotFound,
-                "the login Keychain holds no Tilo device key",
+                format!(
+                    "the {} holds no Tilo device key",
+                    crate::platform_store::NAME
+                ),
             ))
         }),
+    }
+}
+
+/// Whether `paths` keeps a device key at all, without reading it.
+///
+/// # Errors
+///
+/// When the key file's directory, or the platform store, cannot answer.
+pub fn holds_device_key(paths: &IdentityPaths) -> Result<bool, PersistError> {
+    match paths.device_key_ownership {
+        DeviceKeyOwnership::File => match fs::symlink_metadata(&paths.device_privkey) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        },
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "android",
+            all(test, target_os = "linux")
+        ))]
+        DeviceKeyOwnership::PlatformStore => Ok(crate::platform_store::load()?.is_some()),
+    }
+}
+
+/// Make `sk` this device's key wherever `paths` keeps it, replacing the one
+/// there: only a re-key ([`crate::branch`]) does this.
+///
+/// # Errors
+///
+/// When the key cannot be written, or the platform store does not keep it.
+pub fn replace_device_key(paths: &IdentityPaths, sk: &SigningKey) -> Result<(), PersistError> {
+    match paths.device_key_ownership {
+        DeviceKeyOwnership::File => Ok(write_device_key(&paths.device_privkey, sk)?),
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "android",
+            all(test, target_os = "linux")
+        ))]
+        DeviceKeyOwnership::PlatformStore => crate::platform_store::replace(sk),
     }
 }
 
@@ -959,9 +1011,13 @@ pub fn load_or_create_device_key(
     paths: &IdentityPaths,
 ) -> Result<(SigningKey, DeviceKeyOutcome), PersistError> {
     protect_secret_process()?;
-    #[cfg(target_os = "macos")]
-    if paths.device_key_ownership == DeviceKeyOwnership::Keychain {
-        return crate::keychain::load_or_create();
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "android",
+        all(test, target_os = "linux")
+    ))]
+    if paths.device_key_ownership == DeviceKeyOwnership::PlatformStore {
+        return crate::platform_store::load_or_create();
     }
     let path = paths.device_privkey.as_path();
     match fs::metadata(path) {

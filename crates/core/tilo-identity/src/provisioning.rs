@@ -20,7 +20,8 @@ use zeroize::{Zeroize, Zeroizing};
 pub enum IdentityStorage {
     /// The platform's secret store, or its explicitly reported private-file
     /// fallback: what a real session uses. On macOS the device key and the
-    /// runtime's channel-state key are in the login Keychain too, with no
+    /// runtime's channel-state key are in the login Keychain too, and on
+    /// Android the device key is in the app's Keystore-wrapped store, with no
     /// file fallback.
     Platform,
     /// Plain private files beside the record, for isolated test fixtures.
@@ -55,19 +56,20 @@ impl IdentityStorage {
         Self::Files
     }
 
-    /// Where the device key is kept under this storage.
-    #[cfg(target_os = "macos")]
+    /// Where the device key is kept under this storage: the platform's secret
+    /// store, unless the session asked for files.
+    #[cfg(any(target_os = "macos", target_os = "android"))]
     #[must_use]
     pub fn device_key_ownership(self) -> DeviceKeyOwnership {
         match self {
-            Self::Platform => DeviceKeyOwnership::Keychain,
+            Self::Platform => DeviceKeyOwnership::PlatformStore,
             Self::Files => DeviceKeyOwnership::File,
         }
     }
 
     /// Where the device key is kept under this storage: a file, which Tilo
     /// OS shares between the root filesystem daemon and the session.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
     #[must_use]
     pub fn device_key_ownership(self) -> DeviceKeyOwnership {
         match self {
