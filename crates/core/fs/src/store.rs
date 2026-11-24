@@ -51,34 +51,6 @@ fn area_holds(files: &FileArea, key: &[u8; 32]) -> bool {
         || files.find_chunk(key).is_some()
 }
 
-#[cfg(test)]
-mod cache_tests;
-mod content;
-mod files;
-mod serve;
-
-pub use area::{FileArea, Retention};
-#[cfg(feature = "filesystem")]
-pub(crate) use content::copy_part;
-
-#[cfg(feature = "filesystem")]
-pub const MAX_BLOB_LOOKUP_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
-#[cfg(feature = "filesystem")]
-pub const MAX_BLOB_LOOKUP_CHUNKS_PER_RECORD: usize = 100_000;
-
-/// Largest blob stored inline, in the area's index database, rather than as a file of its own. It
-/// covers every manifest and every chunk of a small file; a larger whole blob is a file entry with a
-/// persisted outboard, and a manifest at the same key as a file-backed content id always stays inline
-/// so the two never collide.
-pub const INLINE_MAX: usize = 1024 * 1024;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(feature = "filesystem")]
-pub struct BlobDocumentLookupLimits {
-    pub max_live_documents: usize,
-    pub max_manifest_bytes: usize,
-    pub max_chunks_per_document: usize,
-}
 
 #[cfg(feature = "filesystem")]
 impl Default for BlobDocumentLookupLimits {
@@ -1675,4 +1647,34 @@ fn file_backed_chunk(files: &FileArea, hash: Hash) -> Option<Bytes> {
         .read_at(&location.key, location.offset, u64::from(location.len))
         .ok()?;
     (blake3::hash(&bytes).as_bytes() == hash.as_bytes()).then(|| Bytes::from(bytes))
+}
+
+
+#[cfg(test)]
+mod cache_tests;
+mod content;
+mod files;
+mod serve;
+
+pub use area::{FileArea, Retention};
+#[cfg(feature = "filesystem")]
+pub(crate) use content::copy_part;
+
+#[cfg(feature = "filesystem")]
+pub const MAX_BLOB_LOOKUP_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+#[cfg(feature = "filesystem")]
+pub const MAX_BLOB_LOOKUP_CHUNKS_PER_RECORD: usize = 100_000;
+
+/// Largest blob stored inline, in the area's index database, rather than as a file of its own. It
+/// covers every manifest and every chunk of a small file; a larger whole blob is a file entry with a
+/// persisted outboard, and a manifest at the same key as a file-backed content id always stays inline
+/// so the two never collide.
+pub const INLINE_MAX: usize = 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "filesystem")]
+pub struct BlobDocumentLookupLimits {
+    pub max_live_documents: usize,
+    pub max_manifest_bytes: usize,
+    pub max_chunks_per_document: usize,
 }
