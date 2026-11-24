@@ -93,7 +93,9 @@ impl Fixture {
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         tilo_identity::sources::test_trust::install();
         tilo_identity::provisioning::ensure_collaboration_identity(
-            &tilo_identity::store::account_identity_dir(&scratch.path().join("config/tilo/identity")),
+            &tilo_identity::store::account_identity_dir(
+                &scratch.path().join("config/tilo/identity"),
+            ),
             &tilo_device_identity::IdentityPaths::under(scratch.path().join("identity")),
             tilo_identity::provisioning::IdentityStorage::Files,
         )
