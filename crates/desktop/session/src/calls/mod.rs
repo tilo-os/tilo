@@ -450,27 +450,31 @@ impl Carried {
     }
 }
 
-/// What voice channel `channel` is called, as the app that holds it published the channel: the
-/// label of the item `channel` of any of its resources (`tl:<app>:<resource>/<channel>`), empty
+/// What voice channel `channel` is called, as the app that holds it published the channel on the
+/// device's dispatch: the label of the item `channel` of any of its resources
+/// (`tl:<app>:<resource>/<channel>`) among `published`, the rows of the apps' listings; `None`
 /// when the app publishes no such item.
 pub(crate) fn channel_name(
-    surfaces: &[tilo_broker_core::published::PublishedSurface],
+    published: &[tilo_actions::remote::CatalogueRow],
     (workspace, app): (&str, &str),
     channel: &str,
 ) -> Option<String> {
     let prefix = format!("tl:{app}:");
-    surfaces
+    published
         .iter()
-        .filter(|surface| surface.app_id == app && surface.route.cluster_id == workspace)
-        .flat_map(|surface| &surface.actions)
-        .find(|action| {
+        .filter(|row| {
+            tilo_actions::remote::application_provider(&row.provider) == Some((workspace, app))
+        })
+        .find_map(|row| {
+            let action = row.action.as_ref()?;
             action
+                .address
                 .resource
                 .strip_prefix(&prefix)
                 .and_then(|id| id.split_once('/'))
                 .is_some_and(|(_, item)| item == channel)
+                .then(|| action.resource_label.trim().to_owned())
         })
-        .map(|action| action.resource_label.trim().to_owned())
         .filter(|name| !name.is_empty())
 }
 

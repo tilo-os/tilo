@@ -1464,22 +1464,19 @@ impl AppWire {
     /// Say this device's call where everyone in the workspace reads it, and take
     /// in what they say of theirs: the channel a person is in and who is in
     /// each channel's call, which is what this session's apps show of calls.
-    pub(crate) fn follow_calls(&self, sync: &crate::sync::Client) {
+    pub(crate) fn follow_calls(
+        &self,
+        sync: &crate::sync::Client,
+        published: impl FnOnce() -> Vec<tilo_actions::remote::CatalogueRow>,
+    ) {
         let own = self
             .calls_service
             .as_ref()
             .and_then(tilo_native_media::NativeMediaService::own_call);
         let name = own.as_ref().map_or_else(String::new, |call| {
-            // What the app calls the channel, so the workspace reads a name and
-            // not an id; what the people in it said is the fallback.
-            self.action_broker()
-                .and_then(|broker| {
-                    crate::calls::channel_name(
-                        &broker.surfaces(),
-                        (&call.workspace, &call.app),
-                        &call.channel,
-                    )
-                })
+            // What the app calls the channel, as it publishes it on the device's dispatch, so the
+            // workspace reads a name and not an id; what the people in it said is the fallback.
+            crate::calls::channel_name(&published(), (&call.workspace, &call.app), &call.channel)
                 .unwrap_or_else(|| self.calls.name(&call.channel))
         });
         let presence = own.as_ref().map(|call| crate::sync::InCall {

@@ -1439,3 +1439,78 @@ fn a_stream_that_falls_behind_starts_over_at_its_next_keyframe() {
     inbox.admit(picture_of(slow, 10, false));
     assert_eq!(inbox.take(cursor, usize::MAX).0.len(), 2);
 }
+
+/// A row of `app`'s listing in `workspace` on the device's dispatch, offering an action on
+/// `resource` that the app labels `label`.
+fn published_row(
+    workspace: &str,
+    app: &str,
+    resource: &str,
+    label: &str,
+) -> tilo_actions::remote::CatalogueRow {
+    tilo_actions::remote::CatalogueRow::for_action(
+        &tilo_actions::remote::application_provider_token(workspace, app),
+        app,
+        tilo_actions::ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new(resource, "join"),
+            resource_kind: "channel".into(),
+            resource_label: label.into(),
+            action_label: "Join".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: tilo_actions::ExecutionLocus::ClientLocal,
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract::default(),
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        },
+    )
+}
+
+/// The name a call says in the workspace is the one the app publishes for the channel on the
+/// device's dispatch, which a person session reads its apps' actions from: another app's channel
+/// of the same id, or the same app's in another workspace, names nothing.
+#[test]
+fn a_call_is_named_as_its_app_publishes_the_channel_on_the_devices_dispatch() {
+    const HERE: &str = "5c07c075-0000-4000-8000-0000000000aa";
+    const OTHER: &str = "5c07c075-0000-4000-8000-0000000000bb";
+    let published = vec![
+        published_row(
+            OTHER,
+            "so.tilo.chat",
+            "tl:so.tilo.chat:voice/lounge",
+            "Elsewhere",
+        ),
+        published_row(
+            HERE,
+            "so.tilo.notes",
+            "tl:so.tilo.notes:voice/lounge",
+            "Notes",
+        ),
+        published_row(
+            HERE,
+            "so.tilo.chat",
+            "tl:so.tilo.chat:voice/lounge",
+            " Lounge ",
+        ),
+        published_row(HERE, "so.tilo.chat", "tl:so.tilo.chat:voice/quiet", ""),
+    ];
+    assert_eq!(
+        channel_name(&published, (HERE, "so.tilo.chat"), "lounge").as_deref(),
+        Some("Lounge"),
+    );
+    assert_eq!(
+        channel_name(&published, (HERE, "so.tilo.chat"), "quiet"),
+        None,
+        "a channel published with no label falls back to what its people said",
+    );
+    assert_eq!(
+        channel_name(&published, (HERE, "so.tilo.chat"), "absent"),
+        None
+    );
+}
