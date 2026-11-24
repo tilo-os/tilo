@@ -109,6 +109,19 @@ export function startThread({ tokenItem, origin = API }, op) {
   };
 }
 
+/// Shows `status` as a voice channel's status, the line Discord shows under its name: who is on
+/// the workspace's side of the call carried there. An empty status clears it.
+export function voiceStatus({ tokenItem, origin = API }, channel, status) {
+  return {
+    url: `${at(origin)}/channels/${channel}/voice-status`,
+    key: tokenItem,
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ status: status ? status.slice(0, 500) : null }),
+    reason: "who is in the workspace's side of a call",
+  };
+}
+
 /// A bot token's shape: three non-empty dot-separated parts of base64url characters.
 export function looksLikeToken(token) {
   const parts = String(token ?? "").split(".");

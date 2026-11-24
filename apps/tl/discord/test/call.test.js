@@ -38,6 +38,7 @@ function harness({ makeVoice } = {}) {
     reports: [],
     heardFrames: [],
     saidFrames: [],
+    asks: [],
     carry(pair) {
       this.carried.push(pair);
       return Promise.resolve({});
@@ -54,6 +55,9 @@ function harness({ makeVoice } = {}) {
       const said = this.saidFrames;
       this.saidFrames = [];
       return Promise.resolve(said);
+    },
+    asked() {
+      return Promise.resolve(this.asks.shift() ?? null);
     },
   };
   const calls = {
@@ -98,23 +102,36 @@ function harness({ makeVoice } = {}) {
     voices.push(voice);
     return voice;
   };
+  const shown = [];
   const carried = startCalls({
     calls,
     lane,
     gateway,
     makeVoice: makeVoice ?? opened,
+    showStatus: (channel, status) => {
+      shown.push([channel, status]);
+      return Promise.resolve();
+    },
     log: () => {},
   });
-  return { lane, calls, gateway, voices, carried };
+  return { lane, calls, gateway, voices, carried, shown };
 }
 
 test("a paired voice channel is carried: the outside call joins the workspace's call", async () => {
   const host = harness();
   try {
     await host.carried.start();
-    await until(() => host.voices.length === 1, "the voice connection");
+    // The pair is carried at once; the bot waits in no empty Discord call.
     expect(host.lane.carried).toEqual([{ outside: "458", tilo: "voice-tl" }]);
+    await until(() => host.lane.reports.length >= 1, "the call's first report");
+    expect(host.lane.reports[0].link).toEqual({ link: "idle" });
+    expect(host.gateway.joined).toEqual([]);
+
+    // Someone is in the workspace's call: the daemon asks the bot in, saying who is there.
+    host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
+    await until(() => host.voices.length === 1, "the voice connection");
     expect(host.gateway.joined).toEqual([["123", "458"]]);
+    expect(host.shown).toEqual([["458", "On Tilo: Grace"]]);
     expect(host.voices[0].options).toMatchObject({
       endpoint: "c-sjc01.discord.media",
       channel: "458",
@@ -133,7 +150,10 @@ test("a paired voice channel is carried: the outside call joins the workspace's 
         self_mute: true,
       },
     });
-    await until(() => host.lane.reports.length >= 1, "the call's people");
+    await until(
+      () => host.lane.reports.at(-1)?.calls?.[0]?.people?.length === 1,
+      "the call's people",
+    );
     const report = host.lane.reports.at(-1);
     expect(report.calls).toEqual([
       {
@@ -160,6 +180,21 @@ test("a paired voice channel is carried: the outside call joins the workspace's 
     host.lane.saidFrames = [{ speaker: "aa", opus: Buffer.from([3, 4]) }];
     await until(() => host.voices[0].said.length === 1, "the workspace's frame");
     expect([...host.voices[0].said[0]]).toEqual([3, 4]);
+
+    // Nobody is left on either side: the bot leaves Discord's call and clears its status, and the
+    // pair stays carried for whoever comes next.
+    host.lane.asks.push({ call: null, status: null });
+    await until(() => host.voices[0].closed, "the voice connection closed");
+    expect(host.gateway.left).toEqual(["123"]);
+    expect(host.shown.at(-1)).toEqual(["458", ""]);
+    await until(() => host.lane.reports.at(-1)?.link?.link === "idle", "the bot out of the call");
+    // Discord says the bot left, as it does for any leave: the bridge left it itself.
+    host.carried.hear({ state: { guild: "123", user: "900", channel: "" } });
+    expect(host.lane.carried).toEqual([{ outside: "458", tilo: "voice-tl" }]);
+
+    // Someone comes back: the bot joins again.
+    host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
+    await until(() => host.voices.length === 2, "the voice connection again");
   } finally {
     host.carried.close();
   }
@@ -171,6 +206,7 @@ test("a call Discord refuses is reported in the bridge's record", async () => {
   });
   try {
     await host.carried.start();
+    host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
     await until(
       () => host.calls.done.some((call) => call.action === "report_voice"),
       "the problem recorded",
@@ -189,6 +225,7 @@ test("the bridge leaving the call in Discord ends both sides", async () => {
   const host = harness();
   try {
     await host.carried.start();
+    host.lane.asks.push({ call: "458", status: "On Tilo: Grace" });
     await until(() => host.voices.length === 1, "the voice connection");
     host.carried.hear({ state: { guild: "123", user: "900", channel: "" } });
     await until(() => host.voices[0].closed, "the voice connection closed");

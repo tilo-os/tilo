@@ -34,6 +34,7 @@ import {
   webhookDelete,
   react,
   startThread,
+  voiceStatus,
   whyRefused,
 } from "./src/rest.js";
 
@@ -106,9 +107,9 @@ export function callsOf(ws) {
     content(bytes) {
       return ws.files?.upload ? ws.files.upload(bytes) : null;
     },
-    /// This app's call lane, when the workspace client has one: the daemon's side of a call
-    /// carried from an outside service. `null` for a client that carries none, which is a bridge
-    /// that reads and writes but never joins a call.
+    /// This app's call lane (the SDK's `callLane`): the daemon's side of a call carried from an
+    /// outside service. `null` for a workspace client that carries none, which is a bridge that
+    /// reads and writes but never joins a call.
     lane() {
       const lane = ws.callLane;
       if (!lane) return null;
@@ -117,6 +118,7 @@ export function callsOf(ws) {
         report: (report) => lane.report(report),
         heard: (frame) => lane.heard(frame),
         said: () => lane.said(),
+        asked: () => lane.asked(),
       };
     },
   };
@@ -236,6 +238,10 @@ export async function openGateway({
         calls,
         lane,
         makeVoice: makeVoice ?? ((options) => connectVoice(options)),
+        showStatus: (channel, status) =>
+          calls.webCall(
+            voiceStatus({ tokenItem: account.token_item, origin: account.api_origin }, channel, status),
+          ),
         log,
         gateway: {
           get user() {
