@@ -176,12 +176,18 @@ fn read_catalogue() -> Result<CatalogueAnswer, String> {
     for unreachable in &listing.unreachable {
         answer.unanswered.push(unreachable.name.clone());
     }
+    // Each source's own order is the order it wants its apps seen in, so a row's place there is
+    // what the catalogue's front page features.
+    let mut offered_by: std::collections::BTreeMap<&str, i64> = std::collections::BTreeMap::new();
     for offer in &listing.apps {
         if blocks.is_blocked(&offer.package_id) {
             continue;
         }
+        let place = offered_by.entry(offer.registry.as_str()).or_insert(0);
+        *place += 1;
+        let place = *place;
         seen.insert(offer.package_id.clone());
-        items.push(record(&tilo_item(offer, &installed))?);
+        items.push(record(&tilo_item(offer, &installed, place))?);
     }
     // A directory bot has no version to fetch on this computer: adding it saves its program as
     // the person's shortcut, which the workspace's host runs for them.
@@ -264,7 +270,9 @@ fn installed_rows() -> Installed {
     rows
 }
 
-fn tilo_item(offer: &app_cli::CatalogueApp, installed: &Installed) -> Item {
+/// The row for `offer`, which its source lists `featured`-th (1 first): a source offers its apps
+/// in the order it wants them shown, so that place is what its front page features.
+fn tilo_item(offer: &app_cli::CatalogueApp, installed: &Installed, featured: i64) -> Item {
     let version = offer.version.clone();
     let installed_version = installed
         .version
@@ -336,7 +344,7 @@ fn tilo_item(offer: &app_cli::CatalogueApp, installed: &Installed) -> Item {
         runnable,
         processors: offer.architecture.clone(),
         awaiting_developer: false,
-        featured: 0,
+        featured,
         updated: String::new(),
         publisher: offer.publisher_pubkey_hex.clone(),
         digest: offer.tapp_blake3_hex.clone(),
@@ -551,7 +559,7 @@ fn one(input: &str) -> Result<String, String> {
         .into_iter()
         .find(|offer| offer.package_id == ask.identity)
     {
-        return writes(&json!({ "item": record(&tilo_item(&offer, &installed))? }));
+        return writes(&json!({ "item": record(&tilo_item(&offer, &installed, 0))? }));
     }
     if let Some(bot) = listing
         .bots
@@ -577,7 +585,7 @@ fn details(input: &str) -> Result<String, String> {
         .find(|offer| offer.package_id == ask.identity)
     {
         let installed = installed_rows();
-        let item = tilo_item(&offer, &installed);
+        let item = tilo_item(&offer, &installed, 0);
         return writes(&json!({
             "description": item.description,
             "developer": item.developer,
@@ -760,7 +768,7 @@ fn runtime(input: &str) -> Result<String, String> {
     let offer = found
         .first()
         .ok_or_else(|| "No enabled repository offers this runtime.".to_owned())?;
-    writes(&json!({ "item": record(&tilo_item(offer, &installed))? }))
+    writes(&json!({ "item": record(&tilo_item(offer, &installed, 0))? }))
 }
 
 // ---------------------------------------------------------------- package files
@@ -843,7 +851,7 @@ fn review(input: &str) -> Result<String, String> {
                 && offer.publisher_pubkey_hex == publisher
         })
         .map(|offer| {
-            let mut item = tilo_item(offer, &installed_rows());
+            let mut item = tilo_item(offer, &installed_rows(), 0);
             item.versions.truncate(1);
             item
         });
