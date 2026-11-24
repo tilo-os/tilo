@@ -791,7 +791,17 @@ impl Widget for Badge {
             BadgeContent::Modified => Some("Modified".to_owned()),
             _ => self.display_text(),
         };
-        Some(AccessNode::new(Role::StaticText).with_optional_value(value))
+        // A status in words is named by them, as any text is: what a reader announces it by,
+        // and what finds it ("Not responding" on a hung window's card).
+        let name = match &self.content {
+            BadgeContent::Text(words) => Some(words.clone()),
+            _ => None,
+        };
+        Some(
+            AccessNode::new(Role::StaticText)
+                .with_optional_name(name)
+                .with_optional_value(value),
+        )
     }
 }
 
@@ -1020,6 +1030,9 @@ mod tests {
                 Some("99+")
             );
             assert_eq!(Widget::accessibility(&Badge::dot()).unwrap().value, None);
+            let status = Widget::accessibility(&Badge::text("Not responding")).unwrap();
+            assert_eq!(status.name.as_deref(), Some("Not responding"));
+            assert_eq!(status.value.as_deref(), Some("Not responding"));
         }
 
         phase dots_and_the_modified_mark_paint_in_their_ink;
