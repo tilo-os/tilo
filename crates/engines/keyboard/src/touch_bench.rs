@@ -26,6 +26,7 @@ use vello::kurbo::{Point, Rect};
 
 use super::{NextKeyDistribution, ResolveParams, TouchKey, TouchModel, resolve_with};
 use crate::layout::{KeyId, KeyboardLayout, ShiftState, key_rects};
+use crate::num::f64_of_count;
 use crate::predict::Predictor;
 
 const PHRASES: &str = include_str!("../data/typing_phrases.txt");
@@ -39,8 +40,12 @@ impl Rng {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
-        let v = self.0.wrapping_mul(0x2545_f491_4f6c_dd1d);
-        ((v >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        let value = self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 11;
+        // The 53 bits kept fit an `f64` exactly; the high half scales by 2^32
+        // without rounding, so the fraction is exactly the bits over 2^53.
+        let high = f64::from(u32::try_from(value >> 32).unwrap_or(u32::MAX));
+        let low = f64::from(u32::try_from(value & 0xffff_ffff).unwrap_or(u32::MAX));
+        (high * 4_294_967_296.0 + low + 0.5) / 9_007_199_254_740_992.0
     }
 
     fn normal(&mut self) -> f64 {
@@ -81,10 +86,10 @@ pub(super) struct Score {
 
 impl Score {
     pub fn error_rate(self) -> f64 {
-        self.errors as f64 / self.taps.max(1) as f64
+        f64_of_count(self.errors) / f64_of_count(self.taps.max(1))
     }
     pub fn stolen_rate(self) -> f64 {
-        self.stolen as f64 / self.taps.max(1) as f64
+        f64_of_count(self.stolen) / f64_of_count(self.taps.max(1))
     }
 }
 
@@ -129,11 +134,11 @@ fn run(
                             (hit, _) => hit,
                         };
                     let got_ch = got.and_then(|id| kb.letters.iter().find(|k| k.id == id));
-                    score.taps += 1;
+                    score.taps = score.taps.saturating_add(1);
                     if got != Some(target.id) {
-                        score.errors += 1;
+                        score.errors = score.errors.saturating_add(1);
                         if target.rect.contains(touch) {
-                            score.stolen += 1;
+                            score.stolen = score.stolen.saturating_add(1);
                         }
                     }
                     if let Some(k) = got_ch {
@@ -167,7 +172,7 @@ fn sweep_point(
                 s,
                 params,
                 reps,
-                0x9e37_79b9 + i as u64,
+                0x9e37_79b9_u64.saturating_add(u64::try_from(i).unwrap_or(u64::MAX)),
             )
         })
         .collect()
@@ -188,7 +193,7 @@ fn context_resolution_types_fewer_wrong_letters_and_steals_almost_none() {
             tuned.stolen_rate() * 100.0,
         );
         assert!(
-            (tuned.errors as f64) < 0.8 * plain.errors as f64,
+            f64_of_count(tuned.errors) < 0.8 * f64_of_count(plain.errors),
             "resolution must clearly beat the plain hit test at spread {spread}"
         );
         assert!(

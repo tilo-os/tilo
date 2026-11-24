@@ -30,19 +30,27 @@ const MOST_WORDS: usize = 8;
 pub fn call(op: &str, input: &str) -> Result<String, String> {
     match op {
         "layouts" => Ok(layouts().to_string()),
-        "suggest" => ask::<Suggest>(input).and_then(suggest),
-        "correct" => ask::<Correct>(input).and_then(correct),
-        "learn" => ask::<Learn>(input).and_then(learn),
-        "accents" => ask::<Accents>(input).and_then(accents),
-        "emoji" => ask::<Emoji>(input).and_then(emoji),
-        "swipe" => ask::<Swipe>(input).and_then(swipe),
-        "touch" => ask::<Touch>(input).and_then(touch),
+        "suggest" => answered(input, suggest),
+        "correct" => answered(input, correct),
+        "learn" => answered(input, learn),
+        "accents" => answered(input, accents),
+        "emoji" => answered(input, emoji),
+        "swipe" => answered(input, swipe),
+        "touch" => answered(input, touch),
         other => Err(format!("`{other}` is no ask the on-screen keyboard makes")),
     }
 }
 
 fn ask<T: for<'de> Deserialize<'de>>(input: &str) -> Result<T, String> {
     serde_json::from_str(input).map_err(|error| format!("the ask does not read: {error}"))
+}
+
+/// One ask read and answered: reading its JSON is the only part that can fail.
+fn answered<T: for<'de> Deserialize<'de>>(
+    input: &str,
+    answer: impl FnOnce(&T) -> String,
+) -> Result<String, String> {
+    Ok(answer(&ask::<T>(input)?))
 }
 
 fn language(code: &str) -> Language {
@@ -71,9 +79,8 @@ fn predictor(language: Language) -> &'static Mutex<Predictor> {
         OnceLock::new();
     let predictors = PREDICTORS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut held = held(predictors);
-    held.entry(language).or_insert_with(|| {
-        Box::leak(Box::new(Mutex::new(Predictor::for_language(language))))
-    })
+    held.entry(language)
+        .or_insert_with(|| Box::leak(Box::new(Mutex::new(Predictor::for_language(language)))))
 }
 
 fn corrector(language: Language) -> &'static Mutex<Autocorrector> {
@@ -100,12 +107,13 @@ fn with_decoder<T>(language: Language, ask: impl FnOnce(&dyn SwipeModel) -> T) -
     }
     DECODERS.with(|decoders| {
         let mut held = decoders.borrow_mut();
-        let model = held.entry(language).or_insert_with(|| {
-            match crate::futo::FutoSwipeModel::default_load() {
-                Some(model) if language == Language::English => Box::new(model),
-                _ => Box::new(GeometricSwipeModel::for_language(language)),
-            }
-        });
+        let model =
+            held.entry(language).or_insert_with(
+                || match crate::futo::FutoSwipeModel::default_load() {
+                    Some(model) if language == Language::English => Box::new(model),
+                    _ => Box::new(GeometricSwipeModel::for_language(language)),
+                },
+            );
         ask(&**model)
     })
 }
@@ -113,7 +121,8 @@ fn with_decoder<T>(language: Language, ask: impl FnOnce(&dyn SwipeModel) -> T) -
 /// A lock poisoned by a panic in one ask still serves the next: what it guards is a cache of
 /// answers, and no half-written one is read.
 fn held<T>(lock: &'static Mutex<T>) -> MutexGuard<'static, T> {
-    lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 // ---------------------------------------------------------------- layouts
@@ -151,12 +160,7 @@ fn layouts() -> serde_json::Value {
         ("time", InputPurpose::Time),
     ]
     .into_iter()
-    .map(|(name, purpose)| {
-        (
-            name.to_owned(),
-            json!(KeyboardLayout::for_purpose(purpose)),
-        )
-    })
+    .map(|(name, purpose)| (name.to_owned(), json!(KeyboardLayout::for_purpose(purpose))))
     .collect();
     json!({
         "layouts": built,
@@ -221,21 +225,20 @@ impl Default for Suggest {
     }
 }
 
-fn suggest(ask: Suggest) -> Result<String, String> {
+fn suggest(ask: &Suggest) -> String {
     let language = language(&ask.language);
-    let dict = dictionary(language);
     let limit = ask.limit.clamp(1, MOST_WORDS);
     let previous = (!ask.previous.is_empty()).then_some(ask.previous.as_str());
     let mut out = Vec::new();
     {
         let mut predictor = held(predictor(language));
         predictor.adopt_learned(ask.learned.clone());
-        if !ask.word.is_empty() {
-            for (word, score) in predictor.predict_next_n(previous, &ask.word, limit) {
+        if ask.word.is_empty() {
+            for (word, score) in predictor.predict_next_n(previous, "", limit) {
                 out.push(json!({ "word": word, "score": score }));
             }
         } else {
-            for (word, score) in predictor.predict_next_n(previous, "", limit) {
+            for (word, score) in predictor.predict_next_n(previous, &ask.word, limit) {
                 out.push(json!({ "word": word, "score": score }));
             }
         }
@@ -276,34 +279,24 @@ fn suggest(ask: Suggest) -> Result<String, String> {
     for text in emojis {
         out.push(json!({ "word": text, "score": 1.0, "emoji": true }));
     }
-    let _ = dict;
-    Ok(json!({ "completions": out, "next": next }).to_string())
+    json!({ "completions": out, "next": next }).to_string()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(default)]
 struct Learn {
     word: String,
     previous: String,
 }
 
-impl Default for Learn {
-    fn default() -> Self {
-        Self {
-            word: String::new(),
-            previous: String::new(),
-        }
-    }
-}
-
 /// What committing `word` after `previous` teaches the predictor: the transition, or none for a
 /// word that is not letters (a number, a smile).
-fn learn(ask: Learn) -> Result<String, String> {
+fn learn(ask: &Learn) -> String {
     let previous = (!ask.previous.is_empty()).then_some(ask.previous.as_str());
-    Ok(match Predictor::transition(previous, &ask.word) {
+    match Predictor::transition(previous, &ask.word) {
         Some((context, word)) => json!({ "transition": [context, word] }).to_string(),
         None => json!({ "transition": null }).to_string(),
-    })
+    }
 }
 
 // ---------------------------------------------------------------- autocorrection
@@ -329,19 +322,18 @@ impl Default for Correct {
     }
 }
 
-fn correct(ask: Correct) -> Result<String, String> {
+fn correct(ask: &Correct) -> String {
     let language = language(&ask.language);
-    let layout =
-        KeyboardLayout::by_name(&ask.layout).unwrap_or_else(KeyboardLayout::qwerty);
+    let layout = KeyboardLayout::by_name(&ask.layout).unwrap_or_else(KeyboardLayout::qwerty);
     let mut corrector = held(corrector(language));
     corrector.set_adjacency(KeyAdjacency::from_layout(&layout));
     corrector.adopt_kept(&ask.kept);
-    Ok(json!({ "correction": corrector.correct(&ask.word) }).to_string())
+    json!({ "correction": corrector.correct(&ask.word) }).to_string()
 }
 
 // ---------------------------------------------------------------- accents
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(default)]
 struct Accents {
     key: String,
@@ -349,26 +341,16 @@ struct Accents {
     shift: String,
 }
 
-impl Default for Accents {
-    fn default() -> Self {
-        Self {
-            key: String::new(),
-            language: String::new(),
-            shift: String::new(),
-        }
-    }
-}
-
 /// What a long press offers on `key`: the letter first, then its accented forms cased for the
 /// shift, the ones the typing language uses first.
-fn accents(ask: Accents) -> Result<String, String> {
+fn accents(ask: &Accents) -> String {
     let language = language(&ask.language);
     let usage = dictionary(language).accent_usage();
     let key = crate::layout::Key::ch(&ask.key);
     let forms = key.alternates(shift(&ask.shift), |c| {
         usage.get(&c).copied().unwrap_or_default()
     });
-    Ok(json!({ "forms": forms }).to_string())
+    json!({ "forms": forms }).to_string()
 }
 
 // ---------------------------------------------------------------- emoji
@@ -389,14 +371,14 @@ impl Default for Emoji {
     }
 }
 
-fn emoji(ask: Emoji) -> Result<String, String> {
+fn emoji(ask: &Emoji) -> String {
     let catalogue = emoji::Catalogue::english();
     let found: Vec<&str> = catalogue
         .suggest(&ask.word.to_lowercase(), ask.limit.clamp(1, MOST_WORDS))
         .into_iter()
         .map(emoji::Emoji::text)
         .collect();
-    Ok(json!({ "emoji": found }).to_string())
+    json!({ "emoji": found }).to_string()
 }
 
 // ---------------------------------------------------------------- swipe
@@ -427,37 +409,36 @@ impl Default for Swipe {
     }
 }
 
-fn swipe(ask: Swipe) -> Result<String, String> {
-    let layout =
-        KeyboardLayout::by_name(&ask.layout).unwrap_or_else(KeyboardLayout::qwerty);
+fn swipe(ask: &Swipe) -> String {
+    let layout = KeyboardLayout::by_name(&ask.layout).unwrap_or_else(KeyboardLayout::qwerty);
     let area = Rect::new(ask.area[0], ask.area[1], ask.area[2], ask.area[3]);
     if area.width() <= 0.0 || area.height() <= 0.0 {
-        return Ok(json!({ "swipe": false, "candidates": [] }).to_string());
+        return json!({ "swipe": false, "candidates": [] }).to_string();
     }
     let geom = key_rects(&layout, area, ShiftState::Off);
     let path: Vec<Point> = ask
         .path
         .chunks_exact(2)
-        .map(|pair| Point::new(pair[0], pair[1]))
+        .filter_map(|pair| Some(Point::new(*pair.first()?, *pair.get(1)?)))
         .collect();
     if path.len() < 2 || !crate::swipe::is_swipe(&path, key_scale(&geom, &layout)) {
-        return Ok(json!({ "swipe": false, "candidates": [] }).to_string());
+        return json!({ "swipe": false, "candidates": [] }).to_string();
     }
     let language = language(&ask.language);
     let shift = shift(&ask.shift);
     let candidates: Vec<serde_json::Value> = with_decoder(language, |decoder| {
         decoder.decode(&path, &geom, &layout, ask.limit.clamp(1, MOST_WORDS))
     })
-        .into_iter()
-        .map(|candidate| {
-            json!({
-                "word": case_word(&candidate.word, shift),
-                "score": candidate.score,
-                "raw": candidate.word,
-            })
+    .into_iter()
+    .map(|candidate| {
+        json!({
+            "word": case_word(&candidate.word, shift),
+            "score": candidate.score,
+            "raw": candidate.word,
         })
-        .collect();
-    Ok(json!({ "swipe": true, "candidates": candidates }).to_string())
+    })
+    .collect();
+    json!({ "swipe": true, "candidates": candidates }).to_string()
 }
 
 fn case_word(word: &str, shift: ShiftState) -> String {
@@ -467,7 +448,9 @@ fn case_word(word: &str, shift: ShiftState) -> String {
 /// A key's size, in logical pixels, as the width the keyboard lays out: the first letter key's
 /// width, so a path is measured against the keys it crossed.
 fn key_scale(geom: &[(crate::layout::KeyId, Rect)], layout: &KeyboardLayout) -> f64 {
-    crate::swipe::letter_key_scale(geom, layout).unwrap_or(1.0).max(1.0)
+    crate::swipe::letter_key_scale(geom, layout)
+        .unwrap_or(1.0)
+        .max(1.0)
 }
 
 // ---------------------------------------------------------------- taps
@@ -505,9 +488,8 @@ impl Default for Touch {
 }
 
 /// The key a finger meant, and what its landing taught this person's tap positions.
-fn touch(ask: Touch) -> Result<String, String> {
-    let layout =
-        KeyboardLayout::by_name(&ask.layout).unwrap_or_else(KeyboardLayout::qwerty);
+fn touch(ask: &Touch) -> String {
+    let layout = KeyboardLayout::by_name(&ask.layout).unwrap_or_else(KeyboardLayout::qwerty);
     let area = Rect::new(ask.area.0, ask.area.1, ask.area.2, ask.area.3);
     let geom = key_rects(&layout, area, ShiftState::Off);
     let keys: Vec<TouchKey> = geom
@@ -539,10 +521,12 @@ fn touch(ask: Touch) -> Result<String, String> {
     let next = held(predictor(language)).next_key_distribution(previous, &ask.word);
     let point = Point::new(ask.point.0, ask.point.1);
     let Some(target) = crate::touch_model::resolve(point, &keys, &next, &model) else {
-        return Ok(json!({ "key": null }).to_string());
+        return json!({ "key": null }).to_string();
     };
     let mut learnt = None;
-    if ask.personalization && let Some(key) = keys.iter().find(|key| key.id == target) {
+    if ask.personalization
+        && let Some(key) = keys.iter().find(|key| key.id == target)
+    {
         model.learn(key.ch, point, key.rect);
         if let Some(offset) = model.offset(key.ch) {
             learnt = Some(json!({
@@ -554,5 +538,5 @@ fn touch(ask: Touch) -> Result<String, String> {
         }
     }
     let _ = NextKeyDistribution::uniform();
-    Ok(json!({ "key": [target.row, target.col], "taught": learnt }).to_string())
+    json!({ "key": [target.row, target.col], "taught": learnt }).to_string()
 }

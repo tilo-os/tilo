@@ -62,7 +62,7 @@ impl KeyAdjacency {
         for (i, &(a, ra)) in keys.iter().enumerate() {
             let slack = ra.width().min(ra.height()) * 0.05;
             let grown = ra.inflate(slack, slack);
-            for &(b, rb) in keys.iter().skip(i + 1) {
+            for &(b, rb) in keys.iter().skip(i.saturating_add(1)) {
                 if a != b && !grown.intersect(rb).is_zero_area() {
                     pairs.insert((a, b));
                     pairs.insert((b, a));
@@ -90,47 +90,65 @@ impl KeyAdjacency {
 }
 
 pub fn edit_cost(typed: &str, candidate: &str, adjacency: &KeyAdjacency) -> f64 {
-    let a: Vec<char> = typed.chars().collect();
-    let b: Vec<char> = candidate.chars().collect();
-    let cols = b.len() + 1;
-    let mut d = vec![0.0f64; (a.len() + 1) * cols];
-    let at = |i: usize, j: usize| i * cols + j;
-    for i in 0..=a.len() {
-        if let Some(c) = d.get_mut(at(i, 0)) {
-            *c = i as f64 * EDIT_COST;
+    let typed_chars: Vec<char> = typed.chars().collect();
+    let candidate_chars: Vec<char> = candidate.chars().collect();
+    let columns = candidate_chars.len().saturating_add(1);
+    let mut costs = vec![0.0f64; typed_chars.len().saturating_add(1).saturating_mul(columns)];
+    let cell = |row: usize, column: usize| row.saturating_mul(columns).saturating_add(column);
+    // Against nothing, a prefix costs one edit for each of its characters.
+    let mut cost = 0.0;
+    for row in 0..=typed_chars.len() {
+        if let Some(held) = costs.get_mut(cell(row, 0)) {
+            *held = cost;
         }
+        cost += EDIT_COST;
     }
-    for j in 0..=b.len() {
-        if let Some(c) = d.get_mut(at(0, j)) {
-            *c = j as f64 * EDIT_COST;
+    let mut cost = 0.0;
+    for column in 0..=candidate_chars.len() {
+        if let Some(held) = costs.get_mut(cell(0, column)) {
+            *held = cost;
         }
+        cost += EDIT_COST;
     }
-    let get = |d: &[f64], i: usize, j: usize| d.get(at(i, j)).copied().unwrap_or(f64::INFINITY);
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            let (Some(&ca), Some(&cb)) = (a.get(i - 1), b.get(j - 1)) else {
-                continue;
-            };
-            let sub = if ca == cb {
+    let cost_at = |costs: &[f64], row: usize, column: usize| {
+        costs
+            .get(cell(row, column))
+            .copied()
+            .unwrap_or(f64::INFINITY)
+    };
+    // Row `row` and column `column` hold the cost of the first `row` typed and
+    // `column` candidate characters; `typed_char` and `candidate_char` are the
+    // last of those, at `typed_at` and `candidate_at`.
+    for (typed_at, &typed_char) in typed_chars.iter().enumerate() {
+        let row = typed_at.saturating_add(1);
+        for (candidate_at, &candidate_char) in candidate_chars.iter().enumerate() {
+            let column = candidate_at.saturating_add(1);
+            let substitution = if typed_char == candidate_char {
                 0.0
-            } else if adjacency.adjacent(ca, cb) {
+            } else if adjacency.adjacent(typed_char, candidate_char) {
                 ADJACENT_SUBSTITUTION_COST
             } else {
                 EDIT_COST
             };
-            let mut best = (get(&d, i - 1, j) + EDIT_COST)
-                .min(get(&d, i, j - 1) + EDIT_COST)
-                .min(get(&d, i - 1, j - 1) + sub);
-            if i > 1 && j > 1 && a.get(i - 2) == Some(&cb) && b.get(j - 2) == Some(&ca) && ca != cb
+            let mut best = (cost_at(&costs, typed_at, column) + EDIT_COST)
+                .min(cost_at(&costs, row, candidate_at) + EDIT_COST)
+                .min(cost_at(&costs, typed_at, candidate_at) + substitution);
+            // Two neighbouring characters typed the other way round are one transposition.
+            if let (Some(previous_typed), Some(previous_candidate)) =
+                (typed_at.checked_sub(1), candidate_at.checked_sub(1))
+                && typed_chars.get(previous_typed) == Some(&candidate_char)
+                && candidate_chars.get(previous_candidate) == Some(&typed_char)
+                && typed_char != candidate_char
             {
-                best = best.min(get(&d, i - 2, j - 2) + TRANSPOSITION_COST);
+                best = best
+                    .min(cost_at(&costs, previous_typed, previous_candidate) + TRANSPOSITION_COST);
             }
-            if let Some(c) = d.get_mut(at(i, j)) {
-                *c = best;
+            if let Some(held) = costs.get_mut(cell(row, column)) {
+                *held = best;
             }
         }
     }
-    get(&d, a.len(), b.len())
+    cost_at(&costs, typed_chars.len(), candidate_chars.len())
 }
 
 fn hash_str(s: &str) -> u64 {
@@ -173,7 +191,11 @@ impl Autocorrector {
             if !(MIN_WORD_CHARS - 1..=MAX_WORD_CHARS).contains(&n) {
                 continue;
             }
-            let idx = words.len() as u32;
+            // A word table of 2^32 entries is beyond any device's memory; a word
+            // this index cannot name is left uncorrected rather than named wrongly.
+            let Ok(idx) = u32::try_from(words.len()) else {
+                break;
+            };
             for d in single_deletes(&entry.word) {
                 deletes.push((hash_str(&d), idx));
             }
@@ -318,19 +340,22 @@ mod tests {
         phase adjacent_substitution_is_cheaper;
         {
             let adj = KeyAdjacency::from_layout(&KeyboardLayout::qwerty());
-            assert_eq!(edit_cost("tge", "the", &adj), ADJACENT_SUBSTITUTION_COST);
-            assert_eq!(edit_cost("tpe", "the", &adj), EDIT_COST);
-            assert_eq!(edit_cost("teh", "the", &adj), TRANSPOSITION_COST);
-            assert_eq!(edit_cost("the", "the", &adj), 0.0);
+            // The costs are exact sums of the constants above; comparing their
+            // bits compares the numbers, which the floats' own equality does not.
+            let cost = |typed: &str, candidate: &str| edit_cost(typed, candidate, &adj).to_bits();
+            assert_eq!(cost("tge", "the"), ADJACENT_SUBSTITUTION_COST.to_bits());
+            assert_eq!(cost("tpe", "the"), EDIT_COST.to_bits());
+            assert_eq!(cost("teh", "the"), TRANSPOSITION_COST.to_bits());
+            assert_eq!(cost("the", "the"), 0.0f64.to_bits());
             // Nothing to line up, or a letter too few or too many: each letter
             // put in or taken out costs one edit.
-            assert_eq!(edit_cost("", "", &adj), 0.0);
-            assert_eq!(edit_cost("", "the", &adj), 3.0 * EDIT_COST);
-            assert_eq!(edit_cost("the", "", &adj), 3.0 * EDIT_COST);
-            assert_eq!(edit_cost("th", "the", &adj), EDIT_COST, "a missing letter");
+            assert_eq!(cost("", ""), 0.0f64.to_bits());
+            assert_eq!(cost("", "the"), (3.0 * EDIT_COST).to_bits());
+            assert_eq!(cost("the", ""), (3.0 * EDIT_COST).to_bits());
+            assert_eq!(cost("th", "the"), EDIT_COST.to_bits(), "a missing letter");
             assert_eq!(
-                edit_cost("thee", "the", &adj),
-                EDIT_COST,
+                cost("thee", "the"),
+                EDIT_COST.to_bits(),
                 "a doubled letter"
             );
         }

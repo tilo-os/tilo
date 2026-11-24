@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 
 use crate::dict::{Dictionary, Language, fold_char, starts_with_folded, weight_to_count};
+use crate::num::f32_of_u32;
 use crate::touch_model::NextKeyDistribution;
 
 /// Bound the local adaptation cache. Prediction is helpful only while it is
@@ -102,7 +103,7 @@ impl Predictor {
     }
 
     pub fn split_elision<'a>(&self, word: &'a str) -> Option<(&'a str, &'a str)> {
-        let at = word.find('\'')? + 1;
+        let at = word.find('\'')?.checked_add(1)?;
         let (elision, rest) = word.split_at(at);
         (self.dict.contains(elision)
             && (rest.is_empty() || self.dict.iter_prefix(word).next().is_none()))
@@ -243,7 +244,7 @@ impl Predictor {
                 if !starts_with_folded(word, &prefix) {
                     continue;
                 }
-                let confidence = *count as f32 / count.saturating_add(3) as f32;
+                let confidence = f32_of_u32(*count) / f32_of_u32(count.saturating_add(3));
                 upsert_max(&mut scores, word, 0.85 + 0.15 * confidence);
             }
         }
@@ -253,7 +254,7 @@ impl Predictor {
                 if !starts_with_folded(w2, &prefix) {
                     continue;
                 }
-                let bigram_score = *weight as f32 / self.max_bigram_weight as f32;
+                let bigram_score = f32_of_u32(*weight) / f32_of_u32(self.max_bigram_weight);
                 let freq = self.dict.frequency(w2);
                 let s = 0.7 * bigram_score + 0.3 * freq;
                 upsert_max(&mut scores, w2, s);
@@ -265,14 +266,14 @@ impl Predictor {
         // still suggest even without a bigram hit. When there is no prefix and
         // no bigram context, fall back to the most common words.
         if !prefix.is_empty() {
-            for entry in self.dict.complete(&prefix, n * 4) {
+            for entry in self.dict.complete(&prefix, n.saturating_mul(4)) {
                 let freq = self.dict.frequency(&entry.word);
                 // Completion-only candidates score below bigram hits.
                 let s = 0.45 * freq;
                 upsert_max(&mut scores, &entry.word, s);
             }
         } else if prev.is_none() || !self.bigrams.contains_key(prev.as_deref().unwrap_or("")) {
-            for entry in self.dict.words().iter().take(n * 2) {
+            for entry in self.dict.words().iter().take(n.saturating_mul(2)) {
                 let freq = self.dict.frequency(&entry.word);
                 upsert_max(&mut scores, &entry.word, 0.3 * freq);
             }

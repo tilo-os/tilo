@@ -18,6 +18,7 @@ use swipe::{FutoSwipe, ModelPaths};
 use vello::kurbo::{Point, Rect};
 
 use crate::layout::{KeyId, KeyboardLayout};
+use crate::num::{f32_of_count, f32_of_f64};
 use crate::swipe::{Candidate, SwipeModel};
 
 const ENCODER: &str = "honorable_sturgeon/model_fp32.pte";
@@ -43,8 +44,7 @@ impl FutoSwipeModel {
             lm_vocab: with_lm.then(|| lm_vocab.clone()),
             dict_combined: Some(d.join(DICT)),
         };
-        FutoSwipe::new(&paths, 100, 5)
-            .map(|engine| Self { engine })
+        FutoSwipe::new(&paths, 100, 5).map(|engine| Self { engine })
     }
 
     pub fn default_load() -> Option<Self> {
@@ -59,8 +59,11 @@ impl FutoSwipeModel {
     }
 
     pub fn predict_next(&self, context: &[&str], k: usize) -> Vec<Candidate> {
+        // The decoder names its count as `i32`; asking for more candidates than
+        // it can name is answered with all it can.
+        let k = i32::try_from(k).unwrap_or(i32::MAX);
         self.engine
-            .predict_next(context, k as i32)
+            .predict_next(context, k)
             .into_iter()
             .map(|c| Candidate {
                 word: c.word,
@@ -109,11 +112,12 @@ impl SwipeModel for FutoSwipeModel {
         let mut ys = Vec::with_capacity(path.len());
         let mut ts = Vec::with_capacity(path.len());
         for (i, p) in path.iter().enumerate() {
-            xs.push((((p.x - min_pt.x) / w).clamp(0.0, 1.0)) as f32);
-            ys.push((((p.y - min_pt.y) / h).clamp(0.0, 1.0)) as f32);
-            ts.push(i as f32 * 16.0);
+            xs.push(f32_of_f64(((p.x - min_pt.x) / w).clamp(0.0, 1.0)));
+            ys.push(f32_of_f64(((p.y - min_pt.y) / h).clamp(0.0, 1.0)));
+            ts.push(f32_of_count(i) * 16.0);
         }
-        let cands = self.engine.recognize(&xs, &ys, &ts, top_n as i32);
+        let top_n = i32::try_from(top_n).unwrap_or(i32::MAX);
+        let cands = self.engine.recognize(&xs, &ys, &ts, top_n);
         // The FUTO scores are model log-scores; the OSK only needs ranked
         // order in `0..=1`, so map by rank (best first).
         let n = cands.len().max(1);
@@ -122,7 +126,7 @@ impl SwipeModel for FutoSwipeModel {
             .enumerate()
             .map(|(i, c)| Candidate {
                 word: c.word,
-                score: 1.0 - (i as f32) / (n as f32),
+                score: 1.0 - f32_of_count(i) / f32_of_count(n),
             })
             .collect()
     }

@@ -24,6 +24,8 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use crate::num::f32_of_u32;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Language {
     #[default]
@@ -160,7 +162,9 @@ impl Dictionary {
         entries.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.word.cmp(&b.word)));
         let max_weight = entries.first().map_or(1, |e| e.weight).max(1);
 
-        let mut by_lex: Vec<u32> = (0..entries.len() as u32).collect();
+        // A word table of 2^32 entries is beyond any device's memory; saturating
+        // there states the bound every stored index relies on.
+        let mut by_lex: Vec<u32> = (0..u32::try_from(entries.len()).unwrap_or(u32::MAX)).collect();
         // `by_lex` is built from `0..entries.len()` just above, so every
         // index is in range; `get` keeps that an invariant rather than an
         // indexing panic.
@@ -215,7 +219,7 @@ impl Dictionary {
 
     pub fn frequency(&self, word: &str) -> f32 {
         match self.weight(word) {
-            Some(w) => w as f32 / self.max_weight as f32,
+            Some(w) => f32_of_u32(w) / f32_of_u32(self.max_weight),
             None => 0.0,
         }
     }
@@ -292,11 +296,16 @@ impl Dictionary {
         });
         // Upper bound: first word past `lo` that does not start with the
         // prefix; folded order keeps every match contiguous.
-        let hi = self.by_lex.get(lo..).unwrap_or(&[]).partition_point(|&i| {
-            self.entries
-                .get(i as usize)
-                .is_some_and(|e| starts_with_folded(&e.word, prefix))
-        }) + lo;
+        let hi = self
+            .by_lex
+            .get(lo..)
+            .unwrap_or(&[])
+            .partition_point(|&i| {
+                self.entries
+                    .get(i as usize)
+                    .is_some_and(|e| starts_with_folded(&e.word, prefix))
+            })
+            .saturating_add(lo);
         (lo, hi)
     }
 }
@@ -333,7 +342,7 @@ mod tests {
                 assert!(d.weight("the").unwrap() > d.weight("quick").unwrap());
                 assert_eq!(d.weight("THE"), d.weight("the"));
                 assert!(!d.contains("zzxqj"));
-                assert_eq!(d.frequency("zzxqj"), 0.0);
+                assert_eq!(d.frequency("zzxqj").to_bits(), 0.0f32.to_bits());
             }
 
             eprintln!("phase frequency_is_normalised_and_monotone");
@@ -365,7 +374,7 @@ mod tests {
             assert_eq!(empty.len(), 0);
             assert!(!empty.contains("the"));
             assert_eq!(empty.weight("the"), None);
-            assert_eq!(empty.frequency("the"), 0.0);
+            assert_eq!(empty.frequency("the").to_bits(), 0.0f32.to_bits());
             assert!(empty.complete("t", 5).is_empty());
             assert_eq!(empty.iter_prefix("").count(), 0);
             assert!(empty.next_char_weights("").is_empty());
@@ -375,7 +384,7 @@ mod tests {
             let rare = Dictionary::from_str("rare\t0\n");
             assert!(rare.contains("rare"));
             assert_eq!(rare.weight("rare"), Some(0));
-            assert_eq!(rare.frequency("rare"), 0.0);
+            assert_eq!(rare.frequency("rare").to_bits(), 0.0f32.to_bits());
 
             for (line, why) in [
                 ("\t5", "no word"),

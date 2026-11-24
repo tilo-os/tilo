@@ -34,6 +34,7 @@ use vello::kurbo::{Point, Rect};
 
 use crate::dict::{Dictionary, Language, fold_char};
 use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout};
+use crate::num::{f32_of_f64, f64_of_count};
 
 /// Number of points each path (user + ideal) is resampled to before scoring.
 /// SHARK² uses ~100; a smaller count is plenty for a phone-width keyboard and
@@ -172,7 +173,7 @@ impl GeometricSwipeModel {
                 let cost = distance
                     + 0.15 * ends / (key_scale * key_scale)
                     + f64::from(prior_weight) / 100.0 * prior;
-                candidate.score = (-cost).exp() as f32;
+                candidate.score = f32_of_f64((-cost).exp());
             }
         }
         scored.sort_by(|a, b| {
@@ -223,7 +224,7 @@ impl SwipeModel for GeometricSwipeModel {
         let path_len = polyline_length(&user);
         // A swipe's polyline is roughly as long as the sum of hops between its
         // letters; use it to bound candidate length and skip wildly off words.
-        let approx_letters = (path_len / key_scale).round() as i32;
+        let approx_letters = (path_len / key_scale).round();
 
         let mut scored: Vec<Candidate> = Vec::new();
         for index in self.endpoint_candidates(&start_letters, &end_letters) {
@@ -232,16 +233,16 @@ impl SwipeModel for GeometricSwipeModel {
             };
             let word = &entry.word;
             let chars: Vec<char> = word.chars().map(fold_char).collect();
-            let len = chars.len() as i32;
-            if len < 1 {
+            let letters = f64_of_count(chars.len());
+            if letters < 1.0 {
                 continue;
             }
             // Single-letter words can't be swiped (no path) — skip; they are
             // produced by tapping, not swiping.
-            if len < 2 {
+            if letters < 2.0 {
                 continue;
             }
-            if (len - approx_letters).abs() > approx_letters.max(4) {
+            if (letters - approx_letters).abs() > approx_letters.max(4.0) {
                 continue;
             }
             // First/last letter must be near the path ends (the classic
@@ -265,10 +266,10 @@ impl SwipeModel for GeometricSwipeModel {
             }
             let ideal_rs = resample(&ideal, RESAMPLE_N);
             #[cfg(test)]
-            SHAPES_SCORED.with(|count| count.set(count.get() + 1));
+            SHAPES_SCORED.with(|count| count.set(count.get().saturating_add(1)));
 
             let shape = mean_point_distance(&user, &ideal_rs) / user_bbox;
-            let shape_score = (1.0 - shape).clamp(0.0, 1.0) as f32;
+            let shape_score = f32_of_f64((1.0 - shape).clamp(0.0, 1.0));
 
             let freq = self.dict.frequency(word);
             let score = 0.78 * shape_score + 0.22 * freq;
@@ -302,20 +303,20 @@ fn elastic_distance(user: &[Point], ideal: &[Point]) -> f64 {
     for (i, &a) in user.iter().enumerate() {
         let mut current = [f64::INFINITY; RESAMPLE_N + 1];
         let lower = i.saturating_sub(BAND);
-        let upper = (i + BAND + 1).min(ideal.len());
+        let upper = i.saturating_add(BAND).saturating_add(1).min(ideal.len());
         for (j, &b) in ideal.iter().enumerate().take(upper).skip(lower) {
             if let (Some(&diagonal), Some(&vertical), Some(horizontal), Some(cell)) = (
                 previous.get(j),
-                previous.get(j + 1),
+                previous.get(j.saturating_add(1)),
                 current.get(j).copied(),
-                current.get_mut(j + 1),
+                current.get_mut(j.saturating_add(1)),
             ) {
                 *cell = dist2(a, b) + diagonal.min(vertical).min(horizontal);
             }
         }
         previous = current;
     }
-    previous.get(ideal.len()).copied().unwrap_or(f64::INFINITY) / RESAMPLE_N as f64
+    previous.get(ideal.len()).copied().unwrap_or(f64::INFINITY) / f64_of_count(RESAMPLE_N)
 }
 
 fn index_endpoints(dict: &Dictionary) -> HashMap<(char, char), Vec<usize>> {
@@ -350,16 +351,16 @@ fn letter_centres(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> HashMa
 /// Letter-key width and height define the scoring unit. Wide editing keys
 /// must not change recognition of a path through otherwise identical letters.
 pub fn letter_key_scale(key_geom: &[(KeyId, Rect)], layout: &KeyboardLayout) -> Option<f64> {
-    let mut count = 0;
+    let mut count = 0usize;
     let sum: f64 = key_geom
         .iter()
         .filter(|(id, _)| layout.key(*id).is_some_and(Key::is_letter))
         .map(|(_, rect)| {
-            count += 1;
+            count = count.saturating_add(1);
             (rect.width() + rect.height()) * 0.5
         })
         .sum();
-    (count != 0).then(|| sum / f64::from(count))
+    (count != 0).then(|| sum / f64_of_count(count))
 }
 
 fn nearby_letters(p: Point, centres: &HashMap<char, Point>, radius: f64) -> Vec<char> {
@@ -411,23 +412,23 @@ fn resample(path: &[Point], n: usize) -> Vec<Point> {
     if total <= f64::EPSILON {
         return vec![first_pt; n];
     }
-    let step = total / (n - 1) as f64;
+    let step = total / f64_of_count(n.saturating_sub(1));
     let mut out = Vec::with_capacity(n);
     out.push(first_pt);
     let mut seg = 0usize;
     let mut seg_consumed = 0.0;
     let mut acc = 0.0;
-    for _ in 1..(n - 1) {
+    for _ in 1..n.saturating_sub(1) {
         acc += step;
         // Advance along segments until we've covered `acc` arc length.
         // `seg` is bounded below `path.len() - 1` by the loop condition
         // (`seg + 1 >= path.len() - 1` breaks it out first), so both
         // indices are always in range.
-        while let (Some(&a), Some(&b)) = (path.get(seg), path.get(seg + 1)) {
+        while let (Some(&a), Some(&b)) = (path.get(seg), path.get(seg.saturating_add(1))) {
             let seg_len = dist(a, b);
             let remaining = seg_len - seg_consumed;
             let need = acc - traversed(path, seg, seg_consumed);
-            if need <= remaining || seg + 1 >= path.len() - 1 {
+            if need <= remaining || seg.saturating_add(1) >= path.len().saturating_sub(1) {
                 let t = if seg_len > 0.0 {
                     (seg_consumed + need).min(seg_len) / seg_len
                 } else {
@@ -437,7 +438,7 @@ fn resample(path: &[Point], n: usize) -> Vec<Point> {
                 seg_consumed = (seg_consumed + need).min(seg_len);
                 break;
             }
-            seg += 1;
+            seg = seg.saturating_add(1);
             seg_consumed = 0.0;
         }
     }
@@ -490,7 +491,7 @@ fn mean_point_distance(a: &[Point], b: &[Point]) -> f64 {
         return f64::MAX;
     }
     let sum: f64 = a.iter().zip(b.iter()).map(|(&pa, &pb)| dist(pa, pb)).sum();
-    sum / n as f64
+    sum / f64_of_count(n)
 }
 
 fn dist(a: Point, b: Point) -> f64 {
@@ -590,7 +591,7 @@ mod tests {
                 assert_eq!(actual.len(), expected.len());
                 for (actual, expected) in actual.iter().zip(&expected) {
                     assert_eq!(actual.word, expected.word);
-                    assert_eq!(actual.score, expected.score);
+                    assert_eq!(actual.score.to_bits(), expected.score.to_bits());
                 }
             }
         }
@@ -702,7 +703,7 @@ mod tests {
             assert_eq!(top.first().map(|c| c.word.as_str()), Some("keyboard"));
             let words = model.dictionary().len();
             assert!(
-                scored * 4 < words,
+                scored.saturating_mul(4) < words,
                 "the endpoint index prunes the dictionary: {scored} of {words} words scored"
             );
         }
@@ -793,12 +794,14 @@ mod tests {
             for part in swipes.chunks(chunk) {
                 let (layout, geom) = (&layout, &geom);
                 workers.push(scope.spawn(move || {
-                    let (mut top1, mut top3) = (0, 0);
+                    let (mut top1, mut top3) = (0usize, 0usize);
                     for (word, path) in part {
                         let top = model.decode_top(path, geom, layout, 3);
                         match top.iter().position(|c| c.word == *word) {
-                            Some(0) => (top1, top3) = (top1 + 1, top3 + 1),
-                            Some(_) => top3 += 1,
+                            Some(0) => {
+                                (top1, top3) = (top1.saturating_add(1), top3.saturating_add(1));
+                            }
+                            Some(_) => top3 = top3.saturating_add(1),
                             None => {}
                         }
                     }
@@ -808,7 +811,9 @@ mod tests {
             workers
                 .into_iter()
                 .map(|w| w.join().expect("decode worker"))
-                .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+                .fold((0usize, 0usize), |a, b| {
+                    (a.0.saturating_add(b.0), a.1.saturating_add(b.1))
+                })
         })
     }
 

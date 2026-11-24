@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use vello::kurbo::{Point, Rect};
 
 use crate::layout::KeyId;
+use crate::num::{f32_of_f64, f32_of_u32, f64_of_count, usize_of_f64};
 
 /// Standard deviation of the touch distribution around a key centre, as a
 /// fraction of the key's width (x) and height (y). Tuned with the simulated
@@ -185,11 +186,11 @@ impl TouchModel {
         }
         let c = rect.center();
         let lim = f64::from(MAX_OFFSET) * 2.0;
-        let ox = ((touch.x - c.x) / rect.width()).clamp(-lim, lim) as f32;
-        let oy = ((touch.y - c.y) / rect.height()).clamp(-lim, lim) as f32;
+        let ox = f32_of_f64(((touch.x - c.x) / rect.width()).clamp(-lim, lim));
+        let oy = f32_of_f64(((touch.y - c.y) / rect.height()).clamp(-lim, lim));
         let entry = self.offsets.entry(ch).or_default();
         entry.samples = entry.samples.saturating_add(1);
-        let rate = (1.0 / entry.samples as f32).max(MIN_LEARNING_RATE);
+        let rate = (1.0 / f32_of_u32(entry.samples)).max(MIN_LEARNING_RATE);
         entry.dx = (entry.dx + rate * (ox - entry.dx)).clamp(-MAX_OFFSET, MAX_OFFSET);
         entry.dy = (entry.dy + rate * (oy - entry.dy)).clamp(-MAX_OFFSET, MAX_OFFSET);
     }
@@ -241,7 +242,7 @@ pub fn resolve_with(
     let uniform = if keys.is_empty() {
         0.0
     } else {
-        1.0 / keys.len() as f64
+        1.0 / f64_of_count(keys.len())
     };
     let prior = |ch: char| {
         if p_next.is_uniform() {
@@ -278,12 +279,12 @@ pub fn hit_map(
     if step <= 0.0 || area.width() <= 0.0 || area.height() <= 0.0 {
         return cells;
     }
-    let columns = (area.width() / step).ceil() as usize;
-    let rows = (area.height() / step).ceil() as usize;
+    let columns = usize_of_f64((area.width() / step).ceil());
+    let rows = usize_of_f64((area.height() / step).ceil());
     for row in 0..rows {
-        let y = area.y0 + row as f64 * step;
+        let y = area.y0 + f64_of_count(row) * step;
         for column in 0..columns {
-            let x = area.x0 + column as f64 * step;
+            let x = area.x0 + f64_of_count(column) * step;
             let rect = Rect::new(x, y, (x + step).min(area.x1), (y + step).min(area.y1));
             let c = rect.center();
             // Resolution only ever runs for a tap that landed on a letter.
@@ -328,8 +329,8 @@ impl NextKeyCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::predict::Predictor;
     use crate::layout::{KeyboardLayout, ShiftState, key_rects};
+    use crate::predict::Predictor;
 
     fn qwerty_keys() -> Vec<TouchKey> {
         let layout = KeyboardLayout::qwerty();

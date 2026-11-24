@@ -13,6 +13,7 @@ pub mod autocorrect;
 pub mod dict;
 pub mod futo;
 pub mod layout;
+mod num;
 pub mod predict;
 pub mod service;
 pub mod swipe;
