@@ -1222,6 +1222,9 @@ action ids, arguments and answers (`person_accounts`, `person_vault`,
   replica admits its writes to that record and nothing else, with no member row
   and no keys, and history names the person. It never enters a workspace or
   redeems an invitation.
+  It never holds a key: a reader device of the person, the placing host when it
+  is one and otherwise the device they use it from, seals and opens its record
+  over the same links, and nothing else does.
   Inside such a VM the daemon's socket opens only for the tenant's account: the
   daemon checks each connection's peer credentials and refuses any other account,
   the Browser's included. A tenant connection acts as the person's unnamed agent,
