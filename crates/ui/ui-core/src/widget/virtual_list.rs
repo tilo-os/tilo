@@ -842,6 +842,17 @@ impl VirtualRows {
         self.rect.inflate(hang, 0.0)
     }
 
+    /// Whether the rows stand clear of the scroll bar's gutter: while the content overflows,
+    /// beside a bar in its own gutter, and beside an overlay bar that never fades (reduced
+    /// motion), which would otherwise rest over the rows' trailing edge.
+    pub(super) fn keeps_bar_gutter(&self) -> bool {
+        self.scroll_metrics().overflows()
+            && self
+                .overlay_bar
+                .as_ref()
+                .is_none_or(crate::widget::OverlayScrollbar::shown_at_rest)
+    }
+
     fn trailing_inset(&self) -> f64 {
         let bar = if self.rows_beside_bar {
             self.gutter
@@ -1907,7 +1918,7 @@ impl Widget for VirtualRows {
             let offset = self.viewport.offset();
             self.viewport.set_viewport(self.rect.height());
             self.keep_end();
-            let beside_bar = self.overlay_bar.is_none() && self.scroll_metrics().overflows();
+            let beside_bar = self.keeps_bar_gutter();
             if self.viewport.offset().to_bits() != offset.to_bits()
                 || beside_bar != self.rows_beside_bar
             {

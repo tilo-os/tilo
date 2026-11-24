@@ -127,7 +127,7 @@ impl VirtualRows {
 
 impl VirtualRows {
     pub(super) fn place_rows(&mut self, taffy: &mut impl Styles) {
-        self.rows_beside_bar = self.overlay_bar.is_none() && self.scroll_metrics().overflows();
+        self.rows_beside_bar = self.keeps_bar_gutter();
         let left = length(px(self.lead));
         let right = length(px(self.trailing_inset()));
         let places = self

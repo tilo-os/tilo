@@ -151,6 +151,13 @@ impl OverlayScrollbar {
         self.reduce_motion || self.pointer_near || self.bar.is_active()
     }
 
+    /// Whether the bar stays shown at rest, as it does under reduced motion: it is then a bar
+    /// like any other, and its host keeps its gutter free rather than laying it over the content.
+    #[must_use]
+    pub fn shown_at_rest(&self) -> bool {
+        self.reduce_motion
+    }
+
     #[must_use]
     pub fn opacity(&self) -> f32 {
         self.fade
