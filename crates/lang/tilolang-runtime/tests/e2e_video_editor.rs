@@ -426,8 +426,12 @@ mod cases {
             assert_eq!(media.len(), 1);
             assert_eq!(s.text(&media[0], "words"), "Harbour");
             assert_eq!(s.clips(&p).len(), 1, "the title is placed too");
-            let input = s.engine.last_input();
-            assert!(input.is_empty(), "a title needs no engine work: {input}");
+            // The title is drawn from its own words: a title asked the device to probe nothing.
+            let ops = s.engine.ops();
+            assert!(
+                ops.iter().all(|op| op == "still"),
+                "a title needs no probe, only the frame it is drawn in: {ops:?}"
+            );
         }
 
         phase a_render_runs_as_a_job_whose_progress_is_asked;
@@ -560,16 +564,18 @@ mod cases {
             };
             let stills = || s.engine.ops().iter().filter(|op| *op == "still").count();
             // The preview draws the frame the person looks at.
+            let before = stills();
             s.call("preview", vec![Value::resource(&p), Value::Float(1.0)]);
-            assert_eq!(stills(), 1, "the frame at the playhead");
+            assert_eq!(stills(), before + 1, "the frame at the playhead");
             // A look the person changes draws it again: the edit is seen as it is made, not at
             // the next move of the playhead.
+            let before = stills();
             s.call(
                 "set_look",
                 vec![Value::resource(&clip), look("opacity"), Value::Float(0.4)],
             );
             assert_eq!(s.number(&clip, "opacity"), 0.4);
-            assert_eq!(stills(), 2, "the frame was drawn again after the edit");
+            assert_eq!(stills(), before + 1, "the frame was drawn again after the edit");
             // The mask is a shape the clip shows through, with its place, size and edge.
             s.call("set_mask", vec![Value::resource(&clip), Value::text("ellipse")]);
             assert_eq!(s.text(&clip, "mask_shape"), "ellipse");
