@@ -1,7 +1,6 @@
 {
   "app": "totp",
   "said": "Authenticator",
-  "family": "apps",
   "live": "tl",
   "tl": {
     "id": "so.tilo.totp",

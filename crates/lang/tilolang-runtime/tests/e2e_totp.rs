@@ -177,7 +177,9 @@ mod cases {
 
     /// One argument of a call by its parameter's name, `None` when it was left out.
     fn argument<'a>(args: &'a [(String, Value)], name: &str) -> Option<&'a Value> {
-        args.iter().find(|(key, _)| key == name).map(|(_, value)| value)
+        args.iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value)
     }
 
     fn text(args: &[(String, Value)], name: &str) -> String {
@@ -211,7 +213,9 @@ mod cases {
                 return Invoked::Failed("the vault answers actions alone".to_owned());
             };
             if app.as_str() != "so.tilo.vault" {
-                return Invoked::Failed(format!("this test's vault is no {app}, and `{name}` is not its own"));
+                return Invoked::Failed(format!(
+                    "this test's vault is no {app}, and `{name}` is not its own"
+                ));
             }
             self.calls.borrow_mut().push(name.clone());
             match name.as_str() {
@@ -343,9 +347,7 @@ mod cases {
 
         fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
             let id = self.app.action(action);
-            self.rt
-                .invoke_action(&me(), (id.as_str(), args))
-                .unwrap()
+            self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap()
         }
 
         fn add(&self, issuer: &str, label: &str, secret: &str) -> ResourceRef {
@@ -353,13 +355,7 @@ mod cases {
         }
 
         /// The account `issuer` names, kept with the colour slot it shows by.
-        fn add_coloured(
-            &self,
-            issuer: &str,
-            label: &str,
-            secret: &str,
-            color: i64,
-        ) -> ResourceRef {
+        fn add_coloured(&self, issuer: &str, label: &str, secret: &str, color: i64) -> ResourceRef {
             returned_ref(self.call(
                 "add_account",
                 vec![
@@ -412,7 +408,11 @@ mod cases {
         fn window(&self) -> ViewInstance {
             let mut window = self
                 .rt
-                .open_view(&me(), &self.app.view("vault_window"), vec![Value::resource(&self.root)])
+                .open_view(
+                    &me(),
+                    &self.app.view("vault_window"),
+                    vec![Value::resource(&self.root)],
+                )
                 .unwrap();
             window.set_lazy_rows(false).unwrap();
             window
@@ -513,11 +513,6 @@ mod cases {
         }
     }
 
-    /// Whether the view state `name` is set, as a flag.
-    fn state_bool(view: &ViewInstance, name: &str) -> bool {
-        truthy(view.view_state(name).as_ref().map(unslotted))
-    }
-
     /// A flag as a slot keeps it: a scalar is kept as the number it boxes to, or as the flag
     /// itself where the value came whole.
     fn truthy(value: Option<&Value>) -> bool {
@@ -542,6 +537,42 @@ mod cases {
         let window = s.window();
         let key = keyed(&window, "ui.Button", words);
         window.press(&key).expect("the press runs");
+    }
+
+    /// A setup link drawn as the QR code a person photographs, as a PNG: the picture the scan
+    /// reads, beside the bytes of one it cannot.
+    fn qr_png(uri: &str) -> Vec<u8> {
+        use image::{ExtendedColorType, ImageEncoder};
+        let code = qrcode::QrCode::with_error_correction_level(uri.as_bytes(), qrcode::EcLevel::M)
+            .expect("a setup link fits a QR code");
+        let modules = code.to_colors();
+        let side = code.width();
+        let (scale, quiet) = (6usize, 4usize);
+        let pixels_side = (side + quiet * 2) * scale;
+        let mut rgba = vec![255u8; pixels_side * pixels_side * 4];
+        for y in 0..side {
+            for x in 0..side {
+                if modules[y * side + x] == qrcode::Color::Dark {
+                    for dy in 0..scale {
+                        for dx in 0..scale {
+                            let px = (x + quiet) * scale + dx;
+                            let py = (y + quiet) * scale + dy;
+                            let at = (py * pixels_side + px) * 4;
+                            rgba[at..at + 4].copy_from_slice(&[0, 0, 0, 255]);
+                        }
+                    }
+                }
+            }
+        }
+        let (width, height) = (
+            u32::try_from(pixels_side).expect("a QR picture is a few hundred pixels wide"),
+            u32::try_from(pixels_side).expect("a QR picture is a few hundred pixels tall"),
+        );
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&rgba, width, height, ExtendedColorType::Rgba8)
+            .expect("the picture encodes as a PNG");
+        png
     }
 
     /// The notices the app said in passing, as (words, kind) pairs.
@@ -676,6 +707,29 @@ mod cases {
                 "{notice}"
             );
             assert!(s.accounts().is_empty());
+        }
+
+        phase a_picture_of_a_setup_link_adds_the_account_and_says_so;
+        {
+            let s = Desk::new();
+            let picture = s.picture(&qr_png(
+                "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&issuer=Acme",
+            ));
+            let made = s.call(
+                "import_picture",
+                vec![Value::resource(&s.root), Value::file(picture)],
+            );
+            assert!(matches!(made, InvokeOutcome::Done(_)), "{made:?}");
+            assert_eq!(
+                said(&s),
+                [("QR code read".to_owned(), "success".to_owned())],
+                "the person is told the picture's code was read"
+            );
+            let accounts = s.accounts();
+            assert_eq!(accounts.len(), 1, "the link the picture carried added its account");
+            assert_eq!(s.text(&accounts[0], "issuer"), "Acme");
+            assert_eq!(s.text(&accounts[0], "label"), "bob");
+            assert_eq!(s.text(&s.root, "notice"), "", "a picture that read says nothing wrong");
         }
 
         phase an_account_is_changed_and_its_key_kept_when_left_out;
