@@ -186,12 +186,17 @@ pub enum PersonalFabricAction {
     },
     /// Source-side cancellation before target consent has minted an
     /// authorization. Exact authenticated source/session binding is required.
-    RemoteAudioCancel { session_id: [u8; 16] },
+    RemoteAudioCancel {
+        session_id: [u8; 16],
+    },
     /// Fabric clock probe, sent only while something on the prober holds
     /// this peer's clock in sync. `sent_us` is the prober's
     /// `CLOCK_MONOTONIC` send time in microseconds, echoed back so the
     /// report closes a four-timestamp exchange. Carries nothing else.
-    FabricClockProbe { nonce: [u8; 16], sent_us: u64 },
+    FabricClockProbe {
+        nonce: [u8; 16],
+        sent_us: u64,
+    },
     /// The reporter's receive and reply times for one clock probe, from
     /// which the prober estimates clock offset and skew.
     FabricClockReport {
@@ -223,43 +228,15 @@ pub enum PersonalFabricAction {
         /// cannot play in time.
         playout: Option<crate::fabric::clock::ClockSyncState>,
     },
-    /// Ask one exact member device to join a group. The member's own
-    /// compositor asks its user; nothing plays until it approves.
-    SpeakerGroupInvite {
-        group: crate::fabric::speaker_group::SpeakerGroupId,
-        name: String,
-        output: crate::fabric::speaker_group::EndpointSelector,
-        role: crate::fabric::speaker_group::SpeakerRole,
-    },
-    /// The member's answer. The durable consent itself is the membership the
-    /// member authors in its own snapshot; this only reports promptly.
-    SpeakerGroupDecision {
-        group: crate::fabric::speaker_group::SpeakerGroupId,
-        accepted: bool,
-    },
-    /// The leader removed this member or deleted the group, or the member
-    /// left. Either side tears down every session of the group.
-    SpeakerGroupLeave {
-        group: crate::fabric::speaker_group::SpeakerGroupId,
-    },
-    /// Start one playback session on a consented member. Any of the person's
-    /// devices may play to a group; the member admits it only while its own
-    /// membership still covers the group as published by the leader.
-    SpeakerGroupSessionOffer {
-        session_id: [u8; 16],
-        group: crate::fabric::speaker_group::SpeakerGroupId,
-    },
-    /// Admission result. Approval carries a fresh random capability bound to
-    /// the exact source and session.
-    SpeakerGroupSessionDecision {
-        session_id: [u8; 16],
-        group: crate::fabric::speaker_group::SpeakerGroupId,
-        authorization: Option<[u8; 16]>,
-    },
-    SpeakerGroupSessionStop {
-        session_id: [u8; 16],
-        authorization: Option<[u8; 16]>,
-    },
+    // Speaker groups, their consents and their playbacks are carried in the record of the
+    // person's devices now: no device sends these, and validation refuses one from an older
+    // device. Each holds its tag so the actions after it keep theirs.
+    RetiredSpeakerGroupInvite,
+    RetiredSpeakerGroupDecision,
+    RetiredSpeakerGroupLeave,
+    RetiredSpeakerGroupSessionOffer,
+    RetiredSpeakerGroupSessionDecision,
+    RetiredSpeakerGroupSessionStop,
     /// Play a short sound on one of the target's own outputs so the person
     /// setting up speakers can tell which one it is. Rate-limited there.
     SpeakerIdentify {
@@ -448,19 +425,13 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::SpeakerGroupInvite {
-                group,
-                name,
-                output,
-                role,
-            } => {
-                if !group.valid()
-                    || !crate::fabric::speaker_group::valid_group_name(name)
-                    || !output.valid()
-                    || !role.valid()
-                {
-                    return Err(FabricError::InvalidAction);
-                }
+            PersonalFabricAction::RetiredSpeakerGroupInvite
+            | PersonalFabricAction::RetiredSpeakerGroupDecision
+            | PersonalFabricAction::RetiredSpeakerGroupLeave
+            | PersonalFabricAction::RetiredSpeakerGroupSessionOffer
+            | PersonalFabricAction::RetiredSpeakerGroupSessionDecision
+            | PersonalFabricAction::RetiredSpeakerGroupSessionStop => {
+                return Err(FabricError::InvalidAction);
             }
             PersonalFabricAction::SpeakerIdentify { output } => {
                 if !output.valid() {
@@ -503,35 +474,8 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::SpeakerGroupDecision { group, .. }
-            | PersonalFabricAction::SpeakerListenDecision { group, .. }
-            | PersonalFabricAction::SpeakerGroupLeave { group } => {
+            PersonalFabricAction::SpeakerListenDecision { group, .. } => {
                 if !group.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::SpeakerGroupSessionOffer { session_id, group } => {
-                if session_id == &[0; 16] || !group.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::SpeakerGroupSessionDecision {
-                session_id,
-                group,
-                authorization,
-            } => {
-                if session_id == &[0; 16]
-                    || !group.valid()
-                    || authorization.is_some_and(|value| value == [0; 16])
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::SpeakerGroupSessionStop {
-                session_id,
-                authorization,
-            } => {
-                if session_id == &[0; 16] || authorization.is_some_and(|value| value == [0; 16]) {
                     return Err(FabricError::InvalidAction);
                 }
             }

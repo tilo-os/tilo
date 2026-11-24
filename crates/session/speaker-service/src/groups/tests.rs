@@ -4,10 +4,12 @@ use std::time::{Duration, Instant};
 use media::sync_playout::ChannelRole;
 
 use super::*;
-use tilo_network_actor::fabric::speaker_group::{StereoSide, SurroundChannel};
+use tilo_network_actor::fabric::speaker_group::StereoSide;
 use tilo_network_actor::fabric::{
     DeviceAbout, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
 };
+use tilo_resource::Replica;
+use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 
 const LEFT: SpeakerRole = SpeakerRole::Stereo(StereoSide::Left);
 const RIGHT: SpeakerRole = SpeakerRole::Stereo(StereoSide::Right);
@@ -24,92 +26,602 @@ fn microphone(device: &str) -> EndpointSelector {
     EndpointSelector::mint(&id(device), "alsa_input.analog-stereo")
 }
 
-fn stamp(device: &str) -> FabricStamp {
-    FabricStamp {
-        counter: 0,
-        device: id(device),
-    }
+fn group_id(value: u8) -> SpeakerGroupId {
+    SpeakerGroupId([value; 16])
 }
 
-/// One simulated device: its policy core and what it last published.
-struct Device {
-    name: &'static str,
-    core: SpeakerGroupCore,
-    counter: u64,
-    online: bool,
-    audio_group: bool,
+/// The person's devices: the record of their devices and what each says live.
+struct World {
+    record: Replica<Devices>,
+    fabric: PersonDevices,
 }
 
-impl Device {
-    fn new(name: &'static str) -> Self {
-        let mut core = SpeakerGroupCore::default();
-        core.seed(None);
+impl World {
+    fn new() -> Self {
         Self {
-            name,
-            core,
-            counter: 0,
-            online: true,
-            audio_group: true,
+            record: Replica::new(),
+            fabric: PersonDevices::default(),
         }
     }
 
-    fn id(&self) -> DeviceId {
-        id(self.name)
-    }
-
-    /// Keep what this device says of itself into `fabric`, replacing what it
-    /// said before.
-    fn publish(&mut self, fabric: &mut PersonDevices) {
-        self.counter = self.counter.saturating_add(1);
+    /// `device` joins the person's devices, offering one output and one microphone.
+    fn device(&mut self, device: &str, audio_group: bool) {
+        let local = id(device);
+        self.record
+            .apply(Devices::KEEP_DEVICE.with((device.to_owned(), "00".to_owned())))
+            .expect("the device is kept");
         let endpoints = vec![
-            AudioEndpoint {
-                selector: output(self.name),
-                kind: AudioEndpointKind::Output,
-                label: format!("{} speakers", self.name),
+            tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint {
+                selector: output(device).to_hex(),
+                microphone: false,
+                label: format!("{device} speakers"),
                 is_default: true,
             },
-            AudioEndpoint {
-                selector: microphone(self.name),
-                kind: AudioEndpointKind::Microphone,
-                label: format!("{} microphone", self.name),
+            tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint {
+                selector: microphone(device).to_hex(),
+                microphone: true,
+                label: format!("{device} microphone"),
                 is_default: true,
             },
         ];
-        let mut device = PersonDevice::new(
-            self.id(),
+        self.record
+            .apply(Devices::SAY_SPEAKER_ENDPOINTS.with((
+                device.to_owned(),
+                hex::encode(postcard::to_allocvec(&endpoints).expect("endpoints encode")),
+            )))
+            .expect("the device offers its endpoints");
+        let mut known = PersonDevice::new(
+            local,
             DeviceAbout {
-                label: self.name.into(),
+                label: device.into(),
                 kind: DeviceKind::Speaker,
                 capabilities: FabricCapabilities {
                     audio_output: true,
-                    audio_group: self.audio_group,
+                    audio_group,
                     ..FabricCapabilities::default()
                 },
             },
         );
-        device.online = self.online;
-        device.last_seen_unix_ms = self.counter;
-        device.speakers = self.core.authored(endpoints, &stamp(self.name));
-        fabric.insert(device);
+        known.online = true;
+        known.last_seen_unix_ms = 1;
+        self.fabric.insert(known);
     }
 
-    fn handle(
-        &mut self,
-        fabric: &PersonDevices,
-        item: &Egress,
-        from: &str,
-        now: Instant,
-    ) -> Vec<Egress> {
-        assert_eq!(
-            item.target,
-            self.id(),
-            "{item:?} delivered to the wrong device"
-        );
-        let mut mint = || [9; 16];
-        self.core
-            .handle(fabric, &self.id(), &id(from), &item.action, now, &mut mint)
-            .expect("a speaker-group action")
+    fn state(&self) -> SpeakerState {
+        SpeakerState::of(&self.record.state().expect("the record reads"))
     }
+
+    fn apply(&mut self, writes: Vec<SpeakerWrite>) {
+        for write in writes {
+            self.record
+                .apply(action_of(write))
+                .expect("a speaker-group write holds");
+        }
+    }
+}
+
+fn members(pairs: &[(&str, SpeakerRole)]) -> Vec<MemberSpec> {
+    pairs
+        .iter()
+        .map(|(device, role)| MemberSpec {
+            device: id(device),
+            output: output(device),
+            role: *role,
+        })
+        .collect()
+}
+
+/// A pair the office leads, the shelf consenting to play its right side.
+fn pair(world: &mut World, core: &mut SpeakerGroupCore, group: SpeakerGroupId) {
+    let office = id("office");
+    let writes = core
+        .create_group(
+            &world.state(),
+            &world.fabric,
+            &office,
+            group,
+            "Living room",
+            &members(&[("office", LEFT), ("shelf", RIGHT)]),
+            Instant::now(),
+        )
+        .expect("the office leads the pair");
+    world.apply(writes);
+}
+
+/// The shelf answers the consent prompt `core` now holds for `group`.
+fn consent(world: &mut World, core: &mut SpeakerGroupCore, group: SpeakerGroupId, approved: bool) {
+    let shelf = id("shelf");
+    let writes = core
+        .resolve_consent(&world.state(), &shelf, group, approved, Instant::now())
+        .expect("the shelf was asked");
+    world.apply(writes);
+}
+
+fn reconcile(world: &mut World, core: &mut SpeakerGroupCore, device: &str) -> Vec<SpeakerWrite> {
+    core.reconcile(
+        &world.state(),
+        &world.fabric,
+        &id(device),
+        true,
+        Instant::now(),
+        &mut || [9; 16],
+    )
+}
+
+#[test]
+fn a_group_is_written_to_the_record_and_a_member_answers_once() {
+    let mut world = World::new();
+    world.device("office", true);
+    world.device("shelf", true);
+    let mut office = SpeakerGroupCore::default();
+    let group = group_id(1);
+    pair(&mut world, &mut office, group);
+
+    let written = world.state();
+    let led = written.group(group).expect("the office leads the pair");
+    assert_eq!(led.leader, id("office"));
+    assert_eq!(led.members.len(), 2);
+    assert!(
+        written.memberships_of(&id("shelf")).is_empty(),
+        "the shelf has not agreed yet"
+    );
+    assert_eq!(
+        written.member_states(&world.fabric, led),
+        vec![
+            SpeakerMemberStatus::Ready,
+            SpeakerMemberStatus::AwaitingConsent
+        ],
+        "the shelf is asked"
+    );
+
+    // The shelf's own pass asks its person once; answering yes writes its consent.
+    let mut shelf = SpeakerGroupCore::default();
+    reconcile(&mut world, &mut shelf, "shelf");
+    let pending = shelf.view(&world.state(), &world.fabric, &id("shelf"), &|_| None);
+    assert_eq!(pending.consents.len(), 1, "the shelf asks its person once");
+    assert_eq!(pending.consents[0].prompt().is_empty(), false);
+    consent(&mut world, &mut shelf, group, true);
+    let written = world.state();
+    let led = written.group(group).unwrap();
+    assert_eq!(
+        written.member_states(&world.fabric, led),
+        vec![SpeakerMemberStatus::Ready, SpeakerMemberStatus::Ready]
+    );
+
+    // A second pass asks nothing more.
+    reconcile(&mut world, &mut shelf, "shelf");
+    let view = shelf.view(&world.state(), &world.fabric, &id("shelf"), &|_| None);
+    assert!(view.consents.is_empty());
+    assert_eq!(view.memberships.len(), 1);
+}
+
+#[test]
+fn a_consented_group_admits_playbacks_from_its_source_only() {
+    let mut world = World::new();
+    world.device("office", true);
+    world.device("shelf", true);
+    let mut office = SpeakerGroupCore::default();
+    let mut shelf = SpeakerGroupCore::default();
+    let group = group_id(2);
+    pair(&mut world, &mut office, group);
+    reconcile(&mut world, &mut shelf, "shelf");
+    consent(&mut world, &mut shelf, group, true);
+
+    // The office plays to the pair: one offer per remote member, the shelf's right output.
+    let session = [4; 16];
+    let writes = office
+        .start_session(
+            &world.state(),
+            &world.fabric,
+            &id("office"),
+            group,
+            GroupAudioSource::System,
+            session,
+            Instant::now(),
+        )
+        .expect("the office plays");
+    let offered = writes
+        .iter()
+        .filter_map(|write| match write {
+            SpeakerWrite::Offer { route, target, .. } => Some((*route, target.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(offered.len(), 1, "the office plays on its own output too");
+    assert_eq!(offered[0].1, id("shelf"));
+    assert_eq!(
+        offered[0].0,
+        member_route_id(session, &id("shelf"), output("shelf"))
+    );
+    world.apply(writes);
+
+    // The shelf admits it with a capability of its own, bound to that exact source.
+    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    let route = offered[0].0;
+    assert!(
+        writes.iter().any(|write| matches!(
+            write,
+            SpeakerWrite::Admit { route: admitted, authorization: Some(value) }
+                if *admitted == route && *value == [9; 16]
+        )),
+        "the shelf admits the playback with its capability: {writes:?}"
+    );
+    world.apply(writes);
+    let recorded = world.state();
+    let playback = recorded
+        .playback(route)
+        .expect("the playback is in the record");
+    assert!(playback.admitted);
+    assert_eq!(playback.authorization, Some([9; 16]));
+    assert_eq!(playback.source, id("office"));
+
+    // The office reads the admission and starts the route to the shelf.
+    reconcile(&mut world, &mut office, "office");
+    let plans = office.playback_plans();
+    assert_eq!(plans.len(), 1);
+    let shelf_member = plans[0]
+        .members
+        .iter()
+        .find(|member| member.device == id("shelf"))
+        .expect("the shelf plays");
+    assert_eq!(shelf_member.authorization, Some([9; 16]));
+    assert_eq!(shelf_member.channel, ChannelRole::Right);
+    let receiving = shelf
+        .route_specs(&world.state(), &id("shelf"))
+        .into_iter()
+        .find(|spec| matches!(spec, RouteSpec::Receive { .. }))
+        .expect("the shelf receives what the office plays");
+    let RouteSpec::Receive {
+        route: received,
+        authorization,
+        output: on,
+        channel,
+        ..
+    } = receiving
+    else {
+        unreachable!()
+    };
+    assert_eq!(received, route);
+    assert_eq!(authorization, [9; 16]);
+    assert_eq!(on, output("shelf"));
+    assert_eq!(channel, ChannelRole::Right);
+    assert!(shelf.admits(route, &id("office")));
+
+    // A playback from a device that is not the source is not what the shelf admitted.
+    assert!(!shelf.admits(route, &id("office2")));
+    assert!(!shelf.admits([7; 16], &id("office")));
+
+    // The office ends it: the record loses the playback, and the shelf stops its route.
+    let writes = office.stop_session(session).expect("the office stops");
+    world.apply(writes);
+    assert!(world.state().playback(route).is_none());
+    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    assert!(
+        writes.iter().any(
+            |write| matches!(write, SpeakerWrite::Stop { route: stopped, .. } if *stopped == route)
+        ),
+        "the shelf lets go: {writes:?}"
+    );
+    world.apply(writes);
+    assert!(shelf.route_specs(&world.state(), &id("shelf")).is_empty());
+}
+
+#[test]
+fn consent_ends_when_the_group_changes_under_a_member() {
+    let mut world = World::new();
+    world.device("office", true);
+    world.device("shelf", true);
+    let mut office = SpeakerGroupCore::default();
+    let mut shelf = SpeakerGroupCore::default();
+    let group = group_id(3);
+    pair(&mut world, &mut office, group);
+    reconcile(&mut world, &mut shelf, "shelf");
+    consent(&mut world, &mut shelf, group, true);
+
+    // The office changes the shelf's role: its consent no longer covers the member, and the
+    // shelf is asked again rather than playing a role it did not agree to.
+    let writes = office
+        .update_group(
+            &world.state(),
+            &world.fabric,
+            &id("office"),
+            group,
+            "Living room",
+            &members(&[("office", LEFT), ("shelf", RIGHT)]),
+            Instant::now(),
+        )
+        .expect("the office edits the group");
+    world.apply(writes);
+    // A consent for the same output and role still covers it.
+    reconcile(&mut world, &mut shelf, "shelf");
+    let view = shelf.view(&world.state(), &world.fabric, &id("shelf"), &|_| None);
+    assert!(view.consents.is_empty(), "the same role stays agreed");
+    assert_eq!(view.memberships.len(), 1);
+
+    // Moving the shelf to the left side is a different contribution: it is asked again, and
+    // until it agrees the member reads as awaiting consent.
+    let writes = office
+        .update_group(
+            &world.state(),
+            &world.fabric,
+            &id("office"),
+            group,
+            "Living room",
+            &members(&[("office", RIGHT), ("shelf", LEFT)]),
+            Instant::now(),
+        )
+        .expect("the office swaps the sides");
+    world.apply(writes);
+    let state = world.state();
+    let led = state.group(group).unwrap();
+    assert_eq!(
+        state.member_states(&world.fabric, led),
+        vec![
+            SpeakerMemberStatus::Ready,
+            SpeakerMemberStatus::AwaitingConsent
+        ]
+    );
+    reconcile(&mut world, &mut shelf, "shelf");
+    let view = shelf.view(&world.state(), &world.fabric, &id("shelf"), &|_| None);
+    assert_eq!(view.consents.len(), 1, "the shelf agrees to the new role");
+
+    // And the consent it gave for the old role is withdrawn by its next pass.
+    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    assert!(
+        writes
+            .iter()
+            .any(|write| matches!(write, SpeakerWrite::Withdraw { play: true, .. })),
+        "a consent the leader no longer writes as agreed goes: {writes:?}"
+    );
+    world.apply(writes);
+    assert!(world.state().memberships_of(&id("shelf")).is_empty());
+}
+
+#[test]
+fn a_groups_teardown_releases_its_members() {
+    let mut world = World::new();
+    world.device("office", true);
+    world.device("shelf", true);
+    let mut office = SpeakerGroupCore::default();
+    let mut shelf = SpeakerGroupCore::default();
+    let group = group_id(4);
+    pair(&mut world, &mut office, group);
+    reconcile(&mut world, &mut shelf, "shelf");
+    consent(&mut world, &mut shelf, group, true);
+    let session = [6; 16];
+    let writes = office
+        .start_session(
+            &world.state(),
+            &world.fabric,
+            &id("office"),
+            group,
+            GroupAudioSource::System,
+            session,
+            Instant::now(),
+        )
+        .expect("the office plays");
+    world.apply(writes);
+    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    world.apply(writes);
+    reconcile(&mut world, &mut office, "office");
+
+    // The office deletes the group: its members are let go and the playback ends.
+    let writes = office.delete_group(&id("office"), group);
+    assert!(
+        writes
+            .iter()
+            .any(|write| matches!(write, SpeakerWrite::Stop { .. })),
+        "the playback ends: {writes:?}"
+    );
+    world.apply(writes);
+    let state = world.state();
+    assert!(state.group(group).is_none());
+    assert!(state.playbacks.is_empty());
+    assert!(
+        office
+            .view(&state, &world.fabric, &id("office"), &|_| None)
+            .groups
+            .is_empty()
+    );
+
+    // The shelf's next pass hears nothing of the group: its consent goes, and its route ends.
+    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    assert!(
+        writes
+            .iter()
+            .any(|write| matches!(write, SpeakerWrite::Withdraw { play: true, .. })),
+        "the shelf drops its consent: {writes:?}"
+    );
+    world.apply(writes);
+    assert!(world.state().memberships_of(&id("shelf")).is_empty());
+}
+
+#[test]
+fn admitted_playbacks_become_routes_by_endpoint_selector() {
+    let mut world = World::new();
+    world.device("office", true);
+    world.device("shelf", true);
+    let mut office = SpeakerGroupCore::default();
+    let mut shelf = SpeakerGroupCore::default();
+    let group = group_id(5);
+    pair(&mut world, &mut office, group);
+    reconcile(&mut world, &mut shelf, "shelf");
+    consent(&mut world, &mut shelf, group, true);
+
+    let session = [8; 16];
+    world.apply(
+        office
+            .start_session(
+                &world.state(),
+                &world.fabric,
+                &id("office"),
+                group,
+                GroupAudioSource::System,
+                session,
+                Instant::now(),
+            )
+            .unwrap(),
+    );
+    let writes = reconcile(&mut world, &mut shelf, "shelf");
+    world.apply(writes);
+    reconcile(&mut world, &mut office, "office");
+
+    // The office plays the left side on its own output and sends the right side to the shelf.
+    let playing = office.route_specs(&world.state(), &id("office"));
+    let local = playing
+        .iter()
+        .find(|spec| matches!(spec, RouteSpec::Local { .. }))
+        .expect("the office plays its own side");
+    let RouteSpec::Local {
+        output: on,
+        channel,
+        ..
+    } = local
+    else {
+        unreachable!()
+    };
+    assert_eq!(*on, output("office"));
+    assert_eq!(*channel, ChannelRole::Left);
+    assert!(
+        playing
+            .iter()
+            .any(|spec| matches!(spec, RouteSpec::Send { target, .. } if *target == id("shelf")))
+    );
+
+    // And the recorded route changes only when the sessions it stands for do.
+    let running = playing
+        .iter()
+        .map(|spec| (spec.route(), spec.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let (end, start) = route_changes(&running, &playing);
+    assert!(end.is_empty() && start.is_empty());
+
+    // A member that leaves the group ends the route: the shelf withdraws its consent.
+    let writes = shelf
+        .leave(&world.state(), &id("shelf"), group)
+        .expect("the shelf leaves");
+    world.apply(writes);
+    let writes = reconcile(&mut world, &mut office, "office");
+    assert!(
+        writes
+            .iter()
+            .any(|write| matches!(write, SpeakerWrite::Stop { .. })),
+        "the office stops sending to the shelf: {writes:?}"
+    );
+    world.apply(writes);
+    let playing = office.route_specs(&world.state(), &id("office"));
+    assert!(
+        !playing
+            .iter()
+            .any(|spec| matches!(spec, RouteSpec::Send { .. }))
+    );
+}
+
+#[test]
+fn a_groups_microphones_listen_only_for_the_leader_and_with_consent() {
+    let mut world = World::new();
+    world.device("office", true);
+    world.device("shelf", true);
+    let mut office = SpeakerGroupCore::default();
+    let mut shelf = SpeakerGroupCore::default();
+    let group = group_id(6);
+    pair(&mut world, &mut office, group);
+    reconcile(&mut world, &mut shelf, "shelf");
+    consent(&mut world, &mut shelf, group, true);
+
+    let published = world.state().group(group).unwrap().clone();
+    let candidates = office.listener_candidates(
+        &world.state(),
+        &world.fabric,
+        &id("office"),
+        &published,
+        Instant::now(),
+    );
+    let shelf_candidate = candidates
+        .iter()
+        .find(|candidate| candidate.device == id("shelf"))
+        .expect("the shelf has a microphone");
+    assert_eq!(shelf_candidate.state, ListenerState::NotAsked);
+    assert_eq!(shelf_candidate.microphone, microphone("shelf"));
+
+    // The office asks the shelf to let it listen; the shelf's person says no.
+    let asks = office.invite_listeners(
+        &world.state(),
+        &published,
+        &[(id("shelf"), microphone("shelf"))],
+        Instant::now(),
+    );
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].target, id("shelf"));
+    shelf
+        .handle_listen_action(
+            &world.state(),
+            &id("shelf"),
+            &id("office"),
+            &asks[0].action,
+            Instant::now(),
+        )
+        .expect("the shelf takes the invite");
+    assert!(!shelf.may_listen(
+        &world.state(),
+        &world.fabric,
+        &id("shelf"),
+        &id("office"),
+        group,
+        microphone("shelf")
+    ));
+    let writes = shelf
+        .resolve_listen_consent(&world.state(), &id("shelf"), group, false, Instant::now())
+        .expect("the shelf answers");
+    world.apply(writes);
+    assert!(world.state().listeners_of(&id("shelf")).is_empty());
+
+    // Asked again, it agrees, and only the leader may then record with it.
+    let asks = office.invite_listeners(
+        &world.state(),
+        &published,
+        &[(id("shelf"), microphone("shelf"))],
+        Instant::now() + super::CONSENT_TTL + Duration::from_secs(1),
+    );
+    shelf
+        .handle_listen_action(
+            &world.state(),
+            &id("shelf"),
+            &id("office"),
+            &asks[0].action,
+            Instant::now(),
+        )
+        .unwrap();
+    let writes = shelf
+        .resolve_listen_consent(&world.state(), &id("shelf"), group, true, Instant::now())
+        .expect("the shelf agrees");
+    world.apply(writes);
+    assert!(shelf.may_listen(
+        &world.state(),
+        &world.fabric,
+        &id("shelf"),
+        &id("office"),
+        group,
+        microphone("shelf")
+    ));
+    assert!(
+        !shelf.may_listen(
+            &world.state(),
+            &world.fabric,
+            &id("shelf"),
+            &id("other"),
+            group,
+            microphone("shelf")
+        ),
+        "only the group's leader may listen"
+    );
+
+    // Stopping it takes the consent back from the record.
+    let writes = shelf
+        .stop_listening(&world.state(), &id("shelf"), group)
+        .expect("the shelf stops listening");
+    world.apply(writes);
+    assert!(world.state().listeners_of(&id("shelf")).is_empty());
 }
 
 /// The route id shelf's audio travels under within `session`.
@@ -117,1080 +629,58 @@ fn shelf_route(session: [u8; 16]) -> [u8; 16] {
     member_route_id(session, &id("shelf"), output("shelf"))
 }
 
-fn pair_members() -> Vec<MemberSpec> {
-    vec![
-        MemberSpec {
-            device: id("office"),
-            output: output("office"),
-            role: LEFT,
-        },
-        MemberSpec {
-            device: id("shelf"),
-            output: output("shelf"),
-            role: RIGHT,
-        },
-    ]
+#[test]
+fn a_member_route_is_one_per_session_and_member() {
+    let session = [3; 16];
+    assert_eq!(shelf_route(session), shelf_route(session));
+    assert_ne!(shelf_route(session), shelf_route([4; 16]));
+    assert_ne!(
+        shelf_route(session),
+        member_route_id(session, &id("office"), output("shelf"))
+    );
+    assert_ne!(shelf_route(session), [0; 16]);
 }
 
-/// Office leads a stereo pair with shelf; returns the fabric with both
-/// published and the group id, before shelf has answered.
-fn invited_pair(
-    office: &mut Device,
-    shelf: &mut Device,
-    now: Instant,
-) -> (PersonDevices, SpeakerGroupId, Vec<Egress>) {
-    let mut fabric = PersonDevices::default();
-    office.publish(&mut fabric);
-    shelf.publish(&mut fabric);
-    let group = SpeakerGroupId([4; 16]);
-    let invites = office
-        .core
+#[test]
+fn silence_is_not_played() {
+    // A session with no ready member is refused rather than played to nobody.
+    let mut world = World::new();
+    world.device("office", true);
+    world.device("shelf", true);
+    let shelf = id("shelf");
+    let mut offline = world
+        .fabric
+        .get(&shelf)
+        .cloned()
+        .expect("the shelf is published");
+    offline.online = false;
+    world.fabric.insert(offline);
+    let mut office = SpeakerGroupCore::default();
+    let group = group_id(7);
+    let writes = office
         .create_group(
-            &fabric,
-            &office.id(),
+            &world.state(),
+            &world.fabric,
+            &id("office"),
             group,
-            "Living room",
-            &pair_members(),
-            now,
+            "Shelf alone",
+            &members(&[("shelf", LEFT)]),
+            Instant::now(),
         )
-        .unwrap();
-    office.publish(&mut fabric);
-    (fabric, group, invites)
-}
-
-/// Office and shelf form a consented stereo pair.
-fn joined_pair(
-    office: &mut Device,
-    shelf: &mut Device,
-    now: Instant,
-) -> (PersonDevices, SpeakerGroupId) {
-    let (mut fabric, group, invites) = invited_pair(office, shelf, now);
-    assert_eq!(invites.len(), 1);
-    assert!(shelf.handle(&fabric, &invites[0], "office", now).is_empty());
-    let decision = shelf
-        .core
-        .resolve_consent(&fabric, &shelf.id(), group, true, &stamp("shelf"))
-        .unwrap();
-    shelf.publish(&mut fabric);
+        .expect("the office leads a group on the shelf alone");
+    world.apply(writes);
     assert!(
         office
-            .handle(&fabric, &decision[0], "shelf", now)
-            .is_empty()
+            .start_session(
+                &world.state(),
+                &world.fabric,
+                &id("office"),
+                group,
+                GroupAudioSource::System,
+                [1; 16],
+                Instant::now(),
+            )
+            .is_err(),
+        "a group nobody can play is not played"
     );
-    (fabric, group)
-}
-
-fn admitted_session(
-    office: &mut Device,
-    shelf: &mut Device,
-    fabric: &PersonDevices,
-    group: SpeakerGroupId,
-    session: [u8; 16],
-    now: Instant,
-) -> [u8; 16] {
-    let offers = office
-        .core
-        .start_session(
-            fabric,
-            &office.id(),
-            group,
-            GroupAudioSource::PickerToken(1),
-            session,
-            now,
-        )
-        .unwrap();
-    let decision = shelf.handle(fabric, &offers[0], "office", now);
-    office.handle(fabric, &decision[0], "shelf", now);
-    assert_eq!(plan_of(office, session).members.len(), 2);
-    shelf_route(session)
-}
-
-/// The stop `device` is sent for `session`.
-fn stop_to(device: &DeviceId, session: [u8; 16], authorization: Option<[u8; 16]>) -> Egress {
-    egress(
-        device,
-        PersonalFabricAction::SpeakerGroupSessionStop {
-            session_id: session,
-            authorization,
-        },
-    )
-}
-
-/// The leave `device` is sent for `group`.
-fn leave_to(device: &DeviceId, group: SpeakerGroupId) -> Egress {
-    egress(device, PersonalFabricAction::SpeakerGroupLeave { group })
-}
-
-/// The leader's plan for `session`.
-fn plan_of(office: &Device, session: [u8; 16]) -> GroupPlaybackPlan {
-    office
-        .core
-        .playback_plans()
-        .into_iter()
-        .find(|plan| plan.session_id == session)
-        .expect("the session's plan")
-}
-
-tilo_test_env::scenario! {
-    fn a_group_invites_its_remote_members_and_a_member_answers_once;
-
-    phase a_new_group_asks_only_remote_members_and_their_answer_makes_them_ready;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (mut fabric, group, invites) = invited_pair(&mut office, &mut shelf, now);
-        assert_eq!(
-            invites,
-            vec![egress(
-                &id("shelf"),
-                PersonalFabricAction::SpeakerGroupInvite {
-                    group,
-                    name: "Living room".into(),
-                    output: output("shelf"),
-                    role: RIGHT,
-                },
-            )]
-        );
-        assert_eq!(
-            fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
-            vec![
-                SpeakerMemberStatus::Ready,
-                SpeakerMemberStatus::AwaitingConsent
-            ]
-        );
-
-        // A forged invite the leader never published cannot be approved.
-        let forged = egress(
-            &id("shelf"),
-            PersonalFabricAction::SpeakerGroupInvite {
-                group,
-                name: "Living room".into(),
-                output: output("shelf"),
-                role: LEFT,
-            },
-        );
-        shelf.handle(&fabric, &forged, "office", now);
-        assert!(
-            shelf
-                .core
-                .view(&fabric, &shelf.id(), &|_| None)
-                .consents
-                .is_empty()
-        );
-        assert!(
-            shelf
-                .core
-                .resolve_consent(&fabric, &shelf.id(), group, true, &stamp("shelf"))
-                .is_err()
-        );
-        assert!(shelf.core.memberships.iter().flatten().next().is_none());
-
-        // The real invite is one prompt that says what it is for.
-        shelf.handle(&fabric, &invites[0], "office", now);
-        let view = shelf.core.view(&fabric, &shelf.id(), &|_| None);
-        assert_eq!(view.consents.len(), 1);
-        let consent = &view.consents[0];
-        assert_eq!(consent.name, "Living room");
-        assert_eq!(consent.leader_label, "office");
-        assert_eq!(consent.scope, SpeakerConsentScope::Play(RIGHT));
-        assert_eq!(consent.endpoint_label.as_deref(), Some("shelf speakers"));
-        assert_eq!(consent.prompt(), "Join Living room as the right speaker?");
-
-        let decision = shelf
-            .core
-            .resolve_consent(&fabric, &shelf.id(), group, true, &stamp("shelf"))
-            .unwrap();
-        shelf.publish(&mut fabric);
-        assert!(
-            office
-                .handle(&fabric, &decision[0], "shelf", now)
-                .is_empty()
-        );
-        assert_eq!(
-            fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
-            vec![SpeakerMemberStatus::Ready, SpeakerMemberStatus::Ready]
-        );
-        assert!(
-            shelf
-                .core
-                .view(&fabric, &shelf.id(), &|_| None)
-                .consents
-                .is_empty()
-        );
-        // A consented member is not asked again.
-        assert!(
-            office
-                .core
-                .pump(&fabric, &office.id(), true, now + INVITE_RETRY)
-                .is_empty()
-        );
-
-        // A calibration trim keeps the consent and must stay in range.
-        let trim = SpeakerTrim {
-            delay_ns: 2_500_000,
-            gain_mb: -150,
-            eq: Vec::new(),
-        };
-        office
-            .core
-            .set_trims(group, &[(shelf.id(), output("shelf"), trim.clone())])
-            .unwrap();
-        office.publish(&mut fabric);
-        let published = fabric.speaker_group(group).unwrap();
-        assert_eq!(published.member(&shelf.id()).unwrap().trim, trim);
-        assert_eq!(
-            fabric.speaker_member_states(published),
-            vec![SpeakerMemberStatus::Ready, SpeakerMemberStatus::Ready]
-        );
-        assert!(
-            office
-                .core
-                .set_trims(
-                    group,
-                    &[(
-                        shelf.id(),
-                        output("shelf"),
-                        SpeakerTrim {
-                            delay_ns: u64::MAX,
-                            ..SpeakerTrim::default()
-                        }
-                    )]
-                )
-                .is_err()
-        );
-    }
-
-    phase an_unanswered_invite_is_repeated_while_the_member_is_online;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (fabric, group, invites) = invited_pair(&mut office, &mut shelf, now);
-        assert!(office.core.pump(&fabric, &office.id(), true, now).is_empty());
-        assert_eq!(
-            office.core
-                .pump(&fabric, &office.id(), true, now + INVITE_RETRY)
-                .len(),
-            1
-        );
-
-        // A stale prompt expires, and cannot be approved afterwards.
-        shelf.handle(&fabric, &invites[0], "office", now);
-        shelf.core.pump(
-            &fabric,
-            &shelf.id(),
-            true,
-            now + CONSENT_TTL + Duration::from_secs(1),
-        );
-        assert!(
-            shelf
-                .core
-                .resolve_consent(&fabric, &shelf.id(), group, true, &stamp("shelf"))
-                .is_err()
-        );
-    }
-
-    phase declining_stops_the_leader_asking_until_the_group_is_edited;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (fabric, group, invites) = invited_pair(&mut office, &mut shelf, now);
-        shelf.handle(&fabric, &invites[0], "office", now);
-        let decision = shelf
-            .core
-            .resolve_consent(&fabric, &shelf.id(), group, false, &stamp("shelf"))
-            .unwrap();
-        office.handle(&fabric, &decision[0], "shelf", now);
-        assert!(
-            office
-                .core
-                .pump(&fabric, &office.id(), true, now + INVITE_RETRY * 3)
-                .is_empty()
-        );
-        let edited = office
-            .core
-            .update_group(&fabric, &office.id(), group, "Lounge", &pair_members(), now)
-            .unwrap();
-        assert!(
-            edited
-                .iter()
-                .any(|item| matches!(item.action, PersonalFabricAction::SpeakerGroupInvite { .. }))
-        );
-    }
-}
-
-tilo_test_env::scenario! {
-    fn a_consented_group_admits_sessions_from_its_source_only;
-
-    phase any_of_your_devices_plays_and_admits_and_only_the_source_speaks_for_a_session;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf, mut phone) = (
-            Device::new("office"),
-            Device::new("shelf"),
-            Device::new("phone"),
-        );
-        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        phone.publish(&mut fabric);
-
-        // Any of the person's devices can play to the group.
-        let session = [3; 16];
-        let offers = phone
-            .core
-            .start_session(
-                &fabric,
-                &phone.id(),
-                group,
-                GroupAudioSource::PickerToken(11),
-                session,
-                now,
-            )
-            .unwrap();
-        assert_eq!(offers.len(), 2);
-        for offer in &offers {
-            let (member, from) = if offer.target == office.id() {
-                (&mut office, "office")
-            } else {
-                (&mut shelf, "shelf")
-            };
-            let decision = member.handle(&fabric, offer, "phone", now);
-            assert_eq!(decision.len(), 1);
-            assert_eq!(decision[0].target, phone.id());
-            assert!(matches!(
-                decision[0].action,
-                PersonalFabricAction::SpeakerGroupSessionDecision {
-                    authorization: Some(value),
-                    ..
-                } if value == [9; 16]
-            ));
-            assert!(phone.handle(&fabric, &decision[0], from, now).is_empty());
-        }
-        let plans = phone.core.playback_plans();
-        assert_eq!(plans.len(), 1);
-        assert_eq!(plans[0].source, GroupAudioSource::PickerToken(11));
-        let channels = plans[0]
-            .members
-            .iter()
-            .map(|member| {
-                (
-                    member.device.as_str().to_string(),
-                    member.channel,
-                    member.authorization,
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            channels,
-            vec![
-                ("office".into(), ChannelRole::Left, Some([9; 16])),
-                ("shelf".into(), ChannelRole::Right, Some([9; 16])),
-            ]
-        );
-        let grant = shelf
-            .core
-            .grant(&fabric, &shelf.id(), shelf_route(session), &phone.id())
-            .unwrap();
-        assert_eq!(grant.channel, ChannelRole::Right);
-        assert_eq!(grant.output, output("shelf"));
-        assert!(
-            shelf
-                .core
-                .grant(&fabric, &shelf.id(), shelf_route(session), &office.id())
-                .is_none()
-        );
-
-        let member_route = shelf_route(session);
-
-        // The leader plays its own output locally, without asking itself.
-        let movie = [5; 16];
-        let offers = office
-            .core
-            .start_session(
-                &fabric,
-                &office.id(),
-                group,
-                GroupAudioSource::MediaSession("movie".into()),
-                movie,
-                now,
-            )
-            .unwrap();
-        assert_eq!(offers.len(), 1);
-        assert_eq!(offers[0].target, shelf.id());
-        let plan = plan_of(&office, movie);
-        assert_eq!(plan.members.len(), 1, "shelf has not admitted yet");
-        assert_eq!(plan.members[0].device, office.id());
-        assert_eq!(plan.members[0].authorization, None);
-
-        // A member without consent refuses a session.
-        let unconsented = egress(
-            &shelf.id(),
-            PersonalFabricAction::SpeakerGroupSessionOffer {
-                session_id: [6; 16],
-                group: SpeakerGroupId([6; 16]),
-            },
-        );
-        let reply = shelf.handle(&fabric, &unconsented, "office", now);
-        assert_eq!(
-            reply,
-            vec![egress(
-                &office.id(),
-                PersonalFabricAction::SpeakerGroupSessionDecision {
-                    session_id: [6; 16],
-                    group: SpeakerGroupId([6; 16]),
-                    authorization: None,
-                },
-            )]
-        );
-        assert!(!shelf.core.inbound.contains_key(&[6; 16]));
-
-        // A session stop from anyone but its source is ignored.
-        let stop = stop_to(&shelf.id(), member_route, Some([9; 16]));
-        shelf.handle(&fabric, &stop, "office", now);
-        assert!(shelf.core.inbound.contains_key(&member_route));
-        shelf.handle(&fabric, &stop, "phone", now);
-        assert!(!shelf.core.inbound.contains_key(&member_route));
-    }
-
-    phase an_ended_route_or_session_stops_playing_and_a_source_going_offline_ends_it;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        let session = [8; 16];
-        let route = admitted_session(&mut office, &mut shelf, &fabric, group, session, now);
-        // Admitted sessions become send, local and receive routes.
-        let leader = office.core.route_specs(&fabric, &office.id());
-        assert_eq!(leader.len(), 2);
-        assert!(leader.iter().any(|spec| matches!(
-            spec,
-            RouteSpec::Local { channel: ChannelRole::Left, output: out, .. } if *out == output("office")
-        )));
-        assert!(leader.contains(&RouteSpec::Send {
-            route,
-            target: shelf.id(),
-            authorization: [9; 16],
-            source: GroupAudioSource::PickerToken(1),
-        }));
-        let member = shelf.core.route_specs(&fabric, &shelf.id());
-        assert_eq!(
-            member,
-            vec![RouteSpec::Receive {
-                route,
-                source: office.id(),
-                authorization: [9; 16],
-                output: output("shelf"),
-                channel: ChannelRole::Right,
-                trim: SpeakerTrim::default(),
-            }]
-        );
-        assert!(shelf.core.admits(route, &office.id()));
-        assert!(!shelf.core.admits(route, &id("phone")));
-
-        // A route the audio path lost ends its member session.
-        assert_eq!(
-            shelf.core.route_lost(route),
-            vec![stop_to(&office.id(), route, Some([9; 16]))]
-        );
-        assert_eq!(
-            office.core.route_lost(route),
-            vec![stop_to(&shelf.id(), route, Some([9; 16]))]
-        );
-        let plan = plan_of(&office, session);
-        assert_eq!(plan.members.len(), 1);
-
-        // A late admission for an ended session is revoked.
-        let late = egress(
-            &office.id(),
-            PersonalFabricAction::SpeakerGroupSessionDecision {
-                session_id: [1; 16],
-                group,
-                authorization: Some([7; 16]),
-            },
-        );
-        assert_eq!(
-            office.handle(&fabric, &late, "shelf", now),
-            vec![stop_to(&shelf.id(), [1; 16], Some([7; 16]))]
-        );
-
-        // A member that never answers is dropped from the session.
-        office
-            .core
-            .start_session(
-                &fabric,
-                &office.id(),
-                group,
-                GroupAudioSource::PickerToken(1),
-                [2; 16],
-                now,
-            )
-            .unwrap();
-        let out = office
-            .core
-            .pump(&fabric, &office.id(), true, now + ADMISSION_TIMEOUT);
-        assert!(out.contains(&stop_to(&shelf.id(), shelf_route([2; 16]), None)));
-        let plan = plan_of(&office, [2; 16]);
-        assert_eq!(plan.members.len(), 1);
-    }
-
-    phase a_source_going_offline_ends_the_members_session_and_not_the_consent;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        let session = [8; 16];
-        admitted_session(&mut office, &mut shelf, &fabric, group, session, now);
-        office.online = false;
-        office.publish(&mut fabric);
-        shelf.core.pump(&fabric, &shelf.id(), true, now);
-        assert!(!shelf.core.inbound.contains_key(&shelf_route(session)));
-        // Consent itself survives a leader going offline.
-        assert!(shelf.core.memberships.iter().flatten().next().is_some());
-    }
-
-    phase only_certified_devices_that_can_join_are_admitted;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let mut fabric = PersonDevices::default();
-        office.publish(&mut fabric);
-        let stranger = office.core.create_group(
-            &fabric,
-            &office.id(),
-            SpeakerGroupId([1; 16]),
-            "Living room",
-            &pair_members(),
-            now,
-        );
-        assert!(stranger.is_err(), "shelf is not in the fabric");
-        shelf.audio_group = false;
-        shelf.publish(&mut fabric);
-        assert!(
-            office.core
-                .create_group(
-                    &fabric,
-                    &office.id(),
-                    SpeakerGroupId([1; 16]),
-                    "Living room",
-                    &pair_members(),
-                    now,
-                )
-                .is_err(),
-            "shelf has media continuity off"
-        );
-        let mut missing = pair_members();
-        missing[1].output = EndpointSelector::mint(&id("shelf"), "unplugged");
-        shelf.audio_group = true;
-        shelf.publish(&mut fabric);
-        assert!(
-            office.core
-                .create_group(
-                    &fabric,
-                    &office.id(),
-                    SpeakerGroupId([1; 16]),
-                    "Living room",
-                    &missing,
-                    now
-                )
-                .is_err(),
-            "shelf does not offer that output"
-        );
-    }
-}
-
-tilo_test_env::scenario! {
-    fn consent_ends_when_the_group_changes_under_a_member;
-
-    phase leaving_withdraws_consent_ends_sessions_and_silences_invites;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        let session = [8; 16];
-        let route = admitted_session(&mut office, &mut shelf, &fabric, group, session, now);
-        let out = shelf.core.leave(group).unwrap();
-        assert!(out.contains(&leave_to(&office.id(), group)));
-        assert!(out.contains(&stop_to(&office.id(), route, Some([9; 16]))));
-        assert!(
-            shelf
-                .core
-                .grant(&fabric, &shelf.id(), route, &office.id())
-                .is_none()
-        );
-        shelf.publish(&mut fabric);
-        for item in &out {
-            office.handle(&fabric, item, "shelf", now);
-        }
-        let plan = plan_of(&office, session);
-        assert_eq!(plan.members.len(), 1);
-        assert!(
-            office
-                .core
-                .pump(&fabric, &office.id(), true, now + INVITE_RETRY * 2)
-                .is_empty(),
-            "a member that left is not nagged"
-        );
-    }
-
-    phase changing_a_members_role_voids_its_consent_and_asks_again;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        let session = [8; 16];
-        admitted_session(&mut office, &mut shelf, &fabric, group, session, now);
-        let mut swapped = pair_members();
-        swapped[0].role = RIGHT;
-        swapped[1].role = LEFT;
-        let out = office
-            .core
-            .update_group(&fabric, &office.id(), group, "Living room", &swapped, now)
-            .unwrap();
-        assert!(out.iter().any(|item| matches!(
-            item.action,
-            PersonalFabricAction::SpeakerGroupInvite { role: LEFT, .. }
-        )));
-        office.publish(&mut fabric);
-        assert_eq!(
-            fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
-            vec![
-                SpeakerMemberStatus::Ready,
-                SpeakerMemberStatus::AwaitingConsent
-            ]
-        );
-        shelf.core.pump(&fabric, &shelf.id(), true, now);
-        assert!(!shelf.core.inbound.contains_key(&shelf_route(session)));
-        assert!(shelf.core.memberships.iter().flatten().next().is_none());
-    }
-}
-
-tilo_test_env::scenario! {
-    fn a_groups_teardown_releases_its_members;
-
-    phase deleting_a_group_releases_members_and_they_drop_their_consent;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        let session = [8; 16];
-        let route = admitted_session(&mut office, &mut shelf, &fabric, group, session, now);
-        let out = office.core.delete_group(group).unwrap();
-        assert!(out.contains(&leave_to(&shelf.id(), group)));
-        assert!(office.core.playback_plans().is_empty());
-        office.publish(&mut fabric);
-        // Even if the leave message is lost, the member notices the group is
-        // gone from its leader's part of the person's store.
-        let teardown = shelf.core.pump(&fabric, &shelf.id(), true, now);
-        assert!(teardown.contains(&stop_to(&office.id(), route, Some([9; 16]))));
-        assert!(shelf.core.memberships.iter().flatten().next().is_none());
-    }
-
-    phase disabling_media_continuity_tears_everything_down;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        let session = [8; 16];
-        let route = admitted_session(&mut office, &mut shelf, &fabric, group, session, now);
-        let out = shelf.core.pump(&fabric, &shelf.id(), false, now);
-        assert!(out.contains(&stop_to(&office.id(), route, Some([9; 16]))));
-        assert!(out.contains(&leave_to(&office.id(), group)));
-        assert!(shelf.core.memberships.iter().flatten().next().is_none());
-        let leader = office.core.pump(&fabric, &office.id(), false, now);
-        assert!(leader.contains(&stop_to(&shelf.id(), route, Some([9; 16]))));
-        assert!(office.core.playback_plans().is_empty());
-    }
-}
-
-tilo_test_env::scenario! {
-    fn admitted_sessions_become_routes_by_endpoint_selector;
-
-    phase a_surround_set_resolves_member_channels_for_grants;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf, mut sub) = (
-            Device::new("office"),
-            Device::new("shelf"),
-            Device::new("sub"),
-        );
-        let mut fabric = PersonDevices::default();
-        office.publish(&mut fabric);
-        shelf.publish(&mut fabric);
-        sub.publish(&mut fabric);
-        let mut members = pair_members();
-        members.push(MemberSpec {
-            device: id("sub"),
-            output: output("sub"),
-            role: SpeakerRole::Surround(SurroundChannel::Lfe),
-        });
-        let group = SpeakerGroupId([2; 16]);
-        let invites = office
-            .core
-            .create_group(&fabric, &office.id(), group, "Cinema", &members, now)
-            .unwrap();
-        office.publish(&mut fabric);
-        let to_sub = invites.iter().find(|item| item.target == sub.id()).unwrap();
-        sub.handle(&fabric, to_sub, "office", now);
-        sub.core
-            .resolve_consent(&fabric, &sub.id(), group, true, &stamp("sub"))
-            .unwrap();
-        sub.publish(&mut fabric);
-        let offer = egress(
-            &sub.id(),
-            PersonalFabricAction::SpeakerGroupSessionOffer {
-                session_id: [4; 16],
-                group,
-            },
-        );
-        sub.handle(&fabric, &offer, "office", now);
-        let grant = sub
-            .core
-            .grant(&fabric, &sub.id(), [4; 16], &office.id())
-            .unwrap();
-        assert_eq!(grant.channel, ChannelRole::Lfe);
-    }
-
-    phase endpoints_are_published_by_selector_without_node_identities;
-    {
-        let graph = media::audio::AudioGraph {
-            sinks: vec![media::audio::AudioDevice {
-                id: 57,
-                serial: 1204,
-                name: "alsa_output.pci-0000_66_00.6.analog-stereo".into(),
-                description: "Speakers".into(),
-                is_default: true,
-                volume: None,
-                muted: None,
-                channels: 2,
-                codec: None,
-            }],
-            sources: vec![media::audio::AudioDevice {
-                id: 58,
-                serial: 1205,
-                name: "alsa_input.usb-mic".into(),
-                description: String::new(),
-                is_default: false,
-                volume: None,
-                muted: None,
-                channels: 1,
-                codec: None,
-            }],
-            ..media::audio::AudioGraph::default()
-        };
-        let endpoints = endpoints_from_graph(&id("office"), &graph);
-        assert_eq!(endpoints.len(), 2);
-        assert_eq!(endpoints[0].kind, AudioEndpointKind::Output);
-        assert_eq!(endpoints[0].label, "Speakers");
-        assert_eq!(endpoints[1].kind, AudioEndpointKind::Microphone);
-        assert_eq!(endpoints[1].label, "alsa_input.usb-mic");
-        let wire = postcard::to_allocvec(&endpoints[0]).unwrap();
-        assert!(!wire.windows(4).any(|window| window == b"alsa"));
-    }
-
-    phase admitted_sessions_become_send_local_and_receive_routes;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf) = (Device::new("office"), Device::new("shelf"));
-        let (fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        let session = [8; 16];
-        let route = admitted_session(&mut office, &mut shelf, &fabric, group, session, now);
-        let leader = office.core.route_specs(&fabric, &office.id());
-        assert_eq!(leader.len(), 2);
-        assert!(leader.iter().any(|spec| matches!(
-            spec,
-            RouteSpec::Local { channel: ChannelRole::Left, output: out, .. } if *out == output("office")
-        )));
-        assert!(leader.contains(&RouteSpec::Send {
-            route,
-            target: shelf.id(),
-            authorization: [9; 16],
-            source: GroupAudioSource::PickerToken(1),
-        }));
-        let member = shelf.core.route_specs(&fabric, &shelf.id());
-        assert_eq!(
-            member,
-            vec![RouteSpec::Receive {
-                route,
-                source: office.id(),
-                authorization: [9; 16],
-                output: output("shelf"),
-                channel: ChannelRole::Right,
-                trim: SpeakerTrim::default(),
-            }]
-        );
-        assert!(shelf.core.admits(route, &office.id()));
-        assert!(!shelf.core.admits(route, &id("phone")));
-    }
-
-    phase route_changes_start_new_end_gone_and_restart_changed_routes;
-    {
-        let spec = |route: u8, delay_ns| RouteSpec::Receive {
-            route: [route; 16],
-            source: id("office"),
-            authorization: [9; 16],
-            output: output("shelf"),
-            channel: ChannelRole::Right,
-            trim: SpeakerTrim {
-                delay_ns,
-                ..SpeakerTrim::default()
-            },
-        };
-        let running = BTreeMap::from([([1; 16], spec(1, 0)), ([2; 16], spec(2, 0))]);
-        let (end, start) = route_changes(&running, &[spec(2, 5_000), spec(3, 0)]);
-        assert_eq!(end, vec![[1; 16], [2; 16]]);
-        assert_eq!(start, vec![spec(2, 5_000), spec(3, 0)]);
-        let (end, start) = route_changes(&running, &[spec(1, 0), spec(2, 0)]);
-        assert!(end.is_empty() && start.is_empty());
-    }
-}
-
-tilo_test_env::scenario! {
-    fn a_groups_microphones_listen_only_for_the_leader_and_with_consent;
-
-    phase a_microphone_listens_only_after_its_own_device_consents;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf, mut phone) = (
-            Device::new("office"),
-            Device::new("shelf"),
-            Device::new("phone"),
-        );
-        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        phone.publish(&mut fabric);
-
-        // Only the leader may ask a consented member for a sweep.
-        assert_eq!(
-            shelf
-                .core
-                .sweep_output(&fabric, &shelf.id(), &office.id(), group),
-            Some(output("shelf"))
-        );
-        assert_eq!(
-            shelf
-                .core
-                .sweep_output(&fabric, &shelf.id(), &id("phone"), group),
-            None
-        );
-
-        let published = fabric.speaker_group(group).unwrap().clone();
-        let candidates = office
-            .core
-            .listener_candidates(&fabric, &office.id(), &published, now);
-        assert_eq!(candidates[0].device, office.id(), "this device comes first");
-        assert!(candidates[0].local);
-        assert_eq!(candidates[0].state, ListenerState::Ready);
-        assert_eq!(
-            candidate_state(&office, &fabric, group, "phone", now),
-            ListenerState::NotAsked
-        );
-        // Playing in the group is not consent to listen.
-        assert_eq!(
-            candidate_state(&office, &fabric, group, "shelf", now),
-            ListenerState::NotAsked
-        );
-
-        let invites =
-            office
-                .core
-                .invite_listeners(&published, &[(phone.id(), microphone("phone"))], now);
-        assert_eq!(
-            invites,
-            vec![Egress {
-                target: phone.id(),
-                action: PersonalFabricAction::SpeakerListenInvite {
-                    group,
-                    name: "Living room".into(),
-                    microphone: microphone("phone"),
-                },
-            }]
-        );
-        assert!(
-            office
-                .core
-                .invite_listeners(&published, &[(phone.id(), microphone("phone"))], now)
-                .is_empty(),
-            "asked once"
-        );
-        assert_eq!(
-            candidate_state(&office, &fabric, group, "phone", now),
-            ListenerState::AwaitingConsent
-        );
-
-        assert!(phone.handle(&fabric, &invites[0], "office", now).is_empty());
-        assert!(!phone.core.may_listen(
-            &fabric,
-            &phone.id(),
-            &office.id(),
-            group,
-            microphone("phone")
-        ));
-        let view = phone.core.view(&fabric, &phone.id(), &|_| None);
-        assert_eq!(view.consents.len(), 1);
-        assert_eq!(view.consents[0].scope, SpeakerConsentScope::Listen);
-        assert_eq!(
-            view.consents[0].endpoint_label.as_deref(),
-            Some("phone microphone")
-        );
-        assert_eq!(
-            view.consents[0].prompt(),
-            "Let office use this microphone for Living room?"
-        );
-
-        let decision = phone
-            .core
-            .resolve_listen_consent(&fabric, &phone.id(), group, true, &stamp("phone"))
-            .unwrap();
-        phone.publish(&mut fabric);
-        assert!(
-            office
-                .handle(&fabric, &decision[0], "phone", now)
-                .is_empty()
-        );
-        assert_eq!(
-            candidate_state(&office, &fabric, group, "phone", now),
-            ListenerState::Ready
-        );
-        assert!(phone.core.may_listen(
-            &fabric,
-            &phone.id(),
-            &office.id(),
-            group,
-            microphone("phone")
-        ));
-        // Only the leader may ask, and only for the exact microphone.
-        assert!(!phone.core.may_listen(
-            &fabric,
-            &phone.id(),
-            &shelf.id(),
-            group,
-            microphone("phone")
-        ));
-        assert!(
-            !phone
-                .core
-                .may_listen(&fabric, &phone.id(), &office.id(), group, output("phone"))
-        );
-        let memberships = phone.core.view(&fabric, &phone.id(), &|_| None).memberships;
-        assert_eq!(memberships.len(), 1);
-        assert_eq!(memberships[0].scope, SpeakerConsentScope::Listen);
-
-        // Withdrawing tells the leader, stops listening at once, and ends the
-        // leader's sweep.
-        let withdrawn = phone.core.stop_listening(group).unwrap();
-        assert_eq!(
-            withdrawn[0].action,
-            PersonalFabricAction::SpeakerListenDecision {
-                group,
-                accepted: false
-            }
-        );
-        assert!(!phone.core.may_listen(
-            &fabric,
-            &phone.id(),
-            &office.id(),
-            group,
-            microphone("phone")
-        ));
-        assert_eq!(
-            phone
-                .core
-                .sweep_output(&fabric, &phone.id(), &office.id(), group),
-            None
-        );
-    }
-
-    phase a_declined_or_ended_listening_consent_is_not_asked_again_or_kept;
-    {
-        let now = Instant::now();
-        let (mut office, mut shelf, mut phone) = (
-            Device::new("office"),
-            Device::new("shelf"),
-            Device::new("phone"),
-        );
-        let (mut fabric, group) = joined_pair(&mut office, &mut shelf, now);
-        phone.publish(&mut fabric);
-        let published = fabric.speaker_group(group).unwrap().clone();
-        let asked = [(phone.id(), microphone("phone"))];
-
-        // A declined microphone is not asked again until the prompt expires.
-        let invites = office.core.invite_listeners(&published, &asked, now);
-        phone.handle(&fabric, &invites[0], "office", now);
-        let decision = phone
-            .core
-            .resolve_listen_consent(&fabric, &phone.id(), group, false, &stamp("phone"))
-            .unwrap();
-        office.handle(&fabric, &decision[0], "phone", now);
-        assert_eq!(
-            candidate_state(&office, &fabric, group, "phone", now),
-            ListenerState::Declined
-        );
-        assert!(
-            office
-                .core
-                .invite_listeners(&published, &asked, now)
-                .is_empty()
-        );
-        let later = now + CONSENT_TTL;
-        assert_eq!(
-            candidate_state(&office, &fabric, group, "phone", later),
-            ListenerState::NotAsked
-        );
-
-        // Once the prompt expired the leader asks again, and the answer is
-        // consent.
-        let consent = |phone: &mut Device, office: &mut Device, fabric: &mut PersonDevices, at| {
-            let invites = office.core.invite_listeners(&published, &asked, at);
-            assert_eq!(invites.len(), 1);
-            for invite in &invites {
-                phone.handle(fabric, invite, "office", at);
-            }
-            phone
-                .core
-                .resolve_listen_consent(fabric, &phone.id(), group, true, &stamp("phone"))
-                .unwrap();
-            phone.publish(fabric);
-        };
-        consent(&mut phone, &mut office, &mut fabric, later);
-        let stopped = phone.core.pump(&fabric, &phone.id(), false, now);
-        assert!(stopped.iter().any(|item| {
-            item.target == office.id()
-                && item.action
-                    == PersonalFabricAction::SpeakerListenDecision {
-                        group,
-                        accepted: false,
-                    }
-        }));
-        assert!(phone.core.listeners.iter().flatten().next().is_none());
-
-        // And with the group: deleting it releases the listening device.
-        consent(
-            &mut phone,
-            &mut office,
-            &mut fabric,
-            later + CONSENT_TTL,
-        );
-        let released = office.core.delete_group(group).unwrap();
-        office.publish(&mut fabric);
-        let leave = released
-            .iter()
-            .find(|item| item.target == phone.id())
-            .expect("the listening device is released too");
-        phone.handle(&fabric, leave, "office", now);
-        assert!(phone.core.listeners.iter().flatten().next().is_none());
-    }
-}
-
-fn candidate_state(
-    office: &Device,
-    fabric: &PersonDevices,
-    group: SpeakerGroupId,
-    device: &str,
-    now: Instant,
-) -> ListenerState {
-    let published = fabric.speaker_group(group).unwrap();
-    office
-        .core
-        .listener_candidates(fabric, &office.id(), published, now)
-        .into_iter()
-        .find(|candidate| candidate.device == id(device))
-        .unwrap()
-        .state
 }

@@ -34,6 +34,7 @@ use crate::calibration::{
 };
 use crate::groups::{
     ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
+    SpeakerState,
 };
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::PersonDevices;
@@ -138,16 +139,19 @@ pub fn playback_info(
 
 /// Every device's endpoints as Settings shows them.
 #[must_use]
-pub fn devices(fabric: &PersonDevices, local: &DeviceId) -> Vec<SpeakerDeviceInfo> {
+pub fn devices(
+    state: &SpeakerState,
+    fabric: &PersonDevices,
+    local: &DeviceId,
+) -> Vec<SpeakerDeviceInfo> {
     fabric
         .devices()
         .values()
         .take(runtime_collab::MAX_SPEAKER_DEVICES)
         .map(|known| {
             let endpoints = |kind| {
-                known
-                    .speakers
-                    .endpoints
+                state
+                    .endpoints_of(&known.device)
                     .iter()
                     .filter(|endpoint| endpoint.kind == kind)
                     .map(|endpoint| SpeakerEndpointInfo {
@@ -204,13 +208,14 @@ impl Calibrations {
     /// stands.
     pub fn pump(
         &mut self,
-        fabric: &PersonDevices,
+        state: &SpeakerState,
+        _fabric: &PersonDevices,
         consent: &BTreeMap<SpeakerGroupId, Vec<ListenerCandidate>>,
         now: Instant,
     ) {
         self.runs.retain(|group, run| {
-            fabric
-                .speaker_group(*group)
+            state
+                .group(*group)
                 .is_some_and(|published| run.matches(published))
                 || matches!(
                     run.phase(),
@@ -381,6 +386,7 @@ pub fn admit_identify(now: Instant) -> bool {
 /// Advance calibration runs; called from the fabric runtime's pump.
 pub fn pump(network: &dyn FabricLink) {
     let fabric = network.devices();
+    let speaker = crate::groups::speaker_state(network);
     let waiting = state()
         .lock()
         .map(|state| state.calibrations.awaiting_consent())
@@ -388,7 +394,7 @@ pub fn pump(network: &dyn FabricLink) {
     let consent = waiting
         .into_iter()
         .filter_map(|group| {
-            let published = fabric.speaker_group(group)?;
+            let published = speaker.group(group)?;
             Some((
                 group,
                 crate::groups::listener_candidates(network, published),
@@ -396,7 +402,9 @@ pub fn pump(network: &dyn FabricLink) {
         })
         .collect::<BTreeMap<_, _>>();
     if let Ok(mut state) = state().lock() {
-        state.calibrations.pump(&fabric, &consent, Instant::now());
+        state
+            .calibrations
+            .pump(&speaker, &fabric, &consent, Instant::now());
     }
 }
 
@@ -419,6 +427,7 @@ fn snapshot(network: &dyn FabricLink) -> SpeakerSnapshot {
         return SpeakerSnapshot::default();
     }
     let fabric = network.devices();
+    let speaker = crate::groups::speaker_state(network);
     let view = crate::groups::view(network);
     let output = output_group(&view);
     let groups = view
@@ -445,8 +454,8 @@ fn snapshot(network: &dyn FabricLink) -> SpeakerSnapshot {
                 .collect(),
             playback: playback_info(&view, group.id),
             output_here: output == Some(group.id),
-            microphones: fabric
-                .speaker_group(group.id)
+            microphones: speaker
+                .group(group.id)
                 .filter(|_| group.led_locally)
                 .map(|published| crate::groups::listener_candidates(network, published))
                 .unwrap_or_default()
@@ -467,7 +476,7 @@ fn snapshot(network: &dyn FabricLink) -> SpeakerSnapshot {
         .map_or_else(|_| Vec::new(), |state| state.calibrations.info());
     SpeakerSnapshot {
         media_enabled,
-        devices: devices(&fabric, &local),
+        devices: devices(&speaker, &fabric, &local),
         groups,
         calibrations,
     }
@@ -868,14 +877,15 @@ fn start_calibration(
         .local_device_fabric_identity()
         .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))?;
     let fabric = network.devices();
-    let published = fabric
-        .speaker_group(id)
+    let speaker = crate::groups::speaker_state(network);
+    let published = speaker
+        .group(id)
         .ok_or_else(|| crate::i18n::t("speaker-error-group-unavailable"))?;
     if published.leader != local {
         return Err(crate::i18n::t("speaker-error-calibrate-on-leader"));
     }
-    if fabric
-        .speaker_member_states(published)
+    if speaker
+        .member_states(&fabric, published)
         .iter()
         .any(|state| *state != SpeakerMemberStatus::Ready)
     {

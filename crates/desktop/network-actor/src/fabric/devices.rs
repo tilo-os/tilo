@@ -1,8 +1,9 @@
 //! The person's devices as one of them knows them.
 //!
 //! What lasts is in the person's own store, each device's in its own part, which that device alone
-//! writes: what it is ([`DeviceAbout`]), the speaker groups it leads and joined
-//! ([`SpeakerFabricState`]), and its disk-unlock enrolments ([`UnlockFabricState`]).
+//! writes: what it is ([`DeviceAbout`]) and its disk-unlock enrolments
+//! ([`UnlockFabricState`]). Its speaker groups are in the same record
+//! ([`tilo_workspace_service::workspaces::person_workspace::speaker`]).
 //! What holds only while a device is there is said on its session with each of the others and kept
 //! nowhere: that it is there, and what was copied on it.
 //!
@@ -13,9 +14,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::fabric::speaker_group::{
-    SpeakerFabricState, SpeakerGroup, SpeakerGroupId, SpeakerMemberStatus,
-};
 use crate::fabric::unlock::UnlockFabricState;
 use crate::fabric::{
     ClipboardEntry, ClipboardHistory, DeviceId, DeviceKind, FabricCapabilities, FabricError,
@@ -64,8 +62,6 @@ pub struct PersonDevice {
     pub last_seen_unix_ms: u64,
     /// The copies it offers, as it last offered them.
     pub clipboard: Vec<ClipboardEntry>,
-    /// Its speaker groups, memberships, outputs and microphones.
-    pub speakers: SpeakerFabricState,
     /// Its disk-unlock enrolments, the auto-approvals made on it and its answers to boots.
     pub unlock: UnlockFabricState,
 }
@@ -80,7 +76,6 @@ impl PersonDevice {
             online: false,
             last_seen_unix_ms: 0,
             clipboard: Vec::new(),
-            speakers: SpeakerFabricState::default(),
             unlock: UnlockFabricState::default(),
         }
     }
@@ -145,91 +140,6 @@ impl PersonDevices {
             }
         }
         history
-    }
-
-    /// Every group any of the person's devices leads, the newest of each.
-    #[must_use]
-    pub fn speaker_groups(&self) -> Vec<&SpeakerGroup> {
-        let mut winners = BTreeMap::<SpeakerGroupId, &SpeakerGroup>::new();
-        for group in self
-            .devices
-            .values()
-            .flat_map(|device| &device.speakers.groups)
-        {
-            if winners
-                .get(&group.id)
-                .is_none_or(|current| group.stamp.is_newer_than(&current.stamp))
-            {
-                winners.insert(group.id, group);
-            }
-        }
-        let mut groups = winners.into_values().collect::<Vec<_>>();
-        groups.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
-        groups
-    }
-
-    #[must_use]
-    pub fn speaker_group(&self, id: SpeakerGroupId) -> Option<&SpeakerGroup> {
-        self.speaker_groups()
-            .into_iter()
-            .find(|group| group.id == id)
-    }
-
-    /// Where each member of `group` stands, in member order.
-    #[must_use]
-    pub fn speaker_member_states(&self, group: &SpeakerGroup) -> Vec<SpeakerMemberStatus> {
-        group
-            .members
-            .iter()
-            .map(|member| {
-                let Some(device) = self.devices.get(&member.device) else {
-                    return SpeakerMemberStatus::NotCertified;
-                };
-                if member.device != group.leader && !device.about.capabilities.audio_group {
-                    return SpeakerMemberStatus::Unavailable;
-                }
-                if device.speakers.output(member.output).is_none() {
-                    return SpeakerMemberStatus::OutputMissing;
-                }
-                let consented = member.device == group.leader
-                    || device
-                        .speakers
-                        .memberships
-                        .iter()
-                        .any(|membership| membership.covers(group, member));
-                if !consented {
-                    SpeakerMemberStatus::AwaitingConsent
-                } else if device.online {
-                    SpeakerMemberStatus::Ready
-                } else {
-                    SpeakerMemberStatus::Offline
-                }
-            })
-            .collect()
-    }
-
-    /// Admission rules for a group its leader is about to keep: every member is one of the
-    /// person's devices, can join speaker groups (the leader's own outputs always can), and offers
-    /// the named output.
-    /// # Errors
-    /// [`FabricError::InvalidSpeakerGroup`] for a structural problem,
-    /// [`FabricError::UnknownDevice`] for a device that is not the person's, and
-    /// [`FabricError::IneligibleSpeakerMember`] for a device that cannot join or does not offer
-    /// that output.
-    pub fn admit_speaker_group(&self, group: &SpeakerGroup) -> Result<(), FabricError> {
-        group.validate(&group.leader)?;
-        for member in &group.members {
-            let device = self
-                .devices
-                .get(&member.device)
-                .ok_or(FabricError::UnknownDevice)?;
-            if (member.device != group.leader && !device.about.capabilities.audio_group)
-                || device.speakers.output(member.output).is_none()
-            {
-                return Err(FabricError::IneligibleSpeakerMember);
-            }
-        }
-        Ok(())
     }
 }
 

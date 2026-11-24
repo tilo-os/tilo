@@ -1,31 +1,37 @@
 //! Consent for calibration to listen with another device's microphone.
 //!
-//! It mirrors membership consent. The leader invites a device when a
-//! calibration first wants its microphone; that device asks its own user
-//! once and, on approval, keeps a [`SpeakerListener`] in its own part of the
-//! person's store. Only then may the leader ask it to capture around a sweep,
-//! and the device answers with what it measured from that audio, never the
-//! audio itself. The leader's own microphones need no consent: the person
-//! calibrating is at that device.
+//! It mirrors membership consent. The leader asks a device when a calibration first wants its
+//! microphone; that device asks its own user once and, on approval, writes a listening consent
+//! into its own part of the record of the person's devices. Only then may the leader ask it to
+//! capture around a sweep, and the device answers with what it measured from that audio, never
+//! the audio itself. The leader's own microphones need no consent: the person calibrating is at
+//! that device.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
 
 use super::{
-    CONSENT_TTL, Egress, SpeakerConsentScope, SpeakerConsentView, SpeakerGroupCore, egress,
+    CONSENT_TTL, ConsentWrite, SpeakerConsentScope, SpeakerConsentView, SpeakerGroupCore,
+    SpeakerState, SpeakerWrite,
 };
 use tilo_network_actor::fabric::DeviceId;
-use tilo_network_actor::fabric::FabricStamp;
 use tilo_network_actor::fabric::speaker_group::{
-    EndpointSelector, MAX_SPEAKER_LISTENERS, SpeakerGroup, SpeakerGroupId, SpeakerListener,
+    EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerListener,
 };
 use tilo_network_actor::fabric::{PersonDevices, PersonalFabricAction};
 
+/// One live ask to a device to let this one listen while calibrating.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListenEgress {
+    pub target: DeviceId,
+    pub action: PersonalFabricAction,
+}
+
 #[derive(Clone, Debug)]
 pub struct PendingListen {
-    leader: DeviceId,
-    microphone: EndpointSelector,
-    received: Instant,
+    pub(super) leader: DeviceId,
+    pub(super) microphone: EndpointSelector,
+    pub(super) received: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -35,8 +41,7 @@ pub struct ListenInvite {
     answer: Option<bool>,
 }
 
-/// Where one device's microphone stands for calibrating one group, as its
-/// leader sees it.
+/// Where one device's microphone stands for calibrating one group, as its leader sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListenerState {
     /// This device, or a device whose consent covers the group.
@@ -62,15 +67,11 @@ pub struct ListenerCandidate {
 }
 
 impl SpeakerGroupCore {
-    fn listeners_mut(&mut self) -> &mut Vec<SpeakerListener> {
-        self.listeners.get_or_insert_with(Vec::new)
-    }
-
-    /// Every device of the person with a microphone, one microphone each,
-    /// this device first.
+    /// Every device of the person with a microphone, one microphone each, this device first.
     #[must_use]
     pub fn listener_candidates(
         &self,
+        state: &SpeakerState,
         fabric: &PersonDevices,
         local: &DeviceId,
         group: &SpeakerGroup,
@@ -80,7 +81,7 @@ impl SpeakerGroupCore {
             .devices()
             .values()
             .filter_map(|known| {
-                let microphone = known.speakers.calibration_microphone()?;
+                let microphone = state.calibration_microphone(&known.device)?;
                 let device = known.device.clone();
                 let recent =
                     self.listen_invites
@@ -89,9 +90,8 @@ impl SpeakerGroupCore {
                             invite.microphone == microphone.selector
                                 && now.saturating_duration_since(invite.sent) < CONSENT_TTL
                         });
-                let consented = known
-                    .speakers
-                    .listeners
+                let consented = state
+                    .listeners_of(&device)
                     .iter()
                     .any(|listener| listener.covers(group, microphone.selector))
                     || recent.is_some_and(|invite| invite.answer == Some(true));
@@ -124,24 +124,29 @@ impl SpeakerGroupCore {
         candidates
     }
 
-    /// Ask each of `microphones` that has not answered recently to let this
-    /// device listen while calibrating `group`.
+    /// Ask each of `microphones` that has not answered recently to let this device listen while
+    /// calibrating `group`.
     pub fn invite_listeners(
         &mut self,
+        state: &SpeakerState,
         group: &SpeakerGroup,
         microphones: &[(DeviceId, EndpointSelector)],
         now: Instant,
-    ) -> Vec<Egress> {
+    ) -> Vec<ListenEgress> {
         microphones
             .iter()
             .filter(|(device, _)| device != &group.leader)
             .filter_map(|(device, microphone)| {
                 let key = (group.id, device.clone());
-                let answered = self.listen_invites.get(&key).is_some_and(|invite| {
+                let answered = state
+                    .listeners_of(device)
+                    .iter()
+                    .any(|listener| listener.covers(group, *microphone));
+                let recent = self.listen_invites.get(&key).is_some_and(|invite| {
                     invite.microphone == *microphone
                         && now.saturating_duration_since(invite.sent) < CONSENT_TTL
                 });
-                if answered {
+                if answered || recent {
                     return None;
                 }
                 self.listen_invites.insert(
@@ -152,14 +157,14 @@ impl SpeakerGroupCore {
                         answer: None,
                     },
                 );
-                Some(egress(
-                    device,
-                    PersonalFabricAction::SpeakerListenInvite {
+                Some(ListenEgress {
+                    target: device.clone(),
+                    action: PersonalFabricAction::SpeakerListenInvite {
                         group: group.id,
                         name: group.name.clone(),
                         microphone: *microphone,
                     },
-                ))
+                })
             })
             .collect()
     }
@@ -167,88 +172,82 @@ impl SpeakerGroupCore {
     /// Answer a microphone prompt on this device.
     pub fn resolve_listen_consent(
         &mut self,
-        fabric: &PersonDevices,
+        state: &SpeakerState,
         local: &DeviceId,
         group_id: SpeakerGroupId,
         approved: bool,
-        stamp: &FabricStamp,
-    ) -> Result<Vec<Egress>, String> {
+        now: Instant,
+    ) -> Result<Vec<SpeakerWrite>, String> {
         let pending = self
             .listen_consents
             .remove(&group_id)
             .ok_or_else(|| crate::i18n::t("speaker-error-request-expired"))?;
-        if approved {
-            if !listen_matches(fabric, local, group_id, &pending) {
-                return Err(crate::i18n::t("speaker-error-group-changed"));
-            }
-            let listeners = self.listeners_mut();
-            listeners.retain(|listener| listener.group != group_id);
-            if listeners.len() >= MAX_SPEAKER_LISTENERS {
-                self.listen_consents.insert(group_id, pending);
-                return Err(crate::i18n::t("speaker-error-too-many-memberships"));
-            }
-            listeners.push(SpeakerListener {
-                group: group_id,
-                leader: pending.leader.clone(),
-                microphone: pending.microphone,
-                stamp: stamp.clone(),
-            });
+        if approved
+            && (state
+                .group(group_id)
+                .is_none_or(|published| published.leader != pending.leader)
+                || state.microphone(local, pending.microphone).is_none())
+        {
+            return Err(crate::i18n::t("speaker-error-group-changed"));
         }
-        Ok(vec![egress(
-            &pending.leader,
-            PersonalFabricAction::SpeakerListenDecision {
+        let _ = now;
+        Ok(vec![SpeakerWrite::Consent {
+            device: local.clone(),
+            consent: ConsentWrite::Listen {
                 group: group_id,
-                accepted: approved,
+                leader: pending.leader,
+                microphone: pending.microphone,
             },
-        )])
+            approved,
+        }])
     }
 
     /// Withdraw this device's microphone consent for a group.
-    pub fn stop_listening(&mut self, group_id: SpeakerGroupId) -> Result<Vec<Egress>, String> {
-        let listeners = self.listeners_mut();
-        let index = listeners
+    pub fn stop_listening(
+        &mut self,
+        state: &SpeakerState,
+        local: &DeviceId,
+        group_id: SpeakerGroupId,
+    ) -> Result<Vec<SpeakerWrite>, String> {
+        let listener = state
+            .listeners_of(local)
             .iter()
-            .position(|listener| listener.group == group_id)
+            .find(|listener| listener.group == group_id)
             .ok_or_else(|| crate::i18n::t("speaker-error-not-a-member"))?;
-        let listener = listeners.remove(index);
-        Ok(vec![egress(
-            &listener.leader,
-            PersonalFabricAction::SpeakerListenDecision {
-                group: group_id,
-                accepted: false,
-            },
-        )])
+        Ok(vec![SpeakerWrite::Withdraw {
+            device: local.clone(),
+            group: group_id,
+            leader: listener.leader.clone(),
+            play: false,
+        }])
     }
 
-    /// Whether `source` may have this device record `microphone` for
-    /// `group` now: it leads the group as published, and this device's
-    /// consent covers exactly that group, leader and microphone.
+    /// Whether `source` may have this device record `microphone` for `group` now: it leads the
+    /// group as written, and this device's consent covers exactly that group, leader and
+    /// microphone.
     #[must_use]
     pub fn may_listen(
         &self,
+        state: &SpeakerState,
         fabric: &PersonDevices,
         local: &DeviceId,
         source: &DeviceId,
         group: SpeakerGroupId,
         microphone: EndpointSelector,
     ) -> bool {
-        fabric.speaker_group(group).is_some_and(|published| {
+        let _ = fabric;
+        state.group(group).is_some_and(|published| {
             &published.leader == source
                 && source != local
-                && self
-                    .listeners
+                && state
+                    .listeners_of(local)
                     .iter()
-                    .flatten()
-                    .any(|listener| listener.covers(published, microphone))
+                    .any(|listener: &SpeakerListener| listener.covers(published, microphone))
         })
     }
 
-    /// The leader removed the group, or this device left: drop any
-    /// microphone consent and prompt for it.
+    /// The leader removed the group, or this device left: drop the prompt for it.
     pub fn forget_listening(&mut self, group: SpeakerGroupId, source: &DeviceId) {
-        if let Some(listeners) = self.listeners.as_mut() {
-            listeners.retain(|listener| listener.group != group || &listener.leader != source);
-        }
         if self
             .listen_consents
             .get(&group)
@@ -261,29 +260,33 @@ impl SpeakerGroupCore {
 
     pub fn handle_listen_action(
         &mut self,
+        state: &SpeakerState,
+        local: &DeviceId,
         source: &DeviceId,
         action: &PersonalFabricAction,
         now: Instant,
-    ) -> Option<Vec<Egress>> {
+    ) -> Option<Vec<ListenEgress>> {
         match action {
             PersonalFabricAction::SpeakerListenInvite {
                 group, microphone, ..
             } => {
-                let already = self.listeners.iter().flatten().any(|listener| {
+                let local = local.clone();
+                let covered = state.listeners_of(&local).iter().any(|listener| {
                     listener.group == *group
                         && &listener.leader == source
                         && listener.microphone == *microphone
                 });
-                if already {
-                    return Some(vec![egress(
-                        source,
-                        PersonalFabricAction::SpeakerListenDecision {
+                if covered {
+                    return Some(vec![ListenEgress {
+                        target: source.clone(),
+                        action: PersonalFabricAction::SpeakerListenDecision {
                             group: *group,
                             accepted: true,
                         },
-                    )]);
+                    }]);
                 }
-                if self.listen_consents.len() < MAX_SPEAKER_LISTENERS
+                if self.listen_consents.len()
+                    < tilo_network_actor::fabric::speaker_group::MAX_SPEAKER_LISTENERS
                     || self.listen_consents.contains_key(group)
                 {
                     self.listen_consents.insert(
@@ -308,77 +311,61 @@ impl SpeakerGroupCore {
         }
     }
 
-    /// Maintenance for microphone consent: everything is withdrawn while
-    /// media continuity is off; otherwise consent for a group its leader no
-    /// longer publishes is void and stale prompts expire.
+    /// Maintenance for microphone consent: everything is withdrawn while media continuity is
+    /// off; otherwise consent for a group its leader no longer writes is void and stale prompts
+    /// expire.
     pub fn pump_listening(
         &mut self,
+        state: &SpeakerState,
         fabric: &PersonDevices,
         local: &DeviceId,
         enabled: bool,
         now: Instant,
-    ) -> Vec<Egress> {
+    ) -> Vec<SpeakerWrite> {
+        let _ = now;
         if !enabled {
             self.listen_consents.clear();
             self.listen_invites.clear();
-            return self
-                .listeners
-                .as_mut()
-                .map(|listeners| {
-                    listeners
-                        .drain(..)
-                        .map(|listener| {
-                            egress(
-                                &listener.leader,
-                                PersonalFabricAction::SpeakerListenDecision {
-                                    group: listener.group,
-                                    accepted: false,
-                                },
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            return Vec::new();
         }
-        let stale = self
-            .listeners
+        let stale = state
+            .listeners_of(local)
             .iter()
-            .flatten()
             .filter(|listener| {
                 fabric.contains(&listener.leader)
-                    && fabric
-                        .speaker_group(listener.group)
+                    && state
+                        .group(listener.group)
                         .is_none_or(|group| group.leader != listener.leader)
             })
-            .map(|listener| listener.group)
+            .map(|listener| (listener.group, listener.leader.clone()))
             .collect::<BTreeSet<_>>();
-        if !stale.is_empty() {
-            self.listeners_mut()
-                .retain(|listener| !stale.contains(&listener.group));
-        }
-        self.listen_consents.retain(|group, pending| {
-            now.saturating_duration_since(pending.received) < CONSENT_TTL
-                && listen_matches(fabric, local, *group, pending)
-        });
-        Vec::new()
+        stale
+            .into_iter()
+            .map(|(group, leader)| SpeakerWrite::Withdraw {
+                device: local.clone(),
+                group,
+                leader,
+                play: false,
+            })
+            .collect()
     }
 
     pub fn listen_consent_views(
         &self,
+        state: &SpeakerState,
         fabric: &PersonDevices,
         local: &DeviceId,
     ) -> Vec<SpeakerConsentView> {
         let microphone_label = |microphone| {
-            fabric
-                .get(local)
-                .and_then(|known| known.speakers.microphone(microphone))
+            state
+                .microphone(local, microphone)
                 .map(|endpoint| endpoint.label.clone())
         };
         self.listen_consents
             .iter()
-            .filter(|(group, pending)| listen_matches(fabric, local, **group, pending))
+            .filter(|(group, pending)| listen_matches(state, local, **group, pending))
             .filter_map(|(group, pending)| {
-                let published = fabric.speaker_group(*group)?;
+                let published = state.group(*group)?;
                 Some(SpeakerConsentView {
                     group: *group,
                     name: published.name.clone(),
@@ -391,14 +378,19 @@ impl SpeakerGroupCore {
             .collect()
     }
 
-    pub fn listener_views(&self, fabric: &PersonDevices) -> Vec<super::SpeakerMembershipView> {
-        self.listeners
+    pub fn listener_views(
+        &self,
+        state: &SpeakerState,
+        fabric: &PersonDevices,
+        local: &DeviceId,
+    ) -> Vec<super::SpeakerMembershipView> {
+        state
+            .listeners_of(local)
             .iter()
-            .flatten()
             .map(|listener| super::SpeakerMembershipView {
                 group: listener.group,
-                name: fabric
-                    .speaker_group(listener.group)
+                name: state
+                    .group(listener.group)
                     .map_or_else(String::new, |group| group.name.clone()),
                 leader_label: device_label(fabric, &listener.leader),
                 scope: SpeakerConsentScope::Listen,
@@ -414,21 +406,16 @@ fn device_label(fabric: &PersonDevices, device: &DeviceId) -> String {
     )
 }
 
-/// The prompt still describes the group as its leader publishes it, and
-/// this device still offers the microphone.
+/// The prompt still describes the group as its leader writes it, and this device still offers
+/// the microphone.
 fn listen_matches(
-    fabric: &PersonDevices,
+    state: &SpeakerState,
     local: &DeviceId,
     group: SpeakerGroupId,
     pending: &PendingListen,
 ) -> bool {
-    let published = fabric
-        .speaker_group(group)
+    let published = state
+        .group(group)
         .is_some_and(|published| published.leader == pending.leader);
-    // Before this device's own part of the person's store is known, the
-    // microphone cannot be checked; the capture resolves it again anyway.
-    let offered = fabric
-        .get(local)
-        .is_none_or(|known| known.speakers.microphone(pending.microphone).is_some());
-    published && offered
+    published && state.microphone(local, pending.microphone).is_some()
 }

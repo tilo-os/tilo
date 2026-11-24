@@ -1,39 +1,40 @@
-//! Consent, admission and teardown for speaker groups.
+//! Speaker groups kept in the record of the person's devices.
 //!
-//! [`SpeakerGroupCore`] is the whole policy, driven with explicit fabric
-//! state and time so it is testable without a network. The process-global
-//! wrapper below feeds it the live fabric and sends what it emits.
+//! [`SpeakerGroupCore`] is the whole policy, driven with the record and the live fabric as
+//! explicit values, so it is testable without a network or a clock. The process-global wrapper
+//! below feeds it what the record and the fabric say, and writes back what it decides.
 //!
 //! Three things are kept apart:
 //!
-//! * **Configuration** — the groups this device leads. They live in its part
-//!   of the person's store and only this device edits them.
-//! * **Consent** — memberships this device agreed to. Each is asked for once,
-//!   on this device, and written into its part of the person's store. A change to
-//!   the member's output or role in the group no longer matches it, so the
-//!   member is asked again.
-//! * **Sessions** — one playback to a group. Any of the person's devices may
-//!   start one; each member admits it only while its consent still covers
-//!   the group as its leader publishes it, and answers with a fresh random
-//!   capability bound to that exact source and session. Losing the source,
-//!   the consent, the group, or media continuity ends the session.
+//! * **Configuration** — the groups a device leads, the outputs and microphones it offers, and
+//!   the consents it gave. The record of the person's devices holds each under the device that
+//!   wrote it, so every device of theirs reads it and only that device edits it.
+//! * **Consent** — a membership another device leads. The member device asks its person once, on
+//!   its own screen, and writes the answer into its own part of the record; a change to the
+//!   member's output or role no longer matches it, so the member is asked again.
+//! * **Playbacks** — one playback to a group. Any of the person's devices may offer one; each
+//!   member admits it only while its consent covers the group as its leader wrote it, with a
+//!   fresh random capability bound to that exact source and session. Losing the source, the
+//!   consent, the group, or media continuity ends it.
 //!
-//! The timed audio path consumes [`outbound_playback_plans`] on the playing
-//! device and [`member_grant`] on each member. `PipeWire` identities stay
-//! inside [`resolve_local_output`].
+//! The timed audio path consumes [`outbound_playback_plans`] on the playing device and
+//! [`member_grant`] on each member. `PipeWire` identities stay inside [`resolve_local_output`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tilo_network_actor::fabric::link::FabricLink;
+use tilo_resource::Invoke;
+use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
+use tilo_workspace_service::workspaces::person_workspace::speaker as record;
 
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
 use tilo_network_actor::fabric::clock::{ClockSyncFailure, ClockSyncState};
 use tilo_network_actor::fabric::speaker_group::{
-    AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState, SpeakerGroup,
-    SpeakerGroupId, SpeakerGroupMember, SpeakerListener, SpeakerMemberStatus, SpeakerMembership,
-    SpeakerRole, SpeakerTrim,
+    AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerGroup, SpeakerGroupId,
+    SpeakerGroupMember, SpeakerListener, SpeakerMemberStatus, SpeakerMembership, SpeakerRole,
+    SpeakerTrim,
 };
 use tilo_network_actor::fabric::{PersonDevices, PersonalFabricAction};
 
@@ -41,33 +42,101 @@ mod endpoints;
 mod listening;
 
 use endpoints::local_endpoints;
-pub use listening::{ListenerCandidate, ListenerState};
+pub use listening::{ListenEgress, ListenerCandidate, ListenerState};
 
-/// How long an unanswered join prompt stays on the member device.
+/// How long an unanswered consent prompt stays on the member device.
 const CONSENT_TTL: Duration = Duration::from_secs(10 * 60);
-/// How often the leader repeats an unanswered invite to an online member.
-const INVITE_RETRY: Duration = Duration::from_secs(30);
 /// How long a playing device waits for one member to admit a session.
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Upper bound on concurrent sessions in either direction.
 pub const MAX_SPEAKER_SESSIONS: usize = 4;
 
-/// One fabric action to send to one exact device.
+/// One change the policy makes to the record of the person's devices.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Egress {
-    pub target: DeviceId,
-    pub action: PersonalFabricAction,
+pub enum SpeakerWrite {
+    /// The outputs and microphones this device offers.
+    Endpoints {
+        device: DeviceId,
+        endpoints: Vec<AudioEndpoint>,
+    },
+    /// A group this device leads, as it now stands.
+    Lead {
+        device: DeviceId,
+        group: SpeakerGroup,
+    },
+    /// A group this device no longer leads.
+    Drop {
+        device: DeviceId,
+        group: SpeakerGroupId,
+    },
+    /// This device's answer to a group led elsewhere: a consent to play, or to listen.
+    Consent {
+        device: DeviceId,
+        consent: ConsentWrite,
+        approved: bool,
+    },
+    /// This device takes back a consent it gave.
+    Withdraw {
+        device: DeviceId,
+        group: SpeakerGroupId,
+        leader: DeviceId,
+        play: bool,
+    },
+    /// Offer one playback of a group to one member.
+    Offer {
+        route: [u8; 16],
+        session: [u8; 16],
+        source: DeviceId,
+        target: DeviceId,
+        group: SpeakerGroupId,
+    },
+    /// A member's answer to an offer: its capability, or nothing.
+    Admit {
+        route: [u8; 16],
+        authorization: Option<[u8; 16]>,
+    },
+    /// End a playback, from either end.
+    Stop {
+        route: [u8; 16],
+        authorization: Option<[u8; 16]>,
+    },
 }
 
-fn egress(target: &DeviceId, action: PersonalFabricAction) -> Egress {
-    Egress {
-        target: target.clone(),
-        action,
+/// What a consent covers: playing in a group, or letting it listen with a microphone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConsentWrite {
+    Play {
+        group: SpeakerGroupId,
+        leader: DeviceId,
+        output: EndpointSelector,
+        role: SpeakerRole,
+    },
+    Listen {
+        group: SpeakerGroupId,
+        leader: DeviceId,
+        microphone: EndpointSelector,
+    },
+}
+
+impl ConsentWrite {
+    fn group(&self) -> SpeakerGroupId {
+        match self {
+            Self::Play { group, .. } | Self::Listen { group, .. } => *group,
+        }
+    }
+
+    fn leader(&self) -> &DeviceId {
+        match self {
+            Self::Play { leader, .. } | Self::Listen { leader, .. } => leader,
+        }
+    }
+
+    const fn play(&self) -> bool {
+        matches!(self, Self::Play { .. })
     }
 }
 
-/// What a session plays. The playing device resolves it; it never crosses
-/// the fabric.
+/// What a session plays. The playing device resolves it; it never leaves the device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupAudioSource {
     /// An entry of the shell's live-audio source picker.
@@ -123,34 +192,6 @@ struct PendingConsent {
     received: Instant,
 }
 
-#[derive(Clone, Debug)]
-struct InviteRecord {
-    output: EndpointSelector,
-    role: SpeakerRole,
-    sent: Instant,
-    declined: bool,
-}
-
-/// The speaker-group policy, independent of transport and wall time.
-#[derive(Default)]
-pub struct SpeakerGroupCore {
-    /// Groups this device leads. `None` until seeded from what it kept in its
-    /// part of the person's store, so a restart keeps the configuration.
-    groups: Option<Vec<SpeakerGroup>>,
-    /// Consents this device gave, seeded the same way.
-    memberships: Option<Vec<SpeakerMembership>>,
-    invites: BTreeMap<(SpeakerGroupId, DeviceId), InviteRecord>,
-    consents: BTreeMap<SpeakerGroupId, PendingConsent>,
-    /// Microphone consents this device gave, seeded like memberships.
-    listeners: Option<Vec<SpeakerListener>>,
-    listen_invites: BTreeMap<(SpeakerGroupId, DeviceId), listening::ListenInvite>,
-    listen_consents: BTreeMap<SpeakerGroupId, listening::PendingListen>,
-    outbound: BTreeMap<[u8; 16], GroupSession>,
-    inbound: BTreeMap<[u8; 16], MemberSession>,
-    /// Media continuity was turned off; nothing starts until it is back.
-    media_off: bool,
-}
-
 /// A request to edit one member of a group this device leads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemberSpec {
@@ -159,118 +200,491 @@ pub struct MemberSpec {
     pub role: SpeakerRole,
 }
 
-impl SpeakerGroupCore {
-    /// Adopt the persisted records once, the first time local state is
-    /// needed after start.
-    pub fn seed(&mut self, previous: Option<&SpeakerFabricState>) {
-        if self.groups.is_none() {
-            self.groups = Some(previous.map_or_else(Vec::new, |state| state.groups.clone()));
-        }
-        if self.memberships.is_none() {
-            self.memberships =
-                Some(previous.map_or_else(Vec::new, |state| state.memberships.clone()));
-        }
-        if self.listeners.is_none() {
-            self.listeners = Some(previous.map_or_else(Vec::new, |state| state.listeners.clone()));
-        }
-    }
+/// One playback as the record holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedPlayback {
+    pub route: [u8; 16],
+    pub session: [u8; 16],
+    pub source: DeviceId,
+    pub target: DeviceId,
+    pub group: SpeakerGroupId,
+    pub admitted: bool,
+    pub refused: bool,
+    pub authorization: Option<[u8; 16]>,
+}
 
-    /// The state this device publishes, stamped as its own.
+/// The person's speaker groups as the record of their devices holds them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpeakerState {
+    /// The groups any of their devices leads, newest write of each id.
+    pub groups: Vec<SpeakerGroup>,
+    /// What each device offers, by device.
+    pub endpoints: BTreeMap<DeviceId, Vec<AudioEndpoint>>,
+    /// The consents each device gave to play, by device.
+    pub memberships: BTreeMap<DeviceId, Vec<SpeakerMembership>>,
+    /// The consents each device gave to listen, by device.
+    pub listeners: BTreeMap<DeviceId, Vec<SpeakerListener>>,
+    /// The consents each device declined, by device: kept so it is not asked again.
+    pub declined: BTreeMap<DeviceId, Vec<record::SpeakerConsent>>,
+    /// Every playback the record holds.
+    pub playbacks: Vec<RecordedPlayback>,
+}
+
+impl SpeakerState {
+    /// The record `record` read as speaker groups: entries that do not parse are left out.
     #[must_use]
-    pub fn authored(
-        &self,
-        endpoints: Vec<AudioEndpoint>,
-        stamp: &FabricStamp,
-    ) -> SpeakerFabricState {
-        SpeakerFabricState {
-            endpoints,
-            groups: self
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one reading keeps every part of the record beside the type it becomes"
+    )]
+    pub fn of(record: &Devices) -> Self {
+        let mut state = Self::default();
+        for (key, device) in record.speaker_devices.iter() {
+            let Ok(id) = DeviceId::new(key.as_str()) else {
+                continue;
+            };
+            let endpoints = device
+                .endpoints
+                .iter()
+                .filter_map(|endpoint| {
+                    Some(AudioEndpoint {
+                        selector: EndpointSelector::from_hex(&endpoint.selector)?,
+                        kind: if endpoint.microphone {
+                            AudioEndpointKind::Microphone
+                        } else {
+                            AudioEndpointKind::Output
+                        },
+                        label: endpoint.label.clone(),
+                        is_default: endpoint.is_default,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let groups = device
                 .groups
                 .iter()
-                .flatten()
-                .cloned()
-                .map(|mut group| {
-                    group.stamp = stamp.clone();
-                    group
+                .filter_map(|led| {
+                    let id = SpeakerGroupId::from_hex(&led.id)?;
+                    let members = led
+                        .members
+                        .iter()
+                        .filter_map(|member| {
+                            Some(SpeakerGroupMember {
+                                device: DeviceId::new(&member.device).ok()?,
+                                output: EndpointSelector::from_hex(&member.output)?,
+                                role: role_from_record(&member.role)?,
+                                trim: trim_from_record(member),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if members.len() != led.members.len() {
+                        return None;
+                    }
+                    let group = SpeakerGroup {
+                        id,
+                        name: led.name.clone(),
+                        leader: id_of(key.as_str()),
+                        members,
+                        stamp: FabricStamp {
+                            counter: u64::try_from(led.at_ms).unwrap_or(0),
+                            device: id_of(key.as_str()),
+                        },
+                    };
+                    group.validate(&group.leader).ok()?;
+                    Some(group)
                 })
-                .collect(),
-            memberships: self
-                .memberships
-                .iter()
-                .flatten()
-                .cloned()
-                .map(|mut membership| {
-                    membership.stamp = stamp.clone();
-                    membership
-                })
-                .collect(),
-            listeners: self
-                .listeners
-                .iter()
-                .flatten()
-                .cloned()
-                .map(|mut listener| {
-                    listener.stamp = stamp.clone();
-                    listener
-                })
-                .collect(),
+                .collect::<Vec<_>>();
+            if !endpoints.is_empty() {
+                state.endpoints.insert(id.clone(), endpoints);
+            }
+            state.groups.extend(groups);
+            for consent in &device.consents {
+                match (
+                    consent.approved,
+                    SpeakerGroupId::from_hex(&consent.group),
+                    DeviceId::new(&consent.leader).ok(),
+                ) {
+                    (true, Some(group), Some(leader)) if consent.play => {
+                        if let Some(membership) = play_membership(group, leader, consent) {
+                            state
+                                .memberships
+                                .entry(id.clone())
+                                .or_default()
+                                .push(membership);
+                        }
+                    }
+                    (true, Some(group), Some(leader)) => {
+                        if let Some(microphone) = EndpointSelector::from_hex(&consent.microphone) {
+                            state
+                                .listeners
+                                .entry(id.clone())
+                                .or_default()
+                                .push(SpeakerListener {
+                                    group,
+                                    leader,
+                                    microphone,
+                                    stamp: FabricStamp {
+                                        counter: u64::try_from(consent.at_ms).unwrap_or(0),
+                                        device: id.clone(),
+                                    },
+                                });
+                        }
+                    }
+                    (false, _, _) => {
+                        state
+                            .declined
+                            .entry(id.clone())
+                            .or_default()
+                            .push(consent.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        state
+            .groups
+            .sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+        for (key, playback) in record.speaker_playbacks.iter() {
+            let (Some(route), Some(session), Some(group)) = (
+                selector_bytes(key.as_str()),
+                selector_bytes(playback.session.as_str()),
+                SpeakerGroupId::from_hex(&playback.group),
+            ) else {
+                continue;
+            };
+            let (Ok(source), Ok(target)) = (
+                DeviceId::new(&playback.source),
+                DeviceId::new(&playback.target),
+            ) else {
+                continue;
+            };
+            let stage = playback.stage;
+            state.playbacks.push(RecordedPlayback {
+                route,
+                session,
+                source,
+                target,
+                group,
+                admitted: stage == record::PlaybackStage::Admitted,
+                refused: stage == record::PlaybackStage::Refused,
+                authorization: EndpointSelector::from_hex(&playback.authorization)
+                    .map(|selector| selector.0),
+            });
+        }
+        state
+    }
+
+    /// The group `id`, as its leader wrote it.
+    #[must_use]
+    pub fn group(&self, id: SpeakerGroupId) -> Option<&SpeakerGroup> {
+        self.groups.iter().find(|group| group.id == id)
+    }
+
+    /// What `device` offers.
+    #[must_use]
+    pub fn endpoints_of(&self, device: &DeviceId) -> &[AudioEndpoint] {
+        self.endpoints.get(device).map_or(&[], Vec::as_slice)
+    }
+
+    /// The output `device` offers under `selector`.
+    #[must_use]
+    pub fn output(&self, device: &DeviceId, selector: EndpointSelector) -> Option<&AudioEndpoint> {
+        self.endpoints_of(device).iter().find(|endpoint| {
+            endpoint.selector == selector && endpoint.kind == AudioEndpointKind::Output
+        })
+    }
+
+    /// The microphone `device` offers under `selector`.
+    #[must_use]
+    pub fn microphone(
+        &self,
+        device: &DeviceId,
+        selector: EndpointSelector,
+    ) -> Option<&AudioEndpoint> {
+        self.endpoints_of(device).iter().find(|endpoint| {
+            endpoint.selector == selector && endpoint.kind == AudioEndpointKind::Microphone
+        })
+    }
+
+    /// The microphone calibration listens with on `device`: the default one, else the first.
+    #[must_use]
+    pub fn calibration_microphone(&self, device: &DeviceId) -> Option<&AudioEndpoint> {
+        let mut microphones = self
+            .endpoints_of(device)
+            .iter()
+            .filter(|endpoint| endpoint.kind == AudioEndpointKind::Microphone);
+        let first = microphones.clone().next();
+        microphones.find(|endpoint| endpoint.is_default).or(first)
+    }
+
+    /// The consents `device` gave to play in groups.
+    #[must_use]
+    pub fn memberships_of(&self, device: &DeviceId) -> &[SpeakerMembership] {
+        self.memberships.get(device).map_or(&[], Vec::as_slice)
+    }
+
+    /// The consents `device` gave to let groups listen.
+    #[must_use]
+    pub fn listeners_of(&self, device: &DeviceId) -> &[SpeakerListener] {
+        self.listeners.get(device).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether `device`'s consent covers `member` of `group` as it stands.
+    #[must_use]
+    pub fn membership_covers(
+        &self,
+        device: &DeviceId,
+        group: &SpeakerGroup,
+        member: &SpeakerGroupMember,
+    ) -> bool {
+        self.memberships_of(device)
+            .iter()
+            .any(|membership| membership.covers(group, member))
+    }
+
+    /// Whether `device` declined to play `member` of `group` as it now stands, so it is not asked
+    /// again until the leader changes it.
+    #[must_use]
+    pub fn declined_play(
+        &self,
+        device: &DeviceId,
+        group: &SpeakerGroup,
+        member: &SpeakerGroupMember,
+    ) -> bool {
+        self.declined.get(device).is_some_and(|declined| {
+            declined.iter().any(|consent| {
+                consent.play
+                    && SpeakerGroupId::from_hex(&consent.group) == Some(group.id)
+                    && DeviceId::new(&consent.leader).ok().as_ref() == Some(&group.leader)
+                    && EndpointSelector::from_hex(&consent.output) == Some(member.output)
+                    && role_from_record(&consent.role) == Some(member.role)
+            })
+        })
+    }
+
+    /// Where each member of `group` stands, in member order.
+    #[must_use]
+    pub fn member_states(
+        &self,
+        fabric: &PersonDevices,
+        group: &SpeakerGroup,
+    ) -> Vec<SpeakerMemberStatus> {
+        group
+            .members
+            .iter()
+            .map(|member| {
+                let Some(device) = fabric.get(&member.device) else {
+                    return SpeakerMemberStatus::NotCertified;
+                };
+                if member.device != group.leader && !device.about.capabilities.audio_group {
+                    return SpeakerMemberStatus::Unavailable;
+                }
+                if self.output(&member.device, member.output).is_none() {
+                    return SpeakerMemberStatus::OutputMissing;
+                }
+                let consented = member.device == group.leader
+                    || self.membership_covers(&member.device, group, member);
+                if !consented {
+                    SpeakerMemberStatus::AwaitingConsent
+                } else if device.online {
+                    SpeakerMemberStatus::Ready
+                } else {
+                    SpeakerMemberStatus::Offline
+                }
+            })
+            .collect()
+    }
+
+    /// Whether every member is one of the person's devices, can join speaker groups (the
+    /// leader's own outputs always can), and offers the named output.
+    ///
+    /// # Errors
+    /// The group does not hold, names a device that is not the person's, or names an output that
+    /// device does not offer.
+    pub fn admits(&self, fabric: &PersonDevices, group: &SpeakerGroup) -> Result<(), String> {
+        group
+            .validate(&group.leader)
+            .map_err(|error| error.to_string())?;
+        for member in &group.members {
+            let device = fabric
+                .get(&member.device)
+                .ok_or_else(|| crate::i18n::t("speaker-error-device-unknown"))?;
+            if (member.device != group.leader && !device.about.capabilities.audio_group)
+                || self.output(&member.device, member.output).is_none()
+            {
+                return Err(crate::i18n::t("speaker-error-member-unavailable"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The playback whose route is `route`.
+    #[must_use]
+    pub fn playback(&self, route: [u8; 16]) -> Option<&RecordedPlayback> {
+        self.playbacks
+            .iter()
+            .find(|playback| playback.route == route)
+    }
+}
+
+fn id_of(key: &str) -> DeviceId {
+    DeviceId::new(key).unwrap_or_else(|_| DeviceId::new("unknown").expect("a device id"))
+}
+
+fn role_from_record(value: &str) -> Option<SpeakerRole> {
+    use tilo_network_actor::fabric::speaker_group::{RoomPoint, StereoSide, SurroundChannel};
+    Some(match value {
+        "left" => SpeakerRole::Stereo(StereoSide::Left),
+        "right" => SpeakerRole::Stereo(StereoSide::Right),
+        "center" => SpeakerRole::Surround(SurroundChannel::Center),
+        "lfe" => SpeakerRole::Surround(SurroundChannel::Lfe),
+        "surround-left" => SpeakerRole::Surround(SurroundChannel::SurroundLeft),
+        "surround-right" => SpeakerRole::Surround(SurroundChannel::SurroundRight),
+        point => {
+            let (x_mm, y_mm, z_mm) = {
+                let mut parts = point.strip_prefix("room:")?.split(':');
+                let x = parts.next()?.parse().ok()?;
+                let y = parts.next()?.parse().ok()?;
+                let z = parts.next()?.parse().ok()?;
+                (x, y, z)
+            };
+            SpeakerRole::RoomPoint(RoomPoint { x_mm, y_mm, z_mm })
+        }
+    })
+}
+
+fn role_to_record(role: SpeakerRole) -> String {
+    use tilo_network_actor::fabric::speaker_group::{StereoSide, SurroundChannel};
+    match role {
+        SpeakerRole::Stereo(StereoSide::Left) => "left".to_owned(),
+        SpeakerRole::Stereo(StereoSide::Right) => "right".to_owned(),
+        SpeakerRole::Surround(SurroundChannel::Center) => "center".to_owned(),
+        SpeakerRole::Surround(SurroundChannel::Lfe) => "lfe".to_owned(),
+        SpeakerRole::Surround(SurroundChannel::SurroundLeft) => "surround-left".to_owned(),
+        SpeakerRole::Surround(SurroundChannel::SurroundRight) => "surround-right".to_owned(),
+        SpeakerRole::RoomPoint(point) => {
+            format!("room:{}:{}:{}", point.x_mm, point.y_mm, point.z_mm)
         }
     }
+}
 
-    fn groups_mut(&mut self) -> &mut Vec<SpeakerGroup> {
-        self.groups.get_or_insert_with(Vec::new)
+fn trim_from_record(member: &record::SpeakerLedMember) -> SpeakerTrim {
+    SpeakerTrim {
+        delay_ns: member.delay_ns,
+        gain_mb: member.gain_mb,
+        eq: member
+            .eq
+            .iter()
+            .map(
+                |band| tilo_network_actor::fabric::speaker_group::SpeakerEqBand {
+                    center_hz: band.center_hz,
+                    gain_mb: band.gain_mb,
+                    q_milli: band.q_milli,
+                },
+            )
+            .collect(),
     }
+}
 
-    fn memberships_mut(&mut self) -> &mut Vec<SpeakerMembership> {
-        self.memberships.get_or_insert_with(Vec::new)
-    }
+fn trim_to_record(trim: &SpeakerTrim) -> (u64, i32, Vec<record::SpeakerEqBand>) {
+    (
+        trim.delay_ns,
+        trim.gain_mb,
+        trim.eq
+            .iter()
+            .map(|band| record::SpeakerEqBand {
+                center_hz: band.center_hz,
+                gain_mb: band.gain_mb,
+                q_milli: band.q_milli,
+            })
+            .collect(),
+    )
+}
 
-    #[must_use]
-    pub fn led_group(&self, id: SpeakerGroupId) -> Option<&SpeakerGroup> {
-        self.groups.iter().flatten().find(|group| group.id == id)
-    }
+fn selector_bytes(value: &str) -> Option<[u8; 16]> {
+    let mut bytes = [0; 16];
+    (hex::decode_to_slice(value, &mut bytes).is_ok() && hex::encode(bytes) == value)
+        .then_some(bytes)
+}
 
-    /// Create a group this device leads and invite its remote members.
+fn play_membership(
+    group: SpeakerGroupId,
+    leader: DeviceId,
+    consent: &record::SpeakerConsent,
+) -> Option<SpeakerMembership> {
+    Some(SpeakerMembership {
+        group,
+        leader: leader.clone(),
+        output: EndpointSelector::from_hex(&consent.output)?,
+        role: role_from_record(&consent.role)?,
+        stamp: FabricStamp {
+            counter: u64::try_from(consent.at_ms).unwrap_or(0),
+            device: leader,
+        },
+    })
+}
+
+/// The speaker-group policy, independent of transport and wall time.
+#[derive(Default)]
+pub struct SpeakerGroupCore {
+    /// Consents this device was asked for and has not answered.
+    consents: BTreeMap<SpeakerGroupId, PendingConsent>,
+    /// Microphone consents it was asked for and has not answered.
+    listen_consents: BTreeMap<SpeakerGroupId, listening::PendingListen>,
+    /// Microphone invites it sent, and their answers.
+    listen_invites: BTreeMap<(SpeakerGroupId, DeviceId), listening::ListenInvite>,
+    outbound: BTreeMap<[u8; 16], GroupSession>,
+    inbound: BTreeMap<[u8; 16], MemberSession>,
+    /// Media continuity was turned off; nothing starts until it is back.
+    media_off: bool,
+}
+
+impl SpeakerGroupCore {
+    /// Create a group this device leads.
     pub fn create_group(
         &mut self,
+        state: &SpeakerState,
         fabric: &PersonDevices,
         local: &DeviceId,
         id: SpeakerGroupId,
         name: &str,
         members: &[MemberSpec],
         now: Instant,
-    ) -> Result<Vec<Egress>, String> {
-        if self.groups.iter().flatten().count()
+    ) -> Result<Vec<SpeakerWrite>, String> {
+        if state
+            .groups
+            .iter()
+            .filter(|group| &group.leader == local)
+            .count()
             >= tilo_network_actor::fabric::speaker_group::MAX_SPEAKER_GROUPS
         {
             return Err(crate::i18n::t("speaker-error-too-many-groups"));
         }
-        if self.led_group(id).is_some() {
+        if state.group(id).is_some() {
             return Err(crate::i18n::t("speaker-error-group-exists"));
         }
         let group = build_group(id, name, local, members, &BTreeMap::new())?;
-        fabric
-            .admit_speaker_group(&group)
-            .map_err(|error| error.to_string())?;
-        let invites = self.invite(&group, now, true);
-        self.groups_mut().push(group);
-        Ok(invites)
+        state.admits(fabric, &group)?;
+        let _ = now;
+        Ok(vec![SpeakerWrite::Lead {
+            device: local.clone(),
+            group,
+        }])
     }
 
-    /// Replace the name and members of a group this device leads. Members
-    /// keep their calibration while their output and role stay the same;
-    /// removed members are told to leave, changed ones are asked again.
+    /// Replace the name and members of a group this device leads. Members keep their calibration
+    /// while their output and role stay the same; removed members are let go.
     pub fn update_group(
         &mut self,
+        state: &SpeakerState,
         fabric: &PersonDevices,
         local: &DeviceId,
         id: SpeakerGroupId,
         name: &str,
         members: &[MemberSpec],
         now: Instant,
-    ) -> Result<Vec<Egress>, String> {
+    ) -> Result<Vec<SpeakerWrite>, String> {
         let previous = self
-            .led_group(id)
+            .led_group(state, local, id)
             .cloned()
             .ok_or_else(|| crate::i18n::t("speaker-error-group-gone"))?;
         let trims = previous
@@ -284,41 +698,36 @@ impl SpeakerGroupCore {
             })
             .collect();
         let group = build_group(id, name, local, members, &trims)?;
-        fabric
-            .admit_speaker_group(&group)
-            .map_err(|error| error.to_string())?;
-        let mut out = removed_members(&previous, &group)
-            .into_iter()
-            .map(|device| {
-                egress(
-                    &device,
-                    PersonalFabricAction::SpeakerGroupLeave { group: id },
-                )
-            })
-            .collect::<Vec<_>>();
-        self.invites
-            .retain(|(group_id, device), _| *group_id != id || group.member(device).is_some());
-        out.extend(self.invite(&group, now, true));
-        out.extend(self.end_outbound_for_group(id));
-        if let Some(slot) = self.groups_mut().iter_mut().find(|slot| slot.id == id) {
-            *slot = group;
+        state.admits(fabric, &group)?;
+        let mut out = Vec::new();
+        for device in removed_members(&previous, &group) {
+            out.extend(self.end_outbound_member(|session, member| {
+                session.group == id && member.device == device
+            }));
         }
+        out.push(SpeakerWrite::Lead {
+            device: local.clone(),
+            group,
+        });
+        out.extend(self.end_outbound_for_group_if_unchanged(id));
+        let _ = now;
         Ok(out)
     }
 
-    /// Replace the calibration trims of a led group, member by member. The
-    /// member set is unchanged, so no consent is asked again.
+    /// Replace the calibration trims of a led group, member by member. The member set is
+    /// unchanged, so no consent is asked again.
     pub fn set_trims(
         &mut self,
+        state: &SpeakerState,
+        local: &DeviceId,
         id: SpeakerGroupId,
         trims: &[(DeviceId, EndpointSelector, SpeakerTrim)],
-    ) -> Result<(), String> {
+    ) -> Result<Vec<SpeakerWrite>, String> {
         let group = self
-            .groups_mut()
-            .iter_mut()
-            .find(|group| group.id == id)
+            .led_group(state, local, id)
+            .cloned()
             .ok_or_else(|| crate::i18n::t("speaker-error-group-gone"))?;
-        let mut updated = group.clone();
+        let mut updated = group;
         for (device, output, trim) in trims {
             let member = updated
                 .members
@@ -328,144 +737,86 @@ impl SpeakerGroupCore {
             member.trim = trim.clone();
         }
         updated
-            .validate(&updated.leader.clone())
+            .validate(local)
             .map_err(|_| crate::i18n::t("speaker-error-calibration-range"))?;
-        *group = updated;
-        Ok(())
+        Ok(vec![SpeakerWrite::Lead {
+            device: local.clone(),
+            group: updated,
+        }])
     }
 
     /// Delete a group this device leads and release every member.
-    pub fn delete_group(&mut self, id: SpeakerGroupId) -> Result<Vec<Egress>, String> {
-        let groups = self.groups_mut();
-        let index = groups
-            .iter()
-            .position(|group| group.id == id)
-            .ok_or_else(|| crate::i18n::t("speaker-error-group-gone"))?;
-        let group = groups.remove(index);
-        self.invites.retain(|(group_id, _), _| *group_id != id);
-        let listening = self
-            .listen_invites
-            .keys()
-            .filter(|(group_id, device)| *group_id == id && group.member(device).is_none())
-            .map(|(_, device)| device.clone())
-            .collect::<BTreeSet<_>>();
-        self.listen_invites
-            .retain(|(group_id, _), _| *group_id != id);
-        let mut out = group
-            .members
-            .iter()
-            .filter(|member| member.device != group.leader)
-            .map(|member| member.device.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .chain(listening)
-            .map(|device| {
-                egress(
-                    &device,
-                    PersonalFabricAction::SpeakerGroupLeave { group: id },
-                )
-            })
-            .collect::<Vec<_>>();
-        out.extend(self.end_outbound_for_group(id));
-        Ok(out)
+    pub fn delete_group(&mut self, local: &DeviceId, id: SpeakerGroupId) -> Vec<SpeakerWrite> {
+        let mut out = self.end_outbound_for_group(id);
+        out.push(SpeakerWrite::Drop {
+            device: local.clone(),
+            group: id,
+        });
+        out
     }
 
-    /// Invites for remote members that have not consented. `force` resends
-    /// regardless of the retry interval and forgets earlier declines, for an
-    /// explicit edit.
-    fn invite(&mut self, group: &SpeakerGroup, now: Instant, force: bool) -> Vec<Egress> {
-        group
-            .members
-            .iter()
-            .filter(|member| member.device != group.leader)
-            .filter_map(|member| {
-                let key = (group.id, member.device.clone());
-                let due = force
-                    || self.invites.get(&key).is_none_or(|record| {
-                        !record.declined
-                            && (record.output != member.output
-                                || record.role != member.role
-                                || now.saturating_duration_since(record.sent) >= INVITE_RETRY)
-                    });
-                if !due {
-                    return None;
-                }
-                self.invites.insert(
-                    key,
-                    InviteRecord {
-                        output: member.output,
-                        role: member.role,
-                        sent: now,
-                        declined: false,
-                    },
-                );
-                Some(egress(
-                    &member.device,
-                    PersonalFabricAction::SpeakerGroupInvite {
-                        group: group.id,
-                        name: group.name.clone(),
-                        output: member.output,
-                        role: member.role,
-                    },
-                ))
-            })
-            .collect()
-    }
-
-    /// Resolve a join prompt on this device.
+    /// Answer a join prompt on this device.
     pub fn resolve_consent(
         &mut self,
-        fabric: &PersonDevices,
+        state: &SpeakerState,
         local: &DeviceId,
         group_id: SpeakerGroupId,
         approved: bool,
-        stamp: &FabricStamp,
-    ) -> Result<Vec<Egress>, String> {
+        now: Instant,
+    ) -> Result<Vec<SpeakerWrite>, String> {
         let pending = self
             .consents
             .remove(&group_id)
             .ok_or_else(|| crate::i18n::t("speaker-error-request-expired"))?;
         if approved {
-            if !consent_matches(fabric, local, group_id, &pending) {
-                return Err(crate::i18n::t("speaker-error-group-changed"));
-            }
-            if self.memberships.iter().flatten().count()
+            let published = state
+                .group(group_id)
+                .filter(|published| published.leader == pending.leader)
+                .ok_or_else(|| crate::i18n::t("speaker-error-group-changed"))?;
+            let member = published
+                .member(local)
+                .filter(|member| member.output == pending.output && member.role == pending.role)
+                .ok_or_else(|| crate::i18n::t("speaker-error-group-changed"))?;
+            if state.memberships_of(local).len()
                 >= tilo_network_actor::fabric::speaker_group::MAX_SPEAKER_MEMBERSHIPS
             {
                 self.consents.insert(group_id, pending);
                 return Err(crate::i18n::t("speaker-error-too-many-memberships"));
             }
-            let memberships = self.memberships_mut();
-            memberships.retain(|membership| membership.group != group_id);
-            memberships.push(SpeakerMembership {
+            let _ = member;
+        }
+        let _ = now;
+        Ok(vec![SpeakerWrite::Consent {
+            device: local.clone(),
+            consent: ConsentWrite::Play {
                 group: group_id,
-                leader: pending.leader.clone(),
+                leader: pending.leader,
                 output: pending.output,
                 role: pending.role,
-                stamp: stamp.clone(),
-            });
-        }
-        Ok(vec![egress(
-            &pending.leader,
-            PersonalFabricAction::SpeakerGroupDecision {
-                group: group_id,
-                accepted: approved,
             },
-        )])
+            approved,
+        }])
     }
 
     /// Withdraw this device's consent to a group led elsewhere.
-    pub fn leave(&mut self, group_id: SpeakerGroupId) -> Result<Vec<Egress>, String> {
-        let memberships = self.memberships_mut();
-        let index = memberships
+    pub fn leave(
+        &mut self,
+        state: &SpeakerState,
+        local: &DeviceId,
+        group_id: SpeakerGroupId,
+    ) -> Result<Vec<SpeakerWrite>, String> {
+        let membership = state
+            .memberships_of(local)
             .iter()
-            .position(|membership| membership.group == group_id)
-            .ok_or_else(|| crate::i18n::t("speaker-error-not-a-member"))?;
-        let membership = memberships.remove(index);
-        let mut out = vec![egress(
-            &membership.leader,
-            PersonalFabricAction::SpeakerGroupLeave { group: group_id },
-        )];
+            .find(|membership| membership.group == group_id)
+            .ok_or_else(|| crate::i18n::t("speaker-error-not-a-member"))?
+            .clone();
+        let mut out = vec![SpeakerWrite::Withdraw {
+            device: local.clone(),
+            group: group_id,
+            leader: membership.leader,
+            play: true,
+        }];
         out.extend(self.end_inbound(|session| session.group == group_id));
         Ok(out)
     }
@@ -473,23 +824,25 @@ impl SpeakerGroupCore {
     /// Start playing `source` to a group from this device.
     pub fn start_session(
         &mut self,
+        state: &SpeakerState,
         fabric: &PersonDevices,
         local: &DeviceId,
         group_id: SpeakerGroupId,
         source: GroupAudioSource,
         session_id: [u8; 16],
         now: Instant,
-    ) -> Result<Vec<Egress>, String> {
+    ) -> Result<Vec<SpeakerWrite>, String> {
         if self.media_off {
             return Err(crate::i18n::t("speaker-error-media-off"));
         }
         if self.outbound.len().saturating_add(self.inbound.len()) >= MAX_SPEAKER_SESSIONS {
             return Err(crate::i18n::t("speaker-error-too-many-sessions"));
         }
-        let group = fabric
-            .speaker_group(group_id)
-            .ok_or_else(|| crate::i18n::t("speaker-error-group-unavailable"))?;
-        let states = fabric.speaker_member_states(group);
+        let group = state
+            .group(group_id)
+            .ok_or_else(|| crate::i18n::t("speaker-error-group-unavailable"))?
+            .clone();
+        let states = state.member_states(fabric, &group);
         let channels = group.channel_roles();
         let members = group
             .members
@@ -517,14 +870,12 @@ impl SpeakerGroupCore {
         let offers = members
             .iter()
             .filter(|member| member.phase == SessionMemberPhase::AwaitingAdmission)
-            .map(|member| {
-                egress(
-                    &member.device,
-                    PersonalFabricAction::SpeakerGroupSessionOffer {
-                        session_id: member.route,
-                        group: group_id,
-                    },
-                )
+            .map(|member| SpeakerWrite::Offer {
+                route: member.route,
+                session: session_id,
+                source: local.clone(),
+                target: member.device.clone(),
+                group: group_id,
             })
             .collect();
         self.outbound.insert(
@@ -540,247 +891,69 @@ impl SpeakerGroupCore {
     }
 
     /// Stop one session in either direction.
-    pub fn stop_session(&mut self, session_id: [u8; 16]) -> Result<Vec<Egress>, String> {
+    pub fn stop_session(&mut self, session_id: [u8; 16]) -> Result<Vec<SpeakerWrite>, String> {
         if let Some(session) = self.outbound.remove(&session_id) {
             return Ok(stop_members(&session));
         }
         if let Some(session) = self.inbound.remove(&session_id) {
-            return Ok(vec![egress(
-                &session.source,
-                PersonalFabricAction::SpeakerGroupSessionStop {
-                    session_id,
-                    authorization: Some(session.authorization),
-                },
-            )]);
+            return Ok(vec![SpeakerWrite::Stop {
+                route: session_id,
+                authorization: Some(session.authorization),
+            }]);
         }
         Err(crate::i18n::t("speaker-error-session-gone"))
     }
 
-    /// Consume one authenticated speaker-group action. Returns `None` for
-    /// any other action.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one exhaustive handler keeps each speaker action beside its admission rule"
-    )]
+    /// Consume one authenticated live speaker action: the writes it makes to the record, and
+    /// the live asks it answers. `None` for any other action.
     pub fn handle(
         &mut self,
-        fabric: &PersonDevices,
+        state: &SpeakerState,
         local: &DeviceId,
         source: &DeviceId,
         action: &PersonalFabricAction,
         now: Instant,
-        mint: &mut dyn FnMut() -> [u8; 16],
-    ) -> Option<Vec<Egress>> {
-        if let Some(out) = self.handle_listen_action(source, action, now) {
-            return Some(out);
-        }
-        let mut out = Vec::new();
-        match action {
-            PersonalFabricAction::SpeakerGroupInvite {
-                group,
-                output,
-                role,
-                ..
-            } => {
-                let already = self.memberships.iter().flatten().any(|membership| {
-                    membership.group == *group
-                        && &membership.leader == source
-                        && membership.output == *output
-                        && membership.role == *role
-                });
-                if already {
-                    out.push(egress(
-                        source,
-                        PersonalFabricAction::SpeakerGroupDecision {
-                            group: *group,
-                            accepted: true,
-                        },
-                    ));
-                } else if self.consents.len()
-                    < tilo_network_actor::fabric::speaker_group::MAX_SPEAKER_MEMBERSHIPS
-                    || self.consents.contains_key(group)
-                {
-                    self.consents.insert(
-                        *group,
-                        PendingConsent {
-                            leader: source.clone(),
-                            output: *output,
-                            role: *role,
-                            received: now,
-                        },
-                    );
-                }
-            }
-            PersonalFabricAction::SpeakerGroupDecision { group, accepted } => {
-                if let Some(record) = self.invites.get_mut(&(*group, source.clone())) {
-                    record.declined = !*accepted;
-                    record.sent = now;
-                }
-            }
-            PersonalFabricAction::SpeakerGroupLeave { group } => {
-                self.forget_listening(*group, source);
-                let withdrawn = self
-                    .led_group(*group)
-                    .and_then(|led| led.member(source))
-                    .map(|member| (member.output, member.role));
-                if let Some((output, role)) = withdrawn {
-                    // The member withdrew: stop asking until the group is
-                    // edited, and drop it from sessions playing from here.
-                    self.invites.insert(
-                        (*group, source.clone()),
-                        InviteRecord {
-                            output,
-                            role,
-                            sent: now,
-                            declined: true,
-                        },
-                    );
-                    out.extend(self.drop_outbound_member(|session, member| {
-                        session.group == *group && &member.device == source
-                    }));
-                }
-                let removed = {
-                    let memberships = self.memberships_mut();
-                    let before = memberships.len();
-                    memberships.retain(|membership| {
-                        membership.group != *group || &membership.leader != source
-                    });
-                    before != memberships.len()
-                };
-                if self
-                    .consents
-                    .get(group)
-                    .is_some_and(|pending| &pending.leader == source)
-                {
-                    self.consents.remove(group);
-                }
-                if removed {
-                    out.extend(self.end_inbound(|session| session.group == *group));
-                }
-            }
-            PersonalFabricAction::SpeakerGroupSessionOffer { session_id, group } => {
-                let admitted = self.outbound.len().saturating_add(self.inbound.len())
-                    < MAX_SPEAKER_SESSIONS
-                    && !self.inbound.contains_key(session_id)
-                    && self.consent_covers(fabric, local, *group);
-                let authorization = admitted.then(&mut *mint);
-                if let Some(authorization) = authorization {
-                    self.inbound.insert(
-                        *session_id,
-                        MemberSession {
-                            source: source.clone(),
-                            group: *group,
-                            authorization,
-                        },
-                    );
-                }
-                out.push(egress(
-                    source,
-                    PersonalFabricAction::SpeakerGroupSessionDecision {
-                        session_id: *session_id,
-                        group: *group,
-                        authorization,
-                    },
-                ));
-            }
-            PersonalFabricAction::SpeakerGroupSessionDecision {
-                session_id,
-                group,
-                authorization,
-            } => {
-                let mut unmatched = authorization.is_some();
-                for session in self
-                    .outbound
-                    .values_mut()
-                    .filter(|session| session.group == *group)
-                {
-                    for member in session.members.iter_mut().filter(|member| {
-                        member.route == *session_id
-                            && &member.device == source
-                            && member.phase == SessionMemberPhase::AwaitingAdmission
-                    }) {
-                        unmatched = false;
-                        member.authorization = *authorization;
-                        member.phase = if authorization.is_some() {
-                            SessionMemberPhase::Admitted
-                        } else {
-                            SessionMemberPhase::Refused
-                        };
-                    }
-                }
-                // A late admission for a session that already ended must not
-                // leave a capability alive on the member.
-                if unmatched {
-                    out.push(egress(
-                        source,
-                        PersonalFabricAction::SpeakerGroupSessionStop {
-                            session_id: *session_id,
-                            authorization: *authorization,
-                        },
-                    ));
-                }
-            }
-            PersonalFabricAction::SpeakerGroupSessionStop {
-                session_id,
-                authorization,
-            } => {
-                let inbound = self.inbound.get(session_id).is_some_and(|session| {
-                    &session.source == source
-                        && authorization.is_none_or(|value| value == session.authorization)
-                });
-                if inbound {
-                    self.inbound.remove(session_id);
-                }
-                for member in self
-                    .outbound
-                    .values_mut()
-                    .flat_map(|session| session.members.iter_mut())
-                    .filter(|member| member.route == *session_id && &member.device == source)
-                {
-                    member.phase = SessionMemberPhase::Refused;
-                    member.authorization = None;
-                }
-            }
-            _ => return None,
-        }
-        Some(out)
+    ) -> Option<(Vec<SpeakerWrite>, Vec<ListenEgress>)> {
+        self.handle_listen_action(state, local, source, action, now)
+            .map(|live| (Vec::new(), live))
     }
 
-    /// Whether this device may admit a session for `group` right now: the
-    /// leader publishes the group with this device as a member, and either
-    /// this device is that leader or its consent covers the member as
-    /// published.
+    /// Whether this device may admit a playlist for `group` right now: the leader writes the
+    /// group with this device as a member, and either this device is that leader or its consent
+    /// covers the member as published.
     fn consent_covers(
         &self,
-        fabric: &PersonDevices,
+        state: &SpeakerState,
         local: &DeviceId,
         group: SpeakerGroupId,
     ) -> bool {
-        let Some(published) = fabric.speaker_group(group) else {
+        let Some(published) = state.group(group) else {
             return false;
         };
         let Some(member) = published.member(local) else {
             return false;
         };
-        &published.leader == local
-            || self
-                .memberships
-                .iter()
-                .flatten()
-                .any(|membership| membership.covers(published, member))
+        &published.leader == local || state.membership_covers(local, published, member)
     }
 
-    /// Periodic maintenance. With media continuity disabled everything ends
-    /// and consents are withdrawn; otherwise stale consent, sessions whose
-    /// peers or consent vanished, and unanswered invites are handled.
-    pub fn pump(
+    /// Periodic maintenance: what the record says about this device's groups, consents and
+    /// playbacks now, and the writes that bring the two in line. With media continuity off
+    /// everything ends and consents are withdrawn; otherwise the record's new groups are asked
+    /// about, offers are admitted or refused, and stale sessions end.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one pass keeps every part of what the record and the sessions say together"
+    )]
+    pub fn reconcile(
         &mut self,
+        state: &SpeakerState,
         fabric: &PersonDevices,
         local: &DeviceId,
         enabled: bool,
         now: Instant,
-    ) -> Vec<Egress> {
-        let mut out = self.pump_listening(fabric, local, enabled, now);
+        mint: &mut dyn FnMut() -> [u8; 16],
+    ) -> Vec<SpeakerWrite> {
+        let mut out = self.pump_listening(state, fabric, local, enabled, now);
         self.media_off = !enabled;
         if !enabled {
             out.extend(self.end_inbound(|_| true));
@@ -788,31 +961,62 @@ impl SpeakerGroupCore {
                 out.extend(stop_members(&session));
             }
             self.consents.clear();
-            self.invites.clear();
-            if let Some(memberships) = self.memberships.as_mut() {
-                for membership in memberships.drain(..) {
-                    out.push(egress(
-                        &membership.leader,
-                        PersonalFabricAction::SpeakerGroupLeave {
-                            group: membership.group,
-                        },
-                    ));
-                }
+            self.listen_consents.clear();
+            self.listen_invites.clear();
+            for membership in state.memberships_of(local) {
+                out.push(SpeakerWrite::Withdraw {
+                    device: local.clone(),
+                    group: membership.group,
+                    leader: membership.leader.clone(),
+                    play: true,
+                });
             }
-            self.groups = None;
+            for listener in state.listeners_of(local) {
+                out.push(SpeakerWrite::Withdraw {
+                    device: local.clone(),
+                    group: listener.group,
+                    leader: listener.leader.clone(),
+                    play: false,
+                });
+            }
             return out;
         }
 
-        // A consent whose group its leader no longer publishes as it was
-        // agreed is void. Only a leader whose part of the person's store is
-        // known can void it.
-        let stale = self
-            .memberships
+        // A group led elsewhere that names this device and that it neither agreed to nor
+        // declined as it now stands is asked about here, once.
+
+        for group in state.groups.iter().filter(|group| &group.leader != local) {
+            let Some(member) = group.member(local) else {
+                continue;
+            };
+            if state.membership_covers(local, group, member)
+                || state.declined_play(local, group, member)
+                || self.consents.get(&group.id).is_some_and(|pending| {
+                    pending.leader == group.leader
+                        && pending.output == member.output
+                        && pending.role == member.role
+                })
+            {
+                continue;
+            }
+            self.consents.insert(
+                group.id,
+                PendingConsent {
+                    leader: group.leader.clone(),
+                    output: member.output,
+                    role: member.role,
+                    received: now,
+                },
+            );
+        }
+
+        // A consent whose group its leader no longer writes as it was agreed is void.
+        let stale = state
+            .memberships_of(local)
             .iter()
-            .flatten()
             .filter(|membership| {
                 fabric.contains(&membership.leader)
-                    && !fabric.speaker_group(membership.group).is_some_and(|group| {
+                    && !state.group(membership.group).is_some_and(|group| {
                         group
                             .member(local)
                             .is_some_and(|member| membership.covers(group, member))
@@ -820,39 +1024,186 @@ impl SpeakerGroupCore {
             })
             .map(|membership| membership.group)
             .collect::<BTreeSet<_>>();
-        if !stale.is_empty() {
-            self.memberships_mut()
-                .retain(|membership| !stale.contains(&membership.group));
+        for group in stale {
+            let leader = state
+                .memberships_of(local)
+                .iter()
+                .find(|membership| membership.group == group)
+                .map(|membership| membership.leader.clone());
+            if let Some(leader) = leader {
+                out.push(SpeakerWrite::Withdraw {
+                    device: local.clone(),
+                    group,
+                    leader,
+                    play: true,
+                });
+            }
         }
 
-        let online = |device: &DeviceId| fabric.get(device).is_some_and(|known| known.online);
         self.consents.retain(|group, pending| {
             now.saturating_duration_since(pending.received) < CONSENT_TTL
-                && online(&pending.leader)
-                && !(fabric.contains(&pending.leader) && fabric.speaker_group(*group).is_none())
+                && fabric
+                    .get(&pending.leader)
+                    .is_some_and(|leader| leader.online)
+                && state.group(*group).is_some_and(|group| {
+                    group.leader == pending.leader
+                        && group.member(local).is_some_and(|member| {
+                            member.output == pending.output && member.role == pending.role
+                        })
+                })
         });
 
-        let revoked = self
-            .inbound
-            .iter()
-            .filter(|(_, session)| {
-                !online(&session.source) || !self.consent_covers(fabric, local, session.group)
-            })
-            .map(|(session_id, _)| *session_id)
-            .collect::<BTreeSet<_>>();
-        out.extend(self.end_inbound_ids(&revoked));
+        out.extend(self.reconcile_outbound(state, fabric, local, now, mint));
+        out.extend(self.reconcile_inbound(state, fabric, local, now, mint));
+        out
+    }
 
+    /// Bring each offered playback to this device in line with the record: a member that
+    /// consents admits it with a fresh capability, one that does not refuses it, and the audio
+    /// path plays what is admitted.
+    fn reconcile_inbound(
+        &mut self,
+        state: &SpeakerState,
+        fabric: &PersonDevices,
+        local: &DeviceId,
+        now: Instant,
+        mint: &mut dyn FnMut() -> [u8; 16],
+    ) -> Vec<SpeakerWrite> {
+        let mut out = Vec::new();
+        let mut keep = BTreeSet::new();
+        for playback in state
+            .playbacks
+            .iter()
+            .filter(|playback| &playback.target == local)
+        {
+            keep.insert(playback.route);
+            let online = fabric
+                .get(&playback.source)
+                .is_some_and(|device| device.online);
+            let covers = self.consent_covers(state, local, playback.group);
+            if playback.admitted {
+                if let Some(authorization) = playback.authorization.filter(|_| covers && online) {
+                    let group = playback.group;
+                    let source = playback.source.clone();
+                    self.inbound.insert(
+                        playback.route,
+                        MemberSession {
+                            source,
+                            group,
+                            authorization,
+                        },
+                    );
+                    continue;
+                }
+                self.inbound.remove(&playback.route);
+                out.push(SpeakerWrite::Stop {
+                    route: playback.route,
+                    authorization: playback.authorization,
+                });
+                continue;
+            }
+            if playback.refused {
+                continue;
+            }
+            if self.inbound.len().saturating_add(self.outbound.len()) >= MAX_SPEAKER_SESSIONS
+                || !covers
+            {
+                out.push(SpeakerWrite::Admit {
+                    route: playback.route,
+                    authorization: None,
+                });
+                continue;
+            }
+            let authorization = mint();
+            self.inbound.insert(
+                playback.route,
+                MemberSession {
+                    source: playback.source.clone(),
+                    group: playback.group,
+                    authorization,
+                },
+            );
+            out.push(SpeakerWrite::Admit {
+                route: playback.route,
+                authorization: Some(authorization),
+            });
+        }
+        let ended = self
+            .inbound
+            .keys()
+            .copied()
+            .filter(|route| !keep.contains(route))
+            .collect::<BTreeSet<_>>();
+        out.extend(self.end_inbound_ids(&ended));
+        let _ = now;
+        out
+    }
+
+    /// Bring each session this device plays in line with the record: an admitted member starts
+    /// its route, a refused one is let go, and a member whose playback the record lost is
+    /// stopped.
+    fn reconcile_outbound(
+        &mut self,
+        state: &SpeakerState,
+        fabric: &PersonDevices,
+        local: &DeviceId,
+        now: Instant,
+        _mint: &mut dyn FnMut() -> [u8; 16],
+    ) -> Vec<SpeakerWrite> {
+        let mut out = Vec::new();
+        for session in self.outbound.values_mut() {
+            for member in &mut session.members {
+                if matches!(
+                    member.phase,
+                    SessionMemberPhase::Local
+                        | SessionMemberPhase::Admitted
+                        | SessionMemberPhase::Refused
+                ) {
+                    continue;
+                }
+                match state.playback(member.route) {
+                    Some(playback) if playback.admitted => {
+                        member.authorization = playback.authorization;
+                        member.phase = SessionMemberPhase::Admitted;
+                    }
+                    Some(playback) if playback.refused => {
+                        member.phase = SessionMemberPhase::Refused;
+                    }
+                    _ => {
+                        let online = fabric
+                            .get(&member.device)
+                            .is_some_and(|device| device.online);
+                        if !online
+                            || now.saturating_duration_since(session.started) >= ADMISSION_TIMEOUT
+                        {
+                            member.phase = SessionMemberPhase::Refused;
+                        }
+                    }
+                }
+            }
+        }
+        // A member that has not admitted a playback by the deadline is let go, and one that
+        // admitted it leaves when the record loses it or the member goes away. An offer whose
+        // write has not reached this device's reading yet is still being admitted.
         out.extend(self.drop_outbound_member(|session, member| {
-            member.phase != SessionMemberPhase::Local
-                && (!online(&member.device)
-                    || (member.phase == SessionMemberPhase::AwaitingAdmission
-                        && now.saturating_duration_since(session.started) >= ADMISSION_TIMEOUT))
+            match member.phase {
+                SessionMemberPhase::Local | SessionMemberPhase::Refused => false,
+                SessionMemberPhase::AwaitingAdmission => {
+                    now.saturating_duration_since(session.started) >= ADMISSION_TIMEOUT
+                }
+                SessionMemberPhase::Admitted => {
+                    state.playback(member.route).is_none()
+                        || !fabric
+                            .get(&member.device)
+                            .is_some_and(|device| device.online)
+                }
+            }
         }));
         let finished = self
             .outbound
             .iter()
             .filter(|(_, session)| {
-                fabric.speaker_group(session.group).is_none()
+                state.group(session.group).is_none()
                     || session
                         .members
                         .iter()
@@ -865,28 +1216,23 @@ impl SpeakerGroupCore {
                 out.extend(stop_members(&session));
             }
         }
-
-        let led = self.groups.iter().flatten().cloned().collect::<Vec<_>>();
-        for group in led {
-            let awaiting = fabric
-                .speaker_member_states(&group)
-                .into_iter()
-                .zip(&group.members)
-                .filter(|(state, member)| {
-                    *state == SpeakerMemberStatus::AwaitingConsent && online(&member.device)
-                })
-                .map(|(_, member)| member.device.clone())
-                .collect::<BTreeSet<_>>();
-            let mut pending = group.clone();
-            pending
-                .members
-                .retain(|member| awaiting.contains(&member.device));
-            out.extend(self.invite(&pending, now, false));
-        }
+        let _ = local;
         out
     }
 
-    fn end_inbound(&mut self, mut predicate: impl FnMut(&MemberSession) -> bool) -> Vec<Egress> {
+    fn led_group<'a>(
+        &self,
+        state: &'a SpeakerState,
+        local: &DeviceId,
+        id: SpeakerGroupId,
+    ) -> Option<&'a SpeakerGroup> {
+        state.group(id).filter(|group| &group.leader == local)
+    }
+
+    fn end_inbound(
+        &mut self,
+        mut predicate: impl FnMut(&MemberSession) -> bool,
+    ) -> Vec<SpeakerWrite> {
         let ids = self
             .inbound
             .iter()
@@ -896,23 +1242,20 @@ impl SpeakerGroupCore {
         self.end_inbound_ids(&ids)
     }
 
-    fn end_inbound_ids(&mut self, ids: &BTreeSet<[u8; 16]>) -> Vec<Egress> {
+    fn end_inbound_ids(&mut self, ids: &BTreeSet<[u8; 16]>) -> Vec<SpeakerWrite> {
         ids.iter()
             .filter_map(|session_id| {
-                self.inbound.remove(session_id).map(|session| {
-                    egress(
-                        &session.source,
-                        PersonalFabricAction::SpeakerGroupSessionStop {
-                            session_id: *session_id,
-                            authorization: Some(session.authorization),
-                        },
-                    )
-                })
+                self.inbound
+                    .remove(session_id)
+                    .map(|session| SpeakerWrite::Stop {
+                        route: *session_id,
+                        authorization: Some(session.authorization),
+                    })
             })
             .collect()
     }
 
-    fn end_outbound_for_group(&mut self, group: SpeakerGroupId) -> Vec<Egress> {
+    fn end_outbound_for_group(&mut self, group: SpeakerGroupId) -> Vec<SpeakerWrite> {
         let (ended, kept): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.outbound)
             .into_iter()
             .partition(|(_, session)| session.group == group);
@@ -920,10 +1263,21 @@ impl SpeakerGroupCore {
         ended.values().flat_map(stop_members).collect()
     }
 
+    fn end_outbound_for_group_if_unchanged(&mut self, group: SpeakerGroupId) -> Vec<SpeakerWrite> {
+        self.end_outbound_for_group(group)
+    }
+
+    fn end_outbound_member(
+        &mut self,
+        mut predicate: impl FnMut(&GroupSession, &SessionMember) -> bool,
+    ) -> Vec<SpeakerWrite> {
+        self.drop_outbound_member(|session, member| predicate(session, member))
+    }
+
     fn drop_outbound_member(
         &mut self,
         mut predicate: impl FnMut(&GroupSession, &SessionMember) -> bool,
-    ) -> Vec<Egress> {
+    ) -> Vec<SpeakerWrite> {
         let mut out = Vec::new();
         for session in self.outbound.values_mut() {
             let current = session.clone();
@@ -932,13 +1286,10 @@ impl SpeakerGroupCore {
                     continue;
                 }
                 if member.phase != SessionMemberPhase::Local {
-                    out.push(egress(
-                        &member.device,
-                        PersonalFabricAction::SpeakerGroupSessionStop {
-                            session_id: member.route,
-                            authorization: member.authorization,
-                        },
-                    ));
+                    out.push(SpeakerWrite::Stop {
+                        route: member.route,
+                        authorization: member.authorization,
+                    });
                 }
                 member.phase = SessionMemberPhase::Refused;
                 member.authorization = None;
@@ -947,16 +1298,13 @@ impl SpeakerGroupCore {
         out
     }
 
-    /// Presentation rows for the Devices surface and Settings. `playout`
-    /// answers, per member route, whether that member can play in time (see
+    /// Presentation rows for the Devices surface and Settings. `playout` answers, per member
+    /// route, whether that member can play in time (see
     /// [`crate::remote_audio::group_route_playout`]).
     #[must_use]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one projection keeps every speaker row beside the fabric state it reads"
-    )]
     pub fn view(
         &self,
+        state: &SpeakerState,
         fabric: &PersonDevices,
         local: &DeviceId,
         playout: &dyn Fn([u8; 16]) -> Option<ClockSyncState>,
@@ -968,14 +1316,13 @@ impl SpeakerGroupCore {
             )
         };
         let output_label = |device: &DeviceId, output: EndpointSelector| {
-            fabric
-                .get(device)
-                .and_then(|known| known.speakers.output(output))
+            state
+                .output(device, output)
                 .map(|endpoint| endpoint.label.clone())
         };
-        let groups = fabric
-            .speaker_groups()
-            .into_iter()
+        let groups = state
+            .groups
+            .iter()
             .map(|group| SpeakerGroupView {
                 id: group.id,
                 name: group.name.clone(),
@@ -985,7 +1332,7 @@ impl SpeakerGroupCore {
                 members: group
                     .members
                     .iter()
-                    .zip(fabric.speaker_member_states(group))
+                    .zip(state.member_states(fabric, group))
                     .map(|(member, state)| SpeakerMemberView {
                         device: member.device.clone(),
                         device_label: label(&member.device),
@@ -1001,9 +1348,9 @@ impl SpeakerGroupCore {
         let consents = self
             .consents
             .iter()
-            .filter(|(group, pending)| consent_matches(fabric, local, **group, pending))
+            .filter(|(group, pending)| consent_matches(state, local, **group, pending))
             .filter_map(|(group, pending)| {
-                let published = fabric.speaker_group(*group)?;
+                let published = state.group(*group)?;
                 Some(SpeakerConsentView {
                     group: *group,
                     name: published.name.clone(),
@@ -1013,25 +1360,24 @@ impl SpeakerGroupCore {
                     endpoint_label: output_label(local, pending.output),
                 })
             })
-            .chain(self.listen_consent_views(fabric, local))
+            .chain(self.listen_consent_views(state, fabric, local))
             .collect();
-        let memberships = self
-            .memberships
+        let memberships = state
+            .memberships_of(local)
             .iter()
-            .flatten()
             .map(|membership| SpeakerMembershipView {
                 group: membership.group,
-                name: fabric
-                    .speaker_group(membership.group)
+                name: state
+                    .group(membership.group)
                     .map_or_else(String::new, |group| group.name.clone()),
                 leader_label: label(&membership.leader),
                 scope: SpeakerConsentScope::Play(membership.role),
             })
-            .chain(self.listener_views(fabric))
+            .chain(self.listener_views(state, fabric, local))
             .collect();
         let name_of = |group: SpeakerGroupId| {
-            fabric
-                .speaker_group(group)
+            state
+                .group(group)
                 .map_or_else(String::new, |group| group.name.clone())
         };
         let sessions = self
@@ -1090,8 +1436,8 @@ impl SpeakerGroupCore {
         }
     }
 
-    /// What the playing device's timed audio path renders for each session:
-    /// only members that are this device's own outputs or have admitted it.
+    /// What the playing device's timed audio path renders for each session: only members that
+    /// are this device's own outputs or have admitted it.
     #[must_use]
     pub fn playback_plans(&self) -> Vec<GroupPlaybackPlan> {
         self.outbound
@@ -1122,13 +1468,15 @@ impl SpeakerGroupCore {
             .collect()
     }
 
-    /// Every audio route this device should run right now, derived from the
-    /// sessions it plays and the sessions it admitted as a member.
+    /// Every audio route this device should run right now, derived from the sessions it plays
+    /// and the sessions it admitted as a member.
     #[must_use]
-    pub fn route_specs(&self, fabric: &PersonDevices, local: &DeviceId) -> Vec<RouteSpec> {
+    pub fn route_specs(&self, state: &SpeakerState, local: &DeviceId) -> Vec<RouteSpec> {
         let playing = self.outbound.values().flat_map(|session| {
-            session.members.iter().filter_map(move |member| {
-                match (member.phase, member.authorization) {
+            session
+                .members
+                .iter()
+                .filter_map(|member| match (member.phase, member.authorization) {
                     (SessionMemberPhase::Local, _) => Some(RouteSpec::Local {
                         route: member.route,
                         source: session.source.clone(),
@@ -1143,11 +1491,10 @@ impl SpeakerGroupCore {
                         source: session.source.clone(),
                     }),
                     _ => None,
-                }
-            })
+                })
         });
         let receiving = self.inbound.iter().filter_map(|(route, session)| {
-            let grant = self.grant(fabric, local, *route, &session.source)?;
+            let grant = self.grant(state, local, *route, &session.source)?;
             Some(RouteSpec::Receive {
                 route: *route,
                 source: session.source.clone(),
@@ -1160,24 +1507,23 @@ impl SpeakerGroupCore {
         playing.chain(receiving).collect()
     }
 
-    /// The output this device plays a calibration sweep on when `source`
-    /// asks: only the group's leader may ask, and only while this device's
-    /// consent covers its membership.
+    /// The output this device plays a calibration sweep on when `source` asks: only the group's
+    /// leader may ask, and only while this device's consent covers its membership.
     #[must_use]
     pub fn sweep_output(
         &self,
-        fabric: &PersonDevices,
+        state: &SpeakerState,
         local: &DeviceId,
         source: &DeviceId,
         group: SpeakerGroupId,
     ) -> Option<EndpointSelector> {
-        let published = fabric.speaker_group(group)?;
-        (&published.leader == source && self.consent_covers(fabric, local, group))
+        let published = state.group(group)?;
+        (&published.leader == source && self.consent_covers(state, local, group))
             .then(|| published.member(local).map(|member| member.output))?
     }
 
-    /// Whether this device admitted `route` from exactly `source`. Checked for
-    /// every received frame, so a withdrawn consent stops audio at once.
+    /// Whether this device admitted `route` from exactly `source`. Checked for every received
+    /// frame, so a withdrawn consent stops audio at once.
     #[must_use]
     pub fn admits(&self, route: [u8; 16], source: &DeviceId) -> bool {
         self.inbound
@@ -1185,30 +1531,30 @@ impl SpeakerGroupCore {
             .is_some_and(|session| &session.source == source)
     }
 
-    /// The audio path ended `route` on its own (a lost link or a failed
-    /// output): end the member session it carried, telling the peer.
-    pub fn route_lost(&mut self, route: [u8; 16]) -> Vec<Egress> {
+    /// The audio path ended `route` on its own (a lost link or a failed output): end the member
+    /// session it carried.
+    pub fn route_lost(&mut self, route: [u8; 16]) -> Vec<SpeakerWrite> {
         if self.inbound.contains_key(&route) {
             return self.end_inbound_ids(&BTreeSet::from([route]));
         }
         self.drop_outbound_member(|_, member| member.route == route)
     }
 
-    /// What a member plays for one admitted session, resolved against the
-    /// group as its leader publishes it now.
+    /// What a member plays for one admitted session, resolved against the group as its leader
+    /// writes it now.
     #[must_use]
     pub fn grant(
         &self,
-        fabric: &PersonDevices,
+        state: &SpeakerState,
         local: &DeviceId,
         session_id: [u8; 16],
         source: &DeviceId,
     ) -> Option<MemberPlaybackGrant> {
         let session = self.inbound.get(&session_id)?;
-        if &session.source != source || !self.consent_covers(fabric, local, session.group) {
+        if &session.source != source || !self.consent_covers(state, local, session.group) {
             return None;
         }
-        let group = fabric.speaker_group(session.group)?;
+        let group = state.group(session.group)?;
         let index = group
             .members
             .iter()
@@ -1292,7 +1638,7 @@ pub fn member_route_id(
     route
 }
 
-fn stop_members(session: &GroupSession) -> Vec<Egress> {
+fn stop_members(session: &GroupSession) -> Vec<SpeakerWrite> {
     session
         .members
         .iter()
@@ -1302,25 +1648,20 @@ fn stop_members(session: &GroupSession) -> Vec<Egress> {
                 SessionMemberPhase::AwaitingAdmission | SessionMemberPhase::Admitted
             )
         })
-        .map(|member| {
-            egress(
-                &member.device,
-                PersonalFabricAction::SpeakerGroupSessionStop {
-                    session_id: member.route,
-                    authorization: member.authorization,
-                },
-            )
+        .map(|member| SpeakerWrite::Stop {
+            route: member.route,
+            authorization: member.authorization,
         })
         .collect()
 }
 
 fn consent_matches(
-    fabric: &PersonDevices,
+    state: &SpeakerState,
     local: &DeviceId,
     group: SpeakerGroupId,
     pending: &PendingConsent,
 ) -> bool {
-    fabric.speaker_group(group).is_some_and(|published| {
+    state.group(group).is_some_and(|published| {
         published.leader == pending.leader
             && published.member(local).is_some_and(|member| {
                 member.output == pending.output && member.role == pending.role
@@ -1385,8 +1726,8 @@ impl SpeakerConsentScope {
     }
 }
 
-/// "Join 'Living room' as the right speaker?" or "Let the office use this
-/// microphone to calibrate 'Living room'?" on the asked device.
+/// "Join 'Living room' as the right speaker?" or "Let the office use this microphone to
+/// calibrate 'Living room'?" on the asked device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpeakerConsentView {
     pub group: SpeakerGroupId,
@@ -1701,8 +2042,8 @@ impl RouteSpec {
     }
 }
 
-/// Which routes to end and which to start so the running set becomes
-/// `desired`. A route whose parameters changed is restarted.
+/// Which routes to end and which to start so the running set becomes `desired`. A route whose
+/// parameters changed is restarted.
 #[must_use]
 pub fn route_changes(
     running: &BTreeMap<[u8; 16], RouteSpec>,
@@ -1737,8 +2078,7 @@ pub struct PlannedMember {
     pub output: EndpointSelector,
     pub channel: media::sync_playout::ChannelRole,
     pub trim: SpeakerTrim,
-    /// The member-issued capability every frame must carry; `None` for this
-    /// device's own output.
+    /// The member-issued capability every frame must carry; `None` for this device's own output.
     pub authorization: Option<[u8; 16]>,
 }
 
@@ -1773,14 +2113,168 @@ fn unavailable() -> String {
     crate::i18n::t("speaker-error-unavailable")
 }
 
-fn send_all(network: &dyn FabricLink, out: Vec<Egress>) -> Result<(), String> {
-    let mut first_error = None;
-    for item in out {
-        if let Err(error) = network.try_send_personal_fabric_action(&item.target, item.action) {
-            first_error.get_or_insert(error);
+/// The record of the person's devices as this device's daemon last read it, as speaker groups.
+fn record_state(network: &dyn FabricLink) -> Option<SpeakerState> {
+    network
+        .person_devices()
+        .map(|record| SpeakerState::of(&record))
+}
+
+/// The person's speaker groups as the record of their devices holds them, empty until this
+/// device has read it.
+#[must_use]
+pub fn speaker_state(network: &dyn FabricLink) -> SpeakerState {
+    record_state(network).unwrap_or_default()
+}
+
+fn now_ms() -> i64 {
+    i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
+}
+
+/// The typed action that makes `write` to the record of the person's devices.
+fn action_of(write: SpeakerWrite) -> Invoke<Devices> {
+    use tilo_workspace_service::workspaces::person_workspace::devices::Devices as Record;
+    match write {
+        SpeakerWrite::Endpoints { device, endpoints } => {
+            let endpoints = endpoints
+                .iter()
+                .map(|endpoint| record::SpeakerEndpoint {
+                    selector: endpoint.selector.to_hex(),
+                    microphone: endpoint.kind == AudioEndpointKind::Microphone,
+                    label: endpoint.label.clone(),
+                    is_default: endpoint.is_default,
+                })
+                .collect::<Vec<_>>();
+            let bytes = postcard::to_allocvec(&endpoints).expect("endpoints encode");
+            Record::SAY_SPEAKER_ENDPOINTS.with((device.as_str().to_owned(), hex::encode(bytes)))
+        }
+        SpeakerWrite::Lead { device, group } => {
+            let members = group
+                .members
+                .iter()
+                .map(|member| {
+                    let (delay_ns, gain_mb, eq) = trim_to_record(&member.trim);
+                    record::SpeakerLedMember {
+                        device: member.device.as_str().to_owned(),
+                        output: member.output.to_hex(),
+                        role: role_to_record(member.role),
+                        delay_ns,
+                        gain_mb,
+                        eq,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let bytes = postcard::to_allocvec(&members).expect("members encode");
+            Record::LEAD_SPEAKER_GROUP.with((
+                device.as_str().to_owned(),
+                group.id.to_hex(),
+                group.name.clone(),
+                hex::encode(bytes),
+                now_ms(),
+            ))
+        }
+        SpeakerWrite::Drop { device, group } => {
+            Record::DROP_SPEAKER_GROUP.with((device.as_str().to_owned(), group.to_hex()))
+        }
+        SpeakerWrite::Consent {
+            device,
+            consent,
+            approved,
+        } => {
+            let (group, leader, play, output, role, microphone) = match &consent {
+                ConsentWrite::Play {
+                    group,
+                    leader,
+                    output,
+                    role,
+                } => (
+                    group.to_hex(),
+                    leader.as_str().to_owned(),
+                    true,
+                    output.to_hex(),
+                    role_to_record(*role),
+                    String::new(),
+                ),
+                ConsentWrite::Listen {
+                    group,
+                    leader,
+                    microphone,
+                } => (
+                    group.to_hex(),
+                    leader.as_str().to_owned(),
+                    false,
+                    String::new(),
+                    String::new(),
+                    microphone.to_hex(),
+                ),
+            };
+            let endpoint = if play { output } else { microphone };
+            Record::CONSENT_SPEAKER_GROUP.with(
+                tilo_workspace_service::workspaces::person_workspace::devices::SpeakerConsentGiven {
+                    device: device.as_str().to_owned(),
+                    group,
+                    leader,
+                    play,
+                    endpoint,
+                    role,
+                    approved,
+                    at_ms: now_ms(),
+                },
+            )
+        }
+        SpeakerWrite::Withdraw {
+            device,
+            group,
+            leader,
+            play,
+        } => Record::WITHDRAW_SPEAKER_GROUP.with((
+            device.as_str().to_owned(),
+            group.to_hex(),
+            leader.as_str().to_owned(),
+            play,
+        )),
+        SpeakerWrite::Offer {
+            route,
+            session,
+            source,
+            target,
+            group,
+        } => Record::OFFER_SPEAKER_PLAYBACK.with((
+            hex::encode(route),
+            hex::encode(session),
+            source.as_str().to_owned(),
+            target.as_str().to_owned(),
+            group.to_hex(),
+            now_ms(),
+        )),
+        SpeakerWrite::Admit {
+            route,
+            authorization,
+        } => match authorization {
+            Some(authorization) => Record::ADMIT_SPEAKER_PLAYBACK.with((
+                hex::encode(route),
+                hex::encode(authorization),
+                now_ms(),
+            )),
+            None => Record::REFUSE_SPEAKER_PLAYBACK.with((hex::encode(route), now_ms())),
+        },
+        SpeakerWrite::Stop {
+            route,
+            authorization,
+        } => Record::STOP_SPEAKER_PLAYBACK.with((
+            hex::encode(route),
+            authorization.map(hex::encode).unwrap_or_default(),
+        )),
+    }
+}
+
+/// Make every `write` to the record of the person's devices, telling what the record refused.
+fn apply_writes(network: &dyn FabricLink, writes: Vec<SpeakerWrite>) {
+    for write in writes {
+        if let Err(error) = network.apply_person_devices(action_of(write)) {
+            tracing::warn!(%error, "a speaker group change did not reach the person's record");
         }
     }
-    first_error.map_or(Ok(()), |error| Err(error.to_string()))
 }
 
 fn local_device(network: &dyn FabricLink) -> Result<DeviceId, String> {
@@ -1790,30 +2284,8 @@ fn local_device(network: &dyn FabricLink) -> Result<DeviceId, String> {
         .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))
 }
 
-/// What this device keeps about its speaker groups in its part of the person's
-/// store. The session asks for it on each pass and keeps the answer in that
-/// device's own part; nothing is written while media continuity is off.
-pub fn authored_state(
-    device: &DeviceId,
-    previous: Option<&SpeakerFabricState>,
-    stamp: &FabricStamp,
-    media_enabled: bool,
-) -> SpeakerFabricState {
-    if !media_enabled {
-        return SpeakerFabricState::default();
-    }
-    let endpoints = local_endpoints(device, Instant::now());
-    core().lock().map_or_else(
-        |_| SpeakerFabricState::default(),
-        |mut core| {
-            core.seed(previous);
-            core.authored(endpoints, stamp)
-        },
-    )
-}
-
-/// Handle one authenticated action. Returns true when it was a
-/// speaker-group action, including a rejected one.
+/// Handle one authenticated live action. Returns true when it was a speaker-group action,
+/// including a rejected one.
 pub fn handle_action(
     network: &dyn FabricLink,
     envelope: &tilo_network_actor::fabric::PersonalFabricActionEnvelope,
@@ -1825,12 +2297,14 @@ pub fn handle_action(
         let _ = play_identify_locally(&local, output);
         return true;
     }
+    let Some(state) = record_state(network) else {
+        return false;
+    };
     if let PersonalFabricAction::SpeakerSweep { group, start_ns } = envelope.action {
-        let fabric = network.devices();
         let output = core()
             .lock()
             .ok()
-            .and_then(|core| core.sweep_output(&fabric, &local, &envelope.source, group));
+            .and_then(|core| core.sweep_output(&state, &local, &envelope.source, group));
         if let Some(output) = output {
             play_sweep_at(&local, output, start_ns);
         }
@@ -1845,7 +2319,7 @@ pub fn handle_action(
     {
         let fabric = network.devices();
         let allowed = core().lock().is_ok_and(|core| {
-            core.may_listen(&fabric, &local, &envelope.source, group, microphone)
+            core.may_listen(&state, &fabric, &local, &envelope.source, group, microphone)
         });
         crate::calibration::listen_for_leader(
             &local,
@@ -1869,37 +2343,36 @@ pub fn handle_action(
         crate::calibration::deliver_hearing(&envelope.source, *group, *sweep, hearing.clone());
         return true;
     }
-    let fabric = network.devices();
     let out = {
         let Ok(mut core) = core().lock() else {
             return false;
         };
-        core.seed(fabric.get(&local).map(|device| &device.speakers));
         core.handle(
-            &fabric,
+            &state,
             &local,
             &envelope.source,
             &envelope.action,
             Instant::now(),
-            &mut tilo_network_actor::fabric::nonzero::<16>,
         )
     };
     match out {
-        Some(out) => {
-            let _ = send_all(network, out);
+        Some((writes, live)) => {
+            apply_writes(network, writes);
+            for item in live {
+                let _ = network.try_send_personal_fabric_action(&item.target, item.action);
+            }
             true
         }
         None => false,
     }
 }
 
-/// Play the identify sound on `output` of `device`: locally, or by asking
-/// that device to play it on its own output.
+/// Play the identify sound on `output` of `device`: locally, or by asking that device to play it
+/// on its own output.
 ///
 /// # Errors
-///
-/// Returns a message when the device or output is unavailable, a sound
-/// played too recently, or the request cannot be delivered.
+/// Returns a message when the device or output is unavailable, a sound played too recently, or
+/// the request cannot be delivered.
 pub fn identify(
     network: &dyn FabricLink,
     device: &DeviceId,
@@ -1909,11 +2382,12 @@ pub fn identify(
     if device == &local {
         return play_identify_locally(&local, output);
     }
-    let fabric = network.devices();
-    let offered = fabric
+    let state = record_state(network).unwrap_or_default();
+    let offline = network
+        .devices()
         .get(device)
-        .is_some_and(|known| known.online && known.speakers.output(output).is_some());
-    if !offered {
+        .is_none_or(|known| !known.online);
+    if offline || state.output(device, output).is_none() {
         return Err(crate::i18n::t("speaker-error-speaker-unavailable"));
     }
     network
@@ -1940,10 +2414,9 @@ fn play_identify_locally(local: &DeviceId, output: EndpointSelector) -> Result<(
         })
 }
 
-/// Play the calibration sweep on `output` when this device's clock reads
-/// `start_ns`; the leader already converted its schedule through its
-/// estimate of this clock. One sweep at a time; requests too far from now
-/// are ignored, and the leader's measurement then reports no sweep.
+/// Play the calibration sweep on `output` when this device's clock reads `start_ns`; the leader
+/// already converted its schedule through its estimate of this clock. One sweep at a time;
+/// requests too far from now are ignored, and the leader's measurement then reports no sweep.
 fn play_sweep_at(local: &DeviceId, output: EndpointSelector, start_ns: i64) {
     static SWEEPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let lead = start_ns.saturating_sub(media::pw_stream::monotonic_now_ns());
@@ -2002,29 +2475,49 @@ pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
     let Ok(local) = local_device(network) else {
         return;
     };
+    let Some(state) = record_state(network) else {
+        return;
+    };
     let fabric = network.devices();
+    let mut writes = Vec::new();
+    if media_enabled {
+        let endpoints = local_endpoints(&local, Instant::now());
+        // While PipeWire cannot be read there is nothing to write: what the device offered
+        // before stays, rather than a failed read emptying its outputs from the record.
+        if !endpoints.is_empty() && state.endpoints_of(&local) != endpoints.as_slice() {
+            writes.push(SpeakerWrite::Endpoints {
+                device: local.clone(),
+                endpoints,
+            });
+        }
+    }
     let out = core().lock().map_or_else(
         |_| Vec::new(),
         |mut core| {
-            if media_enabled {
-                core.seed(fabric.get(&local).map(|device| &device.speakers));
-            }
-            core.pump(&fabric, &local, media_enabled, Instant::now())
+            core.reconcile(
+                &state,
+                &fabric,
+                &local,
+                media_enabled,
+                Instant::now(),
+                &mut tilo_network_actor::fabric::nonzero::<16>,
+            )
         },
     );
-    let _ = send_all(network, out);
+    writes.extend(out);
+    apply_writes(network, writes);
     let answers = crate::calibration::drain_answers();
     if media_enabled {
         for (leader, action) in answers {
             let _ = network.try_send_personal_fabric_action(&leader, action);
         }
     }
-    reconcile_routes(network, &fabric, &local, media_enabled);
+    reconcile_routes(network, &state, &local, media_enabled);
     crate::settings::pump(network);
 }
 
-/// Routes this process started, routes starting on a worker, and routes
-/// whose start failed recently.
+/// Routes this process started, routes starting on a worker, and routes whose start failed
+/// recently.
 #[derive(Default)]
 struct RunningRoutes {
     running: BTreeMap<[u8; 16], RouteSpec>,
@@ -2039,19 +2532,19 @@ fn running_routes() -> &'static Mutex<RunningRoutes> {
     ROUTES.get_or_init(|| Mutex::new(RunningRoutes::default()))
 }
 
-/// Bring the audio routes in line with the sessions: start routes for newly
-/// admitted members, end routes whose session or consent ended, and end the
-/// session of a route the audio path dropped on its own.
+/// Bring the audio routes in line with the sessions: start routes for newly admitted members,
+/// end routes whose session or consent ended, and end the session of a route the audio path
+/// dropped on its own.
 fn reconcile_routes(
     network: &dyn FabricLink,
-    fabric: &PersonDevices,
+    state: &SpeakerState,
     local: &DeviceId,
     media_enabled: bool,
 ) {
     let desired = if media_enabled {
         core()
             .lock()
-            .map_or_else(|_| Vec::new(), |core| core.route_specs(fabric, local))
+            .map_or_else(|_| Vec::new(), |core| core.route_specs(state, local))
     } else {
         Vec::new()
     };
@@ -2079,8 +2572,7 @@ fn reconcile_routes(
         if routes.retry_after.contains_key(&route) || !routes.starting.insert(route) {
             continue;
         }
-        // Opening sinks and streams talks to the audio daemon; never on the
-        // compositor thread.
+        // Opening sinks and streams talks to the audio daemon; never on the compositor thread.
         let local = local.clone();
         let spawned = std::thread::Builder::new()
             .name("speaker-route".into())
@@ -2122,7 +2614,7 @@ fn reconcile_routes(
                     .collect::<Vec<_>>()
             },
         );
-        let _ = send_all(network, out);
+        apply_writes(network, out);
     }
 }
 
@@ -2131,8 +2623,8 @@ fn audio_source(source: &GroupAudioSource) -> crate::remote_audio::GroupRouteSou
         GroupAudioSource::PickerToken(token) => {
             crate::remote_audio::GroupRouteSource::Picker(*token)
         }
-        // The media keeps decoding here, so everything this device plays is
-        // what the group should hear.
+        // The media keeps decoding here, so everything this device plays is what the group
+        // should hear.
         GroupAudioSource::MediaSession(_) | GroupAudioSource::System => {
             crate::remote_audio::GroupRouteSource::System
         }
@@ -2184,8 +2676,8 @@ fn start_route(local: &DeviceId, spec: &RouteSpec) -> Result<(), String> {
     }
 }
 
-/// Whether this device admitted `route` from exactly `source`; the live
-/// audio path checks it for every group frame.
+/// Whether this device admitted `route` from exactly `source`; the live audio path checks it
+/// for every group frame.
 #[must_use]
 pub fn admits_route(route: [u8; 16], source: &DeviceId) -> bool {
     core().lock().is_ok_and(|core| core.admits(route, source))
@@ -2195,20 +2687,21 @@ fn with_core<T>(
     network: &dyn FabricLink,
     apply: impl FnOnce(
         &mut SpeakerGroupCore,
+        &SpeakerState,
         &PersonDevices,
         &DeviceId,
-    ) -> Result<(T, Vec<Egress>), String>,
+    ) -> Result<(T, Vec<SpeakerWrite>), String>,
 ) -> Result<T, String> {
     let local = local_device(network)?;
+    let state = record_state(network).ok_or_else(|| {
+        "this device has not read the record of the person's devices yet".to_owned()
+    })?;
     let fabric = network.devices();
     let mut core = core().lock().map_err(|_| unavailable())?;
-    core.seed(fabric.get(&local).map(|device| &device.speakers));
-    let applied = apply(&mut core, &fabric, &local);
+    let applied = apply(&mut core, &state, &fabric, &local);
     drop(core);
     let (value, out) = applied?;
-    // Local state already changed; a member that cannot be reached now is
-    // asked again by the next pump, so delivery failures are not fatal.
-    let _ = send_all(network, out);
+    apply_writes(network, out);
     Ok(value)
 }
 
@@ -2218,9 +2711,9 @@ pub fn create_group(
     name: &str,
     members: &[MemberSpec],
 ) -> Result<SpeakerGroupId, String> {
-    with_core(network, |core, fabric, local| {
+    with_core(network, |core, state, fabric, local| {
         let id = SpeakerGroupId(tilo_network_actor::fabric::nonzero::<16>());
-        let out = core.create_group(fabric, local, id, name, members, Instant::now())?;
+        let out = core.create_group(state, fabric, local, id, name, members, Instant::now())?;
         Ok((id, out))
     })
 }
@@ -2232,8 +2725,8 @@ pub fn update_group(
     name: &str,
     members: &[MemberSpec],
 ) -> Result<(), String> {
-    with_core(network, |core, fabric, local| {
-        let out = core.update_group(fabric, local, id, name, members, Instant::now())?;
+    with_core(network, |core, state, fabric, local| {
+        let out = core.update_group(state, fabric, local, id, name, members, Instant::now())?;
         Ok(((), out))
     })
 }
@@ -2244,15 +2737,17 @@ pub fn set_trims(
     id: SpeakerGroupId,
     trims: &[(DeviceId, EndpointSelector, SpeakerTrim)],
 ) -> Result<(), String> {
-    with_core(network, |core, _, _| {
-        core.set_trims(id, trims)?;
-        Ok(((), Vec::new()))
+    with_core(network, |core, state, _, local| {
+        let out = core.set_trims(state, local, id, trims)?;
+        Ok(((), out))
     })
 }
 
 /// Delete a group led by this device.
 pub fn delete_group(network: &dyn FabricLink, id: SpeakerGroupId) -> Result<(), String> {
-    with_core(network, |core, _, _| Ok(((), core.delete_group(id)?)))
+    with_core(network, |core, _, _, local| {
+        Ok(((), core.delete_group(local, id)))
+    })
 }
 
 /// Answer a join or microphone prompt on this device.
@@ -2262,41 +2757,36 @@ pub fn resolve_consent(
     kind: SpeakerConsentKind,
     approved: bool,
 ) -> Result<(), String> {
-    with_core(network, |core, fabric, local| {
-        let stamp = FabricStamp {
-            counter: 0,
-            device: local.clone(),
-        };
+    let state = record_state(network).unwrap_or_default();
+    with_core(network, |core, _, _, local| {
         let out = match kind {
             SpeakerConsentKind::Play => {
-                core.resolve_consent(fabric, local, group, approved, &stamp)?
+                core.resolve_consent(&state, local, group, approved, Instant::now())?
             }
             SpeakerConsentKind::Listen => {
-                core.resolve_listen_consent(fabric, local, group, approved, &stamp)?
+                core.resolve_listen_consent(&state, local, group, approved, Instant::now())?
             }
         };
         Ok(((), out))
     })
 }
 
-/// Leave a group led by another device, or stop letting it listen with
-/// this device's microphone.
+/// Leave a group led by another device, or stop letting it listen with this device's microphone.
 pub fn leave_group(
     network: &dyn FabricLink,
     group: SpeakerGroupId,
     kind: SpeakerConsentKind,
 ) -> Result<(), String> {
-    with_core(network, |core, _, _| {
+    with_core(network, |core, state, _, local| {
         let out = match kind {
-            SpeakerConsentKind::Play => core.leave(group)?,
-            SpeakerConsentKind::Listen => core.stop_listening(group)?,
+            SpeakerConsentKind::Play => core.leave(state, local, group)?,
+            SpeakerConsentKind::Listen => core.stop_listening(state, local, group)?,
         };
         Ok(((), out))
     })
 }
 
-/// The person's microphones that could listen while calibrating a group
-/// this device leads.
+/// The person's microphones that could listen while calibrating a group this device leads.
 #[must_use]
 pub fn listener_candidates(
     network: &dyn FabricLink,
@@ -2305,26 +2795,32 @@ pub fn listener_candidates(
     let Ok(local) = local_device(network) else {
         return Vec::new();
     };
+    let state = record_state(network).unwrap_or_default();
     let fabric = network.devices();
     core().lock().map_or_else(
         |_| Vec::new(),
-        |core| core.listener_candidates(&fabric, &local, group, Instant::now()),
+        |core| core.listener_candidates(&state, &fabric, &local, group, Instant::now()),
     )
 }
 
-/// Ask the devices of `microphones` that have not answered yet to let this
-/// device listen while calibrating `group`.
+/// Ask the devices of `microphones` that have not answered yet to let this device listen while
+/// calibrating `group`.
 pub fn invite_listeners(
     network: &dyn FabricLink,
     group: &SpeakerGroup,
     microphones: &[(DeviceId, EndpointSelector)],
 ) -> Result<(), String> {
-    with_core(network, |core, _, _| {
-        Ok((
-            (),
-            core.invite_listeners(group, microphones, Instant::now()),
-        ))
-    })
+    let state = record_state(network).unwrap_or_default();
+    let live = core().lock().map_err(|_| unavailable())?.invite_listeners(
+        &state,
+        group,
+        microphones,
+        Instant::now(),
+    );
+    for item in live {
+        let _ = network.try_send_personal_fabric_action(&item.target, item.action);
+    }
+    Ok(())
 }
 
 /// Play `source` from this device to a group.
@@ -2333,16 +2829,24 @@ pub fn start_session(
     group: SpeakerGroupId,
     source: GroupAudioSource,
 ) -> Result<[u8; 16], String> {
-    with_core(network, |core, fabric, local| {
+    with_core(network, |core, state, fabric, local| {
         let session_id = tilo_network_actor::fabric::nonzero::<16>();
-        let out = core.start_session(fabric, local, group, source, session_id, Instant::now())?;
+        let out = core.start_session(
+            state,
+            fabric,
+            local,
+            group,
+            source,
+            session_id,
+            Instant::now(),
+        )?;
         Ok((session_id, out))
     })
 }
 
 /// Stop one session in either direction.
 pub fn stop_session(network: &dyn FabricLink, session_id: [u8; 16]) -> Result<(), String> {
-    with_core(network, |core, _, _| {
+    with_core(network, |core, _, _, _| {
         Ok(((), core.stop_session(session_id)?))
     })
 }
@@ -2352,18 +2856,22 @@ pub fn view(network: &dyn FabricLink) -> SpeakerGroupsView {
     let Ok(local) = local_device(network) else {
         return SpeakerGroupsView::default();
     };
+    let state = record_state(network).unwrap_or_default();
     let fabric = network.devices();
-    // Read before taking the core: the audio path takes the core while it
-    // holds its own state.
+    // Read before taking the core: the audio path takes the core while it holds its own state.
     let playouts = crate::remote_audio::group_route_playouts();
     core().lock().map_or_else(
         |_| SpeakerGroupsView::default(),
-        |core| core.view(&fabric, &local, &|route| playouts.get(&route).copied()),
+        |core| {
+            core.view(&state, &fabric, &local, &|route| {
+                playouts.get(&route).copied()
+            })
+        },
     )
 }
 
-/// Sessions this device is playing to groups, with each member it may send
-/// to. The timed audio path renders exactly these.
+/// Sessions this device is playing to groups, with each member it may send to. The timed audio
+/// path renders exactly these.
 #[must_use]
 pub fn outbound_playback_plans() -> Vec<GroupPlaybackPlan> {
     core()
@@ -2371,8 +2879,8 @@ pub fn outbound_playback_plans() -> Vec<GroupPlaybackPlan> {
         .map_or_else(|_| Vec::new(), |core| core.playback_plans())
 }
 
-/// What this device plays for `session_id` from `source`, or `None` when it
-/// has not admitted that exact session.
+/// What this device plays for `session_id` from `source`, or `None` when it has not admitted
+/// that exact session.
 #[must_use]
 pub fn member_grant(
     network: &dyn FabricLink,
@@ -2380,11 +2888,11 @@ pub fn member_grant(
     source: &DeviceId,
 ) -> Option<MemberPlaybackGrant> {
     let local = local_device(network).ok()?;
-    let fabric = network.devices();
+    let state = record_state(network)?;
     core()
         .lock()
         .ok()?
-        .grant(&fabric, &local, session_id, source)
+        .grant(&state, &local, session_id, source)
 }
 
 /// Resolve one of this device's published selectors to its local output.

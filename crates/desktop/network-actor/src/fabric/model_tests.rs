@@ -432,76 +432,33 @@ fn remote_audio_frames_play_after_capture_within_the_latency_bound() {
 }
 
 #[test]
-fn speaker_group_wire_rejects_zero_identities_and_bad_names() {
-    use crate::fabric::speaker_group::{
-        EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, StereoSide,
-    };
+fn a_retired_speaker_group_action_is_refused() {
     let source = id("source");
     let target = id("target");
-    let envelope = |action| PersonalFabricActionEnvelope {
-        request_id: [3; 16],
-        source: source.clone(),
-        target: target.clone(),
-        issued_unix_ms: 10_000,
-        action,
+    let check = |action| {
+        PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        }
+        .validate_at(&source, &target, 10_100)
     };
-    let check = |action| envelope(action).validate_at(&source, &target, 10_100);
-    let invite = |group, name: &str, output, role| PersonalFabricAction::SpeakerGroupInvite {
-        group,
-        name: name.into(),
-        output,
-        role,
-    };
-    let group = SpeakerGroupId([1; 16]);
-    let output = EndpointSelector([2; 16]);
-    let right = SpeakerRole::Stereo(StereoSide::Right);
-    assert_eq!(check(invite(group, "Living room", output, right)), Ok(()));
-    for bad in [
-        invite(SpeakerGroupId([0; 16]), "Living room", output, right),
-        invite(group, "", output, right),
-        invite(group, "line\nbreak", output, right),
-        invite(group, "Living room", EndpointSelector([0; 16]), right),
-        invite(
-            group,
-            "Living room",
-            output,
-            SpeakerRole::RoomPoint(RoomPoint {
-                x_mm: i32::MAX,
-                y_mm: 0,
-                z_mm: 0,
-            }),
-        ),
-        PersonalFabricAction::SpeakerGroupSessionOffer {
-            session_id: [0; 16],
-            group,
-        },
-        PersonalFabricAction::SpeakerGroupSessionDecision {
-            session_id: [4; 16],
-            group,
-            authorization: Some([0; 16]),
-        },
-        PersonalFabricAction::SpeakerGroupSessionStop {
-            session_id: [4; 16],
-            authorization: Some([0; 16]),
-        },
-        PersonalFabricAction::SpeakerGroupLeave {
-            group: SpeakerGroupId([0; 16]),
-        },
+    for retired in [
+        PersonalFabricAction::RetiredSpeakerGroupInvite,
+        PersonalFabricAction::RetiredSpeakerGroupDecision,
+        PersonalFabricAction::RetiredSpeakerGroupLeave,
+        PersonalFabricAction::RetiredSpeakerGroupSessionOffer,
+        PersonalFabricAction::RetiredSpeakerGroupSessionDecision,
+        PersonalFabricAction::RetiredSpeakerGroupSessionStop,
     ] {
         assert_eq!(
-            check(bad.clone()),
+            check(retired.clone()),
             Err(FabricError::InvalidAction),
-            "{bad:?}"
+            "{retired:?}"
         );
     }
-    assert_eq!(
-        check(PersonalFabricAction::SpeakerGroupSessionDecision {
-            session_id: [4; 16],
-            group,
-            authorization: None,
-        }),
-        Ok(())
-    );
 }
 
 #[test]

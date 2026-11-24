@@ -1,11 +1,11 @@
 //! What the person's devices keep of themselves in the person's own workspace.
 //!
 //! Each device writes what lasts of it under its own key
-//! ([`tilo_workspace_service::workspaces::person_workspace::devices`]): what it is ([`ABOUT`]),
-//! the speaker groups it leads and joined and the outputs it offers them ([`SPEAKERS`]), and its
-//! disk-unlock enrolments, which the session's disk unlock keeps and reads
-//! ([`crate::network::kept_unlock`]). The workspace carries all of it between the person's
-//! devices, a device that comes up later included.
+//! ([`tilo_workspace_service::workspaces::person_workspace::devices`]): what it is ([`ABOUT`])
+//! and its disk-unlock enrolments, which the session's disk unlock keeps and reads
+//! ([`crate::network::kept_unlock`]). Its speaker groups are typed actions on the same record
+//! ([`tilo_workspace_service::workspaces::person_workspace::speaker`]). The workspace carries all
+//! of it between the person's devices, a device that comes up later included.
 //!
 //! Every value is the postcard bytes of its type, written only when it changed; a value that does
 //! not read, or does not hold for the device it is under, is left out, and so is a device whose
@@ -16,14 +16,12 @@ use serde::de::DeserializeOwned;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
-use super::{DeviceAbout, PersonDevice, SpeakerFabricState};
+use super::{DeviceAbout, PersonDevice};
 use crate::PersonResources;
 use crate::platform::fabric::DeviceId;
 
 /// What a device is: its [`DeviceAbout`].
 pub(crate) const ABOUT: &str = "about";
-/// Its speaker groups, memberships, outputs and microphones: its [`SpeakerFabricState`].
-pub(crate) const SPEAKERS: &str = "speakers";
 
 /// Keep `value` under `name` among what `device` says of itself. Returns whether it changed.
 ///
@@ -90,10 +88,6 @@ pub(crate) fn kept(resources: &PersonResources, person: &[u8; 32]) -> Vec<Person
                     )
                 });
             let mut person_device = PersonDevice::new(device.clone(), about);
-            person_device.speakers = fact(SPEAKERS)
-                .and_then(|value| decoded::<SpeakerFabricState>(value))
-                .filter(|speakers| speakers.validate(&device).is_ok())
-                .unwrap_or_default();
             person_device.unlock = crate::network::kept_unlock(&state, kept, &device);
             Some(person_device)
         })

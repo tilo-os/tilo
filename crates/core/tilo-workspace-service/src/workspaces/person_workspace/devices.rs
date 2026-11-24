@@ -55,6 +55,10 @@ use tilo_resource::{Collection, Id, Model, Refusal, resource};
 use tilo_user_identity::certification::MAX_CERTIFICATION_LABEL_BYTES;
 use tilo_user_identity::{DeviceCert, RevocationEntry, revocation_of, revokes};
 
+use super::speaker::{
+    self, PlaybackStage, SpeakerConsent, SpeakerDevice, SpeakerLedGroup, SpeakerPlayback,
+};
+
 /// The resource of the person's devices in their own workspace.
 pub const DEVICES: (&str, &str) = ("so.tilo.devices", "devices");
 
@@ -97,6 +101,10 @@ pub struct Devices {
     pub inputs: Collection<InputHand>,
     /// The notifications shown on each of the person's devices, by [`SharedNotice`] id.
     pub notices: Collection<SharedNotice>,
+    /// What each device offers, leads and agreed to of speaker groups, by its key.
+    pub speaker_devices: Collection<SpeakerDevice>,
+    /// Each playback of a group to one member, by its route.
+    pub speaker_playbacks: Collection<SpeakerPlayback>,
 }
 
 /// The longest a notification is shown on the person's other devices, ms.
@@ -604,7 +612,9 @@ pub struct Network {
 }
 
 /// A notification one device of the person's shows on the others.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct NoticeShown {
     /// The notification, which a later answer or retirement names.
     pub id: String,
@@ -631,7 +641,9 @@ pub struct NoticeShown {
 }
 
 /// The hand-over one device of the person's asks for another's keyboard and pointer.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct HandOver {
     /// The device whose keyboard and pointer are handed over, by key (lowercase hex).
     pub driven: String,
@@ -649,6 +661,30 @@ pub struct HandOver {
     pub granted_ms: i64,
     /// When it ends, ms since the epoch.
     pub until_ms: i64,
+}
+
+/// The answer a member device gives to a group its leader wrote: to play in it, or to let it
+/// listen with a microphone, as the person on that device approved or declined it.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+)]
+pub struct SpeakerConsentGiven {
+    /// The answering device, by key (lowercase hex).
+    pub device: String,
+    /// The group, 16 bytes in hex.
+    pub group: String,
+    /// The device that leads it, by key.
+    pub leader: String,
+    /// Whether it consents to play in the group; otherwise to listen with a microphone.
+    pub play: bool,
+    /// The output it plays on, or the microphone it listens with, 16 bytes in hex.
+    pub endpoint: String,
+    /// The role it plays, as the leader wrote it.
+    pub role: String,
+    /// Whether the person approved it; false when they declined.
+    pub approved: bool,
+    /// When they answered, ms since the epoch.
+    pub at_ms: i64,
 }
 
 #[resource(kind = "tilo.devices", read_content = tilo_resource::read::fields)]
@@ -1049,7 +1085,9 @@ impl Devices {
             return Err(Refusal::new("a device drives another of your devices"));
         }
         if asked_ms <= 0 {
-            return Err(Refusal::new("a hand-over is asked at a time since the epoch"));
+            return Err(Refusal::new(
+                "a hand-over is asked at a time since the epoch",
+            ));
         }
         let driven = Id::from_raw(driven);
         if self
@@ -1193,10 +1231,14 @@ impl Devices {
     pub fn grant_input(&mut self, #[param(flatten)] input: HandOver) -> Result<(), Refusal> {
         validate_bytes(&input.nonce, 16)?;
         if !(input.keyboard || input.pointer) {
-            return Err(Refusal::new("a hand-over lets in the keyboard, the pointer or both"));
+            return Err(Refusal::new(
+                "a hand-over lets in the keyboard, the pointer or both",
+            ));
         }
         if input.granted_ms <= 0 || input.until_ms <= input.granted_ms {
-            return Err(Refusal::new("a hand-over holds from when it was made until a later time"));
+            return Err(Refusal::new(
+                "a hand-over holds from when it was made until a later time",
+            ));
         }
         let Some(kept) = self.inputs.get_mut(&Id::from_raw(input.driven)) else {
             return Err(Refusal::new("nobody asked to drive that device"));
@@ -1324,6 +1366,54 @@ impl Devices {
         Ok(())
     }
 
+    /// Say the outputs and microphones `device` offers to speaker groups, as the postcard bytes
+    /// of its [`SpeakerEndpoint`](super::speaker::SpeakerEndpoint)s in hex: this device's own.
+    #[action(housekeeping)]
+    pub fn say_speaker_endpoints(
+        &mut self,
+        device: String,
+        endpoints: String,
+    ) -> Result<(), Refusal> {
+        validate_key(&device)?;
+        if !self.devices.contains(&Id::from_raw(device.clone())) {
+            return Err(Refusal::new("that key is not one of your devices"));
+        }
+        let endpoints = speaker::decode_endpoints(&endpoints).map_err(Refusal::new)?;
+        if endpoints.len() > speaker::MAX_ENDPOINTS {
+            return Err(Refusal::new(format!(
+                "a device offers at most {} outputs and microphones",
+                speaker::MAX_ENDPOINTS
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for endpoint in &endpoints {
+            if !speaker::valid_selector(&endpoint.selector)
+                || endpoint.label.is_empty()
+                || endpoint.label.len() > speaker::MAX_LABEL_BYTES
+                || endpoint.label.chars().any(char::is_control)
+                || !seen.insert(endpoint.selector.clone())
+            {
+                return Err(Refusal::new(
+                    "each endpoint is named once, by 16 bytes in hex and a printable label",
+                ));
+            }
+        }
+        let id = Id::from_raw(device);
+        match self.speaker_devices.get_mut(&id) {
+            Some(kept) => kept.endpoints = endpoints,
+            None => {
+                self.speaker_devices.push(
+                    id,
+                    SpeakerDevice {
+                        endpoints,
+                        ..SpeakerDevice::default()
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Say the person answered the notification `id` on the device `device`: `chosen` the key of
     /// the action they chose, empty when they dismissed it. The first answer stands.
     #[action]
@@ -1352,6 +1442,323 @@ impl Devices {
     pub fn retire_notice(&mut self, id: String) -> Result<(), Refusal> {
         let id = Id::from_raw(id);
         self.notices.retain(|kept, _| *kept != id);
+        Ok(())
+    }
+
+    /// Keep the group `group` led by `device`, called `name`, with its `members` (the postcard
+    /// bytes of [`SpeakerLedMember`](super::speaker::SpeakerLedMember)s in hex), written at
+    /// `at_ms`: it replaces the group of that id, and only its leader writes it.
+    #[action(housekeeping)]
+    pub fn lead_speaker_group(
+        &mut self,
+        device: String,
+        group: String,
+        name: String,
+        members: String,
+        at_ms: i64,
+    ) -> Result<(), Refusal> {
+        validate_key(&device)?;
+        if !self.devices.contains(&Id::from_raw(device.clone())) {
+            return Err(Refusal::new("that key is not one of your devices"));
+        }
+        if at_ms <= 0 {
+            return Err(Refusal::new("a group is written at a time since the epoch"));
+        }
+        let led = SpeakerLedGroup {
+            id: group,
+            name,
+            members: speaker::decode_members(&members).map_err(Refusal::new)?,
+            at_ms,
+        };
+        for member in &led.members {
+            if !self.devices.contains(&Id::from_raw(member.device.clone())) {
+                return Err(Refusal::new("a group names only your devices"));
+            }
+            let offers = self
+                .speaker_devices
+                .get(&Id::from_raw(member.device.clone()))
+                .is_some_and(|known| speaker::offers_output(known, &member.output));
+            if !offers {
+                return Err(Refusal::new(
+                    "a group member plays on an output that device offers",
+                ));
+            }
+        }
+        let id = Id::from_raw(device);
+        if let Some(state) = self.speaker_devices.get_mut(&id) {
+            return speaker::keep_group(&mut state.groups, led).map_err(Refusal::new);
+        }
+        let mut state = SpeakerDevice::default();
+        speaker::keep_group(&mut state.groups, led).map_err(Refusal::new)?;
+        self.speaker_devices.push(id, state);
+        Ok(())
+    }
+
+    /// Forget the group `group` that `device` led, and every playback of it.
+    #[action(housekeeping)]
+    pub fn drop_speaker_group(&mut self, device: String, group: String) -> Result<(), Refusal> {
+        validate_key(&device)?;
+        let id = Id::from_raw(device);
+        if let Some(state) = self.speaker_devices.get_mut(&id) {
+            state.groups.retain(|led| led.id != group);
+        }
+        self.speaker_playbacks
+            .retain(|_, playback| playback.group != group);
+        Ok(())
+    }
+
+    /// Keep the answer a member device gives to a group its leader wrote: to play the role the
+    /// leader gave it on an output, or to let the group listen with one of its microphones, as
+    /// the person on it approved or declined it. It covers the group only as its leader wrote it.
+    #[action(housekeeping)]
+    pub fn consent_speaker_group(
+        &mut self,
+        #[param(flatten)] given: SpeakerConsentGiven,
+    ) -> Result<(), Refusal> {
+        let SpeakerConsentGiven {
+            device,
+            group,
+            leader,
+            play,
+            endpoint,
+            role,
+            approved,
+            at_ms,
+        } = given;
+        validate_key(&device)?;
+        validate_key(&leader)?;
+        if at_ms <= 0 {
+            return Err(Refusal::new("a consent is given at a time since the epoch"));
+        }
+        let Some(led) = speaker::group(self, &group).cloned() else {
+            return Err(Refusal::new("that group is not in your record"));
+        };
+        let led_by = self.speaker_devices.iter().any(|(id, state)| {
+            state.groups.iter().any(|led| led.id == group) && id.as_str() == leader
+        });
+        if !led_by {
+            return Err(Refusal::new("that group is not led by that device"));
+        }
+        if play {
+            let member = led
+                .member(&device)
+                .ok_or_else(|| Refusal::new("that group names no output here"))?;
+            if member.output != endpoint || member.role != role {
+                return Err(Refusal::new(
+                    "a consent covers the output and role the leader wrote",
+                ));
+            }
+        } else {
+            let offers = self
+                .speaker_devices
+                .get(&Id::from_raw(device.clone()))
+                .is_some_and(|known| speaker::offers_microphone(known, &endpoint));
+            if !offers {
+                return Err(Refusal::new(
+                    "a listening consent names a microphone this device offers",
+                ));
+            }
+        }
+        let consent = SpeakerConsent {
+            group,
+            leader,
+            play,
+            output: if play {
+                endpoint.clone()
+            } else {
+                String::new()
+            },
+            role: if play { role } else { String::new() },
+            microphone: if play { String::new() } else { endpoint },
+            approved,
+            at_ms,
+        };
+        let id = Id::from_raw(device);
+        match self.speaker_devices.get_mut(&id) {
+            Some(state) => {
+                let same = |kept: &SpeakerConsent| {
+                    kept.group == consent.group
+                        && kept.leader == consent.leader
+                        && kept.play == consent.play
+                };
+                if let Some(kept) = state.consents.iter_mut().find(|kept| same(kept)) {
+                    *kept = consent;
+                } else {
+                    if state.consents.len() >= speaker::MAX_CONSENTS {
+                        return Err(Refusal::new(format!(
+                            "a device keeps at most {} consents",
+                            speaker::MAX_CONSENTS
+                        )));
+                    }
+                    state.consents.push(consent);
+                }
+            }
+            None => {
+                self.speaker_devices.push(
+                    id,
+                    SpeakerDevice {
+                        consents: vec![consent],
+                        ..SpeakerDevice::default()
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Take back `device`'s consent to the group `group` led by `leader`: to play in it, or to let
+    /// it listen with a microphone.
+    #[action(housekeeping)]
+    pub fn withdraw_speaker_group(
+        &mut self,
+        device: String,
+        group: String,
+        leader: String,
+        play: bool,
+    ) -> Result<(), Refusal> {
+        validate_key(&device)?;
+        let id = Id::from_raw(device.clone());
+        if let Some(state) = self.speaker_devices.get_mut(&id) {
+            state.consents.retain(|consent| {
+                !(consent.group == group && consent.leader == leader && consent.play == play)
+            });
+        }
+        if play {
+            self.speaker_playbacks
+                .retain(|_, playback| playback.group != group || playback.target != device);
+        }
+        Ok(())
+    }
+
+    /// Offer the group `group` led by `source` to `target` as one playback, at `at_ms`: the
+    /// member admits it, with a capability bound to that exact source, or refuses it.
+    #[action(housekeeping)]
+    pub fn offer_speaker_playback(
+        &mut self,
+        route: String,
+        session: String,
+        source: String,
+        target: String,
+        group: String,
+        at_ms: i64,
+    ) -> Result<(), Refusal> {
+        validate_bytes(&route, 16)?;
+        validate_bytes(&session, 16)?;
+        validate_key(&source)?;
+        validate_key(&target)?;
+        if !self.devices.contains(&Id::from_raw(source.clone()))
+            || !self.devices.contains(&Id::from_raw(target.clone()))
+        {
+            return Err(Refusal::new("a playback plays between your devices"));
+        }
+        if at_ms <= 0 {
+            return Err(Refusal::new(
+                "a playback is offered at a time since the epoch",
+            ));
+        }
+        let Some(led) = speaker::group(self, &group) else {
+            return Err(Refusal::new("that group is not in your record"));
+        };
+        if led.member(&target).is_none() {
+            return Err(Refusal::new("that group names no output there"));
+        }
+        if self
+            .speaker_playbacks
+            .get(&Id::from_raw(route.clone()))
+            .is_none()
+            && self.speaker_playbacks.iter().count() >= speaker::MAX_PLAYBACKS
+        {
+            return Err(Refusal::new(format!(
+                "at most {} playbacks stand at once",
+                speaker::MAX_PLAYBACKS
+            )));
+        }
+        let playback = SpeakerPlayback {
+            session,
+            source,
+            target,
+            group,
+            stage: PlaybackStage::Offered,
+            authorization: String::new(),
+            at_ms,
+        };
+        let id = Id::from_raw(route);
+        match self.speaker_playbacks.get_mut(&id) {
+            Some(kept) => {
+                kept.stage = playback.stage;
+                kept.authorization.clear();
+                kept.at_ms = playback.at_ms;
+            }
+            None => {
+                self.speaker_playbacks.push(id, playback);
+            }
+        }
+        Ok(())
+    }
+
+    /// Admit the playback `session` with `authorization`, the capability bound to its exact
+    /// source, at `at_ms`: the member's own answer to the offer.
+    #[action(housekeeping)]
+    pub fn admit_speaker_playback(
+        &mut self,
+        route: String,
+        authorization: String,
+        at_ms: i64,
+    ) -> Result<(), Refusal> {
+        validate_bytes(&authorization, 16)?;
+        if authorization == hex::encode([0; 16]) {
+            return Err(Refusal::new("a capability is 16 non-zero bytes in hex"));
+        }
+        if at_ms <= 0 {
+            return Err(Refusal::new(
+                "a playback is admitted at a time since the epoch",
+            ));
+        }
+        let id = Id::from_raw(route);
+        let Some(kept) = self.speaker_playbacks.get_mut(&id) else {
+            return Err(Refusal::new("nobody offered that playback"));
+        };
+        if kept.stage == PlaybackStage::Admitted {
+            return Ok(());
+        }
+        kept.stage = PlaybackStage::Admitted;
+        kept.authorization = authorization;
+        kept.at_ms = at_ms;
+        Ok(())
+    }
+
+    /// Refuse the playback `session` at `at_ms`.
+    #[action(housekeeping)]
+    pub fn refuse_speaker_playback(&mut self, route: String, at_ms: i64) -> Result<(), Refusal> {
+        if at_ms <= 0 {
+            return Err(Refusal::new(
+                "a playback is refused at a time since the epoch",
+            ));
+        }
+        if let Some(kept) = self.speaker_playbacks.get_mut(&Id::from_raw(route)) {
+            kept.stage = PlaybackStage::Refused;
+            kept.authorization.clear();
+            kept.at_ms = at_ms;
+        }
+        Ok(())
+    }
+
+    /// End the playback `session`: under `authorization` when the member ends what it admitted,
+    /// or empty when the playing device ends it.
+    #[action(housekeeping)]
+    pub fn stop_speaker_playback(
+        &mut self,
+        route: String,
+        authorization: String,
+    ) -> Result<(), Refusal> {
+        let id = Id::from_raw(route);
+        let ends = self
+            .speaker_playbacks
+            .get(&id)
+            .is_some_and(|kept| authorization.is_empty() || kept.authorization == authorization);
+        if ends {
+            self.speaker_playbacks.retain(|kept, _| *kept != id);
+        }
         Ok(())
     }
 
@@ -1624,7 +2031,9 @@ mod tests {
         let (laptop, phone) = ([1; 32], [2; 32]);
         let mut devices = tilo_resource::Replica::<Devices>::new();
         assert!(
-            devices.apply(Devices::asking_input(&phone, &laptop, 10)).is_err(),
+            devices
+                .apply(Devices::asking_input(&phone, &laptop, 10))
+                .is_err(),
             "a device the record does not keep drives nothing"
         );
         for device in [laptop, phone] {
@@ -1633,7 +2042,9 @@ mod tests {
                 .expect("the device is kept");
         }
         assert!(
-            devices.apply(Devices::asking_input(&laptop, &laptop, 10)).is_err(),
+            devices
+                .apply(Devices::asking_input(&laptop, &laptop, 10))
+                .is_err(),
             "a device does not drive itself"
         );
         devices
@@ -1641,7 +2052,10 @@ mod tests {
             .expect("the laptop asks to drive the phone");
         let hand = |state: &Devices| state.inputs.get(&Id::from_raw(hex::encode(phone))).cloned();
         let asked = hand(&devices.state().unwrap()).expect("the ask is kept");
-        assert!(!asked.holds(&hex::encode(laptop), 11), "an ask drives nothing yet");
+        assert!(
+            !asked.holds(&hex::encode(laptop), 11),
+            "an ask drives nothing yet"
+        );
 
         let granted = InputHand {
             nonce: hex::encode([9; 16]),
@@ -1653,15 +2067,29 @@ mod tests {
         };
         assert!(
             devices
-                .apply(Devices::granting_input(&phone, &InputHand { asked_ms: 9, ..granted.clone() }))
+                .apply(Devices::granting_input(
+                    &phone,
+                    &InputHand {
+                        asked_ms: 9,
+                        ..granted.clone()
+                    }
+                ))
                 .is_err(),
             "a grant answers the ask it was made for"
         );
         devices
             .apply(Devices::granting_input(&phone, &granted))
             .expect("the phone lets the laptop in");
-        assert!(hand(&devices.state().unwrap()).unwrap().holds(&hex::encode(laptop), 500));
-        assert!(!hand(&devices.state().unwrap()).unwrap().holds(&hex::encode(laptop), 1_000));
+        assert!(
+            hand(&devices.state().unwrap())
+                .unwrap()
+                .holds(&hex::encode(laptop), 500)
+        );
+        assert!(
+            !hand(&devices.state().unwrap())
+                .unwrap()
+                .holds(&hex::encode(laptop), 1_000)
+        );
 
         // Another ask while it holds leaves it.
         devices
@@ -1672,7 +2100,153 @@ mod tests {
         devices
             .apply(Devices::ending_input(&phone, &laptop, &granted.nonce))
             .expect("the hand-over ends");
-        assert_eq!(hand(&devices.state().unwrap()), None, "the phone's input is its own again");
+        assert_eq!(
+            hand(&devices.state().unwrap()),
+            None,
+            "the phone's input is its own again"
+        );
+    }
+
+    /// A group one device leads, the member's consent and one playback stand in the record, and
+    /// each is refused where it names what the record does not hold.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario keeps the group, its consent and its playback visible together"
+    )]
+    fn a_speaker_group_its_consent_and_playback_are_in_the_record() {
+        let (office, shelf) = ([1; 32], [2; 32]);
+        let (office_key, shelf_key) = (hex::encode(office), hex::encode(shelf));
+        let group = hex::encode([5; 16]);
+        let (office_output, shelf_output) = (hex::encode([8; 16]), hex::encode([9; 16]));
+        let mut devices = tilo_resource::Replica::<Devices>::new();
+        for key in [&office_key, &shelf_key] {
+            devices
+                .apply(Devices::KEEP_DEVICE.with((key.clone(), "00".to_owned())))
+                .expect("the device is kept");
+        }
+        let endpoint = |selector: &str, microphone: bool| super::speaker::SpeakerEndpoint {
+            selector: selector.to_owned(),
+            microphone,
+            label: "Speakers".into(),
+            is_default: true,
+        };
+        for (key, output) in [(&office_key, &office_output), (&shelf_key, &shelf_output)] {
+            let endpoints = vec![
+                endpoint(output, false),
+                endpoint(&hex::encode([7; 16]), true),
+            ];
+            devices
+                .apply(Devices::SAY_SPEAKER_ENDPOINTS.with((
+                    key.clone(),
+                    hex::encode(postcard::to_allocvec(&endpoints).unwrap()),
+                )))
+                .expect("the device offers its endpoints");
+        }
+        let member = |device: &str, output: &str, role: &str| super::speaker::SpeakerLedMember {
+            device: device.to_owned(),
+            output: output.to_owned(),
+            role: role.to_owned(),
+            ..super::speaker::SpeakerLedMember::default()
+        };
+        let members = vec![
+            member(&office_key, &office_output, "left"),
+            member(&shelf_key, &shelf_output, "right"),
+        ];
+        assert!(
+            devices
+                .apply(Devices::LEAD_SPEAKER_GROUP.with((
+                    office_key.clone(),
+                    group.clone(),
+                    "Living room".to_owned(),
+                    hex::encode(postcard::to_allocvec(&members).unwrap()),
+                    1,
+                )))
+                .is_ok(),
+            "the office leads the pair"
+        );
+        let state = devices.state().unwrap();
+        assert_eq!(
+            super::speaker::group(&state, &group).map(|led| led.members.len()),
+            Some(2)
+        );
+        assert!(
+            state
+                .speaker_devices
+                .get(&Id::from_raw(shelf_key.clone()))
+                .unwrap()
+                .consents
+                .is_empty(),
+            "the shelf has not agreed yet"
+        );
+
+        // A consent for the shelf's own role is kept; one for another role is refused.
+        let consent = |role: &str| {
+            Devices::CONSENT_SPEAKER_GROUP.with(SpeakerConsentGiven {
+                device: shelf_key.clone(),
+                group: group.clone(),
+                leader: office_key.clone(),
+                play: true,
+                endpoint: shelf_output.clone(),
+                role: role.to_owned(),
+                approved: true,
+                at_ms: 2,
+            })
+        };
+        assert!(
+            devices.apply(consent("left")).is_err(),
+            "a consent covers the written role"
+        );
+        devices.apply(consent("right")).expect("the shelf agrees");
+
+        // One playback, offered to the shelf under its route, is admitted with its capability
+        // bound to the office, and ended from either end.
+        let (session, route, authorization) = (
+            hex::encode([3; 16]),
+            hex::encode([4; 16]),
+            hex::encode([6; 16]),
+        );
+        assert!(
+            devices
+                .apply(Devices::ADMIT_SPEAKER_PLAYBACK.with((
+                    route.clone(),
+                    authorization.clone(),
+                    2,
+                )))
+                .is_err(),
+            "a playback nobody offered is not admitted"
+        );
+        devices
+            .apply(Devices::OFFER_SPEAKER_PLAYBACK.with((
+                route.clone(),
+                session.clone(),
+                office_key.clone(),
+                shelf_key.clone(),
+                group.clone(),
+                3,
+            )))
+            .expect("the office offers it");
+        let offered = |devices: &tilo_resource::Replica<Devices>| {
+            devices
+                .state()
+                .unwrap()
+                .speaker_playbacks
+                .get(&Id::from_raw(route.clone()))
+                .cloned()
+        };
+        let kept = offered(&devices).expect("the playback is kept");
+        assert_eq!(kept.session, session);
+        assert_eq!(kept.stage, PlaybackStage::Offered);
+        devices
+            .apply(Devices::ADMIT_SPEAKER_PLAYBACK.with((route.clone(), authorization.clone(), 4)))
+            .expect("the shelf admits it");
+        let kept = offered(&devices).expect("the playback is still kept");
+        assert_eq!(kept.stage, PlaybackStage::Admitted);
+        assert_eq!(kept.authorization, authorization);
+        devices
+            .apply(Devices::STOP_SPEAKER_PLAYBACK.with((route.clone(), String::new())))
+            .expect("the office ends it");
+        assert!(offered(&devices).is_none(), "an ended playback is let go");
     }
 
     #[test]
@@ -1710,7 +2284,9 @@ mod tests {
             },
         ] {
             assert!(
-                devices.apply(Devices::showing_notice(&mail, &refused)).is_err(),
+                devices
+                    .apply(Devices::showing_notice(&mail, &refused))
+                    .is_err(),
                 "{refused:?} is no notification the record shows"
             );
         }
@@ -1718,7 +2294,12 @@ mod tests {
             .apply(Devices::showing_notice(&mail, &notice))
             .expect("the desktop shows its mail on the person's other devices");
         let kept = |devices: &tilo_resource::Replica<Devices>, id: &str| {
-            devices.state().unwrap().notices.get(&Id::from_raw(id)).cloned()
+            devices
+                .state()
+                .unwrap()
+                .notices
+                .get(&Id::from_raw(id))
+                .cloned()
         };
         assert!(kept(&devices, &mail).unwrap().shown_at(2_000));
 
@@ -1740,7 +2321,10 @@ mod tests {
             (hex::encode(laptop).as_str(), "archive"),
             "the first answer stands"
         );
-        assert!(!answered.shown_at(2_000), "an answered notification is shown nowhere");
+        assert!(
+            !answered.shown_at(2_000),
+            "an answered notification is shown nowhere"
+        );
 
         // What ran out leaves the record as the next one is shown.
         devices

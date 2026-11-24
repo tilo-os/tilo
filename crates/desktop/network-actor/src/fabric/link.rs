@@ -4,6 +4,8 @@
 
 use std::collections::BTreeSet;
 
+use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
+
 use crate::fabric::DeviceId;
 
 use crate::fabric::{ClipboardEntry, PersonDevices, PersonalFabricAction};
@@ -33,6 +35,20 @@ pub trait FabricLink {
     /// The person's devices as this one knows them: what each keeps in their store and what
     /// each said live.
     fn devices(&self) -> PersonDevices;
+    /// The record of the person's devices in their own workspace, as this device's daemon last
+    /// read it: what every device of theirs keeps, and reads, of their speaker groups.
+    fn person_devices(&self) -> Option<Devices> {
+        None
+    }
+    /// Apply `action`, a typed action on the person's devices record, through this device's
+    /// daemon, as this device.
+    ///
+    /// # Errors
+    /// This session holds no copy of the person's workspace, or the daemon refused the action.
+    fn apply_person_devices(&self, action: tilo_resource::Invoke<Devices>) -> Result<(), String> {
+        let _ = action;
+        Err("this device holds no record of the person's devices".to_owned())
+    }
     /// The devices with a live session right now.
     fn online_device_ids(&self) -> BTreeSet<DeviceId>;
     /// The person's other devices heard on this device's local network now,
@@ -76,6 +92,14 @@ pub type SharedLink = std::sync::Arc<dyn FabricLink + Send + Sync>;
 impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
     fn devices(&self) -> PersonDevices {
         (**self).devices()
+    }
+
+    fn person_devices(&self) -> Option<Devices> {
+        (**self).person_devices()
+    }
+
+    fn apply_person_devices(&self, action: tilo_resource::Invoke<Devices>) -> Result<(), String> {
+        (**self).apply_person_devices(action)
     }
 
     fn online_device_ids(&self) -> BTreeSet<DeviceId> {

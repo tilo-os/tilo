@@ -267,6 +267,8 @@ mod shell_themes;
 mod shortcut_effects;
 #[path = "shortcut_guide.rs"]
 mod shortcut_guide;
+#[path = "speaker_groups.rs"]
+mod speaker_groups;
 #[path = "startup_timeline.rs"]
 mod startup_timeline;
 #[path = "strips_tabs.rs"]

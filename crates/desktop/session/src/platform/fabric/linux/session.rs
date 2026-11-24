@@ -14,15 +14,17 @@ use iroh::EndpointId;
 use settings_store::continuity_privacy::ContinuityCapability;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::PersonalFabricPayload;
+use tilo_resource::Invoke;
+use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
 use super::live::Live;
 use super::store;
 use super::{
-    ClipboardEntry, DeviceAbout, DeviceKind, FabricCapabilities,
-    FabricLink, MediaSourceLocator, PersonDevices, PersonalFabricAction,
-    PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, clock,
+    ClipboardEntry, DeviceAbout, DeviceKind, FabricCapabilities, FabricLink, MediaSourceLocator,
+    PersonDevices, PersonalFabricAction, PersonalFabricActionEnvelope, PersonalFabricSendError,
+    SharedLink, clock,
 };
-use crate::platform::fabric::{DeviceId, FabricStamp, nonzero};
+use crate::platform::fabric::{DeviceId, nonzero};
 /// Where this session's frames leave for the person's other devices.
 type Outbox = crate::sync::HostOutbox;
 
@@ -299,43 +301,12 @@ impl SessionFabric {
     }
 
     /// Tell the person's other devices the copies this device offers, when they moved since they
-    /// were last told, and keep the speaker groups this device leads
-    /// and joined in its part of the person's store when they moved: the session's pass calls this
-    /// once it offered the clipboard, so a copy leaves on the pass that made it.
+    /// were last told: the session's pass calls this once it offered the clipboard, so a copy
+    /// leaves on the pass that made it.
     pub(crate) fn announce(&self) {
         if self.offered_moved.swap(false, Ordering::Relaxed) {
             let clipboard = self.live.lock_recover().own_clipboard().to_vec();
             self.publish(None, PersonalFabricPayload::Clipboard(clipboard));
-        }
-        self.keep_speakers();
-    }
-
-    /// Keep the speaker groups this device leads and joined, the memberships it gave and the
-    /// outputs it offers in its part of the person's store, when they moved. Nothing is offered
-    /// while Media continuity is off.
-    fn keep_speakers(&self) {
-        let Some((resources, cert)) = &self.personal else {
-            return;
-        };
-        let local = self.live.lock_recover().local().clone();
-        let kept = self
-            .devices()
-            .get(&local)
-            .map(|device| device.speakers.clone());
-        let speakers = tilo_speaker_service::groups::authored_state(
-            &local,
-            kept.as_ref(),
-            &FabricStamp {
-                counter: 1,
-                device: local.clone(),
-            },
-            self.continuity.media_permitted(),
-        );
-        if kept.as_ref() == Some(&speakers) {
-            return;
-        }
-        if let Err(error) = store::keep_own(resources, cert, store::SPEAKERS, &speakers) {
-            tracing::warn!(%error, "this device's speaker groups were not kept");
         }
     }
 
@@ -356,6 +327,20 @@ impl SessionFabric {
 }
 
 impl FabricLink for SessionFabric {
+    fn person_devices(&self) -> Option<Devices> {
+        let (resources, _) = self.personal.as_ref()?;
+        resources.read::<Devices>(DEVICES)
+    }
+
+    fn apply_person_devices(&self, action: Invoke<Devices>) -> Result<(), String> {
+        let (resources, _) = self
+            .personal
+            .as_ref()
+            .ok_or_else(|| "this device holds no record of the person's devices".to_owned())?;
+        resources.apply(DEVICES, move || action.clone());
+        Ok(())
+    }
+
     fn devices(&self) -> PersonDevices {
         let mut kept = match &self.personal {
             Some((resources, _)) => {
@@ -489,12 +474,12 @@ impl crate::Session {
             // so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
             | PersonalFabricAction::FabricClockReport { .. }
-            | PersonalFabricAction::SpeakerGroupInvite { .. }
-            | PersonalFabricAction::SpeakerGroupDecision { .. }
-            | PersonalFabricAction::SpeakerGroupLeave { .. }
-            | PersonalFabricAction::SpeakerGroupSessionOffer { .. }
-            | PersonalFabricAction::SpeakerGroupSessionDecision { .. }
-            | PersonalFabricAction::SpeakerGroupSessionStop { .. }
+            | PersonalFabricAction::RetiredSpeakerGroupInvite
+            | PersonalFabricAction::RetiredSpeakerGroupDecision
+            | PersonalFabricAction::RetiredSpeakerGroupLeave
+            | PersonalFabricAction::RetiredSpeakerGroupSessionOffer
+            | PersonalFabricAction::RetiredSpeakerGroupSessionDecision
+            | PersonalFabricAction::RetiredSpeakerGroupSessionStop
             | PersonalFabricAction::SpeakerIdentify { .. }
             | PersonalFabricAction::SpeakerSweep { .. }
             | PersonalFabricAction::SpeakerListenInvite { .. }

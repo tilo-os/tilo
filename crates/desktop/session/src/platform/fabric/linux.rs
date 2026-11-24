@@ -13,7 +13,7 @@ pub(crate) use store::{ABOUT, decoded, keep_own};
 pub use tilo_network_actor::fabric::clock;
 pub use tilo_network_actor::fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
 pub use tilo_network_actor::fabric::speaker_group::{
-    AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState,
+    AudioEndpoint, AudioEndpointKind, EndpointSelector,
 };
 pub use tilo_network_actor::fabric::unlock::{
     AutoApproval, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,

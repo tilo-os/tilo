@@ -25,6 +25,7 @@ use super::Workspaces;
 
 pub mod accessory;
 pub mod devices;
+pub mod speaker;
 pub mod wake;
 pub mod wifi;
 
