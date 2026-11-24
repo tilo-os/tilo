@@ -541,10 +541,10 @@ impl Personal {
             if from < after {
                 order.remove(from);
                 order.insert(after, *workspace);
-                writes.push(
-                    WorkspaceList::PLACE_WORKSPACE
-                        .with((workspace.to_string(), previous.to_string())),
-                );
+                writes.push(person_list::placing(
+                    &workspace.to_string(),
+                    &previous.to_string(),
+                ));
             }
         }
         writes
@@ -728,11 +728,7 @@ impl Personal {
         if !matches!(self.shown_on(workspace, &device), Some(current) if current != shown) {
             return false;
         }
-        self.write(&[WorkspaceList::SHOW_WORKSPACE.with((
-            workspace.to_string(),
-            hex::encode(device),
-            shown,
-        ))])
+        self.write(&[person_list::showing(&workspace.to_string(), device, shown)])
     }
 
     /// Take in the person's workspaces on hosts that the device's daemon lists and this device
@@ -747,23 +743,33 @@ impl Personal {
     ) -> Vec<ListWrite> {
         let mut writes = Vec::new();
         for (workspace, entry) in listed {
-            let host = hex::encode(entry.host.host.writes_for());
+            if list.went(workspace) {
+                continue;
+            }
             let Ok(hint) = postcard::to_allocvec(&entry.host) else {
                 continue;
             };
             let hint = hex::encode(hint);
-            if list.went(workspace) {
-                continue;
-            }
+            let device = entry.host.host.writes_for();
             let id = workspace.to_string();
-            let named = list.get(workspace);
-            if named.is_none() {
-                writes.push(WorkspaceList::LIST_WORKSPACE.with((id.clone(), entry.name.clone())));
-                writes.push(WorkspaceList::HOST_WORKSPACE.with((id.clone(), host.clone())));
-            }
-            // The address is the host's own word for where it answers: it is said under its key.
-            if named.and_then(|named| named.addresses.get(&host)) != Some(&hint) {
-                writes.push(WorkspaceList::REACH_WORKSPACE.with((id, host, hint)));
+            match list.get(workspace) {
+                // Its name, where it is kept and the address it answers at, as one write.
+                None => {
+                    let kept = person_list::KeptAt {
+                        device,
+                        hint: Some(entry.host.clone()),
+                    };
+                    writes.extend(person_list::listing(&id, &entry.name, Some(&kept)));
+                }
+                // A workspace the list names keeps its name and host. The address is the host's
+                // own word for where it answers: it is said under its key.
+                Some(named) => {
+                    if named.addresses.get(&hex::encode(device)) != Some(&hint)
+                        && let Some(reach) = person_list::reaching(&id, device, &entry.host)
+                    {
+                        writes.push(reach);
+                    }
+                }
             }
         }
         writes
@@ -799,15 +805,14 @@ impl Personal {
     /// workspace's own state names it (`hints`, by workspace id), as writes of `list`: a device of
     /// the person's that does not hold one yet enters it there.
     fn say_hints(&self, list: &WorkspaceList, hints: &[(String, Vec<u8>)]) -> Vec<ListWrite> {
-        let device = hex::encode(self.device);
+        let device = self.device;
         hints
             .iter()
             .filter_map(|(workspace, hint)| {
                 let listed = list.get(WorkspaceId::parse(workspace)?)?;
                 let hint = hex::encode(hint);
-                (listed.addresses.get(&device) != Some(&hint)).then(|| {
-                    WorkspaceList::REACH_WORKSPACE.with((workspace.clone(), device.clone(), hint))
-                })
+                (listed.addresses.get(&hex::encode(device)) != Some(&hint))
+                    .then(|| person_list::reaching_at(workspace, device, &hint))
             })
             .collect()
     }

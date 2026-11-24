@@ -30,7 +30,7 @@ use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::direct::{Answered, DirectSync, Kept};
 use tilo_peer_state::join::{
     JoinBootstrap, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
-    JoinTransportResponse, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
+    JoinTransportResponse, Role, TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint,
 };
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::WriteRefusal;
@@ -910,10 +910,17 @@ impl Workspaces {
         self.inner.executions.fence(workspace);
         self.inner.member.held.notify_waiters();
         tracing::info!(%name, workspace_id = %workspace, "holding a workspace this device joined as a member");
-        // The person's list names every workspace they take part in, and this device is taken
-        // into this one now: it is listed in the record of their own workspace, written where
-        // that workspace is held. A host that made it for them writes nothing of theirs.
-        if taken_in && let Ok(summary) = self.summary(&name).await {
+        // The person's list names the workspaces that are theirs: the admission says which, as
+        // the part they take in it. A workspace of their own — one a site made for them handed
+        // to them as its owner — is listed in the record of their own workspace, written where
+        // that is governed. One they were let into at someone's site, or that another person's
+        // agent or API put them in, is someone else's and is not listed: their own devices add
+        // to their list only what is theirs. A site that made a workspace writes nothing of
+        // theirs.
+        if taken_in
+            && bootstrap.role == Role::Owner
+            && let Ok(summary) = self.summary(&name).await
+        {
             self.list_for(
                 &device.cert.user_public_key,
                 &summary.workspace,

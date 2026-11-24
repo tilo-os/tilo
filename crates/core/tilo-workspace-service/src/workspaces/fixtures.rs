@@ -446,16 +446,13 @@ pub async fn list_workspace(
     name: &str,
     hint: &tilo_peer_state::join::TransportHint,
 ) {
-    use tilo_user_identity::WorkspaceList;
     let person = writer.serving_certificate().user_public_key;
     let own = tilo_server_protocol::servers::person_workspace_id(&person);
-    let host = hex::encode(hint.host.device_public_key);
-    let address = hex::encode(postcard::to_stdvec(hint).unwrap());
-    for invoke in [
-        WorkspaceList::LIST_WORKSPACE.with((workspace.to_owned(), name.to_owned())),
-        WorkspaceList::HOST_WORKSPACE.with((workspace.to_owned(), host.clone())),
-        WorkspaceList::REACH_WORKSPACE.with((workspace.to_owned(), host.clone(), address.clone())),
-    ] {
+    let kept = super::person_list::KeptAt {
+        device: hint.host.device_public_key,
+        hint: Some(hint.clone()),
+    };
+    for invoke in super::person_list::listing(workspace, name, Some(&kept)) {
         super::person_workspace::apply_on(
             writer,
             &own,

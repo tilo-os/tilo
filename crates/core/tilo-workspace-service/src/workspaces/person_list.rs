@@ -8,9 +8,9 @@
 //! server.
 //!
 //! One writer runs wherever the person's own workspace is governed: the daemon calls these
-//! changes as part of the action that made the workspace, took the device into one or admitted
-//! the person, so the list is complete without a desktop session, and a workspace removed is
-//! remembered as gone so a device that was away lets it go too.
+//! changes as part of the action that made the workspace, took the device into one that is
+//! theirs or admitted the person, so the list is complete without a desktop session, and a
+//! workspace removed is remembered as gone so a device that was away lets it go too.
 
 use tilo_peer_state::join::TransportHint;
 use tilo_resource::Invoke;
@@ -37,16 +37,11 @@ pub fn listing(workspace: &str, name: &str, kept: Option<&KeptAt>) -> Vec<Invoke
     let mut changes =
         vec![WorkspaceList::LIST_WORKSPACE.with((workspace.to_owned(), name.to_owned()))];
     if let Some(kept) = kept {
-        let device = hex::encode(kept.device);
-        changes.push(WorkspaceList::HOST_WORKSPACE.with((workspace.to_owned(), device.clone())));
+        changes.push(hosting(workspace, kept.device));
         if let Some(hint) = &kept.hint
-            && let Ok(bytes) = postcard::to_allocvec(hint)
+            && let Some(reach) = reaching(workspace, kept.device, hint)
         {
-            changes.push(WorkspaceList::REACH_WORKSPACE.with((
-                workspace.to_owned(),
-                device,
-                hex::encode(bytes),
-            )));
+            changes.push(reach);
         }
     }
     changes
@@ -73,11 +68,30 @@ pub fn reaching(
     hint: &TransportHint,
 ) -> Option<Invoke<WorkspaceList>> {
     let bytes = postcard::to_allocvec(hint).ok()?;
-    Some(WorkspaceList::REACH_WORKSPACE.with((
+    Some(reaching_at(workspace, device, &hex::encode(bytes)))
+}
+
+/// [`reaching`] at the address `hint` already encoded: postcard, in hex, as a workspace's host
+/// signed it.
+#[must_use]
+pub fn reaching_at(workspace: &str, device: [u8; 32], hint: &str) -> Invoke<WorkspaceList> {
+    WorkspaceList::REACH_WORKSPACE.with((
         workspace.to_owned(),
         hex::encode(device),
-        hex::encode(bytes),
-    )))
+        hint.to_owned(),
+    ))
+}
+
+/// The change that shows `workspace` on `device`, one of the person's, or keeps it off there.
+#[must_use]
+pub fn showing(workspace: &str, device: [u8; 32], shown: bool) -> Invoke<WorkspaceList> {
+    WorkspaceList::SHOW_WORKSPACE.with((workspace.to_owned(), hex::encode(device), shown))
+}
+
+/// The change that puts `workspace` right after `after` in the person's order.
+#[must_use]
+pub fn placing(workspace: &str, after: &str) -> Invoke<WorkspaceList> {
+    WorkspaceList::PLACE_WORKSPACE.with((workspace.to_owned(), after.to_owned()))
 }
 
 impl Workspaces {

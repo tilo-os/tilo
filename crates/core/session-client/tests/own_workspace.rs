@@ -204,10 +204,10 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
             .await,
         "the site lists nothing in a workspace of someone whose root is elsewhere"
     );
-    // Bob's computer takes in the Lounge his tab entered and the workspace the site just made
-    // him, as a device of his does for each workspace it takes part in. Taking one in lists it
-    // in the record of his own workspace, which his computer holds and writes: it is what he
-    // sees his workspaces in.
+    // Bob's computer takes in the Lounge his tab entered, which is Alice's and only let him in,
+    // and the workspace the site just made him, which is his own. Taking one in lists it in the
+    // record of his own workspace only when it is his: the one the site made for him, written
+    // by the device that governs that record.
     take_in(&bob_workspaces, &workspaces, &lounge.workspace).await;
     take_in(&bob_workspaces, &workspaces, &own.workspace).await;
     let names = listed_names(bob_workspaces).await;
@@ -215,9 +215,11 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         names.contains(&own.name),
         "the workspace the site made is in the person's list: {names:?}"
     );
+    // A workspace someone else's site let him into is not his, and their list never names it:
+    // what is added to it there would be a list of Alice's workspaces.
     assert!(
-        names.contains(&lounge.name),
-        "the Lounge is one of the person's too: {names:?}"
+        !names.contains(&lounge.name),
+        "a workspace he was let into at someone's site is not on his list: {names:?}"
     );
 
     // A page opening that workspace through its own entry, as the workspace switcher does for one
