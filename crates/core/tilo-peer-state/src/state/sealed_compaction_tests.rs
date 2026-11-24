@@ -3127,6 +3127,12 @@ tilo_test_env::scenario! {
         let (mut holder, mut behind, writes, mut author) = three_writes(&f, &keys);
         admit(&mut behind, &f.other, writes[0].clone(), now);
         let fold = mint(&mut holder, &keys, &f.owner, now).unwrap();
+        // Every device with the record's keys checked the checkpoint, which a device that kept
+        // less than it covers then reads without the writes it stands in for.
+        checked_by_every_device(&f, &mut holder, &keys);
+        behind
+            .receive_from(origin(&f.owner), holder.workspace_message(), now)
+            .unwrap();
         // Without the keys it stays refused: nothing tells it from one that left writes out.
         refused_with(&mut behind, &f.owner, fold.clone(), now, "has not admitted");
         assert_eq!(
@@ -3162,6 +3168,12 @@ tilo_test_env::scenario! {
         let (mut holder, mut behind, writes, mut author) = three_writes(&f, &keys);
         admit(&mut behind, &f.other, writes[0].clone(), now);
         let fold = mint(&mut holder, &keys, &f.owner, now).unwrap();
+        // Every device with the record's keys checked the checkpoint, which a device that kept
+        // less than it covers then reads without the writes it stands in for.
+        checked_by_every_device(&f, &mut holder, &keys);
+        behind
+            .receive_from(origin(&f.owner), holder.workspace_message(), now)
+            .unwrap();
         refused_with(&mut behind, &f.owner, fold.clone(), now, "has not admitted");
         let next = write(&holder, &f.other, &keys, &author.edit("value", "4"), now);
         admit(&mut holder, &f.other, next.clone(), now);
@@ -3255,6 +3267,9 @@ tilo_test_env::scenario! {
         // The phone folds both into a compaction the workspace takes, and is removed: the
         // removal's cut keeps that compaction as the phone's history.
         let taken = mint(&mut governor, &keys, &phone, now).unwrap();
+        // Every device with the record's keys checked it, which a device behind it then reads
+        // without the writes it stands in for.
+        checked_by_every_device(&f, &mut governor, &keys);
         let root = SigningKey::from_bytes(&[1; 32]);
         let mut removal = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
