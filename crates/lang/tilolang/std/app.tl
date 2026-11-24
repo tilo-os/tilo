@@ -1847,6 +1847,12 @@ fn tenths(n: Int, unit: Int, said: Text) -> Text {
     if rest == 0 { "{whole} {said}" } else { "{whole}.{rest} {said}" }
 }
 
+/// A size in bytes as a limit set in mebibytes reads it: `25 MiB`, `1.5 MiB`. What a host keeps
+/// is set and kept in mebibytes, so a limit and a refusal past it read in the same unit.
+fn mib(bytes: Int) -> Text {
+    tenths(bytes, 1048576, "MiB")
+}
+
 fn picker_size(bytes: Int) -> Text {
     if bytes < 1000 {
         "{bytes} bytes"

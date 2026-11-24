@@ -195,6 +195,9 @@ pub(crate) struct HostInner {
     carried: Cell<bool>,
     /// The person and policy the runtime's members were last given from ([`Host::follow_members`]).
     pub(crate) members_from: RefCell<Option<(String, tilo_action_policy::WorkspacePolicy)>>,
+    /// Where the workspace's content is read from, when its embedder has one
+    /// ([`Host::follow_content`](crate::content::Host::follow_content)).
+    pub(crate) content_source: RefCell<Option<crate::content::ContentSource>>,
 }
 
 thread_local! {
@@ -896,9 +899,7 @@ impl HostInner {
             }
             // The one line typed names nothing — only space and what the action's other
             // parameters take — so the action does not run and makes no change.
-            None => {
-                request.args.clone()
-            }
+            None => request.args.clone(),
         };
         Ok(DynAction {
             app: request.app.to_owned(),
@@ -1062,6 +1063,7 @@ impl Host {
             migrations_wait: Cell::new(false),
             carried: Cell::new(false),
             members_from: RefCell::new(None),
+            content_source: RefCell::new(None),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         let host = Self { inner };

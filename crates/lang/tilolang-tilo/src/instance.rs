@@ -351,6 +351,8 @@ pub struct Instance {
     store: ResourceStore,
     /// Where the host reads the person's access in the workspace, once its embedder has one.
     access: Rc<RefCell<Option<Rc<crate::authority::AccessSource>>>>,
+    /// Where the host reads the workspace's content from, once its embedder has one.
+    content: Rc<RefCell<Option<crate::content::ContentSource>>>,
     platform: Rc<dyn Platform>,
     names: Rc<dyn NameHost>,
     /// What the workspace's member list calls people, which `names` reads first.
@@ -500,6 +502,7 @@ impl Instance {
             link_home: config.link_home,
             store: config.store,
             access: Rc::default(),
+            content: Rc::default(),
             platform,
             names: Rc::clone(&told) as Rc<dyn NameHost>,
             told,
@@ -585,6 +588,16 @@ impl Instance {
     /// host gave it one).
     pub fn set_access(&self, source: Rc<crate::authority::AccessSource>) {
         *self.access.borrow_mut() = Some(source);
+    }
+
+    /// Read the workspace's content from `source`: its owners' limits and the content a limit
+    /// refused, which the host serves as `workspace.content` each time [`Host::follow_content`]
+    /// runs. May come after the host started.
+    pub fn set_content_source(&self, source: crate::content::ContentSource) {
+        if let Some(host) = self.host.borrow().as_ref() {
+            host.set_content_source(Rc::clone(&source));
+        }
+        *self.content.borrow_mut() = Some(source);
     }
 
     /// Send the outside effects the instance settles to `sink`. Before the host starts.
@@ -1100,6 +1113,9 @@ impl Instance {
                 return None;
             }
         };
+        if let Some(source) = self.content.borrow().as_ref() {
+            host.set_content_source(Rc::clone(source));
+        }
         host.runtime()
             .set_name_host(SharedNames(Rc::clone(&self.names)));
         let runtime = host.runtime();
@@ -2469,8 +2485,7 @@ impl Instance {
             (Some("primary"), _) => {
                 // What a primary action made opens beside the list, as the person asked for it.
                 if let Some(made) = made_resource(&result) {
-                    self.pressed_opens
-                        .push((self.last_fire, made.id_string()));
+                    self.pressed_opens.push((self.last_fire, made.id_string()));
                 }
             }
             _ => {}
@@ -2482,8 +2497,7 @@ impl Instance {
         if role != Some("primary")
             && let Some(made) = made_resource(&result)
         {
-            self.pressed_shows
-                .push((self.last_fire, made.id_string()));
+            self.pressed_shows.push((self.last_fire, made.id_string()));
         }
     }
 
@@ -2611,10 +2625,20 @@ impl Instance {
         // Who is at a resource shows wherever a view reads its lenses.
         let lenses = std::mem::take(&mut self.lenses_changed);
         let members = self.follow_members();
+        // What the workspace's owners let members post there, and what a limit refused: the
+        // views that read `workspace.content` show a refusal as it stands and as it goes.
+        let content = self.host().is_some_and(|host| host.follow_content());
         // The time a view read moved on: the frame its embedder woke for it.
         let timed = self.wakes_in().is_some_and(|wait| wait.is_zero());
-        let changed =
-            received || opened || pulled || settled || lenses || person || members || timed;
+        let changed = received
+            || opened
+            || pulled
+            || settled
+            || lenses
+            || person
+            || members
+            || content
+            || timed;
         // A view runs where something reached it: what a change told its store, a state it
         // read, the time it waits for ([`crate::runtime::ViewInstance::woken`]).
         let changed = {

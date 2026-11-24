@@ -166,8 +166,15 @@ const ACTIVITY_ROOTS: &[(&str, &str, &str)] = &[("history", "Activity", "workspa
 /// Where the workspace's members are read: everyone in it now, which every host serves its
 /// runtime from the member list it decides by ([`crate::host::Host::follow_members`]).
 pub const WORKSPACE_MEMBERS: &str = "workspace/members";
+/// Where the workspace's content is read: its owners' limits on what members post there, and
+/// the content a limit refused, which every host serves its runtime from what it decides by
+/// ([`crate::content::Host::give_content`]).
+pub const WORKSPACE_CONTENT: &str = "workspace/content";
 /// The workspace's root a view names, `workspace.members` (`use tilo.workspace as workspace`).
-const WORKSPACE_ROOTS: &[(&str, &str, &str)] = &[("members", "Members", WORKSPACE_MEMBERS)];
+const WORKSPACE_ROOTS: &[(&str, &str, &str)] = &[
+    ("members", "Members", WORKSPACE_MEMBERS),
+    ("content", "Content", WORKSPACE_CONTENT),
+];
 
 /// The resource the workspace's members are read as, of the type its package reads it as.
 #[must_use]
@@ -176,6 +183,16 @@ pub fn workspace_members() -> crate::runtime::ResourceRef {
         doc: WORKSPACE_MEMBERS.to_owned(),
         item: None,
         ty: format!("{WORKSPACE_APP}#Members"),
+    }
+}
+
+/// The resource the workspace's content is read as, of the type its package reads it as.
+#[must_use]
+pub fn workspace_content() -> crate::runtime::ResourceRef {
+    crate::runtime::ResourceRef {
+        doc: WORKSPACE_CONTENT.to_owned(),
+        item: None,
+        ty: format!("{WORKSPACE_APP}#Content"),
     }
 }
 
