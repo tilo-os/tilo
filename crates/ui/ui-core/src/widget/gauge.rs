@@ -358,7 +358,11 @@ impl RingReading {
 
 /// A retained progress ring.
 pub struct ProgressRing {
+    /// Where the ring is going: what the reading says now.
     frac: f64,
+    /// What the ring is drawn at: it follows `frac` on the motion a reading settles on, so a value
+    /// that steps (a speed test's dial, a scan's progress) eases there instead of jumping.
+    drawn: crate::motion::MotionValue<f64>,
     value: String,
     caption: String,
     size: ProgressRingSize,
@@ -377,6 +381,14 @@ impl ProgressRing {
                 frac.clamp(0.0, 1.0)
             } else {
                 0.0
+            },
+            drawn: {
+                let at = if frac.is_finite() {
+                    frac.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                crate::motion::MotionValue::new(at)
             },
             value: String::new(),
             caption: String::new(),
@@ -458,11 +470,12 @@ impl ProgressRing {
 
     /// Update the fill and readout (a ticking countdown).
     pub fn set(&mut self, frac: f64, value: impl Into<String>) {
-        self.frac = if frac.is_finite() {
+        let at = if frac.is_finite() {
             frac.clamp(0.0, 1.0)
         } else {
             0.0
         };
+        self.frac = at;
         let value = value.into();
         if value.is_empty() != self.value.is_empty() {
             self.layout_dirty = true;
@@ -479,7 +492,8 @@ impl ProgressRing {
     }
 
     fn face(&self) -> ProgressRingFace<'_> {
-        let mut face = ProgressRingFace::new(self.frac).size(self.size);
+        let mut face =
+            ProgressRingFace::new(self.drawn.get(crate::motion::frame_now())).size(self.size);
         face.fill = self.fill;
         if !self.value.is_empty() {
             face = face.value(&self.value);
@@ -533,6 +547,19 @@ impl Widget for ProgressRing {
         if env.should_cull(self.rect) {
             return;
         }
+        // A value that stepped eases to where it is going, so a dial that lands a sample a second
+        // moves between them as a reading does rather than jumping.
+        if !self.drawn.target().total_cmp(&self.frac).is_eq() {
+            self.drawn.set(
+                self.frac,
+                crate::motion::Follow::READING.timing(
+                    crate::motion::Direction::of(self.frac >= self.drawn.target()),
+                    theme.motion(),
+                    crate::tokens::MotionSource::Pointer,
+                ),
+                crate::motion::frame_now(),
+            );
+        }
         self.face().paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
@@ -540,6 +567,12 @@ impl Widget for ProgressRing {
     }
 
     crate::redraw_flag!();
+
+    fn needs_animation_frame(&self) -> bool {
+        // The ring keeps asking for frames while its fill is on its way to the value it shows.
+        self.drawn.is_moving(crate::motion::frame_now())
+            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
 
     fn name(&self) -> &'static str {
         "ProgressRing"
@@ -1024,6 +1057,33 @@ mod tests {
             assert_eq!(node.role, crate::a11y::Role::ProgressBar);
             assert_eq!(node.name.as_deref(), Some("CPU"));
             assert_eq!(node.value.as_deref(), Some("42%"));
+        }
+
+        phase a_stepped_value_eases_to_the_next;
+        {
+            let mut ring = ProgressRing::new(0.0);
+            assert_eq!(ring.face().frac, 0.0, "it starts where it is set");
+            ring.set(0.8, "8.0");
+            assert_eq!(ring.frac, 0.8, "the reading is what it is going to");
+            // Drawing starts the motion, and the frames it asks for carry it there.
+            let frame = crate::motion::pin_frame();
+            let start = crate::motion::frame_now();
+            let drawn = {
+                ring.drawn.set(
+                    ring.frac,
+                    crate::motion::Follow::READING.timing(
+                        crate::motion::Direction::Enter,
+                        Theme::dark().motion(),
+                        crate::tokens::MotionSource::Pointer,
+                    ),
+                    start,
+                );
+                ring.face().frac
+            };
+            assert!(drawn < 0.8, "it has not jumped to the value: {drawn}");
+            drop(frame);
+            let _later = crate::motion::pin_frame_at(start + crate::time::Duration::from_millis(40));
+            assert!(ring.face().frac > drawn, "it eases there");
         }
 
         phase span_paints_track_and_fill;

@@ -949,6 +949,16 @@ impl Transient {
 pub struct Follow;
 
 impl Follow {
+    /// A reading settling on the value it is given: a gauge's fill, a speed test's dial. `fast`,
+    /// so a value that steps a few times a second glides between the samples rather than lagging
+    /// behind them.
+    pub const READING: MotionSpec = MotionSpec {
+        enter: Pace::Fast,
+        exit: Pace::Fast,
+        reduced: Reduced::Lands,
+        shortcut: Shortcut::Lands,
+    };
+
     /// An agent's pointer travelling to the control it is about to act on, so the person sees where it
     /// acts: `slow`, longer across the screen.
     pub const APPROACH: MotionSpec = MotionSpec {
