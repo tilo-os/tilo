@@ -778,12 +778,15 @@ readers = ["crates/core/tilo-app-id/src/chat.rs"]
 
 [[cargo]]
 package = "tilo-runtime"
-# The host tests install the tilolang apps from their sources, and the customer
+# The host tests install the tilolang apps and the Rust apps from their sources, and the customer
 # workspace test holds the tilo.sh book to the pages it lists.
-inputs = ["apps/tl/", "docs/tilo-sh/pages.toml"]
+inputs = ["apps/", "docs/tilo-sh/pages.toml"]
 readers = [
   "crates/core/tilo-runtime/tests/customer_workspaces.rs",
   "crates/core/tilo-runtime/tests/host/apps.rs",
+  "crates/core/tilo-runtime/tests/host/app_actions.rs",
+  "crates/core/tilo-runtime/tests/host/messages_for_agents.rs",
+  "crates/core/tilo-runtime/tests/host/scratchpad_no_window.rs",
 ]
 
 [[cargo]]

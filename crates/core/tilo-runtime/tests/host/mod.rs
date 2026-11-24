@@ -53,6 +53,10 @@
 
 pub mod apps;
 
+mod app_actions;
+mod messages_for_agents;
+mod scratchpad_no_window;
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -62,9 +66,12 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION, ActionCallError, ActionProvider, Caller,
+    CataloguePage, CatalogueQuery, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReadAnswer,
+    ReceiptStatus, RemoteActionTarget, ResourceReadRequest, answered, application_action_target,
+    workspace_provider,
 };
-use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ActionService, NoActions, RemoteDevice};
 use tilo_runtime::RuntimeServices as _;
 use tilo_runtime::device::services::Daemon;
@@ -756,6 +763,165 @@ pub fn certified(
     };
     tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
     (key, cert)
+}
+
+/// The target of `app`'s `action` on its own record in the daemon's workspace: the address an
+/// agent's path, a view's button and `tilo do` all reach, whatever language the app is written in.
+#[must_use]
+pub fn app_action(host: &Host, app: &str, resource: &str, action: &str) -> RemoteActionTarget {
+    application_action_target(host.workspace(), app, resource, action)
+}
+
+/// The daemon's workspace starts `app` with no window, as the workspace's own `start` does: the
+/// answer names the instance that runs, and the app opens its own record there.
+///
+/// # Panics
+///
+/// When the dispatch does not answer at all.
+pub async fn start_app(host: &Host, app: &str) -> Result<Value, ActionCallError> {
+    let target = RemoteActionTarget {
+        provider: workspace_provider(host.workspace()),
+        address: ActionAddress::new(
+            format!("{APPLICATION_RESOURCE_PREFIX}{app}"),
+            APPLICATION_START_ACTION,
+        ),
+    };
+    output(host, target, Value::Null)
+        .await
+        .map(|output| output.value.unwrap_or_default())
+}
+
+/// What the person's own dispatch answers a call of `target` with `arguments` (an object, or
+/// `null`), followed to its end: its whole output, or why it did not run.
+///
+/// # Panics
+///
+/// When the dispatch does not answer at all.
+pub async fn output(
+    host: &Host,
+    target: RemoteActionTarget,
+    arguments: Value,
+) -> Result<ActionOutput, ActionCallError> {
+    let caller = host.caller();
+    let provider = host.dispatch();
+    let request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target,
+        argument: match &arguments {
+            Value::Object(map) => InvokeArgument::Json(map.clone()),
+            _ => InvokeArgument::None,
+        },
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let invocation = request.invocation;
+    let receipt = provider
+        .invoke(&caller, request)
+        .await
+        .expect("the dispatch answers")?;
+    let status = receipt.status;
+    let deadline = tilo_test_env::hang_deadline();
+    while matches!(status, ReceiptStatus::Accepted) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the call never settled"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let Some(state) = provider.observe(&caller, &invocation) else {
+            continue;
+        };
+        match state.update {
+            InvocationUpdate::Succeeded { output, .. } => return Ok(output),
+            InvocationUpdate::Failed { error, .. } => {
+                return Err(ActionCallError::Refused {
+                    reason: error.message,
+                });
+            }
+            InvocationUpdate::Cancelled { .. } => {
+                return Err(ActionCallError::Refused {
+                    reason: "the call was cancelled".into(),
+                });
+            }
+            _ => {}
+        }
+    }
+    match status {
+        ReceiptStatus::Completed { output } => Ok(output),
+        ReceiptStatus::Failed { error } => Err(ActionCallError::Refused {
+            reason: error.message,
+        }),
+        ReceiptStatus::Rejected { error } => Err(error),
+        ReceiptStatus::Cancelled { .. } => Err(ActionCallError::Refused {
+            reason: "the call was cancelled".into(),
+        }),
+        ReceiptStatus::Accepted => Err(ActionCallError::Unavailable {
+            reason: "the call never settled".into(),
+        }),
+    }
+}
+
+/// The record `app` keeps at `record` in the daemon's workspace, read through the device's one
+/// record reader as `tilo_read record:<app>:<record>` reads it: the record's entry with its
+/// content under `value`, or `absent` when nothing was ever written to it.
+///
+/// # Panics
+///
+/// When the dispatch reads no records.
+pub async fn record(host: &Host, app: &str, record: &str) -> Result<Value, ActionCallError> {
+    let reads = host
+        .dispatch()
+        .resource_reads()
+        .ok_or_else(|| ActionCallError::Unavailable {
+            reason: "the dispatch reads no records".into(),
+        })?;
+    let read = ResourceReadRequest {
+        workspace: host.workspace().to_owned(),
+        app: app.to_owned(),
+        record: record.to_owned(),
+        joined: false,
+        after: None,
+        wait_ms: None,
+        answer: ReadAnswer::Reading,
+    };
+    let answer = answered(reads, &host.caller(), read).await?;
+    Ok(answer["records"].get(0).cloned().unwrap_or(Value::Null))
+}
+
+/// The catalogue page the person's dispatch answers for `app`: the actions its running process
+/// publishes now, and those its signed manifest offers while it is closed.
+///
+/// # Panics
+///
+/// When the dispatch does not answer at all.
+pub async fn listed(host: &Host, app: &str) -> Result<CataloguePage, ActionCallError> {
+    let query = CatalogueQuery {
+        app_id: Some(app.to_owned()),
+        max_results: MAX_CATALOGUE_PAGE,
+        ..CatalogueQuery::default()
+    };
+    host.dispatch()
+        .query(&host.caller(), query)
+        .await
+        .expect("the dispatch answers")
+}
+
+/// The record `app`'s running process opened in the daemon's workspace, as its live connection
+/// names it: `Some("")` for the app's package-primary record, `None` when the app runs no record.
+#[must_use]
+pub fn running_record(page: &CataloguePage, workspace: &str, app: &str) -> Option<String> {
+    page.providers
+        .iter()
+        .find(|provider| {
+            provider.app_id == app
+                && provider.workspace == workspace
+                && provider.provider.parse::<u64>().is_ok()
+        })
+        .map(|provider| provider.document_id.clone())
 }
 
 /// A call of the action at `address` of `provider` with `arguments` (an object, or `null`).

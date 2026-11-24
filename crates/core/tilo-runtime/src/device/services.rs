@@ -375,6 +375,13 @@ fn passing_through(dir: &std::path::Path, what: &str) -> std::path::PathBuf {
 }
 
 impl Daemon {
+    /// The apps installed for this profile: the packages this device starts, and the processes it
+    /// runs each in.
+    #[must_use]
+    pub fn apps(&self) -> &apps::Apps {
+        &self.apps
+    }
+
     /// A new shell link: a connection to this daemon's dispatch that it opens itself and admits as
     /// the shell of the person this device acts for, by a one-use secret no other process ever
     /// sees. Whoever holds it is the shell; hand it only to the shell this daemon starts.

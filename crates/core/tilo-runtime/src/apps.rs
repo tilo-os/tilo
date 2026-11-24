@@ -943,6 +943,16 @@ impl LauncherServices for Apps {
     }
 }
 
+impl Apps {
+    /// How many processes this device runs `app` in `workspace` with no window on `record` now:
+    /// one per call that started one, so a second call answered by the same process leaves the
+    /// count where it was. `record` names what the launch opened, when it named one.
+    #[must_use]
+    pub fn no_window_processes(&self, app: &str, workspace: &str, record: Option<&str>) -> usize {
+        self.launched.no_window_processes(app, workspace, record)
+    }
+}
+
 /// The profile's service sockets, as an app is connected to them.
 #[cfg_attr(
     not(any(target_os = "linux", target_os = "macos")),
@@ -1108,6 +1118,23 @@ impl Launched {
                 && record.record.as_deref() == on
                 && process_start_time(*pid) == Some(record.start_time)
         })
+    }
+
+    /// How many processes this device started with no window for `app` in `workspace` on `record`
+    /// run now: one per launch, so a second call that finds the first still answers it and starts
+    /// nothing.
+    fn no_window_processes(&self, app: &str, workspace: &str, on: Option<&str>) -> usize {
+        let launches = self.0.lock_recover();
+        launches
+            .iter()
+            .filter(|(pid, record)| {
+                record.no_window
+                    && record.app == app
+                    && record.workspace == workspace
+                    && record.record.as_deref() == on
+                    && process_start_time(**pid) == Some(record.start_time)
+            })
+            .count()
     }
 
     /// The ticket of the launch recorded for `pid`, whatever it attests.
