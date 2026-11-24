@@ -309,23 +309,28 @@ export function voicePairs(state) {
 }
 
 /// Who Discord says is in `channel` of `guild`, the bridge's own account left out: their account
-/// id, the name Discord shows, their avatar hash, and whether their microphone or ear is off.
-/// What a call's bridged participants are made of.
-export function callPeople(states, { guild, channel, self }) {
+/// id, the name Discord shows, where their avatar is served and the hash of it in the
+/// workspace's content store when the bridge kept it, and whether their microphone or ear is
+/// off. What a call's bridged participants are made of.
+export function callPeople(states, { guild, channel, self, avatars }) {
   const people = [];
   for (const state of states ?? []) {
     if (String(state.guild) !== String(guild)) continue;
     if (String(state.channel) !== String(channel)) continue;
     if (!state.user || state.user === self) continue;
-    people.push({
+    const avatar_url = state.avatar
+      ? `https://cdn.discordapp.com/avatars/${state.user}/${state.avatar}.png?size=128`
+      : "";
+    const person = {
       account: String(state.user),
       name: state.name || "Someone",
-      avatar_url: state.avatar
-        ? `https://cdn.discordapp.com/avatars/${state.user}/${state.avatar}.png?size=128`
-        : "",
+      avatar_url,
       muted: Boolean(state.mute) || Boolean(state.self_mute),
       deafened: Boolean(state.deaf) || Boolean(state.self_deaf),
-    });
+    };
+    const hash = avatar_url && avatars?.get(avatar_url);
+    if (hash) person.avatar = hash;
+    people.push(person);
   }
   people.sort((a, b) => (a.account < b.account ? -1 : a.account > b.account ? 1 : 0));
   return people;

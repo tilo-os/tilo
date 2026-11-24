@@ -43,6 +43,14 @@ export class Calls {
     return this.ws.read(path);
   }
 
+  /// Put `bytes` into the workspace's content store, answering the reference the host named
+  /// (`tilo.content:<hash>`), or null for a client that keeps no content.
+  async content(bytes) {
+    const files = this.ws?.files;
+    if (!files?.upload) return null;
+    return files.upload(bytes);
+  }
+
   /// What the vault holds for `item`, released to this process for the gateway's login.
   async release(item) {
     return this.ws.vault.release(item);

@@ -12,6 +12,7 @@
 // either, and a lane it is not granted is refused there.
 
 import { SELF, callPeople, voicePairs } from "./plan.js";
+import { keepAvatar } from "./avatars.js";
 
 /// How often the workspace's frames are taken: one Opus frame.
 const PUMP_MS = 20;
@@ -23,18 +24,31 @@ export const ACCOUNTS = `${SELF}/accounts`;
 ///
 /// `calls`: the workspace client (its `read` and the lane below). `lane`: the workspace's call
 /// lane for this app's connection. `gateway`: the Discord gateway this process holds.
-export function startCalls({ calls, lane, gateway, makeVoice, log = () => {}, onState = () => {} }) {
-  return new Carried({ calls, lane, gateway, makeVoice, log, onState });
+export function startCalls({
+  calls,
+  lane,
+  gateway,
+  makeVoice,
+  fetch = globalThis.fetch,
+  content = (bytes) => calls.content?.(bytes) ?? null,
+  log = () => {},
+  onState = () => {},
+}) {
+  return new Carried({ calls, lane, gateway, makeVoice, fetch, content, log, onState });
 }
 
 export class Carried {
-  constructor({ calls, lane, gateway, makeVoice, log, onState }) {
+  constructor({ calls, lane, gateway, makeVoice, fetch, content, log, onState }) {
     this.calls = calls;
     this.lane = lane;
     this.gateway = gateway;
     this.makeVoice = makeVoice;
+    this.fetch = fetch;
+    this.content = content;
     this.log = log;
     this.onState = onState;
+    /// Where each avatar address was kept in the workspace's content, by the address.
+    this.avatars = new Map();
     this.carried = new Map();
     this.states = new Map();
     this.pump = null;
@@ -182,7 +196,16 @@ export class Carried {
       guild,
       channel,
       self: this.gateway.user?.id ?? "",
+      avatars: this.avatars,
     });
+    await Promise.all(
+      people.map(async (person) => {
+        if (!person.avatar && person.avatar_url) {
+          const hash = await this.#avatar(person.avatar_url);
+          if (hash) person.avatar = hash;
+        }
+      }),
+    );
     const link = carried.opened
       ? { link: "joined", call: channel }
       : carried.problem
@@ -193,6 +216,16 @@ export class Carried {
     } catch (error) {
       this.log(`the call's people did not reach the workspace: ${error?.message ?? error}`);
     }
+  }
+
+  /// The workspace's content hash of the picture at `url`, fetched once per address.
+  async #avatar(url) {
+    if (this.avatars.has(url)) return this.avatars.get(url);
+    this.avatars.set(url, "");
+    const hash = await keepAvatar(url, { fetch: this.fetch, content: this.content });
+    if (!hash) this.log(`the avatar at ${url} was not kept`);
+    this.avatars.set(url, hash ?? "");
+    return hash ?? "";
   }
 
   async #reportProblem(problem) {
