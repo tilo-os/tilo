@@ -63,6 +63,11 @@ view writer(d: Document) {
                                     placeholder: "Start writing",
                                     reveal: reveal,
                                     format: format_ask,
+                                    insert: if d.chosen == "" {
+                                        .none
+                                    } else {
+                                        .some("{d.chosen}:{d.chosen_count}")
+                                    },
                                     slash: ["image"],
                                 ) {
                                     on headings(words, levels): set(heading_lines, words).then(
@@ -269,8 +274,44 @@ template view ruler_band(d: Document, format_ask: State<Option<Text>>, asked: St
                     on press: set(asked, asked + 1).then(set(format_ask, "numbers:{asked + 1}"))
                 }
             }
+            row(gap: .tight) {
+                text("Align", role: .caption, secondary: true)
+                ui.Chip("Left") {
+                    on press: set(asked, asked + 1).then(set(format_ask, "align:left:{asked + 1}"))
+                }
+                ui.Chip("Centre") {
+                    on press: set(asked, asked + 1).then(set(format_ask, "align:center:{asked + 1}"))
+                }
+                ui.Chip("Right") {
+                    on press: set(asked, asked + 1).then(set(format_ask, "align:right:{asked + 1}"))
+                }
+                ui.Chip("Justified") {
+                    on press: set(asked, asked + 1).then(set(format_ask, "align:justify:{asked + 1}"))
+                }
+            }
+            row(gap: .tight) {
+                text("Indent", role: .caption, secondary: true)
+                for step in steps() {
+                    ui.Chip("{step}") {
+                        on press: set(asked, asked + 1).then(
+                            set(format_ask, "indent:{step}:{asked + 1}"),
+                        )
+                    }
+                }
+            }
         }
     }
+}
+
+/// The steps a paragraph's indent and spacing are set in, in points: none, then the widths a
+/// writer moves text by.
+fn steps() -> List<Int> {
+    [0, 6, 12, 18, 24]
+}
+
+/// The styles every document has, as the paragraph panel names them.
+fn style_names() -> List<Text> {
+    ["Body", "Heading 1", "Heading 2", "Heading 3"]
 }
 
 /// The panel beside the page: the page's setup, the words' own look, or the review of what
@@ -291,7 +332,7 @@ template view side_panel(
                 }
             }
             if panel == "styles" {
-                page_setup(d)
+                page_setup(d, format_ask, asked)
             } else if panel == "format" {
                 text_format(format_ask, asked)
             } else {
@@ -389,7 +430,7 @@ fn color_at(colors: List<Text>, index: Int) -> Text {
 
 /// How the page is set up: its paper, its margins, the paragraph styles a person may give a
 /// block, and what the document was started as.
-view page_setup(d: Document) {
+view page_setup(d: Document, format_ask: State<Option<Text>>, asked: State<Int>) {
     stack(gap: .group) {
         section("Paper") {
             row(gap: .tight, wrap: true) {
@@ -410,6 +451,37 @@ view page_setup(d: Document) {
                 ui.NumberInput(bind: d.margin_right, label: "Right", min: 0.0, max: 288.0)
                 ui.NumberInput(bind: d.margin_bottom, label: "Bottom", min: 0.0, max: 288.0)
                 ui.NumberInput(bind: d.margin_left, label: "Left", min: 0.0, max: 288.0)
+            }
+        }
+        section("Paragraph") {
+            row(gap: .tight, wrap: true) {
+                for name in style_names() {
+                    ui.Chip("{name}") {
+                        on press: set(asked, asked + 1).then(
+                            set(format_ask, "style:{name}:{asked + 1}"),
+                        )
+                    }
+                }
+            }
+            row(gap: .tight, wrap: true) {
+                text("Before", role: .caption, secondary: true)
+                for step in steps() {
+                    ui.Chip("{step}") {
+                        on press: set(asked, asked + 1).then(
+                            set(format_ask, "before:{step}:{asked + 1}"),
+                        )
+                    }
+                }
+            }
+            row(gap: .tight, wrap: true) {
+                text("After", role: .caption, secondary: true)
+                for step in steps() {
+                    ui.Chip("{step}") {
+                        on press: set(asked, asked + 1).then(
+                            set(format_ask, "after:{step}:{asked + 1}"),
+                        )
+                    }
+                }
             }
         }
         section("Set up") {

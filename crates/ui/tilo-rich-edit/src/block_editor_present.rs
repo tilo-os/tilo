@@ -9,13 +9,45 @@ use ui::widget::marks::MarkSpan;
 
 use super::{Block, BlockEditor, BlockKind, DocumentPosition, DocumentSelection};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a paragraph says of its own look, beside its kind: the values a word processor's
+/// paragraph panel sets, empty where the document's own rhythm and the editor's defaults
+/// hold. A kind says what a paragraph is (a heading, a list item, a quote); a named style
+/// says how it is set, and this carries the name through as the record keeps it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ParagraphStyle {
+    /// Where its lines stand: the editor's own alignment when unset.
+    pub align: Option<ui::richtext::TextAlign>,
+    /// The space above it, in points, where the document sets one.
+    pub space_before: Option<f32>,
+    /// The space below it, in points.
+    pub space_after: Option<f32>,
+    /// How far its text starts from the margin, in points.
+    pub indent: Option<f32>,
+    /// How far its first line starts beyond that indent, in points; negative hangs it.
+    pub first_line_indent: Option<f32>,
+    /// The named style it is set in (`Body`, `Heading 1`, a style the document defines).
+    pub style: Option<String>,
+}
+
+impl ParagraphStyle {
+    /// Whether it sets nothing, so a paragraph carrying it looks exactly as its kind says.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct BlockContent {
     pub id: String,
     pub kind: BlockKind,
     pub text: String,
     /// Inline marks over byte ranges of `text`.
     pub marks: Vec<MarkSpan>,
+    /// The paragraph's own look: how its lines align, the space it keeps from the
+    /// paragraphs around it, how far its first line starts from the margin, and the named
+    /// style it is set in.
+    pub paragraph: ParagraphStyle,
     pub nesting: u8,
     pub code_group: Option<String>,
     /// Who wrote which run of `text`: byte ranges and the writer's id, shown
@@ -31,6 +63,7 @@ impl BlockContent {
             kind: BlockKind::Paragraph,
             text: text.into(),
             marks: Vec::new(),
+            paragraph: ParagraphStyle::default(),
             nesting: 0,
             code_group: None,
             authors: Vec::new(),
@@ -55,6 +88,7 @@ fn shows(block: &Block, content: &BlockContent) -> bool {
         && block.text() == content.text
         && block.line.marks() == content.marks.as_slice()
         && block.nesting == content.nesting
+        && block.style == content.paragraph
         && block.code_group == content.code_group
         && shows_authors(content, &block.line)
 }
@@ -149,6 +183,7 @@ impl Block {
             code_group: content.code_group,
             nesting: content.nesting,
             line,
+            style: content.paragraph,
             soft_break: false,
         }
     }
@@ -173,6 +208,7 @@ impl Block {
             kind: self.kind.clone(),
             text: self.text().to_owned(),
             marks: self.line.marks().to_vec(),
+            paragraph: self.style.clone(),
             nesting: self.nesting,
             code_group: self.code_group.clone(),
             authors: self
@@ -209,6 +245,11 @@ impl Block {
         if self.nesting != content.nesting || self.code_group != content.code_group {
             self.nesting = content.nesting;
             self.code_group.clone_from(&content.code_group);
+            changed = true;
+            reshaped = true;
+        }
+        if self.style != content.paragraph {
+            self.style = content.paragraph.clone();
             changed = true;
             reshaped = true;
         }

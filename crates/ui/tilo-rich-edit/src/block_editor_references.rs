@@ -81,12 +81,22 @@ pub struct BlockEditorProps {
     #[component(event(value = Vec<String>))]
     pub image: Event,
     /// The formatting a view asks for, as a toolbar beside the document asks it: `bold`,
-    /// `italic`, `underline`, `strike`, `bullets`, `numbers`, `heading:<level>` or
-    /// `link:<address>`, then a count the view changes each time it asks (`bold:1`, `bold:2`),
-    /// so the same command asked twice is two commands. Formatting a message is a command of the
-    /// shared editor's, never a control of the app's own.
+    /// `italic`, `underline`, `strike`, `super`, `sub`, `size:<points>`,
+    /// `font:<sans|serif|mono>`, `color:#rrggbb`, `highlight:#rrggbb`, `align:<left|center|right|justify>`,
+    /// `before:<points>`, `after:<points>`, `indent:<points>`, `hanging:<points>`,
+    /// `style:<name>`, `bullets`, `numbers`, `heading:<level>` or `link:<address>`, then a count
+    /// the view changes each time it asks (`bold:1`, `bold:2`), so the same command asked twice
+    /// is two commands. Formatting a message is a command of the shared editor's, never a
+    /// control of the app's own.
     #[component(state)]
     pub format: Option<String>,
+    /// A picture to write in at the caret, as a view asks after the person chose a file: the
+    /// address of its content, then a count the view changes every time it asks
+    /// (`{address}:1`), so the same picture chosen twice is two pictures. A view asks this from
+    /// its own Insert image, so the picture lands where the person is writing rather than at the
+    /// end of the document.
+    #[component(state)]
+    pub insert: Option<String>,
     /// The heading the document shows, asked by the view that places an outline beside it: the
     /// place of the heading among the document's headings (`headings` reports them in that
     /// order), then a count the view changes every time it asks (`3:1`), so asking for a heading
@@ -378,6 +388,7 @@ impl Described for BlockEditor {
             // A view opened with a formatting ask is just opened: the ask is answered on the
             // change that follows, never on the editor a note is first shown in.
             format: _,
+            insert: _,
             reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
@@ -442,6 +453,7 @@ impl Described for BlockEditor {
             headings,
             image,
             format,
+            insert,
             reveal,
         } = props;
         let editing = BodyBinding::bound(&rich, &markdown);
@@ -476,8 +488,9 @@ impl Described for BlockEditor {
         self.reveal_asked(reveal);
         // A formatting ask is one command: the same ask twice is the command it already ran.
         let formatted = self.format_asked(format);
+        let inserted = self.insert_asked(insert);
         self.publish_headings();
-        rebound || formatted
+        rebound || formatted || inserted
     }
 }
 

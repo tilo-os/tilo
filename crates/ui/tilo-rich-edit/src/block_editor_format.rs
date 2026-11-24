@@ -4,6 +4,44 @@
 use super::{BlockEditor, BlockKind, DocumentPosition, EditScope};
 use ui::widget::marks::{Mark, MarkSpan};
 
+/// One change a view asks of a paragraph's own look, as a toolbar or a paragraph panel offers
+/// it: where its lines stand, the space it keeps above and below, its indent, and the named
+/// style it is set in.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ParagraphChange {
+    Align(ui::richtext::TextAlign),
+    SpaceBefore(Option<f32>),
+    SpaceAfter(Option<f32>),
+    Indent(Option<f32>),
+    FirstLineIndent(Option<f32>),
+    Style(Option<String>),
+}
+
+impl ParagraphChange {
+    fn apply(&self, style: &mut crate::ParagraphStyle) {
+        match self {
+            Self::Align(align) => style.align = Some(*align),
+            Self::SpaceBefore(points) => style.space_before = *points,
+            Self::SpaceAfter(points) => style.space_after = *points,
+            Self::Indent(points) => style.indent = *points,
+            Self::FirstLineIndent(points) => style.first_line_indent = *points,
+            Self::Style(name) => style.style.clone_from(name),
+        }
+    }
+}
+
+/// The points a command names, or none for a number it does not hold; `0` clears.
+fn points(argument: &str) -> Option<Option<f32>> {
+    argument
+        .trim()
+        .trim_end_matches("pt")
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|points| (0.0..=288.0).contains(points))
+        .map(|points| (points > 0.0).then_some(points))
+}
+
 impl BlockEditor {
     pub fn toggle_mark(&mut self, mark: Mark) -> bool {
         self.note_edit_anywhere();
@@ -148,6 +186,63 @@ impl BlockEditor {
         self.edit_scope.widen(EditScope::Blocks(touched));
         self.dirty = true;
         true
+    }
+
+    /// What of a paragraph's own look a command sets.
+    pub fn set_paragraph(&mut self, change: ParagraphChange) -> bool {
+        self.note_edit_anywhere();
+        if self.read_only {
+            return false;
+        }
+        let Some(range) = self.selected_block_range() else {
+            return false;
+        };
+        let targets: Vec<usize> = range
+            .clone()
+            .filter(|index| {
+                self.blocks.get(*index).is_some_and(|block| {
+                    block.kind.is_editable()
+                        && !matches!(
+                            block.kind,
+                            BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                        )
+                })
+            })
+            .collect();
+        if targets.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        let mut relayout = false;
+        for index in targets {
+            let Some(block) = self.blocks.get_mut(index) else {
+                continue;
+            };
+            let before = block.style.clone();
+            change.apply(&mut block.style);
+            if block.style == before {
+                continue;
+            }
+            changed = true;
+            match &change {
+                ParagraphChange::Align(align) => {
+                    block.line.set_align(*align);
+                }
+                ParagraphChange::SpaceBefore(_)
+                | ParagraphChange::SpaceAfter(_)
+                | ParagraphChange::Indent(_)
+                | ParagraphChange::FirstLineIndent(_) => relayout = true,
+                ParagraphChange::Style(_) => relayout = true,
+            }
+        }
+        if changed {
+            self.edit_scope.widen(EditScope::Blocks(range));
+            self.dirty = true;
+        }
+        if relayout {
+            self.restack();
+        }
+        changed
     }
 
     /// Set the run's own look — colour, size, face or baseline shift — over the selection, or
@@ -347,6 +442,35 @@ impl BlockEditor {
                 .is_some_and(|rgb| self.set_look_mark(Mark::Color(rgb))),
             "highlight" => crate::rich_doc::rgb_of(argument)
                 .is_some_and(|rgb| self.set_look_mark(Mark::Highlight(rgb))),
+            "align" => crate::rich_doc::align_of(argument)
+                .is_some_and(|align| self.set_paragraph(ParagraphChange::Align(align))),
+            "before" => points(argument)
+                .is_some_and(|points| self.set_paragraph(ParagraphChange::SpaceBefore(points))),
+            "after" => points(argument)
+                .is_some_and(|points| self.set_paragraph(ParagraphChange::SpaceAfter(points))),
+            "indent" => points(argument)
+                .is_some_and(|points| self.set_paragraph(ParagraphChange::Indent(points))),
+            "hanging" => points(argument).is_some_and(|points| {
+                self.set_paragraph(ParagraphChange::FirstLineIndent(points))
+            }),
+            // A named style is its name, and for the styles every document has it is also what
+            // the paragraph is: a heading style makes a heading, as the paragraph panel does.
+            "style" => {
+                let name = argument.trim();
+                if name.is_empty() {
+                    false
+                } else {
+                    let named = self.set_paragraph(ParagraphChange::Style(Some(name.to_owned())));
+                    let kind = match name.to_lowercase().as_str() {
+                        "body" | "normal" => self.set_heading(None),
+                        "heading 1" | "heading1" => self.set_heading(Some(1)),
+                        "heading 2" | "heading2" => self.set_heading(Some(2)),
+                        "heading 3" | "heading3" => self.set_heading(Some(3)),
+                        _ => false,
+                    };
+                    named || kind
+                }
+            }
             "bullets" => self.toggle_list(false),
             "numbers" => self.toggle_list(true),
             "heading" => match argument.trim().parse::<u8>() {
@@ -364,6 +488,7 @@ impl BlockEditor {
 mod tests {
     use super::*;
     use crate::{Block, CursorPlacement};
+    use ui::richtext::TextAlign;
 
     /// A toolbar's ask formats once: the same ask again is the command it already ran, and what
     /// the ask names is what it formats.
@@ -469,5 +594,39 @@ mod tests {
                 .contains(&Mark::Highlight([0xff, 0xf8, 0xc5]))
         );
         assert!(editor.active_marks().contains(&Mark::Superscript));
+    }
+    /// A paragraph's own look — its alignment, the space above and below it, its indent and
+    /// the named style it is set in — reaches the block the caret is in, and a built-in style
+    /// name also makes the paragraph that kind.
+    #[test]
+    fn a_paragraphs_look_is_set_from_the_toolbar() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("one"), Block::paragraph("two")]);
+        editor.focus_block(0, CursorPlacement::End);
+
+        assert!(editor.set_paragraph(ParagraphChange::Align(TextAlign::Center)));
+        assert_eq!(editor.blocks[0].style.align, Some(TextAlign::Center));
+        assert!(
+            !editor.set_paragraph(ParagraphChange::Align(TextAlign::Center)),
+            "asking for the alignment it holds changes nothing"
+        );
+
+        assert!(editor.format_asked(Some("indent:12:1".into())));
+        assert_eq!(editor.blocks[0].style.indent, Some(12.0));
+        assert!(editor.format_asked(Some("before:6:2".into())));
+        assert_eq!(editor.blocks[0].style.space_before, Some(6.0));
+        assert!(editor.format_asked(Some("after:18:3".into())));
+        assert_eq!(editor.blocks[0].style.space_after, Some(18.0));
+        assert!(editor.format_asked(Some("indent:0:4".into())));
+        assert_eq!(
+            editor.blocks[0].style.indent, None,
+            "no indent is the document's own"
+        );
+
+        assert!(editor.format_asked(Some("style:Heading 2:5".into())));
+        assert_eq!(editor.blocks[0].style.style.as_deref(), Some("Heading 2"));
+        assert_eq!(editor.blocks[0].kind, BlockKind::Heading(2));
+        assert!(editor.format_asked(Some("style:Body:6".into())));
+        assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
     }
 }

@@ -284,10 +284,17 @@ pub struct Block {
     /// Outline depth for non-list content. List kinds retain their wire-compatible depth.
     pub nesting: u8,
     pub line: RichTextLine,
+    /// The paragraph's own look, as its content carries it: where its lines align, the space
+    /// it keeps from the paragraphs around it, its indent and the named style it is set in.
+    pub style: ParagraphStyle,
     /// Set by Shift+Enter: renders with no inter-block top spacing so
     /// the two lines read as one paragraph.
     pub soft_break: bool,
 }
+
+/// A paragraph's spacing and indent are stored in points, the unit every document codec
+/// writes; the toolkit draws in logical pixels at 96 dpi.
+const PIXELS_PER_POINT: f32 = 96.0 / 72.0;
 
 /// Ephemeral pointer state for the editor's block-order handle.  The durable
 /// result is still produced by the normal semantic-diff bridge as a stable-id
@@ -308,6 +315,7 @@ impl Block {
             code_group: None,
             nesting: 0,
             line,
+            style: ParagraphStyle::default(),
             soft_break: false,
         }
     }
@@ -787,6 +795,9 @@ pub struct BlockEditor {
     /// The formatting a view last asked for (`format`), as it asked: the ask it answers again
     /// only when it changes.
     asked_format: Option<String>,
+    /// The picture a view last asked to write in at the caret (`insert`), as it asked: the ask
+    /// it answers again only when it changes.
+    insert_ask: Option<String>,
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
     presence_key: Option<present::PresenceKeyFn>,
@@ -988,6 +999,7 @@ impl BlockEditor {
             revealed: None,
             revealed_block: None,
             asked_format: None,
+            insert_ask: None,
             presence_key: None,
             body: None,
         };
@@ -8176,6 +8188,10 @@ impl BlockEditor {
             ))
         });
         let marker_width = list_marker::marker_width(&self.blocks);
+        // The space each paragraph asks for below it, read before the blocks are borrowed to
+        // prepare them: a block's top margin is the wider of its own ask and the one above.
+        let space_after_above: Vec<Option<f32>> =
+            self.blocks.iter().map(|block| block.style.space_after).collect();
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
@@ -8201,10 +8217,13 @@ impl BlockEditor {
                 clippy::cast_possible_truncation,
                 reason = "bounded on-screen block inset"
             )]
+            let paragraph_indent = b.style.indent.unwrap_or(0.0)
+                + b.style.first_line_indent.unwrap_or(0.0).max(0.0);
             b.line.set_layout_inset(
                 (prefix_gutter_for(&b.kind) * self.text_scale) as f32
                     + LIST_INDENT_STEP_PX * f32::from(b.indent()) * theme.text_scale
-                    + marker_width.get(i).copied().unwrap_or(0.0) * theme.text_scale,
+                    + marker_width.get(i).copied().unwrap_or(0.0) * theme.text_scale
+                    + paragraph_indent * theme.text_scale,
             );
             b.line.set_wrap(
                 (self.wrap_lines
@@ -8213,6 +8232,12 @@ impl BlockEditor {
                     && formula_descriptor(&b.kind).is_none()
                     && !matches!(b.kind, BlockKind::Table { visual: true }),
             );
+            // A paragraph's own look: its lines stand where it says within the width, and its
+            // text starts as far from the margin as its indent puts it. A first line's own
+            // indent rides with the inset until a hanging one is asked for, which no codec
+            // stores yet, so the first line shares the paragraph's.
+            b.line
+                .set_align(b.style.align.unwrap_or(self.text_align));
             // A document paragraph already receives spacing from the block stack, and TextInput's
             // normal multiline field padding would add another 8 px above and below every line,
             // making consecutive prose read like separate form fields: keep that padding for richer
@@ -8294,6 +8319,23 @@ impl BlockEditor {
             } else {
                 rhythm.related * theme.text_scale
             };
+            // The space a paragraph asks for above it replaces the rhythm's, and the one the
+            // paragraph before asked for below it adds to it: a person sets both, and either
+            // alone holds.
+            let asked_before = b.style.space_before.map(|points| points * PIXELS_PER_POINT);
+            let asked_after_above = space_after_above
+                .get(i.saturating_sub(1))
+                .copied()
+                .flatten()
+                .map(|points| points * PIXELS_PER_POINT);
+            if i > 0 {
+                stack_box.margin_top = match (asked_before, asked_after_above) {
+                    (Some(before), Some(after)) => before.max(after) * theme.text_scale,
+                    (Some(before), None) => before * theme.text_scale,
+                    (None, Some(after)) => after * theme.text_scale,
+                    (None, None) => stack_box.margin_top,
+                };
+            }
             if is_formula_end.get(i).copied().unwrap_or(false) {
                 stack_box.min = if formula_descriptor(&b.kind)
                     .is_some_and(|descriptor| descriptor.mode == ui::math::FormulaMode::Visual)
@@ -11607,7 +11649,7 @@ pub mod references;
 mod remount;
 #[path = "block_editor_text_menu.rs"]
 mod text_menu;
-pub use present::{BlockContent, EditScope, PresenceKeyFn};
+pub use present::{BlockContent, EditScope, ParagraphStyle, PresenceKeyFn};
 
 #[path = "block_editor_cards.rs"]
 mod cards;

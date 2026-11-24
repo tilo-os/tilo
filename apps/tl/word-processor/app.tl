@@ -38,6 +38,11 @@ type Document (untitled: "Untitled Document") {
     /// Why the last thing asked of the document did not happen, such as a file no codec reads;
     /// empty while nothing went wrong. The page shows it over the writing until it is dismissed.
     notice: Text = ""
+    /// The address of the picture the person last chose to write in, and how many times they
+    /// have chosen one: the page hands both to the editor, which writes the picture in where
+    /// they are writing.
+    chosen: Text = ""
+    chosen_count: Int merge counter = 0
 }
 
 root Document
@@ -302,10 +307,12 @@ action replace_selection(d: Document, text: Text) {
     d.body = RichText.from_markdown(text)
 }
 
-/// Puts a picture in the document, where the writing ends: the person picks the file, and the
-/// document keeps the address of its content rather than the picture.
+/// Writes a picture in where the person is writing: the person picks the file, and the page
+/// hands the address of its content to the editor, which puts it at the caret. The document
+/// keeps the address rather than the picture.
 action place_image(d: Document, image: File) (icon: .image, label: "Insert image") {
-    d.body = RichText(d.body, "\n![]({image.url})\n")
+    d.chosen = image.url
+    d.chosen_count += 1
 }
 
 /// The first picture the document shows, as content another app can take.

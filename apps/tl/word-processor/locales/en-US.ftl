@@ -38,6 +38,11 @@ d-4hldj6md = Reactions
 d-mgawklxl = Notice
     .doc = Why the last thing asked of the document did not happen, such as a file no codec reads; empty while nothing went wrong.
 
+d-mpu4ekps = Chosen
+    .doc = The address of the picture the person last chose to write in, and how many times they have chosen one: the page hands both to the editor, which writes the picture in where they are writing.
+
+d-po3yh2xl = Chosen count
+
 d-swntfsuf-filter-margin_top = Margin top
 
 d-swntfsuf-filter-margin_right = Margin right
@@ -45,6 +50,8 @@ d-swntfsuf-filter-margin_right = Margin right
 d-swntfsuf-filter-margin_bottom = Margin bottom
 
 d-swntfsuf-filter-margin_left = Margin left
+
+d-swntfsuf-filter-chosen_count = Chosen count
 
 d-bzk5q6y4 = New document
     .doc = Starts the document over: a blank page, or the Markdown one of the templates starts with.
@@ -152,7 +159,7 @@ d-wnzg47ko = Replace selection
 d-wnzg47ko-text = Text
 
 d-c3edrhdp = Insert image
-    .doc = Puts a picture in the document, where the writing ends: the person picks the file, and the document keeps the address of its content rather than the picture.
+    .doc = Writes a picture in where the person is writing: the person picks the file, and the page hands the address of its content to the editor, which puts it at the caret.
 
 d-c3edrhdp-image = Image
 
@@ -241,6 +248,21 @@ d-xxexkmsk = Writer
     .w-ruler = Ruler
     .w-outline = Outline
     .w-close = Close
+    .w-paper = Paper
+    .w-a4 = A4
+    .w-letter = Letter
+    .w-legal = Legal
+    .w-margins = Margins
+    .w-top = Top
+    .w-right = Right
+    .w-bottom = Bottom
+    .w-left = Left
+    .w-paragraph = Paragraph
+    .w-before = Before
+    .w-after = After
+    .w-set-up = Set up
+    .w-started-as-a-page = Started as a { $started } page.
+    .w-the-page-s-margins-and-paper = The page's margins and paper are the document's own, on every device.
     .w-face = Face
     .w-sans = Sans
     .w-serif = Serif
@@ -249,18 +271,13 @@ d-xxexkmsk = Writer
     .w-text-colour = Text colour
     .w-highlight = Highlight
     .w-margins-in-points = Margins in points
-    .w-left = Left
-    .w-top = Top
-    .w-right = Right
-    .w-bottom = Bottom
-    .w-paper = Paper
-    .w-a4 = A4
-    .w-letter = Letter
-    .w-legal = Legal
-    .w-paragraph = Paragraph
     .w-body = Body
     .w-bulleted = Bulleted
     .w-numbered = Numbered
+    .w-align = Align
+    .w-centre = Centre
+    .w-justified = Justified
+    .w-indent = Indent
     .w-the-document-could-not-be-opened = The document could not be opened
     .w-untitled-document = Untitled Document
     .w-start-writing = Start writing
@@ -281,20 +298,6 @@ d-qgcdvpjd = File menu
     .w-start-from-a-report = Start from a report
     .w-start-from-a-r-sum = Start from a résumé
     .w-start-from-meeting-notes = Start from meeting notes
-
-d-zxsai53l = Page setup
-    .w-paper = Paper
-    .w-a4 = A4
-    .w-letter = Letter
-    .w-legal = Legal
-    .w-margins = Margins
-    .w-top = Top
-    .w-right = Right
-    .w-bottom = Bottom
-    .w-left = Left
-    .w-set-up = Set up
-    .w-started-as-a-page = Started as a { $started } page.
-    .w-the-page-s-margins-and-paper = The page's margins and paper are the document's own, on every device.
 
 d-m6f4uc6u = Review panel
     .w-a-person-or-agent-that-suggests = A person or agent that suggests a change to the words leaves it here for you to accept.

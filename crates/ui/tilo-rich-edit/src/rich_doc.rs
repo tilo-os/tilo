@@ -3,7 +3,7 @@
 use tilo_doc::document::MarkValue;
 use tilo_doc::snapshot::BlockView;
 
-use crate::BlockContent;
+use crate::{BlockContent, ParagraphStyle};
 use crate::{BlockKind, CalloutKind};
 use ui::widget::marks::{Mark, MarkSpan};
 
@@ -186,6 +186,37 @@ pub fn hex_of(rgb: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
 }
 
+/// The alignment a paragraph attribute names, as the document codecs write it.
+pub fn align_of(name: &str) -> Option<ui::richtext::TextAlign> {
+    match name.trim().to_lowercase().as_str() {
+        "left" => Some(ui::richtext::TextAlign::Left),
+        "center" | "centre" => Some(ui::richtext::TextAlign::Center),
+        "right" => Some(ui::richtext::TextAlign::Right),
+        "justify" | "justified" => Some(ui::richtext::TextAlign::Justified),
+        _ => None,
+    }
+}
+
+/// The name a paragraph's alignment is stored as: [`align_of`]'s inverse.
+pub fn align_name(align: ui::richtext::TextAlign) -> &'static str {
+    match align {
+        ui::richtext::TextAlign::Left => "left",
+        ui::richtext::TextAlign::Center => "center",
+        ui::richtext::TextAlign::Right => "right",
+        ui::richtext::TextAlign::Justified => "justify",
+    }
+}
+
+/// The number a paragraph attribute holds, whether the document stored it as a float or a
+/// whole number.
+fn number_attr(view: &BlockView, key: &str) -> Option<f32> {
+    match view.attrs.get(key) {
+        Some(tilo_doc::AttrVal::Float(number)) => Some(*number as f32),
+        Some(tilo_doc::AttrVal::Int(number)) => Some(*number as f32),
+        _ => None,
+    }
+}
+
 pub fn content_of(view: &BlockView) -> BlockContent {
     let text = view.text.clone();
     let mut marks: Vec<MarkSpan> = view
@@ -214,11 +245,20 @@ pub fn content_of(view: &BlockView) -> BlockContent {
         .map(|(start, end, author)| (byte_of_char(&text, start)..byte_of_char(&text, end), author))
         .filter(|(range, _)| range.start < range.end)
         .collect();
+    let paragraph = ParagraphStyle {
+        align: str_attr(view, "align").and_then(align_of),
+        space_before: number_attr(view, "space_before"),
+        space_after: number_attr(view, "space_after"),
+        indent: number_attr(view, "indent"),
+        first_line_indent: number_attr(view, "first_line_indent"),
+        style: str_attr(view, "style").map(str::to_owned),
+    };
     BlockContent {
         id: view.id.clone(),
         kind,
         text,
         marks,
+        paragraph,
         nesting,
         code_group,
         authors,
@@ -363,6 +403,31 @@ pub fn view_of_content(content: &BlockContent) -> BlockView {
         attrs.insert(
             "nesting".to_owned(),
             tilo_doc::AttrVal::Int(i64::from(content.nesting)),
+        );
+    }
+    if let Some(align) = content.paragraph.align {
+        attrs.insert(
+            "align".to_owned(),
+            tilo_doc::AttrVal::Str(align_name(align).to_owned()),
+        );
+    }
+    for (key, value) in [
+        ("space_before", content.paragraph.space_before),
+        ("space_after", content.paragraph.space_after),
+        ("indent", content.paragraph.indent),
+        ("first_line_indent", content.paragraph.first_line_indent),
+    ] {
+        if let Some(number) = value {
+            attrs.insert(
+                key.to_owned(),
+                tilo_doc::AttrVal::Float(f64::from(number)),
+            );
+        }
+    }
+    if let Some(style) = &content.paragraph.style {
+        attrs.insert(
+            "style".to_owned(),
+            tilo_doc::AttrVal::Str(style.clone()),
         );
     }
     let marks = content
@@ -1067,5 +1132,47 @@ mod tests {
             ]
         );
         assert_eq!(content_of(&view).marks, content.marks);
+    }
+    /// What a paragraph says of its own look goes to the document in the attributes its codecs
+    /// read, and comes back as the paragraph style the editor draws.
+    #[test]
+    fn a_paragraphs_look_round_trips_through_its_stored_attributes() {
+        let content = BlockContent {
+            paragraph: ParagraphStyle {
+                align: Some(ui::richtext::TextAlign::Justified),
+                space_before: Some(6.0),
+                space_after: Some(12.0),
+                indent: Some(18.0),
+                first_line_indent: Some(-6.0),
+                style: Some("Body".into()),
+            },
+            ..BlockContent::paragraph("", "set as a paragraph")
+        };
+        let view = view_of_content(&content);
+        let stored: Vec<(String, String)> = view
+            .attrs
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    tilo_doc::AttrVal::Bool(flag) => flag.to_string(),
+                    tilo_doc::AttrVal::Int(number) => number.to_string(),
+                    tilo_doc::AttrVal::Float(number) => number.to_string(),
+                    tilo_doc::AttrVal::Str(text) => text.clone(),
+                };
+                (key.clone(), value)
+            })
+            .collect();
+        assert_eq!(
+            stored,
+            [
+                ("align".to_owned(), "justify".to_owned()),
+                ("first_line_indent".to_owned(), "-6".to_owned()),
+                ("indent".to_owned(), "18".to_owned()),
+                ("space_after".to_owned(), "12".to_owned()),
+                ("space_before".to_owned(), "6".to_owned()),
+                ("style".to_owned(), "Body".to_owned()),
+            ]
+        );
+        assert_eq!(content_of(&view).paragraph, content.paragraph);
     }
 }

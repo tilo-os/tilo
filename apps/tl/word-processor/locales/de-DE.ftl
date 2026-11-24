@@ -37,6 +37,13 @@ d-4hldj6md = Reaktionen
 d-mgawklxl = Hinweis
     .doc = Warum das zuletzt vom Dokument Verlangte nicht geschah, etwa eine Datei, die kein Codec liest; leer, solange nichts schiefging.
 
+d-mpu4ekps = Gewählt
+    .doc = Die Adresse des Bildes, das die Person zuletzt zum Einfügen gewählt hat, und wie oft sie eines gewählt hat: die Seite gibt beides dem Editor, der das Bild dort einfügt, wo sie schreibt.
+
+d-po3yh2xl = Gewählt-Zähler
+
+d-swntfsuf-filter-chosen_count = Gewählt-Zähler
+
 d-swntfsuf-filter-margin_top = Oberer Rand
 
 d-swntfsuf-filter-margin_right = Rechter Rand
@@ -240,6 +247,16 @@ d-xxexkmsk = Writer
     .w-ruler = Lineal
     .w-outline = Gliederung
     .w-close = Schließen
+    .w-margins = Ränder
+    .w-set-up = Einrichtung
+    .w-started-as-a-page = Begonnen als Seite „{ $started }“.
+    .w-the-page-s-margins-and-paper = Die Ränder und das Papier der Seite gehören dem Dokument, auf jedem Gerät.
+    .w-before = Davor
+    .w-after = Danach
+    .w-align = Ausrichtung
+    .w-centre = Zentriert
+    .w-justified = Blocksatz
+    .w-indent = Einzug
     .w-face = Schriftart
     .w-sans = Serifenlos
     .w-serif = Serifen
@@ -280,20 +297,6 @@ d-qgcdvpjd = Dateimenü
     .w-start-from-a-report = Mit einem Bericht beginnen
     .w-start-from-a-r-sum = Mit einem Lebenslauf beginnen
     .w-start-from-meeting-notes = Mit Besprechungsnotizen beginnen
-
-d-zxsai53l = Seiteneinrichtung
-    .w-paper = Papier
-    .w-a4 = A4
-    .w-letter = Letter
-    .w-legal = Legal
-    .w-margins = Ränder
-    .w-top = Oben
-    .w-right = Rechts
-    .w-bottom = Unten
-    .w-left = Links
-    .w-set-up = Einrichtung
-    .w-started-as-a-page = Begonnen als Seite „{ $started }“.
-    .w-the-page-s-margins-and-paper = Die Ränder und das Papier der Seite gehören dem Dokument, auf jedem Gerät.
 
 d-m6f4uc6u = Prüfbereich
     .w-a-person-or-agent-that-suggests = Eine Person oder ein Agent, die oder der eine Änderung an den Worten vorschlägt, legt sie hier ab, damit Sie sie annehmen.

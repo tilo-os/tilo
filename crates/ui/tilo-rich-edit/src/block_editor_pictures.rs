@@ -82,6 +82,47 @@ impl BlockEditor {
         }
     }
 
+    /// Answer a view's ask to write a picture in at the caret, as a toolbar's Insert image does
+    /// after it chose the file: the ask names the address, then a count the view changes every
+    /// time it asks (`{address}:1`), so the same picture chosen twice is two pictures. Each ask
+    /// is answered once.
+    pub fn insert_asked(&mut self, asked: Option<String>) -> bool {
+        if asked == self.insert_ask {
+            return false;
+        }
+        self.insert_ask.clone_from(&asked);
+        let Some(asked) = asked else {
+            return false;
+        };
+        let address = match asked.rsplit_once(':') {
+            Some((address, count))
+                if !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()) =>
+            {
+                address
+            }
+            _ => asked.as_str(),
+        };
+        self.insert_picture(address)
+    }
+
+    /// Write the picture whose bytes are at `address` in where the caret is: after the block it
+    /// is in, or over the selection, as a paste puts one. The address is a content address a view
+    /// hands over after the person chose a file (`file.choose`), which keeps a toolbar's Insert
+    /// image landing where they are writing rather than at the end of the document.
+    pub fn insert_picture(&mut self, address: &str) -> bool {
+        if address.trim().is_empty() || self.read_only {
+            return false;
+        }
+        let Some(target) = self.image_paste_target() else {
+            return false;
+        };
+        let kept = ui::pictures::KeptPicture {
+            name: "Image".to_owned(),
+            address: address.to_owned(),
+        };
+        self.place_picture(&kept, target)
+    }
+
     /// Write `picture` into the document where `target` says: after the block the caret is in, or
     /// over the selection it was made across. One step of the document's history, as a paste is.
     pub(crate) fn place_picture(
