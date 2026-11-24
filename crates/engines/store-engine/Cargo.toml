@@ -1,0 +1,31 @@
+[package]
+name = "tilo-store-engine"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The App Store's device work: the catalogues it reads and the changes it makes, answered for `so.tilo.store` by name."
+
+[dependencies]
+app-catalogue = { path = "../../core/app-catalogue" }
+app-cli = { path = "../../os/app-cli" }
+package-store = { path = "../../core/package-store" }
+package-actions = { path = "../../core/package-actions" }
+registry-types = { path = "../../core/registry-types" }
+tilo-app-package = { path = "../../core/tilo-app-package" }
+tilo-content = { path = "../../core/content" }
+tilo-desktop-entry = { path = "../../desktop/desktop-entry" }
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+settings-store = { path = "../../system/settings-store" }
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+hex.workspace = true
+tracing.workspace = true
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+reqwest = { workspace = true, features = ["blocking", "json"] }
+getrandom.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

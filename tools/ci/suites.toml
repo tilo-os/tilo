@@ -2128,11 +2128,6 @@ suite = "tools/font-catalog.py"
 by = "tools/tests/test_font_artifacts.py"
 
 [[cargo]]
-package = "store"
-inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
-readers = ["apps/store/build.rs"]
-
-[[cargo]]
 package = "tilo-pdf"
 inputs = ["tools/test-assets.py", "tools/test-assets-build.rs"]
 readers = ["crates/engines/tilo-pdf/build.rs"]

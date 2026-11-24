@@ -68,6 +68,9 @@ mod e2e_tool_context;
 mod e2e_todo;
 #[path = "e2e_video_editor.rs"]
 mod e2e_video_editor;
+
+#[path = "e2e_store.rs"]
+mod e2e_store;
 #[path = "effects.rs"]
 mod effects;
 #[path = "event_values.rs"]

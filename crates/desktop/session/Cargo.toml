@@ -308,6 +308,7 @@ tilo-presentation = { path = "../../platform/tilo-presentation" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+tilo-store-engine = { path = "../../engines/store-engine" }
 # The outside origins the session's own services keep records in step with: the mail, YouTube,
 # music and calendar connectors' clients, and the registry that makes an origin's connector
 # reachable (`tilolang_tilo::origin::remote`).

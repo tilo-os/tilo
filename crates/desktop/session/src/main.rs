@@ -1213,6 +1213,9 @@ fn services(
     let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
     let mut following: Following = Vec::new();
     services.push(Box::new(tilo_settings_service::SettingsService::new()));
+    // The App Store's device work, which it asks the session for by name (`engine.call`): what
+    // its sources offer and the changes a person asks for.
+    tilo_store_engine::register();
     // What this session ran into: the list as the resource's reading and each record's text as its
     // own, which Settings reads as an app does.
     services.push(Box::new(tilo_crash_reports::CrashReports::new()));

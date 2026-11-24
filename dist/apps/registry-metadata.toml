@@ -90,7 +90,7 @@ description = "Collect useful pieces of text and code for reuse."
 [apps.speed-test]
 description = "Measure connection speed and understand your network at a glance."
 [apps.store]
-description = "Discover and open native Tilo apps from the signed Tilo app registry."
+description = "Discover and open the apps of your workspace from the signed Tilo app registries."
 [apps.tasks]
 description = "Track the workspace's issues on a list and a board, and hand them to agents."
 [apps.terminal]

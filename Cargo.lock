@@ -15604,42 +15604,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "store"
-version = "0.1.2"
-dependencies = [
- "app-catalogue",
- "app-cli",
- "app-registry",
- "blake3",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "hex",
- "lru 0.18.3",
- "package-actions",
- "package-store",
- "reqwest",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tilo-app",
- "tilo-app-id",
- "tilo-app-package",
- "tilo-app-process-engine",
- "tilo-automerge-fork",
- "tilo-desktop-entry",
- "tilo-files",
- "tilo-net",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "strength_reduce"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -21113,6 +21077,7 @@ dependencies = [
  "tilo-sheets",
  "tilo-speaker-service",
  "tilo-startup-metrics",
+ "tilo-store-engine",
  "tilo-system-service",
  "tilo-system-stats",
  "tilo-test-env",
@@ -21512,6 +21477,31 @@ dependencies = [
  "tracing",
  "web-time",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-store-engine"
+version = "0.1.0"
+dependencies = [
+ "app-catalogue",
+ "app-cli",
+ "blake3",
+ "getrandom 0.4.3",
+ "hex",
+ "package-actions",
+ "package-store",
+ "registry-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "tilo-app-package",
+ "tilo-content",
+ "tilo-desktop-entry",
+ "tilo-net",
+ "tilolang-tilo",
+ "tracing",
 ]
 
 [[package]]
@@ -22568,7 +22558,6 @@ dependencies = [
  "settings-model",
  "settings-store",
  "sha2 0.11.0",
- "store",
  "tempfile",
  "test-document-app",
  "test-http",
@@ -28001,7 +27990,6 @@ dependencies = [
  "static_assertions",
  "statrs",
  "stop-token",
- "store",
  "strength_reduce",
  "strict-num",
  "stringprep",

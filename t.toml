@@ -108,7 +108,7 @@ unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native",
     "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "store", "tilo-agent-session",
+    "runtime-bundle", "tilo-agent-session",
     "tilo-app-cli", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
     "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -157,7 +157,7 @@ args = ["--locked", "--profile", "ci", "--tests"]
 unify = "workspace-unify"
 packages = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "install",
-    "launcher", "launcher-macos", "local-model-service", "runtime-bundle", "store",
+    "launcher", "launcher-macos", "local-model-service", "runtime-bundle",
     "tilo-agent-session", "tilo-app-cli", "tilo-environment", "tilo-liveness",
     "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli",
     "tilolang-tilo", "ush", "windows-vm",
@@ -217,7 +217,7 @@ unify = "workspace-unify"
 packages = [
     "accounts", "app-cli", "key-group",
     "containers", "discord-worker", "imager", "launcher", "local-model-service",
-    "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
+    "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings",
     "tilo-agent-session", "tilo-app", "tilo-bluez",
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
@@ -287,7 +287,7 @@ trailing = ["-D", "warnings"]
 exclude = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
+    "runtime-bundle", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -323,7 +323,7 @@ trailing = ["-D", "warnings"]
 packages = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
+    "runtime-bundle", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
     "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
 ]
@@ -386,7 +386,7 @@ unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "fs-native", "imager",
     "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
-    "runtime-bundle", "store", "tilo-agent-session", "tilo-app-cli",
+    "runtime-bundle", "tilo-agent-session", "tilo-app-cli",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
     "windows-vm", "workspace-unify",
@@ -6221,7 +6221,7 @@ default = false
 [[check]]
 name = "test-assets"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/settings/shots/artifacts.json apps/store/fixtures/artwork/artifacts.json crates/engines/doc-fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
+run = "python3 -I tools/test-assets.py --cache-root /target/test-assets apps/settings/shots/artifacts.json crates/engines/doc-fixtures/artifacts.json crates/engines/tilo-pdf/tests/fixtures/artifacts.json"
 outputs = ["/target/test-assets/**"]
 default = false
 
@@ -7126,7 +7126,7 @@ timeout_secs = 2400
 on = ["dispatch", "idle"]
 dispatch_inputs = { only = "", discover = "" }
 [check.matrix]
-app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "code-editor", "devices", "displays-across-devices", "file-explorer", "music", "notes", "passwords", "settings", "shell", "tube", "video-player"]
+app = ["apps", "capabilities", "capabilities-unused", "capabilities-unused-agent", "capabilities-unused-styles", "capture", "code-editor", "devices", "displays-across-devices", "file-explorer", "music", "notes", "passwords", "settings", "shell", "store", "tube", "video-player"]
 
 # Every app's open against the product's bar, 100 ms from asking for an app on the device to the
 # frame that shows its window: the cold open and each open after a quit, as the walks of the apps

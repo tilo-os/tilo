@@ -1050,7 +1050,6 @@ doc = false
 "static_assertions-1_1_0" = { package = "static_assertions", version = "^1.1.0", default-features = false, features = [] }
 "statrs-0_19_1" = { package = "statrs", version = "^0.19.1", default-features = false, features = [] }
 "stop-token-0_7_0" = { package = "stop-token", version = "^0.7.0", default-features = false, features = [] }
-"store" = { path = "../../apps/store", default-features = false, features = [] }
 "strength_reduce-0_2_4" = { package = "strength_reduce", version = "^0.2.4", default-features = false, features = [] }
 "strict-num-0_1_1" = { package = "strict-num", version = "^0.1.1", default-features = false, features = ["approx-eq", "default", "float-cmp"] }
 "stringprep-0_1_5" = { package = "stringprep", version = "^0.1.5", default-features = false, features = [] }
@@ -3661,7 +3660,6 @@ doc = false
 "static_assertions-1_1_0" = { package = "static_assertions", version = "^1.1.0", default-features = false, features = [] }
 "statrs-0_19_1" = { package = "statrs", version = "^0.19.1", default-features = false, features = [] }
 "stop-token-0_7_0" = { package = "stop-token", version = "^0.7.0", default-features = false, features = [] }
-"store" = { path = "../../apps/store", default-features = false, features = [] }
 "strength_reduce-0_2_4" = { package = "strength_reduce", version = "^0.2.4", default-features = false, features = [] }
 "strict-num-0_1_1" = { package = "strict-num", version = "^0.1.1", default-features = false, features = ["approx-eq", "default", "float-cmp"] }
 "stringprep-0_1_5" = { package = "stringprep", version = "^0.1.5", default-features = false, features = [] }

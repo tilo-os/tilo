@@ -102,11 +102,6 @@ text = "WireGuard"
 reason = "A protocol's name, spelled the same in every language."
 
 [[allow]]
-file = "apps/store/src/app.rs"
-text = "Terminal"
-reason = "A store app's own name, the same in every language; the sentence around it is the catalogue's."
-
-[[allow]]
 file = "apps/settings/src/panes/agent_models/hub.rs"
 text = "Hugging Face"
 reason = "A service's name, spelled the same in every language; the sentence around it is the catalogue's."

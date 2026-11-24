@@ -30,7 +30,7 @@ CLEAN = forest(
     "3tilo-ui v0.1.0 (/repo/crates/ui/ui-core)",
     "4serde v1.0.228",
     "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)",
-    "0store v0.1.2 (/repo/apps/store)",
+    "0imager v0.1.0 (/repo/apps/imager)",
     "1install v0.1.0 (/repo/crates/core/install)",
     "2serde v1.0.228 (*)",
     "1runtime-dylib v0.1.0 (/repo/crates/sdk/runtime-dylib) (*)",
@@ -41,14 +41,14 @@ CLEAN = forest(
 
 class RuntimeSurfaceTests(unittest.TestCase):
     def test_an_app_may_link_an_os_crate_the_runtime_does_not_carry(self) -> None:
-        self.assertEqual(checker.violations(CLEAN, ["notes", "store"], TARGET), [])
+        self.assertEqual(checker.violations(CLEAN, ["notes", "imager"], TARGET), [])
 
     def test_a_denied_crate_reached_through_a_dependency_fails(self) -> None:
         tree = CLEAN.replace(
             "4serde v1.0.228\n",
             "4serde v1.0.228\n4package-store v0.1.0 (/repo)\n5tilo-fs v0.1.0 (/repo)\n",
         )
-        found = checker.violations(tree, ["notes", "store"], TARGET)
+        found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1)
         self.assertIn("reaches tilo-fs", found[0])
 
@@ -60,10 +60,10 @@ class RuntimeSurfaceTests(unittest.TestCase):
             "4serde v1.0.228\n",
             "4serde v1.0.228\n4typst-assets v0.15.1\n",
         ).replace(
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1typst-assets v0.15.1 (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0imager",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1typst-assets v0.15.1 (*)\n0imager",
         )
-        found = checker.violations(tree, ["notes", "store"], TARGET)
+        found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches typst-assets", found[0])
         self.assertIn("libtilo_typst_engine.so", found[0])
@@ -77,11 +77,11 @@ class RuntimeSurfaceTests(unittest.TestCase):
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2workspace-hack v0.1.0 (/repo)\n3typst-assets v0.15.1\n",
         ).replace(
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0imager",
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1typst-assets v0.15.1 (*)\n"
-            "1workspace-hack v0.1.0 (/repo) (*)\n0store",
+            "1workspace-hack v0.1.0 (/repo) (*)\n0imager",
         )
-        self.assertEqual(checker.violations(tree, ["notes", "store"], TARGET), [])
+        self.assertEqual(checker.violations(tree, ["notes", "imager"], TARGET), [])
 
     def test_the_youtube_client_back_in_the_runtime_fails(self) -> None:
         # Music and Tube load rustypipe from libtilo_youtube_engine.so; the
@@ -90,10 +90,10 @@ class RuntimeSurfaceTests(unittest.TestCase):
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2rustypipe v0.11.4\n",
         ).replace(
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1rustypipe v0.11.4 (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0imager",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1rustypipe v0.11.4 (*)\n0imager",
         )
-        found = checker.violations(tree, ["notes", "store"], TARGET)
+        found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches rustypipe", found[0])
         self.assertIn("libtilo_youtube_engine.so", found[0])
@@ -106,11 +106,11 @@ class RuntimeSurfaceTests(unittest.TestCase):
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2browser-continuity v0.1.0 (/repo/crates/import/browser-continuity)\n",
         ).replace(
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0imager",
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
-            "1browser-continuity v0.1.0 (/repo/crates/import/browser-continuity) (*)\n0store",
+            "1browser-continuity v0.1.0 (/repo/crates/import/browser-continuity) (*)\n0imager",
         )
-        found = checker.violations(tree, ["notes", "store"], TARGET)
+        found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches browser-continuity", found[0])
         self.assertIn("libtilo_browser_import_engine.so", found[0])
@@ -123,11 +123,11 @@ class RuntimeSurfaceTests(unittest.TestCase):
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2app-catalogue v0.1.0 (/repo/crates/core/app-catalogue)\n",
         ).replace(
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0imager",
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
-            "1app-catalogue v0.1.0 (/repo/crates/core/app-catalogue) (*)\n0store",
+            "1app-catalogue v0.1.0 (/repo/crates/core/app-catalogue) (*)\n0imager",
         )
-        found = checker.violations(tree, ["notes", "store"], TARGET)
+        found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches app-catalogue", found[0])
         self.assertIn("libtilo_app_process_engine.so", found[0])
@@ -142,12 +142,12 @@ class RuntimeSurfaceTests(unittest.TestCase):
             "4serde v1.0.228\n2account-credentials v0.1.0 (/repo/crates/integrations/account-credentials)\n"
             "2jiff-tzdb v0.1.10\n",
         ).replace(
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0imager",
             "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
             "1account-credentials v0.1.0 (/repo/crates/integrations/account-credentials) (*)\n"
-            "1jiff-tzdb v0.1.10 (*)\n0store",
+            "1jiff-tzdb v0.1.10 (*)\n0imager",
         )
-        found = checker.violations(tree, ["notes", "store"], TARGET)
+        found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 2, found)
         self.assertIn("reaches account-credentials", found[0])
         self.assertIn("libtilo_accounts_engine.so", found[0])
@@ -159,8 +159,8 @@ class RuntimeSurfaceTests(unittest.TestCase):
         under_ui = "".join(f"4{crate}\n" for crate in crates)
         under_notes = "".join(f"1{crate} (*)\n" for crate in crates)
         return CLEAN.replace("4serde v1.0.228\n", f"4serde v1.0.228\n{under_ui}").replace(
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
-            f"1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n{under_notes}0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0imager",
+            f"1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n{under_notes}0imager",
         )
 
     def test_sqlite_in_the_runtime_fails(self) -> None:
@@ -169,7 +169,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
         # toolkit; imager-backend and db-client then failed to link, because
         # rusqlite's inline API calls sqlite3_* the runtime does not export.
         tree = self._with_runtime_crates("rusqlite v0.37.0", "libsqlite3-sys v0.35.0")
-        found = checker.violations(tree, ["notes", "store"], TARGET, frozenset({"libsqlite3-sys"}))
+        found = checker.violations(tree, ["notes", "imager"], TARGET, frozenset({"libsqlite3-sys"}))
         self.assertEqual(len(found), 2, found)
         self.assertIn("reaches libsqlite3-sys", found[0])
         self.assertIn("reaches rusqlite", found[1])
@@ -177,7 +177,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
 
     def test_an_unclassified_c_library_in_the_runtime_fails(self) -> None:
         tree = self._with_runtime_crates("libfoo-sys v1.0.0", "bar v1.0.0")
-        found = checker.violations(tree, ["notes", "store"], TARGET, frozenset({"bar"}))
+        found = checker.violations(tree, ["notes", "imager"], TARGET, frozenset({"bar"}))
         self.assertEqual(len(found), 2, found)
         self.assertIn("reaches bar, a C-library crate", found[0])
         self.assertIn("reaches libfoo-sys, a C-library crate", found[1])
@@ -186,7 +186,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
     def test_a_classified_c_library_in_the_runtime_passes(self) -> None:
         tree = self._with_runtime_crates("glib-sys v0.21.0", "zstd-sys v2.0.16+zstd.1.5.7")
         self.assertEqual(
-            checker.violations(tree, ["notes", "store"], TARGET, frozenset({"zstd-sys"})), []
+            checker.violations(tree, ["notes", "imager"], TARGET, frozenset({"zstd-sys"})), []
         )
 
     def test_an_engine_the_toolkit_opens_on_first_use_is_not_in_the_runtime(self) -> None:
@@ -200,15 +200,15 @@ class RuntimeSurfaceTests(unittest.TestCase):
                 "4tilo-highlight-grammars v0.1.0 (/repo/crates/ui/highlight-grammars)|\n"
                 "5syntect v5.2.0|\n",
             ).replace(
-                "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
+                "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0imager",
                 "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n"
-                "1tilo-ui v0.1.0 (/repo/crates/ui/ui-core) (*)\n0store",
+                "1tilo-ui v0.1.0 (/repo/crates/ui/ui-core) (*)\n0imager",
             )
 
         self.assertEqual(
-            checker.violations(tree("native,lazy-highlight"), ["notes", "store"], TARGET), []
+            checker.violations(tree("native,lazy-highlight"), ["notes", "imager"], TARGET), []
         )
-        found = checker.violations(tree("native"), ["notes", "store"], TARGET)
+        found = checker.violations(tree("native"), ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 2, found)
         self.assertIn("reaches syntect", found[0])
         self.assertIn("libtilo_highlight_engine.so", found[0])
@@ -219,10 +219,10 @@ class RuntimeSurfaceTests(unittest.TestCase):
             "4serde v1.0.228\n",
             "4serde v1.0.228\n4mime_guess v2.0.5\n",
         ).replace(
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0store",
-            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1mime_guess v2.0.5 (*)\n0store",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n0imager",
+            "1tilo-app v0.1.0 (/repo/crates/sdk/tilo-app) (*)\n1mime_guess v2.0.5 (*)\n0imager",
         )
-        found = checker.violations(tree, ["notes", "store"], TARGET)
+        found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1, found)
         self.assertIn("reaches mime_guess", found[0])
         self.assertIn("tilo-mime", found[0])
@@ -232,7 +232,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
             "4serde v1.0.228\n",
             "4serde v1.0.228\n2unused-engine v1.0.0\n",
         )
-        found = checker.violations(tree, ["notes", "store"], TARGET)
+        found = checker.violations(tree, ["notes", "imager"], TARGET)
         self.assertEqual(len(found), 1)
         self.assertIn("carries unused-engine", found[0])
 
@@ -246,7 +246,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
         self.assertIn("lacks tilo-app, tilo-ui", checker.violations(hollow, [], TARGET)[0])
 
     def test_an_app_missing_from_the_graph_fails(self) -> None:
-        found = checker.violations(CLEAN, ["notes", "store", "mail"], TARGET)
+        found = checker.violations(CLEAN, ["notes", "imager", "mail"], TARGET)
         self.assertEqual(found, [f"cargo tree did not describe mail for {TARGET}"])
 
 

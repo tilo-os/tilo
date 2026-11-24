@@ -383,7 +383,7 @@ mod https_completion {
     // It cannot substitute caller-supplied bytes during the disclosure continuation.
     struct StoreOwner(std::path::PathBuf);
     impl StoreOwner {
-        fn load(&self) -> tilo_resource::Replica<store::Reports> {
+        fn load(&self) -> tilo_resource::Replica<store_report_fixture::Reports> {
             if self.0.exists() {
                 tilo_resource::Replica::load(&std::fs::read(&self.0).unwrap()).unwrap()
             } else {
@@ -395,13 +395,13 @@ mod https_completion {
             let mut reports = self.load();
             if reports.state().unwrap().report("org.example.app").is_none() {
                 reports
-                    .apply(store::Reports::DRAFT_REPORT.with("org.example.app"))
+                    .apply(store_report_fixture::Reports::DRAFT_REPORT.with("org.example.app"))
                     .unwrap();
             }
             reports
                 .apply(
                     tilo_resource::Invoke::edit(
-                        &store::Reports::note("org.example.app").replace(note),
+                        &store_report_fixture::Reports::note("org.example.app").replace(note),
                     )
                     .unwrap(),
                 )
@@ -413,8 +413,8 @@ mod https_completion {
             let mut reports = self.load();
             reports
                 .apply(
-                    store::Reports::RECORD_MODERATION_CASE.with(
-                        store::reports::reports::RecordModerationCase {
+                    store_report_fixture::Reports::RECORD_MODERATION_CASE.with(
+                        store_report_fixture::reports::RecordModerationCase {
                             app_id: "org.example.app".into(),
                             case_id: receipt.case_id.clone(),
                             status: if receipt.status == ModerationCaseStatus::Open {
@@ -472,7 +472,7 @@ mod https_completion {
             if case.is_some() {
                 "Open"
             } else {
-                store::reports::DRAFT_STATUS
+                store_report_fixture::DRAFT_STATUS
             },
             note,
             case,
@@ -782,5 +782,81 @@ mod https_completion {
                 );
             },
         );
+    }
+}
+
+/// The Store's report document, as the app publishes it: a report about an app, its concern, and
+/// the registry's case once there is one. The broker keeps the document's shape generic, so a test
+/// names one the way a real Store does.
+mod store_report_fixture {
+    use std::collections::BTreeMap;
+
+    use tilo_resource::{self, Model, Refusal, resource};
+
+    pub const DRAFT_STATUS: &str = "Not submitted";
+
+    #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Report {
+        #[model(readonly)]
+        pub status: String,
+        pub note: String,
+        #[model(readonly)]
+        pub case: Option<String>,
+    }
+
+    impl Report {
+        pub fn case_id(&self) -> Option<&str> {
+            self.case.as_deref().filter(|case| !case.is_empty())
+        }
+    }
+
+    #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
+    #[model(check = Reports::valid)]
+    pub struct Reports {
+        pub reports: BTreeMap<String, Report>,
+    }
+
+    #[resource(kind = "store.catalog", search = Reports::search)]
+    impl Reports {
+        #[action(label = "store-report-create")]
+        pub fn draft_report(
+            &mut self,
+            #[param("App identity")] app_id: String,
+        ) -> Result<(), Refusal> {
+            let report = self.reports.entry(app_id).or_default();
+            report.status = DRAFT_STATUS.to_owned();
+            Ok(())
+        }
+
+        #[action(external)]
+        pub fn record_moderation_case(
+            &mut self,
+            #[param("App identity")] app_id: String,
+            #[param("The registry's case id")] case_id: String,
+            #[param("The case's status")] status: String,
+        ) -> Result<(), Refusal> {
+            let report = self.reports.entry(app_id).or_default();
+            report.case = Some(case_id);
+            report.status = status;
+            Ok(())
+        }
+    }
+
+    impl Reports {
+        fn valid(&self) -> Result<(), Refusal> {
+            Ok(())
+        }
+
+        fn search(&self) -> Vec<tilo_resource::SearchEntry> {
+            Vec::new()
+        }
+
+        pub fn report(&self, app_id: &str) -> Option<&Report> {
+            self.reports.get(app_id)
+        }
+
+        pub fn note(app_id: &str) -> tilo_resource::Path<Self, String> {
+            Self::paths().reports.key(app_id).note
+        }
     }
 }

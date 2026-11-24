@@ -2,7 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-include = ["*", "tl-calendar", "tl-contacts", "tl-ebook", "tl-files", "tl-music", "tl-notes", "tl-sheets", "tl-tube", "tl-photos", "tl-pdf", "tl-video"]
+include = ["*", "tl-calendar", "tl-contacts", "tl-ebook", "tl-files", "tl-music", "tl-notes", "tl-sheets", "tl-store", "tl-tube", "tl-photos", "tl-pdf", "tl-video"]
 
 [collections.desktop]
 extends = ["default"]
@@ -38,9 +38,6 @@ calendar = ["runtime-engine"]
 clocks = ["runtime-engine"]
 messages = ["runtime-engine"]
 print-centre = ["runtime-engine"]
-# The app host's client, with its RPC, and the catalogue, from their engine
-# library beside the runtime.
-store = ["runtime-engine"]
 # The emoji catalogue, with its names in every locale, from its engine library
 # beside the runtime.
 chat = ["runtime-engine"]

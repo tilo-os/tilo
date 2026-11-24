@@ -130,7 +130,6 @@
   "speed-test": {"libraries": 7623807, "tests": 754246064},
   "ssh-agent-client": {"libraries": 183619, "tests": 5566176},
   "staging-handoff-model": {"libraries": 7172845, "tests": 6187144},
-  "store": {"libraries": 34736459, "tests": 1916420656},
   "swipe": {"libraries": 41117, "tests": 5703848},
   "system-extension": {"libraries": 2874300, "tests": 16849152},
   "terminal": {"libraries": 28861440, "tests": 3234455120},

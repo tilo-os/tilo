@@ -1,0 +1,71 @@
+{
+  "app": "store",
+  "said": "App Store",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.store",
+    "package": "store"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open the App Store on a computer with nothing read yet",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "actions"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "repositories",
+      "said": "Open the Flatpak repositories",
+      "ops": [
+        {
+          "press_any": [
+            "Flatpak repositories"
+          ]
+        },
+        {
+          "wait_for": "Configured repositories"
+        }
+      ]
+    },
+    {
+      "id": "back",
+      "said": "Go back to the apps",
+      "ops": [
+        {
+          "press_any": [
+            "Back to apps"
+          ]
+        },
+        {
+          "wait_for": "All apps"
+        }
+      ]
+    },
+    {
+      "id": "trust",
+      "said": "Read how reports and signatures work",
+      "ops": [
+        {
+          "press_any": [
+            "Trust and moderation"
+          ]
+        },
+        {
+          "wait_for": "How reports work"
+        }
+      ]
+    }
+  ]
+}
