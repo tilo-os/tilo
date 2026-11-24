@@ -878,7 +878,7 @@ view window_menu(w: device.Window, place: Option<LayoutPlace>, listed: Bool) {
         // it was in to the others.
         if groups_in_band(w) > 1 {
             ui.MenuItem("Move to a new strip", icon: .arrow_up_down) {
-                on choose: device.move_to_new_strip(device.windows, tab: w.key)
+                on choose: session.move_to_new_strip(tab: w.key)
             }
         }
         ui.MenuSeparator()
