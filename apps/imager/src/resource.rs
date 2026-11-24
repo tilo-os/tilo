@@ -731,7 +731,9 @@ mod tests {
             let (services, recorder) = ui::process::ProcessServices::recording();
             let _host = ui::process::enter(&services);
             let mut app = crate::app::sample_host();
-            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(image));
+            recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
+                ui::portal::OpenedFile::at(std::fs::File::open(&image).unwrap(), &image),
+            ));
             app.effect(&ImagerEffect::ChooseImage).unwrap();
             app.settle();
             assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
