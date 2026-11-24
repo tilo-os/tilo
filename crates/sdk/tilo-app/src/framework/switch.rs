@@ -6,9 +6,7 @@ use ui_core::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
 
-use ui_core::text_render::TextRenderer;
-use ui_core::vello::Scene;
-use ui_core::vello::kurbo::{Affine, Point, Rect};
+use ui_core::vello::kurbo::{Point, Rect};
 use ui_core::widget::DrawChild;
 use ui_core::widget::{Element, Widget};
 use ui_core::winit::event::WindowEvent;
@@ -149,11 +147,14 @@ impl Widget for Switch {
         self.part.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.part
-            .draw_child(scene, transform, text, theme,&env);
+        self.part.draw_child(scene, transform, text, theme, &env);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {

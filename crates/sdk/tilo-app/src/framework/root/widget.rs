@@ -5,16 +5,12 @@
 
 use std::collections::HashSet;
 
-use ui_core::Theme;
 use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::resources::PublishesResources;
 use ui_core::search::capability::SearchSource;
-use ui_core::text_render::TextRenderer;
-use ui_core::vello::Scene;
-use ui_core::vello::kurbo::Affine;
 use ui_core::view::ThawError;
 use ui_core::widget::capability::{Request, RequestMut};
 use ui_core::widget::controls::{ActionControls, AttributedControlInvocation};
@@ -299,12 +295,18 @@ impl Decorator for RootWidget {
         self.0.settle(edits, path);
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
-        #[allow(unused_variables, unused_mut, reason = "a draw binds only the parts it uses")]
+    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let root = &mut self.0;
         self.1.draw(transform, || {
-            root.draw(&mut tilo_ui::DrawCtx::new(scene, transform, text, theme, env));
+            root.draw(&mut ui_core::DrawCtx::new(
+                scene, transform, text, theme, env,
+            ));
         });
     }
 
