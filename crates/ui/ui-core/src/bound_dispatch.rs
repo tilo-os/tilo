@@ -1,8 +1,10 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
 mod bound_widget;
+#[cfg(test)]
+pub(crate) use bound_widget::keyboard_input_scope;
 pub(crate) use bound_widget::{
-    BoundTraversal, has_separate_document_owner, history_owner, keyboard_input_scope,
-    visit_components, visit_resource_owners,
+    BoundTraversal, has_separate_document_owner, history_owner, visit_components,
+    visit_resource_owners,
 };
 pub use bound_widget::{BoundWidget, callback_binding, resource_owners};
 pub(crate) mod local_target;
@@ -37,10 +39,9 @@ use filter::{inherit_filtered, insert_available_permitted};
 mod control;
 pub(crate) use control::{
     ControlContinuationArguments, ControlDeclaration, ControlIdentity, ControlObservation,
-    control_declaration, control_observation,
+    control_declaration, control_draft_identity, control_observation,
+    control_observation_with_arguments,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use control::{control_draft_identity, control_observation_with_arguments};
 
 use crate::permissions::{MemberId, PermissionContext, SharedPermissions};
 use crate::published::SharedResource;
@@ -774,16 +775,6 @@ impl Default for BoundPublication {
     }
 }
 impl BoundPublication {
-    pub(crate) fn clear(&self) {
-        self.owners.borrow_mut().clear();
-        self.aliases.borrow_mut().clear();
-    }
-
-    /// How many resources the components here have published since this frame started.
-    pub(crate) fn published(&self) -> u64 {
-        self.published.get()
-    }
-
     pub(crate) fn alias(
         &self,
         binding: &CallbackBinding,
@@ -826,6 +817,16 @@ impl BoundPublication {
     pub(crate) fn target(
         &self,
         address: &tilo_actions::ActionAddress,
+    ) -> Result<Option<BoundActionTarget>, BoundActionError> {
+        self.target_within(address, &mut HeldScope::default())
+    }
+
+    /// [`Self::target`] within a walk that resolves many addresses of one surface: the scope
+    /// `held` carries from one lookup to the next.
+    pub(crate) fn target_within(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        held: &mut HeldScope,
     ) -> Result<Option<BoundActionTarget>, BoundActionError> {
         // A caller may name the app's own id for a resource its window
         // published under a transport alias: the directory offers it that
@@ -887,7 +888,7 @@ impl BoundPublication {
             .get(&owner)
             .cloned()
             .ok_or_else(unknown)?;
-        let _entry = binding.enter()?;
+        held.enter(Some(&binding))?;
         Ok(Some(BoundActionTarget {
             input: Input::Discrete,
             address: BoundActionAddress {
@@ -902,6 +903,9 @@ impl BoundPublication {
         binding: &CallbackBinding,
         mut resource: ResourceSpec,
     ) -> Result<ResourceSpec, BoundActionError> {
+        // Every resource of the surface is aliased through the component that publishes it, one per
+        // row of a long collection: the entry below holds it for the whole recursion.
+        let _entry = binding.enter()?;
         resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(
             resource.kind.clone(),
             resource.id.as_str(),
@@ -1114,17 +1118,6 @@ fn holds_resource(resource: &ResourceSpec, id: &str) -> bool {
             .children
             .iter()
             .any(|child| holds_resource(child, id))
-}
-
-/// Whether any widget of `widget`'s tree, whatever component it is part of, may resolve resource `id`
-/// once what it reads arrives.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) fn any_resource_pending(widget: &dyn Widget, id: &str) -> bool {
-    let mut pending = crate::widget::resources::resource_pending(widget, id);
-    widget.for_each_child(&mut |child| {
-        pending = pending || any_resource_pending(child, id);
-    });
-    pending
 }
 
 /// [`unbound_resource_pending`] in the component `binding` hosts.
@@ -1409,60 +1402,13 @@ pub(crate) fn directory_observation(
 #[derive(Default)]
 pub(crate) struct BoundResourceCache(RefCell<Vec<CachedBoundResources>>);
 
-#[derive(Clone, PartialEq)]
-struct UndoInputs {
-    revision: u64,
-    generation: u64,
-    document: (Vec<ChangeHash>, usize),
-}
-
-/// Each component's undo status as last read, kept while nothing it follows moved: a frame tells every
-/// undo control its status, and reading it opens the component's record, which a window nothing reached
-/// need not do on every frame another window draws.
-#[derive(Default)]
-pub(crate) struct UndoStatusCache(
-    RefCell<Vec<(CallbackBinding, UndoInputs, crate::undo::UndoStatus)>>,
-);
-
-impl UndoStatusCache {
-    /// `binding`'s undo status: as last read while nothing it follows moved, else read now.
-    pub(crate) fn status(
-        &self,
-        binding: &CallbackBinding,
-        outer: &mut AutoCommit,
-    ) -> crate::undo::UndoStatus {
-        let inputs = binding.undo_inputs(outer);
-        if let Some(inputs) = &inputs
-            && let Some((_, _, status)) = self
-                .0
-                .borrow()
-                .iter()
-                .find(|(seen, read, _)| seen.same_component(binding) && read == inputs)
-        {
-            return status.clone();
-        }
-        let status = binding.undo_status(outer).unwrap_or_default();
-        let mut entries = self.0.borrow_mut();
-        entries.retain(|(seen, _, _)| {
-            !seen.same_component(binding) && !seen.closing.get() && seen.lifetime.is_active()
-        });
-        if let Some(inputs) = inputs {
-            entries.push((binding.clone(), inputs, status.clone()));
-        }
-        status
-    }
-}
-
-/// One bound owner's admission generation and record frontier, read on each side of an input dispatch
-/// (the native App) or of a frame (the frame harness, which also reads the owner's inputs:
-/// [`bound_owner_inputs`]).
+/// One bound owner's admission generation and record frontier, read on each side of an input
+/// dispatch (the native App).
 pub(crate) struct BoundOwnerMark {
     binding: CallbackBinding,
     /// Only the native input path has snapshots across generations.
-    #[cfg(feature = "native")]
     generation: Option<u64>,
     document: Option<(Vec<automerge::ChangeHash>, usize)>,
-    inputs: Option<OwnerInputs>,
 }
 
 /// What an owner's published controls and synced root read besides its record and its widgets: what its
@@ -1483,23 +1429,12 @@ impl BoundOwnerMark {
 }
 
 /// Every live bound owner under `root`, once each, in tree order.
-#[cfg(feature = "native")]
 pub(crate) fn bound_owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
-    owner_marks(root, outer, false)
+    owner_marks(root, outer)
 }
 
-/// [`bound_owner_marks`] with each owner's inputs.
-pub(crate) fn bound_owner_inputs(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
-    owner_marks(root, outer, true)
-}
-
-fn owner_marks(root: &dyn Widget, outer: &AutoCommit, inputs: bool) -> Vec<BoundOwnerMark> {
-    fn visit(
-        widget: &dyn Widget,
-        outer: &AutoCommit,
-        inputs: bool,
-        marks: &mut Vec<BoundOwnerMark>,
-    ) {
+fn owner_marks(root: &dyn Widget, outer: &AutoCommit) -> Vec<BoundOwnerMark> {
+    fn visit(widget: &dyn Widget, outer: &AutoCommit, marks: &mut Vec<BoundOwnerMark>) {
         if let Some(binding) = callback_binding(widget)
             && !binding.closing.get()
             && binding.lifetime.is_active()
@@ -1508,47 +1443,24 @@ fn owner_marks(root: &dyn Widget, outer: &AutoCommit, inputs: bool) -> Vec<Bound
                 .any(|mark| mark.binding.same_component(&binding))
         {
             let entry = binding.enter();
-            #[cfg(feature = "native")]
             let generation = binding.generation().ok().flatten();
             let document = binding
                 .read_document(outer, |doc, _| crate::doc::settle_mark(doc))
                 .ok();
-            let inputs = inputs.then(|| OwnerInputs {
-                permissions: binding.permissions.borrow().directory_observation(),
-                save: binding
-                    .shown_save_status(&binding.chain_parts())
-                    .map_err(|error| error.to_string()),
-            });
             drop(entry);
             marks.push(BoundOwnerMark {
                 binding,
-                #[cfg(feature = "native")]
                 generation,
                 document,
-                inputs,
             });
         }
-        widget.for_each_child(&mut |child| visit(child, outer, inputs, marks));
+        widget.for_each_child(&mut |child| visit(child, outer, marks));
     }
     let mut marks = Vec::new();
-    visit(root, outer, inputs, &mut marks);
+    visit(root, outer, &mut marks);
     marks
 }
 
-/// Whether two [`bound_owner_inputs`] reads name the same owners, each with its record committed and
-/// unmoved and with the same inputs.
-pub(crate) fn same_owner_inputs(before: &[BoundOwnerMark], after: &[BoundOwnerMark]) -> bool {
-    before.len() == after.len()
-        && before.iter().zip(after).all(|(before, after)| {
-            before.binding.same_component(&after.binding)
-                && before.is_committed()
-                && before.document == after.document
-                && before.inputs.is_some()
-                && before.inputs == after.inputs
-        })
-}
-
-#[cfg(feature = "native")]
 impl BoundResourceCache {
     /// An input dispatch lends each owner its record mutably, which advances the owner's admission
     /// generation whether or not anything was written. When the records stand exactly where they
@@ -1581,6 +1493,15 @@ impl BoundResourceCache {
             }
         }
         true
+    }
+
+    /// Whether what a component's published resources were read from outside it moved since they
+    /// were gathered (a shared record a peer's change merged into): the next gathering reads them
+    /// again, and what is shown of them is stale until it does.
+    pub(crate) fn outside_reads_moved(&self) -> bool {
+        self.0.borrow().iter().any(
+            |entry| matches!(&entry.local, LocalInputs::Owner(_, reads) if reads.stand().is_err()),
+        )
     }
 }
 struct CachedBoundResources {
@@ -1631,6 +1552,7 @@ pub(crate) fn discover_cached_bound_resources(
         revisions: &mut Vec<Option<String>>,
         declarations: bool,
         taken: &mut crate::widget::resources::TakenResources,
+        root: bool,
     ) {
         let boundary = callback_binding(widget);
         if boundary
@@ -1647,6 +1569,17 @@ pub(crate) fn discover_cached_bound_resources(
                 let found = crate::widget::resources::shared_resources(widget, doc);
                 let fresh: Vec<_> = found
                     .into_iter()
+                    .map(|resource| {
+                        // Only the component's root speaks for its resource: what a
+                        // widget below it publishes is views and effects, never a
+                        // change of the document.
+                        if root {
+                            return resource;
+                        }
+                        SharedResource::from_resource(crate::widget::resources::outside_document(
+                            resource.to_resource(),
+                        ))
+                    })
                     .filter(|resource| !taken.holds(resource.id()))
                     .collect();
                 for resource in &fresh {
@@ -1655,8 +1588,20 @@ pub(crate) fn discover_cached_bound_resources(
                 resources.extend(fresh);
             }
         }
+        // A widget hosting a component is where that component's tree starts: what it
+        // publishes speaks for the resource, and only below it do views and effects stand.
+        let below = boundary.is_some();
         widget.for_each_child(&mut |child| {
-            owned(child, doc, owner, resources, revisions, declarations, taken);
+            owned(
+                child,
+                doc,
+                owner,
+                resources,
+                revisions,
+                declarations,
+                taken,
+                below,
+            );
         });
     }
     fn visit(
@@ -1705,6 +1650,7 @@ pub(crate) fn discover_cached_bound_resources(
                         &mut revisions,
                         false,
                         &mut crate::widget::resources::TakenResources::default(),
+                        true,
                     );
                     revisions
                 })
@@ -1760,6 +1706,7 @@ pub(crate) fn discover_cached_bound_resources(
                                 &mut Vec::new(),
                                 true,
                                 &mut crate::widget::resources::TakenResources::default(),
+                                true,
                             );
                             resources
                                 .iter()
@@ -2996,8 +2943,6 @@ fn perform_resource_action(
                         &target.address.address,
                         arguments.as_ref(),
                         argument,
-                        actor,
-                        approval,
                     ) {
                         return Err(BoundActionError::Hosted(hosted));
                     }
@@ -4152,11 +4097,96 @@ thread_local! {
 }
 /// What entering a component's callback scope has until it is dropped.
 pub struct CallbackScopeGuard {
-    _wake: WakeScopeGuard,
-    _device: ExecutingHostDevice,
-    _person: ExecutingHostPerson,
-    _scope: ExecutingScope,
-    _actor: tilo_resource::action::ResourceActorScope,
+    _wake: Option<WakeScopeGuard>,
+    _device: Option<ExecutingHostDevice>,
+    _person: Option<ExecutingHostPerson>,
+    _scope: Option<ExecutingScope>,
+    _actor: Option<tilo_resource::action::ResourceActorScope>,
+    /// The depth [`OPEN_SCOPES`] stood at before this scope opened it: dropping the guard closes
+    /// every scope that stood above it.
+    opened: Option<usize>,
+}
+
+impl CallbackScopeGuard {
+    /// The guard for work that runs inside a scope this thread already holds
+    /// ([`CallbackBinding::enter`]).
+    fn held() -> Self {
+        Self {
+            _wake: None,
+            _device: None,
+            _person: None,
+            _scope: None,
+            _actor: None,
+            opened: None,
+        }
+    }
+}
+
+impl Drop for CallbackScopeGuard {
+    fn drop(&mut self) {
+        if let Some(depth) = self.opened.take() {
+            OPEN_SCOPES.with_borrow_mut(|open| open.truncate(depth));
+        }
+    }
+}
+
+thread_local! {
+    /// The component scopes this thread has entered and not left, innermost last. A hosted
+    /// component's descendants share its binding, so the walks over them and the document reads
+    /// under them meet the same scope at every widget: entering it again while it is open would
+    /// only set what it has already set.
+    static OPEN_SCOPES: RefCell<Vec<OpenScope>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A component's callback scope open on this thread ([`OPEN_SCOPES`]): what entering it again must
+/// meet to run the work inside it.
+struct OpenScope {
+    closing: Rc<Cell<bool>>,
+    lifetime_id: uuid::Uuid,
+    actor: MemberId,
+}
+
+impl OpenScope {
+    /// Whether `binding` opens the scope this one is, entering as `actor`.
+    fn same(&self, binding: &CallbackBinding, actor: &MemberId) -> bool {
+        self.lifetime_id == binding.lifetime_id
+            && Rc::ptr_eq(&self.closing, &binding.closing)
+            && self.actor == *actor
+    }
+}
+
+/// One component's scope held across a walk that visits many of its widgets or resources one after
+/// another. A walk that recurses keeps its own guard alive for its children; a loop over nodes of
+/// the same component holds it here, and enters it again only when the component changes.
+#[derive(Default)]
+pub(crate) struct HeldScope {
+    held: Option<(CallbackBinding, CallbackScopeGuard)>,
+}
+
+impl HeldScope {
+    /// Enter `binding`'s scope for the visit about to run, unless it is the one this walk holds.
+    ///
+    /// # Errors
+    /// As [`CallbackBinding::enter`].
+    pub(crate) fn enter(
+        &mut self,
+        binding: Option<&CallbackBinding>,
+    ) -> Result<(), BoundDispatchError> {
+        let Some(binding) = binding else {
+            self.held = None;
+            return Ok(());
+        };
+        if let Some((held, _)) = &self.held
+            && held.enters_same_scope(binding)
+        {
+            binding.check_resource()?;
+            return Ok(());
+        }
+        self.held = None;
+        let guard = binding.enter()?;
+        self.held = Some((binding.clone(), guard));
+        Ok(())
+    }
 }
 
 struct ActiveEntry;
@@ -4306,20 +4336,6 @@ impl CallbackBinding {
         }
         Ok(changed)
     }
-    /// What the component's undo status follows besides its widgets: its
-    /// input revision, the admission generation of its record and the
-    /// record's frontier. `None` while any of it cannot be read, so a status
-    /// is read afresh ([`UndoStatusCache`]).
-    fn undo_inputs(&self, outer: &AutoCommit) -> Option<UndoInputs> {
-        Some(UndoInputs {
-            revision: self.lifetime.revision()?,
-            generation: self.generation().ok()??,
-            document: self
-                .read_document(outer, |document, _| crate::doc::settle_mark(document))
-                .ok()?,
-        })
-    }
-
     pub(crate) fn undo_status(
         &self,
         outer: &mut AutoCommit,
@@ -4616,22 +4632,36 @@ impl CallbackBinding {
         })
     }
     pub(crate) fn enter(&self) -> Result<CallbackScopeGuard, BoundDispatchError> {
-        let _profile = tilo_resource::profiling::Phase::start("ui.callback_scope");
         self.check_resource()?;
+        let actor = crate::invocation_scope::current_invoker()
+            .and_then(|invoker| invoker.acting.members().first().map(|m| (*m).clone()))
+            .unwrap_or_else(|| self.author.clone());
+        // A component's widgets inherit its binding, so the walks that visit them and the
+        // document reads under them enter the same scope again and again: one already open on this
+        // thread runs the work inside it instead of opening it once more ([`OPEN_SCOPES`]).
+        if OPEN_SCOPES.with_borrow(|open| open.last().is_some_and(|open| open.same(self, &actor))) {
+            return Ok(CallbackScopeGuard::held());
+        }
+        let _profile = tilo_resource::profiling::Phase::start("ui.callback_scope");
         let wake = self
             .lifetime
             .enter_if_open()
             .map_err(|_| BoundDispatchError::ClosedLifetime)?;
+        let opened = OPEN_SCOPES.with_borrow_mut(|open| {
+            open.push(OpenScope {
+                closing: Rc::clone(&self.closing),
+                lifetime_id: self.lifetime_id,
+                actor: actor.clone(),
+            });
+            open.len() - 1
+        });
         Ok(CallbackScopeGuard {
-            _wake: wake,
-            _device: ExecutingHostDevice::enter(&self.device_id),
-            _person: ExecutingHostPerson::enter(&self.local_person),
-            _scope: ExecutingScope::enter(self.lifetime_id),
-            _actor: tilo_resource::action::ResourceActorScope::enter(
-                crate::invocation_scope::current_invoker()
-                    .and_then(|invoker| invoker.acting.members().first().map(|m| (*m).clone()))
-                    .unwrap_or_else(|| self.author.clone()),
-            ),
+            _wake: Some(wake),
+            _device: Some(ExecutingHostDevice::enter(&self.device_id)),
+            _person: Some(ExecutingHostPerson::enter(&self.local_person)),
+            _scope: Some(ExecutingScope::enter(self.lifetime_id)),
+            _actor: Some(tilo_resource::action::ResourceActorScope::enter(actor)),
+            opened: Some(opened),
         })
     }
     pub(crate) fn with_document<R>(
@@ -4639,8 +4669,6 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
-        #[cfg(test)]
-        document_admission_probe::record(self);
         self.with_resource_frame(outer, true, callback)
     }
     /// Input reached the component outside its passes (an event, an action, focus): its input revision
@@ -4655,8 +4683,6 @@ impl CallbackBinding {
         outer: &mut AutoCommit,
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
-        #[cfg(test)]
-        document_admission_probe::record(self);
         self.with_resource_frame(outer, false, |document, root| {
             let handle = ACTIVE
                 .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
@@ -5105,7 +5131,3 @@ mod device_actor_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/native_text_tests.rs"]
 mod native_text_tests;
-
-#[cfg(test)]
-#[path = "bound_dispatch/document_admission_probe.rs"]
-pub(crate) mod document_admission_probe;

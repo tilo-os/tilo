@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use tilo_app as ui;
-use ui::headless::Framed;
+use ui::app::driver::{FrameOptions, Framed};
 use ui::presence::PresenceCtx;
 use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release, named_key};
 use ui::taffy::prelude::*;
@@ -48,7 +48,7 @@ fn layout_block_editor(
         ui::State::new(),
         editor,
         ui::headless::viewport((INSET + width, HEIGHT)),
-        ui::headless::FrameOptions {
+        FrameOptions {
             theme: Some(Theme::dark()),
             text: Some(renderer()),
             host_style: Some(ui::taffy::Style {
@@ -563,7 +563,11 @@ fn a_document_on_paper_reports_the_sheets_it_fills() {
     let long = "A paragraph with enough words to wrap across the page when it is set narrow.\n\n"
         .repeat(60);
     let mut editor = ui::rich_edit::BlockEditor::from_markdown(&long).with_wrap_lines(true);
-    assert_eq!(editor.page_count(), 0, "one continuous page until paper is asked for");
+    assert_eq!(
+        editor.page_count(),
+        0,
+        "one continuous page until paper is asked for"
+    );
     editor.set_pages(ui::rich_edit::Pages::of("A4", "Writer", ""));
     let mut editor = layout_block_editor(editor, 240.0);
     let _ = block_scene(&mut editor);

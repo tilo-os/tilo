@@ -288,7 +288,7 @@ impl DumpWriter {
 const HISTORY_CAP: usize = 240;
 
 /// The [`crate::app::App`] holds one of these behind an `Option`; the headless
-/// [`crate::headless::FrameHarness`] holds another for the perf harness.
+/// [`crate::headless::Driver`] holds another for the perf runs.
 pub struct FrameProfiler {
     origin: Instant,
     frame_index: u64,
@@ -935,7 +935,7 @@ pub enum PerfStep {
     ClickAt(f64, f64),
 }
 
-/// Reusable across any app: build a [`crate::headless::FrameHarness`] over the app's real root + state,
+/// Reusable across any app: build a [`crate::headless::Driver`] over the app's real root + state,
 /// then call [`run_scenario`].
 #[derive(Debug, Clone)]
 pub struct PerfScenario {
@@ -981,10 +981,7 @@ impl PerfScenario {
     clippy::panic,
     reason = "invalid benchmark workloads must not return timing reports"
 )]
-pub fn run_scenario(
-    driver: &mut crate::headless::FrameHarness,
-    scenario: &PerfScenario,
-) -> PerfReport {
+pub fn run_scenario(driver: &mut crate::headless::Driver, scenario: &PerfScenario) -> PerfReport {
     driver.begin_profiling();
     for _ in 0..scenario.warmup {
         driver.profile_frame();
@@ -1028,7 +1025,7 @@ pub fn run_scenario_on(
     root: Box<dyn crate::widget::Widget>,
     scenario: &PerfScenario,
 ) -> PerfReport {
-    let mut driver = crate::headless::FrameHarness::new(state, root, scenario.viewport);
+    let mut driver = crate::headless::Driver::new(state, root, scenario.viewport);
     run_scenario(&mut driver, scenario)
 }
 
@@ -1207,7 +1204,7 @@ mod tests {
             let root = crate::widget::Button::new("activate", "Activate")
                 .on_click(move || observed.set(observed.get() + 1));
             let mut driver =
-                crate::headless::FrameHarness::new(crate::State::new(), Box::new(root), (400, 300));
+                crate::headless::Driver::new(crate::State::new(), Box::new(root), (400, 300));
             let scenario = PerfScenario {
                 name: "real-click".into(),
                 viewport: (400, 300),
@@ -1221,7 +1218,7 @@ mod tests {
 
         {
             let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut driver = crate::headless::FrameHarness::new(
+                let mut driver = crate::headless::Driver::new(
                     crate::State::new(),
                     Box::new(crate::widget::Text::new("Root")),
                     (400, 300),

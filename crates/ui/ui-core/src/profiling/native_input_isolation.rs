@@ -50,14 +50,14 @@ pub(super) fn dispatch(
 mod tests {
     use super::*;
     use crate::{
-        headless::FrameHarness,
+        headless::Driver,
         widget::{Column, Scrollable, Text, TextInput, Widget},
     };
     use std::{cell::Cell, rc::Rc};
     use winit::event::{DeviceId, ElementState};
 
-    fn driver(root: Box<dyn Widget>) -> FrameHarness {
-        FrameHarness::new_with_controlled_inputs(
+    fn driver(root: Box<dyn Widget>) -> Driver {
+        Driver::new_with_controlled_inputs(
             crate::State::new(),
             root,
             (400, 300),

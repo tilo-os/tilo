@@ -237,8 +237,7 @@ mod tests {
     use vello::kurbo::{Point, Vec2};
     use winit::event::{DeviceId, MouseButton};
 
-    use crate::headless::FrameHarness;
-
+    use crate::headless::Driver;
     use crate::theme::Theme;
     use crate::widget::{Button, EventCtx, TaffyTreeExt as _, Widget};
 
@@ -403,10 +402,10 @@ mod tests {
         )
     }
 
-    fn hovered() -> (FrameHarness, Staged, Clicks) {
+    fn hovered() -> (Driver, Staged, Clicks) {
         let clicks = Clicks::default();
         let staged = Staged::default();
-        let mut harness = FrameHarness::new(
+        let mut harness = Driver::new(
             crate::State::new(),
             Box::new(Rebuilds::new(&clicks, &staged).0),
             (400, 200),
@@ -418,7 +417,7 @@ mod tests {
 
     /// Stage a fresh, equivalent button `offset` below the first and run the frame that swaps it in, as
     /// a worker result landing does.
-    fn rebuild(harness: &mut FrameHarness, staged: &Staged, clicks: &Clicks, offset: f64) {
+    fn rebuild(harness: &mut Driver, staged: &Staged, clicks: &Clicks, offset: f64) {
         *staged.borrow_mut() = Some((copy_link(clicks, "rebuilt"), offset));
         harness.relayout();
         assert!(staged.borrow().is_none(), "the frame swapped the button in");

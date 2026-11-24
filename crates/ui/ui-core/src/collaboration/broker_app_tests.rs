@@ -4,8 +4,8 @@
 //! (`collaboration::test_support`).
 
 use crate::collaboration::test_support::{
-    Captures, FakeBroker, eventually, manager_on,
-    manager_on_resource_route, ordinary_manager, stand_up_fake_broker, wake_channel,
+    Captures, FakeBroker, eventually, manager_on, manager_on_resource_route, ordinary_manager,
+    stand_up_fake_broker, wake_channel,
 };
 use std::sync::Arc;
 use uuid::Uuid;

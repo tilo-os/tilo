@@ -3,7 +3,7 @@
 use super::*;
 use crate::hosting::testing::TestHost;
 
-pub(super) fn evidence(harness: &mut ui::headless::FrameHarness, name: &str) {
+pub(super) fn evidence(harness: &mut ui::headless::Driver, name: &str) {
     let Some(directory) = std::env::var_os("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };

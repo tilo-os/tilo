@@ -699,7 +699,7 @@ tilo_test_env::scenario! {
             Ok(available)
         })
         .child(Box::new(content));
-        let mut harness = crate::headless::FrameHarness::new_with_theme(
+        let mut harness = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             Box::new(region),
             (333, 517),

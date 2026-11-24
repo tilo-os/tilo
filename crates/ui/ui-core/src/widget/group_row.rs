@@ -5681,6 +5681,9 @@ impl GroupRow {
                 && let Some(group) = self.groups.get_mut(i)
             {
                 group.handle_event(event, &mut ctx.reborrow(ctx.path, node_id));
+                // The window that holds the keyboard has the keys: what it does not take is no
+                // other window's, and not input the host holds for content on its way.
+                *ctx.handled = true;
                 return;
             }
         }

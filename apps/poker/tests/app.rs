@@ -454,8 +454,18 @@ fn the_window_bar_names_the_table_and_the_window_draws_no_title() {
         Some("Poker table")
     );
     let harness = app.harness();
-    assert!(
-        harness.a11y_node_named("Poker table").is_none(),
+    // The window's tree carries its bar first; the bar's location is the one name it may hold.
+    fn named(nodes: &[ui::a11y::AccessNode], name: &str) -> usize {
+        nodes
+            .iter()
+            .map(|node| {
+                usize::from(node.name.as_deref() == Some(name)) + named(&node.children, name)
+            })
+            .sum()
+    }
+    assert_eq!(
+        harness.a11y_nodes_named("Poker table").len(),
+        named(&harness.window_parts(), "Poker table"),
         "the window draws no title of its own"
     );
     assert!(

@@ -3,8 +3,7 @@
 use std::collections::HashMap;
 
 use tilo_rich_edit::BlockEditor;
-use tilo_ui::headless::FrameHarness;
-
+use tilo_ui::headless::Driver;
 use tilo_ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
@@ -16,7 +15,7 @@ use winit::event::WindowEvent;
 
 const SIZE: (u32, u32) = (1200, 800);
 
-fn key(harness: &FrameHarness, (width, height): (u32, u32), generation: u64) -> TargetKey {
+fn key(harness: &Driver, (width, height): (u32, u32), generation: u64) -> TargetKey {
     TargetKey {
         width,
         height,
@@ -26,7 +25,7 @@ fn key(harness: &FrameHarness, (width, height): (u32, u32), generation: u64) -> 
     }
 }
 
-fn present(harness: &mut FrameHarness, frames: &mut RetainedFrames, key: TargetKey) -> Repaint {
+fn present(harness: &mut Driver, frames: &mut RetainedFrames, key: TargetKey) -> Repaint {
     harness.poll_frame().unwrap();
     let scene = harness.frame_render_input().scene;
     let repaint = frames.repaint(scene, harness.scene_parts(), key);
@@ -106,7 +105,7 @@ impl AppWidget for Note {
 
 /// A note of eight paragraphs in a window, drawn once with its scene parts tracked, and where its
 /// editor is.
-fn note_window() -> (FrameHarness, RetainedFrames, TargetKey, Rect) {
+fn note_window() -> (Driver, RetainedFrames, TargetKey, Rect) {
     let markdown = (0..8)
         .map(|i| format!("Paragraph number {i} of the note."))
         .collect::<Vec<_>>()
@@ -124,7 +123,7 @@ fn note_window() -> (FrameHarness, RetainedFrames, TargetKey, Rect) {
         1,
         WindowWidth::Normal,
     );
-    let mut harness = FrameHarness::for_root(
+    let mut harness = Driver::for_root(
         tilo_ui::State::new(),
         GroupRow::new(vec![window]),
         SIZE,
@@ -185,7 +184,7 @@ fn a_new_paragraph_repaints_its_line_not_the_editor() {
 fn a_dragged_selection_repaints_the_rows_it_changed() {
     let (mut harness, mut frames, key, editor) = note_window();
     let scale = harness.input_scale();
-    let move_to = |harness: &mut FrameHarness, x: f64, y: f64| {
+    let move_to = |harness: &mut Driver, x: f64, y: f64| {
         harness.send(&tilo_ui::synthetic_input::cursor_moved(
             x * scale,
             y * scale,

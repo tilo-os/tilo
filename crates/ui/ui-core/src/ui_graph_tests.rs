@@ -25,7 +25,7 @@ fn graph_checked_controls_share_view_values_without_document_writes() {
     ).unwrap();
     let context = UiBuildContext::default();
     let widget = document.build_with(&Theme::dark(), &context).unwrap();
-    let mut driver = crate::headless::FrameHarness::new(crate::State::new(), widget, (360, 200));
+    let mut driver = crate::headless::Driver::new(crate::State::new(), widget, (360, 200));
     let before = driver.dump_json();
     driver.perform_named("check", &Action::ToggleCheck).unwrap();
     driver
@@ -255,7 +255,7 @@ fn app_component_factories_receive_props_and_keep_graph_lifecycle() {
         Ok(Box::new(Text::new(title).with_id(request.id)))
     });
     let widget = document.build_with(&Theme::dark(), &context).unwrap();
-    let mut app = crate::headless::FrameHarness::new(crate::State::new(), widget, (320, 120));
+    let mut app = crate::headless::Driver::new(crate::State::new(), widget, (320, 120));
     app.expect(
         &crate::headless::SemanticExpectation::named("profile")
             .role(Role::StaticText)
@@ -287,8 +287,7 @@ fn builder_previews_and_edits_unloaded_app_components() {
     .unwrap();
     let handle = UiGraphHandle::new(document).unwrap();
     let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
-    let mut app =
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1200, 720));
+    let mut app = crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1200, 720));
     app.expect(
         &crate::headless::SemanticExpectation::named("profile")
             .role(Role::StaticText)
@@ -328,7 +327,7 @@ fn graph_json_round_trips_and_builds_real_accessible_widgets() {
     title_doc.splice_text(&text, 0, 0, "Roadmap").unwrap();
     let values = UiValues::default();
     let context = UiBuildContext::default().with_values(values.clone());
-    let mut driver = crate::headless::FrameHarness::new(
+    let mut driver = crate::headless::Driver::new(
         crate::State::from_doc(title_doc),
         reparsed.build_with(&Theme::dark(), &context).unwrap(),
         (640, 360),
@@ -376,7 +375,7 @@ fn serialized_check_label_builds_visible_and_spoken_semantics() {
         value_path: "remember".into(),
         enabled: true,
     });
-    let mut driver = crate::headless::FrameHarness::new(
+    let mut driver = crate::headless::Driver::new(
         crate::State::new(),
         document.build(&Theme::dark()).unwrap(),
         (360, 120),
@@ -502,7 +501,7 @@ fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
     .unwrap();
     let handle = router.handle();
     let mut driver =
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(router), (640, 360));
+        crate::headless::Driver::new(crate::State::new(), Box::new(router), (640, 360));
     let document_before = driver.dump_json();
 
     driver
@@ -563,7 +562,7 @@ fn navigation_to_an_unknown_registered_screen_is_disabled() {
             &UiBuildContext::default().with_router(route.clone()),
         )
         .unwrap();
-    let mut driver = crate::headless::FrameHarness::new(crate::State::new(), root, (640, 360));
+    let mut driver = crate::headless::Driver::new(crate::State::new(), root, (640, 360));
     let inspection = driver.inspection();
     let missing = find_missing(&inspection.root).expect("missing-route button remains visible");
     assert!(missing.state.disabled);
@@ -642,8 +641,7 @@ fn live_edit_rebuilds_the_real_subtree_and_round_trips() {
     assert_eq!(handle.document().unwrap().nodes().len(), 4);
     assert!(matches!(handle.node("save"), Ok(UiNode::Button { .. })));
     let live = handle.widget(&Theme::dark()).unwrap();
-    let mut driver =
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(live), (640, 360));
+    let mut driver = crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
     assert!(driver.inspection_json().unwrap().contains("Save"));
 
     handle
@@ -814,7 +812,7 @@ fn live_graph_reject_bad_apply_keeps_last_good_tree() {
     let doc = AutoCommit::new();
     Widget::sync(&mut live, &doc, &automerge::ROOT);
     assert!(
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(live), (640, 360))
+        crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360))
             .inspection_json()
             .unwrap()
             .contains("Save"),
@@ -1149,8 +1147,7 @@ fn live_structural_edits_rebuild_and_save_the_same_graph() {
             UiBuildContext::default().with_values(values.clone()),
         )
         .unwrap();
-    let mut driver =
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(live), (640, 360));
+    let mut driver = crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
     handle
         .insert_child(
             "root",
@@ -1188,7 +1185,7 @@ fn live_structural_edits_rebuild_and_save_the_same_graph() {
     assert!(UiDocument::from_json(&handle.to_json_pretty().unwrap()).is_ok());
 }
 
-fn edit_builder_button_properties(driver: &mut crate::headless::FrameHarness) {
+fn edit_builder_button_properties(driver: &mut crate::headless::Driver) {
     driver
         .perform_named("builder-property", &Action::SetValue("Publish".into()))
         .unwrap();
@@ -1245,7 +1242,7 @@ fn graphical_editor_changes_and_saves_the_live_preview_graph() {
             Ok(())
         });
     let mut driver =
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
+        crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
     let initial = driver.inspection_json().unwrap();
     assert!(initial.contains("builder-add-button"));
@@ -1325,7 +1322,7 @@ fn graphical_editor_validates_property_edits_atomically_and_tracks_renamed_ids()
     let handle = UiGraphHandle::new(sample()).unwrap();
     let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
     let mut driver =
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
+        crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
     driver
         .perform_named("builder-add-container", &Action::Activate)
@@ -1371,7 +1368,7 @@ fn graphical_editor_keeps_renames_live_and_routes_shortcuts_to_local_history() {
     let handle = UiGraphHandle::new(sample()).unwrap();
     let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
     let mut driver =
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
+        crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
     driver
         .perform_named("builder-add-container", &Action::Activate)
@@ -1408,7 +1405,7 @@ fn graphical_editor_exposes_layout_and_text_source_choices() {
     let handle = UiGraphHandle::new(sample()).unwrap();
     let editor = UiGraphEditor::new(handle.clone(), Theme::dark()).unwrap();
     let mut driver =
-        crate::headless::FrameHarness::new(crate::State::new(), Box::new(editor), (1_400, 800));
+        crate::headless::Driver::new(crate::State::new(), Box::new(editor), (1_400, 800));
 
     driver
         .perform_named("builder-column-gap", &Action::SetValue("12.5".into()))

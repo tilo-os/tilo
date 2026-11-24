@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::presence::PathSegment;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::toggle_group::Segment;
@@ -99,7 +99,7 @@ fn rects_for(ids: &[&'static str], targets: &HashMap<String, Rect>) -> Vec<(&'st
         .collect()
 }
 
-fn assert_row_is_aligned(label: &str, harness: &FrameHarness) {
+fn assert_row_is_aligned(label: &str, harness: &Driver) {
     assert_rects_aligned(label, &control_rects(&harness.targets()));
 }
 
@@ -150,14 +150,13 @@ fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
             ("light", Theme::light()),
             ("high-contrast", Theme::high_contrast()),
         ] {
-            let harness =
-                FrameHarness::new_with_theme(State::new(), fixture_row(), (1000, 200), theme);
+            let harness = Driver::new_with_theme(State::new(), fixture_row(), (1000, 200), theme);
             assert_row_is_aligned(name, &harness);
         }
     }
 
     {
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             State::new(),
             fixture_row(),
             (1200, 240),
@@ -176,7 +175,7 @@ fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
                 (1800, 260),
             ),
         ] {
-            let harness = FrameHarness::new_with_theme(State::new(), dense_row(), viewport, theme);
+            let harness = Driver::new_with_theme(State::new(), dense_row(), viewport, theme);
             let rects = rects_for(&DENSE_IDS, &harness.targets());
             let centre = rects[0].1.center().y;
             for (id, rect) in &rects {
@@ -220,7 +219,7 @@ fn mixed_controls_share_one_centre_line_across_themes_scales_and_resize() {
     }
 
     {
-        let mut harness = FrameHarness::new(State::new(), fixture_row(), (1000, 200));
+        let mut harness = Driver::new(State::new(), fixture_row(), (1000, 200));
         harness.resize((1400, 320)).expect("resize settles");
         assert_row_is_aligned("dark after resize", &harness);
     }
@@ -240,8 +239,7 @@ fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
             ("dark @ 2× text", Theme::dark().with_text_scale(2.0)),
         ] {
             let viewport = (900, 200);
-            let harness =
-                FrameHarness::new_with_theme(State::new(), toolbar_row(), viewport, theme);
+            let harness = Driver::new_with_theme(State::new(), toolbar_row(), viewport, theme);
             let rects = rects_for(&TOOLBAR_IDS, &harness.targets());
             assert_rects_aligned(name, &rects);
             let (_, toggle) = rects[1];
@@ -270,7 +268,7 @@ fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
     // row agree on the new height — measured on the production layout path.
     {
         let at = |scale: f32| {
-            let harness = FrameHarness::new_with_theme(
+            let harness = Driver::new_with_theme(
                 State::new(),
                 dense_row(),
                 (1800, 260),

@@ -17,7 +17,6 @@ pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
 pub use resource_operation::resource_operation_handlers;
-pub(crate) use resource_operation::start_without_document_writes;
 pub(crate) use resource_operation::{
     ResourceOperation, ResourceOperationStart, ResourceOperations,
     local_resource_operation_handlers, poll_resource_operation, start_in_children, start_operation,
@@ -1570,6 +1569,20 @@ pub(crate) fn take_view_only_pan() -> bool {
     VIEW_ONLY_PAN.with(|pan| pan.replace(false))
 }
 
+/// The window holding `widget` lost the keyboard: every control in it that held the keyboard gives
+/// it up, as a native window's controls do when another window becomes active. What the person
+/// types next is the window they moved to, never the one they left. Whether anything let go.
+pub fn release_keyboard(widget: &mut dyn Widget) -> bool {
+    let mut released = widget.is_focusable() && widget.is_focused();
+    if released {
+        widget.set_focus(false);
+    }
+    for child in widget.children_mut() {
+        released |= release_keyboard(child);
+    }
+    released
+}
+
 thread_local! {
     static LAYOUT_MOVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -1993,7 +2006,6 @@ pub(crate) fn handle_collab_event(widget: &mut dyn Widget, event: &::collaborati
 }
 
 /// Mount native views through each owner's retained lifecycle topology.
-#[cfg(feature = "native")]
 pub(crate) fn mount_native_views(
     widget: &mut dyn Widget,
     host: &crate::widget::native_view::NativeViewHost<'_>,
@@ -2463,7 +2475,6 @@ pub use data_table_component::{
     DataTableCellProps, DataTableColumnProps, DataTableProps, DataTableRowProps, DescribedTable,
 };
 mod window_group;
-pub(crate) use window_group::place_search as place_window_search;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
     WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
@@ -2689,8 +2700,6 @@ mod slideshow_component;
 
 pub use slideshow_component::{Slideshow, SlideshowProps};
 mod tree_component;
-#[cfg(test)]
-pub(crate) use tree_component::items_tree;
 pub use tree_component::{
     DescribedTreeView, RemovedNodes, TREE_ROW_DOUBLE_HEIGHT, TREE_ROW_HEIGHT, TreeTone,
     TreeViewNodeProps, TreeViewProps, TreeViewRowProps,
@@ -2746,8 +2755,8 @@ mod activation;
 mod press;
 pub use press::Press;
 mod dismissal;
+pub(crate) use activation::take_presses;
 pub use activation::{Interaction, PaintedTargets, paint_disabled, paint_focus_ring};
-pub(crate) use activation::{press_waiting, take_presses};
 pub mod media_card;
 mod media_grid_component;
 pub use media_card::{

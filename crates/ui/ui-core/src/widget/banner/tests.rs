@@ -1,5 +1,5 @@
 use super::*;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::state::State;
 use crate::widget::Column;
 use std::cell::Cell;
@@ -22,8 +22,8 @@ fn content_hits(content: &BannerContent<'_>, width: f64) -> (f64, BannerHit) {
     (height, hit)
 }
 
-fn driver(root: Box<dyn Widget>) -> FrameHarness {
-    let mut driver = FrameHarness::new(State::new(), root, (640, 400));
+fn driver(root: Box<dyn Widget>) -> Driver {
+    let mut driver = Driver::new(State::new(), root, (640, 400));
     driver.relayout();
     driver
 }
@@ -105,8 +105,8 @@ fn a_state_bound_banner_collapses_while_absent() {
     assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
 }
 
-/// The first child of the harness's column, as it moves.
-fn band(d: &FrameHarness) -> Option<crate::widget::Disclosing> {
+/// The first child of the driver's column, as it moves.
+fn band(d: &Driver) -> Option<crate::widget::Disclosing> {
     d.root_widget().children()[0].disclosing()
 }
 
@@ -288,14 +288,14 @@ fn a_banner_in_a_section_or_a_container_moves_what_follows_the_group() {
     }
 }
 
-fn rooted(column: Column) -> FrameHarness {
-    let mut d = FrameHarness::for_root(State::new(), column, (640, 400), Theme::dark());
+fn rooted(column: Column) -> Driver {
+    let mut d = Driver::for_root(State::new(), column, (640, 400), Theme::dark());
     d.relayout();
     d
 }
 
 /// A view that builds its banner anew on every change, as most apps do.
-fn rebuild(d: &mut FrameHarness, banner: Option<Banner>) {
+fn rebuild(d: &mut Driver, banner: Option<Banner>) {
     let mut children: Vec<Box<dyn Widget>> = Vec::new();
     if let Some(banner) = banner {
         children.push(Box::new(banner));
@@ -306,7 +306,7 @@ fn rebuild(d: &mut FrameHarness, banner: Option<Banner>) {
 }
 
 /// The column's offsets: how far its first child is drawn below its place.
-fn first_offset(d: &FrameHarness) -> f64 {
+fn first_offset(d: &Driver) -> f64 {
     d.root::<Column>()
         .drawn_offsets()
         .and_then(|offsets| offsets.first().copied())
@@ -424,7 +424,7 @@ fn nothing_leaves_when_the_whole_view_is_replaced() {
 }
 
 /// How far the column's child `index` is drawn below its place.
-fn offset_of(d: &FrameHarness, index: usize) -> f64 {
+fn offset_of(d: &Driver, index: usize) -> f64 {
     d.root::<Column>()
         .drawn_offsets()
         .and_then(|offsets| offsets.get(index).copied())
@@ -669,7 +669,7 @@ fn the_layout_places_the_controls_without_a_paint() {
 fn a_banner_its_stack_gives_no_slot_places_its_controls_inside_it() {
     use crate::widget::arrange::Stack as Arranged;
     let state = crate::LocalState::new(Some(sync_failed()));
-    let mut d = FrameHarness::for_root(
+    let mut d = Driver::for_root(
         State::new(),
         Arranged::stack()
             .push(Box::new(
@@ -683,7 +683,7 @@ fn a_banner_its_stack_gives_no_slot_places_its_controls_inside_it() {
     );
     d.relayout();
     // The box the banner is drawn in: its own at rest, its slot on its way.
-    let inside = |d: &FrameHarness, what: &str| {
+    let inside = |d: &Driver, what: &str| {
         let box_ = d.root_widget().children()[0].paint_bounds();
         let action = d.targets()["sync.retry"];
         assert!(
@@ -926,7 +926,7 @@ tilo_test_env::scenario! {
                 .with_id("trouble")
                 .with_action(Button::new("trouble.retry", "Try again"))
         };
-        let mut narrow = FrameHarness::new(
+        let mut narrow = Driver::new(
             State::new(),
             Box::new(Column::new().push(Box::new(banner()))),
             (360, 400),
@@ -948,7 +948,7 @@ tilo_test_env::scenario! {
             "it stands under what the banner says: {retry:?} in {box_:?}"
         );
 
-        let mut wide = FrameHarness::new(
+        let mut wide = Driver::new(
             State::new(),
             Box::new(Column::new().push(Box::new(banner()))),
             (900, 400),
@@ -982,7 +982,7 @@ tilo_test_env::scenario! {
                 .with_id("sync")
                 .with_action(Button::new("sync.retry", "Try again"))
         };
-        let mut d = FrameHarness::for_root(
+        let mut d = Driver::for_root(
             State::new(),
             Column::new().push(Box::new(banner())),
             (420, 400),
@@ -1078,7 +1078,7 @@ tilo_test_env::scenario! {
 /// message on a narrow banner they are the same controls they are beside it on a wide one.
 #[test]
 fn both_actions_keep_their_faces_whether_beside_or_under_the_message() {
-    fn roles(d: &FrameHarness) -> Vec<(String, ButtonRole)> {
+    fn roles(d: &Driver) -> Vec<(String, ButtonRole)> {
         let mut found = Vec::new();
         let mut pending: Vec<&dyn Widget> = vec![d.root_widget()];
         while let Some(widget) = pending.pop() {
@@ -1116,7 +1116,7 @@ fn both_actions_keep_their_faces_whether_beside_or_under_the_message() {
     assert_eq!(roles(&d), wide, "under the message, the same faces");
 }
 
-fn page_ground(d: &FrameHarness) -> [u8; 3] {
+fn page_ground(d: &Driver) -> [u8; 3] {
     let ground = d.theme().tokens.colors.surfaces.content.to_rgba8();
     [ground.r, ground.g, ground.b]
 }
@@ -1146,8 +1146,7 @@ fn a_banner_that_leaves_still_paints_the_band_it_kept() {
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         let start = crate::time::now();
         let mut d = with_monotonic_time(start, || {
-            let mut d =
-                FrameHarness::for_root(State::new(), offline_view(), (640, 400), theme.clone());
+            let mut d = Driver::for_root(State::new(), offline_view(), (640, 400), theme.clone());
             d.relayout();
             d
         });
@@ -1238,7 +1237,7 @@ fn a_banner_on_its_way_in_paints_only_as_far_as_it_has_opened() {
 
 /// How far the first child of the column has opened: the band's whole height, and the part of it
 /// drawn this frame.
-fn revealed_band(d: &FrameHarness) -> Option<(f64, f64)> {
+fn revealed_band(d: &Driver) -> Option<(f64, f64)> {
     match d.root_widget().children()[0].disclosing()? {
         crate::widget::Disclosing::Band { extent, drawn } => Some((extent, drawn)),
         crate::widget::Disclosing::Grows { .. } => None,
@@ -1262,7 +1261,7 @@ struct BandFrame {
     clippy::cast_sign_loss,
     reason = "pixel tallies inside the rendered frame"
 )]
-fn captured_band(d: &FrameHarness, name: &'static str, extent: f64, reveal: f64) -> BandFrame {
+fn captured_band(d: &Driver, name: &'static str, extent: f64, reveal: f64) -> BandFrame {
     let slot = d.root_widget().children()[0].paint_bounds();
     let ground = page_ground(d);
     let rgba = d.render_rgba();

@@ -2420,7 +2420,7 @@ fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
         let text = ui::widget::Text::new("Donaudampfschifffahrtsgesellschaft").with_wrap_mode(mode);
         let mut column = Part::new(Box::new(Stack::stack().push(Box::new(text))));
         column.fit.width.max = Some(Length::Rem(6.0));
-        let mut h = ui::headless::FrameHarness::for_root(
+        let mut h = ui::headless::Driver::for_root(
             ui::State::new(),
             Stack::stack().push_part(column),
             (320, 200),
@@ -2441,7 +2441,7 @@ fn a_line_with_less_room_than_its_text_needs_is_caught() {
         let mut line = tilo_rich_edit::RichTextLine::new();
         line.set_wrap(true);
         line.set_text("The new onboarding build is on the test machines.");
-        let mut h = ui::headless::FrameHarness::for_root(
+        let mut h = ui::headless::Driver::for_root(
             ui::State::new(),
             ui::widget::Container::new()
                 .with_width(216.0)

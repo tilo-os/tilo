@@ -295,7 +295,7 @@ struct Rest {
 }
 
 /// The session's window on the frame clock the session's own host presents on
-/// ([`tilo_app_window::AppWindow`] under `ui::headless::FrameHarness`): the key down, the text and
+/// ([`tilo_app_window::AppWindow`] under `ui::headless::Driver`): the key down, the text and
 /// the key up of one keystroke reach one frame, as they do in a window whose host draws on the
 /// display's clock, instead of running a frame each.
 fn on_the_frame_clock(mut session: Session) -> Session {

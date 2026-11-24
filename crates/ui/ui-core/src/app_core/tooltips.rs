@@ -4,7 +4,6 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -38,22 +37,6 @@ pub(crate) struct TooltipLayer {
 }
 
 impl TooltipLayer {
-    /// The frame demand of the layer: a repaint it owes, the time a pending tooltip's dwell runs out,
-    /// and whether a chip is arriving.
-    pub(crate) fn schedule(&self) -> (bool, Option<crate::time::Instant>, bool) {
-        (self.redraw, self.host.reveal_at(), self.host.is_moving())
-    }
-
-    /// Feed one host event to the layer, before it is dispatched: with `target`, what the surface
-    /// offers at the pointer's new place, the pointer settles over it.
-    pub(crate) fn track(&mut self, event: &WindowEvent, target: Option<(Rect, String)>) {
-        if matches!(event, WindowEvent::CursorMoved { .. }) {
-            self.on_pointer(target, crate::time::now());
-        } else if TooltipHost::dismissed_by(event) {
-            self.dismiss();
-        }
-    }
-
     /// Run the layer's clock up to now: a pending tooltip's dwell runs out and the chip it was showing
     /// arrives.
     pub(crate) fn tick(&mut self) {
@@ -100,7 +83,6 @@ impl TooltipLayer {
         self.redraw || self.host.needs_frame()
     }
 
-    #[cfg(feature = "native")]
     pub(crate) fn reveal_at(&self) -> Option<crate::time::Instant> {
         self.host.reveal_at()
     }

@@ -16,8 +16,7 @@ use ui_core::application::{
     ApplicationOwner, Capture, ComponentRunnerInputs, OpenFile, PlaybackHandoff,
     PreparedComponentInputs, ProcessContext,
 };
-use ui_core::bound_dispatch::BoundActionAddress;
-use ui_core::headless::FrameHarness;
+use ui_core::headless::Driver;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{MemberId, PermissionContext, Role, SharedPermissions};
 
@@ -421,8 +420,8 @@ pub(super) fn window_content(directory: &std::path::Path) -> tilo_content::Conte
 /// names its host the actions of the records it shows that another workspace holds (a person's
 /// profile records), and only a host holding that workspace decides them.
 pub trait Host {
-    /// Take up the window `harness` opened for `author`, before its first frame.
-    fn opened(harness: &mut FrameHarness, author: &str);
+    /// Take up the window `driver` opened for `author`, before its first frame.
+    fn opened(driver: &mut Driver, author: &str);
 }
 
 /// No host beside the window, as in a capture or a fixture seeder run on its own: the actions
@@ -431,13 +430,15 @@ pub trait Host {
 pub struct Alone;
 
 impl Host for Alone {
-    fn opened(_: &mut FrameHarness, _: &str) {}
+    fn opened(_: &mut Driver, _: &str) {}
 }
 
 /// One framework app mounted headlessly: a test, a fixture seeder or an
 /// inspection tool drives it through the real runtime, hosted as `H` says.
 pub struct HeadlessApp<A: ResourceApp, H: Host = Alone> {
-    harness: FrameHarness,
+    /// Boxed: a test moves its app between the helpers that open, relaunch and capture it, and
+    /// each move of a driver held by value took its whole size on the stack again.
+    driver: Box<Driver>,
     /// Where the window's documents are kept: another window of this profile
     /// shares them ([`Self::open_window`]).
     owner: ApplicationOwner,
@@ -474,7 +475,7 @@ pub struct HeadlessApp<A: ResourceApp, H: Host = Alone> {
 /// document `settings`, and what the window's controls invoke there is
 /// changed as `author`'s.
 fn serve_kept<A: ResourceApp>(
-    harness: &mut FrameHarness,
+    driver: &mut Driver,
     settings: &ui_core::storage::SettingsDocument,
     author: &str,
 ) {
@@ -493,7 +494,7 @@ fn serve_kept<A: ResourceApp>(
             &kept,
             settings.clone(),
         );
-        harness.serve_provider(provider, records.served_for(&MemberId::person(author)));
+        driver.serve_provider(provider, records.served_for(&MemberId::person(author)));
     }
 }
 
@@ -1032,11 +1033,11 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
                 }
             },
         )?;
-        let mut harness = opened.harness;
-        serve_kept::<A>(&mut harness, &opened.profile.settings(), author);
-        H::opened(&mut harness, author);
+        let mut driver = opened.driver;
+        serve_kept::<A>(&mut driver, &opened.profile.settings(), author);
+        H::opened(&mut driver, author);
         Ok(Self {
-            harness,
+            driver,
             owner: opened.owner,
             closed: false,
             records: opened.records,
@@ -1062,14 +1063,14 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// for a live window.
     pub fn kept_by_host(
         &mut self,
-        host: impl FnOnce(&mut FrameHarness, &ui_core::storage::SettingsDocument, &str),
+        host: impl FnOnce(&mut Driver, &ui_core::storage::SettingsDocument, &str),
     ) {
         let mut declared = super::Resources::declaring();
         A::resources(&mut declared);
         for (provider, _) in declared.into_kept() {
-            self.harness.stop_serving_provider(provider);
+            self.driver.stop_serving_provider(provider);
         }
-        host(&mut self.harness, &self.profile.settings(), &self.author);
+        host(&mut self.driver, &self.profile.settings(), &self.author);
     }
 
     /// The app's file areas in this profile, which the running app writes
@@ -1140,9 +1141,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// Open the app again without closing it, as a reloaded page does: its window's view is
     /// what the window kept while open, never what a close would save.
     pub fn reload(mut self) -> Result<Self, LaunchError> {
-        self.harness
-            .flush_component_resources()
-            .map_err(operation)?;
+        self.driver.flush_component_resources().map_err(operation)?;
         self.closed = true;
         self.launch_again(&[])
     }
@@ -1459,7 +1458,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// The document the window shows now: the one it was opened on, or one
     /// its view opened in its place ([`ResourceEnv::open_here`](super::ResourceEnv::open_here)).
     pub fn checkout(&self) -> &DocumentCheckout {
-        self.harness.component_resource().unwrap_or(&self.checkout)
+        self.driver.component_checkout().unwrap_or(&self.checkout)
     }
 
     /// Consume the hosted window's explicit save-retry request, as its
@@ -1481,10 +1480,8 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
 
     fn close(&mut self) -> Result<(), LaunchError> {
         if !self.closed {
-            self.harness
-                .flush_component_resources()
-                .map_err(operation)?;
-            self.harness.close_components();
+            self.driver.flush_component_resources().map_err(operation)?;
+            self.driver.close_components();
             self.closed = true;
         }
         Ok(())
@@ -1501,10 +1498,10 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         surface_in::<A, S>(self.harness()).expect("the view hosts this surface")
     }
 
-    /// The headless frame harness, for input-level tests (`click_named`,
-    /// `type_text`, `targets`).
-    pub fn harness(&mut self) -> &mut FrameHarness {
-        &mut self.harness
+    /// The display-less driver the app runs on, for input-level tests
+    /// (`click_named`, `type_text`, `targets`).
+    pub fn harness(&mut self) -> &mut Driver {
+        &mut self.driver
     }
 
     /// Every text the window shows now, as assistive technology reads it:
@@ -1547,7 +1544,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// it is not.
     pub fn submit(&mut self, submit: impl super::Submit<A::Resource>) -> Result<(), String> {
         let refused = self
-            .harness
+            .driver
             .with_widget_mut(|root: &mut ResourceRoot| {
                 let Some(typed) = root.typed::<A::Resource>() else {
                     return Err("the window's root is another resource type".to_owned());
@@ -1599,13 +1596,8 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
             return Err(tilo_actions::ApiError::Failed(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
-        let address = BoundActionAddress {
-            instance_id: self.instance,
-            address: tilo_actions::ActionAddress::new(resource, id),
-        };
-        let harness = self.harness();
-        harness.invoke_bound_action(&address, &arguments)?;
-        harness.relayout();
+        let address = tilo_actions::ActionAddress::new(resource, id);
+        self.harness().invoke_action(&address, &arguments, None)?;
         Ok(())
     }
 
@@ -1682,20 +1674,15 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
             return Err(tilo_actions::ApiError::Failed(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
-        let address = BoundActionAddress {
-            instance_id: self.instance,
-            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id),
-        };
-        let harness = self.harness();
-        let started = harness.invoke_bound_action(&address, &arguments)?;
-        harness.relayout();
+        let address = tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id);
+        let started = self.harness().invoke_action(&address, &arguments, None)?;
         Ok(started.completed())
     }
 
     /// Invoke one of the app's effects through the host API, as a button,
     /// the palette or an agent does, and wait for its answer: what it
     /// reported at once, or the result of the job it started. Progress the
-    /// job reported is in [`FrameHarness::job_updates`].
+    /// job reported is in [`Driver::job_updates`].
     pub fn effect<E: Effect>(
         &mut self,
         effect: &E,
@@ -1832,14 +1819,11 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         id: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_actions::InvocationId, tilo_actions::ApiError> {
-        let address = BoundActionAddress {
-            instance_id: self.instance,
-            address: tilo_actions::ActionAddress::new(resource, id),
-        };
-        let harness = self.harness();
-        let approval = harness.approval();
+        let address = tilo_actions::ActionAddress::new(resource, id);
+        let driver = self.harness();
+        let approval = driver.approval();
         let (invocation, started) =
-            harness.start_bound_job_for(None, &address, arguments, Some(&approval))?;
+            driver.start_bound_job_for(None, &address, arguments, Some(&approval))?;
         self.last_effect = Some(invocation);
         if started.completed().is_some() {
             return Err(tilo_actions::ApiError::Failed(format!(
@@ -1865,7 +1849,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         let Some(invocation) = self.last_effect else {
             return Vec::new();
         };
-        self.harness().job_updates(invocation).to_vec()
+        self.harness().job_updates(invocation)
     }
 
     fn effect_as(
@@ -1886,10 +1870,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
-        let address = BoundActionAddress {
-            instance_id: self.instance,
-            address: tilo_actions::ActionAddress::new(resource, id),
-        };
+        let address = tilo_actions::ActionAddress::new(resource, id);
         // What the action declares it answers, checked as the broker checks
         // it: an answer outside it fails here as it fails live.
         let declared = self
@@ -1915,22 +1896,12 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         let (invocation, started) =
             harness.start_bound_job_for(invoker, &address, arguments, approval.as_ref())?;
         self.last_effect = Some(invocation);
-        let harness = self.harness();
+        let driver = self.harness();
         if let Some(output) = started.completed() {
-            harness.relayout();
+            driver.relayout();
             return within(output);
         }
-        let finished = |harness: &FrameHarness| {
-            harness
-                .job_updates(invocation)
-                .iter()
-                .find(|update| update.is_terminal())
-                .cloned()
-        };
-        harness.wait_until(ui_core::time::Duration::from_secs(30), |harness| {
-            finished(harness).is_some()
-        });
-        match finished(harness) {
+        match driver.await_job(invocation, ui_core::time::Duration::from_secs(30)) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => within(output),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
                 Err(tilo_actions::ApiError::Failed(error.message))
@@ -1962,8 +1933,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
         let doc = self
             .read_document_of(&self.checkout().id, Clone::clone)
             .unwrap_or_default();
-        let harness = self.harness();
-        harness
+        self.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
                 ui_core::widget::presence_topology::Presences::presences(root, &doc)
             })
@@ -2084,16 +2054,18 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// test may have changed what its views read past the framework
     /// ([`ui_core::component_inputs`]).
     pub fn settle(&mut self) {
-        ui_core::component_inputs::forcing(|| {
-            self.harness()
-                .wait_until(ui_core::time::Duration::ZERO, |_| true);
-        });
+        // The frame takes up what the event brought, the record's writer is offered what it
+        // changed, and the frame after takes up what that answered.
+        let driver = self.harness();
+        driver.relayout();
+        driver.persist_tick();
+        driver.relayout();
     }
 
     /// What the live window does once input stops, and no more: what its
     /// components' workers woke them for taken up, the frame the input
     /// asked for, control invocations dispatched and edits offered to the
-    /// record's writer ([`FrameHarness::idle`]). Unlike [`Self::settle`] it
+    /// record's writer ([`Driver::idle`]). Unlike [`Self::settle`] it
     /// forces no frame to sync and publish, so it costs what the live window
     /// costs: what the perf measurements run after each interaction.
     pub fn idle(&mut self) {
@@ -2299,22 +2271,19 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
                 "arguments are an object".into(),
             ));
         };
-        let address = BoundActionAddress {
-            instance_id: self.instance,
-            address: tilo_actions::ActionAddress::new(resource, id),
-        };
-        let harness = self.harness();
-        let started = if confirmed {
-            harness.invoke_bound_action_approved(&address, &arguments)?
-        } else {
-            match ambient {
-                Some(ambient) => {
-                    harness.invoke_bound_action_within(&address, &arguments, ambient)?
-                }
-                None => harness.invoke_bound_action(&address, &arguments)?,
+        let address = tilo_actions::ActionAddress::new(resource, id);
+        let driver = self.harness();
+        // A confirmed call is sent again with the person's approve, as the device's ask sends it.
+        let approval = confirmed.then(|| driver.approval());
+        let started = match ambient {
+            Some(ambient) => {
+                driver.invoke_action_within(&address, &arguments, approval.as_ref(), ambient)?
             }
+            // A call the app hands its peer before running it answers once that comes back: a
+            // caller that asked for a value waits for it, as an agent's call waits for its
+            // receipt.
+            None => driver.invoke_action_answering(&address, &arguments, approval.as_ref())?,
         };
-        harness.relayout();
         Ok(started.completed())
     }
 
@@ -2327,17 +2296,10 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
             return Err(tilo_actions::ApiError::Failed(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
-        let address = BoundActionAddress {
-            instance_id: self.instance,
-            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id),
-        };
-        let harness = self.harness();
-        if confirmed {
-            harness.invoke_bound_action_approved(&address, &arguments)?;
-        } else {
-            harness.invoke_bound_action(&address, &arguments)?;
-        }
-        harness.relayout();
+        let address = tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, id);
+        let driver = self.harness();
+        let approval = confirmed.then(|| driver.approval());
+        driver.invoke_action(&address, &arguments, approval.as_ref())?;
         Ok(())
     }
 
@@ -2633,27 +2595,27 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
 
     /// Undo the local member's last action, as Ctrl+Z does.
     pub fn undo(&mut self) -> bool {
-        let harness = self.harness();
-        let undone = harness.perform_undo();
-        harness.relayout();
-        undone
+        let driver = self.harness();
+        let undoes = driver.undo_status().can_undo;
+        driver.perform_undo();
+        undoes
     }
 
     /// Redo, as Ctrl+Shift+Z does.
     pub fn redo(&mut self) -> bool {
-        let harness = self.harness();
-        let redone = harness.perform_redo();
-        harness.relayout();
-        redone
+        let driver = self.harness();
+        let redoes = driver.undo_status().can_redo;
+        driver.perform_redo();
+        redoes
     }
 }
 
-/// The custom surface of type `S` that `A`'s view hosts in `harness`,
+/// The custom surface of type `S` that `A`'s view hosts in `driver`,
 /// without running a frame (see [`super::testing::with_surface`]).
 pub fn surface_in<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
-    harness: &mut FrameHarness,
+    driver: &mut Driver,
 ) -> Option<&mut S> {
-    surface_of::<A, S>(harness.widget_mut::<ResourceRoot>()?)
+    surface_of::<A, S>(driver.widget_mut::<ResourceRoot>()?)
 }
 
 pub(super) fn surface_of<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
@@ -2675,7 +2637,7 @@ impl<A: ResourceApp, H: Host> Drop for HeadlessApp<A, H> {
         if std::thread::panicking() {
             if !self.closed {
                 self.closed = true;
-                self.harness.close_components();
+                self.driver.close_components();
             }
             return;
         }
@@ -2739,7 +2701,7 @@ struct WindowLaunch<'a> {
 
 /// A headless app [`open_app`] opened.
 struct Opened {
-    harness: FrameHarness,
+    driver: Box<Driver>,
     owner: ApplicationOwner,
     records: ResourceStore,
     checkout: DocumentCheckout,
@@ -2876,13 +2838,20 @@ fn open_app(
         let _phase = tilo_resource::profiling::Phase::start("start.instantiate");
         definition.instantiate(prepared.context, prepared.target, prepared.restore)?
     };
-    let mut harness = {
+    let mut driver = {
         let _phase = tilo_resource::profiling::Phase::start("start.first_frame");
-        FrameHarness::from_component(component, viewport, prepared.runner_inputs)?
+        Box::new(Driver::from_component(
+            component,
+            viewport,
+            prepared.runner_inputs,
+        )?)
     };
+    // The workspace the window answers to: what the app asks of it is kept, and calls
+    // and jobs reach the app as the workspace delivers them.
+    driver.connect_peer();
     {
         let _phase = tilo_resource::profiling::Phase::start("start.settle");
-        settle_launch(&mut harness);
+        settle_launch(&mut driver);
     }
     // The live host withdraws a component's whole action surface (the
     // palette's, agents', scripts') when any of its actions breaks its
@@ -2892,7 +2861,7 @@ fn open_app(
         Vec::new()
     } else {
         let _phase = tilo_resource::profiling::Phase::start("start.contract_check");
-        harness.component_contract_violations()
+        driver.component_contract_violations()
     };
     if !violations.is_empty() {
         return Err(LaunchError::Operation(format!(
@@ -2906,7 +2875,7 @@ fn open_app(
         )));
     }
     Ok(Opened {
-        harness,
+        driver,
         owner,
         records,
         checkout,

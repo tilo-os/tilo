@@ -3,7 +3,7 @@
 //! commits.
 
 use tilo_ui::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::ui_graph::{UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource};
 use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
@@ -162,7 +162,7 @@ fn create(
     ))
 }
 
-fn harness(host: &ProbeHarness) -> FrameHarness {
+fn harness(host: &ProbeHarness) -> Driver {
     static DEFINITION: std::sync::OnceLock<tilo_ui::application::ApplicationDefinition> =
         std::sync::OnceLock::new();
     let definition = DEFINITION.get_or_init(|| definition(create));
@@ -170,19 +170,19 @@ fn harness(host: &ProbeHarness) -> FrameHarness {
     let component = definition
         .instantiate(context, LaunchTarget::New, RestoreInput::None)
         .unwrap();
-    let mut frame = FrameHarness::from_component(component, (800, 600), runner_inputs()).unwrap();
+    let mut frame = Driver::from_component(component, (800, 600), runner_inputs()).unwrap();
     frame.relayout();
     frame
 }
 
-fn input_rect(frame: &FrameHarness) -> tilo_ui::kurbo::Rect {
+fn input_rect(frame: &Driver) -> tilo_ui::kurbo::Rect {
     *frame
         .targets()
         .get("title-input")
         .expect("the input is a target")
 }
 
-fn press(frame: &mut FrameHarness, x: f64, y: f64) {
+fn press(frame: &mut Driver, x: f64, y: f64) {
     let device_id = tilo_ui::winit::event::DeviceId::dummy();
     frame.send_host_event(&WindowEvent::CursorMoved {
         device_id,
@@ -197,7 +197,7 @@ fn press(frame: &mut FrameHarness, x: f64, y: f64) {
     }
 }
 
-fn title(frame: &FrameHarness) -> String {
+fn title(frame: &Driver) -> String {
     frame.inspection_json().unwrap()
 }
 
@@ -328,7 +328,7 @@ fn component_publication_locus_respects_scrollable_clipping() {
             .unwrap();
         let record = component.record().id.as_str().to_owned();
         let mut frame = if let Some(height) = outer_clip {
-            FrameHarness::new(
+            Driver::new(
                 tilo_ui::State::new(),
                 Box::new(
                     tilo_ui::widget::Scrollable::new_vertical()
@@ -341,7 +341,7 @@ fn component_publication_locus_respects_scrollable_clipping() {
                 (800, 600),
             )
         } else {
-            FrameHarness::from_component(component, (800, 600), runner_inputs()).unwrap()
+            Driver::from_component(component, (800, 600), runner_inputs()).unwrap()
         };
         frame.relayout();
         let address =
@@ -371,6 +371,10 @@ fn component_publication_locus_respects_scrollable_clipping() {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one record's whole publication lifetime, from its owner's first input to its end"
+)]
 #[test]
 fn component_publication_locus_checks_owner_record_and_lifetime_without_input() {
     let host = ProbeHarness::new();
@@ -384,7 +388,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
     let app = definition.app_id().to_owned();
     let id = component.record().id.clone();
     let record = id.as_str().to_owned();
-    let mut frame = FrameHarness::from_component(component, (800, 600), runner_inputs()).unwrap();
+    let mut frame = Driver::from_component(component, (800, 600), runner_inputs()).unwrap();
     frame.relayout();
     let resources = frame.published_bound_resources_of(Some(12)).unwrap();
     let address = tilo_actions::api::survey(&resources)
@@ -458,7 +462,12 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
         frame.published_action_locus(12, &app, &record, &address),
         Some(frame.targets()["locus-button-0"])
     );
-    frame.open_caller_search("").unwrap();
+    frame
+        .open_search(&tilo_ui::widget::search_request::SearchRequest {
+            query: Some(String::new()),
+            ..tilo_ui::widget::search_request::SearchRequest::this_app()
+        })
+        .unwrap();
     assert!(
         frame
             .published_action_locus(12, &app, &record, &address)
@@ -488,8 +497,7 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
             .unwrap();
         let app = definition.app_id().to_owned();
         let checkout = component.record().clone();
-        let mut frame =
-            FrameHarness::from_component(component, (800, 600), runner_inputs()).unwrap();
+        let mut frame = Driver::from_component(component, (800, 600), runner_inputs()).unwrap();
         frame.relayout();
         let address =
             tilo_actions::api::survey(&frame.published_bound_resources_of(Some(12)).unwrap())
@@ -512,7 +520,7 @@ fn component_publication_locus_refuses_ambiguous_controls_and_replaced_mounts() 
             .instantiate(context, target, RestoreInput::None)
             .unwrap();
         let mut replacement =
-            FrameHarness::from_component(replacement, (800, 600), runner_inputs()).unwrap();
+            Driver::from_component(replacement, (800, 600), runner_inputs()).unwrap();
         replacement.relayout();
         replacement.published_bound_resources_of(Some(12)).unwrap();
         assert!(
@@ -622,12 +630,12 @@ fn component_publication_invocation_cannot_cross_same_instance_owners() {
         column = column.push(Box::new(TileHost::from_component(component)));
         owners.push((published, calls));
     }
-    let mut frame = FrameHarness::new(tilo_ui::State::new(), Box::new(column), (800, 600));
+    let mut frame = Driver::new(tilo_ui::State::new(), Box::new(column), (800, 600));
     let addresses =
         tilo_actions::api::survey(&frame.published_bound_resources_of(Some(12)).unwrap());
     assert_eq!(addresses.len(), 2);
     assert_ne!(addresses[0].address.resource, addresses[1].address.resource);
-    let invoke = |frame: &mut FrameHarness, address: &tilo_actions::ActionAddress| {
+    let invoke = |frame: &mut Driver, address: &tilo_actions::ActionAddress| {
         frame.invoke_bound_action(
             &tilo_ui::bound_dispatch::BoundActionAddress {
                 instance_id: 12,

@@ -58,7 +58,7 @@ pub struct Picture {
     /// What it was drawn from: the picture is drawn again when this changes.
     pub version: u64,
     /// The picture, as a `data:` address of a PNG
-    /// ([`crate::headless::FrameHarness::paint_pictures`]); none until a host draws it.
+    /// ([`crate::headless::Driver::paint_pictures`]); none until a host draws it.
     #[serde(skip)]
     pub data: Option<std::sync::Arc<str>>,
 }
@@ -239,7 +239,8 @@ fn grid_css(style: &taffy::Style, out: &mut String) {
                         RepetitionCount::AutoFit => "auto-fit".to_owned(),
                         RepetitionCount::Count(count) => count.to_string(),
                     };
-                    let tracks: Vec<String> = repeat.tracks.iter().copied().map(track_css).collect();
+                    let tracks: Vec<String> =
+                        repeat.tracks.iter().copied().map(track_css).collect();
                     format!("repeat({count},{})", tracks.join(" "))
                 }
             })
@@ -247,10 +248,18 @@ fn grid_css(style: &taffy::Style, out: &mut String) {
             .join(" ")
     };
     let auto = |tracks: &[taffy::TrackSizingFunction]| {
-        tracks.iter().copied().map(track_css).collect::<Vec<_>>().join(" ")
+        tracks
+            .iter()
+            .copied()
+            .map(track_css)
+            .collect::<Vec<_>>()
+            .join(" ")
     };
     for (name, value) in [
-        ("grid-template-columns", template(&style.grid_template_columns)),
+        (
+            "grid-template-columns",
+            template(&style.grid_template_columns),
+        ),
         ("grid-template-rows", template(&style.grid_template_rows)),
         ("grid-auto-columns", auto(&style.grid_auto_columns)),
         ("grid-auto-rows", auto(&style.grid_auto_rows)),
@@ -290,7 +299,10 @@ fn grid_placement_css(style: &taffy::Style, out: &mut String) {
             GridPlacement::NamedSpan(name, span) => Some(format!("span {name} {span}")),
         }
     }
-    for (name, placement) in [("grid-row", &style.grid_row), ("grid-column", &style.grid_column)] {
+    for (name, placement) in [
+        ("grid-row", &style.grid_row),
+        ("grid-column", &style.grid_column),
+    ] {
         match (line(&placement.start), line(&placement.end)) {
             (None, None) => {}
             (start, end) => {

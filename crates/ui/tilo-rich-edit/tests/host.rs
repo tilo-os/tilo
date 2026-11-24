@@ -2,13 +2,13 @@
 //! show in a document.
 
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Container, Widget};
 use winit::event::ElementState;
 
-fn frame(root: Box<dyn Widget>) -> FrameHarness {
-    FrameHarness::new_with_controlled_inputs(
+fn frame(root: Box<dyn Widget>) -> Driver {
+    Driver::new_with_controlled_inputs(
         State::new(),
         root,
         (400, 240),
@@ -155,7 +155,7 @@ fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteractio
     event
 }
 
-fn note_frame(text: &str) -> FrameHarness {
+fn note_frame(text: &str) -> Driver {
     use tilo_rich_edit::{BlockContent, BlockEditor};
     let mut editor = BlockEditor::new();
     // The agent's writes name it `b1`, the start of its id, as the document lets a caller.
@@ -272,7 +272,7 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
     });
     frame.poll_frame().unwrap();
     frame.relayout();
-    frame.render_rgba();
+    let _ = frame.render_rgba();
     let tags: Vec<String> = frame
         .presence()
         .caret_tags()
@@ -290,7 +290,7 @@ fn an_agent_writing_wears_one_tag_at_its_caret() {
     frame.type_text("x");
     frame.poll_frame().unwrap();
     frame.relayout();
-    frame.render_rgba();
+    let _ = frame.render_rgba();
     assert!(
         frame
             .presence()

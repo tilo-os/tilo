@@ -2164,7 +2164,7 @@ mod tests {
 
     #[test]
     fn held_activation_keys_do_not_repeat_admitted_toolbar_commands() {
-        use crate::headless::Framed;
+        use crate::app::driver::Framed;
         use std::cell::Cell;
         use std::rc::Rc;
         let _settled = crate::motion::testing::settled();

@@ -2157,13 +2157,13 @@ mod tests {
         };
         let mut scope = FindScope::new(Box::new(page)).with_bar(FindBar::new().with_replace());
         scope.open();
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             scope,
             (900, 400),
             Theme::dark(),
         );
-        let field = |harness: &crate::headless::FrameHarness, name: &str| {
+        let field = |harness: &crate::app::driver::Driver, name: &str| {
             harness
                 .a11y_nodes()
                 .into_iter()

@@ -381,6 +381,11 @@ impl SurfacePublication for Publishing {
             .as_ref()
             .map_or_else(Vec::new, |reads| reads(field, id))
     }
+    fn says_of_rows(&self) -> bool {
+        self.sources.row_status.is_some()
+            || self.sources.item_presentation.is_some()
+            || self.sources.item_reads.is_some()
+    }
     fn live_rows(&self) -> Vec<LiveRow> {
         self.sources
             .rows

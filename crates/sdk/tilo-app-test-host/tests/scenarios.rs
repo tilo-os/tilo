@@ -6,7 +6,7 @@ use std::rc::Rc;
 use tilo_app_test_host::TestApp;
 
 use tilo_app::advanced::{NodeId, TaffyTree, WindowEvent};
-use tilo_app::headless::FrameHarness;
+use tilo_app::headless::Driver;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::ElementState;
 use ui_core::widget::DrawChild;
@@ -145,7 +145,7 @@ impl ResourceApp for PlaylistApp {
         }
     }
 
-    fn scenario_input(name: Option<&str>, input: &mut FrameHarness) -> Result<(), String> {
+    fn scenario_input(name: Option<&str>, input: &mut Driver) -> Result<(), String> {
         if name != Some("clicked") {
             return Ok(());
         }

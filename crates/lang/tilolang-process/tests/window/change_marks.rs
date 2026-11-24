@@ -19,8 +19,8 @@ pub(crate) fn run() -> (ActionInvoker, ActionContext) {
 
 /// A window a test drives.
 pub(crate) trait Driven {
-    /// The frame harness the window is drawn in.
-    fn harness(&mut self) -> &mut ui::headless::FrameHarness;
+    /// The display-less driver the window is drawn in.
+    fn harness(&mut self) -> &mut ui::headless::Driver;
     /// Its frames until it is at rest.
     fn settle(&mut self);
 }

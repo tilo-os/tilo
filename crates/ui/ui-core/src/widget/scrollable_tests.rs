@@ -1356,7 +1356,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
-    use crate::headless::FrameHarness;
+    use crate::app::driver::Driver;
     use crate::widget::{Field, TextInput, TextInputKind};
     use crate::{LocalState, State};
 
@@ -1403,7 +1403,7 @@ fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
                 .fill_parent_height()
                 .with_focus_reveal()
                 .with_child(Box::new(content));
-            let mut harness = FrameHarness::new_with_theme(
+            let mut harness = Driver::new_with_theme(
                 State::new(),
                 Box::new(scroll),
                 (400, 300),
@@ -1435,7 +1435,7 @@ fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
                 }
                 scroll.set_offset_y(0.0);
             }).unwrap();
-            // The harness ran the production layout after that deliberate
+            // The driver ran the production layout after that deliberate
             // scroll. Unchanged focus must not pull the person back down.
             harness
                 .with_widget_mut::<Scrollable, _>(|scroll| {
@@ -2083,14 +2083,14 @@ use crate::synthetic_input::named_key;
 
 #[test]
 fn persistent_overflow_bar_paints_before_input_and_after_idle_without_ticks() {
-    use crate::headless::FrameHarness;
+    use crate::app::driver::Driver;
     use crate::widget::{Column, Text};
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
         let mut content = Column::new().with_no_padding().with_intrinsic_height();
         for index in 0..71 {
             content = content.push(Box::new(Text::new(&format!("Application {index}"))));
         }
-        let mut host = FrameHarness::new_with_theme(
+        let mut host = Driver::new_with_theme(
             crate::State::new(),
             Box::new(
                 Scrollable::new_vertical()
@@ -2144,8 +2144,8 @@ fn persistent_overflow_bar_paints_before_input_and_after_idle_without_ticks() {
 /// which shows only once it is scrolled.
 #[test]
 fn a_scroll_that_shows_its_bar_paints_it_while_it_overflows_without_input() {
+    use crate::app::driver::Driver;
     use crate::component::Described;
-    use crate::headless::FrameHarness;
     use crate::widget::{Column, Text};
     let theme = Theme::dark();
     for shows_bar in [true, false] {
@@ -2161,7 +2161,7 @@ fn a_scroll_that_shows_its_bar_paints_it_while_it_overflows_without_input() {
                 ..super::component::ScrollProps::default()
             },
         );
-        let mut host = FrameHarness::new_with_theme(
+        let mut host = Driver::new_with_theme(
             crate::State::new(),
             Box::new(scroll),
             (400, 300),
@@ -2183,7 +2183,7 @@ fn a_scroll_that_shows_its_bar_paints_it_while_it_overflows_without_input() {
 
 #[test]
 fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
-    use crate::headless::FrameHarness;
+    use crate::app::driver::Driver;
     use crate::widget::{MediaAspect, MediaCard, MediaGrid, MediaSource};
     for theme in [
         Theme::dark(),
@@ -2199,7 +2199,7 @@ fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
                         .meta("The creator")
                 })
                 .collect();
-            FrameHarness::new_with_theme(
+            Driver::new_with_theme(
                 crate::State::new(),
                 Box::new(
                     Scrollable::new_vertical()

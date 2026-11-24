@@ -15,7 +15,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::profiling::{FRAME_BUDGET_US, PerfReport, PerfScenario, PerfStep, run_scenario_on};
 use tilo_ui::state::State;
 use tilo_ui::widget::{Column, Scrollable, Text, Widget};
@@ -41,7 +41,7 @@ fn list_app(rows: usize, offset: Rc<Cell<(f32, f32)>>) -> (State, Box<dyn Widget
 }
 
 fn verified_scroll_step(
-    driver: &mut FrameHarness,
+    driver: &mut Driver,
     offset: &Cell<(f32, f32)>,
     dy: f64,
     step: usize,
@@ -76,7 +76,7 @@ fn verified_list_scroll(count: usize) -> Result<PerfReport, String> {
             count: 1,
         })
         .collect();
-    let mut driver = FrameHarness::new(state, root, scenario.viewport);
+    let mut driver = Driver::new(state, root, scenario.viewport);
     driver.send(&WindowEvent::CursorMoved {
         device_id: DeviceId::dummy(),
         position: PhysicalPosition::new(
@@ -191,7 +191,7 @@ mod tests {
             tilo_ui::i18n::I18nManager::init("en-US");
             let offset = Rc::new(Cell::new((0.0, 256.0)));
             let (state, root) = list_app(200, Rc::clone(&offset));
-            let mut driver = FrameHarness::new(state, root, tilo_ui::headless::DEFAULT_VIEWPORT);
+            let mut driver = Driver::new(state, root, tilo_ui::headless::DEFAULT_VIEWPORT);
             driver.send(&WindowEvent::CursorMoved {
                 device_id: DeviceId::dummy(),
                 position: PhysicalPosition::new(-100.0, -100.0),

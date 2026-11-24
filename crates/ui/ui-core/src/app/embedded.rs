@@ -4,7 +4,6 @@
 //! and the actions it publishes); the host only lays it out, hands it the
 //! region's input and draws it where it sits.
 
-use crate::app_core::AppCore as _;
 use std::cell::{Cell, RefCell};
 
 use super::{

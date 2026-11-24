@@ -53,7 +53,7 @@ impl App {
             {}
         }
     }
-    fn capture_history_entry(&mut self) {
+    pub(super) fn capture_history_entry(&mut self) {
         let captured = self.history.as_mut().is_some_and(|history| {
             history.captures_input()
                 && history
@@ -400,6 +400,11 @@ impl App {
             self.set_focused_node(Some(focus));
         }
         self.handle_unconsumed_activation_key(event, &mut handled);
+        self.service_history_own_controls();
+        // A press on History's own chrome is answered here, where History hosts
+        // it: the open (or return) it asks for is taken before anything else this
+        // input queued runs, so what components queued before it is sealed by the
+        // refresh below rather than dispatched by the frame that follows.
         // A genuine open request must seal the live queue before any History
         // output disposal. The refresh also invalidates admitted raw maps
         // before replacing framework chrome.
@@ -419,7 +424,6 @@ impl App {
         self.layout.layout_dirty = true;
         true
     }
-    #[cfg(feature = "native")]
     pub(super) fn settle_history_presentation(&mut self) -> bool {
         self.refresh_document_routes();
         if crate::history_mode::embedded::has_review(self.root_widget.as_ref()) {
@@ -507,7 +511,6 @@ impl App {
     }
 
     /// Sync and publish what a History write changed in `source`.
-    #[cfg(feature = "native")]
     fn publish_history_write(
         &mut self,
         source: Option<&crate::history_mode::HistorySourceRegistration>,
@@ -527,7 +530,6 @@ impl App {
 
     /// Called only after native exit layout, focus, drawing and publication.
     /// A deferred or failed frame retains its leases until a later completion.
-    #[cfg(feature = "native")]
     pub(super) fn finish_history_return_frame(&mut self) {
         // Keep an outer covering lease through nested discard callbacks too.
         let mut opened = crate::history_mode::embedded::finish_returns(self.root_widget.as_mut());
@@ -643,8 +645,20 @@ impl App {
             return true;
         }
         if self.history_controls_event(event, scale) {
+            // History's own chrome took this input: what widgets queued runs in no frame that
+            // follows it, so the entry (or return) it asks for seals the live queue instead.
+            self.input.passive_input = true;
             *handled |= self.dispatch_framework_history_event(event, scale);
             return *handled;
+        }
+        // A person's own action, from an assistive technology or the host's own menu, is a frame
+        // that follows no chrome input.
+        if !matches!(
+            event,
+            winit::event::WindowEvent::CursorMoved { .. }
+                | winit::event::WindowEvent::CursorLeft { .. }
+        ) {
+            self.input.passive_input = false;
         }
         let history_handled = *handled;
         if !history_handled
@@ -770,6 +784,8 @@ impl App {
     fn build_presentation_layout(&mut self) {
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
             self.layout.taffy = taffy::TaffyTree::new();
+            self.layout.host_node = None;
+            self.layout.host_child = None;
             dialog.sync(&self.state.doc, &self.state.root);
             let root = dialog.build_layout(
                 &mut self.layout.taffy,
@@ -857,7 +873,6 @@ impl App {
         }
     }
 
-    #[cfg(feature = "native")]
     pub(super) fn apply_history_presentation(&mut self, root: taffy::NodeId) {
         if let Some(history) = &mut self.history {
             history.apply_composition(
@@ -878,11 +893,16 @@ impl App {
     /// Ordinary applications retain native document chrome by default.
     #[must_use]
     pub fn without_native_document_chrome(mut self) -> Self {
+        self.drop_native_document_chrome();
+        self
+    }
+
+    /// [`Self::without_native_document_chrome`] on an app already in place.
+    pub(crate) fn drop_native_document_chrome(&mut self) {
         self.native_document_chrome = false;
         if let Some(history) = &mut self.history {
             history.remove_open_button();
         }
-        self
     }
 
     /// Apply the native window's default presentation before the event loop
@@ -918,7 +938,6 @@ impl App {
     /// History and search while `tab_presents`: the app draws no History
     /// band of its own, offers its header row the control only while the
     /// bar is hidden, and its header drops its own search button.
-    #[cfg(feature = "native")]
     pub(crate) fn set_window_presents_history(&mut self, tab_presents: bool) {
         self.set_window_presents_bar(tab_presents);
         if let Some(history) = &mut self.history {
@@ -933,7 +952,6 @@ impl App {
     /// History to open: the one its root widget offers
     /// ([`crate::widget::WindowHistory`]: a window showing the system's
     /// history of what it shows), else its History API's.
-    #[cfg(feature = "native")]
     pub(crate) fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
         crate::history_mode::host::offered_control(
             self.root_widget.as_ref(),
@@ -944,7 +962,6 @@ impl App {
     /// The window's History control was pressed: run it on the History the
     /// root widget offers, else on this app's History API, as the History
     /// shortcut does.
-    #[cfg(feature = "native")]
     pub(crate) fn invoke_window_history_control(
         &mut self,
         control: crate::widget::HistoryControl,

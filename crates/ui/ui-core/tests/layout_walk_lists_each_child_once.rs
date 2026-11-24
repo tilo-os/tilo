@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{TaffyTreeExt, Widget};
 
@@ -61,7 +61,7 @@ impl Widget for Owner {
 }
 
 fn lay_out(listed: usize) {
-    let mut harness = FrameHarness::for_root(
+    let mut harness = Driver::for_root(
         State::new(),
         Owner {
             leaf: Leaf { _sized: 0 },

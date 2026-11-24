@@ -58,7 +58,7 @@ fn provenance_and_author_pill_presentation() {
     /// raised surface), chips and bands literal white veneers, hover
     /// `neutral[3]`, and the selection bar the focus ring.
     ///
-    /// Writes `$UX1X_F4_OUT/<theme>/activity_timeline.png` plus the harness
+    /// Writes `$UX1X_F4_OUT/<theme>/activity_timeline.png` plus the driver's
     /// inspection when that variable is set; asserts regardless.
     fn ux1x_pane_chips_and_bands_keep_a_derived_edge_on_both_presets() {
         use crate::offscreen::OffscreenRenderer;
@@ -75,7 +75,7 @@ fn provenance_and_author_pill_presentation() {
                     clippy::cast_sign_loss,
                     reason = "a small test viewport"
                 )]
-                let harness = crate::headless::FrameHarness::new_with_theme(
+                let harness = crate::app::driver::Driver::new_with_theme(
                     crate::State::new(),
                     Box::new(ux1x_fixture()),
                     (pw as u32, ph as u32),

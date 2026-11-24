@@ -40,7 +40,6 @@ pub use labels::{
     is_unnamed_person, person_label, shown_name, unnamed_label, unnamed_person_label,
     unnamed_person_short_label,
 };
-#[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
 pub use mark::PresenceMark;
@@ -74,7 +73,6 @@ pub fn local_workspace_key() -> Option<PresenceKey> {
 /// [`PresenceKey::surface_pointer`] for this process's own surface. The
 /// coordinates a winit `CursorMoved` carries are surface-local, so this
 /// is the only representation an app can provide.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn local_surface_pointer() -> PresenceKey {
     PresenceKey::surface_pointer(crate::local_surface_id())
 }

@@ -424,6 +424,12 @@ impl ResourceSet {
         self
     }
 
+    /// Whether this store writes its records' changes through its port itself, rather than a
+    /// window's routes publishing them.
+    pub fn writes_for_self(&self) -> bool {
+        self.writes
+    }
+
     /// Every record this process has open.
     pub fn open_resources(&self) -> Vec<DocumentCheckout> {
         let mut out: Vec<DocumentCheckout> = self
@@ -2071,6 +2077,13 @@ impl ResourceStore {
     #[must_use]
     pub fn takes_writes(&self) -> bool {
         self.0.try_borrow_mut().is_ok()
+    }
+
+    /// Whether this store writes its records' changes through its port itself, rather than a
+    /// window's routes publishing them. Its own writer is then the one path its changes take:
+    /// publishing them on a route as well would settle a write the workspace never took.
+    pub fn writes_for_self(&self) -> bool {
+        self.0.try_borrow().is_ok_and(|set| set.writes_for_self())
     }
 
     pub fn read<R>(&self, id: &DocumentId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {

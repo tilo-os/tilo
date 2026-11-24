@@ -1,10 +1,11 @@
 //! Source-scoped accessibility for app-owned secondary surfaces.
 
 use super::{
-    AccessNode, AkNode, AkNodeId, AkRect, AkRole, ROOT_ID, TreeInfo, TreeUpdate,
-    apply_semantics_common, map_role, synthetic_node_id, synthetic_text_run_node_id,
-    text_run_content, text_run_for,
+    AccessNode, AkNode, AkNodeId, AkRect, ROOT_ID, TreeUpdate, apply_semantics_common, map_role,
+    synthetic_node_id, synthetic_text_run_node_id, text_run_content, text_run_for,
 };
+#[cfg(any(feature = "native", test))]
+use super::{AkRole, TreeInfo};
 use vello::kurbo::Point;
 
 struct SurfaceWalk {
@@ -57,6 +58,7 @@ impl SurfaceWalk {
     }
 }
 
+#[cfg(any(feature = "native", test))]
 pub(crate) fn surface_tree_update(
     access: Option<&AccessNode>,
     origin: Point,

@@ -364,7 +364,6 @@ impl App {
     /// value, masked or shown. Such a frame is withheld from captures like a
     /// protected app's, so a typed password never reaches a screenshot or a
     /// screen share.
-    #[cfg(feature = "native")]
     pub(crate) fn set_secret_on_screen(&mut self, shown: bool) {
         self.floating.secret_on_screen = shown;
     }
@@ -1553,7 +1552,6 @@ impl App {
     /// but the native secondary may not have committed and taken pointer focus
     /// yet. Once the root reattaches, its presentation disappears immediately,
     /// so the very next primary event remains app-local as usual.
-    #[cfg(feature = "native")]
     fn primary_floating_pointer_event(
         &self,
         event: &WindowEvent,

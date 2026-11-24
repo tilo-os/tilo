@@ -3,7 +3,7 @@
 //! for no more frames however much of its page lies below the fold.
 
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::widget::{
     Checkbox, Column, Container, Scrollable, Segment, Slider, Toggle, ToggleGroup,
 };
@@ -23,7 +23,7 @@ fn controls_scrolled_out_of_view_ask_for_no_more_frames() {
         .push(Box::new(Checkbox::given(true)))
         .push(Box::new(Slider::new("level", "level")));
     let view = Scrollable::new_vertical().with_child(Box::new(page));
-    let mut window = FrameHarness::new(State::new(), Box::new(view), (400, 300));
+    let mut window = Driver::new(State::new(), Box::new(view), (400, 300));
     let mut frames = 0;
     while window.poll_frame().expect("the page lays out") {
         frames += 1;

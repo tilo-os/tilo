@@ -177,7 +177,7 @@ fn shot(launch: &LaunchArgs, out: &std::path::Path) -> Result<(), String> {
         &ui::WakeHandle::new(),
         Opened::Shot(scenario),
     );
-    let mut frame = ui::headless::FrameHarness::new_with_theme(
+    let mut frame = ui::headless::Driver::new_with_theme(
         ui::State::new(),
         root,
         launch.viewport.unwrap_or(SHOT_VIEWPORT),

@@ -10,13 +10,13 @@ fn icon(id: &'static str, icon: Icon, name: &str) -> Element {
     Box::new(Button::icon_only(id, icon, name).on_open(|| {}))
 }
 
-fn part_rect(h: &FrameHarness, part: Part) -> Rect {
+fn part_rect(h: &Driver, part: Part) -> Rect {
     h.root::<NavShell>()
         .part(part)
         .map_or(Rect::ZERO, Widget::get_rect)
 }
 
-fn exposed_ids(h: &FrameHarness) -> Vec<String> {
+fn exposed_ids(h: &Driver) -> Vec<String> {
     h.root::<NavShell>()
         .children()
         .iter()
@@ -45,8 +45,9 @@ tilo_test_env::scenario! {
         let mut h = harness(shell, 1024, 700, Theme::dark());
         settle(&mut h, 1024, 700);
         let (new, new_events) = Probe::boxed("content-next");
-        h.root_mut::<NavShell>().set_content(new);
-        h.root_mut::<NavShell>()
+        h.widget_mut::<NavShell>().expect("the shell").set_content(new);
+        h.widget_mut::<NavShell>()
+            .expect("the shell")
             .set_content_header("Final", vec![icon("share", Icon::Send, "Share")]);
         assert_eq!(
             exposed_ids(&h),
@@ -61,7 +62,8 @@ tilo_test_env::scenario! {
         assert!(old_events.get() > 0, "the event reached the built content");
         assert_eq!(new_events.get(), 0);
         assert!(
-            h.root_mut::<NavShell>()
+            h.widget_mut::<NavShell>()
+                .expect("the shell")
                 .content_mut::<Probe>()
                 .is_some_and(|p| p.id == "content-next"),
             "typed access sees the content waiting to go in"
@@ -144,7 +146,7 @@ tilo_test_env::scenario! {
             .overview_count(3);
         let mut h = harness(shell, 1400, 800, Theme::dark());
         settle(&mut h, 1400, 800);
-        let heading = |h: &FrameHarness, column: Column| {
+        let heading = |h: &Driver, column: Column| {
             h.root::<NavShell>()
                 .part(Part::Title(column))
                 .and_then(Widget::accessibility)

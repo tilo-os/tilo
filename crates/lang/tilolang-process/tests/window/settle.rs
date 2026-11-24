@@ -7,7 +7,7 @@
 //! under load the quiet moment comes before the work.
 
 use tilolang_process::TilolangProcess;
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 
 /// The longest a host may take to be done with what it owes before the test says so: a failure,
 /// not a wait — nothing is settled by letting time pass.
@@ -26,7 +26,7 @@ pub use tilolang_process::window::hosted::Woken;
 ///
 /// A placeholder whose answer landed stands until the window's next deadline (a skeleton that
 /// showed is held so it never flashes): the frame then shows the answer, so it is waited for.
-pub fn framed(window: &mut FrameHarness) -> bool {
+pub fn framed(window: &mut Driver) -> bool {
     window.relayout();
     let schedule = window.frame_schedule();
     if schedule.needs_redraw {

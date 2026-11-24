@@ -16,15 +16,10 @@
 //! ([`crate::widget::WindowHeader::set_window_presents_search`]) and its
 //! History draws no toggle of its own.
 
-#[cfg(feature = "native")]
-use crate::app_core::KeyCore as _;
-#[cfg(feature = "native")]
 use crate::widget::InPlace;
 use crate::widget::SearchDriver;
-#[cfg(feature = "native")]
 use crate::widget::{FindAbilities, FindOptions};
 use crate::window_toolbar::{SearchOffer, WindowOffer};
-#[cfg(feature = "native")]
 use crate::window_toolbar::{SearchOpening, ToolbarEvent};
 
 use super::App;
@@ -70,7 +65,6 @@ pub(crate) struct WindowBarRuntime {
 impl WindowBarRuntime {
     /// Whether the window handled the input with the serial `serial`: serials grow by one per
     /// event and wrap.
-    #[cfg(feature = "native")]
     pub(super) fn handled(&self, serial: u32) -> bool {
         self.handled_input
             .is_some_and(|handled| handled.wrapping_sub(serial) < 1 << 31)
@@ -79,7 +73,6 @@ impl WindowBarRuntime {
 
 impl WindowBarRuntime {
     /// Whether the window's bar presents search and History for the app.
-    #[cfg(feature = "native")]
     pub(crate) fn presents(&self) -> bool {
         self.presents
     }
@@ -99,7 +92,6 @@ impl WindowBarRuntime {
     }
 
     /// The shell connection went away: a new one is told afresh.
-    #[cfg(feature = "native")]
     pub(crate) fn disconnected(&mut self) {
         self.sent = None;
     }
@@ -110,7 +102,6 @@ impl App {
     /// it stopped, or the app shows its own controls). Returns whether that
     /// changed; the app's structure is rebuilt then, so its header drops or
     /// regains the button that opens its search.
-    #[cfg(feature = "native")]
     pub(crate) fn set_window_presents_bar(&mut self, presents: bool) -> bool {
         if self.floating.window_bar.presents == presents {
             return false;
@@ -132,7 +123,6 @@ impl App {
 
     /// What the app's widgets offer the window's search, looked at once per
     /// widget tree.
-    #[cfg(feature = "native")]
     pub(crate) fn window_search_offer(&mut self) -> SearchOffer {
         self.window_search_offer_and_abilities().0
     }
@@ -140,7 +130,6 @@ impl App {
     /// What the app's widgets offer the window's search and what their
     /// document's find offers beyond matching, looked at once per widget
     /// tree.
-    #[cfg(feature = "native")]
     fn window_search_offer_and_abilities(&mut self) -> (SearchOffer, FindAbilities) {
         if let Some(offer) = self.floating.window_bar.offer {
             return offer;
@@ -160,7 +149,6 @@ impl App {
     /// opens the window bar's search instead of a find of the app's own: the
     /// bar shows this window from another process and the app has something
     /// to search in place (for replacing, a document).
-    #[cfg(feature = "native")]
     pub(crate) fn window_bar_takes(&mut self, opening: SearchOpening) -> bool {
         if !crate::window_toolbar::is_hosted() || !self.floating.window_bar.presents {
             return false;
@@ -172,7 +160,6 @@ impl App {
     }
 
     /// What the window offers the bar now.
-    #[cfg(feature = "native")]
     pub(crate) fn window_offer(&mut self) -> WindowOffer {
         let (search, find) = self.window_search_offer_and_abilities();
         WindowOffer {
@@ -185,7 +172,6 @@ impl App {
     }
 
     /// The offer to send the shell, when it changed since it was last told.
-    #[cfg(feature = "native")]
     pub(crate) fn take_window_offer_change(&mut self) -> Option<WindowOffer> {
         // The document changed under an open search: its matches follow; a
         // query view's count follows its results.
@@ -206,7 +192,6 @@ impl App {
     /// What the person did in the window's bar, after the input with the serial `after_input`
     /// (the shell's): run at once when the window handled that input, else once it has, before
     /// any input after it.
-    #[cfg(feature = "native")]
     pub(crate) fn receive_bar_event(&mut self, event: ToolbarEvent, after_input: Option<u32>) {
         let bar = &mut self.floating.window_bar;
         match after_input {
@@ -225,7 +210,6 @@ impl App {
     /// The window handled the input with the serial `serial`, and everything before it: what
     /// the person did in the bar after it, and the controls the shell pressed after it, run
     /// now, before the window handles the input after.
-    #[cfg(feature = "native")]
     pub fn input_handled(&mut self, serial: u32) {
         // What a control pressed from now on follows: the invocation it makes names this serial.
         crate::press::note(serial);
@@ -240,13 +224,14 @@ impl App {
                 self.run_bar_event(&event);
             }
         }
+        // Only a native window holds a press for the input before it.
+        #[cfg(feature = "native")]
         self.deliver_held_presses();
     }
 
     /// Run what the person did in the window's bar: the bar's search and History here, the
     /// app's own parts by the widgets that declared them, now, so that what it does comes
     /// before what the input after it does.
-    #[cfg(feature = "native")]
     fn run_bar_event(&mut self, event: &ToolbarEvent) {
         if self.apply_window_bar_event(event).is_some() {
             return;
@@ -267,9 +252,8 @@ impl App {
     /// Hand the app an event about its own parts
     /// ([`crate::window_toolbar::take_events`]). A press on a part is a
     /// press on the app: it hands the app the keyboard
-    /// ([`Self::hand_keyboard_to_app`]), as in the frame harness
-    /// (`FrameHarness::press_window_part`).
-    #[cfg(feature = "native")]
+    /// ([`Self::hand_keyboard_to_app`]), as the display-less driver's
+    /// `press_window_part` delivers one.
     pub(crate) fn deliver_app_part_event(&mut self, event: ToolbarEvent) {
         if crate::window_toolbar::deliver_to_app(event) {
             self.hand_keyboard_to_app();
@@ -280,7 +264,6 @@ impl App {
     /// `None` for an event about the app's parts, which the app reads
     /// itself ([`crate::window_toolbar::take_events`]); else whether
     /// anything the app shows changed.
-    #[cfg(feature = "native")]
     pub(crate) fn apply_window_bar_event(&mut self, event: &ToolbarEvent) -> Option<bool> {
         Some(match event {
             ToolbarEvent::Search { query } => {
@@ -350,7 +333,6 @@ impl App {
 
     /// Carry the bar's search to the app's widgets. Returns whether anything
     /// the app shows changed.
-    #[cfg(feature = "native")]
     fn drive_window_search(&mut self, step: Option<bool>, finishing: bool) -> bool {
         let bar = &mut self.floating.window_bar;
         let touched = bar.driver.drive(
@@ -378,7 +360,6 @@ impl App {
 
     /// The bar's search opened on this app: what it acts on is what the
     /// app's widgets offer now.
-    #[cfg(feature = "native")]
     fn open_window_search_driver(&mut self) {
         if self.floating.window_bar.driver.in_place() == InPlace::Nothing {
             let offer = self.window_search_offer();
@@ -390,7 +371,6 @@ impl App {
     /// painted, a match scrolled into view, a list narrowed, a match
     /// replaced (the widgets write it when they settle, in that frame's
     /// sync).
-    #[cfg(feature = "native")]
     fn window_search_touched(&mut self, touched: bool) {
         if touched {
             self.mark_semantic_tree_stale();

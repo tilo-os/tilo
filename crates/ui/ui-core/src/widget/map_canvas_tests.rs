@@ -164,12 +164,8 @@ fn pointing_marks_where_an_answer_grows_from() {
         origin: Point::new(100.0, 50.0),
         zoom: 2.0,
     });
-    let mut host = crate::headless::FrameHarness::for_root(
-        crate::State::new(),
-        map,
-        (800, 600),
-        Theme::dark(),
-    );
+    let mut host =
+        crate::app::driver::Driver::for_root(crate::State::new(), map, (800, 600), Theme::dark());
     host.relayout();
     host.send(&crate::synthetic_input::cursor_moved(300.0, 200.0));
     for state in [ElementState::Pressed, ElementState::Released] {

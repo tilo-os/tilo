@@ -25,7 +25,7 @@ use {
     ui_core::application::{
         ApplicationOwner, Capture, ComponentRunnerInputs, NativeProcess, PreparedComponentInputs,
     },
-    ui_core::headless::FrameHarness,
+    ui_core::headless::Driver,
     ui_core::launch::{LaunchArgs, LaunchSpec},
     ui_core::permissions::{PermissionContext, Role},
     ui_core::resource::DocumentCheckout,
@@ -305,7 +305,7 @@ pub trait ResourceApp: 'static {
     /// Must be deterministic, like the rest of the scenario.
     fn scenario_input(
         name: Option<&str>,
-        input: &mut ui_core::headless::FrameHarness,
+        input: &mut ui_core::headless::Driver,
     ) -> Result<(), String> {
         let _ = (name, input);
         Ok(())
@@ -2136,19 +2136,16 @@ pub(crate) fn profile_content(directory: &std::path::Path) -> tilo_content::Cont
 }
 
 /// Take the launch's actions ([`ResourceApp::launch`]) as the live host's
-/// first idle tick does, before anything else drives the harness.
+/// first idle tick does, before anything else drives the window.
 #[cfg(tilo_native_runner)]
-pub(crate) fn settle_launch(harness: &mut FrameHarness) {
-    harness.wait_until(ui_core::time::Duration::ZERO, |_| true);
+pub(crate) fn settle_launch(driver: &mut Driver) {
+    driver.wait_until(ui_core::time::Duration::ZERO, |_| true);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn capture<A: ResourceApp>(
-    harness: &mut FrameHarness,
-    args: &LaunchArgs,
-) -> Result<(), LaunchError> {
-    settle_launch(harness);
-    super::stage::stage::<A>(harness, args.scenario.as_deref())
+fn capture<A: ResourceApp>(driver: &mut Driver, args: &LaunchArgs) -> Result<(), LaunchError> {
+    settle_launch(driver);
+    super::stage::stage::<A>(driver, args.scenario.as_deref())
 }
 
 #[cfg(not(target_arch = "wasm32"))]

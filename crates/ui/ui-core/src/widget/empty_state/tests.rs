@@ -343,7 +343,7 @@ tilo_test_env::scenario! {
                 .on_open(move || counted.set(counted.get() + 1))
                 .into_scrollable()
                 .with_height(50.0);
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 scroll,
                 (240, 50),
@@ -769,7 +769,7 @@ tilo_test_env::scenario! {
                 .with_action("Open")
                 .with_action_id("empty.open")
                 .on_open(move || counted.set(counted.get() + 1));
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 empty,
                 (600, 400),
@@ -868,7 +868,7 @@ tilo_test_env::scenario! {
             .with_action_id("weather.empty.add")
             .on_open(move || seen.set(seen.get() + 1));
         let mut driver =
-            crate::headless::FrameHarness::new(crate::state::State::new(), Box::new(root), (480, 360));
+            crate::app::driver::Driver::new(crate::state::State::new(), Box::new(root), (480, 360));
         let audit = driver.native_app_audit();
         assert!(audit.is_certified(), "{audit:#?}");
         driver

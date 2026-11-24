@@ -277,7 +277,7 @@ fn window_bar_shots_of_every_state() {
         ] {
             let mut group = group_of(tabs);
             group.set_focused(focused);
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 group,
                 (900, 260),

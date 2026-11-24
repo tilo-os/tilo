@@ -9,7 +9,7 @@ use tilo_ui::widget::TaffyTreeExt;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -77,7 +77,7 @@ impl Widget for Probe {
 }
 
 struct Harness {
-    driver: FrameHarness,
+    driver: Driver,
     events: Rc<RefCell<Vec<WindowEvent>>>,
     menu_open_at: Rc<RefCell<Option<[f32; 2]>>>,
 }
@@ -95,7 +95,7 @@ fn harness(raw_touch: bool) -> Harness {
         events: events.clone(),
         menu_open_at: menu_open_at.clone(),
     };
-    let driver = FrameHarness::new(State::new(), Box::new(probe), (600, 400));
+    let driver = Driver::new(State::new(), Box::new(probe), (600, 400));
     events.borrow_mut().clear();
     Harness {
         driver,

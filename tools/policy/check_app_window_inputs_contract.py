@@ -52,7 +52,6 @@ NATIVE_RUNNER_FILES = {
     "app/native_runner/startup.rs",
     "application/runner.rs",
     "dx12_shader_cache.rs",
-    "headless.rs",
     "launch.rs",
     "native_scenario.rs",
     "offscreen.rs",

@@ -299,7 +299,7 @@ impl ResourceApp for AssistedApp {
     }
 }
 
-fn ctrl_z(harness: &mut tilo_app::headless::FrameHarness) {
+fn ctrl_z(harness: &mut tilo_app::headless::Driver) {
     harness.set_modifiers(&["ctrl".into()]);
     harness.key("z");
     harness.set_modifiers(&[]);

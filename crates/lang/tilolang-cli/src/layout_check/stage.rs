@@ -8,7 +8,7 @@ use std::rc::Rc;
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
 use tilolang_tilo::runtime::value::{ResourceRef as RuntimeRef, Value as RuntimeValue};
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 use ui::interaction::InteractionEnvironment;
 
 /// The motion a read window is allowed before it is a finding: two seconds of frames at the pace a
@@ -65,7 +65,7 @@ pub const ME: &str = "ada";
 impl Staged {
     /// The app `app` of `packages` as the window's bar names it: its icon and its title, as the
     /// launcher and the desktop's bar wear them.
-    fn name_window(harness: &mut FrameHarness, app: &str, packages: &Rc<Packages>) {
+    fn name_window(harness: &mut Driver, app: &str, packages: &Rc<Packages>) {
         let meta = packages.platform.iter().find(|meta| meta.app == app);
         let title = meta.map_or_else(String::new, |meta| meta.title.clone());
         let icon = meta
@@ -203,7 +203,7 @@ impl Staged {
         self.settle()
     }
 
-    /// Press `key` (`Tab`, `Down`, `Space`: a key as [`FrameHarness::key`] names it) on the window,
+    /// Press `key` (`Tab`, `Down`, `Space`: a key as [`Driver::key`] names it) on the window,
     /// as a person at the keyboard does.
     pub fn key(&mut self, key: &str) {
         self.window.harness.key(key);
@@ -226,7 +226,7 @@ impl Staged {
         }
     }
 
-    pub fn harness(&self) -> &FrameHarness {
+    pub fn harness(&self) -> &Driver {
         &self.window.harness
     }
 
@@ -304,7 +304,7 @@ impl Staged {
         delta
     }
 
-    pub fn harness_mut(&mut self) -> &mut FrameHarness {
+    pub fn harness_mut(&mut self) -> &mut Driver {
         &mut self.window.harness
     }
 
@@ -796,7 +796,7 @@ mod tests {
                 1.0,
             )
             .expect("the window lies out");
-        let bar = staged.harness_mut().window_bar_layout(f64::from(width));
+        let bar = staged.harness_mut().window_bar_layout();
         let row = crate::layout_check::header_row_controls(&staged, (width, height));
         let named = row
             .iter()
@@ -1040,10 +1040,10 @@ mod tests {
     /// The control the window binds to a published action: its one route, the control the action
     /// lands on, and the check box a person sees inside it.
     fn bound_box(
-        staged: &Staged,
+        staged: &mut Staged,
         descriptor: &tilo_actions::ActionDescriptor,
     ) -> Option<(String, ui::kurbo::Rect, ui::kurbo::Rect)> {
-        let routes = staged.harness().action_ui_routes(&descriptor.address);
+        let routes = staged.harness_mut().action_ui_routes(&descriptor.address);
         let [route] = routes.as_slice() else {
             return None;
         };
@@ -1084,7 +1084,7 @@ mod tests {
             .iter()
             .find(|descriptor| descriptor.action_label == "Increment")
             .expect("the counter publishes the action its button runs");
-        let routes = staged.harness().action_ui_routes(&increment.address);
+        let routes = staged.harness_mut().action_ui_routes(&increment.address);
         let [route] = routes.as_slice() else {
             panic!(
                 "the window binds one button to Increment, as it binds one to every action it \
@@ -1460,7 +1460,7 @@ mod tests {
             .iter()
             .filter(|descriptor| descriptor.action_label == "Inbox")
             .find_map(|descriptor| {
-                let routes = staged.harness().action_ui_routes(&descriptor.address);
+                let routes = staged.harness_mut().action_ui_routes(&descriptor.address);
                 let [route] = routes.as_slice() else {
                     return None;
                 };
@@ -1527,7 +1527,7 @@ mod tests {
             .iter()
             .filter(|descriptor| descriptor.action_label == "New project")
             .find_map(|descriptor| {
-                let routes = staged.harness().action_ui_routes(&descriptor.address);
+                let routes = staged.harness_mut().action_ui_routes(&descriptor.address);
                 let route = routes
                     .into_iter()
                     .find(|route| route.control_id.starts_with("section-action:"))?;
@@ -1587,7 +1587,7 @@ mod tests {
         let (row, check) = descriptors
             .iter()
             .find_map(|descriptor| {
-                bound_box(&staged, descriptor)
+                bound_box(&mut staged, descriptor)
                     .map(|(_id, _control, check)| (descriptor.clone(), check))
             })
             .expect("a row's check box is bound to the check action it runs");

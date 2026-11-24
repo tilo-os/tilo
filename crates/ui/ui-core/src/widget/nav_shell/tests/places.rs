@@ -15,7 +15,7 @@ enum BackInput {
     Gesture,
 }
 
-fn go_back(h: &mut FrameHarness, input: BackInput) {
+fn go_back(h: &mut Driver, input: BackInput) {
     match input {
         BackInput::Chip => {
             let back = geometry(h).back;

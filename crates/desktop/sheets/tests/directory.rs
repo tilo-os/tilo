@@ -10,7 +10,7 @@ use tilo_sheets::directory::{
     self, Directory, DirectoryApp, DirectoryEffect, DirectoryState, Listing, ListingAction, Status,
 };
 use ui::a11y::Action as A11yAction;
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -18,8 +18,16 @@ fn staged(scenario: &str) -> TestApp<DirectoryApp> {
     TestApp::<DirectoryApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
-fn frame_says(frame: &FrameHarness, text: &str) -> bool {
-    frame.a11y_nodes().iter().any(|(_, node)| {
+fn frame_says(frame: &Driver, text: &str) -> bool {
+    says_in(frame.a11y_nodes(), text)
+}
+
+/// Whether an exported accessibility tree says `text` in a name, description or value.
+fn says_in(
+    nodes: impl IntoIterator<Item = (ui::accesskit::NodeId, ui::accesskit::Node)>,
+    text: &str,
+) -> bool {
+    nodes.into_iter().any(|(_, node)| {
         node.label().is_some_and(|label| label.contains(text))
             || node.description().is_some_and(|said| said.contains(text))
             || node.value().is_some_and(|value| value.contains(text))
@@ -74,7 +82,7 @@ fn sheet_says(listings: Vec<Listing>, text: &str) -> bool {
         listings,
         note: None,
     };
-    let mut frame = FrameHarness::new_with_controlled_inputs(
+    let mut frame = Driver::new_with_controlled_inputs(
         ui::state::State::new(),
         directory::sheet(&directory, &query, &ask, None),
         VIEWPORT,
@@ -259,7 +267,7 @@ tilo_test_env::scenario! {
         };
         let query = ui::LocalState::new(String::new());
         let inputs = ui::headless::fixture_runner_inputs();
-        let mut frame = FrameHarness::new_with_controlled_inputs(
+        let mut frame = Driver::new_with_controlled_inputs(
             ui::state::State::new(),
             directory::sheet(&directory(), &query, &ask, None),
             VIEWPORT,

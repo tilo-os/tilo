@@ -2,11 +2,12 @@
 
 use tilo_rich_edit::BlockContent;
 use tilo_ui::State;
-use tilo_ui::headless::{FollowedView, FrameHarness};
+use tilo_ui::app::driver::FollowedView;
+use tilo_ui::headless::Driver;
 use vello::kurbo::Rect;
 
 /// An agent's edit of `resource`, a second ago.
-fn agent_acting(frame: &mut FrameHarness, resource: &str) -> tilo_actions::SemanticInteraction {
+fn agent_acting(frame: &mut Driver, resource: &str) -> tilo_actions::SemanticInteraction {
     let mut event = tilo_ui::headless::agent_acting(resource, "edit");
     event.actor = tilo_actions::Acting::agent("scribe");
     event.action.label = "Edit".into();
@@ -39,7 +40,7 @@ fn long_note() -> tilo_rich_edit::BlockEditor {
 fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
     let root = tilo_ui::widget::Scrollable::new(tilo_ui::widget::ScrollAxis::Vertical)
         .with_child(Box::new(long_note()));
-    let mut frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
+    let mut frame = Driver::new(State::new(), Box::new(root), (400, 240));
     frame.relayout();
     let event = agent_acting(&mut frame, "notes.document:root");
     let written = 13;
@@ -95,7 +96,7 @@ fn following_an_agents_edit_in_text_scrolls_to_the_range_it_wrote() {
 fn following_an_agents_caret_in_text_settles() {
     let root = tilo_ui::widget::Scrollable::new(tilo_ui::widget::ScrollAxis::Vertical)
         .with_child(Box::new(long_note()));
-    let mut frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
+    let mut frame = Driver::new(State::new(), Box::new(root), (400, 240));
     frame.relayout();
     let event = agent_acting(&mut frame, "notes.document:root");
     frame.update_presence(|presence| {

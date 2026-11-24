@@ -90,7 +90,7 @@ tilo_test_env::scenario! {
                     foot: Some(Box::new(crate::widget::Text::new("Add a note"))),
                 },
             );
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 docked,
                 (1600, 900),
@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
             panic!("a column changes its content in place");
         };
         views.insert(0, content);
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             docked,
             (1600, 900),
@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
                 pages(child, out);
             }
         }
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             docked(false),
             (1600, 900),
@@ -227,7 +227,7 @@ tilo_test_env::scenario! {
             panic!("a column takes a bar after it was built");
         };
         views.insert(0, Box::new(crate::widget::Text::new("Outline")));
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             docked,
             (1600, 900),

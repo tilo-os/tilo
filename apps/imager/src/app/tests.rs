@@ -3,10 +3,10 @@ use crate::hosting::testing::TestHost;
 use automerge::AutoCommit;
 use tilo_resource::Fields as _;
 
-fn harness(app: ImagerApp, doc: AutoCommit, viewport: (u32, u32)) -> ui::headless::FrameHarness {
+fn harness(app: ImagerApp, doc: AutoCommit, viewport: (u32, u32)) -> ui::headless::Driver {
     let mut state = ui::State::new();
     assert!(state.adopt_doc(doc));
-    ui::headless::FrameHarness::for_root(state, app, viewport, Theme::dark())
+    ui::headless::Driver::for_root(state, app, viewport, Theme::dark())
 }
 fn ids(app: &ImagerApp) -> Vec<String> {
     fn walk(w: &dyn Widget, out: &mut Vec<String>) {

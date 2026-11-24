@@ -735,11 +735,6 @@ impl ToolbarRow {
         &self.parts
     }
 
-    #[cfg(test)]
-    pub(crate) fn crumbs_painted(&self) -> Option<(Vec<(Option<String>, Rect)>, Rect)> {
-        self.crumbs.as_ref().map(|(_, crumbs)| crumbs.painted())
-    }
-
     pub(crate) fn set_compact(&mut self, compact: bool) {
         self.compact = compact;
     }
@@ -1268,17 +1263,6 @@ impl ToolbarRow {
         let id = view.id.clone();
         self.push(ToolbarEvent::Action { id });
         true
-    }
-
-    /// Pick the row that folds the sidebar's toggle in the bar's overflow menu, as a click does.
-    pub(crate) fn pick_folded_sidebar(&mut self) -> bool {
-        self.open_overflow();
-        let row = self
-            .menu_entries
-            .iter()
-            .position(|entry| matches!(entry, Some(MenuEntry::Sidebar)));
-        self.close_menu();
-        row.is_some_and(|row| self.run_menu_entry(row))
     }
 
     fn run_menu_entry(&mut self, row: usize) -> bool {

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[cfg(feature = "native")]
 use crate::App;
 use crate::Theme;
-use crate::headless::{self, FrameHarness};
+use crate::headless::{self, Driver};
 
 #[cfg(feature = "native")]
 mod app_log;
@@ -53,7 +53,9 @@ macro_rules! android_main {
     };
 }
 
-pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
+/// Viewport a driven frame lays out at unless a spec overrides it. Matches the
+/// default `--shots` viewport so a driven frame and a screenshot agree.
+pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 
 /// Explicit runner authority/presentation preparation; application metadata is never authority.
 pub type ComponentHostPreparer =
@@ -63,7 +65,7 @@ pub type ComponentHostPreparer =
     ) -> Result<crate::application::PreparedComponentInputs, LaunchError>;
 
 /// Drive a mounted capture through its normal actions/input before rendering.
-pub type ComponentCaptureScenario = fn(&mut FrameHarness, &LaunchArgs) -> Result<(), LaunchError>;
+pub type ComponentCaptureScenario = fn(&mut Driver, &LaunchArgs) -> Result<(), LaunchError>;
 
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
 type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
@@ -802,7 +804,7 @@ fn opens_native_window(args: &LaunchArgs) -> bool {
 
 #[allow(
     clippy::exit,
-    reason = "the --headless-drive path reports the harness's pass/fail \
+    reason = "the --headless-drive path reports the drive's pass/fail \
               status as this process's exit code, exactly like --shots \
               reports success by returning Ok — there is no caller to \
               hand a status back to"
@@ -892,7 +894,11 @@ fn run_parsed(
                 driver.write_shot(out, args.window_bar);
             } else if let Some(directory) = &args.responsive_matrix {
                 for (name, viewport) in RESPONSIVE_VIEWPORTS {
-                    driver.resize_component_capture(viewport);
+                    if let Err(error) = driver.resize(viewport) {
+                        return Err(LaunchError::Operation(format!(
+                            "--responsive-matrix {name}: layout failed: {error}"
+                        )));
+                    }
                     // The frame is the window a person sees a moment after the
                     // resize, not the first one it could draw: a scroll thumb
                     // still fading out, or a page still drawn from the bitmap
@@ -933,7 +939,7 @@ fn prepare_font_database_beside() {
 }
 
 #[cfg(feature = "native")]
-fn close_component_capture(driver: &mut FrameHarness) -> Result<(), LaunchError> {
+fn close_component_capture(driver: &mut Driver) -> Result<(), LaunchError> {
     driver.close_components();
     if driver.component_close_reports().iter().any(|report| {
         report.view_error.is_some()
@@ -951,7 +957,7 @@ fn close_component_capture(driver: &mut FrameHarness) -> Result<(), LaunchError>
 }
 
 #[cfg(feature = "native")]
-fn finish_component_audit(driver: &mut FrameHarness, app_id: &str) -> Result<(), LaunchError> {
+fn finish_component_audit(driver: &mut Driver, app_id: &str) -> Result<(), LaunchError> {
     driver.prepare_component_output();
     let audit = driver.native_app_audit();
     let report = serde_json::to_string_pretty(&audit)
@@ -973,8 +979,8 @@ fn finish_component_audit(driver: &mut FrameHarness, app_id: &str) -> Result<(),
 pub(crate) enum DefinitionDispatch {
     Native(Box<App>),
     Headless(i32),
-    Rendered(Box<FrameHarness>),
-    Audit(Box<FrameHarness>),
+    Rendered(Box<Driver>),
+    Audit(Box<Driver>),
 }
 
 #[cfg(feature = "native")]
@@ -1075,17 +1081,20 @@ fn dispatch_definition_with(
         let scenario = spec
             .component_capture_scenario
             .filter(|_| args.scenario.is_some());
-        return Ok(DefinitionDispatch::Headless(
-            headless::run_component_staged(headless, component, prepared.runner_inputs, |driver| {
+        return Ok(DefinitionDispatch::Headless(Driver::run_component_staged(
+            headless,
+            component,
+            prepared.runner_inputs,
+            |driver| {
                 scenario.map_or(Ok(()), |stage| {
                     stage(driver, args).map_err(|e| e.to_string())
                 })
-            }),
-        ));
+            },
+        )));
     }
     if args.shots.is_some() || args.responsive_matrix.is_some() || args.native_audit {
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
-        let mut driver = Box::new(FrameHarness::from_component(
+        let mut driver = Box::new(Driver::from_component(
             component,
             viewport,
             prepared.runner_inputs,
@@ -1139,10 +1148,7 @@ fn dispatch_definition_with(
 /// `--history` and `--search`: open History or this window's search before the capture settles, so the
 /// shot shows it as a person sees it.
 #[cfg(feature = "native")]
-fn show_history_for_capture(
-    driver: &mut FrameHarness,
-    args: &LaunchArgs,
-) -> Result<(), LaunchError> {
+fn show_history_for_capture(driver: &mut Driver, args: &LaunchArgs) -> Result<(), LaunchError> {
     if args.history {
         driver
             .open_history()
@@ -1261,9 +1267,9 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         args.text_scale,
         environment_scale.as_deref(),
     ));
-    // Screenshot review must use the same motion policy as a real app.  The
-    // headless harness does not construct `ui::App`, where this environment
-    // preference is normally read, so thread it onto the shot theme here.
+    // Screenshot review must use the same motion policy as a real app. A
+    // capture's theme is the caller's, not the environment's that a live
+    // window reads, so the preference is threaded onto the shot theme here.
     theme.with_reduce_motion(shot_motion_reduced())
 }
 
@@ -2608,15 +2614,12 @@ mod prepared_launch_tests {
     thread_local! { static PREPARES: Cell<usize> = const { Cell::new(0) }; }
     thread_local! { static CAPTURE_SCENARIOS: Cell<usize> = const { Cell::new(0) }; }
 
-    fn edit_capture(driver: &mut FrameHarness, _: &LaunchArgs) -> Result<(), LaunchError> {
+    fn edit_capture(driver: &mut Driver, _: &LaunchArgs) -> Result<(), LaunchError> {
         CAPTURE_SCENARIOS.set(CAPTURE_SCENARIOS.get().saturating_add(1));
         driver
-            .invoke_bound_action(
-                &crate::bound_dispatch::BoundActionAddress {
-                    instance_id: 11,
-                    address: tilo_actions::ActionAddress::new("probe:shared", "edit"),
-                },
-                &serde_json::Map::new(),
+            .call(
+                &tilo_actions::ActionAddress::new("probe:shared", "edit"),
+                serde_json::Map::new(),
             )
             .map_err(|error| LaunchError::Operation(error.to_string()))?;
         Ok(())
@@ -2821,7 +2824,7 @@ mod prepared_launch_tests {
                 else {
                     panic!("expected prepared output driver");
                 };
-                let description = |driver: &FrameHarness| {
+                let description = |driver: &Driver| {
                     tilo_actions::flatten(&driver.resources())
                         .into_iter()
                         .find(|action| action.action.id == "edit")

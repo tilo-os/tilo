@@ -38,21 +38,26 @@ pub(super) struct PlacedAll {
 }
 
 /// Retained layout and widget lookup state.
-#[cfg_attr(
-    not(feature = "native"),
-    expect(
-        dead_code,
-        reason = "the safe area and content origin are read only by the native event-loop runner"
-    )
-)]
 pub(super) struct LayoutRuntime {
     pub(super) taffy: TaffyTree<()>,
     pub(super) root_node: Option<NodeId>,
+    /// The node the app's root is laid out in: the window's size, as a window gives its app the
+    /// size it shows. Kept apart from [`Self::root_node`], which is the widget root every reader
+    /// names.
+    pub(super) host_node: Option<NodeId>,
+    /// The widget root node [`Self::host_node`] holds, while the host is the one in this tree.
+    pub(super) host_child: Option<NodeId>,
+    /// The style of the node the root is laid out in, for a root a host lays out in a node of its
+    /// own: its size is replaced by the viewport.
+    pub(super) host_root_style: Option<taffy::Style>,
+    /// Lay the root out at its content height against unbounded height, as a scrolling host lays
+    /// the document inside it; the viewport still bounds culling and rasterisation.
+    pub(super) content_height: bool,
     pub(super) node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
     /// Which `node_map` pointers were taken from the live tree
-    /// ([`crate::app_core::AppCore::layout_maps_stale`]).
+    /// ([`crate::app::App::layout_maps_stale`]).
     pub(super) adopted: crate::retained_widgets::Adopted,
-    /// How many builds' maps were admitted ([`crate::app_core::AppCore::admit_layout_maps`]).
+    /// How many builds' maps were admitted ([`crate::app::App::admit_layout_maps`]).
     pub(super) admissions: u64,
     /// The mapped nodes the history sweep visits, and the admission and map
     /// size they were found for (`App::history_sweep_nodes`).
@@ -126,6 +131,43 @@ pub(super) struct LayoutRuntime {
     pub(super) cull: crate::draw_cull::Culling,
     /// What the frame's whole-tree walks last read.
     pub(super) walks: TreeWalks,
+    /// What the last layout pass did with the tree ([`LayoutPass`]).
+    pub(super) last_pass: LayoutPass,
+    /// What the app's hosted frames did since it was made ([`FrameCounts`]).
+    pub(super) frames: FrameCounts,
+}
+
+/// What one layout pass did with the retained tree: a frame held to doing no more than it must
+/// reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct LayoutPass {
+    /// The tree was built again.
+    pub(super) rebuilt: bool,
+    /// Widgets changed the retained tree in place; it was not built again.
+    pub(super) remounted: bool,
+    /// The tree was solved.
+    pub(super) measured: bool,
+    /// Nodes the solve marked to be measured again, and of those the ones with no children
+    /// ([`crate::profiling::layout_counts::LayoutCounts::marked`]).
+    pub(super) marked: (u64, u64),
+    /// Only what the views moved was placed: the pass placed nothing else.
+    pub(super) placed_partly: bool,
+}
+
+/// What an app's hosted frames ([`super::App::surface_frame_with_damage`]) did since it was made.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct FrameCounts {
+    /// Frames whose layout pass completed.
+    pub(super) laid_out: u64,
+    /// Of those, the frames whose pass built the tree again.
+    pub(super) rebuilt: u64,
+    /// Frames whose model pass took up nothing that arrived and synced nothing.
+    pub(super) quiet: u64,
+    /// Layout nodes the frames built: every node of each tree a frame built again, and each node
+    /// a change carried out in place mounted.
+    pub(super) nodes_built: u64,
+    /// The draw commands the frames encoded into their scenes.
+    pub(super) drawn_commands: u64,
 }
 
 impl LayoutRuntime {
@@ -133,6 +175,10 @@ impl LayoutRuntime {
         Self {
             taffy: TaffyTree::new(),
             root_node: None,
+            host_node: None,
+            host_child: None,
+            host_root_style: None,
+            content_height: false,
             node_map: std::collections::HashMap::new(),
             adopted: crate::retained_widgets::Adopted::default(),
             admissions: 0,
@@ -159,6 +205,8 @@ impl LayoutRuntime {
             placed_partly: false,
             cull: crate::draw_cull::Culling::default(),
             walks: TreeWalks::default(),
+            last_pass: LayoutPass::default(),
+            frames: FrameCounts::default(),
         }
     }
 
@@ -172,6 +220,12 @@ impl LayoutRuntime {
         {
             self.undescribed_by = Some(std::panic::Location::caller());
         }
+    }
+
+    /// Whether the host lays the root out in a node of its own ([`Self::host_root_style`],
+    /// [`Self::content_height`]).
+    pub(super) fn hosts_root(&self) -> bool {
+        self.host_root_style.is_some() || self.content_height
     }
 }
 
@@ -275,13 +329,6 @@ impl HistoryWalk {
 }
 
 /// Input modality, gesture, cursor, and tooltip state.
-#[cfg_attr(
-    not(feature = "native"),
-    expect(
-        dead_code,
-        reason = "keyboard layout, gestures, cursor, tooltip, pen and pointer state are read only by the native event-loop runner"
-    )
-)]
 pub(super) struct InputRuntime {
     pub(super) modifiers: winit::event::Modifiers,
     /// Focused native configuration only; no logical key, compose or press history.
@@ -302,8 +349,15 @@ pub(super) struct InputRuntime {
     /// that follows a rebuild under a still pointer.
     pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
     /// Keys typed before the window's content arrived, waiting for it.
-    #[cfg(feature = "native")]
     pub(super) held: super::held_input::HeldInput,
+    /// Framework chrome took the last input (a press on the window's own History) and the person
+    /// has made none since: no frame in between runs a control a widget queued, because the entry
+    /// it asks for seals what was queued before it instead.
+    pub(super) passive_input: bool,
+    /// The window is still opening: its first frame has not finished. No control a widget queued
+    /// runs before it does, so a queue the window was opened with waits for the History entry
+    /// that seals it. Work an app queues as it opens runs from the frame after it.
+    pub(super) opening: bool,
     /// The window has the keyboard: the one a person (or a test control's
     /// activation) addresses among the app's windows.
     pub(super) window_focused: bool,
@@ -313,7 +367,7 @@ pub(super) struct InputRuntime {
     /// Whether the widgets last painted their carets: the window held the
     /// keyboard and nothing over them took it.
     pub(super) widget_carets: bool,
-    /// [`crate::app_core::KeyCore::keyboard_entry_owed`].
+    /// [`crate::app::App::keyboard_entry_owed`].
     pub(super) keyboard_entry_owed: bool,
 }
 
@@ -335,8 +389,9 @@ impl InputRuntime {
             tab_order_continues_in_host: false,
             pointer: crate::app_core::PointerPlace::default(),
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
-            #[cfg(feature = "native")]
             held: super::held_input::HeldInput::default(),
+            passive_input: false,
+            opening: true,
         }
     }
 }
@@ -356,6 +411,9 @@ pub(super) struct ActionRuntime {
     /// else in the window's bar, once the pass ends
     /// ([`super::App::refuse_visibly`]).
     pub(super) refusals: Vec<(String, Option<vello::kurbo::Rect>)>,
+    /// Why the invocations made here that did not run did not, the person's and the app's own
+    /// alike, oldest first: what the window's host reads of them after they were said.
+    pub(super) refused: RefusedLog,
     /// What stands at the control the person last used, until their next
     /// press or key ([`crate::control_notice`]).
     pub(super) control_notice: Option<crate::control_notice::ControlNotice>,
@@ -435,8 +493,12 @@ pub(super) struct ActionRuntime {
     /// The person's presses waiting for what they change to arrive from the workspace.
     pub(super) waiting_controls: Vec<crate::app_core::WaitingControl>,
     /// Each edit an effect submitted for its invoker that the host is still
-    /// admitting, by broker request, to the effect invocation it continues.
-    pub(super) follow_ups: std::collections::HashMap<u64, tilo_actions::InvocationId>,
+    /// admitting, by broker request, to the effect invocation it continues and the control it
+    /// came from.
+    pub(super) follow_ups: std::collections::HashMap<
+        u64,
+        (tilo_actions::InvocationId, crate::app_core::FollowUpControl),
+    >,
     /// Each invocation of another provider's action a control here is bound
     /// to that the provider is still answering, by broker request.
     pub(super) hosted_requests: std::collections::HashSet<u64>,
@@ -498,6 +560,7 @@ impl ActionRuntime {
             action_palette: None,
             palette_window: None,
             refusals: Vec::new(),
+            refused: RefusedLog::default(),
             control_notice: None,
             search_in_host: false,
             focus_after_rebuild: None,
@@ -576,6 +639,10 @@ pub(super) struct AccessibilityRuntime {
     pub(super) live_region_last: std::collections::HashMap<String, String>,
     pub(super) focus_trap_active: bool,
     pub(super) focus_before_trap: Option<NodeId>,
+    /// The control the open trap's own entry put the keyboard on, while the person has not moved
+    /// it: a rebuild seats the keyboard there again from what the modal shows now, never back
+    /// onto a control the trap only chose because nothing else was laid out yet.
+    pub(super) focus_trap_entry: Option<NodeId>,
     /// Separate from the effective theme so disabling high contrast restores
     /// the configured theme exactly.
     pub(super) base_theme: Theme,
@@ -607,6 +674,10 @@ pub(super) struct AccessibilityRuntime {
     /// its tree is built at for the session's export, whose bounds an
     /// assistive client reads in physical pixels.
     pub(super) export_scale: f64,
+    /// The widgets' presentation epoch ([`crate::widget::note_resource_presentation_changed`])
+    /// [`Self::semantic_tree`] was last built at: a widget that changed what it declares outside
+    /// a sync, an input or a layout (a control measured where it is drawn) moves it.
+    pub(super) semantic_tree_presentation: u64,
 }
 
 impl AccessibilityRuntime {
@@ -626,6 +697,7 @@ impl AccessibilityRuntime {
             live_region_last: std::collections::HashMap::new(),
             focus_trap_active: false,
             focus_before_trap: None,
+            focus_trap_entry: None,
             base_theme,
             window: crate::theme::WindowAppearance::default(),
             a11y: crate::a11y::A11ySettings::default(),
@@ -637,6 +709,7 @@ impl AccessibilityRuntime {
             semantic_tree_marks: 0,
             semantic_tree_builds: 0,
             export_scale: 1.0,
+            semantic_tree_presentation: 0,
         }
     }
 }
@@ -715,13 +788,6 @@ impl CollaborationRuntime {
 }
 
 /// Presence publication, follow, and frame-pump state.
-#[cfg_attr(
-    not(feature = "native"),
-    expect(
-        dead_code,
-        reason = "the last published presence is read only by the native event-loop runner"
-    )
-)]
 pub(super) struct PresenceRuntime {
     pub(super) broadcast_scope: Option<PresenceKey>,
     pub(super) pointer_space: Option<crate::presence::PointerSpace>,
@@ -767,13 +833,6 @@ impl HistoryRuntime {
 }
 
 /// Host window identity and fullscreen reconciliation state.
-#[cfg_attr(
-    not(feature = "native"),
-    expect(
-        dead_code,
-        reason = "fullscreen state is read only by the native event-loop runner"
-    )
-)]
 pub(super) struct WindowRuntime {
     pub(super) fullscreen_requested: bool,
     pub(super) fullscreen_active: bool,
@@ -832,6 +891,29 @@ impl RefusalLog {
             self.seen.clear();
         }
         self.seen.insert(key)
+    }
+}
+
+/// Why the invocations made in a window did not run, oldest first ([`ActionRuntime::refused`]).
+#[derive(Default)]
+pub(crate) struct RefusedLog {
+    reasons: std::collections::VecDeque<String>,
+}
+
+impl RefusedLog {
+    /// Bounded: a window refused again and again keeps its newest reasons, and memory stays
+    /// flat.
+    const LIMIT: usize = 256;
+
+    pub(crate) fn push(&mut self, reason: String) {
+        if self.reasons.len() >= Self::LIMIT {
+            self.reasons.pop_front();
+        }
+        self.reasons.push_back(reason);
+    }
+
+    pub(crate) fn reasons(&self) -> impl Iterator<Item = &str> {
+        self.reasons.iter().map(String::as_str)
     }
 }
 

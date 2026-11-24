@@ -169,6 +169,48 @@ impl Widget for FreshAnswers {
     }
 }
 
+/// A form that has no field to show when its dialog first lays it out, as one
+/// that learns its theme only then: the field arrives on the build after.
+struct LateFields {
+    show: Rc<Cell<bool>>,
+    field: Option<Box<dyn Widget>>,
+}
+impl LateFields {
+    fn new(show: Rc<Cell<bool>>) -> Self {
+        Self { show, field: None }
+    }
+}
+impl Widget for LateFields {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        if self.show.get() && self.field.is_none() {
+            self.field = Some(Box::new(Button::new("field", "Name")));
+        }
+        let kids: Vec<_> = self
+            .field
+            .iter_mut()
+            .map(|c| c.build_layout(taffy, theme, node_map))
+            .collect();
+        taffy.widget_node(taffy::Style::default(), &kids, node_map, self)
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.field.iter().map(Box::as_ref).collect()
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.field
+            .iter_mut()
+            .map(|c| &mut **c as &mut (dyn Widget + '_))
+            .collect()
+    }
+    fn name(&self) -> &'static str {
+        "late-fields"
+    }
+}
+
 tilo_test_env::scenario! {
     fn a_modal_focus_trap_keeps_the_keyboard_inside_and_restores_it;
 
@@ -460,6 +502,38 @@ tilo_test_env::scenario! {
             app.focused_node.and_then(|id| named(&app, id)),
             Some("cancel".to_owned()),
             "the keyboard stays on the answer the person chose"
+        );
+    }
+
+    phase a_dialog_whose_field_arrives_late_takes_the_keyboard_at_its_entry;
+    {
+        let show = Rc::new(Cell::new(false));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(
+                ModalDialog::new("Add", LateFields::new(Rc::clone(&show))).open(true),
+            ),
+        );
+        app.init_layout();
+        assert!(app.accessibility.focus_trap_active);
+        assert_eq!(
+            app.accessibility.focus_trap_entry, app.focused_node,
+            "the trap itself chose the only answer laid out"
+        );
+
+        // The form's field is built on the next pass, as one that learns its theme when it is
+        // first laid out: the keyboard goes where the modal now starts, not back to the answer
+        // the trap could only choose while nothing else was there.
+        show.set(true);
+        app.layout.request_rebuild();
+        app.rebuild_structure();
+        let focused = app.focused_node.expect("the trap keeps the keyboard");
+        assert_eq!(
+            app.inspect_node(focused, |widget| widget.test_id().map(str::to_owned))
+                .unwrap()
+                .as_deref(),
+            Some("field"),
+            "the keyboard goes to the entry the modal now shows"
         );
     }
 }

@@ -3,7 +3,7 @@
 
 use super::tests::{relayout_strip, strip_at};
 use super::*;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::retained_present::{PanFrame, PanReplay};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -205,7 +205,7 @@ fn a_peers_caret_in_a_panned_window_is_a_node_where_the_window_drew_it() {
         window(100, "first", Rc::clone(&first)),
         window(200, "second", Rc::clone(&second)),
     ]);
-    let mut frame = FrameHarness::for_root(crate::State::new(), row, (390, 844), Theme::default());
+    let mut frame = Driver::for_root(crate::State::new(), row, (390, 844), Theme::default());
     let peer = ::collaboration::permissions::MemberId::person("claude");
     frame
         .presence_mut()

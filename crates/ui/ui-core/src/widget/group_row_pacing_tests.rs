@@ -1,11 +1,11 @@
 //! How a strip moves frame by frame under a touchpad pan, a throw and a spun wheel,
-//! measured through the production frame path ([`FrameHarness`]) on a virtual clock: the
+//! measured through the production frame path ([`Driver`]) on a virtual clock: the
 //! display's frames and the input device's reports each keep their own rate, as on real
 //! hardware.
 
 use super::tests::make_group;
 use super::*;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::time::testing::with_monotonic_time;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -49,7 +49,7 @@ impl crate::widget::Decorator for FedRow {
 }
 
 struct Strip {
-    harness: FrameHarness,
+    harness: Driver,
     reports: Rc<RefCell<Vec<Report>>>,
     start: Instant,
     measured: u32,
@@ -64,7 +64,7 @@ impl Strip {
             .collect();
         let start = crate::time::now();
         let mut harness = with_monotonic_time(start, || {
-            FrameHarness::for_root(
+            Driver::for_root(
                 crate::State::new(),
                 FedRow {
                     row: GroupRow::new(groups),

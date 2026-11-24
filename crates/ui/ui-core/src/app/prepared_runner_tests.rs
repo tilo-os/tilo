@@ -356,8 +356,7 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
                 app.close_components();
             } else {
                 let mut driver =
-                    crate::headless::FrameHarness::from_component(component, (800, 600), inputs)
-                        .unwrap();
+                    crate::headless::Driver::from_component(component, (800, 600), inputs).unwrap();
                 let observation = observed.borrow();
                 let (theme, renderer_scale) = observation.draws.last().unwrap();
                 assert_eq!(*renderer_scale, 1.5);
@@ -628,7 +627,7 @@ tilo_test_env::scenario! {
 
 enum Runner {
     App(Box<App>),
-    FrameHarness(Box<crate::headless::FrameHarness>),
+    Driver(Box<crate::headless::Driver>),
 }
 impl Runner {
     fn new(mode: u8, mut component: AppComponent) -> Self {
@@ -655,13 +654,9 @@ impl Runner {
                     },
                 )))
             }
-            _ => Self::FrameHarness(Box::new(
-                crate::headless::FrameHarness::from_component(
-                    component,
-                    (320, 180),
-                    runner_inputs(),
-                )
-                .unwrap(),
+            _ => Self::Driver(Box::new(
+                crate::headless::Driver::from_component(component, (320, 180), runner_inputs())
+                    .unwrap(),
             )),
         }
     }
@@ -683,7 +678,7 @@ impl Runner {
                     Err("action absent".into())
                 }
             }
-            Self::FrameHarness(driver) => driver
+            Self::Driver(driver) => driver
                 .invoke_bound_action(
                     &crate::bound_dispatch::BoundActionAddress {
                         instance_id: 11,
@@ -701,7 +696,7 @@ impl Runner {
                 app.close_components();
                 app.take_component_close_reports()
             }
-            Self::FrameHarness(driver) => {
+            Self::Driver(driver) => {
                 driver.close_components();
                 driver.take_component_close_reports()
             }

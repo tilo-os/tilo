@@ -101,6 +101,10 @@ impl App {
         let Some(event) = self.queue_behind_held_input(event) else {
             return true;
         };
+        // Input framework chrome took the last one runs no queued control until the person's
+        // next input: the entry (or return) it asked for has sealed or discarded what was
+        // queued before it ([`Self::presentation_handle_event`]).
+        self.input.passive_input = false;
         let candidate = self.held_input_candidate(&event);
         crate::widget::context_menu::note_input(&event);
         // What this event opens or closes follows it: a press moves, a key
@@ -315,6 +319,9 @@ impl App {
             app.set_interaction_environment(environment);
         }
         if history_input {
+            // History's own chrome took this input: what widgets queued runs in no frame that
+            // follows it, so the entry (or return) it asks for seals the live queue instead.
+            app.input.passive_input = true;
             app.dispatch_framework_history_event(&event, window.scale_factor());
             window.request_redraw();
             return true;
@@ -640,11 +647,8 @@ impl App {
                 _ => None,
             };
             if let Some(dir) = nav {
-                let consumed = app
-                    .root_widget
-                    .on_nav_gesture(dir, &app.state.doc, &app.state.root);
+                let consumed = app.surface_nav_gesture(dir);
                 if consumed {
-                    app.needs_sync = true;
                     window.request_redraw();
                     handled = true;
                 }
@@ -762,7 +766,11 @@ impl App {
             &mut handled,
         );
 
-        if app.dispatch_control_invocations() != 0 {
+        // Input framework chrome took (a press on the window's own History) runs no control a
+        // widget queued, and neither does a window still opening: the entry it asks for seals it,
+        // and the frame that follows runs nothing either.
+        if !app.input.opening && !app.input.passive_input && app.dispatch_control_invocations() != 0
+        {
             handled = true;
             app.needs_sync = true;
             app.layout.layout_dirty = true;
@@ -838,7 +846,7 @@ impl App {
             // a widget says when its size moved, so a press that only
             // repaints (a button held, a row lit) is drawn, not laid out.
             let is_pointer_move = matches!(&event, WindowEvent::CursorMoved { .. });
-            if app.root_widget.is_layout_dirty() {
+            if app.root_widget.is_layout_dirty() || app.root_widget.layout_needs_measure() {
                 app.layout.layout_dirty = true;
             }
             if !is_pointer_move
@@ -877,6 +885,21 @@ impl App {
         }
         handled
     }
+    /// The system's back (or forward) gesture, once its host recognised one (a two-finger swipe,
+    /// an edge pull, a mouse side button, the back key), delivered to the whole tree. Whether
+    /// something took it; what took it syncs in the next frame.
+    pub fn surface_nav_gesture(&mut self, dir: crate::gesture::NavDirection) -> bool {
+        let _entry = self.enter_wake_scope();
+        let taken = self
+            .root_widget
+            .on_nav_gesture(dir, &self.state.doc, &self.state.root);
+        if taken {
+            self.needs_sync = true;
+            self.mark_semantic_tree_stale();
+        }
+        taken
+    }
+
     /// Whether the host the app is shown in continues its focus order past
     /// the app, so Tab at either end of the app's order leaves the app.
     pub fn set_tab_order_continues_in_host(&mut self, continues: bool) {
@@ -1035,7 +1058,6 @@ impl App {
     /// gesture has landed, touch is the input in use. While the built-in
     /// screen reader is on, a finger explores instead and no widget sees it
     /// ([`Self::explore_by_touch`]).
-    #[cfg(feature = "native")]
     pub fn surface_touch(
         &mut self,
         window: &dyn AppSurface,
@@ -1062,7 +1084,6 @@ impl App {
 
     /// A still finger that reached the long-press delay by `now`: the
     /// secondary click it makes, though no contact marks the moment.
-    #[cfg(feature = "native")]
     pub fn surface_touch_hold(
         &mut self,
         window: &dyn AppSurface,
@@ -1158,11 +1179,17 @@ impl App {
         // The model's own work, as a hosted worker's pump runs it:
         // collaboration (inbound edits, directory requests, publication),
         // invocations and idle model work.
+        // What the frame costs and draws, for a profiler the app runs with.
+        let started = self.profiler.as_ref().map(|_| crate::time::now());
+        let commands_before = scene.encoding().draw_tags.len();
         #[cfg(test)]
         let pump_probe = crate::profiling::frame_probe::span("frame.pump");
         self.pump_hosted_model();
         #[cfg(test)]
         drop(pump_probe);
+        if let Some(profiler) = self.profiler.as_mut() {
+            profiler.record_since(crate::profiling::Pass::Sync, started);
+        }
         // The model's pass took in what landed from elsewhere; the frame
         // builds, lays out and draws that state. Work landing meanwhile is
         // the next frame's, which its wake asks for.
@@ -1230,6 +1257,18 @@ impl App {
             damage.repaint("no layout");
             return true;
         };
+        // The tree this frame built before its layout pass is the frame's rebuild too.
+        if structure_rebuilt {
+            self.layout.last_pass.rebuilt = true;
+            self.layout.last_pass.remounted = false;
+        }
+        let frames = &mut self.layout.frames;
+        frames.laid_out = frames.laid_out.saturating_add(1);
+        if self.layout.last_pass.rebuilt {
+            frames.rebuilt = frames.rebuilt.saturating_add(1);
+            let built = u64::try_from(self.layout.node_map.len()).unwrap_or(u64::MAX);
+            frames.nodes_built = frames.nodes_built.saturating_add(built);
+        }
         if geometry_changed {
             self.input.pointer_replay.mark_unsettled();
         }
@@ -1468,9 +1507,26 @@ impl App {
         complete_native_frame_content(self, |_| {});
         #[cfg(test)]
         drop(complete_probe);
+        let commands = u64::try_from(
+            scene
+                .encoding()
+                .draw_tags
+                .len()
+                .saturating_sub(commands_before),
+        )
+        .unwrap_or(u64::MAX);
+        self.layout.frames.drawn_commands =
+            self.layout.frames.drawn_commands.saturating_add(commands);
+        if let (Some(profiler), Some(started)) = (self.profiler.as_mut(), started) {
+            profiler.record_draw_commands(commands);
+            profiler.commit_frame(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+        }
         // The frame laid out the content keys typed before it arrived waited for: they go to it,
         // and the next frame shows what they did.
         let released = self.release_held_input(surface);
+        // The frame that laid the window out is the opening: from the next frame on, what a
+        // widget queued runs as a frame's own work.
+        self.input.opening = false;
         released
             || search_pending
             || self.needs_sync

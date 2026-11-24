@@ -10,7 +10,6 @@ pub(crate) mod header_bar;
 pub(crate) mod macos;
 #[cfg(any(all(any(target_os = "macos", windows), feature = "native"), test))]
 pub(crate) mod menus;
-#[cfg(any(feature = "native", test))]
 pub(crate) mod model;
 #[cfg(any(feature = "native", test))]
 mod owner;
@@ -18,7 +17,6 @@ mod owner;
 pub(crate) mod windows;
 #[cfg(any(all(windows, feature = "native"), test))]
 pub(crate) mod windows_items;
-#[cfg(feature = "native")]
 pub(crate) mod zoom;
 
 #[cfg(any(feature = "native", test))]

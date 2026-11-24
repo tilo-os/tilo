@@ -74,7 +74,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             widget = widget.with_displays(greeter::output_scale::Displays::fixed(layout));
         }
-        let mut frame = ui::headless::FrameHarness::new_with_theme(
+        let mut frame = ui::headless::Driver::new_with_theme(
             ui::State::new(),
             Box::new(widget),
             viewport,

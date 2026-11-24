@@ -10,7 +10,7 @@
 use super::testing::*;
 use super::*;
 use crate::component::{Component, Described, PropType};
-use crate::headless::FrameHarness;
+use crate::headless::Driver;
 use crate::theme::Theme;
 use crate::widget::{
     CodeEditor, CodeEditorProps, DescribedCards, DropZone, DropZoneProps, Image, ImageProps,
@@ -238,7 +238,7 @@ tilo_test_env::scenario! {
         let host = harness(DropZone::from_props("import", props));
         let rect = host.root::<DropZone>().get_rect();
         assert!(rect.width() > 0.0 && rect.height() > 0.0);
-        let wide = FrameHarness::for_root(
+        let wide = Driver::for_root(
             crate::State::new(),
             {
                 let mut column = crate::widget::arrange::Stack::stack().fill_width();

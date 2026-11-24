@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn mixed_checkbox_announces_and_paints_without_remeasuring() {
-        use crate::headless::FrameHarness;
+        use crate::app::driver::Driver;
         let selected = crate::LocalState::new(false);
         let mut checkbox = Checkbox::from_state(&selected)
             .with_label("Select group, 1 of 2 selected")
@@ -964,7 +964,7 @@ mod tests {
         let spoken = crate::screen_reader::describe(&node);
         assert!(spoken.contains("partially checked"), "{spoken}");
         assert!(spoken.contains("1 of 2 selected"), "{spoken}");
-        let mut host = FrameHarness::new_with_theme(
+        let mut host = Driver::new_with_theme(
             crate::State::new(),
             Box::new(checkbox),
             (300, 60),
@@ -1006,13 +1006,13 @@ mod tests {
 
     #[test]
     fn retained_label_remeasures_for_language_or_target_not_ink() {
-        use crate::headless::FrameHarness;
+        use crate::app::driver::Driver;
         use crate::i18n::I18nManager;
         I18nManager::init("en-US");
         I18nManager::add_resource("en-US", "scroll-choice = Short".into());
         I18nManager::add_resource("de-DE", "scroll-choice = Eine lange Beschreibung, die bei schmaler Breite mehrere Zeilen benötigt".into());
         let checked = crate::LocalState::new(false);
-        let mut host = FrameHarness::new_with_theme(
+        let mut host = Driver::new_with_theme(
             crate::State::new(),
             Box::new(
                 crate::widget::Scrollable::new_vertical().with_child(Box::new(
@@ -1022,7 +1022,7 @@ mod tests {
             (180, 300),
             Theme::dark(),
         );
-        let checkbox = |host: &FrameHarness| host.root_widget().children()[0].get_rect();
+        let checkbox = |host: &Driver| host.root_widget().children()[0].get_rect();
         let initial_height = checkbox(&host).height();
         assert!(
             host.text_cache_stats().1 > 0,
@@ -1535,8 +1535,7 @@ mod tests {
                 .with_label("Remember me")
                 .intrinsic_width(),
         ));
-        let app =
-            crate::headless::FrameHarness::new(crate::State::new(), Box::new(row), (900, 200));
+        let app = crate::app::driver::Driver::new(crate::State::new(), Box::new(row), (900, 200));
         let rect = *app.targets().get("hug").expect("checkbox");
         assert!(
             rect.width() < 300.0,

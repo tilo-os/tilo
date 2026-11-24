@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use tilo_resource::Resource;
 use ui_core::application::Capture;
-use ui_core::headless::FrameHarness;
+use ui_core::headless::Driver;
 use ui_core::permissions::Role;
 
 use super::super::{PersonKind, controls, reserved_action_ids};
@@ -56,9 +56,9 @@ struct PublishedActions {
     rows: Vec<tilo_resource::effect::EffectRow>,
 }
 
-/// [`PublishedActions`] of `A`'s root `harness` hosts.
-fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedActions {
-    harness
+/// [`PublishedActions`] of `A`'s root `driver` hosts.
+fn published_ids<A: ResourceApp>(driver: &mut Driver) -> PublishedActions {
+    driver
         .with_widget_mut(|root: &mut ResourceRoot| {
             let typed = root.typed::<A::Resource>()?;
             let views = <A::Resource as Resource>::views(&typed.live.get());
@@ -84,7 +84,7 @@ fn report_surface(
     opening: &Opening,
     mut surface: tilo_resource::Surface,
     person: &[PersonKind],
-    published: &dyn Fn(&mut FrameHarness) -> PublishedActions,
+    published: &dyn Fn(&mut Driver) -> PublishedActions,
 ) -> serde_json::Value {
     let collecting = collect_unbound();
     let profile = Kept::fresh();
@@ -127,9 +127,9 @@ fn report_surface(
             // arrives, in a frame, and published from then on. A report written before would
             // differ from one written after.
             let storage = opened
-                .harness
+                .driver
                 .with_widget_mut(|root: &mut ResourceRoot| Rc::clone(&root.storage));
-            let arrived = opened.harness.wait_until(OPENS_WITHIN, |_| {
+            let arrived = opened.driver.wait_until(OPENS_WITHIN, |_| {
                 !storage.as_ref().is_some_and(|storage| storage.opening())
             });
             if !arrived {
@@ -137,8 +137,8 @@ fn report_surface(
                     "what the view opened did not arrive within {OPENS_WITHIN:?}"
                 ));
             }
-            declared = published(&mut opened.harness);
-            offers = offers_of(&opened.harness.resources());
+            declared = published(&mut opened.driver);
+            offers = offers_of(&opened.driver.resources());
         }
         Err(error) => view = Some(error.to_string()),
     }

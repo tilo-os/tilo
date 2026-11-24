@@ -9,7 +9,7 @@ use ui::time::{Duration, Instant};
 /// A window showing a meter, a bar as wide as its reading, on a clock the test steps.
 struct Meter {
     app: local::End,
-    harness: ui::headless::FrameHarness,
+    driver: ui::headless::Driver,
     now: Instant,
 }
 
@@ -44,12 +44,12 @@ impl Meter {
         app.send(wire::encode_batch(&[open]).expect("encodes"))
             .expect("sends");
         let window = Box::new(AppWindow::new(Box::new(end), Vec::new()));
-        let harness = clock(now, || {
-            let mut harness = ui::headless::FrameHarness::new(ui::State::new(), window, (900, 700));
-            harness.set_theme(ui::Theme::dark().with_reduce_motion(false));
-            harness
+        let driver = clock(now, || {
+            let mut driver = ui::headless::Driver::new(ui::State::new(), window, (900, 700));
+            driver.set_theme(ui::Theme::dark().with_reduce_motion(false));
+            driver
         });
-        let mut meter = Self { app, harness, now };
+        let mut meter = Self { app, driver, now };
         meter.frame_at(now);
         meter
     }
@@ -76,17 +76,17 @@ impl Meter {
     fn frame_at(&mut self, now: Instant) {
         self.now = now;
         clock(now, || {
-            let root = self.harness.root_widget_mut();
+            let root = self.driver.root_widget_mut();
             ui::widget::find_mut::<AppWindow>(root)
                 .expect("the window")
                 .receive();
-            self.harness.relayout();
+            self.driver.relayout();
         });
     }
 
     /// Where the bar ends, as drawn.
     fn drawn(&mut self) -> f64 {
-        let drawing = ui::widget::find_mut::<ui::widget::Drawing>(self.harness.root_widget_mut());
+        let drawing = ui::widget::find_mut::<ui::widget::Drawing>(self.driver.root_widget_mut());
         match drawing
             .expect("the meter is drawn")
             .drawn_at(self.now)
@@ -145,7 +145,7 @@ fn a_reading_moves_from_where_it_is_drawn_and_rests_on_the_latest() {
     // Reduced motion, and a view asking for `.still`, draw a new reading at once.
     let later = start + Duration::from_secs(4);
     let reduced = ui::Theme::dark().with_reduce_motion(true);
-    clock(later, || meter.harness.set_theme(reduced));
+    clock(later, || meter.driver.set_theme(reduced));
     let mut still = Meter::open(0.2, "still", later);
     for meter in [&mut meter, &mut still] {
         meter.read(0.9);

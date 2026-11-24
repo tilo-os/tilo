@@ -585,7 +585,7 @@ mod tests {
         {
             let zone = DropZone::new("picture", "Drop a picture")
                 .with_action(Button::new("picture-choose", "Choose"));
-            let mut harness = crate::headless::FrameHarness::new_with_theme(
+            let mut harness = crate::app::driver::Driver::new_with_theme(
                 crate::State::new(),
                 Box::new(zone),
                 (320, 568),
@@ -618,7 +618,7 @@ mod tests {
             let zone = DropZone::new("import", "Drop books here")
                 .on_files(move |files| sink.borrow_mut().extend(files));
             let mut harness =
-                crate::headless::FrameHarness::new(crate::State::new(), Box::new(zone), (400, 300));
+                crate::app::driver::Driver::new(crate::State::new(), Box::new(zone), (400, 300));
             let [x, y, w, h] = harness.inspection().root.rect;
             harness.click_at(x + w / 2.0, y + h / 2.0);
             harness.send(&WindowEvent::DroppedFile("/home/ada/notes.epub".into()));

@@ -2477,7 +2477,9 @@ impl Widget for VirtualRows {
         // The row's node stands where the row does within the list's own columns, not where the
         // row widget it publishes for stands between the row's gutters: a page finds it by the
         // place the list gives its children.
-        Some(vec![child_index.saturating_add(self.headings_before(child_index))])
+        Some(vec![
+            child_index.saturating_add(self.headings_before(child_index)),
+        ])
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {

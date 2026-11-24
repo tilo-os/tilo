@@ -1,5 +1,5 @@
 use super::*;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::state::State;
 use crate::time::testing::with_monotonic_time;
 use crate::widget::{Column, Text};
@@ -18,13 +18,13 @@ fn details(key: &str) -> DisclosureBand {
     )
 }
 
-fn rooted(column: Column) -> FrameHarness {
-    let mut d = FrameHarness::for_root(State::new(), column, (640, 400), Theme::dark());
+fn rooted(column: Column) -> Driver {
+    let mut d = Driver::for_root(State::new(), column, (640, 400), Theme::dark());
     d.relayout();
     d
 }
 
-fn rebuild(d: &mut FrameHarness, band: Option<DisclosureBand>) {
+fn rebuild(d: &mut Driver, band: Option<DisclosureBand>) {
     let mut children: Vec<Element> = Vec::new();
     if let Some(band) = band {
         children.push(Box::new(band));
@@ -34,11 +34,11 @@ fn rebuild(d: &mut FrameHarness, band: Option<DisclosureBand>) {
     d.relayout();
 }
 
-fn band(d: &FrameHarness) -> Option<crate::widget::Disclosing> {
+fn band(d: &Driver) -> Option<crate::widget::Disclosing> {
     d.root_widget().children()[0].disclosing()
 }
 
-fn offset_of(d: &FrameHarness, index: usize) -> f64 {
+fn offset_of(d: &Driver, index: usize) -> f64 {
     d.root::<Column>()
         .drawn_offsets()
         .and_then(|offsets| offsets.get(index).copied())

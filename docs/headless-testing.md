@@ -398,9 +398,9 @@ Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, 
 {"invoke": {"resource": "installer", "action": "next", "expect_error": "action_unavailable"}}
 ```
 
-`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/ui/ui-core/src/headless/driver.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
+`confirm: true` satisfies a `Confirm` contract and `confirmation_phrase` a `Phrase` one; `expect_error` makes the step pass only when the API refuses with that code, so a scenario can prove a refusal as well as a success. `results` retains what each `invoke` returned, in order, within the limits documented in `crates/ui/ui-core/src/app/driver/jobs.rs`. `bind` keeps an answer for later steps as `{{name.path}}`.
 
-The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`ui::headless`) mounts a component in one `FrameHarness`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the harness, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
+The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`tilo_app::framework::testing`) mounts a component in one `Driver`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the driver, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
 
 Assert on the record, not the widget: the body the store holds, the history entry's author, the undo that reaches the starting state. A test that reads internal fields of the widget proves nothing a user, a script or an agent can observe.
 
@@ -579,6 +579,6 @@ Every build, release included, also runs the main-loop watchdog (`crates/desktop
 | Headless backend | `crates/desktop/compositor/src/backend/headless.rs` |
 | Frame-loop metrics | `crates/desktop/frame-metrics/src/lib.rs` |
 | Memory report | `crates/desktop/compositor/src/memory_report.rs` |
-| App headless drive | `crates/ui/ui-core/src/headless/` |
+| App headless drive | `crates/ui/ui-core/src/app/driver/` |
 | Offscreen renderer | `crates/ui/ui-core/src/offscreen.rs` |
 | Example harnesses | `scripts/headless-examples/` |

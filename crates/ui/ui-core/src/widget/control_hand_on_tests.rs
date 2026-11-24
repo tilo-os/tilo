@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::State;
 use crate::a11y::Action;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::theme::Theme;
 use crate::tokens::MotionSource;
 use crate::widget::{Badge, Checkbox, Column, Slider, Toggle, Widget};
@@ -58,21 +58,21 @@ fn view(model: &Rc<RefCell<Model>>) -> Vec<Box<dyn Widget>> {
     ]
 }
 
-fn rebuild(d: &mut FrameHarness, model: &Rc<RefCell<Model>>) {
+fn rebuild(d: &mut Driver, model: &Rc<RefCell<Model>>) {
     let children = view(model);
     d.root_mut::<Column>().set_children(children);
     d.relayout();
 }
 
-fn moving(d: &FrameHarness, index: usize) -> bool {
+fn moving(d: &Driver, index: usize) -> bool {
     d.root::<Column>().children()[index].needs_animation_frame()
 }
 
-fn rect(d: &FrameHarness, index: usize) -> vello::kurbo::Rect {
+fn rect(d: &Driver, index: usize) -> vello::kurbo::Rect {
     d.root::<Column>().children()[index].get_rect()
 }
 
-fn act(d: &mut FrameHarness, index: usize, action: &Action, source: MotionSource) {
+fn act(d: &mut Driver, index: usize, action: &Action, source: MotionSource) {
     let mut doc = automerge::AutoCommit::new();
     crate::motion::note_source(source);
     let mut column = d.root_mut::<Column>();
@@ -95,7 +95,7 @@ fn rebuilt_controls_move_on_a_click_and_land_on_a_key() {
         level: 0.1,
         unread: 3,
     }));
-    let mut d = FrameHarness::for_root(State::new(), Column::new(), (420, 400), Theme::dark());
+    let mut d = Driver::for_root(State::new(), Column::new(), (420, 400), Theme::dark());
     rebuild(&mut d, &model);
     rebuild(&mut d, &model);
     let _frame = crate::motion::pin_frame();
@@ -130,7 +130,7 @@ fn rebuilt_controls_move_on_a_click_and_land_on_a_key() {
     drop(_frame);
 
     // Once at rest, a key or an assistive action lands at once.
-    let mut d = FrameHarness::for_root(State::new(), Column::new(), (420, 400), Theme::dark());
+    let mut d = Driver::for_root(State::new(), Column::new(), (420, 400), Theme::dark());
     rebuild(&mut d, &model);
     rebuild(&mut d, &model);
     let _frame = crate::motion::pin_frame();
@@ -161,7 +161,7 @@ fn a_rebuilt_switch_showing_another_value_rests() {
         level: 0.5,
         unread: 0,
     }));
-    let mut d = FrameHarness::for_root(State::new(), Column::new(), (420, 400), Theme::dark());
+    let mut d = Driver::for_root(State::new(), Column::new(), (420, 400), Theme::dark());
     rebuild(&mut d, &model);
     let _frame = crate::motion::pin_frame();
     crate::motion::note_source(MotionSource::Pointer);

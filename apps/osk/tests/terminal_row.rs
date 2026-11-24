@@ -7,13 +7,13 @@ use std::rc::Rc;
 
 use osk::{InputPurpose, KeyboardLayout, Keypress, Latch, Modifiers, OskOutput, OskWidget, Symbol};
 use ui::State;
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 use vello::kurbo::Point;
 use winit::event::TouchPhase;
 
 /// A phone-width keyboard serving a terminal.
 struct Terminal {
-    driver: FrameHarness,
+    driver: Driver,
     sent: Rc<RefCell<Vec<OskOutput>>>,
     finger: u64,
 }
@@ -25,7 +25,7 @@ impl Terminal {
         let widget = OskWidget::new()
             .with_purpose(InputPurpose::Terminal)
             .on_output(move |output| sink.borrow_mut().push(output));
-        let driver = FrameHarness::for_root(State::new(), widget, (390, 320), ui::Theme::dark());
+        let driver = Driver::for_root(State::new(), widget, (390, 320), ui::Theme::dark());
         Self {
             driver,
             sent,

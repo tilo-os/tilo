@@ -6,7 +6,7 @@ use crate::application_test_support::{
 use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
-    headless::FrameHarness,
+    headless::Driver,
     widget::{BoundAppWidget, Widget},
 };
 use automerge::{ROOT, transaction::Transactable};
@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "unrelated outer").unwrap();
         state.commit_action(None, None);
-        let mut driver = FrameHarness::from_managed_root(
+        let mut driver = Driver::from_managed_root(
             state,
             ManagedRoot::new(root, registration),
             (900, 650),
@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
     phase managed_component_bundle_automatically_installs_shared_history_in_frame_runner;
     {
         let (_host, component) = component_with_history();
-        let mut driver = FrameHarness::from_component(
+        let mut driver = Driver::from_component(
             component,
             (900, 650),
             crate::application::ComponentRunnerInputs {
@@ -108,7 +108,7 @@ tilo_test_env::scenario! {
     {
         let (_host, component) = component_with_history();
         let root = crate::widget::TileHost::from_component(component);
-        let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
+        let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
         assert!(
             driver.targets().contains_key("history-open"),
             "a managed tile retains the component's History bundle"
@@ -152,7 +152,7 @@ tilo_test_env::scenario! {
             ),
         };
         let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
-        let mut driver = FrameHarness::from_managed_root(
+        let mut driver = Driver::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
             (900, 650),
@@ -280,7 +280,7 @@ thread_local! { static NOW: std::cell::Cell<u64> = const { std::cell::Cell::new(
 fn current_time() -> Option<u64> {
     Some(NOW.get())
 }
-fn review_driver() -> FrameHarness {
+fn review_driver() -> Driver {
     NOW.set(100);
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
@@ -298,7 +298,7 @@ fn review_driver() -> FrameHarness {
         ),
     };
     let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
-    let mut driver = FrameHarness::from_managed_root(
+    let mut driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
         (900, 650),
@@ -680,7 +680,7 @@ fn hidden_canonical_component_updates_once_per_ordinary_host_pass() {
     // A save that lands inside a counted pass syncs the component again to show the new status, so
     // store the record's save before the passes this test counts.
     host.records.try_flush_resource(&record).unwrap();
-    let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
+    let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
 
     let live = (handles.updates.get(), handles.syncs.get());
     driver.relayout();

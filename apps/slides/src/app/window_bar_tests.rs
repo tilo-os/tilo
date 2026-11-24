@@ -22,6 +22,7 @@ fn press(bench: &mut Bench, event: ToolbarEvent) {
 
 /// Press the bar's entry named `name`, and let what it asked for run.
 fn press_named(bench: &mut Bench, name: &str) {
+    bench.app.harness().present_in_window_bar();
     bench.app.harness().press_window_action(name).unwrap();
     bench.frame();
     bench.frame();

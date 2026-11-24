@@ -1,5 +1,6 @@
 use super::*;
-use crate::headless::{FrameHarness, InspectionNode};
+use crate::app::driver::Driver;
+use crate::headless::InspectionNode;
 use crate::widget::ButtonRole;
 use crate::widget::{Column, Container, Scrollable};
 use std::cell::Cell;
@@ -135,7 +136,7 @@ fn a_selected_card_replaces_its_edge_with_one_accent_outline() {
             Box::new(Card::new(Box::new(Text::new("Chosen"))).selected(true)),
             Box::new(Card::new(Box::new(Text::new("Other")))),
         ]);
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(Container::new().with_child(Box::new(grid))),
             (600, 300),
@@ -194,7 +195,7 @@ fn collect_named<'a>(node: &'a InspectionNode, name: &str, out: &mut Vec<&'a Ins
 #[test]
 fn content_rows_use_each_rows_largest_card_and_align_footers() {
     let mut harness =
-        FrameHarness::new_with_theme(crate::State::new(), fixture(), (700, 800), Theme::dark());
+        Driver::new_with_theme(crate::State::new(), fixture(), (700, 800), Theme::dark());
     let inspection = harness.inspection();
     let cards = &inspection.root.children;
     assert_eq!(rect(&cards[0]).height(), rect(&cards[1]).height());
@@ -222,7 +223,7 @@ fn content_rows_use_each_rows_largest_card_and_align_footers() {
 #[test]
 fn scrolling_reaches_the_last_scaled_action() {
     let root = Scrollable::new_vertical().with_child(long_fixture());
-    let mut harness = FrameHarness::new_with_theme(
+    let mut harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(root),
         (240, 400),
@@ -271,7 +272,7 @@ fn cards_in_a_scroll_stack_keep_their_content_height() {
                 counter.set(counter.get() + 1);
             }),
         ));
-    let mut harness = FrameHarness::new_with_theme(
+    let mut harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(Scrollable::new_vertical().with_child(Box::new(content))),
         (480, 360),
@@ -413,7 +414,7 @@ tilo_test_env::scenario! {
         }
         for scale in [1.0, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
-            let mut resized = FrameHarness::new_with_theme(
+            let mut resized = Driver::new_with_theme(
                 crate::State::new(),
                 long_fixture(),
                 (1000, 1800),
@@ -422,7 +423,7 @@ tilo_test_env::scenario! {
             resized.tab(false);
             resized.resize((240, 1800)).unwrap();
             let fresh =
-                FrameHarness::new_with_theme(crate::State::new(), long_fixture(), (240, 1800), theme);
+                Driver::new_with_theme(crate::State::new(), long_fixture(), (240, 1800), theme);
             let a = resized.inspection();
             let b = fresh.inspection();
             assert_eq!(geometry(&a.root), geometry(&b.root));
@@ -473,7 +474,7 @@ fn a_pressable_card_activates_but_its_own_actions_do_not_open_it() {
             Button::new("share", "Share").on_click(crate::testing::record_click("shared")),
         ))
         .on_activate("open-report", move || counter.set(counter.get() + 1));
-    let mut harness = FrameHarness::new_with_theme(
+    let mut harness = Driver::new_with_theme(
         crate::State::new(),
         Box::new(Column::new().with_no_padding().push(Box::new(card))),
         (400, 300),
@@ -504,7 +505,7 @@ tilo_test_env::scenario! {
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(Actions::new(Button::new("save", "Save changes"))));
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(root),
             (600, 300),
@@ -516,7 +517,7 @@ tilo_test_env::scenario! {
 
         let actions = Actions::new(Button::new("primary", "Primary"))
             .secondary(Button::new("secondary", "Secondary"));
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(actions),
             (600, 80),
@@ -535,7 +536,7 @@ tilo_test_env::scenario! {
 
     phase a_card_headed_by_a_section_header_shows_its_title_above_the_body;
     {
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(
                 Card::new(Box::new(Text::new("body")))
@@ -579,7 +580,7 @@ tilo_test_env::scenario! {
             node.children.iter().find_map(first_text)
         }
         let title_height = |scale: f32| {
-            let harness = FrameHarness::new_with_theme(
+            let harness = Driver::new_with_theme(
                 crate::State::new(),
                 Box::new(Card::new(Box::new(Text::new("body"))).with_title("Group")),
                 (400, 200),
@@ -672,7 +673,7 @@ fn a_cards_contents_draw_in_the_colours_of_the_face_they_stand_on() {
             face_raised, theme.tokens.colors.surfaces.raised,
             "{name}: the card's face carries its own raised surface, not the page's"
         );
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(
                 Card::new(Box::new(Text::new("Words on the card's own face")))

@@ -54,14 +54,6 @@ mod window_place;
 pub use rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
 pub use window_place::{list_cap, placement};
 
-/// An action palette, as a window has it.
-pub(crate) type ActionPaletteBox = Box<ActionPalette>;
-
-/// A palette for the host text's `locale`.
-pub(crate) fn make_action_palette(locale: String) -> ActionPaletteBox {
-    Box::new(ActionPalette::with_host_text(locale))
-}
-
 /// The window a palette was asked for from, when a host lays several app tiles out in one tree (the
 /// shell's strip of windows): the innermost tile under `pressed_at` when a press asked (a control
 /// that needs confirmation, clicked in a window that does not hold the keyboard), else the tile around
@@ -227,6 +219,7 @@ impl PendingOperation {
         self.intent.encoded()
     }
 
+    #[cfg(test)]
     pub(crate) fn encode_at_local_owner(
         &self,
         resources: &[ResourceSpec],
@@ -311,7 +304,7 @@ struct HostStep {
 #[crate::component::not_a_component(system, "the palette is the system's")]
 pub struct ActionPalette {
     field: SearchField,
-    results: SearchResultsView,
+    results: Box<SearchResultsView>,
     /// Row `action_id` → how activating it resolves.
     index: HashMap<String, RowResolution>,
     base_index: HashMap<String, RowResolution>,
@@ -514,9 +507,11 @@ impl ActionPalette {
                 .build()
                 .control_size(FIELD_SIZE)
                 .with_placeholder(&crate::i18n::widget_format("action-palette-query", &[])),
-            results: SearchResultsView::new()
-                .with_empty_text("No matches")
-                .with_test_id("action-palette-results"),
+            results: Box::new(
+                SearchResultsView::new()
+                    .with_empty_text("No matches")
+                    .with_test_id("action-palette-results"),
+            ),
             index: HashMap::new(),
             base_index: HashMap::new(),
             askable: HashMap::new(),
@@ -693,14 +688,12 @@ impl ActionPalette {
 
     /// Follow whether it is presented, with the motion the person allows: its host calls this every
     /// frame, drawn or not, so a palette hidden and shown again arrives again.
-    #[cfg(feature = "native")]
     pub(crate) fn follow_presence(&mut self, motion: crate::tokens::EffectiveMotion) {
         let presented = self.is_presented();
         self.appear.follow(presented, motion);
     }
     /// Whether its arrival is still moving: the frame that drew it asks for
     /// another until it rests.
-    #[cfg(feature = "native")]
     pub(crate) fn is_moving(&self) -> bool {
         self.appear.is_moving()
     }
@@ -1758,7 +1751,6 @@ impl ActionPalette {
         self.pending_nav.take()
     }
 
-    #[cfg(feature = "native")]
     pub(crate) fn referenced_bound_targets(&self) -> Vec<crate::bound_dispatch::BoundActionTarget> {
         self.index
             .values()
@@ -2359,7 +2351,7 @@ impl ActionPalette {
     }
 
     pub(crate) fn presentation_widgets(&self) -> (&dyn Widget, &dyn Widget) {
-        (&self.field, &self.results)
+        (&self.field, &*self.results)
     }
 
     /// The widget of the field the palette types into. A host that presents the card outside its
@@ -2367,100 +2359,6 @@ impl ActionPalette {
     #[must_use]
     pub fn field_widget(&self) -> &dyn Widget {
         self.presentation_widgets().0
-    }
-
-    pub(crate) fn perform_host_semantic(
-        &mut self,
-        results_owner: bool,
-        target: Option<&str>,
-        action: &crate::a11y::Action,
-        doc: &mut crate::widget::Edits<'_>,
-        root: &ObjId,
-    ) -> bool {
-        // The caller resolves this owner against the current inspection before
-        // entering the widget. No guessed path or substring is an authority.
-        let handled = if results_owner {
-            target.is_some_and(|target| {
-                self.results
-                    .perform_semantic_action(target, action, doc, root)
-            })
-        } else if matches!(action, crate::a11y::Action::Focus) {
-            true
-        } else {
-            self.field.perform_action(action, &[], doc, root)
-        };
-        if let Some(query) = self.field.take_dirty() {
-            if self.arg.is_none() {
-                self.rebuild(&query);
-            }
-        }
-        self.poll_view_activation();
-        handled
-    }
-
-    pub(crate) fn handle_host_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut crate::widget::Edits<'_>,
-        root: &ObjId,
-    ) -> bool {
-        if self.handle_key(event, &modifiers, doc, root) {
-            return true;
-        }
-        if self.dismissed_on_scrim(event, scale) {
-            return true;
-        }
-        let normalized;
-        let event = if let WindowEvent::CursorMoved {
-            device_id,
-            position,
-        } = event
-        {
-            normalized = WindowEvent::CursorMoved {
-                device_id: *device_id,
-                position: winit::dpi::PhysicalPosition::new(position.x / scale, position.y / scale),
-            };
-            &normalized
-        } else {
-            event
-        };
-        match event {
-            WindowEvent::Ime(_) => {
-                self.route_to_field(event, modifiers, doc, root);
-                if let Some(query) = self.field.take_dirty() {
-                    if self.arg.is_none() {
-                        self.rebuild(&query);
-                    }
-                }
-                true
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x, position.y);
-                self.route_to_field(event, modifiers, doc, root);
-                self.route_to_results(event, modifiers, doc, root);
-                true
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } if self.facet_chip_at(self.last_cursor).is_some() => {
-                if let Some(filter) = self.facet_chip_at(self.last_cursor) {
-                    self.toggle_facet(&filter);
-                }
-                true
-            }
-            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
-                self.route_to_field(event, modifiers, doc, root);
-                self.follow_field_scope();
-                self.route_to_results(event, modifiers, doc, root);
-                self.poll_view_activation();
-                true
-            }
-            WindowEvent::Touch(_) => true,
-            _ => false,
-        }
     }
 
     #[allow(

@@ -18,10 +18,10 @@ use crate::a11y_tree::walk::{A11yVisitor, Visit, walk, walk_synthetic_children};
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
 
-#[cfg(any(feature = "native", test))]
 mod floating_surface;
 #[cfg(feature = "native")]
-pub(crate) use floating_surface::{publish_host_part, surface_action_target, surface_tree_update};
+pub(crate) use floating_surface::surface_tree_update;
+pub(crate) use floating_surface::{publish_host_part, surface_action_target};
 
 /// Reserved so no widget can collide with it: widget ids are offset by +1
 /// from their taffy node id, and structural fallback ids are large offsets

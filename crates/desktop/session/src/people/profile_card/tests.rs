@@ -63,7 +63,7 @@ fn offered() -> LinkState {
 }
 
 /// The card open with `linked` , in a frame that clicks.
-fn framed(linked: Vec<LinkedAccount>) -> ui::headless::Framed<ProfileCard> {
+fn framed(linked: Vec<LinkedAccount>) -> ui::app::driver::Framed<ProfileCard> {
     ui::i18n::I18nManager::init("en-US");
     let mut card = ProfileCard::new();
     card.toggle(
@@ -71,20 +71,20 @@ fn framed(linked: Vec<LinkedAccount>) -> ui::headless::Framed<ProfileCard> {
         Rect::new(1200.0, 2.0, 1220.0, 22.0),
         Rect::new(0.0, 0.0, 1280.0, 720.0),
     );
-    ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+    ui::app::driver::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
 }
 
-fn click(frame: &mut ui::headless::Framed<ProfileCard>, name: &str) {
-    let harness = ui::headless::Framed::harness_mut(frame);
-    harness.poll_frame().unwrap();
+fn click(frame: &mut ui::app::driver::Framed<ProfileCard>, name: &str) {
+    let harness = ui::app::driver::Framed::harness_mut(frame);
+    harness.relayout();
     harness.click_named(name).unwrap();
-    harness.poll_frame().unwrap();
+    harness.relayout();
 }
 
 /// Everything the open card says, as assistive technology reads it.
-fn says(frame: &mut ui::headless::Framed<ProfileCard>) -> String {
-    let harness = ui::headless::Framed::harness_mut(frame);
-    harness.poll_frame().unwrap();
+fn says(frame: &mut ui::app::driver::Framed<ProfileCard>) -> String {
+    let harness = ui::app::driver::Framed::harness_mut(frame);
+    harness.relayout();
     harness.inspection_json().unwrap()
 }
 
@@ -133,7 +133,7 @@ fn the_card_opens_focused_on_itself_and_tab_enters_the_name() {
 #[test]
 fn the_card_opens_with_the_keyboard_on_itself_not_in_the_name_field() {
     let mut frame = framed(Vec::new());
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.poll_frame().unwrap();
     let focused = harness
         .focused_access_node()
@@ -145,10 +145,10 @@ fn the_card_opens_with_the_keyboard_on_itself_not_in_the_name_field() {
         focused.name
     );
     // The name field is entered on purpose.
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.click_named("profile-name").unwrap();
     harness.poll_frame().unwrap();
-    let focused = ui::headless::Framed::harness(&frame)
+    let focused = ui::app::driver::Framed::harness(&frame)
         .focused_access_node()
         .expect("the clicked field holds the keyboard");
     assert_eq!(
@@ -175,9 +175,9 @@ fn settings_sits_at_the_top_of_the_card_before_the_status_sections() {
         },
     );
     let mut frame = framed_model(&with_settings);
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.poll_frame().unwrap();
-    let top = |harness: &ui::headless::FrameHarness, name: &str| {
+    let top = |harness: &ui::headless::Driver, name: &str| {
         let id = harness
             .a11y_node_named(name)
             .unwrap_or_else(|| panic!("no control named {name}"));
@@ -219,7 +219,7 @@ fn a_person_without_a_name_is_asked_for_one() {
             Rect::new(1200.0, 2.0, 1220.0, 22.0),
             Rect::new(0.0, 0.0, 1280.0, 720.0),
         );
-        ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+        ui::app::driver::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
     };
     let mut asked = open(true);
     let said = says(&mut asked);
@@ -242,7 +242,7 @@ fn an_unnamed_person_writes_a_name_into_an_empty_field() {
     let mut frame = framed_model(&unnamed());
     assert_eq!(frame.draft(), "", "the field starts empty");
     {
-        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        let harness = ui::app::driver::Framed::harness_mut(&mut frame);
         let field = harness
             .a11y_node_named(&t("profile-name"))
             .and_then(|id| {
@@ -306,7 +306,8 @@ fn the_card_offers_two_ways_to_keep_your_identity() {
         Rect::new(1200.0, 2.0, 1220.0, 22.0),
         Rect::new(0.0, 0.0, 1280.0, 720.0),
     );
-    let mut frame = ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
+    let mut frame =
+        ui::app::driver::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
     let said = says(&mut frame);
     assert!(said.contains("Keep your name and work"), "{said}");
     assert!(said.contains("Save a recovery key"), "{said}");
@@ -397,8 +398,9 @@ fn a_linked_card_keeps_its_status_field() {
         Rect::new(1350.0, 2.0, 1370.0, 22.0),
         Rect::new(0.0, 0.0, 1440.0, 900.0),
     );
-    let mut frame = ui::headless::Framed::new(ui::State::new(), card, (1440, 900), Theme::dark());
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let mut frame =
+        ui::app::driver::Framed::new(ui::State::new(), card, (1440, 900), Theme::dark());
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.poll_frame().unwrap();
     let targets = harness.targets();
     let at = |name: &str| {
@@ -479,7 +481,7 @@ fn what_went_wrong_is_said_on_the_row() {
 }
 
 /// Hosts the card as a shell does: the linked accounts change during a frame's update, not
-/// through the harness's own access to its root (which lays out from scratch).
+/// through the driver's own access to its root (which lays out from scratch).
 struct Shell {
     card: ProfileCard,
     next: Rc<RefCell<Option<Vec<LinkedAccount>>>>,
@@ -554,12 +556,13 @@ fn a_rebuilt_card_is_laid_out_again_before_a_frame_reaches_it() {
         card,
         next: Rc::clone(&next),
     };
-    let mut frame = ui::headless::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let mut frame =
+        ui::app::driver::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.poll_frame().unwrap();
     let before = harness.rebuilt_frames();
     *next.borrow_mut() = Some(vec![discord(offered())]);
-    assert!(harness.poll_frame().unwrap(), "the change is drawn");
+    harness.relayout();
     assert!(
         harness.rebuilt_frames() > before,
         "the frame lays the rebuilt card out again instead of keeping the old layout"
@@ -585,8 +588,9 @@ fn someone_elses_card_stays_as_it_was_when_your_linked_accounts_arrive() {
         card,
         next: Rc::clone(&next),
     };
-    let mut frame = ui::headless::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let mut frame =
+        ui::app::driver::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.poll_frame().unwrap();
     let before = harness.rebuilt_frames();
     *next.borrow_mut() = Some(vec![discord(unlinked())]);
@@ -625,7 +629,7 @@ fn a_page_card_offers_what_they_are_doing_in_their_own_words() {
             Rect::new(1200.0, 2.0, 1220.0, 22.0),
             Rect::new(0.0, 0.0, 1280.0, 720.0),
         );
-        ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+        ui::app::driver::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
     };
     let said = says(&mut open(Some(ui::StatusSharing::Automatic)));
     assert!(said.contains("profile-status"), "{said}");
@@ -804,7 +808,7 @@ fn ada(can_message: bool, status: LineSource) -> ProfileModel {
     }
 }
 
-fn framed_model(model: &ProfileModel) -> ui::headless::Framed<ProfileCard> {
+fn framed_model(model: &ProfileModel) -> ui::app::driver::Framed<ProfileCard> {
     ui::i18n::I18nManager::init("en-US");
     let mut card = ProfileCard::new();
     card.toggle(
@@ -812,7 +816,7 @@ fn framed_model(model: &ProfileModel) -> ui::headless::Framed<ProfileCard> {
         Rect::new(1000.0, 2.0, 1020.0, 22.0),
         Rect::new(0.0, 0.0, 1280.0, 720.0),
     );
-    ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+    ui::app::driver::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
 }
 
 /// A person whose card has a picture, a status and a way of sharing it: the card as the web
@@ -833,8 +837,8 @@ fn with_status_and_photo() -> ProfileModel {
 /// Put `text` into the card's field `id` in one edit, as the page's semantics bridge does for a
 /// keystroke: a loaded machine's pause between two typed characters keeps half a line, which is
 /// the pause rule working, not the case under test.
-fn set_value(frame: &mut ui::headless::Framed<ProfileCard>, id: &str, text: &str) {
-    let harness = ui::headless::Framed::harness_mut(frame);
+fn set_value(frame: &mut ui::app::driver::Framed<ProfileCard>, id: &str, text: &str) {
+    let harness = ui::app::driver::Framed::harness_mut(frame);
     harness.poll_frame().unwrap();
     // Point at the field first: a person types into the field they focused, and leaving it is
     // what keeps what is there.
@@ -857,10 +861,10 @@ fn a_name_typed_and_left_is_kept() {
     let mut frame = framed_model(&with_status_and_photo());
     set_value(&mut frame, "profile-name", " Grace ");
     // Pointing at the status field leaves the name field.
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.click_named("profile-status").unwrap();
     harness.poll_frame().unwrap();
-    let (card, _) = ui::headless::Framed::split(&mut frame);
+    let (card, _) = ui::app::driver::Framed::split(&mut frame);
     assert_eq!(
         card.take_choice(),
         Some(ProfileChoice::Rename("Grace".into())),
@@ -879,8 +883,8 @@ fn a_status_typed_is_kept_when_the_card_closes() {
     // Said in one edit, as the page's bridge says it: typing it a key at a time lets a loaded
     // machine's pauses keep half the line, which is the pause rule working, not this case.
     set_value(&mut frame, "profile-status", "Reviewing the signup");
-    ui::headless::Framed::harness_mut(&mut frame).key("Escape");
-    ui::headless::Framed::harness_mut(&mut frame)
+    ui::app::driver::Framed::harness_mut(&mut frame).key("Escape");
+    ui::app::driver::Framed::harness_mut(&mut frame)
         .poll_frame()
         .unwrap();
     assert!(!frame.is_open(), "Escape closed the card");
@@ -943,7 +947,7 @@ fn a_pause_that_has_come_stays_due_and_is_kept_when_served() {
 fn a_name_typed_after_another_is_kept() {
     let mut frame = framed_model(&with_status_and_photo());
     set_value(&mut frame, "profile-name", "Grace");
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.click_named("profile-status").unwrap();
     harness.poll_frame().unwrap();
     assert_eq!(
@@ -951,7 +955,7 @@ fn a_name_typed_after_another_is_kept() {
         Some(ProfileChoice::Rename("Grace".into()))
     );
     set_value(&mut frame, "profile-name", "Mira");
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.click_named("profile-status").unwrap();
     harness.poll_frame().unwrap();
     assert_eq!(
@@ -968,10 +972,10 @@ fn a_name_typed_after_another_is_kept() {
 fn a_name_set_through_the_page_bridge_is_kept() {
     let mut frame = framed_model(&with_status_and_photo());
     set_value(&mut frame, "profile-name", "Ada");
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.key("Enter");
     harness.poll_frame().unwrap();
-    let (card, _) = ui::headless::Framed::split(&mut frame);
+    let (card, _) = ui::app::driver::Framed::split(&mut frame);
     assert_eq!(card.draft(), "Ada", "the bridge's edit is the field's text");
     assert_eq!(
         card.take_choice(),
@@ -1003,7 +1007,7 @@ fn a_name_set_through_the_page_bridge_is_kept_once_typing_pauses() {
 #[test]
 fn a_card_left_alone_keeps_nothing() {
     let mut frame = framed_model(&with_status_and_photo());
-    let harness = ui::headless::Framed::harness_mut(&mut frame);
+    let harness = ui::app::driver::Framed::harness_mut(&mut frame);
     harness.poll_frame().unwrap();
     harness.key("Escape");
     harness.poll_frame().unwrap();
@@ -1059,7 +1063,7 @@ fn an_agents_card_says_what_it_is_doing_now_while_it_stands() {
         said.contains("Now"),
         "it reads as what it is at now: {said}"
     );
-    let (card, _) = ui::headless::Framed::split(&mut frame);
+    let (card, _) = ui::app::driver::Framed::split(&mut frame);
     assert!(
         !card.shows(&claude("Working in Notes")),
         "the row moved past the card"
@@ -1076,7 +1080,7 @@ fn an_agents_card_says_what_it_is_doing_now_while_it_stands() {
         "not what it opened with: {said}"
     );
     assert!(frame.is_open(), "the card stays open");
-    let (card, _) = ui::headless::Framed::split(&mut frame);
+    let (card, _) = ui::app::driver::Framed::split(&mut frame);
     assert!(
         !card.updated(&claude("Working in Notes")),
         "the same line again builds nothing"
@@ -1088,7 +1092,7 @@ fn an_agents_card_says_what_it_is_doing_now_while_it_stands() {
 fn your_own_card_is_never_built_again_from_what_is_said_of_someone_else() {
     let mut frame = framed_model(&model());
     assert!(says(&mut frame).contains("Your name"));
-    let (card, _) = ui::headless::Framed::split(&mut frame);
+    let (card, _) = ui::app::driver::Framed::split(&mut frame);
     assert!(!card.updated(&claude("Working in Notes")));
     assert!(
         says(&mut frame).contains("Your name"),

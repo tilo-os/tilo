@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::component::{Component, Described, Source};
-use crate::headless::FrameHarness;
+use crate::headless::Driver;
 use crate::theme::Theme;
 use crate::widget::arrange::{Fit, Sizing};
 use crate::widget::{Card, CardProps, Element, Fitted};
@@ -89,7 +89,7 @@ fn filling_view() -> Element {
 }
 
 fn body_height(card: Card, height: u32) -> f64 {
-    let harness = FrameHarness::for_root(crate::State::new(), card, (600, height), Theme::light());
+    let harness = Driver::for_root(crate::State::new(), card, (600, height), Theme::light());
     crate::widget::find_test_id(harness.root_widget(), SUBJECT)
         .expect("the view in the body is laid out")
         .get_rect()
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
         let mut node = Node::new("card").holding("body", view);
         let props = CardProps::from_source(&mut node).expect("the card reads its body");
         let card = Card::from_props("card", props);
-        let harness = FrameHarness::for_root(crate::State::new(), card, (600, 800), Theme::light());
+        let harness = Driver::for_root(crate::State::new(), card, (600, 800), Theme::light());
         let rect = crate::widget::find_test_id(harness.root_widget(), SUBJECT)
             .expect("the view in the body is laid out")
             .get_rect();

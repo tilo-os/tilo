@@ -11,7 +11,7 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::headless::FrameHarness;
+use crate::headless::Driver;
 use crate::icons::Icon;
 
 use crate::theme::Theme;
@@ -115,7 +115,7 @@ impl Widget for Shows {
 }
 
 struct Stage {
-    harness: FrameHarness,
+    harness: Driver,
     staged: Staged,
     offset: Rc<Cell<f64>>,
     clicks: Clicks,
@@ -134,7 +134,7 @@ impl Stage {
             replaced: false,
             rect: Rect::ZERO,
         };
-        let harness = FrameHarness::new(crate::State::new(), Box::new(root), VIEWPORT);
+        let harness = Driver::new(crate::State::new(), Box::new(root), VIEWPORT);
         Self {
             harness,
             staged,
@@ -178,7 +178,7 @@ fn pressable_at(widget: &dyn Widget, point: Point) -> bool {
     found
 }
 
-fn pressable_centre(harness: &FrameHarness) -> Point {
+fn pressable_centre(harness: &Driver) -> Point {
     let mut hits = Vec::new();
     for y in (0..VIEWPORT.1).step_by(2) {
         for x in (0..VIEWPORT.0).step_by(2) {
@@ -198,7 +198,7 @@ fn pressable_centre(harness: &FrameHarness) -> Point {
     bounds.center()
 }
 
-fn centre_of(harness: &FrameHarness, id: &str) -> Point {
+fn centre_of(harness: &Driver, id: &str) -> Point {
     harness
         .targets()
         .get(id)
@@ -208,7 +208,7 @@ fn centre_of(harness: &FrameHarness, id: &str) -> Point {
 
 /// The control rebuilt at the same place under the held button completes the click; rebuilt a few
 /// pixels away, still under the pointer, it does not.
-fn assert_press_carries(build: Build, locate: impl Fn(&mut FrameHarness) -> Point) {
+fn assert_press_carries(build: Build, locate: impl Fn(&mut Driver) -> Point) {
     let mut scene = Stage::new(build);
     let point = locate(&mut scene.harness);
     scene.point_at(point);
@@ -528,7 +528,7 @@ fn a_control_a_relayout_slides_under_a_still_pointer_takes_the_click() {
 }
 
 /// The centre of the place named `name` in a navigation list the harness shows.
-fn place_centre(harness: &mut FrameHarness, name: &str) -> Point {
+fn place_centre(harness: &mut Driver, name: &str) -> Point {
     fn find(node: &crate::a11y::AccessNode, name: &str) -> Option<Point> {
         if node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some(name) {
             let b = node.bounds?;

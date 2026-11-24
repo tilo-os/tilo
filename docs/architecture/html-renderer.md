@@ -14,7 +14,7 @@ fixed in its semantics, where a screen reader gains too.
 
 ## The composition
 
-`FrameHarness::composition()` (`crates/ui/ui-core/src/headless/composition.rs`)
+`Driver::composition()` (`crates/ui/ui-core/src/app/driver/session.rs`)
 walks the laid-out tree from its root. Each widget becomes a `Composed`
 (`crates/ui/ui-core/src/composition.rs`): its path (the name semantic actions
 use), its rectangle and clip, its layout node's style as CSS, its scroll, whether
@@ -23,7 +23,7 @@ publishes under it. A row a list represents in its own nodes (`Widget::
 accessibility_represents_child`) carries the list's node for it: its place in
 the list, its level and its disclosure. A leaf whose words cannot say what it
 shows (a chart, a map, a canvas, an icon-only button too narrow for its name) is
-marked for a picture; `FrameHarness::paint_pictures` paints each such widget
+marked for a picture; `Driver::paint_pictures` (`crates/ui/ui-core/src/app/driver/pictures.rs`) paints each such widget
 alone and sends it as a PNG, repainted only when what it paints changed.
 
 ## The renderer

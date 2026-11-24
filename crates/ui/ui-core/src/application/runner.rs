@@ -2153,7 +2153,9 @@ mod native_process_tests {
             "{error}"
         );
         assert!(
-            error.to_string().ends_with("(the workspace service is gone)"),
+            error
+                .to_string()
+                .ends_with("(the workspace service is gone)"),
             "{error}"
         );
     }

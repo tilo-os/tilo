@@ -1,6 +1,7 @@
 use super::*;
+use crate::app::driver::Driver;
 use crate::component::{Bound, Described, Fired, Intent};
-use crate::headless::{FrameHarness, InspectionNode};
+use crate::headless::InspectionNode;
 use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use crate::widget::{Column, Element};
 use std::cell::Cell;
@@ -37,7 +38,7 @@ fn a_title_cut_short_reads_in_full_in_the_tooltip() {
     let theme = crate::theme::Theme::dark();
     let message = "Expected `&[String]`, found `&Vec<String>` in the argument to parse_limit";
     let long = ListRow::new("long", message).meta("Ln 14, Col 29");
-    let h = FrameHarness::for_root(crate::State::new(), long, (240, 60), theme.clone());
+    let h = Driver::for_root(crate::State::new(), long, (240, 60), theme.clone());
     let row = h.root::<ListRow>();
     let band = row.text_band();
     let (rect, text) = Widget::tooltip_target_at(row, band.center()).expect("elided title");
@@ -45,7 +46,7 @@ fn a_title_cut_short_reads_in_full_in_the_tooltip() {
     assert_eq!(rect, band);
 
     let short = ListRow::new("short", "Unused import").meta("Ln 2, Col 5");
-    let h = FrameHarness::for_root(crate::State::new(), short, (480, 60), theme);
+    let h = Driver::for_root(crate::State::new(), short, (480, 60), theme);
     let row = h.root::<ListRow>();
     assert_eq!(
         Widget::tooltip_target_at(row, row.text_band().center()),
@@ -58,7 +59,7 @@ fn a_title_cut_short_reads_in_full_in_the_tooltip() {
 fn a_row_tooltip_reads_anywhere_the_row_has_nothing_closer_to_say() {
     let theme = crate::theme::Theme::dark();
     let row = ListRow::new("used", "Deploy").tooltip("Used 3 times");
-    let h = FrameHarness::for_root(crate::State::new(), row, (480, 60), theme);
+    let h = Driver::for_root(crate::State::new(), row, (480, 60), theme);
     let row = h.root::<ListRow>();
     let (_, text) = Widget::tooltip_target_at(row, row.text_band().center()).expect("row tooltip");
     assert_eq!(text, "Used 3 times");
@@ -71,7 +72,7 @@ fn a_badge_column_fits_every_badge_of_the_list() {
     let row = ListRow::new("short", "Deploy")
         .badge("SH")
         .badge_column(Rc::clone(&badges));
-    let h = FrameHarness::for_root(crate::State::new(), row, (480, 60), theme.clone());
+    let h = Driver::for_root(crate::State::new(), row, (480, 60), theme.clone());
     let wide = crate::text_render::with_layout_renderer(&theme, |text| {
         badge_column_width(text, &theme, &["SH", "RUST"])
     });
@@ -482,7 +483,7 @@ fn a_dense_row_is_its_caption_line_not_a_list_row() {
             f64::from(InteractionEnvironment::TOUCH.minimum_collection_row()),
         ),
     ] {
-        let mut h = FrameHarness::for_root(
+        let mut h = Driver::for_root(
             crate::State::new(),
             Column::new().push(Box::new(row())),
             (360, 200),
@@ -600,7 +601,7 @@ fn text_sits_on_the_content_edge_and_the_lift_bleeds_past_it() {
             .with_horizontal_padding(24.0, 24.0)
             .push(Box::new(ListRow::new("a", "Ada").on_open(|| {}))),
     );
-    let harness = FrameHarness::new(crate::State::new(), rows, (400, 200));
+    let harness = Driver::new(crate::State::new(), rows, (400, 200));
     let row = rect_of(find(&harness.inspection().root, "ListRow").unwrap());
     assert!((row.x0 - 24.0).abs() < 0.5);
     let mut list_row = ListRow::new("a", "Ada");
@@ -1133,7 +1134,7 @@ fn a_rows_box_presses_as_far_as_the_pointer_needs() {
         ("a pointer", InteractionEnvironment::POINTER),
         ("a finger", InteractionEnvironment::TOUCH),
     ] {
-        let mut h = FrameHarness::for_root(
+        let mut h = Driver::for_root(
             crate::State::new(),
             Column::new().push(Box::new(row())),
             (360, 300),
@@ -1280,7 +1281,7 @@ fn retained_row_activates_by_pointer_and_accessibility() {
                 .on_open(move || counter.set(counter.get() + 1)),
         )),
     );
-    let mut harness = FrameHarness::new(crate::State::new(), rows, (400, 200));
+    let mut harness = Driver::new(crate::State::new(), rows, (400, 200));
     let [x, y, w, h] = find(&harness.inspection().root, "ListRow")
         .expect("row laid out")
         .rect;
@@ -1317,7 +1318,7 @@ fn a_trailing_disclosure_button_stands_on_the_chevron_column() {
                     "Open Home",
                 ))),
         ));
-    let harness = FrameHarness::new(crate::State::new(), Box::new(rows), (600, 300));
+    let harness = Driver::new(crate::State::new(), Box::new(rows), (600, 300));
     let root = harness.inspection().root;
     let row = rect_of(find(&root, "ListRow").unwrap());
     let button = rect_of(find(&root, "Button").unwrap());
@@ -1344,7 +1345,7 @@ fn a_trailing_control_stands_beside_the_status_dot_not_over_it() {
             crate::widget::Button::new("retry", "Try again")
                 .control_size(crate::widget::ControlSize::Small),
         ));
-    let h = FrameHarness::for_root(crate::State::new(), row, (720, 120), theme.clone());
+    let h = Driver::for_root(crate::State::new(), row, (720, 120), theme.clone());
     let row = h.root::<ListRow>();
     let button = row.trailing.as_ref().unwrap().element.get_rect();
     let band = row.text_band();
@@ -1372,7 +1373,7 @@ fn a_trailing_control_stands_before_the_disclosure_chevron_not_over_it() {
         .secondary("Connected")
         .trailing(Box::new(crate::widget::Toggle::bound("vpn-toggle", "vpn")))
         .disclosure();
-    let h = FrameHarness::for_root(crate::State::new(), row, (720, 120), theme.clone());
+    let h = Driver::for_root(crate::State::new(), row, (720, 120), theme.clone());
     let row = h.root::<ListRow>();
     let toggle = row.trailing.as_ref().unwrap().element.get_rect();
     let band = row.text_band();
@@ -1405,7 +1406,7 @@ fn a_caption_wraps_onto_the_lines_its_control_leaves_it() {
                 "ws-agent-answer-members-outside",
                 "Ask first",
             )));
-        let harness = FrameHarness::new(
+        let harness = Driver::new(
             crate::State::new(),
             Box::new(Column::new().with_no_padding().push(Box::new(row))),
             (width, 300),
@@ -1447,7 +1448,7 @@ fn a_trailing_control_reserves_its_width_and_wraps_under_narrow_text() {
                 "wifi-toggle",
                 "wifi",
             )));
-        let harness = FrameHarness::new(
+        let harness = Driver::new(
             crate::State::new(),
             Box::new(Column::new().with_no_padding().push(Box::new(row))),
             (width, 300),
@@ -1504,7 +1505,7 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
     let row = ListRow::new("contact-ada", "Ada Lovelace")
         .secondary("ada@example.org")
         .on_open(move || invoked.set(invoked.get() + 1));
-    let mut driver = FrameHarness::new(
+    let mut driver = Driver::new(
         crate::State::new(),
         Box::new(Column::new().with_no_padding().push(Box::new(row))),
         (400, 200),
@@ -1568,7 +1569,7 @@ fn a_control_wrapped_under_its_text_fills_the_row_to_its_trailing_edge() {
                 .push(Box::new(chooser)),
         )
     };
-    let controls = |harness: &FrameHarness| {
+    let controls = |harness: &Driver| {
         let root = harness.inspection().root;
         let column = rect_of(&root);
         let mut rows = Vec::new();
@@ -1583,7 +1584,7 @@ fn a_control_wrapped_under_its_text_fills_the_row_to_its_trailing_edge() {
             chooser,
         )
     };
-    let mut harness = FrameHarness::new(crate::State::new(), rows(), (900, 400));
+    let mut harness = Driver::new(crate::State::new(), rows(), (900, 400));
     let (_, row, _, segmented, chooser) = controls(&harness);
     assert!(
         segmented.y1 <= row.y1 && (segmented.x1 - row.x1).abs() < 0.5,
@@ -1639,7 +1640,7 @@ fn collect<'a>(node: &'a InspectionNode, widget: &str, out: &mut Vec<&'a Inspect
 fn a_rows_skeleton_paints_where_the_row_does() {
     let theme = crate::theme::Theme::dark();
     let row = ListRow::new("task", "Water the plants").secondary("Today");
-    let h = FrameHarness::for_root(crate::State::new(), row, (480, 80), theme.clone());
+    let h = Driver::for_root(crate::State::new(), row, (480, 80), theme.clone());
     let row = h.root::<ListRow>();
     let skeleton = crate::widget::SkeletonFace::new(crate::widget::SkeletonShape::Row(row.shape()));
     assert_eq!(
@@ -1683,7 +1684,7 @@ fn a_pressed_row_is_a_fingers_target_tall_on_touch() {
                 if pressed { touch } else { single },
             ),
         ] {
-            let mut h = FrameHarness::for_root(
+            let mut h = Driver::for_root(
                 crate::State::new(),
                 Column::new().push(Box::new(row())),
                 (360, 200),
@@ -1711,7 +1712,7 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
             removed_too.set(removed_too.get() + 1)
         });
     row.set_focus(true);
-    let mut harness = FrameHarness::for_root(crate::State::new(), row, (420, 80), Theme::dark());
+    let mut harness = Driver::for_root(crate::State::new(), row, (420, 80), Theme::dark());
     harness.key("Delete");
     assert_eq!(
         removed.get(),
@@ -1727,7 +1728,7 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
             ran_too.set(ran_too.get() + 1)
         });
     kept.set_focus(true);
-    let mut harness = FrameHarness::for_root(crate::State::new(), kept, (420, 80), Theme::dark());
+    let mut harness = Driver::for_root(crate::State::new(), kept, (420, 80), Theme::dark());
     harness.key("Delete");
     assert_eq!(ran.get(), 0, "a plain row action is not destructive");
 }
@@ -1743,7 +1744,7 @@ fn a_menu_shortcut_runs_where_the_row_has_the_keyboard() {
             Rc::new(move || checked_too.set(checked_too.get() + 1)) as Rc<dyn Fn()>,
         )]);
     row.set_focus(true);
-    let mut harness = FrameHarness::for_root(crate::State::new(), row, (420, 80), Theme::dark());
+    let mut harness = Driver::for_root(crate::State::new(), row, (420, 80), Theme::dark());
     harness.key("Enter");
     assert_eq!(checked.get(), 0, "the key on its own is not the chord");
     harness.set_modifiers(&["command".to_owned()]);
@@ -1785,7 +1786,7 @@ fn a_rows_checkbox_fills_over_frames_where_a_plain_face_would_pop() {
         .secondary("Groceries")
         .checkbox(false, |_| {});
     let mut harness = with_monotonic_time(start, || {
-        FrameHarness::for_root(crate::State::new(), row, (400, 60), Theme::dark())
+        Driver::for_root(crate::State::new(), row, (400, 60), Theme::dark())
     });
     with_monotonic_time(start, || harness.poll_frame()).expect("the first frame draws");
     assert_eq!(
@@ -1842,7 +1843,7 @@ fn a_press_on_the_leading_box_marks_the_row() {
     let toggled = Rc::new(Cell::new(None));
     let seen = Rc::clone(&toggled);
     let row = ListRow::new("milk", "Buy oat milk").checkbox(false, move |on| seen.set(Some(on)));
-    let mut harness = FrameHarness::new(crate::State::new(), Box::new(row), (400, 60));
+    let mut harness = Driver::new(crate::State::new(), Box::new(row), (400, 60));
     let [x, y, _, h] = find(&harness.inspection().root, "ListRow")
         .expect("the row is laid out")
         .rect;
@@ -1875,7 +1876,7 @@ fn a_bound_rows_checkbox_follows_a_check_made_elsewhere() {
     let state = crate::LocalState::new(false);
     let intents = crate::Intents::<Fired>::default();
     let row = bound_row(&state, &intents);
-    let mut harness = FrameHarness::for_root(crate::State::new(), row, (400, 60), Theme::dark());
+    let mut harness = Driver::for_root(crate::State::new(), row, (400, 60), Theme::dark());
     harness.poll_frame().expect("the first frame draws");
     assert_eq!(
         harness.root::<ListRow>().check_pose.expect("drawn").level,
@@ -1944,7 +1945,7 @@ fn a_person_pressing_a_bound_rows_box_still_sees_the_check_fill_in() {
     let intents = crate::Intents::<Fired>::default();
     let row = bound_row(&state, &intents);
     let mut harness = with_monotonic_time(start, || {
-        FrameHarness::for_root(crate::State::new(), row, (400, 60), Theme::dark())
+        Driver::for_root(crate::State::new(), row, (400, 60), Theme::dark())
     });
     with_monotonic_time(start, || harness.poll_frame()).expect("the first frame draws");
     assert_eq!(
@@ -2001,7 +2002,7 @@ fn a_row_that_says_still_marks_at_once_where_brisk_still_moves() {
         .checkbox(false, |_| {})
         .with_feel(crate::motion::Feel::Still);
     let mut harness = with_monotonic_time(start, || {
-        FrameHarness::for_root(crate::State::new(), row, (400, 60), Theme::dark())
+        Driver::for_root(crate::State::new(), row, (400, 60), Theme::dark())
     });
     with_monotonic_time(start, || harness.poll_frame()).expect("the first frame draws");
     let pressed = start + Duration::from_millis(100);
@@ -2036,7 +2037,7 @@ fn a_wrapping_control_settles_at_every_width_beside_marks_after_it() {
             )));
         Box::new(Column::new().with_no_padding().push(Box::new(row)))
     };
-    let mut harness = FrameHarness::new(crate::State::new(), row(), (520, 300));
+    let mut harness = Driver::new(crate::State::new(), row(), (520, 300));
     let narrowing = (160..=520).rev();
     let widening = 160..=520;
     for width in narrowing.chain(widening) {
@@ -2286,7 +2287,7 @@ fn a_double_click_opens_once_and_changes_twice() {
                 .with_no_padding()
                 .push(Box::new(row(Rc::clone(&hits)))),
         );
-        let mut harness = FrameHarness::new(crate::State::new(), rows, (400, 200));
+        let mut harness = Driver::new(crate::State::new(), rows, (400, 200));
         let [x, y, w, h] = find(&harness.inspection().root, "ListRow")
             .expect("row laid out")
             .rect;
@@ -2333,7 +2334,7 @@ fn a_choice_line_publishes_one_control_and_pressing_the_line_opens_its_list() {
             &chosen,
         ))),
     )));
-    let mut harness = FrameHarness::new(crate::State::new(), line, (480, 240));
+    let mut harness = Driver::new(crate::State::new(), line, (480, 240));
 
     let named: Vec<_> = harness
         .controls()

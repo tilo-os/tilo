@@ -725,12 +725,13 @@ mod tests {
     /// The copy reaches an agent as the link's published action, not only a press.
     #[test]
     fn a_links_copy_action_is_published_and_copies_its_address() {
+        use crate::app::driver::Driver;
         use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
-        use crate::headless::{CONTROL_RESOURCE_PREFIX, FrameHarness};
+        use crate::headless::CONTROL_RESOURCE_PREFIX;
         let clipboard = std::sync::Arc::new(InProcessClipboard::default());
         let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
         crate::process::scoped(&services, || {
-            let mut driver = FrameHarness::new(
+            let mut driver = Driver::new(
                 crate::State::new(),
                 Box::new(
                     Link::new("https://example.org/page")

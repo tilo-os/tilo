@@ -295,7 +295,15 @@ impl ResourceRoot {
             // A record a view asked for and could not open is published
             // with its declared actions unavailable for why: nothing is
             // shown of it, so nothing but those is answered.
-            resource.children.extend(self.storage.resource_resources());
+            // The record the window holds, kept for the workspace too, is this resource itself:
+            // published once, as it.
+            let own = resource.id.as_str().to_owned();
+            resource.children.extend(
+                self.storage
+                    .resource_resources()
+                    .into_iter()
+                    .filter(|beside| beside.id.as_str() != own),
+            );
             resource
                 .children
                 .extend(self.storage.unavailable_resources());

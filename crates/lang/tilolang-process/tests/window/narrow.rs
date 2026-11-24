@@ -4,7 +4,7 @@
 
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
-use ui::headless::{FrameHarness, FrameSchedule};
+use ui::headless::{Driver, FrameSchedule};
 use ui::motion::{Direction, Drill};
 use ui::time::testing::with_monotonic_time;
 use ui::time::{Instant, now};
@@ -47,7 +47,7 @@ fn demands_frame(schedule: &FrameSchedule) -> bool {
 }
 
 /// What asks for frames, for a failure message.
-fn asking(harness: &FrameHarness) -> String {
+fn asking(harness: &Driver) -> String {
     format!(
         "{:?}, asked by {:?}",
         harness.frame_schedule(),
@@ -102,7 +102,7 @@ fn assert_settles(app: &mut TestApp<TlApp>, within: ui::time::Duration, what: &s
 
 /// The test id of the first control whose accessible name contains `name`: a note by its title,
 /// which is content the person reads, never a control they look up to press.
-fn named_text(harness: &FrameHarness, name: &str) -> Option<String> {
+fn named_text(harness: &Driver, name: &str) -> Option<String> {
     let named = |node: &&ui::headless::InspectionNode| {
         node.semantics
             .as_ref()
@@ -117,7 +117,7 @@ fn named_text(harness: &FrameHarness, name: &str) -> Option<String> {
 /// The test id of the first control that runs `action` on a document of the app with the id `app`: what the
 /// window says it does is the address the app publishes the action under on that document, wherever
 /// the window's composition draws it and whatever the person's language calls it.
-fn doing_control(harness: &FrameHarness, (app, action): (&str, &str)) -> Option<String> {
+fn doing_control(harness: &Driver, (app, action): (&str, &str)) -> Option<String> {
     let record = format!("tl:{app}:");
     let does = |node: &&ui::headless::InspectionNode| {
         node.semantics
@@ -137,7 +137,7 @@ fn answer() -> (&'static str, &'static str) {
 }
 
 /// How long a push from rest takes to settle at the window's motion setting.
-fn push_motion(harness: &FrameHarness) -> ui::time::Duration {
+fn push_motion(harness: &Driver) -> ui::time::Duration {
     Drill::SPEC.settle_time(
         Direction::Enter,
         harness.theme().motion(),
@@ -214,7 +214,7 @@ fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_fram
 }
 
 /// The accessibility node of the list row whose name contains `name`.
-fn row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
+fn row_node(harness: &Driver, name: &str) -> ui::accesskit::NodeId {
     harness
         .a11y_nodes()
         .into_iter()
@@ -226,7 +226,7 @@ fn row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
 }
 
 /// The accessibility node of the tree row whose name contains `name`.
-fn tree_row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
+fn tree_row_node(harness: &Driver, name: &str) -> ui::accesskit::NodeId {
     harness
         .a11y_nodes()
         .into_iter()

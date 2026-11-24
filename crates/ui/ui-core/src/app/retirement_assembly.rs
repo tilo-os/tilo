@@ -4,8 +4,8 @@ use super::native_runner;
 use super::{
     AccessibilityRuntime, ActionRuntime, App, AppConstructionInputs, Cell, CollaborationManager,
     CollaborationRuntime, ContinuationRuntime, FloatingRuntime, HistoryRuntime, InputRuntime,
-    Instant, LayoutRuntime, NodeId, PaletteSource, PermissionContext,
-    PresenceCtx, PresenceRuntime, State, TextRenderer, Theme, Widget, WindowRuntime,
+    Instant, LayoutRuntime, NodeId, PaletteSource, PermissionContext, PresenceCtx, PresenceRuntime,
+    State, TextRenderer, Theme, Widget, WindowRuntime,
 };
 use crate::semantic_document_read::retirement::RootRetirementPrelude;
 
@@ -76,7 +76,6 @@ pub(super) struct AppAssemblyValues {
     pub bindings: Option<crate::bound_dispatch::BoundNodeMap>,
     pub component_close_reports: Option<Vec<crate::application::ComponentCloseReport>>,
     pub close_admission: Option<crate::close_admission::Admission>,
-    #[cfg(feature = "native")]
     pub report_pointing: Option<Option<super::report_point::Pointing>>,
     pub window_box: Option<crate::widget::context_menu::ContextMenu>,
     pub needs_sync: Option<bool>,
@@ -135,7 +134,7 @@ impl Drop for ValidationRetirement<'_> {
     clippy::unreachable,
     reason = "both callers stage the root, state and inputs before assembly; a missing slot is a construction bug that retires first"
 )]
-pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
+pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> Box<App> {
     let _entry = assembly.wake.as_ref().map_or_else(
         crate::wake::WakeScope::enter_detached,
         crate::wake::WakeScope::enter,
@@ -144,6 +143,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         assembly.retire();
         unreachable!("App assembly owns its root and inputs");
     };
+    let theme_was_ready = matches!(inputs.configured_theme, super::ConstructionValue::Ready(_));
     let configured_theme = assembly
         .configured_theme
         .insert(inputs.configured_theme.resolve_in_place());
@@ -178,10 +178,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
     assembly.values.bindings = Some(crate::bound_dispatch::BoundNodeMap::new());
     assembly.values.component_close_reports = Some(vec![]);
     assembly.values.close_admission = Some(crate::close_admission::Admission::default());
-    #[cfg(feature = "native")]
-    {
-        assembly.values.report_pointing = Some(None);
-    }
+    assembly.values.report_pointing = Some(None);
     assembly.values.window_box = Some(crate::widget::context_menu::ContextMenu::new());
     assembly.values.needs_sync = Some(true);
     assembly.values.theme = Some(configured_theme.clone());
@@ -257,8 +254,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         bindings: Some(bindings),
         component_close_reports: Some(component_close_reports),
         close_admission: Some(close_admission),
-        #[cfg(feature = "native")]
-            report_pointing: Some(report_pointing),
+        report_pointing: Some(report_pointing),
         window_box: Some(window_box),
         needs_sync: Some(needs_sync),
         theme: Some(theme),
@@ -305,7 +301,9 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
     };
     let wake_scope = assembly.wake.take();
     let retirement = assembly.retirement.take();
-    let mut app = App {
+    // Boxed where it is built: an app is tens of kilobytes, and each caller that moved it by value
+    // held another copy on its stack.
+    let mut app = Box::new(App {
         retirement,
         #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
         startup_renderer,
@@ -326,7 +324,6 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         bindings,
         component_close_reports,
         close_admission,
-        #[cfg(feature = "native")]
         report_pointing,
         window_box,
         needs_sync,
@@ -364,22 +361,29 @@ pub(super) fn assemble(mut assembly: AppAssemblyOwnership) -> App {
         profiler,
         native_input_probe,
         floating,
-    };
+    });
 
     app.accessibility.window.your_colour = (inputs.your_colour)();
     app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
-    app.accessibility.a11y.reduce_motion = match app.palette_source {
-        PaletteSource::Host => app.accessibility.base_theme.reduce_motion,
-        PaletteSource::Owned { .. } => (inputs.reduce_motion)(),
+    // A host that owns its palette passes the theme it asks for: its text and UI scales are
+    // the theme's, so a caller's scaled theme draws with the metrics it names. A theme the
+    // host resolves lazily is built from the process's settings, which the inputs carry.
+    let from_theme = matches!(app.palette_source, PaletteSource::Host) || theme_was_ready;
+    app.accessibility.a11y.reduce_motion = if from_theme {
+        app.accessibility.base_theme.reduce_motion
+    } else {
+        (inputs.reduce_motion)()
     };
     app.accessibility.a11y.screen_reader = app.accessibility.screen_reader.is_some();
     app.accessibility.text_scale = match app.palette_source {
         PaletteSource::Host => app.text_renderer.text_scale(),
+        PaletteSource::Owned { .. } if theme_was_ready => app.accessibility.base_theme.text_scale,
         PaletteSource::Owned { .. } => (inputs.text_scale)(),
     };
-    app.accessibility.ui_scale = match app.palette_source {
-        PaletteSource::Host => app.accessibility.base_theme.ui_scale,
-        PaletteSource::Owned { .. } => (inputs.ui_scale)(),
+    app.accessibility.ui_scale = if from_theme {
+        app.accessibility.base_theme.ui_scale
+    } else {
+        (inputs.ui_scale)()
     };
     app.rebuild_theme();
 

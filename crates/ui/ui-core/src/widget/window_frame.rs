@@ -37,7 +37,9 @@ use crate::widget::arrange::{Align, At, Fit, Layers, Length, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::widget::tabs::{TAB_BAR_HEIGHT, TabStrip};
 use crate::widget::window_controls::WindowControls;
-use crate::widget::{Decorator, Element, IconSize, IconWidget, Spacer, Text, Widget, WindowBar};
+use crate::widget::{
+    Decorator, Element, IconSize, IconWidget, Spacer, Text, Widget, WindowBar, WindowBarPart,
+};
 
 /// A window on a shell: the window surface with its edge and shadow, holding the
 /// window's content and its controls, clipped to its radius.
@@ -170,8 +172,12 @@ pub struct WindowFrame {
     /// How wide the controls were laid out, the width the content's header row keeps for
     /// them.
     controls_width: f64,
-    /// The controls' width changed since the header row was told: lay out again.
+    /// The controls' width, or the room the bar has for the name, changed since the bar was
+    /// built: lay out again.
     relayout: bool,
+    /// The room the bar had for the window's name when it was last built: the width the name
+    /// was elided to.
+    name_room: f64,
     /// The header row's measures in the theme of the last layout.
     metrics: Option<HeaderRowMetrics>,
     rect: Rect,
@@ -360,6 +366,7 @@ impl Described for WindowFrame {
             shown: None,
             controls_width: 0.0,
             relayout: false,
+            name_room: 0.0,
             metrics: None,
             rect: Rect::ZERO,
             bar: Rect::ZERO,
@@ -489,6 +496,38 @@ impl WindowFrame {
         self.column()?.child_mut(BODY)
     }
 
+    /// The header row the window's content draws, as the frame laid it out last.
+    pub(crate) fn content_header_row(&self) -> Option<&dyn crate::widget::WindowHeader> {
+        let column = *self.layers.children().first()?;
+        crate::widget::window_header::root_header_row(column)
+    }
+
+    /// Where the content's header row stands while it holds the window's bar; `None` while the
+    /// frame draws a bar of its own.
+    pub(crate) fn held_bar(&self) -> Option<WindowBarPart> {
+        if !self.merged {
+            return None;
+        }
+        let column = *self.layers.children().first()?;
+        crate::widget::window_header::content_bar(column)
+    }
+
+    /// The window's bar as the frame laid it out last: the content's header row while it holds
+    /// the bar, the frame's own bar otherwise.
+    pub(crate) fn bar_rect(&self) -> Rect {
+        self.bar
+    }
+
+    /// The bar the frame draws of its own above the content, as laid out last: empty while the
+    /// content's header row holds the bar.
+    pub(crate) fn own_bar_rect(&self) -> Rect {
+        self.layers
+            .children()
+            .first()
+            .and_then(|column| column.children().get(OWN_BAR).copied())
+            .map_or(Rect::ZERO, Widget::get_rect)
+    }
+
     /// Put `view` in the part being changed.
     fn put(&mut self, view: Element) {
         match self.editing {
@@ -537,6 +576,14 @@ impl WindowFrame {
         self.merged = self.body_mut().is_some_and(|body| {
             crate::widget::window_header::offer_window_bar(body.as_mut(), Some(bar))
         });
+    }
+
+    /// The room the bar has for the window's name at its width now: what the controls leave.
+    fn name_room(&self) -> f64 {
+        self.rect.width()
+            - self.controls_width
+            - crate::widget::window_controls::EDGE_INSET
+            - crate::widget::window_controls::LEAD_GAP
     }
 
     /// The bar the frame draws of its own, this layout.
@@ -847,10 +894,8 @@ impl Decorator for WindowFrame {
     ) -> NodeId {
         let m = HeaderRowMetrics::resolve(theme);
         self.offer_bar(&m);
-        let spare = self.rect.width()
-            - self.controls_width
-            - crate::widget::window_controls::EDGE_INSET
-            - crate::widget::window_controls::LEAD_GAP;
+        let spare = self.name_room();
+        self.name_room = spare;
         self.build_bar(self.shape(), &m, theme, spare);
         #[allow(
             clippy::cast_possible_truncation,
@@ -917,6 +962,12 @@ impl Decorator for WindowFrame {
             .map_or(0.0, |c| c.get_rect().width());
         if (width - self.controls_width).abs() > 0.5 {
             self.controls_width = width;
+            self.relayout = true;
+        }
+        // The name was elided to the room the bar had when it was built: a window laid out at
+        // another width (its first layout, before it had one, or a resize) builds the bar again,
+        // so the name it shows is the one that fits now.
+        if self.shape == BarShape::Title && (self.name_room() - self.name_room).abs() > 0.5 {
             self.relayout = true;
         }
     }
@@ -989,7 +1040,10 @@ impl Decorator for WindowFrame {
     }
 
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        Widget::take_structure_change(&mut self.layers)
+        // The bar built again (its name, the room the controls keep) is a change of the frame's
+        // own, which a host learns here as it learns its children's.
+        let relayout = crate::widget::StructureChange::of(std::mem::take(&mut self.relayout));
+        Widget::take_structure_change(&mut self.layers).join(relayout)
     }
 
     fn name(&self) -> &'static str {

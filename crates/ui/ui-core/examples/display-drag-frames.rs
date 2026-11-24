@@ -5,7 +5,7 @@
 //! any frame relaid the page out; exits non-zero when a frame is over budget
 //! or relaid out. Headless: the CPU side of each frame (sync, layout, draw
 //! encode), not the GPU raster.
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::state::State;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::display_placement::{
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_selection(tilo_ui::LocalState::new("eDP-1".to_owned()));
     let mut host =
-        FrameHarness::new_with_theme(State::new(), Box::new(canvas), (760, 420), Theme::dark());
+        Driver::new_with_theme(State::new(), Box::new(canvas), (760, 420), Theme::dark());
     host.profile_frame();
     let rect = host
         .targets()

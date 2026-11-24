@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_resource::Effect;
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 use ui::tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use ui::widget::Widget;
 
@@ -19,7 +19,7 @@ const ANSWER_BOUND: std::time::Duration = std::time::Duration::from_secs(60);
 /// One window of the installer, run headless.
 pub(crate) struct TestHost {
     store: Store,
-    harness: FrameHarness,
+    harness: Driver,
 }
 
 impl TestHost {
@@ -80,13 +80,13 @@ impl TestHost {
     pub(crate) fn run(store: Store, root: Box<dyn Widget>, viewport: (u32, u32)) -> Self {
         let mut host = Self {
             store,
-            harness: FrameHarness::new(ui::State::new(), root, viewport),
+            harness: Driver::new(ui::State::new(), root, viewport),
         };
         host.settle();
         host
     }
 
-    pub(crate) fn harness(&mut self) -> &mut FrameHarness {
+    pub(crate) fn harness(&mut self) -> &mut Driver {
         &mut self.harness
     }
 

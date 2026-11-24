@@ -65,7 +65,7 @@ pub fn check_scenarios_reach_every_action<A: ResourceApp, H: Host>(
 }
 
 /// Invoke every action `app` publishes, one after another, as a headless
-/// drive's `invoke` steps do (`FrameHarness::invoke_action`: the API's own
+/// drive's `invoke` steps do (`Driver::invoke_action`: the API's own
 /// resolution, availability, confirmation and strict binding), each with
 /// `sample_arguments` and confirmed: an app's own action first as an agent,
 /// then, when the agent was refused, as the person at the screen. Answers the ones the API

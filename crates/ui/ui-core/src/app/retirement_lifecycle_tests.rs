@@ -159,7 +159,7 @@ fn component(host: &ProbeHarness, mount: MountRetirement) -> AppComponent {
         .unwrap()
 }
 fn app(component: AppComponent) -> App {
-    App::from_component_using(component, runner_inputs(), |inputs, binding| {
+    *App::from_component_using(component, runner_inputs(), |inputs, binding| {
         AppConstructionInputs::component_with_services(
             inputs,
             binding,

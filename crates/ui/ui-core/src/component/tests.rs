@@ -401,8 +401,8 @@ tilo_test_env::scenario! {
 
         fn laid_out<W: crate::widget::Widget + 'static>(
             widget: W,
-        ) -> (crate::headless::FrameHarness, Vec<String>) {
-            let host = crate::headless::FrameHarness::for_root(
+        ) -> (crate::headless::Driver, Vec<String>) {
+            let host = crate::headless::Driver::for_root(
                 crate::State::new(),
                 widget,
                 (900, 600),
@@ -943,7 +943,7 @@ tilo_test_env::scenario! {
             item("a", "Q3 plan", false),
             item("b", "Groceries", false),
         ]);
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::headless::Driver::for_root(
             crate::State::new(),
             list,
             (400, 300),
@@ -1007,7 +1007,7 @@ tilo_test_env::scenario! {
         };
         let props = crate::widget::VirtualListProps::from_source(&mut source).expect("reads");
         let list = <crate::widget::DescribedList as Described>::from_props("list", props);
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::headless::Driver::for_root(
             crate::State::new(),
             list,
             (1600, 900),

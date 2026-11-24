@@ -857,6 +857,18 @@ impl super::Decorator for ContextMenuArea {
         inner = content
     );
 
+    /// What the content offers can change in its update (a row the host answered with): a menu
+    /// that waited for it opens in the same frame it comes, without waiting for another layout.
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+        let changed = self.content.update(state, path);
+        let opened = if let Some((anchor, at_pointer)) = self.pending {
+            self.open_over(anchor, at_pointer)
+        } else {
+            false
+        };
+        changed || opened
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
@@ -1298,7 +1310,7 @@ mod tests {
                     )]
                 },
             );
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::headless::Driver::for_root(
                 crate::State::new(),
                 area,
                 (400, 120),
@@ -1414,7 +1426,7 @@ mod tests {
 
     /// A 300 px area over an app whose record offers the four rows, in a window whose host
     /// replays a still pointer after the widgets change, the pointer resting at (100, 100).
-    fn four_entries() -> (crate::headless::FrameHarness, Chosen) {
+    fn four_entries() -> (crate::headless::Driver, Chosen) {
         let chosen = Chosen::default();
         let content = crate::testing::MenuRows::new(&MENU_LABELS, Rc::clone(&chosen));
         let area = ContextMenuArea::new(Box::new(content), |_| {
@@ -1431,7 +1443,7 @@ mod tests {
                 })
                 .collect()
         });
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             area,
             (400, 400),
@@ -1442,18 +1454,14 @@ mod tests {
         (harness, chosen)
     }
 
-    fn mouse(
-        harness: &mut crate::headless::FrameHarness,
-        state: ElementState,
-        button: MouseButton,
-    ) {
+    fn mouse(harness: &mut crate::app::driver::Driver, state: ElementState, button: MouseButton) {
         harness.send(&crate::synthetic_input::mouse_input(state, button));
     }
 
     /// Right-click where the pointer rests, with the frame that rebuilds
     /// the changed content and paints the opened menu landing between press
     /// and release, as it does live.
-    fn right_click(harness: &mut crate::headless::FrameHarness) {
+    fn right_click(harness: &mut crate::app::driver::Driver) {
         mouse(harness, ElementState::Pressed, MouseButton::Right);
         assert!(
             harness.root::<ContextMenuArea>().is_open(),
@@ -1646,7 +1654,7 @@ mod tests {
                     )]
                 },
             );
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 area,
                 (400, 400),
@@ -1686,7 +1694,7 @@ mod tests {
                 )]
             },
         );
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             area,
             (400, 400),
@@ -1730,7 +1738,7 @@ mod tests {
                     )]
                 },
             );
-            let mut harness = crate::headless::FrameHarness::for_root(
+            let mut harness = crate::headless::Driver::for_root(
                 crate::State::new(),
                 area,
                 (400, 120),
@@ -1846,7 +1854,7 @@ mod tests {
             let arrived = Rc::clone(&arrived);
             move |_, _| !arrived.get()
         });
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             area,
             (400, 400),

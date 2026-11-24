@@ -22,7 +22,7 @@ use crate::change_marks::action_id;
 const HOST: &str = "tl:host";
 const LETTERS: &str = "test.letters";
 
-/// `app`'s window in the frame harness with the scenario `scenario` staged.
+/// `app`'s window in the display-less driver with the scenario `scenario` staged.
 fn staged(app: &str, scenario: &str) -> Session {
     let mut session = Session::new(app, "ada");
     session.instance_mut().stage(scenario);

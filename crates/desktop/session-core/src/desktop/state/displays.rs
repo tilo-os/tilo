@@ -362,7 +362,12 @@ impl DesktopHandle {
     /// Step focus `steps` windows along the shown strip, on the next update pass, crossing to the
     /// neighbouring display past either end of the focused one. False when there is nowhere to go.
     pub fn step_focus(&self, steps: i32) -> bool {
-        self.shared.borrow_mut().step_focus(steps)
+        let mut shared = self.shared.borrow_mut();
+        let stepped = shared.step_focus(steps);
+        if stepped {
+            shared.wake.wake();
+        }
+        stepped
     }
 
     /// Move the focused window to the display `steps` places to its right (left when negative). It

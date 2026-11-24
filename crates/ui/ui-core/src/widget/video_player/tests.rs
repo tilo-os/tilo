@@ -1182,7 +1182,7 @@ fn controls_ink_and_edges_read_on_both_presets() {
         for theme in [Theme::dark(), Theme::light()] {
             let theme = theme.with_reduce_motion(true);
             if let Some(png) = ux1x_out(&theme, "video_player.png") {
-                let harness = crate::headless::FrameHarness::new_with_theme(
+                let harness = crate::app::driver::Driver::new_with_theme(
                     crate::State::new(),
                     Box::new(ux1x_fixture()),
                     (640, 360),

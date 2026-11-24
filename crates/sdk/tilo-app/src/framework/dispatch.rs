@@ -194,6 +194,11 @@ impl DispatchCore {
         self.nested.borrow().clone()
     }
 
+    /// Whether the views opened any nested editor ([`Self::nested_resources`]).
+    pub(crate) fn has_nested(&self) -> bool {
+        !self.nested.borrow().is_empty()
+    }
+
     /// Name this resource `label`, as history, the palette and an agent read
     /// it: the name its app gives the state it holds now.
     pub(crate) fn name_resource(&self, label: &str) {

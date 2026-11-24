@@ -6,6 +6,8 @@ include!("deferred_remote_tests.rs");
 
 include!("application_handoff_tests.rs");
 
+include!("driver_peer_tests.rs");
+
 use super::*;
 use crate::a11y_tree::{SemanticActionKind, SemanticId};
 use crate::component::Described;

@@ -671,7 +671,7 @@ pub(crate) trait Framed: Driven {
 }
 
 impl Driven for TestApp<TlApp> {
-    fn harness(&mut self) -> &mut ui::headless::FrameHarness {
+    fn harness(&mut self) -> &mut ui::headless::Driver {
         TestApp::harness(self)
     }
 

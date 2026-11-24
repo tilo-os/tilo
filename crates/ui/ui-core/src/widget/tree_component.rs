@@ -1656,43 +1656,13 @@ impl NavigationSource for DescribedTreeView {
     }
 }
 
-/// A branch "Root" over a leaf "Child", as a described component: the rows a headless run
-/// acts on. It reports the row a person chooses, so a headless run reads the choice it makes.
-#[cfg(test)]
-pub(crate) fn items_tree(id: &str, name: Option<&str>, open: bool) -> DescribedTreeView {
-    let node = |label: &str, item: &str, parent: Option<&str>, branch: bool| TreeViewNodeProps {
-        item: ResourceId(item.into()),
-        label: label.into(),
-        parent: parent.map(|parent| ResourceId(parent.into())),
-        branch,
-        ..TreeViewNodeProps::default()
-    };
-    DescribedTreeView::from_props(
-        id,
-        TreeViewProps {
-            name: name.map(str::to_owned),
-            hide_root: true,
-            nodes: vec![
-                node("Root", "1", None, true),
-                node("Child", "2", Some("1"), false),
-            ]
-            .into(),
-            expanded: Some(if open {
-                vec![ResourceId("1".into())]
-            } else {
-                Vec::new()
-            }),
-            ..TreeViewProps::default()
-        },
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Theme;
+    use crate::app::driver::Driver;
     use crate::component::{BoundValue, Fired, Intent};
-    use crate::headless::{FrameHarness, InspectionNode};
+    use crate::headless::InspectionNode;
     use crate::widget::TreeMove;
 
     fn node(
@@ -1937,7 +1907,7 @@ mod tests {
     /// row's do: the toolkit's buttons, built again as the row shows.
     #[test]
     fn a_nodes_quick_actions_ride_over_its_row() {
-        use crate::headless::FrameHarness;
+        use crate::app::driver::Driver;
         use crate::theme::Theme;
 
         fn names(node: &crate::headless::InspectionNode, out: &mut Vec<String>) {
@@ -1956,7 +1926,7 @@ mod tests {
             ..ButtonProps::default()
         }];
         let tree = tree_of(vec![quick], true, Moves::default());
-        let harness = FrameHarness::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
+        let harness = Driver::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
         let mut laid = Vec::new();
         names(&harness.inspection().root, &mut laid);
         assert!(
@@ -1984,7 +1954,7 @@ mod tests {
             ..TreeViewRowProps::default()
         });
         let tree = tree_of(vec![said, child], true, Moves::default());
-        let harness = FrameHarness::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
+        let harness = Driver::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
         fn read(node: &InspectionNode, out: &mut Vec<(String, Option<String>)>) {
             if let Some(access) = &node.semantics
                 && let Some(name) = &access.name
@@ -2038,7 +2008,7 @@ mod tests {
     /// tree keeps the row under the keyboard and the pointer alike, as every list does.
     #[test]
     fn a_press_chooses_a_trees_row_whatever_the_view_reports() {
-        use crate::headless::FrameHarness;
+        use crate::app::driver::Driver;
         use crate::theme::Theme;
 
         let queue = crate::Intents::default();
@@ -2058,7 +2028,7 @@ mod tests {
                 },
             );
             let mut harness =
-                FrameHarness::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
+                Driver::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
             let row = harness
                 .root::<DescribedTreeView>()
                 .list
@@ -2078,7 +2048,8 @@ mod tests {
     /// in front of them, clear of the box.
     #[test]
     fn a_branch_row_keeps_its_box_and_words_on_its_depths_column() {
-        use crate::headless::{FrameHarness, InspectionNode};
+        use crate::app::driver::Driver;
+        use crate::headless::InspectionNode;
         use crate::theme::Theme;
         use crate::widget::TREE_INDENT;
         use crate::widget::{LayoutInfo, RowLayout};
@@ -2106,7 +2077,7 @@ mod tests {
             true,
             Moves::default(),
         );
-        let harness = FrameHarness::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
+        let harness = Driver::for_root(crate::State::new(), tree, (400, 240), Theme::dark());
         let snapshot = harness.inspection();
         fn rows(node: &InspectionNode, out: &mut Vec<(String, RowLayout)>) {
             if let Some(LayoutInfo::Row(row)) = &node.layout {
@@ -2170,7 +2141,8 @@ mod tests {
     /// there, and its rows' content one step past it.
     #[test]
     fn a_tree_that_fills_its_pane_stands_its_rows_on_the_panes_content_edge() {
-        use crate::headless::{FrameHarness, InspectionNode};
+        use crate::app::driver::Driver;
+        use crate::headless::InspectionNode;
         use crate::theme::Theme;
         use crate::widget::{LayoutInfo, RowLayout};
 
@@ -2188,8 +2160,7 @@ mod tests {
                     ..TreeViewProps::default()
                 },
             );
-            let harness =
-                FrameHarness::for_root(crate::State::new(), tree, (320, 568), Theme::dark());
+            let harness = Driver::for_root(crate::State::new(), tree, (320, 568), Theme::dark());
             fn row(node: &InspectionNode) -> Option<(f64, RowLayout)> {
                 match &node.layout {
                     Some(LayoutInfo::Row(grid)) => Some((node.rect[0], *grid)),
@@ -2268,7 +2239,7 @@ mod tests {
     #[test]
     fn a_trees_row_holds_the_controls_it_shows() {
         use crate::a11y::Action;
-        use crate::headless::FrameHarness;
+        use crate::app::driver::Driver;
         use crate::theme::Theme;
         use accesskit::Role as AkRole;
 
@@ -2283,7 +2254,7 @@ mod tests {
             press: Event::View(Intent::new(&queue, "a", "add")),
             ..ButtonProps::default()
         }];
-        let mut harness = FrameHarness::for_root(
+        let mut harness = Driver::for_root(
             crate::State::new(),
             tree_of(vec![props], true, Moves::default()),
             (400, 400),
@@ -2592,7 +2563,7 @@ mod tests {
     fn shown_tree(
         rows: Vec<ShownRow>,
     ) -> (
-        FrameHarness,
+        Driver,
         crate::Intents<Fired>,
         std::rc::Rc<std::cell::RefCell<ShownRows>>,
     ) {
@@ -2654,7 +2625,7 @@ mod tests {
         };
         let props = TreeViewProps::from_source(&mut source).expect("the tree reads");
         let tree = DescribedTreeView::from_props("tree", props);
-        let harness = FrameHarness::for_root(
+        let harness = Driver::for_root(
             crate::State::new(),
             tree,
             (600, 400),
@@ -2665,7 +2636,7 @@ mod tests {
 
     /// The move `movement` reports of the focused row, as the queue heard it.
     fn moved(
-        harness: &mut FrameHarness,
+        harness: &mut Driver,
         queue: &crate::Intents<Fired>,
         movement: TreeMove,
     ) -> Vec<(String, String, Option<Value>)> {

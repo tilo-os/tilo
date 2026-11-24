@@ -369,6 +369,12 @@ pub(crate) trait SurfacePublication {
     fn item_reads(&self, _field: &str, _id: &str) -> Vec<tilo_resource::read::Declared> {
         Vec::new()
     }
+    /// Whether it says anything of the published rows and items beyond the rows themselves: a
+    /// row's status ([`Self::row_status`]), an item's presentation
+    /// ([`Self::item_presentation`]) or the reads an item answers ([`Self::item_reads`]).
+    fn says_of_rows(&self) -> bool {
+        false
+    }
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
     fn live_row_pending(&self, _id: &str) -> bool {

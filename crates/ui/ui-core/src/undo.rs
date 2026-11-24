@@ -26,8 +26,8 @@ pub fn shortcut(
 
 /// Turn the actions a widget dispatched during the last event into exactly one undo
 /// boundary. `root` and the `node_map` pointers must point at widgets that are alive for
-/// the call — the invariant every `node_map` sweep in [`App`](crate::app::App) and
-/// [`FrameHarness`](crate::headless::FrameHarness) already relies on.
+/// the call — the invariant every `node_map` sweep in [`App`](crate::app::App) already relies
+/// on.
 pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     state: &mut crate::state::State,
     root: *mut dyn crate::widget::Widget,
@@ -81,6 +81,9 @@ pub(crate) unsafe fn record_dispatched_action_bound(
     // SAFETY: the root and every node pointer are live for this exclusive sweep.
     visited.insert(unsafe { crate::widget::node_sweep_identity(root) });
     let mut bound_changed = false;
+    // A row per item: the sweep visits many widgets of the same component, whose scope is held
+    // across them instead of opened and closed for each.
+    let mut held = crate::bound_dispatch::HeldScope::default();
     for node in order {
         let Some(&pointer) = nodes.get(&node) else {
             continue;
@@ -89,7 +92,10 @@ pub(crate) unsafe fn record_dispatched_action_bound(
         if !visited.insert(unsafe { crate::widget::node_sweep_identity(pointer) }) {
             continue;
         }
-        if let Some(binding) = bindings.binding_for(node) {
+        let binding = bindings.binding_for(node);
+        // A closed scope is the node's own refusal: the visits below answer nothing for it.
+        let _ = held.enter(binding.as_ref());
+        if let Some(binding) = binding {
             // Take the bracket first: it needs only the widget, and a sweep
             // finds one on few nodes, if any. Opening the record frame of
             // every bound node to find nothing was most of an idle frame.
@@ -275,11 +281,6 @@ pub fn set_undo_status(
     if let Some(control) = crate::widget::capability::capability_mut::<dyn UndoControl>(widget) {
         control.set_undo_status(status);
     }
-}
-
-/// Whether `widget` shows the undo status: [`set_undo_status`] reaches it.
-pub(crate) fn takes_undo_status(widget: &mut (impl crate::widget::Widget + ?Sized)) -> bool {
-    crate::widget::capability::capability_mut::<dyn UndoControl>(widget).is_some()
 }
 
 /// The undo or redo `widget` asked for, if any.

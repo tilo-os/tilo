@@ -92,6 +92,40 @@ fn owned_resources_at<W: Widget + ?Sized>(
         }
     });
 }
+/// The one resource `address` names, resolved inside the hosted component `root` holds on demand:
+/// the same lookup [`select_local_target`] makes for an address a frame's publication does not
+/// list, for a host that must answer for one address alone.
+pub(crate) fn resolve_on_demand(
+    root: &dyn Widget,
+    doc: &AutoCommit,
+    address: &ActionAddress,
+) -> Option<ResourceSpec> {
+    let binding = crate::bound_dispatch::callback_binding(root)?;
+    binding.enter().ok()?;
+    let mut resources = Vec::new();
+    binding
+        .read_document(doc, |doc, _| {
+            root.for_each_child(&mut |child| {
+                if !crate::bound_dispatch::has_separate_document_owner(child) {
+                    component_resources(child, doc, Some(address), &mut resources);
+                }
+            });
+        })
+        .ok()?;
+    fn find(resources: Vec<ResourceSpec>, id: &str) -> Option<ResourceSpec> {
+        for resource in resources {
+            if resource.id.as_str() == id {
+                return Some(resource);
+            }
+            if let Some(found) = find(resource.children, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    find(resources, &address.resource)
+}
+
 fn provider<W: Widget + ?Sized>(
     root: &W,
     binding: &CallbackBinding,

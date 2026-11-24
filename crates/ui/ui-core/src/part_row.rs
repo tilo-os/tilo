@@ -104,43 +104,42 @@ pub(crate) struct RowInput<'a> {
     pub(crate) platform: crate::platform::PlatformConventions,
 }
 
+/// The toolbar and the search are boxed: each is tens of kilobytes, and a row held by value put
+/// both on the stack of every frame that built or moved it.
 pub(crate) struct PartRow {
-    row: ToolbarRow,
+    row: Box<ToolbarRow>,
     shown: Option<(WindowToolbar, Rect)>,
     tree: TaffyTree<()>,
     node: Option<NodeId>,
     scratch: automerge::AutoCommit,
     pointer: Point,
     repaint: bool,
-    search: WindowSearch,
+    search: Box<WindowSearch>,
     controls: WindowControls,
     controls_state: ControlsState,
     control_lifts: [crate::motion::Feedback; 3],
     window_controls: bool,
     window_actions: Vec<WindowAction>,
     last_ground_press: Option<crate::time::Instant>,
-    /// The row shows only the window's notice, on a card over the app: no band and no
-    /// parts, for a window whose own header row is its bar.
-    notice_card: bool,
 }
 
-/// The widest a notice's card stands, logical pixels: a line a person reads at a glance,
+/// The widest the notice strip stands, logical pixels: a line a person reads at a glance,
 /// not a band across a wide window.
-const NOTICE_CARD_MAX_WIDTH: f64 = 480.0;
+const NOTICE_STRIP_MAX_WIDTH: f64 = 480.0;
 
 impl PartRow {
     pub(crate) fn new() -> Self {
         let mut tree = TaffyTree::new();
         let node = tree.new_leaf(taffy::Style::default()).ok();
         Self {
-            row: ToolbarRow::new(),
+            row: Box::new(ToolbarRow::new()),
             shown: None,
             tree,
             node,
             scratch: automerge::AutoCommit::new(),
             pointer: Point::ORIGIN,
             repaint: false,
-            search: WindowSearch::new(),
+            search: Box::new(WindowSearch::new()),
             controls: WindowControls::default(),
             controls_state: ControlsState::default(),
             control_lifts: [
@@ -151,22 +150,7 @@ impl PartRow {
             window_controls: false,
             window_actions: Vec::new(),
             last_ground_press: None,
-            notice_card: false,
         }
-    }
-
-    /// The row of a window whose own header row is its bar: the window's notice stands on a
-    /// card over the app at the window's foot, and the row draws no band and no parts.
-    pub(crate) fn notice_card() -> Self {
-        let mut row = Self::new();
-        row.notice_card = true;
-        row.row.set_compact(true);
-        row
-    }
-
-    /// Whether this row is only the notice's card ([`Self::notice_card`]).
-    pub(crate) fn is_notice_card(&self) -> bool {
-        self.notice_card
     }
 
     /// The window's own controls stand in this row, at its trailing end, and its empty
@@ -192,7 +176,6 @@ impl PartRow {
     }
 
     /// The window is maximized: its maximize control shows restore.
-    #[cfg(feature = "native")]
     pub(crate) fn set_maximized(&mut self, maximized: bool) {
         let resize = crate::widget::window_controls::Resize::of(maximized, false);
         if self.controls_state.resize != resize {
@@ -208,7 +191,6 @@ impl PartRow {
     }
 
     /// The row must be painted again in full.
-    #[cfg(feature = "native")]
     pub(crate) fn mark_repaint(&mut self) {
         self.repaint = true;
     }
@@ -236,14 +218,7 @@ impl PartRow {
             return 0.0;
         };
         let shown = crate::window_toolbar::shown().unwrap_or_default();
-        let toolbar = if self.notice_card {
-            WindowToolbar {
-                notice: shown.notice,
-                ..WindowToolbar::default()
-            }
-        } else {
-            with_history(shown, history)
-        };
+        let toolbar = with_history(shown, history);
         let (width, window_height) = place.window;
         let inset = f64::from(theme.tokens.spacing.s2);
         let rect = Rect::new(
@@ -262,18 +237,14 @@ impl PartRow {
             );
             self.row
                 .set_popup_area(Rect::new(0.0, 0.0, width, window_height));
-            if self.notice_card {
-                self.controls = WindowControls::default();
-            } else {
-                let spare = self.place_controls(rect);
-                self.row.lay_out(spare);
-                self.place_search(rect, spare);
-            }
+            let spare = self.place_controls(rect);
+            self.row.lay_out(spare);
+            self.place_search(rect, spare);
             self.shown = Some((toolbar, rect));
             self.repaint = true;
         }
         let pad = f64::from(theme.tokens.spacing.s3);
-        let across = (rect.width() - 2.0 * pad).clamp(0.0, NOTICE_CARD_MAX_WIDTH);
+        let across = (rect.width() - 2.0 * pad).clamp(0.0, NOTICE_STRIP_MAX_WIDTH);
         self.repaint |= self.row.measure_strip(theme, across);
         let strip = self.row.strip_height();
         let foot = place.top + window_height - pad;
@@ -284,14 +255,8 @@ impl PartRow {
             Rect::ZERO
         });
         self.search.set_app_name(place.app_name);
-        if !self.notice_card {
-            self.repaint |= self.row.measure_views(theme);
-        }
-        if self.notice_card {
-            0.0
-        } else {
-            TOOLBAR_ROW_HEIGHT
-        }
+        self.repaint |= self.row.measure_views(theme);
+        TOOLBAR_ROW_HEIGHT
     }
 
     fn place_controls(&mut self, rect: Rect) -> Rect {
@@ -385,7 +350,6 @@ impl PartRow {
 
     /// The input evidence of the window's search, beside the app's own: what the field
     /// holds and where the control stands, while the row shows.
-    #[cfg(feature = "native")]
     pub(crate) fn with_search_evidence(
         &self,
         snapshot: Option<serde_json::Value>,
@@ -438,36 +402,6 @@ impl PartRow {
         )
     }
 
-    /// What the row can paint, inside `window`: its band, focus rings and antialiasing
-    /// included, while it rests with no menu open, its location not edited and the search
-    /// closed; else all of `window`, which its menus, suggestions and the search's
-    /// options may cover.
-    pub(crate) fn paint_bounds(
-        &self,
-        left: f64,
-        theme: &crate::theme::Theme,
-        window: Rect,
-    ) -> Rect {
-        if self.notice_card {
-            let Some(card) = self.strip_card(theme) else {
-                return Rect::ZERO;
-            };
-            return card.inflate(4.0, 4.0).intersect(window);
-        }
-        if self.row.popup_open()
-            || self.row.is_editing()
-            || self.search.is_open()
-            || self.needs_frame()
-        {
-            return window;
-        }
-        let mut bounds = self.band(left, theme);
-        if let Some(card) = self.strip_card(theme) {
-            bounds = bounds.union(card);
-        }
-        bounds.inflate(4.0, 4.0).intersect(window)
-    }
-
     /// Paint the row from the host's frame at `left`: its band, its parts and the search,
     /// then their menus and the search's options over the app.
     pub(crate) fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, left: f64) {
@@ -480,16 +414,14 @@ impl PartRow {
         if self.shown.is_none() {
             return;
         }
-        if !self.notice_card {
-            let band = self.band(left, theme);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.content,
-                None,
-                &band,
-            );
-        }
+        let band = self.band(left, theme);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &band,
+        );
         if let Some(card) = self.strip_card(theme) {
             let card =
                 vello::kurbo::RoundedRect::from_rect(card, f64::from(theme.tokens.radii.control));
@@ -567,17 +499,14 @@ impl PartRow {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / input.scale, position.y / input.scale);
         }
-        let over = self.row.strip_rect().contains(self.pointer)
-            || (!self.notice_card && rect.contains(self.pointer));
+        let over = self.row.strip_rect().contains(self.pointer) || rect.contains(self.pointer);
         let mut handled = false;
         let mut focus = None;
-        if !self.notice_card
-            && let Some(opening) = crate::widget::window_search::search_chord(
-                event,
-                input.modifiers.state(),
-                input.platform,
-            )
-            && !self.search.has_keyboard()
+        if let Some(opening) = crate::widget::window_search::search_chord(
+            event,
+            input.modifiers.state(),
+            input.platform,
+        ) && !self.search.has_keyboard()
             && host.takes_search(opening)
         {
             self.open_search(host, MotionSource::Keyboard, opening);
@@ -768,6 +697,12 @@ impl PartRow {
         acted
     }
 
+    /// The row's own toolbar row: where the notice it shows stands, as a driver reads its
+    /// geometry.
+    pub(crate) fn toolbar_row(&self) -> &ToolbarRow {
+        &self.row
+    }
+
     /// The row as assistive technology and automation reach it: the app's parts, the
     /// window's History in the row's menu, the search, and the window's own controls in
     /// their pill.
@@ -849,8 +784,12 @@ impl PartRow {
         true
     }
 
-    /// The row's search, for a test to drive.
-    #[cfg(test)]
+    /// The row's search.
+    pub(crate) fn search(&self) -> &WindowSearch {
+        &self.search
+    }
+
+    /// The row's search, for a host to drive as the person would.
     pub(crate) fn search_mut(&mut self) -> &mut WindowSearch {
         &mut self.search
     }

@@ -140,9 +140,9 @@ impl super::TextInput {
         let result = crate::personal_dictionary::snapshot().and_then(|snapshot| {
             crate::personal_dictionary::edit(
                 snapshot.revision,
-                crate::personal_dictionary::Edit::Add(
-                    crate::personal_dictionary::Word::new(word, None)?,
-                ),
+                crate::personal_dictionary::Edit::Add(crate::personal_dictionary::Word::new(
+                    word, None,
+                )?),
             )
         });
         if let Err(error) = result {

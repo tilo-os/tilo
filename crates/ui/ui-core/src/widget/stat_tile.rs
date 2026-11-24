@@ -908,7 +908,7 @@ impl Widget for StatGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::headless::FrameHarness;
+    use crate::app::driver::Driver;
     use vello::Scene;
     use vello::kurbo::Affine;
 
@@ -1065,7 +1065,7 @@ mod tests {
                 .map(|l| Box::new(StatTile::new(l, "12")) as Element)
                 .collect(),
         );
-        let harness = FrameHarness::new_with_theme(
+        let harness = Driver::new_with_theme(
             crate::State::new(),
             Box::new(group),
             (520, 400),
@@ -1085,8 +1085,7 @@ mod tests {
         let tile = StatTile::new("CPU", "42").on_open("cpu.detail", move || {
             count.set(count.get() + 1);
         });
-        let mut harness =
-            FrameHarness::for_root(crate::State::new(), tile, (280, 140), Theme::dark());
+        let mut harness = Driver::for_root(crate::State::new(), tile, (280, 140), Theme::dark());
         let audit = harness.native_app_audit();
         assert!(audit.is_certified(), "{audit:?}");
         let target = harness.targets()["cpu.detail"];

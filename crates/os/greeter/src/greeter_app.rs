@@ -2425,7 +2425,7 @@ impl Widget for GreeterApp {
             let outputs = ui::widget::layout_rect(taffy, outputs, child_origin);
             self.content = ui::widget::layout_rect(taffy, area, outputs.origin());
         }
-        // The composition depends on the viewport. App and FrameHarness
+        // The composition depends on the viewport. App and Driver
         // settle this rebuild before painting, including the very first frame
         // and crossings caused by display/text scaling.
         let after = (

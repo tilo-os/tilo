@@ -1527,12 +1527,8 @@ fn the_screen_is_laid_out_on_the_outputs_it_runs_on() {
         let (displays, panel, _monitor) = laptop();
         let greeter = GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()))
             .with_displays(displays);
-        let mut harness = ui::headless::FrameHarness::for_root(
-            ui::State::new(),
-            greeter,
-            (1472, 920),
-            Theme::dark(),
-        );
+        let mut harness =
+            ui::headless::Driver::for_root(ui::State::new(), greeter, (1472, 920), Theme::dark());
         harness.tab(false);
         assert_eq!(
             harness.focused_access_node().and_then(|node| node.name),

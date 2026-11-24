@@ -30,7 +30,7 @@ use ui_core::application::{
 };
 use ui_core::application_view::InstanceViewStore;
 use ui_core::collaboration::DocumentMutation;
-use ui_core::headless::FrameHarness;
+use ui_core::headless::Driver;
 use ui_core::permissions::{MemberId, PermissionContext, SharedPermissions};
 
 use ui_core::resource::{
@@ -149,7 +149,7 @@ pub struct AttachedView {
     checkout: DocumentCheckout,
     /// The app's view of the record: mounted, laid out, never drawn. Laid
     /// out when it is next read after a change ([`Self::frame`]).
-    frame: RefCell<Box<FrameHarness>>,
+    frame: RefCell<Box<Driver>>,
     /// The view has not laid out what changed since its last frame: what was
     /// merged (a write's echo, each peer's change) and what the view's own
     /// actions did. One frame shows them all when the view is next read; an
@@ -474,7 +474,7 @@ impl AttachedView {
         let component = definition
             .instantiate(context, target, RestoreInput::None)
             .map_err(|error| error.to_string())?;
-        let mut frame = FrameHarness::from_component(
+        let mut frame = Driver::from_component(
             component,
             VIEWPORT,
             ComponentRunnerInputs {
@@ -549,9 +549,9 @@ impl AttachedView {
     /// record takes, its own write's echo among them, acts through the view
     /// and reads it far less often: the view lays out once for all of them,
     /// when it is read. What that frame asks a worker for is taken up in it
-    /// ([`FrameHarness::settle_owed`]): whoever reads the view reads all it
+    /// ([`Driver::settle_owed`]): whoever reads the view reads all it
     /// makes of the record.
-    fn frame(&self) -> Ref<'_, FrameHarness> {
+    fn frame(&self) -> Ref<'_, Driver> {
         if self.unsettled.replace(false) {
             self.merged.set(false);
             self.moved();
@@ -565,14 +565,14 @@ impl AttachedView {
     /// (an item a change made is there, one it removed is gone), so what an
     /// address names is found here at the cost of that resource, however
     /// much the view would lay out.
-    fn frame_as_is(&self) -> Ref<'_, FrameHarness> {
+    fn frame_as_is(&self) -> Ref<'_, Driver> {
         Ref::map(self.frame.borrow(), |frame| &**frame)
     }
 
     /// What `find` finds in the frame as it stands, or else in the frame laid
     /// out, when it has anything left to lay out: something only a frame
     /// shows (an item a surface publishes once it has synced) is found then.
-    fn found<T>(&self, find: impl Fn(&FrameHarness) -> Option<T>) -> Option<T> {
+    fn found<T>(&self, find: impl Fn(&Driver) -> Option<T>) -> Option<T> {
         let found_now = find(&self.frame_as_is());
         if found_now.is_some() || !self.unsettled.get() {
             return found_now;
@@ -619,7 +619,7 @@ impl AttachedView {
     }
 
     /// The tree `frame` publishes, kept as [`Self::frame_tree`] keeps it.
-    fn tree_of(&self, frame: Ref<'_, FrameHarness>) -> Rc<Vec<tilo_actions::ResourceSpec>> {
+    fn tree_of(&self, frame: Ref<'_, Driver>) -> Rc<Vec<tilo_actions::ResourceSpec>> {
         if let Some(published) = self.published.borrow().as_ref()
             && published.at == self.inputs()
         {
@@ -759,7 +759,7 @@ impl AttachedView {
     /// holds, and whether or not the page it publishes carries them.
     #[must_use]
     pub fn chain_items_named(&self, parent: &str, name: &str) -> Vec<tilo_actions::ResourceSpec> {
-        let lookup = |frame: &mut FrameHarness| {
+        let lookup = |frame: &mut Driver| {
             frame
                 .widget_mut::<super::root::ResourceRoot>()
                 .map(|root| root.storage.chain_items_named(parent, name))
@@ -789,7 +789,7 @@ impl AttachedView {
     #[must_use]
     pub fn chain_level(&self, parent: &str) -> Option<ChainLevel> {
         super::chain_of_resource_id(parent)?;
-        let lookup = |frame: &mut FrameHarness| {
+        let lookup = |frame: &mut Driver| {
             frame
                 .widget_mut::<super::root::ResourceRoot>()
                 .and_then(|root| root.storage.chain_published(parent))
@@ -931,7 +931,7 @@ impl AttachedView {
     /// The resource `id` with its own actions, as the member may reach
     /// them, and none of its children: what an address on it is answered
     /// from, which costs that resource and not the items it holds.
-    fn resource_alone(&self, frame: &FrameHarness, id: &str) -> Option<tilo_actions::ResourceSpec> {
+    fn resource_alone(&self, frame: &Driver, id: &str) -> Option<tilo_actions::ResourceSpec> {
         let mut resource = frame.resource(id)?;
         resource.children.clear();
         self.permitted(resource)
@@ -950,7 +950,7 @@ impl AttachedView {
     pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
         // The one resource's own actions, never its children's: an action
         // elsewhere in the tree is not this address's.
-        let own = |frame: &FrameHarness| {
+        let own = |frame: &Driver| {
             let alone = self.resource_alone(frame, &address.resource)?;
             if !alone
                 .actions
@@ -1152,7 +1152,7 @@ impl AttachedView {
     }
 
     /// After an action: dispatch what it submitted, laying nothing out
-    /// ([`FrameHarness::take_up_acted`]), and leave the view to lay out what
+    /// ([`Driver::take_up_acted`]), and leave the view to lay out what
     /// it did when it is next read. An action never waits for a frame of
     /// everything the view shows; whoever looks lays that out.
     fn settle_acted(&mut self) {
@@ -1723,14 +1723,14 @@ impl AttachedView {
 /// Lay `frame` out, and take up what that frame asked for: the invocations
 /// it submitted, the replies it asked a worker for. One frame when it asked
 /// for nothing; when what it submitted changed the record, the frames that
-/// shows ([`FrameHarness::settle_owed`]). Laid out as a still frame
+/// shows ([`Driver::settle_owed`]). Laid out as a still frame
 /// ([`ui_core::arriving::still_frames`]): a view no window shows has no later frame.
 ///
 /// What a worker or an arrival woke the view's models for meanwhile is served
 /// first, as a live window's idle pass serves it before its next frame: served
 /// after the frame, it retired the layout that frame admitted, and the next
 /// action laid the whole view out again to admit it.
-fn lay_out(frame: &mut FrameHarness) {
+fn lay_out(frame: &mut Driver) {
     let _still = ui_core::arriving::still_frames();
     if frame.has_pending_owner_models()
         && let Err(error) = frame.service_pending_owner_models()

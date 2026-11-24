@@ -7,7 +7,7 @@ use tilo_session_core::surface::{
     LayerPose, Scroll, ShellSurface, SurfaceIme, SurfaceLayer, SurfaceTextInput,
 };
 
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 use ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use vello::kurbo::Affine;
 use vello::peniko::Color;
@@ -174,7 +174,7 @@ fn whole_pixels(bounds: vello::kurbo::Rect, size: (u32, u32)) -> Option<((i32, i
 
 /// One widget tree shown on a rectangle of the desktop.
 pub struct WidgetSurface {
-    host: FrameHarness,
+    host: Driver,
     placement: Placement,
     frames: Frames,
     /// The frame the layer shows, to know what of the next one changed.
@@ -237,7 +237,7 @@ impl WidgetSurface {
     /// Never: the placement's scale is a positive output scale.
     #[must_use]
     pub fn new(root: Box<dyn ui::Widget>, placement: Placement, below: bool) -> Self {
-        let mut host = FrameHarness::new_with_controlled_inputs(
+        let mut host = Driver::new_with_controlled_inputs(
             ui::state::State::new(),
             root,
             placement.size,
@@ -245,7 +245,6 @@ impl WidgetSurface {
             ui::TextRenderer::new(),
             ui::permissions::MemberId::person(String::new()),
         );
-        host.set_caller_palette_enabled(false);
         // This host presents on its own frame clock, the compositor's, as a
         // browser page does on animation frames: a word typed, a drag or a
         // wheel arrives faster than frames, so the key down, the text and the
@@ -328,7 +327,7 @@ impl WidgetSurface {
     /// runs it: a placement made then reports to them, so a policy reading
     /// them in the same frame sees the windows where the tree just laid them
     /// out. What `work` draws, it draws over this tree's own backdrops.
-    fn with_reports<T>(&mut self, work: impl FnOnce(&mut FrameHarness) -> T) -> T {
+    fn with_reports<T>(&mut self, work: impl FnOnce(&mut Driver) -> T) -> T {
         let _placed = self.placed();
         let _wells = self.wells.clone().map(ui::widget::window_well::install);
         let _previews = self
@@ -384,14 +383,14 @@ impl WidgetSurface {
     }
 
     /// The toolkit's host of the widget tree, to drive it directly.
-    pub fn host_mut(&mut self) -> &mut FrameHarness {
+    pub fn host_mut(&mut self) -> &mut Driver {
         &mut self.host
     }
 
     /// The toolkit's host of the widget tree, to read what it says of itself without
     /// changing it.
     #[must_use]
-    pub const fn host(&self) -> &FrameHarness {
+    pub const fn host(&self) -> &Driver {
         &self.host
     }
 
@@ -477,7 +476,7 @@ impl WidgetSurface {
     /// Lay the tree out and draw it now, whether or not a frame is due:
     /// what a caller reading its layout needs first.
     pub fn relayout(&mut self) {
-        self.with_reports(ui::headless::FrameHarness::relayout);
+        self.with_reports(ui::headless::Driver::relayout);
         self.owe();
     }
 
@@ -542,11 +541,17 @@ impl WidgetSurface {
             || ui::widget::drag_bus::revision() != self.drag_seen
     }
 
-    /// [`Self::asked`], answered by the pass about to run.
+    /// [`Self::asked`], answered by the pass about to run. What asked is outside the tree, so the
+    /// tree's app is woken for it, as a window hands its app a wake: the pass then syncs and
+    /// updates, taking up what changed, rather than drawing what the tree last read.
     fn take_asked(&mut self) -> bool {
         let drag = ui::widget::drag_bus::revision();
         let moved = std::mem::replace(&mut self.drag_seen, drag) != drag;
-        self.asked.swap(false, std::sync::atomic::Ordering::AcqRel) | moved
+        let asked = self.asked.swap(false, std::sync::atomic::Ordering::AcqRel) | moved;
+        if asked {
+            self.host.wake_handle().wake();
+        }
+        asked
     }
 
     /// Where the tree stands among the desktop's trees, while it runs: a drag on the toolkit's
@@ -1027,7 +1032,7 @@ impl ShellSurface for WidgetSurface {
             // (the overlays the chrome draws, a model an action wrote) hears of
             // it in its update, which a redraw of what it last showed never
             // runs. The frame below then draws what the pass settled.
-            self.with_reports(ui::headless::FrameHarness::relayout);
+            self.with_reports(ui::headless::Driver::relayout);
             self.owe();
         }
         let now = Instant::now();
@@ -1054,7 +1059,7 @@ impl ShellSurface for WidgetSurface {
         // new backdrops ask the tree for a frame of its own, even when
         // nothing else in it moved.
         let drew = if owed == Owed::Material {
-            self.with_reports(ui::headless::FrameHarness::relayout);
+            self.with_reports(ui::headless::Driver::relayout);
             true
         } else {
             self.with_reports(|host| host.poll_frame().unwrap_or(false))

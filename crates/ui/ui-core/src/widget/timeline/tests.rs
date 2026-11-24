@@ -318,7 +318,7 @@ tilo_test_env::scenario! {
         let days = timeline.days.clone();
         timeline.set_items_for_test(fifty_items(&days));
         timeline.layout_for(area(), &Theme::dark());
-        let mut host = crate::headless::FrameHarness::for_root(
+        let mut host = crate::app::driver::Driver::for_root(
             crate::State::new(),
             timeline,
             (1280, 820),
@@ -401,7 +401,7 @@ tilo_test_env::scenario! {
         let day = timeline.days[2];
         timeline.set_items_for_test(vec![item(0, day, 9 * 60, 10 * 60)]);
         timeline.set_item_events_for_test(vec![item_events(&queue)]);
-        let mut host = crate::headless::FrameHarness::for_root(
+        let mut host = crate::app::driver::Driver::for_root(
             crate::State::new(),
             timeline,
             (1280, 820),

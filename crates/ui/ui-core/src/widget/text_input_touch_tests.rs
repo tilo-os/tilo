@@ -4,7 +4,7 @@
 use super::*;
 
 /// A form taller than its window: a field 100 px down, then the rest.
-fn touch_form(field: TextInput) -> crate::headless::FrameHarness {
+fn touch_form(field: TextInput) -> crate::app::driver::Driver {
     use crate::widget::{Column, Container, Scrollable, Text};
     let form = Scrollable::new_vertical()
         .with_height(300.0)
@@ -24,7 +24,7 @@ fn touch_form(field: TextInput) -> crate::headless::FrameHarness {
                         .with_child(Box::new(Text::new("Rest of the form").with_id("rest"))),
                 )),
         ));
-    let mut frame = crate::headless::FrameHarness::new_with_theme(
+    let mut frame = crate::app::driver::Driver::new_with_theme(
         crate::State::new(),
         Box::new(form),
         (400, 300),

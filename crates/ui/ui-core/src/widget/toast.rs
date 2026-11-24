@@ -1603,6 +1603,9 @@ pub struct NoticeLayer {
     pressed: bool,
     on_press: Box<dyn Fn(&str)>,
     drawn: std::cell::Cell<Option<(Option<crate::time::Instant>, Option<usize>, bool)>>,
+    /// The notice the last update found up, by when it came up: one posted from outside the
+    /// layer's app (the shell's close) is what it declares from then on.
+    taken: Option<crate::time::Instant>,
 }
 
 impl NoticeLayer {
@@ -1619,6 +1622,7 @@ impl NoticeLayer {
             pressed: false,
             on_press: Box::new(on_press),
             drawn: std::cell::Cell::new(None),
+            taken: None,
         }
     }
 
@@ -1804,6 +1808,19 @@ impl NoticeLayer {
 impl crate::widget::Widget for NoticeLayer {
     fn name(&self) -> &'static str {
         "Notice"
+    }
+
+    /// A notice came up or went: what the layer says (its text, its buttons) changed.
+    fn update(
+        &mut self,
+        _state: &crate::widget::AppModel,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        let up = {
+            let notice = self.notice.borrow();
+            notice.get().and(notice.since())
+        };
+        std::mem::replace(&mut self.taken, up) != up
     }
 
     fn build_layout(

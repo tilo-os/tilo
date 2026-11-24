@@ -2119,7 +2119,7 @@ mod tests {
     use tilo_resource::Effect;
     use ui::a11y::Action;
 
-    use ui::headless::{FrameHarness, SemanticExpectation};
+    use ui::headless::{Driver, SemanticExpectation};
 
     use super::*;
     use crate::hosting::testing::TestHost;
@@ -2265,7 +2265,7 @@ mod tests {
             );
             assert!(invoke_internal(&mut app, "install-internal").is_err());
             assert_eq!(app.internal_install.run_state(), &RunState::Idle);
-            let mut harness = FrameHarness::new(
+            let mut harness = Driver::new(
                 ui::State::new(),
                 Box::new(crate::hosting::Hosted(app)),
                 (960, 720),
@@ -2328,7 +2328,7 @@ mod tests {
             }
             assert_eq!(app.status, "Download ready");
             assert!(!app.needs_idle_sync());
-            let mut ready = FrameHarness::new(
+            let mut ready = Driver::new(
                 ui::State::new(),
                 Box::new(app.internal_download_card()),
                 (640, 320),
@@ -2539,7 +2539,7 @@ mod tests {
                 });
             app.desktop_flow.start_check().unwrap();
             assert!(app.poll_background());
-            let mut harness = FrameHarness::new(
+            let mut harness = Driver::new(
                 ui::State::new(),
                 Box::new(crate::hosting::Hosted(app)),
                 (640, 640),
@@ -2557,7 +2557,7 @@ mod tests {
         {
             let mut app = supported_fixture();
             review(&mut app, Experience::Desktop);
-            let mut harness = FrameHarness::new(
+            let mut harness = Driver::new(
                 ui::State::new(),
                 Box::new(crate::hosting::Hosted(app)),
                 (640, 640),
@@ -2623,7 +2623,7 @@ mod tests {
 
             assert!(app.poll_background());
             assert_eq!(app.status, expected);
-            let harness = FrameHarness::new(
+            let harness = Driver::new(
                 ui::State::new(),
                 Box::new(crate::hosting::Hosted(app)),
                 (640, 640),

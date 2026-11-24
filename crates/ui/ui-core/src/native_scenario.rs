@@ -359,6 +359,13 @@ impl InputApproval {
     /// The permit expires on the producer's monotonic clock. A stalled collector cannot approve;
     /// a stale reply cannot revive it. Denial or EOF revokes a pending request, but cannot retract an
     /// event already released.
+    #[cfg_attr(
+        not(unix),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the approval stream is written only where it exists, on unix"
+        )
+    )]
     fn approve(&mut self, step_id: usize) -> Result<Instant, String> {
         #[cfg(not(unix))]
         {

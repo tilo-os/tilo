@@ -239,7 +239,7 @@ mod tests {
                 "profile-name-label",
                 TextInput::local().with_id("profile-name"),
             );
-            let app = crate::headless::FrameHarness::new(
+            let app = crate::app::driver::Driver::new(
                 crate::State::new(),
                 Box::new(crate::column![field]),
                 (400, 600),
@@ -371,11 +371,8 @@ mod tests {
                     "Display name",
                     Box::new(TextInput::local().with_id("display-name")),
                 )));
-            let app = crate::headless::FrameHarness::new(
-                crate::State::new(),
-                Box::new(field),
-                (400, 200),
-            );
+            let app =
+                crate::app::driver::Driver::new(crate::State::new(), Box::new(field), (400, 200));
             let named = app.a11y_nodes_named("Display name");
             assert_eq!(named.len(), 1, "the label names the field once: {named:?}");
             let node = app.a11y_node(named[0]).expect("the exported node");

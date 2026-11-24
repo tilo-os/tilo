@@ -1,5 +1,4 @@
 //! Original-field admission and receipts beside standard Wayland text delivery.
-use crate::app_core::AppCore as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 use taffy::NodeId;

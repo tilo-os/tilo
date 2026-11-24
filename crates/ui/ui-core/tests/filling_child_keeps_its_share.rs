@@ -6,7 +6,7 @@
 #![cfg(test)]
 
 use tilo_ui::State;
-use tilo_ui::headless::FrameHarness;
+use tilo_ui::headless::Driver;
 use tilo_ui::widget::arrange::{Fit, Part, Stack};
 use tilo_ui::widget::{Column, Container, Fitted, Row, Scrollable, Text};
 
@@ -16,7 +16,7 @@ fn stack_in_a_place(
     strip: Container,
     content: Box<dyn tilo_ui::widget::Widget>,
     height: f32,
-) -> FrameHarness {
+) -> Driver {
     let stack = Stack::stack()
         .fill_width()
         .fill_height()
@@ -28,7 +28,7 @@ fn stack_in_a_place(
         .with_height(height)
         .with_child(Box::new(stack));
     let root = Column::new().with_no_padding().push(Box::new(place));
-    let mut driver = FrameHarness::new(State::new(), Box::new(root), (400, 900));
+    let mut driver = Driver::new(State::new(), Box::new(root), (400, 900));
     driver.send(&tilo_ui::synthetic_input::cursor_moved(150.0, 150.0));
     driver
 }
@@ -121,7 +121,7 @@ fn a_filling_child_of_a_column_takes_the_area_under_its_strip() {
                 .with_flex_grow()
                 .with_child(Box::new(tall_scroll("content", 400.0))),
         ));
-    let mut driver = FrameHarness::new(State::new(), Box::new(root), (400, 520));
+    let mut driver = Driver::new(State::new(), Box::new(root), (400, 520));
     driver.send(&tilo_ui::synthetic_input::cursor_moved(150.0, 150.0));
     let targets = driver.targets();
     for (name, rect) in &targets {
@@ -181,7 +181,7 @@ fn a_filling_child_of_a_row_takes_the_area_beside_its_strip() {
                         .with_child(Box::new(Text::new("The whole page").with_id("content"))),
                 )),
         ));
-    let driver = FrameHarness::new(State::new(), Box::new(root), (520, 200));
+    let driver = Driver::new(State::new(), Box::new(root), (520, 200));
     let targets = driver.targets();
     for (name, rect) in &targets {
         println!("{name}: {rect:?}");

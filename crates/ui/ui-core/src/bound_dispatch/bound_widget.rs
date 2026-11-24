@@ -82,6 +82,7 @@ pub fn resource_owners<W: Widget + ?Sized>(widget: &W) -> Vec<HistoryOwner> {
 }
 
 /// [`BoundWidget::keyboard_input_scope`] of `widget`.
+#[cfg(test)]
 pub(crate) fn keyboard_input_scope<W: Widget + ?Sized>(
     widget: &W,
 ) -> Option<crate::application::InstanceId> {

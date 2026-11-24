@@ -16,7 +16,7 @@ use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{WindowInfo, WindowPolicy as _};
 
 use tilo_session::platform::surfaces::{WellPolicy, desktop};
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 use ui::widget::Column;
 use ui::widget::{Element, Map, PinPlace, Wells, WindowWell, window_well};
 
@@ -50,7 +50,7 @@ fn window(id: u64, app: &str) -> WindowInfo {
 struct Frame {
     /// Laid out, and kept alive: the wells hold while it does.
     #[expect(dead_code, reason = "kept only so the frame stays laid out")]
-    harness: FrameHarness,
+    harness: Driver,
     _wells: window_well::Installed,
 }
 
@@ -64,7 +64,7 @@ impl Frame {
                 .push(Box::new(ui::widget::Spacer::fixed(bar)))
                 .push(Box::new(WindowWell::new(place))),
         );
-        let mut harness = FrameHarness::new(ui::State::new(), frame, viewport);
+        let mut harness = Driver::new(ui::State::new(), frame, viewport);
         let installed = window_well::install(wells);
         harness.relayout();
         Self {
@@ -152,7 +152,7 @@ fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view
         },
         Box::new(WindowWell::new(key.clone())),
     ));
-    let mut harness = FrameHarness::new(ui::State::new(), canvas, VIEWPORT);
+    let mut harness = Driver::new(ui::State::new(), canvas, VIEWPORT);
     let _installed = window_well::install(wells.clone());
     harness.relayout();
     let before = wells.well(&key).expect("the well is on screen");

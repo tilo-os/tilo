@@ -2,7 +2,7 @@
 //! resources it publishes and the actions on them, and then reads the state
 //! behind them — not the widget that drew them.
 //!
-//! `HeadlessApp` mounts a component in one frame and opens that API on it.
+//! The display-less `Driver` mounts a component and opens that API on it.
 //! What the cases below assert is what a member, a script and an agent
 //! get: the resource ids they address, the action's own answer, and the
 //! API's refusal — the wrong address, a parameter the contract did not
@@ -13,7 +13,7 @@ use serde_json::json;
 use tilo_actions::ActionAddress;
 use tilo_test_env::TestEnv;
 use tilo_ui::application::{LaunchTarget, RestoreInput};
-use tilo_ui::headless::{Action, HeadlessApp, Invocation, Outcome, Step};
+use tilo_ui::headless::{Action, Driver, Invocation, Outcome, Step};
 
 use crate::support::application::{
     ProbeHarness, body, operation_observations, owner_permissions, runner_probe_definition,
@@ -36,7 +36,7 @@ fn invokes(action: &str) -> Step {
 
 /// A mounted probe that publishes its actions, and the host whose record
 /// store it writes to — kept, because the store flushes on drop.
-fn mounted_probe() -> (ProbeHarness, HeadlessApp) {
+fn mounted_probe() -> (ProbeHarness, Driver) {
     let host = ProbeHarness::new();
     let component = runner_probe_definition()
         .instantiate(
@@ -52,7 +52,7 @@ fn mounted_probe() -> (ProbeHarness, HeadlessApp) {
         )
         .unwrap();
     // The frame is the window: it mounts the component itself.
-    let app = HeadlessApp::mount(component).unwrap();
+    let app = Driver::mount(component).unwrap();
     (host, app)
 }
 
@@ -89,7 +89,7 @@ fn an_app_publishes_the_resources_a_caller_addresses_it_by() {
 fn an_action_runs_and_the_app_is_what_answers_for_it() {
     {
         let (host, mut app) = mounted_probe();
-        let checkout = app.frame().component_resource().cloned();
+        let checkout = app.component_resource();
         let address = ActionAddress::new("probe:shared", "edit");
         let answer = app.call(&address, serde_json::Map::new()).unwrap();
         assert!(
@@ -131,7 +131,7 @@ fn an_action_runs_and_the_app_is_what_answers_for_it() {
             .call_on("probe:shared", "confirm", json!({}))
             .unwrap_err();
         assert_eq!(refused.code(), "action_confirmation_required");
-        app.call_on_confirmed("probe:shared", "confirm", json!({}))
+        app.call_on_approved("probe:shared", "confirm", json!({}))
             .expect("the caller answered the question it was asked");
     }
 }
@@ -141,9 +141,7 @@ fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_
     {
         let (host, mut app) = mounted_probe();
         let checkout = app
-            .frame()
             .component_resource()
-            .cloned()
             .expect("the mounted app keeps the record it was launched on");
         let outcome = app.drive(&[invokes("view")]);
         assert!(outcome.is_pass(), "{:?}", outcome.failure());
@@ -163,9 +161,7 @@ fn a_scenario_drives_the_app_and_the_record_changes_it_made_are_what_it_asserts_
     {
         let (host, mut app) = mounted_probe();
         let checkout = app
-            .frame()
             .component_resource()
-            .cloned()
             .expect("the mounted app keeps the record it was launched on");
         let outcome = app.drive(&[invokes("view"), invokes("edit")]);
         assert!(outcome.is_pass(), "{:?}", outcome.failure());

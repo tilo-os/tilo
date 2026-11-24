@@ -2290,7 +2290,7 @@ mod tests {
         theme: crate::theme::Theme,
     ) -> crate::headless::InspectionNode {
         let mut harness =
-            crate::headless::FrameHarness::for_root(crate::State::new(), list, (900, 600), theme);
+            crate::app::driver::Driver::for_root(crate::State::new(), list, (900, 600), theme);
         harness.relayout();
         harness.inspection().root
     }
@@ -2576,7 +2576,7 @@ mod tests {
                 ..VirtualListProps::default()
             },
         );
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             list,
             (900, 600),
@@ -2683,7 +2683,7 @@ mod tests {
                 ..DescribedRows::default()
             }),
         );
-        let mut harness = crate::headless::FrameHarness::for_root(
+        let mut harness = crate::app::driver::Driver::for_root(
             crate::State::new(),
             list,
             (900, 600),

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 fn own_device_effects_run_for_guests_and_refusals_are_said() {
     use ::collaboration::permissions::{PermissionContext, Role};
     let click = |root: crate::widget::Element, role: Role| {
-        let mut harness = crate::headless::FrameHarness::new_with_theme(
+        let mut harness = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             root,
             (600, 200),
@@ -308,7 +308,7 @@ fn intrinsic_width_stays_compact_and_aligned_in_hosts() {
         let button = Button::new("back", "Back to apps").on_click(move || {
             clicks.fetch_add(1, Ordering::SeqCst);
         });
-        let mut harness = crate::headless::FrameHarness::new_with_theme(
+        let mut harness = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             fit_host(1, button),
             (600, 200),
@@ -499,7 +499,7 @@ fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
 }
 
 fn measured_button_rect(button: Button, scale: f32) -> Rect {
-    let harness = crate::headless::FrameHarness::new_with_theme(
+    let harness = crate::app::driver::Driver::new_with_theme(
         crate::State::new(),
         Box::new(crate::widget::Row::new().push(Box::new(button))),
         (1000, 200),
@@ -1055,7 +1055,7 @@ tilo_test_env::scenario! {
             }),
         ));
         let mut harness =
-            crate::headless::FrameHarness::new(crate::State::new(), Box::new(column), (400, 120));
+            crate::app::driver::Driver::new(crate::State::new(), Box::new(column), (400, 120));
         harness
             .perform_named("files.retry", &crate::a11y::Action::Activate)
             .expect("the press reaches the button through its container");
@@ -1413,7 +1413,7 @@ tilo_test_env::scenario! {
                 .tooltip("Search");
             // What a screen reader says, and what an agent shown the window finds the press by.
             for (button, name) in [(named, "New Private Window"), (tooltip_after, "Search")] {
-                let harness = crate::headless::FrameHarness::new(
+                let harness = crate::app::driver::Driver::new(
                     crate::State::new(),
                     Box::new(crate::widget::Row::new().push(Box::new(button))),
                     (400, 100),
@@ -1645,7 +1645,7 @@ tilo_test_env::scenario! {
 
         /// The retained and immediate labels follow the theme's type scale —
         /// 2× the Label role under a 2× theme — whether the shared renderer is
-        /// matched (2×, the live App and `FrameHarness`) or left at 1× (the
+        /// matched (2×, the live App and `Driver`) or left at 1× (the
         /// apps' raw `--shots` loop), and whether or not a `build_layout` pass
         /// preceded the draw.
         fn retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts() {
@@ -1997,7 +1997,7 @@ tilo_test_env::scenario! {
     // to answer it, so one switch of input would keep it — and its path to the root — asking to be
     // measured on every frame after.
     {
-        let mut harness = crate::headless::FrameHarness::new(
+        let mut harness = crate::app::driver::Driver::new(
             crate::State::new(),
             Box::new(crate::widget::Row::new().push(Box::new(Button::icon_only(
                 "pin",

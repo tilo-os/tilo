@@ -479,11 +479,7 @@ fn start(
     action: &str,
     arguments: &serde_json::Value,
 ) -> tilo_actions::InvocationId {
-    let instance_id = app.harness().component_instance_id().unwrap();
-    let address = tilo_app::bound_dispatch::BoundActionAddress {
-        instance_id,
-        address: tilo_actions::ActionAddress::new("test.post", action),
-    };
+    let address = tilo_actions::ActionAddress::new("test.post", action);
     let approval = app.harness().approval();
     let (invocation, started) = app
         .harness()

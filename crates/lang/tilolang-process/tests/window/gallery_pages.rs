@@ -9,7 +9,7 @@ use tilolang_process::window::app::TlApp;
 use ui::a11y::{Action, Role};
 use ui::composition::page::Page;
 use ui::composition::{Composed, Composition};
-use ui::headless::FrameHarness;
+use ui::headless::Driver;
 
 use super::gallery_html::{nodes, row, shows, until};
 
@@ -47,11 +47,7 @@ const SIZES: [(u32, u32); 2] = [(1280, 800), (390, 844)];
 /// The control named `name` that `composition` offers assistive technology, as a widget path and
 /// the target its press goes to.
 fn offered(composition: &Composition, role: Role, name: &str) -> Option<(String, Option<String>)> {
-    fn find(
-        access: &ui::a11y::AccessNode,
-        role: Role,
-        name: &str,
-    ) -> Option<Option<String>> {
+    fn find(access: &ui::a11y::AccessNode, role: Role, name: &str) -> Option<Option<String>> {
         if access.role == role && access.name.as_deref() == Some(name) && !access.state.hidden {
             return Some(access.action_target.clone());
         }
@@ -71,7 +67,7 @@ fn offered(composition: &Composition, role: Role, name: &str) -> Option<(String,
 }
 
 /// Press what `composition` offers as `widget` and `target`, as a person's press does.
-fn press(harness: &mut FrameHarness, (widget, target): (String, Option<String>), what: &str) {
+fn press(harness: &mut Driver, (widget, target): (String, Option<String>), what: &str) {
     harness
         .perform_semantic_named(&widget, target.as_deref(), &Action::Activate)
         .unwrap_or_else(|refused| panic!("a press on {what} is taken: {refused}"));
@@ -79,10 +75,15 @@ fn press(harness: &mut FrameHarness, (widget, target): (String, Option<String>),
 
 /// Pick `place` in the sidebar, as a person does, and wait for it to show: on a phone, where a
 /// page stands over the places, they go Back to them first.
-fn pick(harness: &mut FrameHarness, place: &str) -> Composition {
-    let composition = until(harness, "the sidebar lists its places, or Back to them", |composition| {
-        row(composition, place).is_some() || offered(composition, Role::Button, "Back").is_some()
-    });
+fn pick(harness: &mut Driver, place: &str) -> Composition {
+    let composition = until(
+        harness,
+        "the sidebar lists its places, or Back to them",
+        |composition| {
+            row(composition, place).is_some()
+                || offered(composition, Role::Button, "Back").is_some()
+        },
+    );
     if row(&composition, place).is_none() {
         let back = offered(&composition, Role::Button, "Back").expect("Back to the places");
         press(harness, back, "Back");
@@ -352,9 +353,9 @@ fn the_wheel_over_the_page_scrolls_its_content() {
         harness,
         "the wheel moves the page's content",
         |composition| {
-            scrollers(composition)
-                .into_iter()
-                .any(|node| node.path == path && node.scroll.is_some_and(|[offset, ..]| offset > 0.0))
+            scrollers(composition).into_iter().any(|node| {
+                node.path == path && node.scroll.is_some_and(|[offset, ..]| offset > 0.0)
+            })
         },
     );
     let offset = scrollers(&composition)

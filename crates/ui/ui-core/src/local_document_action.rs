@@ -80,9 +80,15 @@ pub struct Scope {
     published: Option<PublishedInvocation>,
     routes: Vec<InputRoute>,
     unsigned: Option<UnsignedEdits>,
+    /// This guard observed nothing of its own: it kept the scope already
+    /// installed ([`keep`]) and leaves it as it found it.
+    keep: bool,
 }
 impl Drop for Scope {
     fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
         ACTIVE.with(|active| *active.borrow_mut() = self.previous.take());
         PUBLISHED.with(|published| *published.borrow_mut() = self.published.take());
         INPUT_ROUTES.with(|routes| *routes.borrow_mut() = std::mem::take(&mut self.routes));
@@ -162,6 +168,7 @@ impl Queue {
             published,
             routes,
             unsigned,
+            keep: false,
         }
     }
 
@@ -242,6 +249,21 @@ pub fn suspend() -> Scope {
         published,
         routes,
         unsigned,
+        keep: false,
+    }
+}
+
+/// Keep the local input scope already installed: input that arrives while this
+/// thread's input is already observed belongs to that observation, which
+/// carries the routes the person's edits are reported on. What it hands back
+/// restores nothing.
+pub(crate) fn keep() -> Scope {
+    Scope {
+        previous: None,
+        published: None,
+        routes: Vec::new(),
+        unsigned: None,
+        keep: true,
     }
 }
 

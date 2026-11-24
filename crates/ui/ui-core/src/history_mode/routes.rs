@@ -426,7 +426,12 @@ impl OwnerDocumentRoutes {
                     route: route.clone(),
                     resource_type: resource_type.clone(),
                 });
-                let publishes = owner.publishes_resource();
+                // A store that writes its records through its port itself is the one path its
+                // changes take. Publishing them on a route too would send a second copy, and a
+                // route that cannot confirm the publication settles the store's writer for a
+                // write the workspace never took: the change would reach neither.
+                let publishes =
+                    owner.publishes_resource() && !owner.store_checkout().0.writes_for_self();
                 self.owners.push(OwnerRoute {
                     route,
                     owners: vec![owner],

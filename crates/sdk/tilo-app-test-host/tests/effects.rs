@@ -50,11 +50,7 @@ fn start_causal_action(
     action: &str,
     arguments: &serde_json::Value,
 ) -> tilo_actions::InvocationId {
-    let instance_id = app.harness().component_instance_id().unwrap();
-    let address = tilo_app::bound_dispatch::BoundActionAddress {
-        instance_id,
-        address: tilo_actions::ActionAddress::new("test.mailbox", action),
-    };
+    let address = tilo_actions::ActionAddress::new("test.mailbox", action);
     let approval = app.harness().approval();
     let (invocation, started) = app
         .harness()
@@ -755,10 +751,7 @@ fn start_receipt(app: &mut TestApp<MailApp>) -> tilo_actions::InvocationId {
 }
 
 fn start_named_receipt(app: &mut TestApp<MailApp>, action: &str) -> tilo_actions::InvocationId {
-    let address = tilo_app::bound_dispatch::BoundActionAddress {
-        instance_id: app.harness().component_instance_id().unwrap(),
-        address: tilo_actions::ActionAddress::new("test.mailbox", action),
-    };
+    let address = tilo_actions::ActionAddress::new("test.mailbox", action);
     let approval = app.harness().approval();
     let (invocation, started) = app
         .harness()
@@ -1102,11 +1095,7 @@ tilo_test_env::scenario! {
     phase retiring_parent_cancels_and_unpublishes_even_a_retained_child_host;
     {
         let mut app = TestApp::<NestedSurfaceApp>::new().unwrap();
-        let instance_id = app.harness().component_instance_id().unwrap();
-        let address = tilo_app::bound_dispatch::BoundActionAddress {
-            instance_id,
-            address: tilo_actions::ActionAddress::new("test.mailbox", "tally"),
-        };
+        let address = tilo_actions::ActionAddress::new("test.mailbox", "tally");
         let approval = app.harness().approval();
         let (_, started) = app
             .harness()

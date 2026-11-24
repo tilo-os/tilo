@@ -26,6 +26,12 @@ pub struct LayoutCounts {
     pub copies: u64,
     /// Widget measure callbacks: what Taffy asked a widget's own measurement.
     pub measures: u64,
+    /// Nodes of a window's own tree a solve marked to be measured again, because their widget said
+    /// its size may have moved.
+    pub marked: u64,
+    /// Of [`Self::marked`], the nodes with no children: the widgets that asked, not the containers
+    /// around them.
+    pub marked_leaves: u64,
     /// Wall time inside solves, probes included.
     pub solve_nanos: u64,
 }
@@ -39,6 +45,8 @@ impl LayoutCounts {
         probes: 0,
         copies: 0,
         measures: 0,
+        marked: 0,
+        marked_leaves: 0,
         solve_nanos: 0,
     };
 
@@ -51,6 +59,8 @@ impl LayoutCounts {
         self.probes = self.probes.saturating_add(other.probes);
         self.copies = self.copies.saturating_add(other.copies);
         self.measures = self.measures.saturating_add(other.measures);
+        self.marked = self.marked.saturating_add(other.marked);
+        self.marked_leaves = self.marked_leaves.saturating_add(other.marked_leaves);
         self.solve_nanos = self.solve_nanos.saturating_add(other.solve_nanos);
     }
 }
@@ -106,6 +116,14 @@ pub(crate) fn copy() {
 
 pub(crate) fn measure() {
     counted(|counts| counts.measures = counts.measures.saturating_add(1));
+}
+
+/// A solve of a window's own tree marked a node to be measured again; `leaf` when it has no children.
+pub(crate) fn marked(leaf: bool) {
+    counted(|counts| {
+        counts.marked = counts.marked.saturating_add(1);
+        counts.marked_leaves = counts.marked_leaves.saturating_add(u64::from(leaf));
+    });
 }
 
 thread_local! {

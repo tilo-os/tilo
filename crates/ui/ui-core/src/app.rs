@@ -8,25 +8,25 @@ use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
 use crate::render_thread::{FrameOutcome, RenderRequest};
 #[cfg(feature = "native")]
 use crate::widget::AudiencePresentationWidgetExt as _;
+use crate::widget::FloatingSurfaceWidgetExt as _;
 #[cfg(feature = "native")]
-use crate::widget::{FloatingSurfaceWidgetExt as _, FullscreenWidgetExt as _};
+use crate::widget::FullscreenWidgetExt as _;
 #[cfg(feature = "native")]
 use std::sync::{Arc, mpsc};
-#[cfg(feature = "native")]
 use taffy::AvailableSpace;
 #[cfg(feature = "native")]
 use vello::{Renderer, RendererOptions, peniko::Color};
-#[cfg(feature = "native")]
 use vello::{Scene, kurbo::Affine, kurbo::Point};
 use winit::event::{ElementState, WindowEvent};
+use winit::window::CursorIcon;
 #[cfg(feature = "native")]
 use winit::{
     application::ApplicationHandler,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
-    window::{CursorIcon, Fullscreen, Window, WindowId},
+    window::{Fullscreen, Window, WindowId},
 };
 
-use crate::app_core::{AppCore as _, ControlCore as _, KeyCore as _, ResourceInvocation};
+use crate::app_core::ResourceInvocation;
 use std::cell::Cell;
 
 #[cfg(feature = "native")]
@@ -44,11 +44,9 @@ mod follow_ups;
 mod handoff;
 mod held_answers;
 mod host_commands;
-#[cfg(feature = "native")]
 mod report_point;
 #[cfg(all(feature = "native", test))]
 mod report_point_tests;
-#[cfg(feature = "native")]
 mod window_box;
 
 mod model_lifecycle;
@@ -58,6 +56,7 @@ mod retirement_assembly;
 mod retirement_lifecycle_tests;
 mod surface_route;
 include!("app/floating.rs");
+mod part_bar;
 mod runtime;
 mod window_bar;
 use runtime::{
@@ -90,18 +89,42 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 /// launch rather than a clean exit.
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
-#[cfg(feature = "native")]
 mod content_zoom;
-#[cfg(feature = "native")]
+pub mod driver;
+#[cfg(test)]
+mod driver_apps_a_tests;
+#[cfg(test)]
+mod driver_chrome_tests;
+#[cfg(test)]
+mod driver_frames_tests;
+#[cfg(test)]
+mod driver_host_style_tests;
+#[cfg(test)]
+mod driver_jobs_tests;
+#[cfg(test)]
+mod driver_layout_check_tests;
+#[cfg(test)]
+mod driver_metrics_tests;
+#[cfg(test)]
+mod driver_owner_tests;
+#[cfg(test)]
+mod driver_palette_tests;
+#[cfg(test)]
+mod driver_tests;
+#[cfg(test)]
+mod driver_uicore_tests;
+#[cfg(test)]
+mod driver_widget_tests;
+#[cfg(test)]
+mod driver_window_bar_tests;
 mod held_input;
-#[cfg(feature = "native")]
 mod input_publication;
 mod local_input_capture;
-#[cfg(feature = "native")]
+#[cfg(test)]
+mod session_tests;
 mod surface;
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 pub(crate) use native_runner::startup::prepare_native_renderer;
-#[cfg(feature = "native")]
 pub use surface::{AppSurface, SurfaceDamage};
 #[cfg(feature = "native")]
 mod embedded;
@@ -195,19 +218,16 @@ use crate::collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
 };
 use crate::focus_navigation::Direction;
-#[cfg(feature = "native")]
 use crate::ime::ImeWindowState;
 use crate::permissions::PermissionContext;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-#[cfg(any(feature = "native", test))]
 use crate::time::Duration;
 use crate::time::Instant;
 use crate::widget::Widget;
 use taffy::{NodeId, TaffyTree};
-#[cfg(feature = "native")]
 use vello::kurbo::Rect as KurboRect;
 
 /// Cached [`crate::process::RunnerDiagnostics::perf_log`] check
@@ -223,7 +243,6 @@ fn perf_enabled() -> bool {
 /// forcing a full `compute_layout` on every `layout_dirty` frame — a safety
 /// valve if a subtree ever needs a re-solve without reporting
 /// `layout_needs_measure`.
-#[cfg(feature = "native")]
 fn scroll_opt_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
@@ -262,7 +281,6 @@ mod continuation_tests {
     }
 }
 
-#[cfg(feature = "native")]
 fn next_boundary(s: &str, byte: usize) -> usize {
     let mut b = byte.min(s.len());
     loop {
@@ -276,7 +294,6 @@ fn next_boundary(s: &str, byte: usize) -> usize {
     }
 }
 
-#[cfg(feature = "native")]
 fn prev_boundary(s: &str, byte: usize) -> usize {
     let mut b = byte.min(s.len());
     loop {
@@ -290,7 +307,6 @@ fn prev_boundary(s: &str, byte: usize) -> usize {
     }
 }
 
-#[cfg(feature = "native")]
 fn word_at(s: &str, byte: usize) -> Option<String> {
     let b = byte.min(s.len());
     let is_ws = |c: char| c.is_whitespace();
@@ -334,7 +350,6 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
 /// milliseconds. Winit delivers `CursorMoved` at up to 120 Hz (~8 ms/delta),
 /// which would saturate the Unix socket for no visual gain; 33 ms caps the
 /// wire rate at ~30 Hz, fluid enough without becoming the bottleneck.
-#[cfg(feature = "native")]
 pub(crate) const POINTER_BROADCAST_MIN_GAP_MS: u64 = 33;
 
 #[derive(Clone, Debug)]
@@ -344,7 +359,6 @@ struct DirectedInvocation {
 }
 
 /// Public-in-crate so the throttle decision is unit-testable without a real event loop.
-#[cfg(feature = "native")]
 pub(crate) fn pointer_broadcast_allowed(
     last: Option<Instant>,
     now: Instant,
@@ -473,7 +487,6 @@ pub struct App {
     close_admission: crate::close_admission::Admission,
     /// A window asked for the thing a report is about, until the person points
     /// at it or leaves ([`report_point::Pointing`]).
-    #[cfg(feature = "native")]
     report_pointing: Option<report_point::Pointing>,
     /// The send-to box the window stands with no menu around it ([`Self::open_send_box`]).
     window_box: crate::widget::context_menu::ContextMenu,
@@ -791,6 +804,7 @@ impl App {
         inputs: crate::application::ComponentRunnerInputs,
     ) -> Result<Self, crate::launch::LaunchError> {
         Self::from_component_using(component, inputs, AppConstructionInputs::component)
+            .map(|app| *app)
     }
 
     /// Mount a checked component on an explicitly admitted collaboration manager.
@@ -804,6 +818,7 @@ impl App {
             construction.collab_manager = collaboration;
             construction
         })
+        .map(|app| *app)
     }
 
     /// Mount a standalone native component with the process's existing system services, including
@@ -813,6 +828,7 @@ impl App {
         inputs: crate::application::ComponentRunnerInputs,
     ) -> Result<Self, crate::launch::LaunchError> {
         Self::from_component_using(component, inputs, AppConstructionInputs::native_component)
+            .map(|app| *app)
     }
 
     fn from_component_using(
@@ -822,7 +838,7 @@ impl App {
             crate::application::ComponentRunnerInputs,
             &crate::bound_dispatch::CallbackBinding,
         ) -> AppConstructionInputs,
-    ) -> Result<Self, crate::launch::LaunchError> {
+    ) -> Result<Box<Self>, crate::launch::LaunchError> {
         let scope =
             crate::collaboration::native_initial::take_component_scope().unwrap_or_default();
         let retirement = component.take_root_retirement();
@@ -907,7 +923,7 @@ impl App {
             });
         }
         if behaviour.window == crate::application::WindowRole::InputSurface {
-            app = app.without_native_document_chrome();
+            app.drop_native_document_chrome();
         }
         Ok(app)
     }
@@ -1034,7 +1050,7 @@ impl App {
     ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
         Self::from_managed_root_with_constructor(state, root, |state, widget| {
             let _entry = crate::wake::WakeScope::enter_detached();
-            Self::with_parts(None, state, widget, AppConstructionInputs::controlled())
+            *Self::with_parts(None, state, widget, AppConstructionInputs::controlled())
         })
     }
 
@@ -1098,7 +1114,7 @@ impl App {
         root_widget: Box<dyn Widget>,
         collab_manager: CollaborationManager,
     ) -> Self {
-        Self::with_parts(
+        *Self::with_parts(
             None,
             state,
             root_widget,
@@ -1169,7 +1185,7 @@ impl App {
         let manager = crate::collaboration::native_initial::take_manager().unwrap_or_default();
         let mut inputs = AppConstructionInputs::production(manager);
         inputs.control_domain = Some(domain);
-        Self::with_parts(Some(scope), state, root, inputs)
+        *Self::with_parts(Some(scope), state, root, inputs)
     }
 
     #[cfg(test)]
@@ -1181,7 +1197,7 @@ impl App {
     ) -> Self {
         let mut inputs = AppConstructionInputs::controlled();
         inputs.control_domain = Some(domain);
-        Self::with_parts(Some(scope), state, root, inputs)
+        *Self::with_parts(Some(scope), state, root, inputs)
     }
 
     /// Transfer an existing owner into a live app.
@@ -1206,7 +1222,7 @@ impl App {
         inputs: impl FnOnce() -> AppConstructionInputs,
     ) -> Self {
         let _entry = wake_scope.enter();
-        Self::with_parts(Some(wake_scope), state, root_widget, inputs())
+        *Self::with_parts(Some(wake_scope), state, root_widget, inputs())
     }
 
     /// An app showing `root_widget` under its own wake scope, as an app embedded in a window is,
@@ -1230,12 +1246,84 @@ impl App {
     #[cfg(any(test, all(feature = "native", feature = "test-support")))]
     pub fn new_with_controlled_inputs(state: State, root_widget: Box<dyn Widget>) -> Self {
         let _entry = crate::wake::WakeScope::enter_detached();
-        Self::with_parts(
+        *Self::with_parts(
             None,
             state,
             root_widget,
             AppConstructionInputs::controlled(),
         )
+    }
+
+    /// An app for a surface with no display ([`driver::Driver`]): drawn with the caller's theme and
+    /// fonts, as the caller's person, with the process's settings and services left alone.
+    pub(crate) fn displayless(
+        state: State,
+        root_widget: Box<dyn Widget>,
+        inputs: driver::DriverInputs,
+    ) -> Box<Self> {
+        let driver::DriverInputs {
+            theme,
+            mut text,
+            author,
+        } = inputs;
+        // The theme is composed as the caller hands it over: its scale and its comforts are the
+        // window's, not ones the person's settings would put over it.
+        let (text_scale, ui_scale, reduce_motion) =
+            (theme.text_scale, theme.ui_scale, theme.reduce_motion);
+        text.set_text_scale(theme.text_scale);
+        text.apply_typography(&theme.tokens.typography);
+        let mut presence = PresenceCtx::empty();
+        presence.set_own_identity([author.clone()]);
+        // A wake scope of its own, as a window's app has: work the app starts, and a source outside
+        // it that a host hands the app's wake ([`driver::Driver::wake_handle`]), wakes it, and the
+        // frame that wake brings takes the change up.
+        let scope = {
+            let _outside = crate::wake::WakeScope::enter_detached();
+            crate::wake::WakeScope::new()
+        };
+        let _entry = scope.enter();
+        // The window's controls, as a window of its own attaches them: what they bind is what
+        // the app publishes and what a reader operates.
+        let domain = crate::control_domain::ControlDomain::outer();
+        let mut app = Self::with_parts(
+            Some(scope),
+            state,
+            root_widget,
+            AppConstructionInputs {
+                control_domain: Some(domain),
+                collab_manager: CollaborationManager::disabled(),
+                configured_theme: ConstructionValue::Ready(theme),
+                text_renderer: ConstructionValue::Ready(text),
+                palette_source: PaletteSource::Owned {
+                    renderer: TextRenderer::new,
+                    field: crate::widget::SearchField::new,
+                },
+                watch_system_settings: false,
+                debug_mode: || false,
+                theme_store_stamp: || None,
+                local_author: ConstructionValue::Ready(author),
+                presence_ctx: ConstructionValue::Ready(presence),
+                screen_reader: || None,
+                your_colour: || None,
+                high_contrast: || false,
+                reduce_motion: || false,
+                text_scale: || 1.0,
+                ui_scale: || 1.0,
+                pending_continuation_restore: || None,
+                profiler: || None,
+                floating_surface_client: || None,
+                startup_presence_scope: || None,
+                surface_id: ConstructionValue::Lazy(|| "displayless-surface".into()),
+            },
+        );
+        // The theme is composed as the caller handed it over: its scale and its comforts stand on
+        // the window, where the construction read the person's settings (none here) over it.
+        app.accessibility.text_scale = text_scale;
+        app.accessibility.ui_scale = ui_scale;
+        app.accessibility.a11y.reduce_motion = reduce_motion;
+        app.rebuild_theme();
+        app.set_permission_ctx(PermissionContext::permissive());
+        app
     }
 
     /// Whether the shared permissions moved since the last frame painted them: the drawings the tree
@@ -1284,7 +1372,6 @@ impl App {
     /// A frame drew the tree as it stands: what came after the last one is
     /// painted, and a rebuild or a theme made again after this frame repaints
     /// whole on its own account.
-    #[cfg(feature = "native")]
     pub(crate) fn note_frame_drawn(&mut self) {
         self.frame_theme_epoch = self.theme_epoch;
         self.layout.drawn = (self.layout.rebuilds, self.layout.remounts);
@@ -1333,7 +1420,7 @@ impl App {
         state: State,
         root_widget: Box<dyn Widget>,
         inputs: AppConstructionInputs,
-    ) -> Self {
+    ) -> Box<Self> {
         retirement_assembly::assemble(retirement_assembly::AppAssemblyOwnership {
             retirement: None,
             root: Some(root_widget),
@@ -1379,16 +1466,26 @@ impl App {
                 };
                 theme
             }
-            PaletteSource::Owned { .. } => self
-                .accessibility
-                .base_theme
-                .clone()
-                .in_window(&self.accessibility.window)
-                .with_a11y(
-                    &self.accessibility.a11y,
+            PaletteSource::Owned { .. } => {
+                let base = self
+                    .accessibility
+                    .base_theme
+                    .clone()
+                    .in_window(&self.accessibility.window);
+                let base = if self.accessibility.a11y.high_contrast {
+                    base.with_high_contrast()
+                } else {
+                    base
+                };
+                // The owned base is a theme as its caller composed it, so the person's scales are
+                // taken as factors over it: a theme handed over already at its own scale is kept
+                // as it stands, and one at the plain scale takes the settings whole.
+                base.with_component_scales(
                     self.accessibility.text_scale,
                     self.accessibility.ui_scale * self.accessibility.zoom.factor(),
-                ),
+                )
+                .with_reduce_motion(self.accessibility.a11y.reduce_motion)
+            }
         };
         if crate::window_toolbar::floats() {
             self.theme = self.theme.clone().as_card();
@@ -1508,12 +1605,15 @@ impl App {
         }
         let mut all = Vec::new();
         ids(resources, &mut all);
+        // Every resource of the surface is resolved through the component that published it, one
+        // per row of a long collection: its scope is held across the lookups.
+        let mut held = crate::bound_dispatch::HeldScope::default();
         let targets: Vec<_> = all
             .iter()
             .map(|id| {
                 self.actions
                     .bound_publication
-                    .target(&tilo_actions::ActionAddress::new(*id, ""))
+                    .target_within(&tilo_actions::ActionAddress::new(*id, ""), &mut held)
                     .ok()
                     .flatten()
             })
@@ -1784,7 +1884,6 @@ impl App {
     /// The shape of this window's surface, laid out over `window` (logical) and drawn with `transform`:
     /// rounded at the radius the shell draws the window with, square while it is fullscreen or drawn
     /// edge to edge.
-    #[cfg(feature = "native")]
     #[must_use]
     pub fn window_surface(
         &self,
@@ -1958,7 +2057,6 @@ impl App {
         self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
-    #[cfg(feature = "native")]
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
         if self.report_pointing.is_some() {
             // The window is waiting for the person to point at a thing.
@@ -2027,6 +2125,18 @@ impl App {
     pub fn init_layout(&mut self) {
         let dev_view = self.consume_dev_checkpoint();
         self.init_layout_with_dev_view(dev_view);
+    }
+
+    /// Lay the root out in a node of the host's own: `host_style` styles it (its size is the
+    /// viewport's) and `content_height` lays it out against unbounded height, as a scrolling host
+    /// lays the document inside it. A host that gives neither lays the root out at the viewport,
+    /// the default.
+    pub(crate) fn frame_root_in(&mut self, host_style: Option<taffy::Style>, content_height: bool) {
+        self.layout.host_root_style = host_style;
+        self.layout.content_height = content_height;
+        if self.layout.hosts_root() {
+            self.layout.request_rebuild();
+        }
     }
 
     /// Headless and dev-reload startup.
@@ -2174,12 +2284,11 @@ impl App {
         answering.next().is_none().then_some(single)
     }
 
-    /// [`Self::rebuild_structure`] — whether a control asked for the keyboard in the tree it
-    /// built ([`Widget::take_focus_request`]) and has it. That request is where the keyboard
-    /// goes, over where it was before the rebuild: a caller restoring the focus it captured
-    /// before must leave it.
-    pub(crate) fn rebuild_structure_placing_focus(&mut self) -> bool {
-        let mut requested = false;
+    /// [`Self::rebuild_structure`], keeping the person's place in the tree it builds. A widget
+    /// that asks for the keyboard is answered once the tree it asked in is laid out
+    /// ([`Self::apply_focus_request`] from the host's layout pass), where a control's request
+    /// and the tree it names both stand.
+    pub(crate) fn rebuild_structure_placing_focus(&mut self) {
         let _entry = self.enter_wake_scope();
         let _phase = tilo_resource::profiling::Phase::start("ui.rebuild_structure");
         // The header the rebuild builds hears whether the window's bar
@@ -2241,6 +2350,11 @@ impl App {
             .filter(|(at, identity, live, remembered)| {
                 at.is_some() || identity.is_some() || live.is_some() || remembered.is_some()
             });
+        // The keyboard was on the answer the trap itself chose, not on one the person put it on:
+        // the build below reads the order the modal shows now and seats it there, rather than
+        // restoring an answer that was only the first control laid out at the time.
+        let trap_entry_provisional = self.accessibility.focus_trap_active
+            && self.focused_node == self.accessibility.focus_trap_entry;
         // NodeId values can be reused by the new tree. Clear the old handle
         // without dispatching through its potentially invalid pointer, so a
         // replacement control at the same id still receives set_focus(true).
@@ -2249,6 +2363,8 @@ impl App {
         self.layout.remount = false;
         self.input.pointer_replay.mark_unsettled();
         self.layout.taffy = TaffyTree::new();
+        self.layout.host_node = None;
+        self.layout.host_child = None;
         self.layout.unsolved = true;
         self.component_close_reports.extend(
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
@@ -2265,13 +2381,37 @@ impl App {
         drop(probe);
         self.layout.structure_dirty = false;
         self.layout.layout_dirty = true;
+        // A control the build just made may say it holds the keyboard: a form rebuilt around the
+        // field the person is typing in builds that field focused. Within a trap the tree's own
+        // answer is the app's, and it takes the keyboard once the order the modal shows now is
+        // known, rather than the answer restored from before the build.
+        // SAFETY: the build above made this exact tree, exclusively owned.
+        let retained_focus = self
+            .accessibility
+            .focus_trap_active
+            .then(|| unsafe {
+                crate::widget::layout::CompositionFocus::current(
+                    &self.layout.node_map,
+                    &self.bindings,
+                    None,
+                )
+            })
+            .flatten();
         #[cfg(test)]
         let probe = crate::profiling::frame_probe::span("rebuild.focus");
         self.update_focusable_order();
         #[cfg(test)]
         drop(probe);
+        if let Some(node) = retained_focus
+            && self.focusable_order.contains(&node)
+        {
+            self.set_focused_node(Some(node));
+            self.accessibility.focus_trap_entry = None;
+        }
         if let Some((at, identity, live, remembered)) = trapped_focus
             && self.accessibility.focus_trap_active
+            && retained_focus.is_none()
+            && !trap_entry_provisional
         {
             // The same answer has the keyboard after the rebuild. When the
             // tree no longer reports that answer, a control that still answers
@@ -2368,28 +2508,23 @@ impl App {
             self.layout.request_rebuild();
             self.bindings.clear();
             self.layout.node_map.clear();
-        } else {
-            if self.focused_node.is_none() {
-                // A retained control can keep focus while a modal temporarily
-                // owns input. Rebuilding invalidates its NodeId, not that live
-                // focus. Recover only the unique current focused path inside
-                // the current allowed order; never transfer focus or state to
-                // a replacement.
-                // SAFETY: sync retained this exact exclusively owned topology.
-                self.focused_node = unsafe {
-                    crate::widget::layout::CompositionFocus::current(
-                        &self.layout.node_map,
-                        &self.bindings,
-                        Some(&self.focusable_order),
-                    )
-                };
-            }
-            requested = self.apply_focus_request();
-            crate::app_core::KeyCore::hand_owed_keyboard(self);
+        } else if self.focused_node.is_none() {
+            // A retained control can keep focus while a modal temporarily
+            // owns input. Rebuilding invalidates its NodeId, not that live
+            // focus. Recover only the unique current focused path inside
+            // the current allowed order; never transfer focus or state to
+            // a replacement.
+            // SAFETY: sync retained this exact exclusively owned topology.
+            self.focused_node = unsafe {
+                crate::widget::layout::CompositionFocus::current(
+                    &self.layout.node_map,
+                    &self.bindings,
+                    Some(&self.focusable_order),
+                )
+            };
         }
         self.invalidate_widget_resource_cache();
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
-        requested
     }
 
     /// The narrowest the window's layout works at, in logical pixels, as of the last build of its tree

@@ -803,7 +803,10 @@ impl TrackTimeline {
         let Some(span) = self.tracks.get(track).and_then(|t| t.spans.get(index)) else {
             return;
         };
-        #[allow(clippy::cast_possible_wrap, reason = "a track holds far fewer spans than i64::MAX")]
+        #[allow(
+            clippy::cast_possible_wrap,
+            reason = "a track holds far fewer spans than i64::MAX"
+        )]
         span.pressed.fire(Some(Value::Int(index as i64)));
     }
 

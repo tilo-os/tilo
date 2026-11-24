@@ -10,7 +10,7 @@
 //! [`super::headless`], so a release app carries none of this module.
 
 use ui_core::application::{ApplicationOwner, ComponentRunnerInputs};
-use ui_core::headless::FrameHarness;
+use ui_core::headless::Driver;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{MemberId, Role};
 
@@ -50,36 +50,83 @@ pub const SIDEBAR_BUTTON_WINDOWS: [(u32, u32); 2] = [(1280, 800), (400, 800)];
 /// Open the app with `open` in each of [`SIDEBAR_BUTTON_WINDOWS`], shown in
 /// the desktop's window bar, and click the bar's sidebar button there: every
 /// click flips the sidebar, on the bar, in the window's shell and on screen
-/// ([`FrameHarness::check_window_sidebar_button`]). A narrow window keeps the
-/// button on the sidebar's own screen, behind the screen the person is on,
-/// and the check takes the bar's way back to it.
+/// ([`Driver::window_sidebar_shown`]). A narrow window keeps the button on
+/// the sidebar's own screen, behind the screen the person is on, and the
+/// check takes the bar's way back to it.
 pub fn check_window_sidebar_button<A: ResourceApp, H: Host>(
     mut open: impl FnMut() -> Result<HeadlessApp<A, H>, LaunchError>,
 ) -> Result<(), String> {
     for viewport in SIDEBAR_BUTTON_WINDOWS {
         let mut app = open().map_err(|error| format!("{viewport:?}: the app opens: {error}"))?;
-        let harness = app.harness();
-        harness
+        let driver = app.harness();
+        driver
             .resize(viewport)
             .map_err(|error| format!("{viewport:?}: {error}"))?;
-        harness.present_in_window_bar();
-        harness
-            .check_window_sidebar_button()
-            .map_err(|error| format!("{viewport:?}: {error}"))?;
+        driver.present_in_window_bar();
+        check_sidebar_flips(driver).map_err(|error| format!("{viewport:?}: {error}"))?;
     }
     Ok(())
 }
 
+/// Click the window's sidebar button three times, taking the bar's way back
+/// to it where the window put it aside, and check that each click flipped
+/// the sidebar with the bar, the shell and the frame agreeing every time.
+fn check_sidebar_flips(driver: &mut Driver) -> Result<(), String> {
+    // Each reading is of the window at rest, as a person sees it once the sidebar's motion
+    // landed.
+    let rest =
+        |driver: &mut Driver| driver.settle_for_capture(ui_core::time::Duration::from_secs(2));
+    let mut expected = None;
+    for press in 0..=3 {
+        rest(driver);
+        if !driver.shows_window_sidebar_button() && takes_the_bars_way_back(driver) {
+            rest(driver);
+        }
+        // The flip moves: read it once the window has run the frames that settle it, when bar,
+        // shell and frame agree.
+        driver.idle();
+        let shown = driver.window_sidebar_shown()?;
+        let shown = shown.agreed().ok_or_else(|| {
+            format!("after {press} clicks the bar, shell and frame disagree: {shown:?}")
+        })?;
+        if expected.is_some_and(|expected| expected != shown) {
+            return Err(format!(
+                "click {press} left the sidebar {}",
+                if shown { "shown" } else { "hidden" }
+            ));
+        }
+        expected = Some(!shown);
+        if press == 3 {
+            break;
+        }
+        driver.click_window_sidebar_button()?;
+    }
+    Ok(())
+}
+
+/// Press the window bar's way back, where it shows one: what leads a narrow
+/// window back to the screen that holds its sidebar button.
+fn takes_the_bars_way_back(driver: &mut Driver) -> bool {
+    let back = driver
+        .window_toolbar()
+        .and_then(|toolbar| toolbar.navigation)
+        .is_some_and(|navigation| navigation.back);
+    if back {
+        driver.press_window_part(ui_core::window_toolbar::ToolbarEvent::Back);
+    }
+    back
+}
+
 /// Run `visit` on the custom surface of type `S` that `A`'s view hosts in
-/// `harness` (what [`ViewCx::surface`](super::ViewCx::surface) mounted), then
+/// `driver` (what [`ViewCx::surface`](super::ViewCx::surface) mounted), then
 /// the frames that follow; `None` when the view hosts no such surface at its
 /// root. For a test that drives a component mounted another way than
 /// [`HeadlessApp`] (two windows over one record).
 pub fn with_surface<A: ResourceApp, S: ui_core::widget::Widget + 'static, T>(
-    harness: &mut FrameHarness,
+    driver: &mut Driver,
     visit: impl FnOnce(&mut S) -> T,
 ) -> Option<T> {
-    harness
+    driver
         .with_widget_mut(|root: &mut ResourceRoot| surface_of::<A, S>(root).map(visit))
         .flatten()
 }
@@ -187,7 +234,7 @@ fn live_window<A: ResourceApp>(
     ui_core::App::from_component(component, inputs)
 }
 
-/// [`live_window`] as the harness a test reads what a window publishes and
+/// [`live_window`] as the parts a test reads what a window publishes and
 /// shows through: the component, the content store it was lent and what the
 /// host hands a window's runtime.
 fn live_window_component<A: ResourceApp>(
@@ -217,15 +264,15 @@ fn live_window_component<A: ResourceApp>(
 
 /// The live window `A` opens on a host that keeps its records in `workspace`,
 /// mounted as a real one is: what it shows and publishes, read through
-/// [`FrameHarness`], and the content store the host lent it.
+/// a [`Driver`], and the content store the host lent it.
 pub fn live_window_in_workspace<A: ResourceApp>(
     workspace: &str,
-) -> Result<(FrameHarness, tilo_content::ContentStore), LaunchError> {
+) -> Result<(Driver, tilo_content::ContentStore), LaunchError> {
     let profile = Kept::fresh()?;
     let mut host = private_host::<A>(&profile, workspace)?;
     let (component, content, inputs) = live_window_component::<A>(&mut host, profile.path())?;
-    let harness = FrameHarness::from_component(component, (1024, 768), inputs)?;
-    Ok((harness, content))
+    let driver = Driver::from_component(component, (1024, 768), inputs)?;
+    Ok((driver, content))
 }
 
 /// [`drive_live_window`] with the window shown in a region of a host's

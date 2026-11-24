@@ -1232,7 +1232,7 @@ mod tests {
             .size(AvatarSize::Portrait);
         let input = TextInput::local().with_initial_value("Ada");
         let root = Row::new().push(Box::new(avatar)).push(Box::new(input));
-        let mut harness = crate::headless::FrameHarness::new_with_theme(
+        let mut harness = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             Box::new(root),
             (640, 320),

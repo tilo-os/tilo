@@ -377,7 +377,7 @@ impl ResourceRoot {
         presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Option<Vec<SharedResource>> {
-        if presence.is_some() || self.typed.unreadable().is_some() {
+        if presence.is_some() || self.typed.unreadable().is_some() || self.needs_whole_tree() {
             return None;
         }
         let surface = self.has_surface();
@@ -423,6 +423,17 @@ impl ResourceRoot {
         resources.extend(root.2);
         resources.append(&mut extras);
         Some(resources)
+    }
+
+    /// Whether the publication carries what only the whole tree builds
+    /// ([`Self::decorate_publication`]): what the views say of their rows and
+    /// items, the nested editors they opened, and the records they asked for
+    /// and could not open. The shared tree builds none of them, so it would
+    /// publish the rows without their statuses and leave the rest out.
+    fn needs_whole_tree(&self) -> bool {
+        let mut rows = false;
+        self.surfaces(&mut |surface| rows = rows || surface.says_of_rows());
+        rows || self.dispatch.has_nested() || !self.storage.unavailable_resources().is_empty()
     }
 
     /// `document`, the document-owned children, as the publication carries
@@ -519,6 +530,11 @@ impl ResourceRoot {
         let mut children = document.iter().cloned().collect::<Vec<_>>();
         let mut chains = Vec::new();
         for beside in self.storage.resource_resources_shared() {
+            // The record the window holds, kept for the workspace too, is the window's own
+            // resource: published once, as it.
+            if beside.id() == self.dispatch.resource_id() {
+                continue;
+            }
             if chain_of_resource_id(beside.id()).is_some() {
                 chains.push(opened(beside));
             } else {

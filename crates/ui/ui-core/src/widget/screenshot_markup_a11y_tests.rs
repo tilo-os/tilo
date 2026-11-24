@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use super::*;
 use crate::a11y::Action;
-use crate::headless::FrameHarness;
+use crate::app::driver::Driver;
 use crate::state::State;
 use crate::theme::Theme;
 
-fn harness(width: u32) -> FrameHarness {
+fn harness(width: u32) -> Driver {
     let rgba: Arc<[u8]> = Arc::from(vec![20_u8; 64 * 64 * 4]);
-    let mut h = FrameHarness::for_root(
+    let mut h = Driver::for_root(
         State::new(),
         ScreenshotMarkup::new(rgba, 64, 64),
         (width, 700),
@@ -23,7 +23,7 @@ fn harness(width: u32) -> FrameHarness {
     h
 }
 
-fn activate(h: &mut FrameHarness, name: &str) {
+fn activate(h: &mut Driver, name: &str) {
     let node = h
         .a11y_node_named(name)
         .unwrap_or_else(|| panic!("{name} is not in the accessibility tree"));
@@ -31,20 +31,20 @@ fn activate(h: &mut FrameHarness, name: &str) {
         .unwrap_or_else(|error| panic!("activating {name} failed: {error}"));
 }
 
-fn commands(h: &mut FrameHarness) -> Vec<ScreenshotMarkupCommand> {
+fn commands(h: &mut Driver) -> Vec<ScreenshotMarkupCommand> {
     let taken = h.root_mut::<ScreenshotMarkup>().take_commands();
     h.relayout_at((1200, 700)).expect("layout");
     taken
 }
 
-fn focused_label(h: &FrameHarness) -> Option<String> {
+fn focused_label(h: &Driver) -> Option<String> {
     h.a11y_focus()
         .and_then(|(_, node)| node.label().map(str::to_owned))
 }
 
 /// Tab until the keyboard is on `name`, failing rather than looping when
 /// Tab never reaches it.
-fn tab_to(h: &mut FrameHarness, name: &str) {
+fn tab_to(h: &mut Driver, name: &str) {
     for _ in 0..40 {
         if focused_label(h).as_deref() == Some(name) {
             return;

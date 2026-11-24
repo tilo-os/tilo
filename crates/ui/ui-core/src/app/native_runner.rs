@@ -11,7 +11,7 @@ mod ime;
 mod input_backlog;
 #[cfg(target_os = "linux")]
 mod linux_header;
-mod part_bar;
+use super::part_bar;
 mod private_text_input;
 mod process_windows;
 #[cfg(any(windows, target_os = "linux"))]
@@ -2423,7 +2423,7 @@ impl AppHandler {
         // The app's own row of parts, then the frame around it: where the row
         // is the window's bar, the header draws no second one. Only the Linux
         // header asks: elsewhere the host draws the frame.
-        let _shown = self.part_bar.refresh(&mut self.app, window);
+        let _shown = self.part_bar.refresh(&mut self.app, &**window);
         #[cfg(target_os = "linux")]
         self.decorations.refresh(&mut self.app, window, _shown);
         drop(chrome);
@@ -4996,7 +4996,7 @@ impl AppHandler {
                 return;
             }
         }
-        let parts_took = self.part_bar.route(&mut self.app, window, &event);
+        let parts_took = self.part_bar.route(&mut self.app, &**window, &event);
         drop(chrome);
         if self.part_bar.take_close() {
             self.close_primary_window(window);
@@ -5068,13 +5068,10 @@ impl AppHandler {
         if self.handle_other_window_event(window, escape) || !pressed {
             return;
         }
-        let app = &mut self.app;
-        if app.root_widget.on_nav_gesture(
-            crate::gesture::NavDirection::Back,
-            &app.state.doc,
-            &app.state.root,
-        ) {
-            app.needs_sync = true;
+        if self
+            .app
+            .surface_nav_gesture(crate::gesture::NavDirection::Back)
+        {
             window.request_redraw();
             return;
         }

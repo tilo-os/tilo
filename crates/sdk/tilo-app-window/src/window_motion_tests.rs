@@ -44,14 +44,13 @@ fn send(app: &mut local::End, batch: &[ToUi]) {
 
 /// A window showing `batch`, laid out and drawn once, the person's pointer having just moved: the
 /// first layout never moves, whoever made it.
-fn shown(batch: &[ToUi]) -> (local::End, ui::headless::FrameHarness) {
+fn shown(batch: &[ToUi]) -> (local::End, ui::headless::Driver) {
     let (mut app, end) = local::pair();
     let mut window = AppWindow::new(Box::new(end), Vec::new());
     send(&mut app, batch);
     ui::motion::note_source(MotionSource::Pointer);
     window.receive();
-    let mut harness =
-        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (600, 800));
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (600, 800));
     harness.relayout();
     (app, harness)
 }
@@ -60,7 +59,7 @@ fn shown(batch: &[ToUi]) -> (local::End, ui::headless::FrameHarness) {
 /// lays the change out starts it at.
 fn change(
     app: &mut local::End,
-    harness: &mut ui::headless::FrameHarness,
+    harness: &mut ui::headless::Driver,
     source: MotionSource,
     patches: Vec<Patch>,
 ) -> Instant {
@@ -84,7 +83,7 @@ fn change(
 }
 
 /// The list's parts as drawn at `at`, in order, then those fading out.
-fn drawn(harness: &ui::headless::FrameHarness, at: Instant) -> Vec<DrawnPart> {
+fn drawn(harness: &ui::headless::Driver, at: Instant) -> Vec<DrawnPart> {
     ui::widget::find_test_id(harness.root_widget(), "list")
         .and_then(|list| list.as_any())
         .and_then(|any| any.downcast_ref::<Arranged<FlexLayout>>())

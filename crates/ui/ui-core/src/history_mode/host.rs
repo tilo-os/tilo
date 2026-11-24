@@ -17,7 +17,6 @@ use std::{
     rc::Rc,
 };
 use taffy::{Dimension, FlexDirection, NodeId, Size, Style, TaffyTree};
-#[cfg(feature = "native")]
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -116,8 +115,9 @@ pub struct HistoryHost {
     /// Over the preview while a change is selected: it is an earlier version, read-only, with the way
     /// back to now.
     banner: Row,
-    timeline: ActivityTimeline,
-    unavailable: crate::widget::EmptyState,
+    /// Boxed, as the empty state below is: each is kilobytes the host built by value on the stack.
+    timeline: Box<ActivityTimeline>,
+    unavailable: Box<crate::widget::EmptyState>,
     unavailable_node: Option<NodeId>,
     open_requested: Rc<Cell<bool>>,
     requested_entry: Option<crate::HistoryEntryId>,
@@ -196,9 +196,7 @@ pub struct HistoryHost {
     motion: crate::tokens::EffectiveMotion,
     /// What the frame being drawn painted ([`Self::draw_compared`]), and what the last presented frame
     /// did ([`Self::paint_presented`]).
-    #[cfg(feature = "native")]
     painting: Option<Scene>,
-    #[cfg(feature = "native")]
     painted: Option<Scene>,
 }
 impl HistoryHost {
@@ -268,7 +266,6 @@ impl HistoryHost {
     }
 
     /// The changes History lists, in causal order, whether or not History is open.
-    #[cfg(any(feature = "native", test))]
     pub(crate) fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
         if self.open {
             return self.timeline.entries().to_vec();
@@ -383,7 +380,7 @@ impl HistoryHost {
             toolbar,
             footer: Column::new().with_no_padding().with_intrinsic_height(),
             banner: Row::new(),
-            unavailable,
+            unavailable: Box::new(unavailable),
             unavailable_node: None,
             timeline: {
                 let opens = Rc::clone(&commands);
@@ -394,7 +391,7 @@ impl HistoryHost {
                         super::note_news();
                     });
                 timeline.set_filters_people(true);
-                timeline
+                Box::new(timeline)
             },
             open_requested: request,
             requested_entry: None,
@@ -449,9 +446,7 @@ impl HistoryHost {
             control_domain: None,
             control_lease: None,
             invalid_owner: false,
-            #[cfg(feature = "native")]
             painting: None,
-            #[cfg(feature = "native")]
             painted: None,
         };
         host.rebuild_toolbar();
@@ -464,7 +459,6 @@ impl HistoryHost {
     /// Draw into a scene of its own, append that to `scene`, and say whether it differs from what the
     /// last presented frame painted: a window that shows the live app under an unchanged History
     /// toolbar repaints only what the app's widgets damage.
-    #[cfg(feature = "native")]
     pub(crate) fn draw_compared(
         &mut self,
         scene: &mut Scene,
@@ -492,7 +486,6 @@ impl HistoryHost {
     }
 
     /// The frame drawn last was presented: what the next frame's paint is compared with.
-    #[cfg(feature = "native")]
     pub(crate) fn paint_presented(&mut self) {
         if let Some(painting) = self.painting.take() {
             self.painted = Some(painting);
@@ -678,7 +671,7 @@ impl HistoryHost {
         self.open_requested.set(false);
         self.open = true;
         self.returning_live = false;
-        self.unavailable =
+        *self.unavailable =
             unavailable_state(&HistoryRegistrationError::UnsupportedOwner.to_string());
         self.toolbar_dirty = true;
         true
@@ -702,6 +695,11 @@ impl HistoryHost {
     }
     pub(crate) fn captures_input(&self) -> bool {
         self.open || self.open_requested.get() || !self.selected.is_empty()
+    }
+    /// History's entry is requested and not yet presented: the frame that presents it seals the
+    /// controls components queued before it.
+    pub(crate) fn entry_pending(&self) -> bool {
+        self.open_requested.get() && !self.open
     }
     #[allow(
         clippy::single_match_else,
@@ -919,15 +917,6 @@ impl HistoryHost {
         // emissions into these queues retain their ordinary dispatch semantics.
         self.suspended_control_queues.clear();
     }
-    /// Closed, with nothing in flight: no input captured or asked for, no focus saved or being
-    /// returned, no control return and no review requested.
-    pub(crate) fn at_rest(&self) -> bool {
-        !self.captures_input()
-            && self.saved_focus.is_none()
-            && !self.returning_live
-            && self.control_lease.is_none()
-            && !self.has_review_request()
-    }
     pub(crate) fn has_settled_control_return(&self) -> bool {
         self.control_lease.is_some() && !self.captures_input() && !self.returning_live
     }
@@ -1110,8 +1099,8 @@ impl HistoryHost {
         clear_focus(&mut self.toolbar);
         clear_focus(&mut self.footer);
         clear_focus(&mut self.banner);
-        clear_focus(&mut self.timeline);
-        clear_focus(&mut self.unavailable);
+        clear_focus(&mut *self.timeline);
+        clear_focus(&mut *self.unavailable);
         clear_focus(&mut self.before);
         clear_focus(&mut self.after);
         if let Some(panel) = &mut self.review {
@@ -1326,20 +1315,6 @@ impl HistoryHost {
                 super::sorted_heads(heads.clone()) != controller.observed_live_heads
             }) || self.listing.moved(&heads, self.source().parts().as_deref()))
     }
-    /// Whether every document this surface answers for is a hosted component's (or the host's own),
-    /// whose member access a quiet frame's observation follows: its record's frontier, and whether it can be
-    /// read at all.
-    pub(crate) fn owners_followed_by_frame_observation(&self) -> bool {
-        let followed =
-            |owner: &super::HistoryOwner| matches!(owner.0, super::owner::OwnerKind::Component(_));
-        self.enclosing_owner.as_ref().is_none_or(followed)
-            && self.registration.sources.iter().all(|source| match source {
-                HistorySourceRegistration::OwnedDocument { owner, .. } => followed(owner),
-                HistorySourceRegistration::FolderFiles { .. }
-                | HistorySourceRegistration::HostDocument { .. }
-                | HistorySourceRegistration::Unversioned { .. } => true,
-            })
-    }
     pub(crate) fn review_is_open(&self) -> bool {
         self.review.is_some()
     }
@@ -1518,7 +1493,7 @@ impl HistoryHost {
                                 }
                             }
                             HistorySourceRegistration::Unversioned { reason, .. } => {
-                                self.unavailable = unavailable_state(reason);
+                                *self.unavailable = unavailable_state(reason);
                             }
                             HistorySourceRegistration::FolderFiles { .. } => {
                                 self.close_folder_presentation();

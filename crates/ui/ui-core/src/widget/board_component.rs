@@ -441,12 +441,12 @@ mod tests {
         }
     }
 
-    fn harness(queue: &Intents<Fired>) -> crate::headless::FrameHarness {
+    fn harness(queue: &Intents<Fired>) -> crate::app::driver::Driver {
         laid_out(props(queue))
     }
 
-    fn laid_out(props: BoardProps) -> crate::headless::FrameHarness {
-        crate::headless::FrameHarness::for_root(
+    fn laid_out(props: BoardProps) -> crate::app::driver::Driver {
+        crate::app::driver::Driver::for_root(
             crate::State::new(),
             Board::from_props("board", props),
             (900, 600),
@@ -588,7 +588,7 @@ mod tests {
                 (card.y0 - band.y0).abs() < 0.5,
                 "no band stands over the cards: {card:?} in a list from {band:?}"
             );
-            let list = crate::headless::FrameHarness::for_root(
+            let list = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 crate::widget::Column::new()
                     .with_no_padding()
@@ -660,7 +660,7 @@ mod tests {
                 ),
                 |_| Vec::new(),
             ))];
-            let host = crate::headless::FrameHarness::for_root(
+            let host = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 Board::from_props("board", props),
                 (900, 600),
@@ -720,7 +720,7 @@ mod tests {
                 .with_no_padding()
                 .with_width(656.0)
                 .with_child(Box::new(pane));
-            let mut host = crate::headless::FrameHarness::for_root(
+            let mut host = crate::app::driver::Driver::for_root(
                 crate::State::new(),
                 window,
                 (656, 600),
@@ -807,7 +807,7 @@ mod tests {
                 card.drop = Event::None;
             }
         }
-        let mut host = crate::headless::FrameHarness::for_root(
+        let mut host = crate::app::driver::Driver::for_root(
             crate::State::new(),
             Board::from_props("board", props),
             (900, 600),

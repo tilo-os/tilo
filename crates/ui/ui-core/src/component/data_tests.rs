@@ -10,7 +10,7 @@
 
 use super::testing::*;
 use super::*;
-use crate::headless::FrameHarness;
+use crate::headless::Driver;
 use crate::widget::Widget;
 
 fn column(header: &str) -> Node {
@@ -182,14 +182,14 @@ tilo_test_env::scenario! {
             }
             crate::widget::CardGridProps::from_source(&mut grid).expect("the grid reads")
         };
-        let cards = |host: &FrameHarness| -> Vec<usize> {
+        let cards = |host: &Driver| -> Vec<usize> {
             let grid = host.root::<crate::widget::DescribedCardGrid>().grid();
             (0..grid.len())
                 .filter_map(|index| grid.card(index))
                 .map(|card| std::ptr::from_ref::<dyn Widget>(card.as_ref()).cast::<()>() as usize)
                 .collect()
         };
-        let names = |host: &FrameHarness| -> Vec<String> {
+        let names = |host: &Driver| -> Vec<String> {
             let grid = host.root::<crate::widget::DescribedCardGrid>().grid();
             let mut out = Vec::new();
             fn walk(w: &dyn Widget, out: &mut Vec<String>) {

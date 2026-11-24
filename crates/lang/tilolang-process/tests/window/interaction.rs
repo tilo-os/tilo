@@ -26,7 +26,7 @@ fn settle(app: &mut TestApp<TlApp>) {
 }
 
 /// The rects of the widgets named `widget`, in tree order.
-pub(crate) fn rects_of(window: &ui::headless::FrameHarness, widget: &str) -> Vec<[f64; 4]> {
+pub(crate) fn rects_of(window: &ui::headless::Driver, widget: &str) -> Vec<[f64; 4]> {
     let snapshot = window.inspection();
     let all = snapshot.root.nodes();
     all.into_iter()
@@ -158,14 +158,14 @@ fn a_swipe_past_the_threshold_runs_the_action_in_the_app() {
 }
 
 /// The composer's centre.
-pub(crate) fn composer(window: &ui::headless::FrameHarness) -> (f64, f64) {
+pub(crate) fn composer(window: &ui::headless::Driver) -> (f64, f64) {
     let inputs = rects_of(window, "RichInput");
     center(*inputs.last().expect("the transcript has its composer"))
 }
 
 /// The composer's send button: the last button on the composer's line, at its end past the field
 /// (a composer may stand one before the field too, such as the way to add files).
-pub(crate) fn send_button(window: &ui::headless::FrameHarness) -> (f64, f64) {
+pub(crate) fn send_button(window: &ui::headless::Driver) -> (f64, f64) {
     let (_, y) = composer(window);
     let buttons = rects_of(window, "Button");
     let line = buttons
