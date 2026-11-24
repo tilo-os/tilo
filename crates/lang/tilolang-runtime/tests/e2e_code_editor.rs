@@ -14,7 +14,9 @@ mod cases {
     use std::sync::{Arc, Mutex};
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::host_work::{EngineHost, HeldHost, JobHandlers, Push, held_slot};
-    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{
+        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
+    };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/code-editor/app.tl");
 
