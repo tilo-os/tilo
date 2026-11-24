@@ -52,7 +52,7 @@ use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument,
-    InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, pending, model_providers,
+    InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget, model_providers, pending,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ActionOutput,
@@ -1025,7 +1025,7 @@ impl Account {
             Op::AskModel => self.ask_model(&key, id, args).await,
             Op::ListWebhooks | Op::CreateWebhook | Op::DeleteWebhook => match &self.0.reach {
                 Reach::Forwarded(connection) => forwarded_webhooks(connection, op, args).await,
-                _ => failed(
+                Reach::Here(..) => failed(
                     "unavailable",
                     "a webhook is kept by the device that keeps its workspace",
                     "ask it on the device that keeps the workspace",
@@ -1082,9 +1082,13 @@ impl Account {
         };
         match op {
             Op::EnterWorkspace | Op::LeaveWorkspace | Op::JoinWorkspace | Op::ImportWorkspaces => {
-                unreachable!("answer_here leaves these to the desktop's own answers")
+                failed(
+                    "unavailable",
+                    "the desktop that keeps the workspace answers this",
+                    "ask it on that device",
+                )
             }
-            Op::ListWorkspaces => self.here_workspaces(host, &key, grant, args),
+            Op::ListWorkspaces => Self::here_workspaces(host, &key, grant, args),
             Op::CreateWorkspace => {
                 let Some(name) = field(args, "name") else {
                     return failed(
@@ -1178,7 +1182,7 @@ impl Account {
                 "a key is asked for from the device that answers for the account",
                 "create the key with account/keys#mint, or make one in Tilo",
             ),
-            Op::MintKey => self.here_mint(here, host, &key, grant, &server, args).await,
+            Op::MintKey => self.here_mint(here, host, &key, grant, &server, args),
             Op::RevokeKey => self.here_revoke(host, &key, grant, &server, args).await,
             Op::Usage => failed(
                 "unavailable",
@@ -1248,7 +1252,6 @@ impl Account {
 
     /// The workspaces `key` reaches here, ones labelled with every one of `labels` `args` names.
     fn here_workspaces(
-        &self,
         host: &dyn crate::session::AccountHere,
         key: &GrantKey,
         grant: &Grant,
@@ -1268,7 +1271,7 @@ impl Account {
     }
 
     /// Mint a key reaching one workspace, for an agent to act there, from the key that asks.
-    async fn here_mint(
+    fn here_mint(
         &self,
         here: &dyn crate::session::Here,
         host: &dyn crate::session::AccountHere,
