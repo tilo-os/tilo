@@ -250,6 +250,7 @@ pub fn row_surface<R: crate::words::RowType, E: crate::Effect>() -> Surface {
         fields: Vec::new(),
         types: types.into_types(),
         shows: Vec::new(),
+        live: None,
     }
 }
 
