@@ -24,9 +24,11 @@ mod cases {
         "\n",
         include_str!("../../../../apps/tl/chip-design/scenarios.tl")
     );
-    const REPORT: &str = include_str!("../../../engines/tilo-chip-design-engine/fixtures/storage-report.json");
-    const CHECKPOINT: &str =
-        include_str!("../../../engines/tilo-chip-design-engine/fixtures/checkpoint-verification.json");
+    const REPORT: &str =
+        include_str!("../../../engines/tilo-chip-design-engine/fixtures/storage-report.json");
+    const CHECKPOINT: &str = include_str!(
+        "../../../engines/tilo-chip-design-engine/fixtures/checkpoint-verification.json"
+    );
     const MAPPING: &str =
         include_str!("../../../engines/tilo-chip-design-engine/fixtures/research-mapping.json");
     const SUPERBLOCK: &str =
@@ -108,7 +110,9 @@ mod cases {
 
         fn is_case(&self, r: &ResourceRef, field: &str, case: &str) -> bool {
             match self.rt.read(r, field).unwrap() {
-                Value::Enum(value) => self.app.compiled.ids.get(case) == Some(value.variant.as_str()),
+                Value::Enum(value) => {
+                    self.app.compiled.ids.get(case) == Some(value.variant.as_str())
+                }
                 other => panic!("{field} reads {other:?}"),
             }
         }
@@ -177,7 +181,15 @@ mod cases {
             window
         }
 
-        fn add_operator(&self, node: &str, kind: &str, shape: Vec<i64>, width: i64, x: i64, y: i64) {
+        fn add_operator(
+            &self,
+            node: &str,
+            kind: &str,
+            shape: Vec<i64>,
+            width: i64,
+            x: i64,
+            y: i64,
+        ) {
             self.done(
                 "add_operator_at",
                 vec![
@@ -271,7 +283,11 @@ mod cases {
         );
         assert_eq!(c.number(r, "packed_weight_bytes"), 512);
         assert_eq!(c.text(r, "config_sha256").len(), 64);
-        assert!(c.texts(r, "not_estimated").iter().any(|v| v == "coding_quality"));
+        assert!(
+            c.texts(r, "not_estimated")
+                .iter()
+                .any(|v| v == "coding_quality")
+        );
         assert_eq!(c.text(&c.root, "selected"), "report");
         assert_eq!(c.text(&c.root, "subject"), c.text(r, "digest"));
 
@@ -280,7 +296,10 @@ mod cases {
         assert!(holds(window.tree(), "Packed weight bytes"));
         assert!(holds(window.tree(), "Verification scope"));
 
-        c.done("remove_report", vec![Value::resource(&c.root), Value::resource(r)]);
+        c.done(
+            "remove_report",
+            vec![Value::resource(&c.root), Value::resource(r)],
+        );
         assert!(c.records(&c.root, "reports").is_empty());
         assert_eq!(c.text(&c.root, "selected"), "all");
     }
@@ -318,12 +337,19 @@ mod cases {
         assert!(c.is_case(r, "status", "RunResult.passed"));
         let checks = c.records(r, "checks");
         assert_eq!(checks.len(), 3);
-        assert!(checks.iter().any(|check| c.text(check, "name") == "rtl_vs_integer_oracle"));
+        assert!(
+            checks
+                .iter()
+                .any(|check| c.text(check, "name") == "rtl_vs_integer_oracle")
+        );
         assert_eq!(c.records(r, "tools").len(), 2);
         assert!(!c.text(r, "source").contains("/private/device"));
         let window = c.window();
         assert!(holds(window.tree(), "Reported passed"));
-        c.done("remove_verification", vec![Value::resource(&c.root), Value::resource(r)]);
+        c.done(
+            "remove_verification",
+            vec![Value::resource(&c.root), Value::resource(r)],
+        );
         assert!(c.records(&c.root, "verifications").is_empty());
     }
 
@@ -361,7 +387,11 @@ mod cases {
         let mut forged: serde_json::Value = serde_json::from_str(MAPPING).unwrap();
         forged["manufacturable"] = serde_json::json!(true);
         c.receipt(&forged.to_string());
-        assert_eq!(c.records(&c.root, "verifications").len(), 1, "the forged claim is refused");
+        assert_eq!(
+            c.records(&c.root, "verifications").len(),
+            1,
+            "the forged claim is refused"
+        );
     }
 
     #[test]
@@ -503,12 +533,19 @@ mod cases {
                 Value::text("value"),
             ],
         );
-        assert_eq!(c.text(&c.root, "failure"), "", "choosing an output is refused");
+        assert_eq!(
+            c.text(&c.root, "failure"),
+            "",
+            "choosing an output is refused"
+        );
         assert_eq!(c.text(&c.root, "output_node"), "x");
         assert_eq!(c.text(&c.root, "output_port"), "value");
         c.done("show_graph", vec![Value::resource(&c.root)]);
         let window = c.window();
-        assert!(holds(window.tree(), "Connecting from the Value output of Input"));
+        assert!(holds(
+            window.tree(),
+            "Connecting from the Value output of Input"
+        ));
     }
 
     #[test]
@@ -517,9 +554,15 @@ mod cases {
         c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
         c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
         c.done("show_graph", vec![Value::resource(&c.root)]);
-        c.done("zoom_graph", vec![Value::resource(&c.root), Value::text("in")]);
+        c.done(
+            "zoom_graph",
+            vec![Value::resource(&c.root), Value::text("in")],
+        );
         assert_eq!(c.number(&c.root, "zoom"), 125);
-        c.done("zoom_graph", vec![Value::resource(&c.root), Value::text("fit")]);
+        c.done(
+            "zoom_graph",
+            vec![Value::resource(&c.root), Value::text("fit")],
+        );
         assert_eq!(c.number(&c.root, "zoom"), 100);
 
         // The first shape of the canvas is the first operator's box.

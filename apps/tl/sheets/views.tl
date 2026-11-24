@@ -179,6 +179,12 @@ template view format_menu(w: Workbook, s: Sheet, area: State<Text>) {
         ui.MenuItem("Sum this selection", icon: .plus) {
             on choose: sum_selection(w, s, area)
         }
+        ui.MenuItem("Fill down", icon: .arrow_down) {
+            on choose: fill_down(w, s, area)
+        }
+        ui.MenuItem("Fill right", icon: .arrow_right) {
+            on choose: fill_right(w, s, area)
+        }
         ui.MenuSeparator
         ui.MenuItem("Insert rows above", icon: .list_plus) {
             on choose: insert_rows(w, s, row_of(range_start(area)))
@@ -462,6 +468,8 @@ template view comments_panel(w: Workbook, s: Sheet, area: State<Text>) {
 template view comment_card(w: Workbook, c: Comment, area: State<Text>) {
     state replying: Bool = false
     state reply_text: RichText = RichText("")
+    state editing: Bool = false
+    state draft: RichText = c.text
     ui.Card {
         row(gap: .tight, align: .center) {
             ui.Button(c.range, icon: .locate_fixed, size: .small) {
@@ -475,9 +483,21 @@ template view comment_card(w: Workbook, c: Comment, area: State<Text>) {
                 ui.Badge("Resolved", tone: .success)
             }
         }
-        rich_text(c.text)
+        if editing {
+            row(gap: .tight, align: .center) {
+                ui.RichInput(bind: draft, placeholder: "Edit the comment")
+                ui.Button("Save", icon: .check, size: .small) {
+                    on press: edit_comment(c, draft).then(set(editing, false))
+                }
+                ui.Button("Cancel", icon: .x, size: .small) {
+                    on press: set(editing, false)
+                }
+            }
+        } else {
+            rich_text(c.text)
+        }
         for r in c.replies {
-            reply_row(r)
+            reply_row(w, c, r)
         }
         if replying {
             ui.RichInput(bind: reply_text, placeholder: "Reply") {
@@ -538,6 +558,9 @@ template view charts_panel(w: Workbook, s: Sheet, area: State<Text>, book: Text)
 
 /// One chart, drawn from the cells it is about, with the way to change or remove it.
 template view chart_card(w: Workbook, s: Sheet, c: Chart, area: State<Text>, book: Text) {
+    state editing: Bool = false
+    state title: Text = c.title
+    state range: Text = c.range
     let cells = shown_cells(shown_sheet(values_of(book), s.name))
     let readings = readings_of(book, s.name, c.range)
     ui.Card(title: c.title) {
@@ -552,11 +575,48 @@ template view chart_card(w: Workbook, s: Sheet, c: Chart, area: State<Text>, boo
                 title: .some(c.title),
             )
         }
-        row(gap: .tight) {
+        if editing {
+            stack(gap: .tight) {
+                ui.TextInput(bind: title, placeholder: "Chart title")
+                ui.TextInput(bind: range, placeholder: "Cells, as A1:D9")
+                row(gap: .tight) {
+                    ui.Button("Save", icon: .check, size: .small) {
+                        on press: edit_chart(c, title: title, range: range)
+                            .then(set(editing, false))
+                    }
+                    ui.Button("Cancel", icon: .x, size: .small) {
+                        on press: set(title, c.title)
+                            .then(set(range, c.range))
+                            .then(set(editing, false))
+                    }
+                }
+            }
+        }
+        row(gap: .tight, wrap: true) {
             ui.Button("Show the cells", icon: .locate_fixed, size: .small) {
                 on press: set(area, c.range)
             }
             spacer
+            ui.MenuButton("More", icon: .ellipsis, icon_only: true) {
+                ui.MenuItem("Rename or move the chart…", icon: .pencil) {
+                    on choose: set(title, c.title)
+                        .then(set(range, c.range))
+                        .then(set(editing, true))
+                }
+                ui.MenuItem("Chart the chosen cells", icon: .locate_fixed) {
+                    on choose: edit_chart(c, range: area)
+                }
+                ui.MenuItem("Column chart", icon: .bar_chart, checked: c.kind == .column) {
+                    on choose: edit_chart(c, kind: .some(.column))
+                }
+                ui.MenuItem("Line chart", icon: .activity, checked: c.kind == .line) {
+                    on choose: edit_chart(c, kind: .some(.line))
+                }
+                ui.MenuSeparator
+                ui.MenuItem("Delete the chart", icon: .trash) {
+                    on choose: delete_chart(s, c)
+                }
+            }
             ui.Button("Delete", icon: .trash, icon_only: true, size: .small) {
                 on press: delete_chart(s, c)
             }

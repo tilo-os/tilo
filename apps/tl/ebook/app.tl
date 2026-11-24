@@ -80,6 +80,8 @@ type Progress {
     block: Int
     page: Int
     place: Float
+    /// Whether they finished the book: what the shelf leaves out when it hides finished books.
+    finished: Bool = false
     /// When they last read on.
     at: Date
 }
@@ -139,6 +141,10 @@ type Library {
     draft_folder: Text = ""
     /// The folders this device watches for books.
     folders: Collection<Watched>
+    /// How the shelf orders its books: `title`, `author` or `added`, the last added first.
+    sort_by: Text = "title"
+    /// Whether the shelf leaves out the books a person finished.
+    hide_finished: Bool = false
 }
 
 root library: Library
@@ -381,6 +387,57 @@ action set_justified(lib: Library, on: Bool) (did: "changed the paragraph fittin
     lib.justified = on
 }
 
+/// Orders the shelf by title, by author, or by the books added last.
+action set_shelf_sort(lib: Library, order: Text) (did: "sorted the shelf") {
+    require order == "title" or order == "author" or order == "added" "A shelf is sorted by title, author or added"
+    lib.sort_by = order
+}
+
+/// Leaves the books a person finished off the shelf, or shows them again.
+action set_hide_finished(lib: Library, hidden: Bool) (did: "changed whether finished books show") {
+    lib.hide_finished = hidden
+}
+
+/// The books the shelf shows `who`: the order it is sorted in, without the books they finished
+/// when it hides those.
+fn shelf(lib: Library, who: Actor) -> List<Book> {
+    let shown = lib.books.filter(b -> not lib.hide_finished or not finished_by(b, who))
+    if lib.sort_by == "author" {
+        shown.sort_by(.author)
+    } else if lib.sort_by == "added" { shown.sort_by(.added) } else { shown.sort_by(.title) }
+}
+
+/// Whether the person reading `b` finished it.
+fn finished_by(b: Book, who: Actor) -> Bool {
+    match my_progress(b, who) {
+        .some(held) => held.finished,
+        .none => false,
+    }
+}
+
+/// Marks `b` finished for the person reading it, or starts it again.
+action set_finished(b: Book, who: Actor, finished: Bool = true) uses time (
+    icon: .circle_check,
+    did: "changed whether a book is finished",
+) {
+    if let held = b.progress.find(p -> p.who == who) {
+        held.finished = finished
+        held.at = today
+    } else {
+        b.progress.insert(
+            Progress(
+                who: who,
+                chapter: 0,
+                block: 0,
+                page: 0,
+                place: 0.0,
+                finished: finished,
+                at: today,
+            ),
+        )
+    }
+}
+
 /// Steps to the next palette the reader ships with: its bar's quick switch.
 action cycle_scheme(lib: Library) (icon: .palette, did: "changed the page palette") {
     if lib.scheme == "Sepia" {
@@ -583,6 +640,18 @@ action change_color(b: Book, m: Mark, color: Text) (did: "recoloured a highlight
     }
 }
 
+/// Rewrites what a note or a comment says. Only its author may.
+action edit_mark_text(b: Book, m: Mark, text: RichText) (icon: .pencil, label: "Edit a note") {
+    require created(m)?.who == invoker "Only its author can edit a note"
+    require not text.is_empty() "Write a note first"
+    m.text = text
+}
+
+/// Copies a passage, so it can be pasted anywhere: what a selection's Copy does.
+action copy_passage(text: Text) uses clipboard (icon: .copy, label: "Copy the passage") {
+    if text.trim() != "" { clipboard.copy(text) }
+}
+
 /// Deletes a mark, and the comments on it.
 destructive action delete_mark(b: Book, m: Mark) (did: "deleted a mark") {
     for note in b.marks.filter(x -> x.on == m.id) {
@@ -777,10 +846,13 @@ action clear_found(lib: Library) (did: "cleared the books found online") {
 /// How far through a book the person is, as a sentence its card and row say.
 fn progress_of(b: Book, who: Actor) -> Text {
     let total = b.chapters.len()
-    if total == 0 {
-        return ""
+    if finished_by(b, who) {
+        "Finished"
+    } else if total == 0 {
+        ""
+    } else {
+        "Chapter {(my_chapter(b, who) + 1).clamp(1, total)} of {total}"
     }
-    "Chapter {(my_chapter(b, who) + 1).clamp(1, total)} of {total}"
 }
 
 /// Who wrote a book, as its card says it.
@@ -793,6 +865,23 @@ fn face_of(lib: Library) -> Text {
     lib.face
 }
 
+/// A highlight colour, by the name it is chosen by and the colour it paints.
+type Highlight {
+    name: Text
+    value: Text
+}
+
+/// The colours a passage is highlighted in.
+fn highlight_colours() -> List<Highlight> {
+    [
+        Highlight(name: "Yellow", value: "#f5d76e"),
+        Highlight(name: "Green", value: "#b7e1a1"),
+        Highlight(name: "Pink", value: "#f5b7d0"),
+        Highlight(name: "Blue", value: "#a9cdf5"),
+        Highlight(name: "Purple", value: "#d4b7f5"),
+    ]
+}
+
 /// Which place of the settings strip the library shows: its shelf, its settings, or the books
 /// an online search found.
 view library(lib: Library) {
@@ -802,6 +891,20 @@ view library(lib: Library) {
         actions: {
             ui.Button("Add a book", icon: .file_plus, role: .primary) {
                 on press: file.choose(open_book(lib), accept: ["application/epub+zip"])
+            }
+            ui.MenuButton("Sort", icon: .arrow_down_wide_narrow) {
+                ui.MenuItem("By title", checked: lib.sort_by == "title") {
+                    on choose: set_shelf_sort(lib, "title")
+                }
+                ui.MenuItem("By author", checked: lib.sort_by == "author") {
+                    on choose: set_shelf_sort(lib, "author")
+                }
+                ui.MenuItem("Added last", checked: lib.sort_by == "added") {
+                    on choose: set_shelf_sort(lib, "added")
+                }
+            }
+            ui.Button("Hide finished", icon: .eye_off, toggled: lib.hide_finished) {
+                on press: set_hide_finished(lib, not lib.hide_finished)
             }
             ui.ToggleGroup(selected: showing, label: "What the library shows") {
                 ui.Segment("Shelf")
@@ -815,7 +918,7 @@ view library(lib: Library) {
                 library_settings(lib)
             } else if showing == 2 {
                 found_books(lib, found)
-            } else if lib.books.is_empty() {
+            } else if shelf(lib, invoker).is_empty() {
                 ui.EmptyState(
                     "No books yet",
                     icon: .file_text,
@@ -825,7 +928,7 @@ view library(lib: Library) {
                 ui.Scroll {
                     page(full) {
                         ui.MediaGrid(size: .regular) {
-                            for b in lib.books.sort_by(.title) {
+                            for b in shelf(lib, invoker) {
                                 ui.MediaCard(
                                     item: b,
                                     title: b.title,
@@ -1121,9 +1224,18 @@ view book_page(b: Book) {
                     if not picked.is_empty() {
                         row(gap: .related, align: .center) {
                             text(passage_words(b, chapter, picked), role: .caption, secondary: true)
-                            ui.Button("Highlight", icon: .highlighter, role: .primary) {
-                                on press: highlight(b, chapter, picked, "#f5d76e")
-                                    .then(set(picked, []))
+                            ui.MenuButton("Highlight", icon: .highlighter) {
+                                for colour in highlight_colours() {
+                                    ui.MenuItem(colour.name) {
+                                        on choose: highlight(b, chapter, picked, colour.value)
+                                            .then(
+                                                set(picked, []),
+                                            )
+                                    }
+                                }
+                            }
+                            ui.Button("Copy", icon: .copy) {
+                                on press: copy_passage(passage_words(b, chapter, picked))
                             }
                             ui.Button("Note", icon: .pencil) {
                                 on press: set(noting, true)
@@ -1191,6 +1303,14 @@ view book_page(b: Book) {
                         ui.Button("Bookmark this page", icon: .bookmark, icon_only: true) {
                             on press: toggle_bookmark(b, chapter, my_block(b, invoker))
                         }
+                        ui.Button(
+                            "Finished",
+                            icon: .circle_check,
+                            icon_only: true,
+                            toggled: finished_by(b, invoker),
+                        ) {
+                            on press: set_finished(b, invoker, not finished_by(b, invoker))
+                        }
                     }
                     ui.ProgressBar(
                         value: (page + 1).to_float() / pages.max(1).to_float(),
@@ -1218,6 +1338,8 @@ view book_page(b: Book) {
 /// One mark of the open chapter, with its note and the comments on it, and the way to comment
 /// on it, recolour it or delete it.
 view mark_line(b: Book, m: Mark, commenting: State<Option<Mark>>, comment_text: State<RichText>) {
+    state editing: Bool = false
+    state draft: RichText = m.text
     stack(gap: .tight) {
         ui.ListRow(
             item: m,
@@ -1227,21 +1349,33 @@ view mark_line(b: Book, m: Mark, commenting: State<Option<Mark>>, comment_text: 
         ) {
             on activate: show_passage(b, invoker, m.chapter, m.block)
         }
-        row(gap: .related, align: .center) {
+        row(gap: .related, align: .center, wrap: true) {
             ui.Button("Comment", icon: .message_square) {
                 on press: set(commenting, m)
             }
-            ui.Button("Yellow", icon: .highlighter) {
-                on press: change_color(b, m, "#f5d76e")
+            if m.kind == "note" or m.kind == "comment" {
+                ui.Button("Edit", icon: .pencil) {
+                    on press: set(draft, m.text).then(set(editing, true))
+                }
             }
-            ui.Button("Green", icon: .highlighter) {
-                on press: change_color(b, m, "#b7e1a1")
-            }
-            ui.Button("Blue", icon: .highlighter) {
-                on press: change_color(b, m, "#a9cdf5")
+            for colour in highlight_colours() {
+                ui.Button(colour.name, size: .small) {
+                    on press: change_color(b, m, colour.value)
+                }
             }
             ui.Button("Delete", icon: .trash_2) {
                 on press: delete_mark(b, m)
+            }
+        }
+        if editing {
+            row(gap: .related, align: .center) {
+                rich_input(bind: draft, placeholder: "Edit the note")
+                ui.Button("Save", icon: .check) {
+                    on press: edit_mark_text(b, m, draft).then(set(editing, false))
+                }
+                ui.Button("Cancel", icon: .x) {
+                    on press: set(editing, false)
+                }
             }
         }
         for c in comments_on(b, m) {

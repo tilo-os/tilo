@@ -47,12 +47,13 @@ action relay(b: Bridge, text: Text) {
             )
         };
 
-        call(Some("so.tilo.discord"), "hello")
-            .expect("the Discord bridge's process is admitted");
+        call(Some("so.tilo.discord"), "hello").expect("the Discord bridge's process is admitted");
         for (through, who) in [(Some("so.tilo.other"), "another app"), (None, "a person")] {
             let refused = call(through, "sneaky").expect_err(who);
             assert!(
-                refused.to_string().contains("Only the Discord bridge relays"),
+                refused
+                    .to_string()
+                    .contains("Only the Discord bridge relays"),
                 "{who} is refused with the action's reason: {refused}"
             );
         }

@@ -881,6 +881,35 @@ action fill(w: Workbook, s: Sheet, pair: List<Text>) (icon: .pencil, label: "Fil
     )
 }
 
+/// Fills the rows under the first row of `range` from it: the first row copied down, counting on
+/// as a dragged fill handle does.
+action fill_down(w: Workbook, s: Sheet, range: Text) (icon: .arrow_down, label: "Fill down") {
+    require row_of(range_end(range)) > row_of(range_start(range)) "There is nothing below the first row to fill"
+    let first = row_of(range_start(range))
+    let end_row = row_of(range_end(range))
+    let left = column_of(range_start(range))
+    let right = column_of(range_end(range))
+    fill(w, s, ["{left}{first}:{right}{first}", "{left}{first + 1}:{right}{end_row}"])
+}
+
+/// Fills the columns right of the first column of `range` from it: the first column copied
+/// across, counting on as a dragged fill handle does.
+action fill_right(w: Workbook, s: Sheet, range: Text) (icon: .arrow_right, label: "Fill right") {
+    require column_index(column_of(range_end(range))) > column_index(column_of(range_start(range))) "There is nothing right of the first column to fill"
+    let top = row_of(range_start(range))
+    let bottom = row_of(range_end(range))
+    let first = column_index(column_of(range_start(range)))
+    let end_col = column_index(column_of(range_end(range)))
+    fill(
+        w,
+        s,
+        [
+            "{column_letter(first)}{top}:{column_letter(first)}{bottom}",
+            "{column_letter(first + 1)}{top}:{column_letter(end_col)}{bottom}",
+        ],
+    )
+}
+
 /// Applies one structural change to the workbook and keeps every sheet as the engine leaves it:
 /// its cells, their formats and the cells shown bold, its name when the change renamed it, and
 /// the cells its charts and comments are about.
@@ -1021,6 +1050,12 @@ action edit_reply(r: Reply, text: RichText = r.text) (icon: .pencil, label: "Edi
     require created(r)?.who == invoker "Only its author can edit a reply"
     require not text.is_empty() "Write a reply first"
     r.text = text
+}
+
+/// Deletes a reply. Only its author may.
+destructive action delete_reply(c: Comment, r: Reply) (icon: .trash, label: "Delete reply") {
+    require created(r)?.who == invoker "Only its author can delete a reply"
+    c.replies.remove(r)
 }
 
 /// Deletes a comment and its replies. Only its author may.

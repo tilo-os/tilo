@@ -117,6 +117,9 @@ d-j7r2dpph = Page
 
 d-t4pdkbb6 = Place
 
+d-m5vjvjxn = Finished
+    .doc = Whether they finished the book: what the shelf leaves out when it hides finished books.
+
 d-vpcehkho = At
     .doc = When they last read on.
 
@@ -129,6 +132,8 @@ d-kfdvrrjc-filter-block = Block
 d-kfdvrrjc-filter-page = Page
 
 d-kfdvrrjc-filter-place = Place
+
+d-kfdvrrjc-filter-finished = Finished
 
 d-kfdvrrjc-filter-at = At
 
@@ -231,11 +236,30 @@ d-dww4lfs6 = Draft folder
 d-trpwrvrr = Folders
     .doc = The folders this device watches for books.
 
+d-rmk5y2dl = Sort by
+    .doc = How the shelf orders its books: `title`, `author` or `added`, the last added first.
+
+d-iw7jv3y3 = Hide finished
+    .doc = Whether the shelf leaves out the books a person finished.
+
 d-srrcatfl-filter-text_size = Text size
 
 d-srrcatfl-filter-line_spacing = Line spacing
 
 d-srrcatfl-filter-justified = Justified
+
+d-srrcatfl-filter-hide_finished = Hide finished
+
+d-jya2xpym = Highlight
+    .doc = A highlight colour, by the name it is chosen by and the colour it paints.
+    .noun = { $count ->
+        [one] highlight
+       *[other] highlights
+    }
+
+d-2mud3bws = Name
+
+d-ztqdbzwg = Value
 
 d-4xgt6ef3 = Fill
     .doc = What a new library starts with: the page palettes every reader knows, and the sepia page chosen.
@@ -355,6 +379,27 @@ d-wfzyizr4 = Set justified
 
 d-wfzyizr4-on = On
 
+d-qazz5dbn = Set shelf sort
+    .doc = Orders the shelf by title, by author, or by the books added last.
+    .did = sorted the shelf
+    .w-a-shelf-is-sorted-by-title = A shelf is sorted by title, author or added
+
+d-qazz5dbn-order = Order
+
+d-7c3mgmnh = Set hide finished
+    .doc = Leaves the books a person finished off the shelf, or shows them again.
+    .did = changed whether finished books show
+
+d-7c3mgmnh-hidden = Hidden
+
+d-4wmsw3oj = Set finished
+    .doc = Marks `b` finished for the person reading it, or starts it again.
+    .did = changed whether a book is finished
+
+d-4wmsw3oj-who = Who
+
+d-4wmsw3oj-finished = Finished
+
 d-iex2qhcv = Cycle scheme
     .doc = Steps to the next palette the reader ships with: its bar's quick switch.
     .did = changed the page palette
@@ -429,6 +474,20 @@ d-kyszv557-m = M
 
 d-kyszv557-color = Color
 
+d-rhst3sds = Edit a note
+    .doc = Rewrites what a note or a comment says.
+    .w-only-its-author-can-edit-a = Only its author can edit a note
+    .w-write-a-note-first = Write a note first
+
+d-rhst3sds-m = M
+
+d-rhst3sds-text = Text
+
+d-t53zqwaz = Copy the passage
+    .doc = Copies a passage, so it can be pasted anywhere: what a selection's Copy does.
+
+d-t53zqwaz-text = Text
+
 d-3c4owmt6 = Delete mark
     .doc = Deletes a mark, and the comments on it.
     .did = deleted a mark
@@ -455,13 +514,22 @@ d-oxd7kaud = Watch folder~present
 
 d-w4cgekcm = Show passage~present
 
+d-om3e7iv4 = Set shelf sort~present
+
 d-vwfvgnvc = Add scheme~present
 
 d-f2pjguwz = Delete scheme~present
 
+d-7n672gfq = Edit mark text~present
+
 d-yseykhty = Library
     .w-books = Books
     .w-add-a-book = Add a book
+    .w-sort = Sort
+    .w-by-title = By title
+    .w-by-author = By author
+    .w-added-last = Added last
+    .w-hide-finished = Hide finished
     .w-what-the-library-shows = What the library shows
     .w-shelf = Shelf
     .w-settings = Settings
@@ -505,6 +573,7 @@ d-tntic6tx = Book page
     .w-chapter = Chapter { $value }
     .w-notes = Notes
     .w-highlight = Highlight
+    .w-copy = Copy
     .w-note = Note
     .w-bookmark = Bookmark
     .w-dismiss = Dismiss
@@ -521,13 +590,15 @@ d-tntic6tx = Book page
     .w-two-pages = Two pages
     .w-scrolled = Scrolled
     .w-bookmark-this-page = Bookmark this page
+    .w-finished = Finished
     .w-how-far-through-this-chapter = How far through this chapter
     .w-this-chapter-s-marks = This chapter's marks
     .w-comment = Comment
-    .w-yellow = Yellow
-    .w-green = Green
-    .w-blue = Blue
+    .w-edit = Edit
     .w-delete = Delete
+    .w-edit-the-note = Edit the note
+    .w-save = Save
+    .w-cancel = Cancel
     .w-comment-on-the-highlight = Comment on the highlight
     .w-send-comment = Send comment
 

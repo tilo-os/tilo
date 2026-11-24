@@ -11,9 +11,9 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::ids::MemberId;
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
-    use tilolang_runtime::ids::MemberId;
     use tilolang_runtime::{
         Actor, AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode,
         Value, ViewInstance,
@@ -326,7 +326,11 @@ mod cases {
 
         fn window(&self) -> ViewInstance {
             self.rt
-                .open_view(&me(), &self.app.view("map"), vec![Value::resource(&self.root)])
+                .open_view(
+                    &me(),
+                    &self.app.view("map"),
+                    vec![Value::resource(&self.root)],
+                )
                 .unwrap()
         }
     }

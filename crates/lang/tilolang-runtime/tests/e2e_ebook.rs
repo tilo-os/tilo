@@ -22,6 +22,35 @@ mod cases {
     /// The session app, as far as the books app needs it: opening a resource's window. A tilolang
     /// package cannot name an action `open` (a built-in's name is taken), so the stand-in
     /// declares `open_window` and is published under the name the session's native surface uses.
+    /// The workspace package, as far as this app needs it: its `use` of the people a workspace
+    /// has. A stand-in carries the name the import names.
+    const WORKSPACE_SOURCE: &str = r#"app tilo.workspace "Workspace"
+
+/// One person of the workspace.
+type Member {
+    name: Text
+}
+
+/// The workspace's members, as its apps read them.
+type Members {
+    people: Collection<Member>
+}
+
+root members: Members
+
+default view members_page for Members
+
+row view member_row for Member
+
+view members_page(m: Members) {
+    ui.Text(m.people.len().to_text())
+}
+
+view member_row(p: Member) {
+    ui.ListRow(title: p.name)
+}
+"#;
+
     const SESSION_SOURCE: &str = r#"app so.tilo.session "Session"
 action open_window(resource: host.Resource) {
 }
@@ -59,6 +88,8 @@ action open_window(resource: host.Resource) {
         disk: Rc<RefCell<std::collections::BTreeMap<String, (bool, Vec<u8>)>>>,
         /// The folders the app asked to watch, by path, with the action each runs.
         watches: Rc<RefCell<Vec<(String, String)>>>,
+        /// What the person last copied.
+        clip: Rc<RefCell<String>>,
     }
 
     impl Device {
@@ -96,6 +127,21 @@ action open_window(resource: host.Resource) {
                 .iter()
                 .map(|request| request.url.clone())
                 .collect()
+        }
+
+        fn copied(&self) -> String {
+            self.clip.borrow().clone()
+        }
+    }
+
+    impl tilolang_runtime::clipboard::ClipboardHost for Device {
+        fn copy(&self, _mime: &str, bytes: &[u8]) -> bool {
+            *self.clip.borrow_mut() = String::from_utf8_lossy(bytes).into_owned();
+            true
+        }
+
+        fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
+            None
         }
     }
 
@@ -235,6 +281,7 @@ action open_window(resource: host.Resource) {
             let device = Device::default();
             rt.set_blobs(device.clone());
             rt.set_web(device.clone());
+            rt.set_clipboard(device.clone());
             rt.set_fonts(device.clone());
             rt.set_device_files(device.clone());
             rt.set_clock(|| "2026-11-23T09:00:00Z".to_owned());
@@ -245,7 +292,9 @@ action open_window(resource: host.Resource) {
                 }
             }
             session.load(&rt);
-            let app = App::compile(SOURCE, &[session.meta().clone()]);
+            let workspace = App::compile(WORKSPACE_SOURCE, &[]);
+            workspace.load(&rt);
+            let app = App::compile(SOURCE, &[workspace.meta().clone(), session.meta().clone()]);
             app.load(&rt);
             let lib = rt.create_root("Library").unwrap();
             let books = Self {
@@ -1049,6 +1098,101 @@ action open_window(resource: host.Resource) {
                 .map(|card| text_prop(card, "title"))
                 .collect();
             assert_eq!(titles, ["The Tide Glass"], "the shelf shows its book");
+        }
+
+        phase a_finished_book_leaves_a_shelf_that_hides_finished_books;
+        {
+            let books = Books::new();
+            let book = books.open();
+            books.call(
+                "set_finished",
+                books.args(
+                    "set_finished",
+                    &[
+                        ("b", Value::resource(&book)),
+                        ("who", Value::Actor(me())),
+                        ("finished", Value::Bool(true)),
+                    ],
+                ),
+            );
+            assert_eq!(
+                books.progress(&book, "finished"),
+                serde_json::json!(true),
+                "the person finished the book"
+            );
+            let hiding = |hidden: bool| {
+                books.call(
+                    "set_hide_finished",
+                    books.args(
+                        "set_hide_finished",
+                        &[
+                            ("lib", Value::resource(&books.lib)),
+                            ("hidden", Value::Bool(hidden)),
+                        ],
+                    ),
+                )
+            };
+            hiding(true);
+            let window = books.window("library", vec![Value::resource(&books.lib)]);
+            assert!(
+                of_kind(window.tree(), "ui.MediaCard").is_empty(),
+                "a finished book is left off the shelf"
+            );
+            hiding(false);
+            let window = books.window("library", vec![Value::resource(&books.lib)]);
+            assert_eq!(
+                of_kind(window.tree(), "ui.MediaCard").len(),
+                1,
+                "a finished book shows while the shelf keeps them"
+            );
+        }
+
+        phase a_note_is_edited_and_a_passage_is_copied;
+        {
+            let books = Books::new();
+            let book = books.open();
+            books.call(
+                "highlight",
+                books.args(
+                    "highlight",
+                    &[
+                        ("b", Value::resource(&book)),
+                        ("chapter", Value::Int(0)),
+                        (
+                            "ranges",
+                            Value::List(vec![Value::Int(1), Value::Int(0), Value::Int(6)]),
+                        ),
+                        ("color", Value::text("#f5d76e")),
+                    ],
+                ),
+            );
+            let mark = books.mark_of(&book);
+            books.call(
+                "copy_passage",
+                books.args("copy_passage", &[("text", Value::text("Worth keeping"))]),
+            );
+            assert_eq!(books.device.copied(), "Worth keeping");
+            books.call(
+                "edit_mark_text",
+                books.args(
+                    "edit_mark_text",
+                    &[
+                        ("b", Value::resource(&book)),
+                        ("m", Value::resource(&mark)),
+                        (
+                            "text",
+                            Value::Rich(tilolang_runtime::rich::RichValue::from_text(
+                                "Edited note",
+                            )),
+                        ),
+                    ],
+                ),
+            );
+            assert_eq!(
+                books.mark_field(&book, "text"),
+                serde_json::json!("Edited note"),
+                "the note says what its author wrote"
+            );
         }
     }
 }
