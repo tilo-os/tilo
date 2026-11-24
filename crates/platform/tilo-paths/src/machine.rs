@@ -95,6 +95,29 @@ pub fn daemon_native() -> Result<std::path::PathBuf, String> {
     Ok(daemon_sockets(rustix::process::geteuid().as_raw())?.join(DAEMON_NATIVE))
 }
 
+/// Where this computer's daemon names its pipes on Windows: the `sockets` folder of the account's
+/// own daemon profile. A pipe lives in the system's pipe namespace, not in a folder; its name is
+/// made from this path, and the folder holds the daemon's lock beside them. Neither made nor
+/// checked: the daemon makes it, private to the account.
+///
+/// # Errors
+/// The account names no home.
+#[cfg(windows)]
+pub fn daemon_sockets() -> Result<std::path::PathBuf, String> {
+    account_daemon_profile()
+        .map(|profile| profile.join("sockets"))
+        .ok_or_else(|| "this account names no home folder (USERPROFILE)".to_owned())
+}
+
+/// The native endpoint of the daemon this account reaches ([`daemon_sockets`]).
+///
+/// # Errors
+/// As [`daemon_sockets`].
+#[cfg(windows)]
+pub fn daemon_native() -> Result<std::path::PathBuf, String> {
+    Ok(daemon_sockets()?.join(DAEMON_NATIVE))
+}
+
 /// This account's temporary directory on macOS (`/var/folders/…/T/`), as the system names it:
 /// private to the account, and short whatever the home folder is.
 #[cfg(target_os = "macos")]

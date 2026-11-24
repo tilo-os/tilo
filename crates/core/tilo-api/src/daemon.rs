@@ -102,6 +102,7 @@ pub fn socket_fits(path: &Path) -> Result<(), String> {
 }
 
 /// The directory a person's own service keeps its sockets in, made private to this account.
+#[cfg(unix)]
 fn own_sockets(login: &Path) -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
     let uid = std::fs::metadata(login)
@@ -127,6 +128,17 @@ fn own_sockets(login: &Path) -> Result<PathBuf, String> {
             dir.display()
         ));
     }
+    Ok(dir)
+}
+
+/// The directory a person's own service names its pipes by, made private to this account: what
+/// Windows keeps of a pipe is its name, which this account's profile holds alone.
+#[cfg(windows)]
+fn own_sockets(login: &Path) -> Result<PathBuf, String> {
+    let _ = login;
+    let dir = tilo_paths::machine::daemon_sockets()?;
+    tilo_files::native::private::directory(&dir)
+        .map_err(|error| format!("{} could not be made private: {error}", dir.display()))?;
     Ok(dir)
 }
 

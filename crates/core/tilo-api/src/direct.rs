@@ -166,26 +166,6 @@ impl KeyFile {
     }
 }
 
-/// Whether `pid` lives in this process's user and mount namespaces: what tells
-/// a program of this login from one a sandbox put in a namespace of its own.
-///
-/// A session's other sockets admit a connection by exactly this
-/// (`tilo_session::mcp_server`), so a program admitted there is admitted here
-/// and a sandboxed one is not.
-fn shares_security_namespaces(pid: u32) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-    let same = |kind: &str| {
-        let ours = std::fs::metadata(format!("/proc/self/ns/{kind}"));
-        let theirs = std::fs::metadata(format!("/proc/{pid}/ns/{kind}"));
-        match (ours, theirs) {
-            (Ok(ours), Ok(theirs)) => ours.dev() == theirs.dev() && ours.ino() == theirs.ino(),
-            // A process that cannot be read is not one this desktop knows.
-            _ => false,
-        }
-    };
-    same("user") && same("mnt")
-}
-
 /// Tilo's API in process, as one key.
 #[derive(Clone)]
 pub struct Direct {
@@ -294,29 +274,16 @@ impl Direct {
     /// Serve the API on `listener` until it closes, every request as this key: to programs of
     /// the account that owns the socket, and nobody else.
     ///
-    /// The kernel's account of the connection's peer is the whole of the admission: its account
-    /// must be this process's, and it must live in this login's own user and mount namespaces,
-    /// as a session's other sockets require ([`shares_security_namespaces`]). A program a sandbox
-    /// put in a namespace of its own is the same account and is refused all the same.
+    /// The system's account of the connection's peer is the whole of the admission, as a
+    /// session's other sockets take it (`tilo_socket::tokio::peer_is_this_login`): this login's
+    /// own programs, never one a sandbox confined, though it is the same account.
     pub async fn serve(self, listener: tilo_files::native::socket::tokio::Listener) {
-        use std::os::unix::fs::MetadataExt as _;
         let this = Arc::new(self);
-        // Only this process's own account is served.
-        let owner = std::fs::metadata("/proc/self")
-            .ok()
-            .map(|metadata| metadata.uid());
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
-            let admitted = stream
-                .peer_cred()
-                .ok()
-                .filter(|credentials| Some(credentials.uid()) == owner)
-                .and_then(|credentials| credentials.pid())
-                .and_then(|pid| u32::try_from(pid).ok())
-                .is_some_and(shares_security_namespaces);
-            if !admitted {
+            if !tilo_files::native::socket::tokio::peer_is_this_login(&stream) {
                 tracing::warn!("API: a connection from another account or a sandbox is refused");
                 continue;
             }

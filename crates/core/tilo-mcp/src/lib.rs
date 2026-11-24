@@ -144,23 +144,15 @@ pub struct McpServer<H> {
     /// programs made, for `undo` and `history task`.
     programs: std::sync::Mutex<agent::Programs>,
     /// Where this server asks for its task's tilolang host ([`TaskHosts`]): the device that
-    /// runs the API starts it; `None` for a server that runs no programs. A host
-    /// that cannot start one holds a value nothing constructs: its process link is a
-    /// descriptor, which Windows has none of.
-    #[cfg(unix)]
+    /// runs the API starts it; `None` for a server that runs no programs.
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
-    #[cfg(windows)]
-    task_hosts: Option<std::convert::Infallible>,
     /// Whether the `tilo` tool's programs run on the device this server's calls go to, as its
     /// session's step there ([`tilo_actions::remote::task_programs::RUN`]), where this server
     /// starts no task host itself: a session Tilo's API forwards to a person's device, and the
     /// person's command line, whose programs run in the daemon.
     programs_on_device: bool,
     /// The program connection to the task's host, once its first program started it.
-    #[cfg(unix)]
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
-    #[cfg(windows)]
-    task: tokio::sync::Mutex<Option<std::convert::Infallible>>,
     /// How the task's programs write what the apps declare, once its host answered its
     /// catalogue: a listing reads it once a session rather than every page
     /// ([`McpServer::program_forms`]).
@@ -209,7 +201,6 @@ pub struct McpServer<H> {
     until_ended: bool,
 }
 
-#[cfg(unix)]
 pub use agent::TaskHosts;
 pub use agent::{Go, TaskProgram};
 pub use agent::{PersonStep, literals_in};
@@ -687,7 +678,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     }
 
     /// Run the `tilo` tool's programs in task hosts `hosts` starts.
-    #[cfg(unix)]
     #[must_use]
     pub fn with_task_hosts(mut self, hosts: Option<std::sync::Arc<dyn TaskHosts>>) -> Self {
         self.task_hosts = hosts;

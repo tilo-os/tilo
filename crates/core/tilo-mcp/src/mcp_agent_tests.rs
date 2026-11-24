@@ -3011,8 +3011,8 @@ impl CatalogueHost {
 }
 
 impl crate::TaskHosts for CatalogueHost {
-    fn start(&self, _workspace: &str, _task: &str) -> std::io::Result<std::os::fd::OwnedFd> {
-        let (api, host) = std::os::unix::net::UnixStream::pair()?;
+    fn start(&self, _workspace: &str, _task: &str) -> std::io::Result<tilo_socket::Stream> {
+        let (api, host) = tilo_socket::pair()?;
         let catalogue = self.catalogue.clone();
         std::thread::spawn(move || {
             use std::io::{BufRead as _, Write as _};
@@ -3033,7 +3033,7 @@ impl crate::TaskHosts for CatalogueHost {
                 }
             }
         });
-        Ok(std::os::fd::OwnedFd::from(api))
+        Ok(api)
     }
 }
 

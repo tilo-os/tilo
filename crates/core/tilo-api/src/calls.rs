@@ -219,7 +219,7 @@ impl Calls {
     /// The key file cannot be read or is refused, or the daemon cannot be reached.
     pub async fn open_with(
         reach: Reach<'_>,
-        daemon: impl FnOnce() -> Result<std::os::unix::net::UnixStream, String>,
+        daemon: impl FnOnce() -> Result<tilo_files::native::socket::Stream, String>,
     ) -> Result<Self> {
         if reach.key_file.is_none()
             && let Some(socket) = desktop_socket()
@@ -1408,7 +1408,7 @@ impl Desktop {
     ) -> Result<(Option<String>, Value), ApiError> {
         use http_body_util::BodyExt as _;
         let unavailable = |why: String| ApiError::new("unavailable", why);
-        let stream = tokio::net::UnixStream::connect(&self.socket)
+        let stream = tilo_files::native::socket::tokio::connect(&self.socket)
             .await
             .map_err(|error| {
                 unavailable(format!(

@@ -387,7 +387,7 @@ fn ask_at(socket: &std::path::Path, request: &Value) -> Result<Value, String> {
 fn connect(
     place: &super::DaemonPlace,
     within: Duration,
-) -> Result<std::os::unix::net::UnixStream, String> {
+) -> Result<tilo_files::native::socket::Stream, String> {
     connect_to(&place.native(), within)
 }
 
@@ -395,7 +395,7 @@ fn connect(
 fn connect_to(
     socket: &std::path::Path,
     within: Duration,
-) -> Result<std::os::unix::net::UnixStream, String> {
+) -> Result<tilo_files::native::socket::Stream, String> {
     let stream = tilo_files::native::socket::connect(socket).map_err(|error| {
         format!(
             "Tilo isn't running on this computer ({}: {error})",

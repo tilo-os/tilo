@@ -7,14 +7,14 @@ use super::*;
 /// end this test keeps open and silent, so a read on it waits as a program that stopped does.
 struct SilentProgram {
     /// The far end of every connection started, held open and never written.
-    held: Mutex<Vec<std::os::unix::net::UnixStream>>,
+    held: Mutex<Vec<tilo_socket::Stream>>,
 }
 
 impl crate::TaskHosts for SilentProgram {
-    fn start(&self, _workspace: &str, _task: &str) -> std::io::Result<std::os::fd::OwnedFd> {
-        let (api, kept) = std::os::unix::net::UnixStream::pair()?;
+    fn start(&self, _workspace: &str, _task: &str) -> std::io::Result<tilo_socket::Stream> {
+        let (api, kept) = tilo_socket::pair()?;
         self.held.lock().expect("the held ends").push(kept);
-        Ok(std::os::fd::OwnedFd::from(api))
+        Ok(api)
     }
 }
 

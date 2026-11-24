@@ -10,7 +10,6 @@
 //! runs in, which [`TaskCatalogue`] answers.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
 
 use runtime_portal::process_link::{App, TaskFds, TaskRequest, encode_apps};
@@ -92,7 +91,7 @@ impl TaskHosts {
 }
 
 impl tilo_mcp::TaskHosts for TaskHosts {
-    fn start(&self, workspace: &str, task: &str) -> std::io::Result<OwnedFd> {
+    fn start(&self, workspace: &str, task: &str) -> std::io::Result<tilo_socket::Stream> {
         let (api_end, host_end) = std::os::unix::net::UnixStream::pair()?;
         let catalogue = self.catalogue.catalogue(workspace);
         let encoded = encode_apps(&catalogue.apps);
@@ -114,7 +113,7 @@ impl tilo_mcp::TaskHosts for TaskHosts {
         )?;
         // The host ends when the API closes the program connection, with the client that
         // started it.
-        Ok(api_end.into())
+        Ok(api_end)
     }
 }
 

@@ -195,9 +195,9 @@ impl super::services::Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::ActionAddress;
     use tilo_actions::remote::Admits as _;
     use tilo_actions::remote::task_programs as wire;
-    use tilo_actions::ActionAddress;
     use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
     const WORKSPACE: &str = "the-workspace";
@@ -269,7 +269,7 @@ mod tests {
     }
 
     impl tilo_mcp::TaskHosts for Hosts {
-        fn start(&self, _workspace: &str, task: &str) -> std::io::Result<std::os::fd::OwnedFd> {
+        fn start(&self, _workspace: &str, task: &str) -> std::io::Result<tilo_socket::Stream> {
             use std::io::{BufRead as _, Write as _};
             self.started.lock_recover().push(task.to_owned());
             let (api, host) = std::os::unix::net::UnixStream::pair()?;
@@ -319,7 +319,7 @@ mod tests {
                 }
                 let _ = ended.send(task);
             });
-            Ok(api.into())
+            Ok(api)
         }
     }
 

@@ -9,12 +9,22 @@
 //! it, so choosing a model in Settings is what this service answers with; a
 //! device with no model refuses in words rather than answering empty.
 
-use std::os::fd::{AsFd, OwnedFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsFd as _;
 
 use agent_provider_config::ProviderConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::ImageModelReading;
+
+/// A connection to the model gateway: a Unix socket's descriptor, or a pipe's handle on Windows,
+/// where no gateway runs yet.
+#[cfg(unix)]
+pub type Gateway = std::os::fd::OwnedFd;
+/// A connection to the model gateway: a Unix socket's descriptor, or a pipe's handle on Windows,
+/// where no gateway runs yet.
+#[cfg(windows)]
+pub type Gateway = std::os::windows::io::OwnedHandle;
 
 /// Why the model did not answer. A refusal is the model's own word (its
 /// provider said no, or a policy did), and stays one to the caller.
@@ -100,7 +110,7 @@ pub trait VisionModel: Send + Sync {
 /// This device's model: the AI settings hub's local vision and face models,
 /// reached through the model gateway connection the service opens itself.
 pub struct LocalVision {
-    gateway: Option<OwnedFd>,
+    gateway: Option<Gateway>,
 }
 
 impl LocalVision {
@@ -109,7 +119,7 @@ impl LocalVision {
     /// host that already holds a connection use this; the service opens its
     /// own with [`Self::local`].
     #[must_use]
-    pub fn new(gateway: Option<OwnedFd>) -> Self {
+    pub fn new(gateway: Option<Gateway>) -> Self {
         Self { gateway }
     }
 
@@ -124,7 +134,7 @@ impl LocalVision {
 
     /// The service's own connection to the model gateway.
     #[cfg(target_os = "linux")]
-    fn own_gateway() -> Option<OwnedFd> {
+    fn own_gateway() -> Option<Gateway> {
         let name = launcher::services::MODEL_GATEWAY_SERVICE;
         let requirement = launcher::manifest::ServiceReq::parse(
             name,
@@ -147,13 +157,13 @@ impl LocalVision {
 
     /// The model gateway's connection, when this device has one.
     #[cfg(not(target_os = "linux"))]
-    fn own_gateway() -> Option<OwnedFd> {
+    fn own_gateway() -> Option<Gateway> {
         None
     }
 
     /// The model gateway's connection, when this device has one.
     #[cfg(target_os = "linux")]
-    fn connected(&self) -> Result<&OwnedFd, ModelError> {
+    fn connected(&self) -> Result<&Gateway, ModelError> {
         self.gateway.as_ref().ok_or_else(|| {
             ModelError::Unavailable(
                 "No model gateway runs for this device, so no model answers".to_owned(),

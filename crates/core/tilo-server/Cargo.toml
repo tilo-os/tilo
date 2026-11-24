@@ -131,10 +131,6 @@ thiserror.workspace = true
 # Observability.
 tracing.workspace = true
 
-# Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
-# outside a systemd session.
-sd-notify.workspace = true
-
 # The browser listener (feature `web`): HTTPS for the durable protocol, device
 # certification and the pages' calls.
 hyper = { version = "1", features = ["client", "server", "http1", "http2"], optional = true }
@@ -215,7 +211,6 @@ clap.workspace = true
 toml.workspace = true
 anyhow.workspace = true
 libc.workspace = true
-sd-notify.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 # The daemon's bounded runtime.
 tilo-rt.workspace = true
@@ -341,4 +336,7 @@ test = true
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
+# Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
+# outside a systemd session.
+sd-notify.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }

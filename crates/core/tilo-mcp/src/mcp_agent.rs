@@ -58,9 +58,7 @@ mod view;
 pub(super) mod watch;
 use answer::{action_named, action_row, actions_named, answer_of, outcome, text_result};
 use render::{action_line, action_page, block_line, parse_read_cursor, read_answer, strip_blank};
-#[cfg(unix)]
 pub use tilo::TaskHosts;
-#[cfg(unix)]
 pub(super) use tilo::TaskLink;
 use tilo::actions_note;
 pub use tilo::{Go, TaskProgram};

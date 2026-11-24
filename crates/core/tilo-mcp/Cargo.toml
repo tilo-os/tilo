@@ -38,6 +38,8 @@ tilo-rt.workspace = true
 tilo-test-env = { path = "../../../tools/test-env", optional = true }
 tilo-user-identity = { path = "../tilo-user-identity" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+# The connection to a task's host: a Unix socket, or a pipe on Windows.
+tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket", features = ["tokio"] }
 tracing.workspace = true
 uuid.workspace = true
 

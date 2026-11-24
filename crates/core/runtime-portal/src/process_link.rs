@@ -648,11 +648,12 @@ pub fn try_clone(link: &Descriptor) -> io::Result<Descriptor> {
     {
         link.try_clone()
     }
+    // A descriptor exists only where the platform has descriptors, so elsewhere `link` cannot be
+    // one; the type is empty there and nothing reaches this.
     #[cfg(not(any(unix, windows)))]
     {
-        // A descriptor exists only where the platform has descriptors.
         let _ = link;
-        unreachable!("a link exists only where there are descriptors")
+        Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 }
 
