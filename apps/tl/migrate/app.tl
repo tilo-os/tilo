@@ -82,6 +82,9 @@ type Migration (title: title) {
     run: Text = ""
     run_title: Text = ""
     failure: Text = ""
+    /// Why the device refused the last step asked of the migration; empty once a step goes
+    /// through.
+    refused: Text = ""
     /// How many of each kind the last run brought in.
     brought: Collection<Count>
     /// How many things the last run found already in the workspace.
@@ -116,6 +119,7 @@ action reviewed(m: Migrations, source: Text, title: Text, device: Text, handle: 
     if let g = found {
         g.title = title
         g.handle = handle
+        g.refused = ""
         for what in g.unreadable {
             g.unreadable.remove(what)
         }
@@ -172,18 +176,20 @@ action unreadable(g: Migration, what: Text) {
     g.unreadable.add(what)
 }
 
-/// Chooses an item to be brought in, or leaves it out.
-action choose(i: Item, chosen: Bool = not i.chosen) (
+/// Chooses an item of `g` to be brought in, or leaves it out: the device that holds the data
+/// keeps the choice, and the migration follows it there, as `choose_keys`.
+action choose(g: Migration, i: Item, chosen: Bool = not i.chosen) (
     icon: .check,
     label: "Bring in",
     on: i.chosen,
 ) {
-    i.chosen = chosen
+    engine.choose(source: g.source, items: [i.key], leave_out: not chosen)
 }
 
-/// Chooses the items whose keys are `keys`, or leaves them out; with `only`, every other item is
-/// left out.
+/// The device chose the items whose keys are `keys`, or left them out; with `only`, every other
+/// item is left out.
 action choose_keys(g: Migration, keys: List<Text>, chosen: Bool, only: Bool) {
+    g.refused = ""
     for k in keys {
         if let i = g.items.filter(x -> x.key == k).first() {
             i.chosen = chosen
@@ -198,17 +204,21 @@ action choose_keys(g: Migration, keys: List<Text>, chosen: Bool, only: Bool) {
     }
 }
 
-/// The device began the run `run`: it is running, and what the last run brought is cleared.
+/// The device began the run `run`, or resumed it: it is running. A new run starts its counts
+/// again; a resumed one goes on counting.
 action begun(g: Migration, run: Text, title: Text) {
     g.state = .running
+    if g.run != run {
+        for c in g.brought {
+            g.brought.remove(c)
+        }
+        // A counter starts again by taking off what it holds.
+        g.already_there -= g.already_there
+    }
     g.run = run
     g.run_title = title
-    for c in g.brought {
-        g.brought.remove(c)
-    }
-    // A counter starts again by taking off what it holds.
-    g.already_there -= g.already_there
     g.failure = ""
+    g.refused = ""
 }
 
 /// The run `run` brought in the items `keys`: `count` things of `kind`, and found `already` of
@@ -259,6 +269,18 @@ action forgot_run(g: Migration, run: Text) {
         g.already_there -= g.already_there
         g.failure = ""
     }
+    g.refused = ""
+}
+
+/// The device refused a step asked of `g`, for `why`: nothing chosen to bring in, a source it
+/// cannot read, a run it cannot take back.
+action refused(g: Migration, why: Text) {
+    g.refused = why
+}
+
+/// Read `g`'s source again: what it holds now is what there is to choose from.
+action review(g: Migration) (icon: .refresh, label: "Look again", did: "looked at a source again") {
+    engine.review(source: g.source)
 }
 
 /// Bring in what is chosen of `g`'s source: the device that holds the data runs it as one run,
@@ -271,6 +293,11 @@ action start(g: Migration) (icon: .play, did: "started bringing in") {
 /// Stop `g`'s run after the item it is on: what it brought stays, and starting again resumes it.
 action stop(g: Migration) (icon: .square, did: "stopped bringing in") {
     engine.stop(source: g.source)
+}
+
+/// Take what the run `r` brought in back out of the workspace.
+action undo(g: Migration, r: Run) (icon: .undo_2, did: "took a run back") {
+    engine.undo(run: r.id)
 }
 
 /// What the last run brought in, as a person reads it: "120 contacts, 3 accounts".
@@ -338,7 +365,7 @@ view migration_page(g: Migration) {
                             presence: lenses(x).find(l -> not l.mine)?.who,
                             parent: parent_of(g, x),
                         ) {
-                            item_row(x)
+                            item_row(g, x)
                         }
                     }
                 }
@@ -347,7 +374,7 @@ view migration_page(g: Migration) {
         if not g.runs.is_empty() {
             section("Runs") {
                 for r in g.runs {
-                    run_row(r)
+                    run_row(g, r)
                 }
             }
         }
@@ -378,13 +405,28 @@ view run_status(g: Migration) {
             ui.Button("Stop", icon: .square) {
                 on press: stop(g)
             }
-        } else if g.state != .complete and g.items.any(x -> x.chosen) {
-            ui.Button(if g.state == .stopped { "Resume" } else { "Bring in" }, icon: .play) {
-                on press: start(g)
+        } else {
+            row(gap: .related) {
+                if g.state != .complete and g.items.any(x -> x.chosen) {
+                    ui.Button(
+                        if g.state == .stopped {
+                            "Resume"
+                        } else if g.state == .failed { "Try again" } else { "Bring in" },
+                        icon: .play,
+                    ) {
+                        on press: start(g)
+                    }
+                }
+                ui.Button("Look again", icon: .refresh, role: .plain) {
+                    on press: review(g)
+                }
             }
         }
         if g.state == .failed and g.failure != "" {
             ui.Banner("The run stopped on an error", message: g.failure, kind: .error)
+        }
+        if g.refused != "" {
+            ui.Banner("That could not be done", message: g.refused, kind: .warning)
         }
         if not g.brought.is_empty() or g.already_there > 0 {
             ui.Facts {
@@ -401,19 +443,26 @@ view run_status(g: Migration) {
 
 /// An item of the source as a row: whether it is chosen, what it is, how many things it holds
 /// and what the review says of it.
-view item_row(x: Item) {
+view item_row(g: Migration, x: Item) {
     row(
         x.title,
         checkbox: x.chosen,
-        check: choose(x),
+        check: choose(g, x),
         secondary: if x.note != "" { x.note },
         meta: if x.count > 0 { "{x.count} {x.counts}" },
     )
 }
 
-/// A run as a row: its title, and how many things it brought in.
-view run_row(r: Run) {
-    ui.ListRow(r.title, secondary: "{r.keys.len()} items")
+/// A run as a row: its title, how many things it brought in, and taking it back.
+view run_row(g: Migration, r: Run) {
+    row(gap: .related) {
+        ui.ListRow(r.title, secondary: "{r.keys.len()} items")
+        if g.state != .running {
+            ui.Button("Undo", icon: .undo_2, role: .plain) {
+                on press: undo(g, r)
+            }
+        }
+    }
 }
 
 /// A Thunderbird profile being brought in, halfway through its mail, and this computer's home
