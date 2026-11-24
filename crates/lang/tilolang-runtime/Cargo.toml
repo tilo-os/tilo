@@ -105,8 +105,9 @@ default = ["wasmtime"]
 wasmtime = ["dep:wasmtime", "tilo-wasm-host/wasmtime"]
 
 [dev-dependencies]
-# The database engine the Database Client asks by name, driven end to end by its test.
-tilo-db = { version = "0.1.0", path = "../../engines/tilo-db" }
+# The database engine the Database Client asks by name, driven end to end by its test. No version:
+# the crate is not published, and Cargo leaves a versionless dev-dependency out of the package.
+tilo-db = { path = "../../engines/tilo-db" }
 # A scenario's cases are the phases of one test (`scenario!`).
 tilo-test-env = { path = "../../../tools/test-env" }
 # The platform's packages (the device, the session) an app compiles against in its test.
