@@ -97,11 +97,21 @@ impl Package {
     pub fn main(&self) -> Option<(String, String)> {
         // The app's window opens over the root people share: a root each device keeps its own
         // (`device root readings: Readings`) is the app's own state, never what its window is of.
-        let root = self
+        // A package that roots only what a device keeps (Backups) opens over that device's own.
+        let shared = self
             .meta
             .roots
             .iter()
-            .find(|ty| !self.meta.is_device_root(ty))?;
+            .filter(|ty| !self.meta.is_device_root(ty));
+        let root = shared
+            .into_iter()
+            .find(|ty| self.meta.default_view(ty).is_some())
+            .or_else(|| {
+                self.meta
+                    .roots
+                    .iter()
+                    .find(|ty| self.meta.is_device_root(ty) && self.meta.default_view(ty).is_some())
+            })?;
         let view = self.meta.default_view(root)?;
         Some((view.to_owned(), root.clone()))
     }

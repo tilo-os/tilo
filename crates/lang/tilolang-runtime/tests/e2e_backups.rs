@@ -218,7 +218,18 @@ mod cases {
             rt.set_device_files(Disk);
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
-            let root = rt.create_root("Backups").unwrap();
+            // What this device protects is the device's own: its root stands under the device.
+            let ty = app
+                .meta()
+                .types
+                .iter()
+                .find(|declared| declared.name == "Backups")
+                .expect("the backups type")
+                .id
+                .clone();
+            let root = rt
+                .create_root_at(&format!("devices/local/{}/root-{ty}", app.meta().app), &ty)
+                .expect("this device's backups");
             Self {
                 rt,
                 app,

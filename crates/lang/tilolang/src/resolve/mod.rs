@@ -2854,12 +2854,18 @@ impl Resolver<'_> {
             self.err("E018", span, what);
         }
         // A root each device keeps its own (`device root readings: Readings`) is the app's own
-        // state: its window is never of it, so it is no view of a person's to open.
+        // state: its window is never of it, so it is no view of a person's to open. A package
+        // that roots only what a device keeps (Backups) opens over that device's own, though.
+        let device_is_the_window = self
+            .env
+            .roots
+            .iter()
+            .all(|k| self.env.device_roots.contains(k));
         let missing: Vec<TypeKey> = self
             .env
             .roots
             .iter()
-            .filter(|k| !self.env.device_roots.contains(k))
+            .filter(|k| device_is_the_window || !self.env.device_roots.contains(k))
             .filter(|k| !self.env.default_views.iter().any(|(d, _)| d == *k))
             .cloned()
             .collect();
