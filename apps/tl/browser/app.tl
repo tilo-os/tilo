@@ -3227,6 +3227,7 @@ view page_view(p: Page) {
                                             refresh_page(p),
                                         )
                                     on fail(why: Text): set(failed, why)
+                                    on picture_in_picture_closed: float_page_video(p, false)
                                 }
                                 if let menu = p.menu {
                                     ui.ContextMenu {

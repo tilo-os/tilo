@@ -115,6 +115,9 @@ pub struct WebView {
     /// the engine (`crate::webview::window_engine`).
     navigate: crate::component::Event,
     fail: crate::component::Event,
+    /// What this view reports the shell returning its floated picture through: the person closed
+    /// the picture's window, or the shell handed it back, and the app stops asking for it.
+    pip_closed: crate::component::Event,
     /// Whether this view is the one that reads the engine's events: a window's page, not an
     /// app's view whose own code polls the engine it passed in.
     reports_events: bool,
@@ -235,6 +238,7 @@ impl WebView {
             accessible_name: "Web content".to_string(),
             navigate: crate::component::Event::None,
             fail: crate::component::Event::None,
+            pip_closed: crate::component::Event::None,
             reports_events: false,
             surface: crate::webview::Surface::Page,
             session: None,
@@ -388,6 +392,12 @@ impl WebView {
     ) {
         self.navigate = navigate;
         self.fail = fail;
+    }
+
+    /// Report the shell returning this view's floated picture through `closed`: the person closed
+    /// the picture's window, and the app stops asking for one.
+    pub fn set_pip_closed(&mut self, closed: crate::component::Event) {
+        self.pip_closed = closed;
     }
 
     /// Report the page's navigation and failure through these events, and read the engine's
@@ -994,6 +1004,14 @@ impl crate::widget::PictureInPictureProvider for WebView {
 
     fn picture_in_picture_floating(&self) -> bool {
         self.pip
+    }
+
+    /// The shell returned the picture: the person closed its window, or handed it back to the
+    /// page. The app hears it and stops asking for one, so its control offers the float again.
+    fn picture_in_picture_returned(&mut self) {
+        if let Some(mut closed) = self.pip_closed.clone().handler() {
+            closed();
+        }
     }
 
     /// Where the video stands now, once the page moved it: the view asks the page again now and

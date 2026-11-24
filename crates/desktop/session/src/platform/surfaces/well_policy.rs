@@ -134,6 +134,25 @@ impl WellPolicy {
         initial_extent(window, outputs)
     }
 
+    /// Where the session stands the card a window draws: the app draws it itself, so it takes no
+    /// well of the shell's, and the session says where its window goes.
+    fn card_place(&self, window: &WindowInfo) -> Option<ui::kurbo::Rect> {
+        let policy = self.desktop.policy();
+        policy
+            .draws_card(window.id)
+            .then(|| policy.card_place(window.id))
+            .flatten()
+    }
+
+    /// The size the app asked for its card, when the window draws one.
+    fn card_size(&self, window: &WindowInfo) -> Option<(i32, i32)> {
+        let policy = self.desktop.policy();
+        policy
+            .draws_card(window.id)
+            .then(|| policy.card_size(window.id))
+            .flatten()
+    }
+
     /// The well of `window`'s tab `key`: the one the part drawing `window`'s display laid out,
     /// so a strip two displays' parts both drew places the window on its own display. A window
     /// on a desktop of one display, or one whose display is not yet known, reads any part's.
@@ -245,6 +264,9 @@ impl WindowPolicy for WellPolicy {
         if !self.pending.contains(&window.id) {
             self.pending.push(window.id);
         }
+        if let Some(size) = self.card_size(window) {
+            return Some(size);
+        }
         Some(self.well_or_initial_size(tab.as_deref(), window, outputs))
     }
 
@@ -257,6 +279,9 @@ impl WindowPolicy for WellPolicy {
         self.desktop.cover(outputs);
         let tab = self.tab(window);
         self.pending.retain(|id| *id != window.id);
+        if let Some(at) = self.card_place(window) {
+            return LayoutPoint::from((round(at.x0), round(at.y0)));
+        }
         self.place_of(window, tab.as_deref())
             .unwrap_or_else(|| LayoutPoint::from((OFFSTAGE, 0)))
     }
@@ -298,6 +323,18 @@ impl WindowPolicy for WellPolicy {
                 self.desktop.policy().set_app_id(window.id, app_id);
             }
             let tab = self.tab(window);
+            if let Some(at) = self.card_place(window) {
+                // A card the app draws itself takes no well of the shell's: the session says
+                // where its window stands, and the person moving the picture moves the window.
+                placement.push(WindowPlacement {
+                    id: window.id,
+                    location: LayoutPoint::from((round(at.x0), round(at.y0))),
+                    size: Some((extent(at.width()), extent(at.height()))),
+                    clip: None,
+                    fullscreen: None,
+                });
+                continue;
+            }
             let Some(well) = self.well_for(window, tab.as_deref()) else {
                 // No well on screen: the window waits off it, with the size it has.
                 placement.push(WindowPlacement {

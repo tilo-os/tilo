@@ -36,6 +36,11 @@ pub struct WebViewProps {
     /// The page could not load: carries what the engine said.
     #[component(event(value = String))]
     pub fail: Event,
+    /// The shell returned the picture to the page: the person closed the floated window, or the
+    /// shell handed it back. The view stops floating when the app stops asking; this is how the
+    /// app learns the person is done.
+    #[component(event)]
+    pub picture_in_picture_closed: Event,
     /// The page's engine. A live engine is not a value: it never crosses from an app to the
     /// window, and the window that draws the view holds the one it hands in here.
     #[component(skip)]
@@ -53,14 +58,16 @@ impl Described for WebView {
             surface,
             navigate,
             fail,
+            picture_in_picture_closed,
             engine,
         } = props;
         // The window's page reports its navigation to the app; an app's own engine is read by
         // the app, so this view takes nothing from it. The window's second page is read by the
         // window's session too, so this view shows it and reports nothing.
         let shown = crate::webview::window_surface();
-        let window_page =
-            engine.is_none() && shown == crate::webview::Surface::Page && crate::webview::window_engine().is_some();
+        let window_page = engine.is_none()
+            && shown == crate::webview::Surface::Page
+            && crate::webview::window_engine().is_some();
         let engine = engine
             .or_else(crate::webview::window_engine)
             .unwrap_or_else(|| {
@@ -84,6 +91,7 @@ impl Described for WebView {
         if let Some(title) = title {
             view = view.with_accessible_name(title);
         }
+        view.set_pip_closed(picture_in_picture_closed);
         view = view.with_pip(pip);
         view.open_at(uri);
         view
@@ -95,6 +103,7 @@ impl Described for WebView {
     fn set_props(&mut self, props: WebViewProps) -> bool {
         self.set_accessible_name(props.title.unwrap_or_default());
         self.update_events(props.navigate, props.fail);
+        self.set_pip_closed(props.picture_in_picture_closed);
         self.set_pip(props.pip);
         self.open_at(props.uri);
         true

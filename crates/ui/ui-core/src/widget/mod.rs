@@ -1264,6 +1264,12 @@ pub trait FloatingSurfaceProvider {
         Vec::new()
     }
 
+    /// Whether the person dragging the body of surface `id` moves its window: a picture an app
+    /// floats goes where they drag it, while a card with controls of its own stays put.
+    fn floating_surface_moves_on_drag(&self, _id: &str) -> bool {
+        false
+    }
+
     fn draw_floating_surfaces(&mut self, _ctx: &mut DrawCtx<'_>) {}
 
     fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool {
@@ -1667,6 +1673,7 @@ pub trait FloatingSurfaceWidgetExt {
     /// Whether the person asked to pick an area of the screen to float. Consumed.
     fn take_pip_area_request(&mut self) -> bool;
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, vello::kurbo::Rect)>;
+    fn floating_surface_moves_on_drag(&self, id: &str) -> bool;
     fn draw_floating_surfaces(&mut self, ctx: &mut DrawCtx<'_>);
     fn draw_floating_surface(&mut self, id: &str, ctx: &mut DrawCtx<'_>) -> bool;
     fn floating_surface_presentations(
@@ -1751,6 +1758,11 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
             Vec::new,
             FloatingSurfaceProvider::take_floating_surface_source_updates,
         )
+    }
+
+    fn floating_surface_moves_on_drag(&self, id: &str) -> bool {
+        capability::capability::<dyn FloatingSurfaceProvider>(self)
+            .is_some_and(|provider| provider.floating_surface_moves_on_drag(id))
     }
 
     fn draw_floating_surfaces(&mut self, ctx: &mut DrawCtx<'_>) {

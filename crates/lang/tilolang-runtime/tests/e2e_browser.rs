@@ -1781,8 +1781,30 @@ mod cases {
         );
         assert_eq!(
             plain_button(&view, "Picture in picture"),
-            Some(float),
+            Some(float.clone()),
             "the same control asks again"
+        );
+
+        // The person closed the picture's own window instead: the shell returned it, the page
+        // hears that, and its control offers the float again.
+        view.fire(&float, "press").unwrap();
+        assert_eq!(b.read(&b.opened, "pip"), Value::Bool(true));
+        let view = b.page_view();
+        let webview = of_kind(view.tree(), "ui.WebView").remove(0);
+        view.fire(&webview.key, "picture_in_picture_closed")
+            .expect("the page hears the shell return its picture");
+        assert_eq!(b.read(&b.opened, "pip"), Value::Bool(false));
+        let view = b.page_view();
+        let webview = of_kind(view.tree(), "ui.WebView").remove(0);
+        assert_eq!(
+            webview.props.get("pip"),
+            Some(&Value::Int(0)),
+            "the view stops floating a picture the shell returned"
+        );
+        assert!(
+            plain_button(&view, "Picture in picture").is_some(),
+            "the control offers the float again:\n{}",
+            dump(view.tree())
         );
     }
 

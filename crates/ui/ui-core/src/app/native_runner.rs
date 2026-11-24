@@ -350,6 +350,10 @@ struct NativeFloatingWindow {
     ime_state: Option<NativeImeWindowState>,
     preedit_active: bool,
     preedit_clear_pending: bool,
+    /// Where the person pressed on the surface, while the press is down, and where the pointer
+    /// is now: a drag of a movable surface asks the shell to stand its window elsewhere.
+    drag_from: Option<winit::dpi::PhysicalPosition<f64>>,
+    drag_at: winit::dpi::PhysicalPosition<f64>,
 }
 
 #[derive(Default)]
@@ -1750,6 +1754,8 @@ impl AppHandler {
             ime_state: None,
             preedit_active: false,
             preedit_clear_pending: false,
+            drag_from: None,
+            drag_at: winit::dpi::PhysicalPosition::new(0.0, 0.0),
         });
         Ok(())
     }
@@ -4698,17 +4704,107 @@ impl AppHandler {
         }
     }
 
-    fn handle_native_floating_window_event(&mut self, index: usize, event: WindowEvent) {
-        self.app.root_widget.on_floating_surface_event_source(None);
+    /// A drag of a floating surface's body asks the shell to stand its window where the person
+    /// lets it go: the window moves on release, so a click still reaches what it presses.
+    fn track_floating_drag(&mut self, index: usize, event: &WindowEvent) {
+        use winit::event::{ElementState, MouseButton};
         let Some(surface) = self.floating_windows.get(index) else {
             return;
         };
-        let surface_id = surface.id.clone();
-        let reverse = surface.lifecycle.suspended
-            && self.floating_ime_return_continuation.as_deref() == Some(surface_id.as_str());
-        if surface.lifecycle.suspended && !reverse {
+        if !self
+            .app
+            .root_widget
+            .floating_surface_moves_on_drag(&surface.id)
+        {
             return;
         }
+        let id = surface.id.clone();
+        let scale = surface.window.scale_factor();
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(surface) = self.floating_windows.get_mut(index) {
+                    surface.drag_from = Some(surface.drag_at);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(surface) = self.floating_windows.get_mut(index) {
+                    surface.drag_at = *position;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(surface) = self.floating_windows.get_mut(index) else {
+                    return;
+                };
+                let Some(from) = surface.drag_from.take() else {
+                    return;
+                };
+                let dx = (surface.drag_at.x - from.x) / scale;
+                let dy = (surface.drag_at.y - from.y) / scale;
+                if dx.abs() < 4.0 && dy.abs() < 4.0 {
+                    return;
+                }
+                let shell = surface.shell_rect;
+                let moved =
+                    KurboRect::new(shell.x0 + dx, shell.y0 + dy, shell.x1 + dx, shell.y1 + dy);
+                let content = self
+                    .app
+                    .root_widget
+                    .floating_surface_presentations()
+                    .into_iter()
+                    .find(|presentation| presentation.id == id)
+                    .map(|presentation| {
+                        let content = presentation.content_rect;
+                        KurboRect::new(
+                            content.x0 + dx,
+                            content.y0 + dy,
+                            content.x1 + dx,
+                            content.y1 + dy,
+                        )
+                    });
+                surface.shell_rect = moved;
+                surface.window.request_redraw();
+                let Some(content) = content else {
+                    return;
+                };
+                if let Some(client) = self.app.floating.client.as_mut() {
+                    let _ = client.send(
+                        &crate::floating_surface::FloatingSurfaceClientMessage::SurfaceGeometry {
+                            id,
+                            rect: crate::floating_surface::protocol_rect_array(moved),
+                            content_rect: crate::floating_surface::protocol_rect_array(content),
+                            input_rect: None,
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_native_floating_window_event(&mut self, index: usize, event: WindowEvent) {
+        self.app.root_widget.on_floating_surface_event_source(None);
+        let Some((surface_id, suspended, reverse)) =
+            self.floating_windows.get(index).map(|surface| {
+                let reverse = surface.lifecycle.suspended
+                    && self.floating_ime_return_continuation.as_deref()
+                        == Some(surface.id.as_str());
+                (surface.id.clone(), surface.lifecycle.suspended, reverse)
+            })
+        else {
+            return;
+        };
+        if suspended && !reverse {
+            return;
+        }
+        self.track_floating_drag(index, &event);
         if reverse {
             if matches!(event, WindowEvent::Focused(false)) {
                 self.floating_ime_return_continuation = None;
@@ -4762,6 +4858,9 @@ impl AppHandler {
             }
             return;
         }
+        let Some(surface) = self.floating_windows.get(index) else {
+            return;
+        };
         let window = surface.window.clone();
         let shell_rect = surface.shell_rect;
         self.app

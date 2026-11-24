@@ -90,6 +90,9 @@ struct Shared {
     cards: BTreeMap<Key, Presented>,
     /// The place the floating layer gave each card this pass, in shell pixels.
     slots: BTreeMap<Key, Rect>,
+    /// Where each app's picture stood when the person last moved it, by its activity: a picture
+    /// the app floats again comes back where the person left it.
+    places: BTreeMap<Key, Rect>,
 }
 
 /// The cards the apps draw themselves, shared by the session that authorises them and the layer
@@ -149,14 +152,30 @@ impl Cards {
     /// Stand an app's picture at a place of its own: the shell's cards hold no block it could
     /// take, so the session gives it one.
     pub(crate) fn seat(&self, app: &str, activity: &str, at: Rect) {
-        if let Some(card) = self
-            .shared
-            .borrow_mut()
-            .cards
-            .get_mut(&(app.to_owned(), activity.to_owned()))
-        {
+        let mut shared = self.shared.borrow_mut();
+        let key = (app.to_owned(), activity.to_owned());
+        if let Some(card) = shared.cards.get_mut(&key) {
             card.seat = Some(at);
         }
+    }
+
+    /// The person moved the picture an app floats, dragging it to `at` on the shell: its window
+    /// stands there now, and the next float of it comes back there. Only the window that
+    /// presented it may move it. Whether the surface is one this app floats.
+    pub(crate) fn moved(&self, app: &str, connection: u64, activity: &str, at: Rect) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let key = (app.to_owned(), activity.to_owned());
+        let Some(card) = shared.cards.get_mut(&key) else {
+            return false;
+        };
+        if card.connection != connection
+            || card.role != FloatingSurfaceProtocolRole::PictureInPicture
+        {
+            return false;
+        }
+        card.seat = Some(at);
+        shared.places.insert(key, at);
+        true
     }
 
     /// The card `token` draws, while the app still presents it.
@@ -280,6 +299,10 @@ impl Cards {
             || uuid::Uuid::new_v4().simple().to_string(),
             |card| card.token.clone(),
         );
+        // A picture comes back where the person last left it.
+        let remembered = (request.role == FloatingSurfaceProtocolRole::PictureInPicture)
+            .then(|| self.shared.borrow().places.get(&key).copied())
+            .flatten();
         let shown = Presented {
             app: app.to_owned(),
             activity: request.id.clone(),
@@ -292,7 +315,7 @@ impl Cards {
             told: None,
             stood_down: false,
             adopted: false,
-            seat: None,
+            seat: remembered,
         };
         let size = shown.window_size();
         self.shared.borrow_mut().cards.insert(key, shown);
@@ -662,8 +685,22 @@ mod tests {
                 !cards.update_region("so.tilo.chat", 7, "pip:2", Rect::ZERO),
                 "a surface it never presented moves nothing"
             );
+            // The person dragged the picture where they wanted it: that place is the one its
+            // next float comes back to.
+            let dragged = Rect::new(300.0, 80.0, 660.0, 282.5);
+            assert!(cards.moved("so.tilo.chat", 7, "pip:1", dragged));
+            assert!(
+                !cards.moved("so.tilo.chat", 8, "pip:1", Rect::ZERO),
+                "another window of the app moves nothing"
+            );
             assert!(cards.dismissed(7, "pip:1").is_some(), "the picture returns");
             assert!(cards.presented().is_empty());
+            cards.present("so.tilo.chat", 7, &request).unwrap();
+            assert_eq!(
+                cards.picture_seat("so.tilo.chat", "pip:1"),
+                Some(dragged),
+                "the picture comes back where the person left it"
+            );
         }
 
         phase a_picture_of_another_apps_window_is_refused;

@@ -8837,6 +8837,10 @@
           "name": "fail",
           "doc": "The page could not load: carries what the engine said.",
           "value": "text"
+        },
+        {
+          "name": "picture_in_picture_closed",
+          "doc": "The shell returned the picture to the page: the person closed the floated window, or the shell handed it back. The view stops floating when the app stops asking; this is how the app learns the person is done."
         }
       ],
       "semantics": {

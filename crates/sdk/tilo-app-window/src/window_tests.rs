@@ -3723,6 +3723,14 @@ fn a_floating_picture_is_drawn_where_the_shell_stands_it_and_follows_its_source(
         page.take_floating_surface_source_updates().is_empty(),
         "a picture that stands where it did is not told again"
     );
+    assert!(
+        page.floating_surface_moves_on_drag(id),
+        "the person drags the picture where they want it"
+    );
+    assert!(
+        !page.floating_surface_moves_on_drag("so.tilo.browser:call"),
+        "a card with controls of its own is not dragged by its body"
+    );
 
     // The shell returns the picture: nothing of it is left to draw or to move.
     page.on_floating_surface_host_message(&FloatingSurfaceHostMessage::Closed {

@@ -50,6 +50,40 @@ use ui::vello::kurbo::Rect;
 /// over, and of the display when that window is not on the shell.
 const PICTURE_MARGIN: f64 = 16.0;
 
+/// `at` moved no farther than it must to stand on the outputs the person has: a floating picture
+/// is clamped to what they can see.
+fn on_outputs(at: Rect, outputs: Vec<tilo_compositor::OutputInfo>) -> Rect {
+    let mut area: Option<Rect> = None;
+    for output in outputs {
+        let (true, Some((x, y, width, height))) = (output.enabled, output.rect) else {
+            continue;
+        };
+        let rect = Rect::from_origin_size(
+            (f64::from(x), f64::from(y)),
+            (f64::from(width), f64::from(height)),
+        );
+        area = Some(area.map_or(rect, |area| area.union(rect)));
+    }
+    let Some(area) = area else {
+        return at;
+    };
+    let x = if at.x0 < area.x0 {
+        area.x0 - at.x0
+    } else if at.x1 > area.x1 {
+        area.x1 - at.x1
+    } else {
+        0.0
+    };
+    let y = if at.y0 < area.y0 {
+        area.y0 - at.y0
+    } else if at.y1 > area.y1 {
+        area.y1 - at.y1
+    } else {
+        0.0
+    };
+    at + ui::vello::kurbo::Vec2::new(x, y)
+}
+
 /// The longest frame an app may send: a paint stream and a marker inventory both fit, and nothing
 /// else comes close.
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -1206,10 +1240,16 @@ impl Answers<'_> {
                     refuse(&reply, &app, &name, &reason);
                 }
             }
-            // The app's own geometry is a request: the layer's place stands. A card it presents
-            // again after bringing it down draws the activity there once more.
-            FloatingSurfaceClientMessage::SurfaceGeometry { id, .. } => {
+            // The app's own geometry is a request: the layer's place stands, but a picture the
+            // person dragged stands where they put it, and the next float of it comes back
+            // there. A card the app presents again after bringing it down draws the activity
+            // there once more.
+            FloatingSurfaceClientMessage::SurfaceGeometry { id, rect, .. } => {
                 self.cards.presented_again(&app, connection, &id);
+                if let Ok(at) = protocol_rect(rect) {
+                    let at = on_outputs(at, self.compositor.outputs());
+                    self.cards.moved(&app, connection, &id, at);
+                }
             }
             // The app draws the activity in its own window again: its card stands down until it
             // presents one again.

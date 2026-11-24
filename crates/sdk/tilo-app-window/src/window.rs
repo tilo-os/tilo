@@ -3472,6 +3472,12 @@ impl ui::widget::FloatingSurfaceProvider for AppWindow {
             .map(|region| vec![(self.pip_surface_id(), region)])
             .unwrap_or_default()
     }
+
+    /// The picture is dragged where the person wants it, and the card the shell's own keeps its
+    /// buttons to itself.
+    fn floating_surface_moves_on_drag(&self, id: &str) -> bool {
+        id == self.pip_surface_id()
+    }
 }
 
 impl AppWindow {
