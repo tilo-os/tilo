@@ -20,19 +20,32 @@ use crate::tokens::Rhythm;
 use crate::widget::arrange::{Part, Stack};
 use crate::widget::{Decorator, DrawChild, Element, Widget};
 
-/// The resource a payload names, when it names one: a
-/// [resource](super::drag_source::RESOURCE_PAYLOAD) drag's id, or a run item's
-/// ([`ITEM_PAYLOAD`](super::drag_run::ITEM_PAYLOAD): its key is the resource it stands for's id).
-fn resource_of(payload: &crate::dnd::DragPayload) -> Option<String> {
+/// What a drop carries a target's view: a resource, or device files a source of this window stood
+/// for.
+enum Dropped {
+    Resource(String),
+    Files(Vec<String>),
+}
+
+/// What a payload carries, when it is something a target takes: a
+/// [resource](super::drag_source::RESOURCE_PAYLOAD) drag's id, a run item's
+/// ([`ITEM_PAYLOAD`](super::drag_run::ITEM_PAYLOAD): its key is the resource it stands for's id),
+/// or the paths of a [files](super::drag_source::FILES_PAYLOAD) drag.
+fn dropped_of(payload: &crate::dnd::DragPayload) -> Option<Dropped> {
     let crate::dnd::DragPayload::Custom { kind, blob } = payload else {
         return None;
     };
+    if kind == super::drag_source::FILES_PAYLOAD {
+        let files = super::drag_source::files_of(blob);
+        return (!files.is_empty()).then_some(Dropped::Files(files));
+    }
     if kind != super::drag_source::RESOURCE_PAYLOAD && kind != super::drag_run::ITEM_PAYLOAD {
         return None;
     }
     String::from_utf8(blob.clone())
         .ok()
         .filter(|id| !id.is_empty())
+        .map(Dropped::Resource)
 }
 
 #[path = "drop_target_component.rs"]
@@ -46,11 +59,17 @@ pub struct DropTarget {
     column: Stack,
     /// The resource a drag over it would drop now, while one hovers: what the line says.
     hovered: Option<String>,
-    /// What a drop reports.
+    /// What a drop of a resource reports.
     drop: Event,
+    /// What a drop of a source's device files reports.
+    drop_files: Event,
     /// The key this target is known by on the bus.
     key: String,
     rect: Rect,
+    /// Where the pointer is, in the tree's own pixels: where a drag the desktop carries is.
+    cursor: Point,
+    /// Whether the desktop carries files over the window now.
+    files_over: bool,
     dirty: bool,
 }
 
@@ -64,18 +83,29 @@ impl DropTarget {
                 .push_part(Part::new(child)),
             hovered: None,
             drop,
+            drop_files: Event::default(),
             key: key.into(),
             rect: Rect::ZERO,
+            cursor: Point::ZERO,
+            files_over: false,
             dirty: true,
         }
     }
 
+    /// What a drop of device files a source of this window stood for reports: their paths.
+    #[must_use]
+    pub fn with_files(mut self, drop_files: Event) -> Self {
+        self.drop_files = drop_files;
+        self
+    }
+
     /// Take new content and what a drop reports, as a rebuilt view gives them.
-    pub(crate) fn set_content(&mut self, content: Option<Element>, drop: Event) {
+    pub(crate) fn set_content(&mut self, content: Option<Element>, drop: Event, drop_files: Event) {
         if let Some(content) = content {
             let _ = self.column.replace(0, content);
         }
         self.drop = drop;
+        self.drop_files = drop_files;
     }
 
     /// Where a drop may land: this widget's own box.
@@ -87,20 +117,24 @@ impl DropTarget {
     /// Take the drop the last drag left inside this target, if any: the resource it carried and
     /// where inside the target it was let go, in the target's own logical pixels. One target
     /// takes it; the rest see nothing.
-    fn take(&mut self) -> Option<(String, Point)> {
+    fn take(&mut self) -> Option<(Dropped, Point)> {
         let landed = crate::widget::drag_bus::take(&self.key, self.rect)?;
-        let resource = resource_of(&landed.payload)?;
+        let dropped = dropped_of(&landed.payload)?;
         self.dirty = true;
-        Some((resource, landed.pointer - self.rect.origin().to_vec2()))
+        Some((dropped, landed.pointer - self.rect.origin().to_vec2()))
     }
 
-    /// The resource a drag over the target now carries, while one hovers it.
+    /// The resource a drag over the target now carries, while one hovers it: one on the bus, or
+    /// one whose files a source of this window handed to the desktop.
     fn over_now(&self) -> Option<String> {
+        if self.files_over && self.rect.contains(self.cursor) {
+            return crate::widget::drag_bus::offered();
+        }
         let in_flight = crate::widget::drag_bus::current()?;
         if in_flight.source == self.key || !self.rect.contains(in_flight.pointer) {
             return None;
         }
-        resource_of(&in_flight.payload)
+        dropped_of(&in_flight.payload).map(|_| in_flight.label)
     }
 }
 
@@ -119,14 +153,31 @@ impl Decorator for DropTarget {
         let mut changed = self.column.update(state, path);
         // A drop let go inside this target since the last pass is the event it fires; a drag
         // that came or went changes the line it draws.
-        if let Some((resource, at)) = self.take() {
-            self.drop.fire(Some(crate::component::Value::List(vec![
-                crate::component::Value::Resource(resource),
-                crate::component::Value::List(vec![
-                    crate::component::Value::Int(at.x.round() as i64),
-                    crate::component::Value::Int(at.y.round() as i64),
-                ]),
-            ])));
+        if let Some((dropped, at)) = self.take() {
+            let at = crate::component::Value::List(vec![
+                crate::component::Value::Int(at.x.round() as i64),
+                crate::component::Value::Int(at.y.round() as i64),
+            ]);
+            match dropped {
+                Dropped::Resource(resource) => {
+                    self.drop.fire(Some(crate::component::Value::List(vec![
+                        crate::component::Value::Resource(resource),
+                        at,
+                    ])));
+                }
+                Dropped::Files(files) => {
+                    self.drop_files
+                        .fire(Some(crate::component::Value::List(vec![
+                            crate::component::Value::List(
+                                files
+                                    .into_iter()
+                                    .map(crate::component::Value::Text)
+                                    .collect(),
+                            ),
+                            at,
+                        ])));
+                }
+            }
             changed = true;
         }
         let over = self.over_now();
@@ -172,7 +223,35 @@ impl Decorator for DropTarget {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = ctx.logical(position);
+                self.dirty |= self.files_over;
+            }
+            WindowEvent::HoveredFile(_) => {
+                self.files_over = true;
+                self.dirty = true;
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.files_over = false;
+                self.dirty = true;
+            }
+            _ => {}
+        }
         self.column.handle_event(event, ctx);
+        // Files a source of this window gave the desktop to carry, dropped back inside this
+        // target, are that source's drag landing here: taken as a drop of the bus, at the point
+        // the person let go. A target inside this one took it first when it held the pointer.
+        if let WindowEvent::DroppedFile(path) = event {
+            self.files_over = false;
+            if !*ctx.handled
+                && self.rect.contains(self.cursor)
+                && crate::widget::drag_bus::came_back(path, self.cursor)
+            {
+                self.dirty = true;
+                *ctx.handled = true;
+            }
+        }
     }
 
     fn get_rect(&self) -> Rect {

@@ -2819,7 +2819,7 @@
     },
     {
       "name": "DropTarget",
-      "doc": "A view that takes what another view dragged to it: a chat composer takes an attachment, a dock takes a resource. A drag over it draws the toolkit's drop line, and letting go inside it reports what the drag carried.\nIt takes a resource dragged out of any [`ui.DragSource`](super::DragSource) and a run's item ([`ui.DragItem`](super::DragItem)); nothing else, so a file dragged in from another application is not silently swallowed (`ui.DropZone` is the component for files).",
+      "doc": "A view that takes what another view dragged to it: a chat composer takes an attachment, a dock takes a resource. A drag over it draws the toolkit's drop line, and letting go inside it reports what the drag carried.\nIt takes a resource dragged out of any [`ui.DragSource`](super::DragSource), a run's item ([`ui.DragItem`](super::DragItem)), and the device files a source of this same window stands for — a file manager's entry let go on a folder's row, even while the desktop carries it. A file dragged in from another application is not taken here, so it is never silently swallowed (`ui.DropZone` and a window's own `drop` are for those).",
       "parts": [
         {
           "name": "content",
@@ -2833,6 +2833,16 @@
           "name": "drop",
           "doc": "A resource was dropped on it: carries the resource the drag carried, as its address, and where inside the target it was let go — its x, then its y, in the target's own logical pixels. The view decides what to do with it — a composer attaches it to the draft, a canvas places it where it was dropped, a shell puts what it holds back there.",
           "value": "resource",
+          "at": {
+            "list": "int"
+          }
+        },
+        {
+          "name": "drop_files",
+          "doc": "Device files a source of this window stood for were dropped on it: carries their paths, and where inside the target they were let go, as `drop` says it. A folder's row moves them into its folder.",
+          "value": {
+            "list": "text"
+          },
           "at": {
             "list": "int"
           }

@@ -32,6 +32,19 @@ use crate::widget::{Decorator, DrawChild, Element, Widget};
 /// reads a resource id out of the blob without knowing which view made the drag.
 pub const RESOURCE_PAYLOAD: &str = "resource";
 
+/// What a `DragSource` that stands for device files and no resource carries on the bus: their
+/// paths, each ended by a NUL, which no path holds.
+pub const FILES_PAYLOAD: &str = "files";
+
+/// The paths a [`FILES_PAYLOAD`] blob names.
+#[must_use]
+pub fn files_of(blob: &[u8]) -> Vec<String> {
+    blob.split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect()
+}
+
 #[path = "drag_source_component.rs"]
 mod component;
 pub use component::DragSourceProps;
@@ -138,8 +151,20 @@ impl DragSource {
         self.files = files;
     }
 
-    /// What the drag publishes: the resource's address in the blob.
+    /// What the drag publishes: the resource's address in the blob, or, for a source that stands
+    /// for device files and no resource, their paths.
     fn payload(&self) -> crate::dnd::DragPayload {
+        if self.resource.is_empty() && !self.files.is_empty() {
+            let mut blob = Vec::new();
+            for file in &self.files {
+                blob.extend_from_slice(file.as_os_str().as_encoded_bytes());
+                blob.push(0);
+            }
+            return crate::dnd::DragPayload::Custom {
+                kind: FILES_PAYLOAD.to_owned(),
+                blob,
+            };
+        }
         crate::dnd::DragPayload::Custom {
             kind: RESOURCE_PAYLOAD.to_owned(),
             blob: self.resource.as_bytes().to_vec(),
@@ -182,6 +207,14 @@ impl DragSource {
             // pointer, so the drag is the person's own.
             if !self.files.is_empty() && crate::dnd::start_file_drag(&self.files) {
                 lift.offered = true;
+                // Dropped back on this window, the files are this drag still: a target here
+                // takes them as it takes any drag of its own window.
+                crate::widget::drag_bus::offer(
+                    self.key.clone(),
+                    self.payload(),
+                    self.title.clone(),
+                    self.files.clone(),
+                );
                 self.dirty = true;
                 return;
             }
@@ -190,9 +223,9 @@ impl DragSource {
             return;
         }
         self.dirty = true;
-        crate::widget::drag_bus::carry(
+        crate::widget::drag_bus::carry_payload(
             self.key.clone(),
-            self.resource.as_bytes().to_vec(),
+            self.payload(),
             self.title.clone(),
             point,
             self.rect,
@@ -207,9 +240,11 @@ impl DragSource {
         let lift = self.lift.take()?;
         self.dirty = true;
         if lift.offered {
-            // The desktop carried it; this window's bus never held it.
-            crate::widget::drag_bus::end(None);
-        } else if lift.active {
+            // The desktop carries it, and its drop — here or in another app — is the desktop's
+            // to say: this window's bus never held it in flight.
+            return Some(true);
+        }
+        if lift.active {
             let landed = crate::widget::drag_bus::Landed {
                 source: self.key.clone(),
                 payload: self.payload(),
