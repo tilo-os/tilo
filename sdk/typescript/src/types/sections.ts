@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@33240f2a5b87fd6e";
+export const SURFACE = "so.tilo.settings.sections@ffcedb70cea81fd7";
 
 export interface Ink {
   primary: number;
@@ -174,6 +174,12 @@ export interface WidgetPrefs {
   always_on_strips: number[];
   places: Place[];
   width: number | null;
+}
+
+export interface Learned {
+  enabled: boolean;
+  known: string[];
+  shown: Record<string, number>;
 }
 
 export interface AppNotificationRule {
@@ -625,6 +631,30 @@ export interface PlaceWidgetArgs {
 export interface ResizeWidgetArgs {
   widget: string;
   width: number;
+}
+
+/** The arguments of `show-control-hints`. */
+export interface ShowControlHintsArgs {
+  enabled: boolean;
+}
+
+/** The arguments of `learn-control-hint`. */
+export interface LearnControlHintArgs {
+  hint: string;
+}
+
+/** The arguments of `note-control-hint-shown`. */
+export interface NoteControlHintShownArgs {
+  hint: string;
+}
+
+/** The arguments of `withdraw-control-hint-shown`. */
+export interface WithdrawControlHintShownArgs {
+  hint: string;
+}
+
+/** The arguments of `show-control-hints-again`. */
+export interface ShowControlHintsAgainArgs {
 }
 
 /** The arguments of `record-automatic-updates`. */
@@ -1299,6 +1329,43 @@ export const WIDGETS_ACTIONS = ["setWidgetEnabled", "setWidgetEnabledMany", "set
 /** The `settings.widgets` kind at `path`. */
 export function widgets(ws: tilo.Workspace, path: string): Widgets {
   return resourceProxy(ws, path, SURFACE, WIDGETS_ACTIONS, true) as unknown as Widgets;
+}
+
+/** Control hints — `settings.control-hints`. */
+export interface ControlHints extends tilo.Resource {
+  learned: Learned;
+  showControlHints(args: {
+    enabled: boolean;
+  }): Promise<void>;
+  /** Runs `show-control-hints` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  showControlHintsMany(items: ShowControlHintsArgs[]): Promise<tilo.ActionAnswer[]>;
+  learnControlHint(args: {
+    hint: string;
+  }): Promise<void>;
+  /** Runs `learn-control-hint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  learnControlHintMany(items: LearnControlHintArgs[]): Promise<tilo.ActionAnswer[]>;
+  noteControlHintShown(args: {
+    hint: string;
+  }): Promise<void>;
+  /** Runs `note-control-hint-shown` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  noteControlHintShownMany(items: NoteControlHintShownArgs[]): Promise<tilo.ActionAnswer[]>;
+  withdrawControlHintShown(args: {
+    hint: string;
+  }): Promise<void>;
+  /** Runs `withdraw-control-hint-shown` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  withdrawControlHintShownMany(items: WithdrawControlHintShownArgs[]): Promise<tilo.ActionAnswer[]>;
+  showControlHintsAgain(): Promise<void>;
+  /** Runs `show-control-hints-again` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  showControlHintsAgainMany(items: ShowControlHintsAgainArgs[]): Promise<tilo.ActionAnswer[]>;
+}
+
+/** The actions `ControlHints` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CONTROLHINTS_ACTIONS = ["showControlHints", "showControlHintsMany", "learnControlHint", "learnControlHintMany", "noteControlHintShown", "noteControlHintShownMany", "withdrawControlHintShown", "withdrawControlHintShownMany", "showControlHintsAgain", "showControlHintsAgainMany"] as const;
+
+/** The `settings.control-hints` kind at `path`. */
+export function controlHints(ws: tilo.Workspace, path: string): ControlHints {
+  return resourceProxy(ws, path, SURFACE, CONTROLHINTS_ACTIONS, true) as unknown as ControlHints;
 }
 
 /** Search history — `settings.search_history`. */

@@ -92468,6 +92468,60 @@
         ],
         "description": ""
       },
+      "settings.control-hints.show-control-hints.Arguments": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "description": ""
+      },
+      "settings.control-hints.learn-control-hint.Arguments": {
+        "type": "object",
+        "properties": {
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hint"
+        ],
+        "description": ""
+      },
+      "settings.control-hints.note-control-hint-shown.Arguments": {
+        "type": "object",
+        "properties": {
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hint"
+        ],
+        "description": ""
+      },
+      "settings.control-hints.withdraw-control-hint-shown.Arguments": {
+        "type": "object",
+        "properties": {
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hint"
+        ],
+        "description": ""
+      },
+      "settings.control-hints.show-control-hints-again.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "settings.updates.record-automatic-updates.Arguments": {
         "type": "object",
         "properties": {
@@ -125967,6 +126021,36 @@
       "resource": "settings.widgets",
       "action": "resize-widget",
       "arguments": "#/components/schemas/settings.widgets.resize-widget.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "show-control-hints",
+      "arguments": "#/components/schemas/settings.control-hints.show-control-hints.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "learn-control-hint",
+      "arguments": "#/components/schemas/settings.control-hints.learn-control-hint.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "note-control-hint-shown",
+      "arguments": "#/components/schemas/settings.control-hints.note-control-hint-shown.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "withdraw-control-hint-shown",
+      "arguments": "#/components/schemas/settings.control-hints.withdraw-control-hint-shown.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.control-hints",
+      "action": "show-control-hints-again",
+      "arguments": "#/components/schemas/settings.control-hints.show-control-hints-again.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",
