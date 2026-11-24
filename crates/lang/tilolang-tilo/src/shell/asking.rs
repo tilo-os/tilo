@@ -41,6 +41,9 @@ pub struct AskedReading {
     pub conversation: String,
     /// What it shows before it is answered, as labels and values, in order.
     pub facts: Vec<(String, String)>,
+    /// The records the called action writes besides its own, each by the app that keeps it and
+    /// what the step does there, in the person's words.
+    pub effects: Vec<(String, String)>,
     /// The choices it answers with instead of yes or no, in order.
     pub choices: Vec<String>,
 }
@@ -90,6 +93,12 @@ impl From<&Asked> for AskedReading {
                 .iter()
                 .map(|f| (f.label.clone(), f.value.clone()))
                 .collect(),
+            effects: row
+                .facts
+                .effects
+                .iter()
+                .map(|e| (e.app.clone(), e.what.clone()))
+                .collect(),
             choices: row.facts.choices.clone(),
         }
     }
@@ -136,6 +145,12 @@ impl AskingWriter {
         let choices = parts(questions, |q| {
             q.choices.iter().map(|label| (label.as_str(), "")).collect()
         });
+        let effects = parts(questions, |q| {
+            q.effects
+                .iter()
+                .map(|(app, what)| (app.as_str(), what.as_str()))
+                .collect()
+        });
         let mut writes = self.mirror.sync(
             questions,
             &root,
@@ -174,6 +189,21 @@ impl AskingWriter {
                         Value::Int(i64::try_from(c.index).unwrap_or(i64::MAX)),
                     ),
                     ("label", text(c.label)),
+                ]
+            },
+        ));
+        writes.extend(self.mirror.sync(
+            &effects,
+            &root,
+            ty.field("effects"),
+            find("asked_effect"),
+            |e| e.key.clone(),
+            |e| {
+                vec![
+                    ("key", text(&e.key)),
+                    ("question", text(e.question)),
+                    ("app", text(e.label)),
+                    ("what", text(e.value)),
                 ]
             },
         ));

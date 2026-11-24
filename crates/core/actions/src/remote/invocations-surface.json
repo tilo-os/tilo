@@ -409,6 +409,14 @@
               }
             },
             {
+              "name": "effects",
+              "type": {
+                "list": {
+                  "named": "DeclaredEffect"
+                }
+              }
+            },
+            {
               "name": "destructive",
               "type": "bool"
             },
@@ -648,6 +656,32 @@
             },
             {
               "name": "value",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "name": "DeclaredEffect",
+          "doc": "One record the asked action writes besides its own, as its declaration says it: the app by the name a person reads, and what the step does there in their words.",
+          "fields": [
+            {
+              "name": "app",
+              "type": "text"
+            },
+            {
+              "name": "what",
+              "type": "text"
+            },
+            {
+              "name": "appId",
+              "type": "text"
+            },
+            {
+              "name": "kind",
+              "type": "text"
+            },
+            {
+              "name": "verb",
               "type": "text"
             }
           ]

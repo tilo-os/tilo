@@ -86,6 +86,47 @@ impl Fact {
     }
 }
 
+/// One record an action writes besides its own, as its declaration says it: the app by the
+/// name a person reads, and what the step does there in their words, with the step's own
+/// app, kind and verb for a caller that decides on them rather than reads them
+/// ([`crate::ActionDescriptor::effects`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclaredEffect {
+    /// The app that keeps the record, by the name it shows.
+    pub app: String,
+    /// What the action's step does there, in the person's words.
+    pub what: String,
+    /// The app's id, as the declaration names it.
+    #[serde(default)]
+    pub app_id: String,
+    /// The record's kind (`passwords.workspace-vault`).
+    #[serde(default)]
+    pub kind: String,
+    /// The verb the step runs there.
+    #[serde(default)]
+    pub verb: String,
+}
+
+impl DeclaredEffect {
+    /// The step `step` of a declaration on the app `app_id`, whose display name is `app` and
+    /// whose verb `what` does there, in the person's words.
+    #[must_use]
+    pub fn new(
+        app: impl Into<String>,
+        what: impl Into<String>,
+        step: &crate::ActionEffect,
+    ) -> Self {
+        Self {
+            app: app.into(),
+            what: what.into(),
+            app_id: step.app.clone(),
+            kind: step.kind.clone(),
+            verb: step.verb.clone(),
+        }
+    }
+}
+
 /// One argument an action shows the person before they answer its ask, as
 /// its declaration names it: the parameter, optionally one field of it, and
 /// how its value reads. Admission fills the ask's [`Fact`]s from the call's
@@ -174,6 +215,12 @@ pub struct AskedFacts {
     /// What the person reads before answering, in order.
     #[serde(default)]
     pub facts: Vec<Fact>,
+    /// The records the called action writes besides its own, as it declares them
+    /// ([`crate::ActionDescriptor::effects`]): each app by the name a person reads, and what the
+    /// step does there in their words. Empty for an action that writes only its own resource,
+    /// which says nothing at all of what it writes.
+    #[serde(default)]
+    pub effects: Vec<DeclaredEffect>,
     /// Whether the call takes away what Undo does not bring back.
     #[serde(default)]
     pub destructive: bool,
@@ -871,6 +918,7 @@ mod tests {
                 "words": "",
                 "on": null,
                 "facts": [{"label": "At", "value": "07:00"}],
+                "effects": [],
                 "destructive": false,
                 "choices": [],
                 "verb": "set",

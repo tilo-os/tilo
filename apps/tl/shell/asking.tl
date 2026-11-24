@@ -255,6 +255,9 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                 }
             }
         }
+        // What else the call writes, beyond the record it names: each app and what the step
+        // does there, read from the action's declaration into the asked record.
+        std.action_effects(a.effects, writer: e -> e.app, what: e -> e.what)
         if a.destructive {
             ui.Text("Undo can't bring this back", secondary: true)
         }

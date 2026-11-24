@@ -204,7 +204,7 @@ impl AppBrokerState {
     }
 
     /// The name the person knows app `app` by: its installed manifest's, else its id.
-    fn app_title(&self, app: &str) -> String {
+    pub(super) fn app_title(&self, app: &str) -> String {
         self.services
             .launcher
             .as_ref()

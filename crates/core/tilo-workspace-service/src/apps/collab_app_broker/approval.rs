@@ -162,7 +162,9 @@ impl AppBrokerState {
             }
             return Ok(facts);
         };
+        let declared = tilo_actions::remote::declared_effects(&request.target);
         let mut facts = described(facts, descriptor, &request.argument);
+        facts.effects = self.worded_effects(caller, &declared);
         // A Store disclosure shows exactly what leaves the workspace, and where to.
         if requires_store_approval(&app, &address.action) {
             facts
@@ -170,6 +172,64 @@ impl AppBrokerState {
                 .extend(store_disclosure(caller, request)?.facts());
         }
         Ok(facts)
+    }
+
+    /// The records `effects`, a called action's declaration says it writes beside its own, as
+    /// the person answering the call reads them: each app by the name it shows, and what the
+    /// step does there in the words the app that keeps the record publishes for the step, else
+    /// in this host's words for it.
+    pub(super) fn worded_effects(
+        &self,
+        caller: &Caller,
+        effects: &[tilo_actions::ActionEffect],
+    ) -> Vec<tilo_actions::remote::asked::DeclaredEffect> {
+        let language = settings_store::appearance::preferred_language();
+        effects
+            .iter()
+            .map(|effect| {
+                let app = self.app_title(&effect.app);
+                let key = format!(
+                    "{}-{}",
+                    tilo_resource::label::message_key(&effect.kind),
+                    effect.verb
+                );
+                let what = self.step_label(caller, effect).unwrap_or_else(|| {
+                    let worded = crate::i18n::message(
+                        language.as_deref(),
+                        &key,
+                        &tilo_history::FluentArgs::new(),
+                    );
+                    // A key no catalogue holds reads as the key itself: the verb in words says
+                    // what the step does though nothing has named its phrase.
+                    if worded == key {
+                        effect.verb.replace('-', " ")
+                    } else {
+                        worded
+                    }
+                });
+                tilo_actions::remote::asked::DeclaredEffect::new(app, what, effect)
+            })
+            .collect()
+    }
+
+    /// The label the app keeping `effect`'s record offers its step under, where the app offers
+    /// it to `caller`.
+    fn step_label(&self, caller: &Caller, effect: &tilo_actions::ActionEffect) -> Option<String> {
+        let rows = self
+            .eager_catalogue(
+                caller,
+                RowScope::App {
+                    app_id: &effect.app,
+                    provider: None,
+                },
+            )
+            .0;
+        rows.iter().find_map(|row| {
+            let action = row.action.as_ref()?;
+            (action.resource_kind == effect.kind && action.address.action == effect.verb)
+                .then(|| action.action_label.trim().to_owned())
+                .filter(|label| !label.is_empty())
+        })
     }
 
     /// `error`, an answer to `caller`'s `request`, stating what the person is shown where it

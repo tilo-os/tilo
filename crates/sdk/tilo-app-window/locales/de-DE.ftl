@@ -21,6 +21,7 @@ tilolang-suggested-by = vorgeschlagen von { $name }
 tilolang-ask-always = Immer erlauben
 tilolang-ask-denied = Diese Änderung ist hier nicht erlaubt.
 tilolang-ask-needs-approval = Diese Änderung muss zuerst bestätigt werden.
+tilolang-also-writes = Schreibt außerdem in { $app }: { $what }
 tilolang-change-kept = Deine Änderung bleibt auf diesem Gerät, bis der Arbeitsbereich sie annimmt.
 tilolang-did-changed = hat { $field } geändert
 tilolang-did-renamed = hat es umbenannt

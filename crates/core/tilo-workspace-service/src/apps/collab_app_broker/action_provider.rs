@@ -2205,6 +2205,18 @@ impl AppBrokerState {
         // The launcher keeps the workspace past the read: only this
         // workspace's authority is copied, once every check on the same sample passed.
         let workspace_id = workspace;
+        // What the offered action writes beside its record, read before the workspace is
+        // borrowed: wording it asks the catalogue, which reads the same authority.
+        let effects = offered.as_ref().map_or_else(Vec::new, |action| {
+            let target = tilo_actions::remote::RemoteActionTarget {
+                provider: request.target.provider.clone(),
+                address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
+            };
+            self.worded_effects(
+                caller,
+                &tilo_actions::remote::declared_effects(&target),
+            )
+        });
         let workspace = self
             .decide_for(caller, &workspace_id, |workspace, policy, now| {
                 // A live application target is a route to an existing action,
@@ -2248,6 +2260,7 @@ impl AppBrokerState {
                             action,
                             &policy,
                             argument.as_deref(),
+                            &effects,
                         )));
                     }
                 }

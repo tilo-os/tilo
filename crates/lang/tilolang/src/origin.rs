@@ -812,6 +812,23 @@ pub const KINDS: &[OriginKind] = &[
                 "Collection<session.asked_choice>",
                 "The choices a question answers with instead of yes or no.",
             ),
+            field(
+                "effects",
+                "Collection<session.asked_effect>",
+                "What else each question writes, each naming its question: the app and what the \
+                 step does there, in the person's words.",
+            ),
+        ],
+    },
+    OriginKind {
+        name: "session.asked_effect",
+        doc: "One record a question's action writes besides its own.",
+        derived: true,
+        fields: &[
+            field("key", "Text", "Its id, as `<question>/<number>`."),
+            field("question", "Text", "The question it is of, by its key."),
+            field("app", "Text", "The app that keeps the record, by its name."),
+            field("what", "Text", "What the step does there, in the person's words."),
         ],
     },
     OriginKind {

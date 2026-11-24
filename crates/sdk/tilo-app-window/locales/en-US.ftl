@@ -24,6 +24,10 @@ tilolang-suggested-by = suggested by { $name }
 tilolang-ask-always = Always allow
 tilolang-ask-denied = That change is not allowed here.
 tilolang-ask-needs-approval = That change needs approval first.
+# What else a call writes, one line each, under the question that allows it: the app that keeps
+# the record, and what the step does there ("Also writes to Passwords: Record where an entry was
+# used").
+tilolang-also-writes = Also writes to { $app }: { $what }
 tilolang-change-kept = Your change is kept on this device until the workspace takes it.
 # What a change reads as in history, worked out from the field it wrote and what it held before
 # and after: a sentence goes on with it after who made it ("You moved this to Friday"). `$field`
