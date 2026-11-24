@@ -10784,6 +10784,11 @@
           }
         },
         {
+          "name": "speaking",
+          "doc": "The person the place shows is talking now (in a call): their face rings as they are heard.",
+          "type": "bool"
+        },
+        {
           "name": "parent",
           "doc": "The place this one stands under, by its key: the rows of a list that nests its places (an outline of headings) fold under the one they name, a level in, and stand open. A key that names no place of the list leaves the place at its own level, as a row whose parent is gone does.",
           "type": {

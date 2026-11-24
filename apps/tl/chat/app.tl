@@ -29,6 +29,8 @@ type Conversations {
 
 root conversations: Conversations
 
+device root hearing: Hearing
+
 /// A named group of channels in the sidebar.
 type Category {
     name: Text
@@ -51,6 +53,22 @@ type VoiceChannel {
     service: Text = ""
     /// Its id there, when a bridge carries it: the channel, category or conversation there.
     outside_id: Text = ""
+}
+
+/// How this device plays each person it hears in a call: their level, and whether the person
+/// silenced them, which keeps the level for when they hear them again. It is the device's own:
+/// nobody else's call changes, and another device of the person keeps its own.
+type Hearing {
+    people: Collection<Heard>
+}
+
+/// How this device plays one person in a call.
+type Heard {
+    who: Actor
+    /// In percent of as they arrive, up to twice as loud.
+    percent: Int = 100
+    /// Not played at all, whatever the level.
+    silenced: Bool = false
 }
 
 /// Messages in one stream; any message can start a thread. A post is a change of its channel,
@@ -930,12 +948,11 @@ fn answer_ended(m: Message) -> Bool {
     } else { false }
 }
 
-/// How someone is in a call, as the sidebar says it under their name: talking now, their
-/// microphone or hearing off, their camera on, their screen shared. Nothing while they only
-/// listen.
+/// How someone is in a call, as the sidebar says it under their name: their microphone or
+/// hearing off, their camera on, their screen shared. Talking shows as the ring on their face.
+/// Nothing while they only listen.
 fn call_state(m: host.CallMember) -> Text {
     let says = [
-        if m.speaking { std.say("Speaking") } else { "" },
         if m.deafened { std.say("Deafened") } else if m.muted { std.say("Muted") } else { "" },
         if m.camera { std.say("Camera on") } else { "" },
         if m.screen { std.say("Sharing their screen") } else { "" },
@@ -2081,6 +2098,7 @@ view sidebar(all: Conversations) {
                                                             "{key}/{m.who.name()}",
                                                             m.who.name(),
                                                             person: m.who,
+                                                            speaking: m.speaking,
                                                             secondary: call_state(m),
                                                             parent: key,
                                                         ) {
@@ -2136,6 +2154,7 @@ view sidebar(all: Conversations) {
                                         "{key}/{m.who.name()}",
                                         m.who.name(),
                                         person: m.who,
+                                        speaking: m.speaking,
                                         secondary: call_state(m),
                                         parent: key,
                                     ) {
@@ -2498,9 +2517,88 @@ view report_row(r: Report, place: Text) {
     }
 }
 
-/// A voice channel: the system's call, with this channel as its place.
+/// A voice channel: the system's call, with this channel as its place. Joining plays each person
+/// at the level this device keeps for them, and beside each person is how loud they play here.
 view voice(v: VoiceChannel) {
-    std.call(v)
+    let levels = hearing.people.map(h -> set_call_volume(v, h.who, played(h).to_float()))
+    std.call(v, join: .some(join_call(v).then(levels.many()))) { m ->
+        hearing_menu(v, m.who)
+    }
+}
+
+/// How this device plays `who` in the call held on `v`, as a menu named by it: silenced for the
+/// person alone, or a level from nothing to twice as loud. A choice is kept for the device and
+/// played at once.
+view hearing_menu(v: VoiceChannel, who: Actor) {
+    let heard = heard_of(who)
+    stack(min: 8rem, max: 14rem) {
+        ui.MenuButton(
+            if heard.silenced { "Muted for you" } else { "Volume {heard.percent}%" },
+            icon: if played(heard) == 0 { .volume_x } else { .volume_2 },
+        ) {
+            ui.MenuItem("Mute for me", icon: .volume_x, checked: heard.silenced) {
+                on choose: silence(hearing, who, on: not heard.silenced)
+                    .then(
+                        set_call_volume(
+                            v,
+                            who,
+                            if heard.silenced { heard.percent.to_float() } else { 0.0 },
+                        ),
+                    )
+            }
+            ui.MenuSeparator()
+            for percent in [25, 50, 75, 100, 150, 200] {
+                ui.MenuItem(
+                    "Volume {percent}%",
+                    checked: not heard.silenced and heard.percent == percent,
+                ) {
+                    on choose: set_hearing(hearing, who, percent)
+                        .then(set_call_volume(v, who, percent.to_float()))
+                }
+            }
+        }
+    }
+}
+
+/// How this device plays `who` in a call, as it keeps it: as they arrive until the person set
+/// otherwise here.
+fn heard_of(who: Actor) -> Heard {
+    hearing.people.find(h -> h.who == who) ?? Heard(who: who)
+}
+
+/// How loud this device plays a person, in percent of as they arrive: nothing while silenced.
+fn played(h: Heard) -> Int {
+    if h.silenced { 0 } else { h.percent }
+}
+
+/// Plays `who` in calls on this device at `percent` of as they arrive, and hears them again if
+/// they were silenced. Only this device plays them so; nobody else hears a difference.
+action set_hearing(h: Hearing, who: Actor, percent: Int) (
+    icon: .volume_2,
+    label: "Set how loud someone plays",
+    did: "set how loud someone plays",
+) {
+    require percent >= 0 and percent <= 200 "A level is between 0 and 200 percent"
+    if let had = h.people.find(x -> x.who == who) {
+        had.percent = percent
+        had.silenced = false
+    } else {
+        h.people.insert(Heard(who: who, percent: percent))
+    }
+}
+
+/// Silences `who` in calls on this device, or hears them again at the level they had. Only
+/// this person stops hearing them; everyone else in the call still does.
+action silence(h: Hearing, who: Actor, on: Bool = true) (
+    icon: .volume_x,
+    label: "Mute someone for me",
+    did: "muted someone for themselves",
+) {
+    if let had = h.people.find(x -> x.who == who) {
+        had.silenced = on
+    } else if on {
+        h.people.insert(Heard(who: who, silenced: true))
+    }
 }
 
 /// A voice channel as another app's page summarizes it: its name, and who is in its call.

@@ -99,6 +99,8 @@ pub struct NavItemProps {
     /// The person the place shows, when it is one (a direct conversation): their avatar and
     /// presence ring in the icon's place.
     pub person: Option<Person>,
+    /// The person the place shows is talking now (in a call): their face rings as they are heard.
+    pub speaking: bool,
     /// The place this one stands under, by its key: the rows of a list that nests its places
     /// (an outline of headings) fold under the one they name, a level in, and stand open. A key
     /// that names no place of the list leaves the place at its own level, as a row whose parent
@@ -127,7 +129,7 @@ impl From<NavItemProps> for NavItem {
             item = item.secondary(secondary);
         }
         if let Some(person) = props.person {
-            item = item.person(person.identity, None, false);
+            item = item.person(person.identity, None, props.speaking);
             item = item.person_face(person.name, None);
         }
         if let Some(mentions) = props.mentions.filter(|mentions| *mentions > 0) {

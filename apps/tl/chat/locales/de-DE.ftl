@@ -994,7 +994,6 @@ d-5gbnohgv = Gesperrt
     .doc = Die Entscheidung hat die Person aus dem Arbeitsbereich gesperrt: Wird sie aufgehoben, darf die Person zurück.
 
 d-ejjotbyg = Anrufstatus
-    .w-speaking = Spricht
     .w-deafened = Hört nichts
     .w-muted = Stummgeschaltet
     .w-camera-on = Kamera an
@@ -1129,3 +1128,42 @@ d-u7b7ovh5 = Fenster teilen~present
 d-obu4vl74 = Freigabezugriff festlegen~present
 
 d-6zxrhnyr = Teilen beenden~present
+d-rcybqyag = Gehört
+    .doc = Wie dieses Gerät eine Person in einem Anruf abspielt.
+    .noun = { $count ->
+        [one] Gehörte Person
+       *[other] Gehörte Personen
+    }
+
+d-u4nfj5zx = Prozent
+    .doc = In Prozent davon, wie die Person ankommt, bis doppelt so laut.
+
+d-xtnm4w32 = Stummgeschaltet
+    .doc = Gar nicht abgespielt, gleich bei welcher Lautstärke.
+
+d-a2np4gvd = Wer
+
+d-n3jzxecf = Hören
+    .doc = Wie dieses Gerät jede Person abspielt, die es in einem Anruf hört: ihre Lautstärke, und ob die Person sie stummgeschaltet hat, was die Lautstärke für später aufhebt.
+    .noun = { $count ->
+        [one] Hören
+       *[other] Hören
+    }
+
+d-ua6lm2xh = Personen
+
+d-jnylbhsg = Lautstärkemenü
+    .w-muted-for-you = Für dich stumm
+    .w-volume = Lautstärke { $percent } %
+    .w-mute-for-me = Für mich stummschalten
+
+d-vpyg3qt4 = Festlegen, wie laut jemand klingt
+    .doc = Spielt `who` in Anrufen auf diesem Gerät mit `percent` davon ab, wie die Person ankommt, und hört sie wieder, falls sie stummgeschaltet war.
+    .did = hat festgelegt, wie laut jemand klingt
+    .w-a-level-is-between-0-and = Eine Lautstärke liegt zwischen 0 und 200 Prozent
+
+d-we3jqglq = Festlegen, wie laut jemand klingt
+
+d-z5deq3xd = Jemanden für mich stummschalten
+    .doc = Schaltet `who` in Anrufen auf diesem Gerät stumm, oder hört die Person wieder mit der Lautstärke, die sie hatte.
+    .did = hat jemanden für sich stummgeschaltet

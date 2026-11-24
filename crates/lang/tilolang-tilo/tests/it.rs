@@ -25,6 +25,7 @@ mod chained;
 mod chat;
 mod chat_agents;
 mod chat_ban;
+mod chat_calls;
 mod chat_emoji;
 mod chat_liveshare;
 mod chat_persona_shot;
