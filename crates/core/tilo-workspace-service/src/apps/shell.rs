@@ -71,7 +71,7 @@ impl ShellLinks {
 /// The device's tilolang processes, as the shell reaches them: each takes one connection, a
 /// packet socket the shell's admitted connection carried, and answers the one ask on it
 /// (`runtime_portal::device_processes`).
-pub type ShellProcesses = Arc<dyn Fn(std::os::fd::OwnedFd) + Send + Sync>;
+pub type ShellProcesses = Arc<dyn Fn(runtime_portal::packet::Descriptor) + Send + Sync>;
 
 fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -140,5 +140,5 @@ pub struct ShellServices {
     pub workspaces: crate::workspaces::Workspaces,
     /// The device's identity service, serving a connection the shell took for it from one of the
     /// person's apps: `None` where the device runs none.
-    pub identity: Option<std::sync::Arc<dyn Fn(std::os::unix::net::UnixStream) + Send + Sync>>,
+    pub identity: Option<std::sync::Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>>,
 }

@@ -78,7 +78,7 @@ pub(crate) fn wide(name: &str) -> Vec<u16> {
 }
 
 /// The process at the other end of `pipe`.
-fn peer_pid(pipe: RawHandle, server_end: bool) -> io::Result<u32> {
+pub(crate) fn peer_pid(pipe: RawHandle, server_end: bool) -> io::Result<u32> {
     let mut pid = 0;
     // SAFETY: a live pipe handle and a valid output pointer.
     let found = unsafe {
@@ -187,6 +187,23 @@ impl Listener {
             // SAFETY: a connected pipe handle.
             unsafe { DisconnectNamedPipe(pipe.as_raw_handle()) };
         }
+    }
+
+    /// Another listener on the same pipe, with an instance of its own waiting: the pipe's name
+    /// stays held for as long as either lives.
+    ///
+    /// # Errors
+    /// The new instance could not be made.
+    pub fn try_clone(&self) -> io::Result<Self> {
+        let account = Account::current()?;
+        let descriptor = account.descriptor(PIPE_SDDL)?;
+        let next = instance(&self.name, &descriptor, false)?;
+        Ok(Self {
+            name: self.name.clone(),
+            account,
+            descriptor,
+            next: Mutex::new(Some(next)),
+        })
     }
 
     /// Each connection [`Listener::accept`] takes, in turn.

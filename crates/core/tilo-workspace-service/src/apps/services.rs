@@ -741,7 +741,8 @@ pub trait DisplayControlServices: Send + Sync {
 pub type RecordFounding = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
 /// The shell's link to the device's daemon, or why it has
-/// none.
+/// none. Only a Unix desktop session has a shell.
+#[cfg(unix)]
 pub type DeviceDaemon = Result<runtime_collab::ShellClient, String>;
 
 #[derive(Clone, Default)]

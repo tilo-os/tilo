@@ -110,6 +110,8 @@ mod published_invocation;
 mod record_changes;
 mod resolved_invocation;
 mod route_holds;
+/// A desktop session's app socket, which only a Unix session has.
+#[cfg(unix)]
 pub mod seat;
 #[cfg(test)]
 mod shell_tests;
@@ -144,8 +146,11 @@ pub use published_invocation::{InvocationRequest, OriginalInvocation};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -318,7 +323,7 @@ struct WorkerBinding {
     certificate: tilo_user_identity::DeviceCert,
 }
 struct PendingWorker {
-    stream: std::os::unix::net::UnixStream,
+    stream: tilo_socket::Stream,
     binding: WorkerBinding,
 }
 /// What the caller brings to one invocation: the argument, the actor it runs

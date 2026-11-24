@@ -412,17 +412,19 @@ async fn a_launch_marker_in_pieces_wakes_on_its_bytes() {
     let marker = launcher::services::COLLAB_LAUNCH_MAGIC;
     let (head, tail) = marker.split_at(marker.len() / 2);
 
-    let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
+    let (mut broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
     launcher_end.write_all(head).await.expect("first half");
-    let reading = has_collab_launch_marker(&broker_end);
-    tokio::pin!(reading);
-    // Let the read see the first half and wait for the rest.
-    for _ in 0..4 {
-        assert!(futures::poll!(reading.as_mut()).is_pending());
-        tokio::task::yield_now().await;
+    {
+        let reading = has_collab_launch_marker(&mut broker_end);
+        tokio::pin!(reading);
+        // Let the read see the first half and wait for the rest.
+        for _ in 0..4 {
+            assert!(futures::poll!(reading.as_mut()).is_pending());
+            tokio::task::yield_now().await;
+        }
+        launcher_end.write_all(tail).await.expect("second half");
+        assert!(reading.await.expect("a whole marker"));
     }
-    launcher_end.write_all(tail).await.expect("second half");
-    assert!(reading.await.expect("a whole marker"));
     let mut kept = vec![0_u8; marker.len()];
     broker_end.readable().await.expect("readable");
     broker_end
@@ -430,9 +432,9 @@ async fn a_launch_marker_in_pieces_wakes_on_its_bytes() {
         .expect("the marker is still unread");
     assert_eq!(kept, marker, "peeking leaves the stream untouched");
 
-    let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
+    let (mut broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
     launcher_end.write_all(head).await.expect("first half");
-    let unfinished = has_collab_launch_marker(&broker_end).await;
+    let unfinished = has_collab_launch_marker(&mut broker_end).await;
     assert!(
         unfinished
             .expect_err("an unfinished marker is refused")
@@ -442,11 +444,11 @@ async fn a_launch_marker_in_pieces_wakes_on_its_bytes() {
     );
     drop(launcher_end);
 
-    let (broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
+    let (mut broker_end, mut launcher_end) = tokio::net::UnixStream::pair().unwrap();
     launcher_end.write_all(head).await.expect("first half");
     drop(launcher_end);
     assert!(
-        has_collab_launch_marker(&broker_end)
+        has_collab_launch_marker(&mut broker_end)
             .await
             .expect_err("a peer that hung up mid-marker is refused")
             .to_string()

@@ -39,7 +39,9 @@ impl Shell {
     /// the call that names it by the number answered.
     pub(super) fn hand_over(&self) -> crate::workspaces::providers::HandOver {
         let sending = self.sending.clone();
-        Arc::new(move |file: std::fs::File| sending.send(std::os::fd::OwnedFd::from(file)))
+        Arc::new(move |file: std::fs::File| {
+            sending.send(runtime_portal::descriptors::Owned::from(file))
+        })
     }
 }
 
@@ -60,7 +62,7 @@ const MAX_HANDED: usize = 64;
     reason = "a connection is served on the dispatch's LocalSet, as every other is"
 )]
 pub(super) async fn serve(
-    mut stream: tokio::net::UnixStream,
+    mut stream: tilo_socket::tokio::Stream,
     services: Arc<ShellServices>,
     broker: Broker,
 ) -> Result<(), crate::apps::BrokerError> {
@@ -102,14 +104,29 @@ pub(super) async fn serve(
 /// that dialed the socket itself above all, is closed before anything reaches the processes:
 /// only the shell the daemon started hands them an instance.
 pub(super) async fn processes(
-    stream: tokio::net::UnixStream,
+    stream: tilo_socket::tokio::Stream,
     services: Arc<ShellServices>,
 ) -> Result<(), crate::apps::BrokerError> {
-    use runtime_collab::wire::shell::SHELL_SECRET_BYTES;
     let refused = |why: String| {
         tracing::warn!(%why, "refused a hand-over to the device's tilolang processes");
         Ok(())
     };
+    #[cfg(windows)]
+    {
+        drop((stream, services));
+        refused("a pipe carries no packet socket to hand over".to_owned())
+    }
+    #[cfg(unix)]
+    processes_handed(stream, services, refused).await
+}
+
+#[cfg(unix)]
+async fn processes_handed(
+    stream: tilo_socket::tokio::Stream,
+    services: Arc<ShellServices>,
+    refused: impl Fn(String) -> Result<(), crate::apps::BrokerError>,
+) -> Result<(), crate::apps::BrokerError> {
+    use runtime_collab::wire::shell::SHELL_SECRET_BYTES;
     let (opening, packets) = loop {
         if let Err(error) = stream.readable().await {
             return refused(format!("its connection does not read: {error}"));
@@ -204,7 +221,7 @@ fn vouch_for(
             .identity
             .as_ref()
             .ok_or("this device runs no identity service")?;
-        identity(std::os::unix::net::UnixStream::from(connection));
+        identity(handed_stream(connection)?);
         return Ok(ShellReply::Vouched);
     }
     let handed = match app {
@@ -223,11 +240,7 @@ fn vouch_for(
         }
         None => None,
     };
-    let connection = std::os::unix::net::UnixStream::from(connection);
-    connection
-        .set_nonblocking(true)
-        .map_err(|error| format!("the app's connection cannot be served: {error}"))?;
-    let stream = tokio::net::UnixStream::from_std(connection)
+    let stream = tilo_socket::tokio::from_std(handed_stream(connection)?)
         .map_err(|error| format!("the app's connection cannot be served: {error}"))?;
     let broker = Rc::clone(&shell.broker);
     let state = Arc::clone(&broker.state);
@@ -245,6 +258,27 @@ fn vouch_for(
         }
     });
     Ok(ShellReply::Vouched)
+}
+
+/// The connection a shell handed over as a descriptor.
+#[cfg(unix)]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "one signature on every host: a Windows pipe hands over none"
+)]
+fn handed_stream(
+    connection: runtime_portal::descriptors::Owned,
+) -> Result<tilo_socket::Stream, String> {
+    Ok(tilo_socket::Stream::from(connection))
+}
+
+/// Nothing is handed over a pipe (`runtime_portal::descriptors`), so there is no connection.
+#[cfg(windows)]
+fn handed_stream(
+    connection: runtime_portal::descriptors::Owned,
+) -> Result<tilo_socket::Stream, String> {
+    drop(connection);
+    Err("a pipe hands over no connection".to_owned())
 }
 
 /// Answer `call` for `shell`; a connection that is no shell is refused.
@@ -337,7 +371,7 @@ async fn dispatch(
         return Err("this device acts for its own person only".to_owned());
     }
     let named = named
-        .map(|named| named_caller(*named, &device))
+        .map(|named| named_caller(*named, device))
         .transpose()?;
     let person = named
         .clone()

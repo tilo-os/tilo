@@ -854,7 +854,7 @@ impl AppBrokerState {
         self: &Arc<Self>,
         route: CrdtRoute,
         certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<(std::os::unix::net::UnixStream, OriginalLookup), String> {
+    ) -> Result<(tilo_socket::Stream, OriginalLookup), String> {
         let registration = uuid::Uuid::new_v4();
         let stream =
             self.connect_local_worker_registered(route.clone(), certificate, Some(registration))?;

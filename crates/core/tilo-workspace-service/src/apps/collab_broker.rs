@@ -565,8 +565,7 @@ impl AppActionBroker {
         presentation: &[u8],
         agent: &str,
     ) -> Result<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>, String> {
-        self.state
-            .certified_agent_run(caller, presentation, agent)
+        self.state.certified_agent_run(caller, presentation, agent)
     }
 
     /// Reuse the checked signed personal-cluster admission for native owner checks.
@@ -873,7 +872,7 @@ impl BrokerHandle {
         &self,
         route: CrdtRoute,
         certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<std::os::unix::net::UnixStream, String> {
+    ) -> Result<tilo_socket::Stream, String> {
         self.fanout
             .app_broker()
             .ok_or("broker unavailable")?
@@ -889,7 +888,7 @@ impl BrokerHandle {
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<
         (
-            std::os::unix::net::UnixStream,
+            tilo_socket::Stream,
             crate::apps::collab_app_broker::OriginalLookup,
         ),
         String,

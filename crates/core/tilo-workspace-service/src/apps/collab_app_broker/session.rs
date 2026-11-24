@@ -282,12 +282,9 @@ impl JoinedChannel {
             // No reader answered the write decision: none is registered at this device, the
             // answer was abandoned, or the reader cannot decide a change. The record cannot be
             // changed from here now.
-            None
-            | Some(Ok(None))
-            | Some(Err(_))
-            | Some(Ok(Some(Err(ActionCallError::Unavailable { .. })))) => Err(BrokerError::failed(
-                "this record can't be changed right now".into(),
-            )),
+            None | Some(Err(_) | Ok(None | Some(Err(ActionCallError::Unavailable { .. })))) => Err(
+                BrokerError::failed("this record can't be changed right now".into()),
+            ),
             Some(Ok(Some(Err(refusal)))) => Err(BrokerError::failed(format!(
                 "this connection may not change the record of {} and changes nothing on it: \
                  {refusal}",
@@ -316,12 +313,10 @@ impl JoinedChannel {
             .state
             .revalidate_admission(&opened, &self.verified_identity)?;
         let route = super::record_changes::addressed(&command, &opened);
-        if command.writes() {
-            if !on_behalf_of.is_empty() || current.agent_id.is_some() {
-                return Err(BrokerError::failed(
-                    "this resource route has no caller-scoped signer for the write".into(),
-                ));
-            }
+        if command.writes() && (!on_behalf_of.is_empty() || current.agent_id.is_some()) {
+            return Err(BrokerError::failed(
+                "this resource route has no caller-scoped signer for the write".into(),
+            ));
         }
         if route.app_id.is_empty() || route.cluster_id.is_empty() {
             return Err(BrokerError::failed(
@@ -1064,7 +1059,7 @@ impl NativeContextReadGuard {
     reason = "the broker state and its Rc-backed action-directory registry intentionally run only on the broker LocalSet"
 )]
 pub(super) async fn drive_connection(
-    stream: tokio::net::UnixStream,
+    stream: tilo_socket::tokio::Stream,
     state: Arc<AppBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     peer_id: u64,
@@ -1090,7 +1085,7 @@ pub(super) async fn drive_connection(
             })
         } else {
             if let Some(shell) = state.services.shell.clone() {
-                let marker = super::socket::peeked_marker(&stream).await?;
+                let marker = super::socket::peeked_marker(&mut stream).await?;
                 if marker == *runtime_collab::wire::shell::SHELL_MAGIC {
                     let broker = super::shell::Broker {
                         state: Arc::clone(&state),
@@ -1179,7 +1174,7 @@ pub(super) async fn drive_connection(
         );
         wire::serve(connection, outgoing, reader, writer).await
     } else {
-        let (reader, writer) = stream.into_split();
+        let (reader, writer) = tokio::io::split(stream);
         wire::serve(connection, outgoing, reader, writer).await
     };
     served.map_err(|error| BrokerError::failed(error.to_string()))

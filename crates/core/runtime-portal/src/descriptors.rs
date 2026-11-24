@@ -28,6 +28,9 @@ use rustix::net::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::UnixStream;
 
+/// What a connection hands over: an open descriptor.
+pub type Owned = OwnedFd;
+
 /// Descriptors one write carries. Far below the kernel's `SCM_MAX_FD` (253)
 /// and within the 2048-byte control buffer every receiver reads with.
 const BATCH: usize = 64;

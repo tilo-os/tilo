@@ -20508,6 +20508,7 @@ dependencies = [
 name = "tilo-socket"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "tempfile",
  "tilo-test-env",
  "tokio",
@@ -21801,6 +21802,7 @@ dependencies = [
  "tilo-server-protocol",
  "tilo-session-client",
  "tilo-settings-store",
+ "tilo-socket",
  "tilo-test-env",
  "tilo-test-http",
  "tilo-test-relay",

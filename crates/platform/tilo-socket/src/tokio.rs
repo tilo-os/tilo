@@ -46,6 +46,68 @@ pub fn from_std(stream: crate::Stream) -> io::Result<Stream> {
 #[cfg(windows)]
 pub use self::pipe::{Listener, Stream, connect, from_std, listener};
 
+/// The process at the other end of `stream`, as the kernel saw it connect.
+///
+/// # Errors
+/// The kernel names no process for it.
+pub fn peer_pid(stream: &Stream) -> std::io::Result<u32> {
+    #[cfg(unix)]
+    {
+        stream
+            .peer_cred()?
+            .pid()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .ok_or_else(|| std::io::Error::other("the peer's process is unknown"))
+    }
+    #[cfg(windows)]
+    {
+        stream.peer_pid()
+    }
+}
+
+/// Wait for the first `buffer.len()` bytes the peer sends, and copy them into `buffer` without
+/// consuming them: the next read still returns them. Fewer only when the peer closed first, `0`
+/// when it sent nothing. Cancelling the wait loses nothing.
+///
+/// # Errors
+/// The stream could not be read.
+pub async fn peek(stream: &mut Stream, buffer: &mut [u8]) -> std::io::Result<usize> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd as _;
+        loop {
+            let ready = stream.ready(::tokio::io::Interest::READABLE).await?;
+            // A peek that finds only part reports `WouldBlock`, so the readiness clears and the
+            // next bytes wake this loop.
+            match stream.try_io(::tokio::io::Interest::READABLE, || {
+                // SAFETY: `buffer` is writable for its length and `stream` owns the live socket
+                // for this whole call; MSG_PEEK leaves the bytes for the next read.
+                let read = unsafe {
+                    libc::recv(
+                        stream.as_raw_fd(),
+                        buffer.as_mut_ptr().cast(),
+                        buffer.len(),
+                        libc::MSG_PEEK | libc::MSG_DONTWAIT,
+                    )
+                };
+                let read = usize::try_from(read).map_err(|_| std::io::Error::last_os_error())?;
+                if read == 0 || read >= buffer.len() || ready.is_read_closed() {
+                    return Ok(read);
+                }
+                Err(std::io::ErrorKind::WouldBlock.into())
+            }) {
+                Ok(read) => return Ok(read),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        stream.peek(buffer).await
+    }
+}
+
 /// Whether `stream`'s peer is a program of this login: this account, and not
 /// one a sandbox confined. On Linux the peer's uid must be this process's and it
 /// must live in this process's user and mount namespaces, as a session's other
@@ -157,7 +219,7 @@ mod pipe {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(next);
                 if peer_is(server.as_raw_handle(), true, &self.account)? {
-                    return Ok((Stream::Server(server), SocketAddr));
+                    return Ok((Stream::new(End::Server(server)), SocketAddr));
                 }
                 server.disconnect()?;
             }
@@ -175,18 +237,72 @@ mod pipe {
         // SAFETY: an overlapped pipe handle `stream` owned, handed over once.
         unsafe {
             Ok(if server_end {
-                Stream::Server(NamedPipeServer::from_raw_handle(raw)?)
+                Stream::new(End::Server(NamedPipeServer::from_raw_handle(raw)?))
             } else {
-                Stream::Client(NamedPipeClient::from_raw_handle(raw)?)
+                Stream::new(End::Client(NamedPipeClient::from_raw_handle(raw)?))
             })
         }
     }
 
     /// One end of a connected pipe on the runtime.
     #[derive(Debug)]
-    pub enum Stream {
+    pub struct Stream {
+        end: End,
+        /// What [`Stream::peek`] read off the pipe ahead of the reader. The runtime reads a
+        /// pipe into a buffer of its own as soon as data arrives, so `PeekNamedPipe` cannot be
+        /// trusted to see what came.
+        peeked: Vec<u8>,
+    }
+
+    #[derive(Debug)]
+    enum End {
         Server(NamedPipeServer),
         Client(NamedPipeClient),
+    }
+
+    impl Stream {
+        const fn new(end: End) -> Self {
+            Self {
+                end,
+                peeked: Vec::new(),
+            }
+        }
+
+        /// As [`super::peer_pid`].
+        pub(super) fn peer_pid(&self) -> io::Result<u32> {
+            match &self.end {
+                End::Server(pipe) => crate::windows::peer_pid(pipe.as_raw_handle(), true),
+                End::Client(pipe) => crate::windows::peer_pid(pipe.as_raw_handle(), false),
+            }
+        }
+
+        /// As [`super::peek`].
+        pub(super) async fn peek(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            use tokio::io::AsyncReadExt as _;
+            let mut chunk = [0_u8; 256];
+            while self.peeked.len() < buffer.len() {
+                let wanted = buffer
+                    .len()
+                    .saturating_sub(self.peeked.len())
+                    .min(chunk.len());
+                let Some(chunk) = chunk.get_mut(..wanted) else {
+                    break;
+                };
+                let read = match &mut self.end {
+                    End::Server(pipe) => pipe.read(chunk).await?,
+                    End::Client(pipe) => pipe.read(chunk).await?,
+                };
+                let Some(read) = chunk.get(..read).filter(|read| !read.is_empty()) else {
+                    break;
+                };
+                self.peeked.extend_from_slice(read);
+            }
+            let have = self.peeked.len().min(buffer.len());
+            if let (Some(into), Some(from)) = (buffer.get_mut(..have), self.peeked.get(..have)) {
+                into.copy_from_slice(from);
+            }
+            Ok(have)
+        }
     }
 
     /// Connect to the pipe `path` names, served by this account alone.
@@ -208,7 +324,7 @@ mod pipe {
         }
         // SAFETY: an overlapped pipe handle this function owns, handed over once.
         let client = unsafe { NamedPipeClient::from_raw_handle(pipe.into_raw_handle())? };
-        Ok(Stream::Client(client))
+        Ok(Stream::new(End::Client(client)))
     }
 
     impl AsyncRead for Stream {
@@ -217,9 +333,16 @@ mod pipe {
             cx: &mut Context<'_>,
             buf: &mut ReadBuf<'_>,
         ) -> Poll<io::Result<()>> {
-            match self.get_mut() {
-                Self::Server(pipe) => Pin::new(pipe).poll_read(cx, buf),
-                Self::Client(pipe) => Pin::new(pipe).poll_read(cx, buf),
+            let this = self.get_mut();
+            if !this.peeked.is_empty() {
+                let given = this.peeked.len().min(buf.remaining());
+                buf.put_slice(this.peeked.get(..given).unwrap_or_default());
+                this.peeked.drain(..given);
+                return Poll::Ready(Ok(()));
+            }
+            match &mut this.end {
+                End::Server(pipe) => Pin::new(pipe).poll_read(cx, buf),
+                End::Client(pipe) => Pin::new(pipe).poll_read(cx, buf),
             }
         }
     }
@@ -230,23 +353,23 @@ mod pipe {
             cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<io::Result<usize>> {
-            match self.get_mut() {
-                Self::Server(pipe) => Pin::new(pipe).poll_write(cx, buf),
-                Self::Client(pipe) => Pin::new(pipe).poll_write(cx, buf),
+            match &mut self.get_mut().end {
+                End::Server(pipe) => Pin::new(pipe).poll_write(cx, buf),
+                End::Client(pipe) => Pin::new(pipe).poll_write(cx, buf),
             }
         }
 
         fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            match self.get_mut() {
-                Self::Server(pipe) => Pin::new(pipe).poll_flush(cx),
-                Self::Client(pipe) => Pin::new(pipe).poll_flush(cx),
+            match &mut self.get_mut().end {
+                End::Server(pipe) => Pin::new(pipe).poll_flush(cx),
+                End::Client(pipe) => Pin::new(pipe).poll_flush(cx),
             }
         }
 
         fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            match self.get_mut() {
-                Self::Server(pipe) => Pin::new(pipe).poll_shutdown(cx),
-                Self::Client(pipe) => Pin::new(pipe).poll_shutdown(cx),
+            match &mut self.get_mut().end {
+                End::Server(pipe) => Pin::new(pipe).poll_shutdown(cx),
+                End::Client(pipe) => Pin::new(pipe).poll_shutdown(cx),
             }
         }
     }

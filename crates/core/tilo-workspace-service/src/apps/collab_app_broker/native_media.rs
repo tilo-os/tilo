@@ -231,11 +231,14 @@ impl PeerProcess {
         }
     }
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn from_socket(_: &tokio::net::UnixStream) -> Option<Self> {
+    pub(super) fn from_socket(_: &tilo_socket::tokio::Stream) -> Option<Self> {
         None
     }
     #[cfg(not(target_os = "linux"))]
-    pub(super) fn handed(_: std::os::fd::OwnedFd, _: Option<std::os::fd::OwnedFd>) -> Option<Self> {
+    pub(super) fn handed(
+        _: runtime_portal::descriptors::Owned,
+        _: Option<runtime_portal::descriptors::Owned>,
+    ) -> Option<Self> {
         None
     }
 
@@ -324,7 +327,12 @@ impl LocalAppConnection {
     /// Copies of the pidfds pinning the app's process, and its launcher's when the launcher
     /// handed it over: what the seat hands the daemon with the app's connection. `None` where the
     /// kernel pins no process.
-    pub(super) fn pidfds(&self) -> Option<(std::os::fd::OwnedFd, Option<std::os::fd::OwnedFd>)> {
+    pub(super) fn pidfds(
+        &self,
+    ) -> Option<(
+        runtime_portal::descriptors::Owned,
+        Option<runtime_portal::descriptors::Owned>,
+    )> {
         #[cfg(target_os = "linux")]
         {
             self.process.pidfds().ok()

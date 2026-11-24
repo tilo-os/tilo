@@ -15,26 +15,29 @@ pub(super) struct LauncherHandoff {
 /// Read the launcher's marker and handoff off `stream`; `None` for a raw
 /// client that sent no marker.
 pub(super) async fn read_launcher_handoff(
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut tilo_socket::tokio::Stream,
 ) -> Result<Option<LauncherHandoff>, BrokerError> {
     if !has_collab_launch_marker(stream).await? {
         return Ok(None);
     }
-    let credentials = stream.peer_cred().map_err(|error| {
-        BrokerError::failed(format!(
-            "could not read collaboration peer credentials: {error}"
-        ))
-    })?;
     // A socket pathname is not authority. The kernel must identify a process
-    // from this user before it can attest the compositor's launch record.
-    if credentials.uid() != rustix::process::geteuid().as_raw() {
-        return Err(BrokerError::failed(
-            "collaboration service rejected a peer from another user".into(),
-        ));
+    // from this user before it can attest the compositor's launch record. A
+    // Windows pipe admits this account's processes alone.
+    #[cfg(unix)]
+    {
+        let credentials = stream.peer_cred().map_err(|error| {
+            BrokerError::failed(format!(
+                "could not read collaboration peer credentials: {error}"
+            ))
+        })?;
+        if credentials.uid() != rustix::process::geteuid().as_raw() {
+            return Err(BrokerError::failed(
+                "collaboration service rejected a peer from another user".into(),
+            ));
+        }
     }
-    let pid = credentials
-        .pid()
-        .and_then(|pid| u32::try_from(pid).ok())
+    let pid = tilo_socket::tokio::peer_pid(stream)
+        .ok()
         .filter(|pid| *pid > 0)
         .ok_or_else(|| BrokerError::failed("collaboration peer has no usable pid".into()))?;
     // Retain this exact connected task before consulting the expiring launch
@@ -85,8 +88,8 @@ pub(super) async fn read_launcher_handoff(
 
 /// The peer on `stream` as its kernel credentials name it, before any
 /// handoff says who it is.
-pub(super) fn credentialed_peer(stream: &tokio::net::UnixStream) -> String {
-    stream.peer_cred().ok().and_then(|c| c.pid()).map_or_else(
+pub(super) fn credentialed_peer(stream: &tilo_socket::tokio::Stream) -> String {
+    tilo_socket::tokio::peer_pid(stream).ok().map_or_else(
         || "a peer without credentials".to_owned(),
         |pid| format!("pid {pid}"),
     )

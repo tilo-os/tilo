@@ -148,6 +148,8 @@ libc.workspace = true
 tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 # A host's workspaces keep their files on a disk.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
+# The broker's local socket: a Unix socket, or a named pipe on Windows.
+tilo-socket = { path = "../../platform/tilo-socket", features = ["tokio"] }
 # A host's device runs the runtime its own tasks drive.
 tokio = { workspace = true, features = ["full"] }
 # The certificates a test's mail server presents, which `trust_mail_servers` trusts.

@@ -79,7 +79,6 @@ pub(crate) fn spawn_configured(
     // Bind on the caller's thread: from the worker thread, a bind
     // failure surfaces only via a log line.
     let (std_listener, socket_ownership) = bind_owned_socket(socket_path)?;
-    std_listener.set_nonblocking(true)?; // tokio's reactor requires this for `from_std`.
     log_bound(socket_path);
 
     let attached_state = Arc::clone(&state);
@@ -196,11 +195,11 @@ pub(super) async fn sleep_until(deadline: Option<std::time::Instant>) {
 pub(super) async fn serve_broker_thread(
     state: Arc<AppBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
-    std_listener: std::os::unix::net::UnixListener,
+    std_listener: tilo_socket::Listener,
     socket_path_for_thread: PathBuf,
     quit: Arc<AtomicBool>,
 ) {
-    let listener = match tokio::net::UnixListener::from_std(std_listener) {
+    let listener = match tilo_socket::tokio::listener(std_listener) {
         Ok(l) => l,
         Err(e) => {
             tracing::warn!(
@@ -238,8 +237,8 @@ pub(super) async fn serve_broker_thread(
             let peer_id = state.next_peer_id();
             tokio::task::spawn_local(async move {
                 let result = async {
-                    let stream = tokio::net::UnixStream::from_std(worker.stream)
-                        .map_err(BrokerError::from)?;
+                    let stream =
+                        tilo_socket::tokio::from_std(worker.stream).map_err(BrokerError::from)?;
                     drive_connection(
                         stream,
                         state,
@@ -460,7 +459,7 @@ impl AppBrokerState {
         &self,
         route: CrdtRoute,
         certificate: &tilo_user_identity::DeviceCert,
-    ) -> Result<std::os::unix::net::UnixStream, String> {
+    ) -> Result<tilo_socket::Stream, String> {
         self.connect_local_worker_registered(route, certificate, None)
     }
     pub(super) fn connect_local_worker_registered(
@@ -468,7 +467,7 @@ impl AppBrokerState {
         route: CrdtRoute,
         certificate: &tilo_user_identity::DeviceCert,
         registration: Option<uuid::Uuid>,
-    ) -> Result<std::os::unix::net::UnixStream, String> {
+    ) -> Result<tilo_socket::Stream, String> {
         self.owner_health()?;
         if route.app_id.is_empty() || !route.is_publishable() {
             return Err("worker needs an exact app route".into());
@@ -498,8 +497,7 @@ impl AppBrokerState {
         if workers.len() >= 32 {
             return Err("worker admission queue full".into());
         }
-        let (server, client) = std::os::unix::net::UnixStream::pair().map_err(|e| e.to_string())?;
-        server.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let (server, client) = tilo_socket::pair().map_err(|e| e.to_string())?;
         workers.push(PendingWorker {
             stream: server,
             binding: WorkerBinding {

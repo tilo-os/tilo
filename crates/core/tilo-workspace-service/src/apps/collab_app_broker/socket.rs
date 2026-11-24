@@ -7,12 +7,14 @@ use super::*;
 /// How long a peer that began its protocol header has to finish it.
 pub(super) const LAUNCH_MARKER_COMPLETION: Duration = Duration::from_millis(300);
 
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SocketIdentity {
     pub(super) device: u64,
     pub(super) inode: u64,
 }
 
+#[cfg(unix)]
 pub(super) fn socket_identity(path: &Path) -> std::io::Result<SocketIdentity> {
     let metadata = std::fs::symlink_metadata(path)?;
     if !metadata.file_type().is_socket() {
@@ -27,12 +29,14 @@ pub(super) fn socket_identity(path: &Path) -> std::io::Result<SocketIdentity> {
     })
 }
 
+#[cfg(unix)]
 pub(super) fn socket_lock_path(path: &Path) -> PathBuf {
     let mut lock = path.as_os_str().to_os_string();
     lock.push(".lock");
     PathBuf::from(lock)
 }
 
+#[cfg(unix)]
 pub(super) fn acquire_socket_path_lease(path: &Path) -> std::io::Result<advisory_lock::FileLock> {
     let lock = OpenOptions::new()
         .read(true)
@@ -56,6 +60,7 @@ pub(super) fn acquire_socket_path_lease(path: &Path) -> std::io::Result<advisory
     })
 }
 
+#[cfg(unix)]
 pub(super) fn remove_socket_if_owned(
     path: &Path,
     identity: SocketIdentity,
@@ -72,6 +77,7 @@ pub(super) fn remove_socket_if_owned(
     Ok(true)
 }
 
+#[cfg(unix)]
 pub(super) fn private_socket_parent(path: &Path) -> std::io::Result<&Path> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
@@ -93,6 +99,7 @@ pub(super) fn private_socket_parent(path: &Path) -> std::io::Result<&Path> {
     Ok(parent)
 }
 
+#[cfg(unix)]
 pub(super) fn socket_stage_path(path: &Path) -> std::io::Result<PathBuf> {
     let parent = private_socket_parent(path)?;
     let leaf_len = path
@@ -118,11 +125,12 @@ pub(super) fn socket_stage_path(path: &Path) -> std::io::Result<PathBuf> {
     Ok(parent.join(leaf))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 std::thread_local! {
     pub(super) static FAIL_STAGED_SOCKET_IDENTITY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg(unix)]
 pub(super) fn staged_socket_identity(path: &Path) -> std::io::Result<SocketIdentity> {
     #[cfg(test)]
     if FAIL_STAGED_SOCKET_IDENTITY.with(|fail| fail.replace(false)) {
@@ -133,6 +141,7 @@ pub(super) fn staged_socket_identity(path: &Path) -> std::io::Result<SocketIdent
     socket_identity(path)
 }
 
+#[cfg(unix)]
 pub(super) fn bind_socket_stage(
     path: &Path,
 ) -> std::io::Result<(std::os::unix::net::UnixListener, SocketStage)> {
@@ -184,7 +193,7 @@ pub(super) fn rename_socket_noreplace(source: &Path, destination: &Path) -> std:
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 pub(super) fn rename_socket_noreplace(_: &Path, _: &Path) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
@@ -192,6 +201,7 @@ pub(super) fn rename_socket_noreplace(_: &Path, _: &Path) -> std::io::Result<()>
     ))
 }
 
+#[cfg(unix)]
 pub(super) struct SocketStage {
     pub(super) socket: PathBuf,
     pub(super) identity: Option<SocketIdentity>,
@@ -199,6 +209,7 @@ pub(super) struct SocketStage {
     pub(super) published: bool,
 }
 
+#[cfg(unix)]
 impl Drop for SocketStage {
     fn drop(&mut self) {
         if !self.published
@@ -220,9 +231,10 @@ impl Drop for SocketStage {
 
 /// Remove only a proven stale socket, then bind and retain inode ownership.
 /// A live socket, symlink, non-socket, or replacement inode is never unlinked.
+#[cfg(unix)]
 pub(super) fn bind_owned_socket(
     path: &Path,
-) -> std::io::Result<(std::os::unix::net::UnixListener, SocketOwnership)> {
+) -> std::io::Result<(tilo_socket::Listener, SocketOwnership)> {
     private_socket_parent(path)?;
     let lease = acquire_socket_path_lease(path)?;
     match socket_identity(path) {
@@ -270,12 +282,14 @@ pub(super) fn bind_owned_socket(
     ))
 }
 
+#[cfg(unix)]
 pub(super) struct SocketOwnership {
     pub(super) path: PathBuf,
     pub(super) identity: SocketIdentity,
     pub(super) _lease: advisory_lock::FileLock,
 }
 
+#[cfg(unix)]
 impl Drop for SocketOwnership {
     fn drop(&mut self) {
         let _ = tilo_failure::ignored!(
@@ -285,11 +299,27 @@ impl Drop for SocketOwnership {
     }
 }
 
+/// On Windows the socket is a named pipe: its first instance refuses a pipe another broker
+/// holds, its DACL keeps it to this account, and it leaves nothing behind to reclaim.
+#[cfg(windows)]
+pub(super) fn bind_owned_socket(
+    path: &Path,
+) -> std::io::Result<(tilo_socket::Listener, SocketOwnership)> {
+    Ok((
+        tilo_files::native::private::bind_socket(path)?,
+        SocketOwnership,
+    ))
+}
+
+/// The pipe is the broker's while its listener lives; there is nothing else to hold.
+#[cfg(windows)]
+pub(super) struct SocketOwnership;
+
 /// Peek at an incoming descriptor without consuming the wire's framing
 /// prefix. Raw endpoint diagnostics intentionally omit the launcher marker;
 /// only a marker-bearing connection is subject to shell-process attestation.
 pub(super) async fn has_collab_launch_marker(
-    stream: &tokio::net::UnixStream,
+    stream: &mut tilo_socket::tokio::Stream,
 ) -> Result<bool, BrokerError> {
     Ok(peeked_marker(stream).await? == runtime_portal::launch_handoff::MAGIC)
 }
@@ -297,87 +327,33 @@ pub(super) async fn has_collab_launch_marker(
 /// The first bytes the peer on `stream` sent, as long as a marker, without consuming them: waited
 /// for as long as the peer has not begun, and for `LAUNCH_MARKER_COMPLETION` once it has.
 pub(super) async fn peeked_marker(
-    stream: &tokio::net::UnixStream,
+    stream: &mut tilo_socket::tokio::Stream,
 ) -> Result<[u8; runtime_portal::launch_handoff::MAGIC.len()], BrokerError> {
-    let incomplete =
-        || BrokerError::failed("collaboration peer sent an incomplete protocol header".into());
-    // A peer that has not begun is waited for as before; one that began has
-    // `LAUNCH_MARKER_COMPLETION` to send the rest.
-    let mut complete_by = None;
-    loop {
-        let ready = stream.ready(tokio::io::Interest::READABLE);
-        let ready = match complete_by {
-            None => ready.await,
-            Some(deadline) => tokio::time::timeout_at(deadline, ready)
-                .await
-                .map_err(|_| incomplete())?,
-        }
-        .map_err(|error| {
-            BrokerError::failed(format!("collaboration socket unreadable: {error}"))
-        })?;
-        let mut partial = false;
-        // A peek that finds only part of the marker reports `WouldBlock`, so
-        // the socket's readiness clears and the next bytes wake this loop.
-        match stream.try_io(tokio::io::Interest::READABLE, || {
-            peek_launch_marker(stream, &mut partial)
-        }) {
-            Ok(marker) => return Ok(marker),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if partial {
-                    if ready.is_read_closed() {
-                        return Err(BrokerError::disconnected(
-                            "collaboration peer closed mid protocol header".into(),
-                        ));
-                    }
-                    complete_by.get_or_insert_with(|| {
-                        tokio::time::Instant::now()
-                            .checked_add(LAUNCH_MARKER_COMPLETION)
-                            .unwrap_or_else(tokio::time::Instant::now)
-                    });
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Err(BrokerError::disconnected(
-                    "collaboration peer closed before its protocol header".into(),
-                ));
-            }
-            Err(error) => {
-                return Err(BrokerError::failed(format!(
-                    "could not inspect collaboration protocol header: {error}"
-                )));
-            }
-        }
-    }
-}
-
-/// Peek at the launch marker without consuming it: the whole marker, or
-/// `WouldBlock` — with `partial` set when some of it has arrived — or
-/// `UnexpectedEof` when the peer closed without sending anything.
-pub(super) fn peek_launch_marker(
-    stream: &tokio::net::UnixStream,
-    partial: &mut bool,
-) -> std::io::Result<[u8; runtime_portal::launch_handoff::MAGIC.len()]> {
+    let unreadable = |error: std::io::Error| {
+        BrokerError::failed(format!("collaboration socket unreadable: {error}"))
+    };
     let mut marker = [0_u8; runtime_portal::launch_handoff::MAGIC.len()];
-    // SAFETY: `marker` is a writable fixed-size buffer and `stream` owns
-    // the live socket for this entire call. MSG_PEEK leaves the Cap'n
-    // Proto header untouched for legacy/raw clients.
-    let read = unsafe {
-        libc::recv(
-            stream.as_raw_fd(),
-            marker.as_mut_ptr().cast(),
-            marker.len(),
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
-    };
-    let Ok(read) = usize::try_from(read) else {
-        return Err(std::io::Error::last_os_error());
-    };
-    if read == 0 {
-        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    let begun = tilo_socket::tokio::peek(stream, marker.get_mut(..1).unwrap_or_default())
+        .await
+        .map_err(unreadable)?;
+    if begun == 0 {
+        return Err(BrokerError::disconnected(
+            "collaboration peer closed before its protocol header".into(),
+        ));
     }
+    let read = tokio::time::timeout(
+        LAUNCH_MARKER_COMPLETION,
+        tilo_socket::tokio::peek(stream, &mut marker),
+    )
+    .await
+    .map_err(|_| {
+        BrokerError::failed("collaboration peer sent an incomplete protocol header".into())
+    })?
+    .map_err(unreadable)?;
     if read < marker.len() {
-        *partial = true;
-        return Err(std::io::ErrorKind::WouldBlock.into());
+        return Err(BrokerError::disconnected(
+            "collaboration peer closed mid protocol header".into(),
+        ));
     }
     Ok(marker)
 }
@@ -403,7 +379,7 @@ pub(super) struct AuthenticatedHandoff {
 }
 
 pub(super) async fn authenticate_launcher_handoff(
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut tilo_socket::tokio::Stream,
     services: &ProcessServices,
 ) -> Result<AuthenticatedHandoff, LaunchRefusal> {
     let LauncherHandoff {
@@ -511,10 +487,10 @@ pub(super) async fn authenticate_launcher_handoff(
 /// answered with `error`. Dropping the socket instead leaves its first call
 /// unanswered, and the app only sees its connection reset. Bounded, so a
 /// peer that never hangs up holds nothing for long.
-pub(super) async fn answer_refused_launch(stream: tokio::net::UnixStream, error: BrokerError) {
+pub(super) async fn answer_refused_launch(stream: tilo_socket::tokio::Stream, error: BrokerError) {
     use tokio::io::AsyncWriteExt as _;
     let reason = error.to_string();
-    let (mut reader, mut writer) = stream.into_split();
+    let (mut reader, mut writer) = tokio::io::split(stream);
     let answer = async {
         while let Ok(Some(call)) = runtime_collab::wire::FRAMING
             .read_value_async::<_, runtime_collab::wire::Call>(&mut reader)

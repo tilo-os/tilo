@@ -293,6 +293,9 @@ pub mod fd_transport;
 
 #[cfg(unix)]
 pub mod descriptors;
+#[cfg(windows)]
+#[path = "descriptors/windows.rs"]
+pub mod descriptors;
 
 #[cfg(unix)]
 pub type Descriptors = Option<descriptors::DescriptorSender>;

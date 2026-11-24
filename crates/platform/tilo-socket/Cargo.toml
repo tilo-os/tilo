@@ -21,7 +21,11 @@ tokio = { workspace = true, optional = true, features = ["net", "rt"] }
 
 [features]
 # The same sockets for a tokio caller (`tilo_socket::tokio`).
-tokio = ["dep:tokio"]
+tokio = ["dep:tokio", "dep:libc"]
+
+# A tokio stream's first bytes, peeked without consuming them (`MSG_PEEK`).
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true, optional = true }
 
 # Named pipes, their DACL and the account a peer's token names.
 [target.'cfg(windows)'.dependencies]
