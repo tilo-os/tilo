@@ -916,8 +916,8 @@ fn said(answered: Result<(), String>, io: &mut Io<'_>) -> u8 {
 
 /// An action's answer, as Tilo's API gives it, in the lines a person reads:
 /// the links it answered first, how it stands and the resource it acted on, what it answered
-/// (each list of records a table, each other field a `name: value` line), and what it made or
-/// changed.
+/// (each list of records a table, each other field a `name: value` line, in the order it gave
+/// them), and what it made or changed.
 #[must_use]
 pub fn answer_text(answer: &Value) -> String {
     use std::fmt::Write as _;

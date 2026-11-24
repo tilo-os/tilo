@@ -22,7 +22,8 @@ path = "src/main.rs"
 
 [dependencies]
 libc.workspace = true
-serde_json.workspace = true
+# An answer reads in the order the action gave its fields.
+serde_json = { workspace = true, features = ["preserve_order"] }
 tilo-paths.workspace = true
 # The action model's frames, which `tilo do` and `tilo open` send, and the
 # published tree's own picking of an action by name.

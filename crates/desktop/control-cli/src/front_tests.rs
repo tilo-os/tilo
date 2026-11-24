@@ -419,14 +419,15 @@ fn files_become_absolute_and_links_stay_as_they_are() {
 fn an_answer_says_what_ran_and_what_it_made() {
     let answer = serde_json::json!({"status": "ok", "result": "done", "resources": ["notes/Todo"]});
     assert_eq!(answer_text(&answer), "ok\ndone\n-> notes/Todo");
-    // A list of records reads as a table, each other field as a line, and a link comes first.
+    // A list of records reads as a table, each other field as a line, in the order the action
+    // answered them, and a link comes first.
     let invited = serde_json::json!({"status": "ok", "path": "workspace/invitations",
         "result": {"link": "https://tilo.sh/i/7", "role": "editor",
             "members": [{"name": "Ada", "role": "owner"}, {"name": "Grace Hopper", "role": "editor"}]}});
     assert_eq!(
         answer_text(&invited),
-        "https://tilo.sh/i/7\nok workspace/invitations\nmembers:\n  name          role\n  \
-         Ada           owner\n  Grace Hopper  editor\nrole: editor"
+        "https://tilo.sh/i/7\nok workspace/invitations\nrole: editor\nmembers:\n  \
+         name          role\n  Ada           owner\n  Grace Hopper  editor"
     );
 }
 
