@@ -89,6 +89,46 @@ fn native_socket(profile: &Path) -> io::Result<PathBuf> {
     Ok(sockets(profile)?.native)
 }
 
+/// [`sockets`] with the services' own in [`service_sockets`] instead: a daemon of the computer's
+/// keeps those where only it may enter, and its native endpoint where every client finds it.
+pub(crate) fn sockets_served(profile: &Path) -> io::Result<Sockets> {
+    let mut sockets = sockets(profile)?;
+    let services = service_sockets(profile)?;
+    sockets.collab = services.join(COLLAB_SOCKET);
+    sockets.identity = services.join(IDENTITY_SOCKET);
+    sockets.blobs = services.join(BLOB_SOCKET);
+    Ok(sockets)
+}
+
+/// The directory the profile's services bind `collab.sock`, `identity.sock` and `blobs.sock` in:
+/// the daemon's own [`sockets_dir`], or, for a daemon of the computer's that serves every account,
+/// the account's own below it, which only the daemon may enter. A broker socket refuses a
+/// directory other accounts can reach, while the native endpoint every account calls must stay in
+/// one they reach: the two are kept apart here.
+///
+/// # Errors
+/// The directory cannot be made, or a socket's path is longer than a socket's address holds.
+pub(crate) fn service_sockets(profile: &Path) -> io::Result<PathBuf> {
+    let own = sockets_dir(profile)?;
+    let account = tilo_api::daemon::admission::installed()
+        .and_then(tilo_api::daemon::admission::Admission::device_person_uid);
+    service_sockets_at(&own, tilo_api::daemon::system_daemon(), account)
+}
+
+/// [`service_sockets`] for a daemon that is the computer's (`system`) or one account's, serving
+/// the person of `account`.
+fn service_sockets_at(own: &Path, system: bool, account: Option<u32>) -> io::Result<PathBuf> {
+    let Some(account) = account.filter(|_| system) else {
+        return Ok(own.to_owned());
+    };
+    let dir = own.join("accounts").join(account.to_string());
+    for name in [COLLAB_SOCKET, IDENTITY_SOCKET, BLOB_SOCKET] {
+        tilo_api::daemon::socket_fits(&dir.join(name)).map_err(io::Error::other)?;
+    }
+    tilo_files::native::private::directory(&dir)?;
+    Ok(dir)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Status {

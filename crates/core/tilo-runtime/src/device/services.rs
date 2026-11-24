@@ -1473,7 +1473,9 @@ impl Daemon {
             }
         };
         tilo_files::native::private::directory(root)?;
-        let sockets = crate::daemon::sockets(root)?;
+        // The native endpoint every account reaches, and the services' own sockets apart from it:
+        // a broker's socket refuses a directory another account can read.
+        let sockets = crate::daemon::sockets_served(root)?;
         let dev = matches!(serving, Serving::Dev);
         let actor = identity.person();
         let joined = identity.joined();
