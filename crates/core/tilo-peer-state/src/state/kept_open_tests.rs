@@ -496,6 +496,7 @@ tilo_test_env::scenario! {
         let reader = f.authority.device_public_key;
 
         let plaintext = caller_edit(&f.replica, &caller, &f.owner, f.now, "forged", false);
+        let forged = next_seq(&f.replica, &f.owner);
         let message = write(&f.replica, &f.owner, &keys, &plaintext, f.now);
         admit(&mut f.replica, &f.owner, message, f.now);
         let mut kept = KeptDocument::default();
@@ -509,7 +510,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 kept.refused(),
-                [UnmergedWrite { seq: 1, reason: UnmergedReason::Refused { .. }, .. }]
+                [UnmergedWrite { seq, reason: UnmergedReason::Refused { .. }, .. }] if *seq == forged
             ),
             "the refusal is named: {:?}",
             kept.refused()
@@ -892,9 +893,14 @@ fn a_refused_sealed_change_is_read_without_together_with_what_its_author_built_o
     let mut f = fixture();
     let keys = f.keys();
     let reader = f.authority.device_public_key;
+    // The owner's seeded record took its first sequences: the forged change is its next one.
+    let forged = next_seq(&f.replica, &f.owner);
     write_refused_history(&mut f, &keys);
     let owner = f.owner.verifying_key().to_bytes();
-    let refused = vec![(owner, 1, true), (owner, 2, false)];
+    let refused = vec![
+        (owner, forged, true),
+        (owner, forged.checked_add(1).unwrap(), false),
+    ];
 
     let capture = f
         .replica
