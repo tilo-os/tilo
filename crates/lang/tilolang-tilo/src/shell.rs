@@ -135,6 +135,10 @@ pub const SHELL_FILES: &[(&str, &str)] = &[
         include_str!("../../../../apps/tl/shell/traditional.tl"),
     ),
     (
+        "widgets.tl",
+        include_str!("../../../../apps/tl/shell/widgets.tl"),
+    ),
+    (
         "workspaces.tl",
         include_str!("../../../../apps/tl/shell/workspaces.tl"),
     ),

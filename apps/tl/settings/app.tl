@@ -441,6 +441,87 @@ view appearance_pane() {
             ui.Toggle(bind: on_device.hide_top_bar)
         }
     }
+    ui.Section("Widgets") {
+        widget_setting(
+            "music",
+            "Music",
+            "What is playing on this device or another of yours, with its own controls",
+        )
+        widget_setting("team", "People here", "Who else is in this workspace")
+        widget_setting("calendar", "Calendar", "Today, and the month around it")
+        widget_setting(
+            "system_monitor",
+            "System load",
+            "This machine's processors, memory and heat",
+        )
+    }
+}
+
+/// One widget's choices: whether the shell keeps it, when it shows itself, and where it rests.
+/// Every change is the settings' own action, so the shell, Settings, a script and an agent keep
+/// the same record.
+view widget_setting(key: Text, name: Text, about: Text) {
+    let prefs = widget_prefs_of(key)
+    setting("Keep {name} on the shell", about) {
+        ui.Toggle(shown: prefs.enabled, label: "Keep {name} on the shell") {
+            on check(on): settings.set_widget_enabled(
+                settings.widgets,
+                widget: key,
+                enabled: on,
+            )
+        }
+    }
+    setting("When it shows", "Back after a pause, always, or only when you ask") {
+        ui.ToggleGroup(selected: show_index(prefs.show), label: "When {name} shows") {
+            ui.Segment("After a pause") {
+                on press: settings.set_widget_show(settings.widgets, widget: key, show: "pause")
+            }
+            ui.Segment("Always") {
+                on press: settings.set_widget_show(settings.widgets, widget: key, show: "always")
+            }
+            ui.Segment("Only when I ask") {
+                on press: settings.set_widget_show(settings.widgets, widget: key, show: "ask")
+            }
+        }
+    }
+    setting("Where it rests", "The corner or edge you left it at; a drag from its header moves it") {
+        ui.Button("Back to its corner", icon: .undo, role: .plain) {
+            on press: reset_widget_place(key)
+        }
+    }
+}
+
+/// A widget's choices as the person's settings hold them.
+fn widget_prefs_of(key: Text) -> settings.WidgetPrefs {
+    if key == "music" {
+        settings.widgets.music
+    } else if key == "team" {
+        settings.widgets.team
+    } else if key == "calendar" {
+        settings.widgets.calendar
+    } else {
+        settings.widgets.system_monitor
+    }
+}
+
+/// Which of the three show modes is chosen, in the order the group lists them.
+fn show_index(show: settings.ShowMode) -> Int {
+    if show == .pause {
+        0
+    } else if show == .always { 1 } else { 2 }
+}
+
+/// Puts a widget back at the corner or edge it first rests in on this display.
+fn reset_widget_place(key: Text) -> Action {
+    settings.place_widget(
+        settings.widgets,
+        widget: key,
+        display: device.screen.output,
+        x: if key == "system_monitor" { 0.0 } else { 1.0 },
+        y: if key == "music" or key == "system_monitor" {
+            1.0
+        } else if key == "team" { 0.5 } else { 0.25 },
+    )
 }
 
 /// What this device says and shows when something happens: the banners, the sounds, and the

@@ -73,6 +73,12 @@ view shell_view(a: Layout) window "Desktop shell" {
                 style_panel()
             }
         }
+        // What the person keeps on the shell sits over the style and under every surface, its
+        // own cards below a settings panel or a sheet: a display too narrow for a strip and a
+        // panel side by side has room for neither widget.
+        if not space.compact {
+            widget_layer(a)
+        }
     }
 }
 
