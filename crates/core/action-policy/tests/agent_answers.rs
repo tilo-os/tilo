@@ -528,3 +528,63 @@ fn a_person_answers_for_their_own_agent_without_governing() {
         "nor take back the person's stop"
     );
 }
+
+/// A rule of the workspace's own that denies an agent keeps it from what the rule names, whoever
+/// the agent acts for: the vault and the mail alike are refused, never put to its person. The
+/// workspace's Allow for the agent is no person's answer, and leaves the agent's part undecided.
+#[test]
+fn the_workspaces_denial_of_an_agent_reaches_it_for_every_person() {
+    const OWNER: &str = "0be7";
+    let vault = TreePath::workspace(WORKSPACE)
+        .app("so.tilo.passwords")
+        .kind(tilo_action_policy::roles::WORKSPACE_VAULT_KIND);
+    let mail = TreePath::workspace(WORKSPACE)
+        .app("so.tilo.mail")
+        .kind("mail.mailbox");
+    let files = TreePath::workspace(WORKSPACE).app("so.tilo.files");
+    let rule = |id: &str, node: &TreePath, answer| {
+        Grant::new(
+            id.to_owned(),
+            Grantee::agent(AGENT),
+            node.clone(),
+            KindSet::ALL,
+            answer,
+            Grantee::person(OWNER),
+        )
+    };
+    let policy = WorkspacePolicy {
+        workspace: WORKSPACE.into(),
+        owner: Some(OWNER.into()),
+        members: std::collections::BTreeMap::default(),
+        joined: std::collections::BTreeMap::default(),
+        grants: vec![
+            rule("workspace:helper-kept-from-vault", &vault, Answer::Deny),
+            rule("workspace:helper-kept-from-mail", &mail, Answer::Deny),
+            rule("workspace:helper-files", &files, Answer::Allow),
+        ],
+        custom_roles: std::collections::BTreeMap::default(),
+        assigned_roles: std::collections::BTreeMap::default(),
+    };
+    let agent_part = |person: &str, node: &TreePath, kind| {
+        let mut verdict =
+            Authority::person(policy.party_of_agent(AGENT, person)).decide(node, kind, &cx());
+        verdict.parts.remove(0)
+    };
+    for person in [PERSON, "b0b"] {
+        for node in [vault.clone().action("add"), mail.clone().action("send")] {
+            for kind in [ActionKind::Read, ActionKind::Undoable, ActionKind::Outside] {
+                let decision = agent_part(person, &node, kind);
+                assert_eq!(decision.answer, Answer::Deny, "{person} at {node} {kind:?}");
+                assert!(
+                    matches!(decision.basis, tilo_action_policy::Basis::Grant(_)),
+                    "the workspace's rule refuses it, not the want of one: {decision:?}"
+                );
+            }
+        }
+        let reading = agent_part(person, &files, ActionKind::Read);
+        assert!(
+            matches!(reading.basis, tilo_action_policy::Basis::NoGrant),
+            "the workspace's Allow is no answer for {person}'s agent: {reading:?}"
+        );
+    }
+}
