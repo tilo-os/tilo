@@ -238,13 +238,18 @@ fn an_agents_versions_in_two_apps_name_what_made_them_and_what_they_did_removals
         [VersionKind::Created]
     );
     let checked = store.versions(&landlord).unwrap();
-    // Checking writes what the person changed — the box, and only that: whether it folds is
-    // worked out from what is under and above it, not written with it, and when it changed and
-    // who changed it are the store's version, never a field.
-    assert_eq!(
-        checked.last().unwrap().fields,
-        [field(&ada, TASKS_APP, "Task", "done")]
-    );
+    // Checking writes what the person changed — the box and the status the flag stands beside,
+    // and nothing else: whether it folds is worked out from what is under and above it, not
+    // written with it, and when it changed and who changed it are the store's version, never a
+    // field.
+    let mut written = checked.last().unwrap().fields.clone();
+    written.sort();
+    let mut expected = vec![
+        field(&ada, TASKS_APP, "Task", "done"),
+        field(&ada, TASKS_APP, "Task", "status"),
+    ];
+    expected.sort();
+    assert_eq!(written, expected);
     // A removed resource stays answerable: who removed it.
     for removed in [&old, &stale] {
         let versions = store.versions(removed).unwrap();
