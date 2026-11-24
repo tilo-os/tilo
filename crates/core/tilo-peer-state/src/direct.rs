@@ -387,7 +387,7 @@ impl LinkAdmit {
     /// not keep the workspace may send at all ([`Self::records_only`]), and a
     /// channel's commit only from a device admitted for its keys
     /// ([`Self::key_access`]).
-    fn permits(self, own: [u8; 32], remote: [u8; 32], authored: &Authored) -> bool {
+    fn permits(self, remote: [u8; 32], authored: &Authored) -> bool {
         // A device the host confined to one record writes that record and no
         // other: what it sends of another is refused here, as the same scope
         // refuses to send it another's frames. A hosted environment's device is
@@ -405,7 +405,7 @@ impl LinkAdmit {
         if !self.key_access && matches!(authored.message, NeighbourMsg::MlsGovernance { .. }) {
             return false;
         }
-        !self.own_frames_only || by_remote(&authored.message, authored.from, remote, own)
+        !self.own_frames_only || by_remote(&authored.message, authored.from, remote)
     }
 }
 
@@ -431,9 +431,9 @@ fn records_frame(message: &NeighbourMsg) -> bool {
 
 /// Whether `message`, which the link's stream says `from` wrote, is the frame
 /// of `remote`, the device the transport proved, and names no other device in
-/// the places a frame carries one: a write's signed author, a record's
-/// requester and responder, a channel frame's signer.
-fn by_remote(message: &NeighbourMsg, from: [u8; 32], remote: [u8; 32], own: [u8; 32]) -> bool {
+/// the places a frame carries one: a write's signed author, an ask's
+/// requester and an answer's responder, a channel frame's signer.
+fn by_remote(message: &NeighbourMsg, from: [u8; 32], remote: [u8; 32]) -> bool {
     if from != remote {
         return false;
     }
@@ -443,21 +443,14 @@ fn by_remote(message: &NeighbourMsg, from: [u8; 32], remote: [u8; 32], own: [u8;
         }
         NeighbourMsg::IdentityHello { cert, .. } => cert.device_public_key == remote,
         NeighbourMsg::DocumentContentWant { requester, .. } => *requester == peer_handle(&remote),
-        NeighbourMsg::DocumentContentPiece {
-            responder,
-            requester,
-            ..
+        // An answer is the link's device's own; whoever asked is the host's to
+        // carry it to, or one of its own readers: a host's server asks under a
+        // key of its own, not always the one its links sign with.
+        NeighbourMsg::DocumentContentPiece { responder, .. }
+        | NeighbourMsg::DocumentContentLacks { responder, .. }
+        | NeighbourMsg::DocumentContentRefused { responder, .. } => {
+            *responder == peer_handle(&remote)
         }
-        | NeighbourMsg::DocumentContentLacks {
-            responder,
-            requester,
-            ..
-        }
-        | NeighbourMsg::DocumentContentRefused {
-            responder,
-            requester,
-            ..
-        } => *responder == peer_handle(&remote) && *requester == peer_handle(&own),
         NeighbourMsg::MlsGovernance { frame, .. } => frame.signed_by.as_bytes() == &remote,
         NeighbourMsg::MlsAccessRequest { request, .. } => request.device.as_bytes() == &remote,
         _ => true,
@@ -3045,7 +3038,7 @@ impl DirectSync {
     async fn take_content(&self, remote: [u8; 32], admit: LinkAdmit, authored: Authored) {
         let refused = if !content_frame(&authored.message) {
             Some("a link's content stream carried another frame".to_owned())
-        } else if !admit.permits(self.device(), remote, &authored) {
+        } else if !admit.permits(remote, &authored) {
             Some("the link's device may not send it".to_owned())
         } else {
             self.admits(authored.from, false).err()
@@ -3061,7 +3054,6 @@ impl DirectSync {
             );
             return;
         }
-        let here = content_reaches(&authored.message, self.device());
         if self.fans_out() {
             self.route_content(
                 Authored {
@@ -3072,17 +3064,18 @@ impl DirectSync {
             )
             .await;
         }
-        if here {
-            self.tell_content(Heard {
-                author: authored.from,
-                message: authored.message,
-                landed: false,
-                retained: false,
-                report: Err(crate::AdmissionError::malformed(NOT_WORKSPACE_STATE)),
-                fresh: true,
-            })
-            .await;
-        }
+        // Every reader here takes what it asked for and passes over the rest: a
+        // host's server asks under a key of its own, so whether an answer is
+        // this device's is the reader's to say, not the link's key.
+        self.tell_content(Heard {
+            author: authored.from,
+            message: authored.message,
+            landed: false,
+            retained: false,
+            report: Err(crate::AdmissionError::malformed(NOT_WORKSPACE_STATE)),
+            fresh: true,
+        })
+        .await;
     }
 
     /// Take what the device at the link's other end answers of this device's
@@ -3247,7 +3240,7 @@ impl DirectSync {
         // its own frames, and none but those a device that opens the records
         // it reads takes. A frame it may not send is that frame's refusal,
         // never the link's, as a frame the workspace refuses is.
-        if !admit.permits(self.device(), remote, &authored) {
+        if !admit.permits(remote, &authored) {
             tracing::warn!(
                 workspace = ?self.workspace().ok(),
                 remote = %short(&remote),
@@ -4525,6 +4518,62 @@ mod tests {
                 .await
                 .is_err(),
             "neither refused ask reached the reader"
+        );
+    }
+
+    /// A member's word that it lacks `hash`, from `from` as `responder`, to the
+    /// ask `requester` made.
+    fn lacks(from: [u8; 32], responder: [u8; 32], requester: [u8; 32], hash: &str) -> Authored {
+        Authored {
+            from,
+            message: NeighbourMsg::DocumentContentLacks {
+                responder: peer_handle(&responder),
+                requester: peer_handle(&requester),
+                app_id: "files".into(),
+                cluster_id: WORKSPACE.into(),
+                hash: hash.into(),
+            },
+            published: false,
+        }
+    }
+
+    /// A host asks its members for content as the device its server is, which
+    /// is not always the key its links sign with: a member's answer to that ask
+    /// reaches the host's readers, which take the answers to their own asks.
+    /// An answer a member sends in another device's name is refused.
+    #[tokio::test]
+    async fn a_members_answer_reaches_whoever_on_the_host_asked_for_it() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let roster = [device(&root, 2), device(&root, 3), device(&root, 4)];
+        let member = roster[1].1.device_public_key;
+        let other = roster[2].1.device_public_key;
+        // The host's server asks under a key of its own, not its link's.
+        let server = SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes();
+        let sync = link(&roster, RevocationList::new(), Vec::new());
+        let mut reader = sync.reader();
+        let admit = LinkAdmit {
+            own_frames_only: true,
+            ..LinkAdmit::dialling()
+        };
+
+        sync.take_content(member, admit, lacks(member, other, server, "aa"))
+            .await;
+        sync.take_content(member, admit, lacks(member, member, server, "bb"))
+            .await;
+
+        let heard = tokio::time::timeout(std::time::Duration::from_secs(5), reader.recv())
+            .await
+            .expect("the member's answer reaches the host's readers")
+            .expect("the link is up");
+        assert!(
+            matches!(&heard.message, NeighbourMsg::DocumentContentLacks { hash, .. } if hash == "bb"),
+            "the member's own answer is what arrived"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), reader.recv())
+                .await
+                .is_err(),
+            "the answer sent in another member's name reached no reader"
         );
     }
 
