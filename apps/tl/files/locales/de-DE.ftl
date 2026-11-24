@@ -515,7 +515,6 @@ d-z6cheebf = Orte
     .w-nearby = In der Nähe
 
 d-jwdlcu14 = Eintragsraster
-    .w-files = Dateien
 
 d-wsk8uwkt = Zuletzt geöffnete Dateien
     .w-no-recent-files-yet = Noch keine zuletzt geöffneten Dateien
@@ -753,14 +752,10 @@ d-3jhnrnyu = Übertragungen
 d-ub75cc7h = Übertragung ist vorangekommen
     .doc = Wie weit die Übertragung `t` ist, wie das Gerät jeden Schritt festhält.
 
-d-ub75cc7h-t = Übertragung
-
 d-ub75cc7h-j = Auftrag
 
 d-zwuzfjsv = Übertragung ist zu Ende
     .doc = Die Übertragung `t` ist zu Ende: eine fertige verlässt das Fenster und der Ordner wird neu gelesen; eine fehlgeschlagene bleibt und sagt warum, bis sie geschlossen wird.
-
-d-zwuzfjsv-f = Dateien
 
 d-zwuzfjsv-t = Übertragung
 

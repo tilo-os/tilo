@@ -514,9 +514,7 @@ action transfer_ended(f: Files, t: Transfer, j: host.Job) uses files, time {
     }
     if let s = f.sessions.first() {
         read_listing(f, s.here)
-        if j.state != .failed {
-            s.transfers.remove(t)
-        }
+        if j.state != .failed { s.transfers.remove(t) }
     }
 }
 
@@ -530,7 +528,6 @@ action stop_transfer(f: Files, transfer: Transfer) uses files, time (icon: .x) {
 action dismiss_transfer(f: Files, transfer: Transfer) {
     if let s = f.sessions.first() { s.transfers.remove(transfer) }
 }
-
 
 /// The files a drag of `e` carries: every chosen entry when `e` is one of them, else `e` alone.
 fn dragged(s: Session, e: Entry) -> List<Text> {
