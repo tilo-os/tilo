@@ -346,6 +346,10 @@ impl DaemonPlace {
     ///
     /// # Errors
     /// The daemon does not answer, or refused.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the caller builds the answer's arguments for this one call"
+    )]
     pub fn ask(
         &self,
         action: &str,
@@ -360,6 +364,10 @@ impl DaemonPlace {
     ///
     /// # Errors
     /// The daemon does not answer, or the call failed or was refused.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the caller builds the answer's arguments for this one call"
+    )]
     pub fn act_followed(
         &self,
         action: &str,
@@ -431,6 +439,10 @@ impl DaemonPlace {
 
     /// The daemon's answer to the tool `tool` with `arguments`: its typed answer, its words, and
     /// whether it says it failed.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the call builds the request's arguments for this one call"
+    )]
     fn tool(
         &self,
         tool: &str,
