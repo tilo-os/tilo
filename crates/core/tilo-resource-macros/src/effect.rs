@@ -244,6 +244,14 @@ struct VariantOptions {
     opens_path: Option<Vec<String>>,
     presence: bool,
     edit: bool,
+    /// `document`: published as a document operation the app's own registry
+    /// applies to the record it holds, as the history verbs are, rather than
+    /// an effect its surface answers.
+    document: bool,
+    /// `prompted`: offered in the palette with its first parameter's prompt
+    /// even where every parameter may be left out, as a named verb whose
+    /// optional argument a person still says (how many steps to undo).
+    prompted: bool,
     member: bool,
     kind: Option<String>,
     /// The entities whose ids the effect's first field is bound to: a
@@ -303,9 +311,7 @@ fn offload_option(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<OffloadO
         } else if inner.path.is_ident("output_mb") {
             output_mb = Some(number(&inner)?);
         } else {
-            return Err(
-                inner.error("expected `cpu_ms`, `memory_mb`, `output_mb` or `gpu`")
-            );
+            return Err(inner.error("expected `cpu_ms`, `memory_mb`, `output_mb` or `gpu`"));
         }
         Ok(())
     })?;
@@ -333,6 +339,10 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.kind = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else if meta.path.is_ident("view") {
                 options.view = true;
+            } else if meta.path.is_ident("document") {
+                options.document = true;
+            } else if meta.path.is_ident("prompted") {
+                options.prompted = true;
             } else if meta.path.is_ident("row") {
                 options.row = true;
             } else if meta.path.is_ident("idempotent") {
@@ -405,7 +415,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.outside_with = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(meta.error(
-                    "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns` (`returns = Type` for the value's type), `content`, \
+                    "expected `label`, `keywords`, `icon`, `view`, `document`, `prompted`, `row`, `job`, `cancellable`, `returns` (`returns = Type` for the value's type), `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
                      `own_device`, `attended`, `screen`, `risk`, `phrase`, `audience`, `untrusted`, `opens_path`, `presence`, `edit`, `member`, \
                      `item = field`, `on = RowType`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
@@ -529,6 +539,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 "a `screen` effect only changes the screen it is invoked on: it reads and \
                  answers nothing (drop `kind`, `view`, `edit`, `returns`, `content`, `job`, \
                  `cancellable`, `own_device` and `attended`)",
+            ));
+        }
+        if options.document && (options.view || options.edit || options.screen) {
+            return Err(syn::Error::new(
+                variant.span(),
+                "a `document` effect is an operation of the record's own document, not a \
+                 view of its caller: drop `view`, `edit` and `screen`",
             ));
         }
         let action_kind = match options.kind.as_deref() {
@@ -785,6 +802,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         let presence = options.presence;
         let edits = options.edit;
+        let prompted = options.prompted;
         let member = options.member;
         // An effect with arguments binds its first to the entity it is offered
         // on. One without (showing a set of remotes) is offered on every entity
@@ -860,7 +878,9 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 }))
             }
         };
-        let kind = if options.view || options.edit {
+        let kind = if options.document {
+            quote!(Document)
+        } else if options.view || options.edit {
             quote!(View)
         } else {
             quote!(Effect)
@@ -958,6 +978,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 param_types: #param_types_fn,
                 result: #result,
                 kind: #krate::__private::OperationKind::#kind,
+                prompted: #prompted,
                 row: #row,
                 answers: #answers,
                 risk: #krate::__private::RiskLevel::#risk,

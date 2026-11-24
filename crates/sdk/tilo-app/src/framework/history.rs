@@ -8,8 +8,8 @@ use ui_core::automerge::{AutoCommit, ChangeHash, Patch};
 use ui_core::history_source::ThreadWords;
 
 pub use ui_core::history_source::verbs::{
-    EDIT_TYPE, HistoryEdit, HistoryVersion, PART_EDIT_TYPE, PartEdit, VIEW_TYPE, is_edit,
-    part_edit_specs, review, specs, version_name,
+    EDIT_TYPE, HistoryEdit, HistoryVersion, PART_EDIT_TYPE, PartEdit, VIEW_TYPE, edit_payload,
+    is_edit, part_edit_specs, review, specs, version_name,
 };
 
 /// A history edit of `R`'s document: `R`'s own registry is the only decoder
@@ -50,17 +50,18 @@ fn fmt_history_edit(
 impl<'de, R> serde::Deserialize<'de> for ResourceHistoryEdit<R> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
+        let payload = serde_json::to_vec(&value).map_err(serde::de::Error::custom)?;
         Ok(Self::new(
-            history_edit(value).map_err(serde::de::Error::custom)?,
+            history_edit(&payload).map_err(serde::de::Error::custom)?,
         ))
     }
 }
 
-/// A history edit from its JSON form, decoded by one function for every
-/// resource.
+/// A history edit from the action its invocation or a recorded step carries,
+/// decoded by one function for every resource.
 #[inline(never)]
-fn history_edit(value: serde_json::Value) -> Result<HistoryEdit, serde_json::Error> {
-    <HistoryEdit as serde::Deserialize>::deserialize(value)
+fn history_edit(payload: &[u8]) -> Result<HistoryEdit, String> {
+    ui_core::history_source::verbs::edit_from_payload(payload)
 }
 
 impl<R: tilo_resource::Resource> tilo_actions::Action for ResourceHistoryEdit<R> {

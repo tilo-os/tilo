@@ -30,8 +30,7 @@ use automerge::{AutoCommit, ChangeHash, Patch, PatchAction, Prop, ReadDoc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tilo_actions::{
-    ActionArgs, ActionError, ActionKind, ActionOutput, ActionParam, ActionSpec, ChangeKind,
-    EncodedAction, ExecutionLocus, OperationKind, ParamType, ResultSpec,
+    ActionError, ActionOutput, ActionSpec, ChangeKind, EncodedAction, ExecutionLocus,
 };
 use tilo_resource::history::Version;
 
@@ -50,34 +49,63 @@ const MAX_STEPS: i64 = 50;
 const MAX_LISTED: i64 = 500;
 
 /// A history verb that writes the document.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Effect)]
 #[serde(rename_all = "kebab-case")]
+// The operation is the type every recorded history edit travels as, as [`EDIT_TYPE`] names it.
+#[effect(operation = "tilo.app.history-edit")]
 pub enum HistoryEdit {
+    /// Take back your last steps (an agent: its invocation's) as a new change; with invocation,
+    /// that invocation's steps; with by, that author's steps outside one; with to, all after a
+    /// version.
+    #[effect(document, prompted, kind = "undoable", returns = HistoryAnswer)]
     Undo {
+        #[param("How many steps, newest first")]
         steps: Option<u32>,
+        #[param("A group id from history")]
         invocation: Option<String>,
         /// An author from history, for steps outside one.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[param("The actor's `by` of a history entry, for steps outside an invocation")]
         by: Option<tilo_actions::Actor>,
         /// Every step after this version instead.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[param("A change id from history, or a checkpoint name")]
         to: Option<String>,
         /// Only the step this change id from history is part of, wherever it
         /// stands, instead.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[param(
+            "A change id from history: undo only the step it is part of, of your steps, or of \
+             those invocation or by names"
+        )]
         step: Option<String>,
     },
+    /// Bring back what your last undo took back.
+    #[effect(document, prompted, kind = "undoable", returns = HistoryAnswer)]
     Redo {
+        #[param("How many undos, newest first")]
         steps: Option<u32>,
     },
+    /// Bring the document back to a version as a new change, or only the items named by ids.
+    #[effect(document, kind = "undoable", audience = "agents", returns = HistoryAnswer, icon = "rotate-ccw")]
     Restore {
+        #[param("A change id from history, or a checkpoint name")]
         version: String,
+        #[param("Only these item ids")]
         ids: Option<Vec<String>>,
     },
+    /// Restore precisely the reviewed paths as a new undoable change, only if the live causal
+    /// frontier still matches. Empty selection never restores everything.
+    #[effect(document, kind = "undoable", audience = "agents", returns = HistoryAnswer)]
     RestoreReviewed {
+        #[param("The review object from review-restore")]
         review: review::RestoreReview,
     },
+    /// Name the current version, to restore or compare with later.
+    #[effect(
+        document, kind = "undoable",
+        returns = HistoryAnswer,
+        icon = "bookmark"
+    )]
     Checkpoint {
+        #[param("The name")]
         name: String,
     },
 }
@@ -182,161 +210,181 @@ pub enum HistoryView {
     ReviewRestore { version: String, paths: Vec<String> },
 }
 
-fn invalid(reason: &str) -> EncodedAction {
-    EncodedAction {
-        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
-        payload: reason.as_bytes().to_vec(),
-    }
-}
-
-fn steps_arg(args: &ActionArgs) -> Result<Option<u32>, String> {
-    args.integer("steps")
-        .map(|steps| {
-            if (1..=MAX_STEPS).contains(&steps) {
-                u32::try_from(steps).map_err(|error| error.to_string())
-            } else {
-                Err(format!("steps is 1 to {MAX_STEPS}"))
-            }
-        })
-        .transpose()
-}
-
-fn text_arg(args: &ActionArgs, name: &str) -> Result<String, String> {
-    args.text(name)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{name} is required"))
-}
-
-/// The picture a history verb shows where people list it: the palette draws
-/// undo, redo and history from the toolkit's own shortcut table; these are the
-/// verbs people take that it does not know.
-fn icon_of(id: &str) -> Option<&'static str> {
-    match id {
-        "restore" => Some("rotate-ccw"),
-        "checkpoint" => Some("bookmark"),
-        _ => None,
-    }
-}
-
-fn edit(
-    id: &'static str,
-    label: &'static str,
-    description: &'static str,
-    params: Vec<ActionParam>,
-    build: fn(&ActionArgs) -> Result<HistoryEdit, String>,
-) -> ActionSpec {
-    let mut spec = ActionSpec::typed(
-        id,
-        label,
-        label,
-        ExecutionLocus::ClientLocal,
-        params,
-        // Decoded by the resource's own history edit, which applies it.
-        move |args| match build(args)
-            .and_then(|edit| serde_json::to_vec(&edit).map_err(|error| error.to_string()))
-        {
-            Ok(payload) => EncodedAction {
-                type_id: EDIT_TYPE.to_owned(),
-                payload,
-            },
-            Err(reason) => invalid(&reason),
-        },
-    )
-    .of_kind(tilo_actions::ActionKind::Undoable)
-    .with_description(description);
-    if let Some(icon) = icon_of(id) {
-        spec = spec.with_icon(icon);
-    }
-    spec.type_mut().contract.result = ResultSpec::Json {
-        schema: json!({"type": "object"}),
-    };
-    spec
-}
-
-fn view(
-    id: &'static str,
-    label: &'static str,
-    description: &'static str,
-    params: Vec<ActionParam>,
-    build: fn(&ActionArgs) -> HistoryView,
-) -> ActionSpec {
-    let mut spec = ActionSpec::typed_operation(
-        id,
-        label,
-        label,
-        OperationKind::View,
-        VIEW_TYPE,
-        params,
-        move |args| {
-            EncodedAction::encode_operation(VIEW_TYPE, &build(args)).unwrap_or_else(|_| {
-                EncodedAction {
-                    type_id: VIEW_TYPE.into(),
-                    payload: Vec::new(),
-                }
-            })
-        },
-    )
-    .of_kind(ActionKind::Read)
-    .with_description(description)
-    // A read of the record's own versions, which moves nothing: anyone who may read the record
-    // may run it — a reviewer listing who changed a form included — and it moves no one's focus
-    // or viewport, the caller's own neither.
-    .reads_resource();
-    if let Some(icon) = icon_of(id) {
-        spec = spec.with_icon(icon);
-    }
-    spec.type_mut().contract.result = ResultSpec::Json {
-        schema: json!({"type": "object"}),
-    };
-    spec
-}
-
-const VERSION: &str = "A change id from history, or a checkpoint name";
-
-/// The history actions every framework app publishes, unless its resource
-/// already publishes one of the same id.
-pub fn specs() -> Vec<ActionSpec> {
-    let mut specs = edit_specs();
-    specs.extend(view_specs());
-    specs.extend(review::specs());
-    for spec in &mut specs {
-        if names_a_version(&spec.id) {
-            spec.type_mut()
-                .contract
-                .set_audience(tilo_actions::Audience::Agents);
+impl HistoryView {
+    /// This read, refused when its required words are blank, them trimmed.
+    fn validated(mut self) -> Result<Self, String> {
+        if let Self::ReviewRestore { version, .. } = &mut self {
+            required(version, "version")?;
         }
+        Ok(self)
     }
-    specs
 }
 
-/// Whether the history action `id` names a version by its change id, which
-/// only history shows: agents and scripts list the versions and take one
-/// from there, a person goes back to one in the app's own history. Undo,
-/// redo and naming a checkpoint ask for nothing a person cannot say.
-fn names_a_version(id: &str) -> bool {
-    matches!(id, "restore" | "history" | "diff")
+impl HistoryEdit {
+    /// This edit, refused when its arguments cannot be taken together or out of bounds, its
+    /// required words trimmed.
+    fn validated(mut self) -> Result<Self, String> {
+        match &mut self {
+            Self::Undo {
+                steps,
+                invocation,
+                by,
+                to,
+                step,
+            } => {
+                if let Some(steps) = steps
+                    && !(1..=MAX_STEPS).contains(&i64::from(*steps))
+                {
+                    return Err(format!("steps is 1 to {MAX_STEPS}"));
+                }
+                if to.is_some() && steps.is_some() {
+                    return Err("give steps or to, not both".into());
+                }
+                if step.is_some() && (to.is_some() || steps.is_some()) {
+                    return Err("give step alone, or with whose it is (invocation or by)".into());
+                }
+                if by.is_some() && invocation.is_some() {
+                    return Err("choose an author or an invocation, not both".into());
+                }
+            }
+            Self::Redo { steps } => {
+                if let Some(steps) = steps
+                    && !(1..=MAX_STEPS).contains(&i64::from(*steps))
+                {
+                    return Err(format!("steps is 1 to {MAX_STEPS}"));
+                }
+            }
+            Self::Restore { version, .. } => required(version, "version")?,
+            Self::Checkpoint { name } => required(name, "name")?,
+            Self::RestoreReviewed { .. } => {}
+        }
+        Ok(self)
+    }
 }
 
-fn edit_specs() -> Vec<ActionSpec> {
-    edit_specs_with(edit)
+/// `text`, trimmed, refused when it is nothing: a required word its caller types.
+fn required(text: &mut String, name: &str) -> Result<(), String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{name} is required"));
+    }
+    *text = trimmed.to_owned();
+    Ok(())
 }
 
-/// How a history verb's arguments build its edit.
-type BuildEdit = fn(&ActionArgs) -> Result<HistoryEdit, String>;
+/// What every history verb answers: an object whose keys say what it did — the steps an undo took
+/// back or a redo brought back, the items a restore wrote, the checkpoint it named, or the versions
+/// and comparison a read lists.
+#[derive(Clone, Copy, Debug)]
+pub struct HistoryAnswer;
 
-/// How a history verb is published: its id, label, description,
-/// parameters, and how they build the edit.
-type MakeEdit =
-    fn(&'static str, &'static str, &'static str, Vec<ActionParam>, BuildEdit) -> ActionSpec;
+impl tilo_resource::JsonSchema for HistoryAnswer {
+    fn json_schema() -> Value {
+        json!({"type": "object"})
+    }
+}
 
-/// The history verbs that change one part of a chain, each naming the part
-/// (`part`): what a chain publishes beside its parts' own actions, so the
-/// people, agents and the workspace's moderation take back steps in a part
-/// through the same action API as in any record.
-pub fn part_edit_specs() -> Vec<ActionSpec> {
-    edit_specs_with(part_edit)
+/// The history verbs that change one part of a chain, each naming the part (`part`): what a chain
+/// publishes beside its parts' own actions, so the people, agents and the workspace's moderation
+/// take back steps in a part through the same action API as in any record.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+// The operation is the type every part's history edit travels as, as [`PART_EDIT_TYPE`] names it.
+#[effect(operation = "tilo.app.part-history-edit")]
+pub enum PartHistoryEditAction {
+    /// Take back your last steps (an agent: its invocation's) as a new change; with invocation,
+    /// that invocation's steps; with by, that author's steps outside one; with to, all after a
+    /// version.
+    #[effect(document, kind = "undoable", audience = "agents", returns = HistoryAnswer)]
+    Undo {
+        #[param("How many steps, newest first")]
+        steps: Option<u32>,
+        #[param("A group id from history")]
+        invocation: Option<String>,
+        #[param("The actor's `by` of a history entry, for steps outside an invocation")]
+        by: Option<tilo_actions::Actor>,
+        #[param("A change id from history, or a checkpoint name")]
+        to: Option<String>,
+        #[param(
+            "A change id from history: undo only the step it is part of, of your steps, or of \
+             those invocation or by names"
+        )]
+        step: Option<String>,
+        #[param("The number of the part whose history it changes")]
+        part: u64,
+    },
+    /// Bring back what your last undo took back.
+    #[effect(document, kind = "undoable", audience = "agents", returns = HistoryAnswer)]
+    Redo {
+        #[param("How many undos, newest first")]
+        steps: Option<u32>,
+        #[param("The number of the part whose history it changes")]
+        part: u64,
+    },
+    /// Bring the document back to a version as a new change, or only the items named by ids.
+    #[effect(
+        document, kind = "undoable",
+        audience = "agents",
+        returns = HistoryAnswer,
+        icon = "rotate-ccw"
+    )]
+    Restore {
+        #[param("A change id from history, or a checkpoint name")]
+        version: String,
+        #[param("Only these item ids")]
+        ids: Option<Vec<String>>,
+        #[param("The number of the part whose history it changes")]
+        part: u64,
+    },
+    /// Name the current version, to restore or compare with later.
+    #[effect(
+        document, kind = "undoable",
+        audience = "agents",
+        returns = HistoryAnswer,
+        icon = "bookmark"
+    )]
+    Checkpoint {
+        #[param("The name")]
+        name: String,
+        #[param("The number of the part whose history it changes")]
+        part: u64,
+    },
+}
+
+/// `edit` as the declaration's action, when a part's history has it.
+fn part_action(edit: &PartEdit) -> Result<PartHistoryEditAction, String> {
+    let part = edit.part;
+    Ok(match &edit.edit {
+        HistoryEdit::Undo {
+            steps,
+            invocation,
+            by,
+            to,
+            step,
+        } => PartHistoryEditAction::Undo {
+            steps: *steps,
+            invocation: invocation.clone(),
+            by: by.clone(),
+            to: to.clone(),
+            step: step.clone(),
+            part,
+        },
+        HistoryEdit::Redo { steps } => PartHistoryEditAction::Redo {
+            steps: *steps,
+            part,
+        },
+        HistoryEdit::Restore { version, ids } => PartHistoryEditAction::Restore {
+            version: version.clone(),
+            ids: ids.clone(),
+            part,
+        },
+        HistoryEdit::Checkpoint { name } => PartHistoryEditAction::Checkpoint {
+            name: name.clone(),
+            part,
+        },
+        HistoryEdit::RestoreReviewed { .. } => {
+            return Err("a part's history has no reviewed restore".into());
+        }
+    })
 }
 
 /// A history verb on part `part` of a chain.
@@ -353,211 +401,298 @@ impl PartEdit {
         self.edit.verb()
     }
 
+    /// This edit as the action it runs, in the form the declaration encodes it.
+    ///
+    /// # Errors
+    ///
+    /// A part's history has no reviewed restore.
     pub fn encoded(&self) -> Result<EncodedAction, String> {
+        let action = part_action(self)?;
         Ok(EncodedAction {
-            type_id: EDIT_TYPE.to_owned(),
-            payload: serde_json::to_vec(&self.edit).map_err(|error| error.to_string())?,
+            type_id: PART_EDIT_TYPE.to_owned(),
+            payload: declared_payload(&action)?,
         })
     }
 }
 
-fn part_edit(
-    id: &'static str,
-    label: &'static str,
-    description: &'static str,
-    mut params: Vec<ActionParam>,
-    build: BuildEdit,
-) -> ActionSpec {
-    params.push(ActionParam::required(
-        "part",
-        ParamType::Integer,
-        "The number of the part whose history it changes",
-    ));
-    let mut spec = ActionSpec::typed(
-        id,
-        label,
-        label,
-        ExecutionLocus::ClientLocal,
-        params,
-        move |args| {
-            let part = args
-                .integer("part")
-                .and_then(|part| u64::try_from(part).ok())
-                .ok_or_else(|| "part is a part's number".to_owned());
-            match part
-                .and_then(|part| {
-                    Ok(PartEdit {
-                        part,
-                        edit: build(args)?,
-                    })
-                })
-                .and_then(|edit| serde_json::to_vec(&edit).map_err(|error| error.to_string()))
-            {
-                Ok(payload) => EncodedAction {
-                    type_id: PART_EDIT_TYPE.to_owned(),
-                    payload,
-                },
-                Err(reason) => invalid(&reason),
-            }
-        },
-    )
-    .of_kind(tilo_actions::ActionKind::Undoable)
-    .with_description(description)
-    // A part is named by its number, which only history shows: agents and
-    // scripts take it from there. A person undoes in the app itself.
-    .for_audience(tilo_actions::Audience::Agents);
-    spec.type_mut().contract.result = ResultSpec::Json {
-        schema: json!({"type": "object"}),
-    };
-    spec
+/// The payload `edit` travels as, in the form its declaration encodes it: what an invocation of
+/// the verb, or a step recorded in the document, carries.
+///
+/// # Errors
+///
+/// Its arguments cannot be serialized.
+pub fn edit_payload(edit: &HistoryEdit) -> Result<Vec<u8>, String> {
+    declared_payload(edit)
 }
 
-/// The optional `steps` of an undo or redo, described as `description`.
-fn steps_param(description: &'static str) -> ActionParam {
-    ActionParam::optional("steps", ParamType::Integer, description).nullable()
+/// `action` as the payload an invocation of its verb carries.
+fn declared_payload<E: tilo_resource::Effect>(action: &E) -> Result<Vec<u8>, String> {
+    let payload = json!({
+        "effect": tilo_resource::Effect::id(action),
+        "args": tilo_resource::Effect::arguments(action),
+    });
+    serde_json::to_vec(&payload).map_err(|error| error.to_string())
 }
 
-fn edit_specs_with(edit: MakeEdit) -> Vec<ActionSpec> {
-    vec![
-        undo_spec(edit),
-        edit(
-            "redo",
-            "Redo",
-            "Bring back what your last undo took back.",
-            vec![steps_param("How many undos, newest first")],
-            |args| {
-                Ok(HistoryEdit::Redo {
-                    steps: steps_arg(args)?,
-                })
-            },
-        ),
-        edit(
-            "restore",
-            "Restore version",
-            "Bring the document back to a version as a new change, or only the items named by ids.",
-            vec![
-                ActionParam::required("version", ParamType::Text, VERSION),
-                ActionParam::optional("ids", ParamType::Array, "Only these item ids")
-                    .nullable()
-                    .with_schema(json!({"type": "array", "items": {"type": "string"}})),
-            ],
-            |args| {
-                let ids = args
-                    .array("ids")
-                    .map(|ids| {
-                        ids.iter()
-                            .map(|id| id.as_str().map(str::to_owned))
-                            .collect::<Option<Vec<_>>>()
-                            .ok_or_else(|| "ids are strings".to_owned())
-                    })
-                    .transpose()?;
-                Ok(HistoryEdit::Restore {
-                    version: text_arg(args, "version")?,
-                    ids,
-                })
-            },
-        ),
-        edit(
-            "checkpoint",
-            "Checkpoint",
-            "Name the current version, to restore or compare with later.",
-            vec![ActionParam::required("name", ParamType::Text, "The name")],
-            |args| {
-                Ok(HistoryEdit::Checkpoint {
-                    name: text_arg(args, "name")?,
-                })
-            },
-        ),
-    ]
-}
-
-/// The `undo` verb, built by `edit`.
-fn undo_spec(edit: MakeEdit) -> ActionSpec {
-    edit(
-        "undo",
-        "Undo",
-        "Take back your last steps (an agent: its invocation's) as a new change; with invocation, that invocation's steps; with by, that author's steps outside one; with to, all after a version.",
-        vec![
-            steps_param("How many steps, newest first"),
-            ActionParam::optional("invocation", ParamType::Text, "A group id from history")
-                .nullable(),
-            ActionParam::optional(
-                "by",
-                ParamType::Object,
-                "The actor's `by` of a history entry, for steps outside an invocation",
-            )
-            .nullable(),
-            ActionParam::optional("to", ParamType::Text, VERSION).nullable(),
-            ActionParam::optional(
-                "step",
-                ParamType::Text,
-                "A change id from history: undo only the step it is part of, of your steps, or of those invocation or by names",
-            )
-            .nullable(),
-        ],
-        |args| {
-            let to = args.text("to").map(str::to_owned);
-            let step = args.text("step").map(str::to_owned);
-            if to.is_some() && args.integer("steps").is_some() {
-                return Err("give steps or to, not both".into());
-            }
-            if step.is_some() && (to.is_some() || args.integer("steps").is_some()) {
-                return Err("give step alone, or with whose it is (invocation or by)".into());
-            }
-            let by = args
-                .get("by")
-                .map(|by| serde_json::from_value::<tilo_actions::Actor>(by.to_json()))
-                .transpose()
-                .map_err(|_| "by is an author object from history".to_owned())?;
-            if by.is_some() && args.text("invocation").is_some() {
-                return Err("choose an author or an invocation, not both".into());
-            }
-            Ok(HistoryEdit::Undo {
+impl From<PartHistoryEditAction> for PartEdit {
+    fn from(action: PartHistoryEditAction) -> Self {
+        match action {
+            PartHistoryEditAction::Undo {
+                steps,
+                invocation,
                 by,
-                steps: steps_arg(args)?,
-                invocation: args.text("invocation").map(str::to_owned),
                 to,
                 step,
-            })
-        },
-    )
+                part,
+            } => Self {
+                part,
+                edit: HistoryEdit::Undo {
+                    steps,
+                    invocation,
+                    by,
+                    to,
+                    step,
+                },
+            },
+            PartHistoryEditAction::Redo { steps, part } => Self {
+                part,
+                edit: HistoryEdit::Redo { steps },
+            },
+            PartHistoryEditAction::Restore { version, ids, part } => Self {
+                part,
+                edit: HistoryEdit::Restore { version, ids },
+            },
+            PartHistoryEditAction::Checkpoint { name, part } => Self {
+                part,
+                edit: HistoryEdit::Checkpoint { name },
+            },
+        }
+    }
+}
+
+/// The history a call reads: the versions, a comparison of two, or the review of a restoration.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+// The operation is the type every history read travels as, as [`VIEW_TYPE`] names it.
+#[effect(operation = "tilo.app.history")]
+pub enum HistoryViewAction {
+    /// List the versions, oldest first: change id (what undo to, restore and diff take), action
+    /// and its arguments, invocation, author, time, undone, what an undo took back or a redo
+    /// brought back, checkpoints.
+    #[effect(
+        view,
+        prompted,
+        audience = "agents",
+        returns = HistoryAnswer,
+        tag = tilo_actions::RESOURCE_READ_TAG
+    )]
+    History {
+        #[param("How many recent versions (default 50)")]
+        last: Option<i64>,
+    },
+    /// List the items that differ between two versions.
+    #[effect(
+        view,
+        audience = "agents",
+        returns = HistoryAnswer,
+        tag = tilo_actions::RESOURCE_READ_TAG
+    )]
+    Diff {
+        #[param("A change id from history, or a checkpoint name")]
+        from: String,
+        #[param("The later version (default now)")]
+        to: Option<String>,
+    },
+    /// Review exact-item restoration without writing. Returns pinned target and live heads; copy
+    /// review into restore-reviewed. Any later edit requires a new review.
+    #[effect(
+        view,
+        audience = "agents",
+        returns = HistoryAnswer,
+        tag = tilo_actions::RESOURCE_READ_TAG
+    )]
+    ReviewRestore {
+        #[param("A change id, causal frontier, or checkpoint")]
+        version: String,
+        #[param("Exact differing paths from diff; a root selects its entire value")]
+        paths: Vec<String>,
+    },
+}
+
+impl From<HistoryViewAction> for HistoryView {
+    fn from(action: HistoryViewAction) -> Self {
+        match action {
+            HistoryViewAction::History { last } => Self::History {
+                // A read asks for a bounded list, as the verbs always clamped it.
+                last: last.map(|last| u32::try_from(last.clamp(1, MAX_LISTED)).unwrap_or(1)),
+            },
+            HistoryViewAction::Diff { from, to } => Self::Diff { from, to },
+            HistoryViewAction::ReviewRestore { version, paths } => {
+                Self::ReviewRestore { version, paths }
+            }
+        }
+    }
+}
+
+/// The history actions every framework app publishes, unless its resource
+/// already publishes one of the same id.
+pub fn specs() -> Vec<ActionSpec> {
+    let mut specs = edit_specs();
+    specs.extend(view_specs());
+    specs.extend(review::specs());
+    specs
+}
+
+fn edit_specs() -> Vec<ActionSpec> {
+    ["undo", "redo", "restore", "checkpoint"]
+        .iter()
+        .filter_map(|id| <HistoryEdit as tilo_resource::Effect>::spec(id))
+        .map(published)
+        .collect()
 }
 
 fn view_specs() -> Vec<ActionSpec> {
-    vec![
-        view(
-            "history",
-            "History",
-            "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, invocation, author, time, undone, what an undo took back or a redo brought back, checkpoints.",
-            vec![
-                ActionParam::optional(
-                    "last",
-                    ParamType::Integer,
-                    "How many recent versions (default 50)",
-                )
-                .nullable(),
-            ],
-            |args| HistoryView::History {
-                last: args
-                    .integer("last")
-                    .and_then(|last| u32::try_from(last.clamp(1, MAX_LISTED)).ok()),
-            },
-        ),
-        view(
-            "diff",
-            "Compare versions",
-            "List the items that differ between two versions.",
-            vec![
-                ActionParam::required("from", ParamType::Text, VERSION),
-                ActionParam::optional("to", ParamType::Text, "The later version (default now)")
-                    .nullable(),
-            ],
-            |args| HistoryView::Diff {
-                from: args.text("from").unwrap_or_default().to_owned(),
-                to: args.text("to").map(str::to_owned),
-            },
-        ),
-    ]
+    ["history", "diff"]
+        .iter()
+        .filter_map(|id| <HistoryViewAction as tilo_resource::Effect>::spec(id))
+        .map(published)
+        .collect()
+}
+
+/// The surface the history verbs publish: an optional parameter is `nullable`
+/// and carries no schema of its own — a count or a word is typed by its
+/// parameter, and the bound it keeps is checked when the verb runs — while a
+/// list or a review names its shape; and the record-read tag comes before the
+/// audience a read is listed for.
+fn published(mut spec: ActionSpec) -> ActionSpec {
+    let names: Vec<String> = spec
+        .params()
+        .iter()
+        .map(|param| param.name.to_string())
+        .collect();
+    for name in names {
+        spec.narrow_param(&name, |param| {
+            param.nullable = !param.required;
+            let Some(schema) = param.schema.take() else {
+                return;
+            };
+            // Only a list names a shape of its own: a count, a word or an author is typed by its
+            // parameter, and the bound it keeps is checked when the verb runs.
+            if plain_schema(&schema) || (!param.required && !list_schema(&schema)) {
+                return;
+            }
+            param.schema = Some(std::sync::Arc::new(without_null(schema.as_ref().clone())));
+        });
+    }
+    let tags = &mut spec.type_mut().contract.tags;
+    if let Some(at) = tags
+        .iter()
+        .position(|tag| tag == tilo_actions::RESOURCE_READ_TAG)
+    {
+        let read = tags.remove(at);
+        tags.insert(0, read);
+    }
+    spec
+}
+
+/// Whether `schema` is the plain type of a scalar, whose parameter already says
+/// it, or a union of one with null.
+fn plain_schema(schema: &Value) -> bool {
+    let plain = |ty: &Value| {
+        matches!(
+            ty.as_str(),
+            Some("string" | "integer" | "number" | "boolean")
+        )
+    };
+    match schema.get("type") {
+        Some(Value::String(ty)) => {
+            matches!(ty.as_str(), "string" | "integer" | "number" | "boolean")
+        }
+        Some(Value::Array(types)) => types
+            .iter()
+            .all(|ty| ty.as_str() == Some("null") || plain(ty)),
+        _ => false,
+    }
+}
+
+/// Whether `schema` is a list's, possibly a union of one with null.
+fn list_schema(schema: &Value) -> bool {
+    let mut kinds: Vec<Option<&str>> = match schema.get("type") {
+        Some(Value::String(ty)) => vec![Some(ty.as_str())],
+        Some(Value::Array(types)) => types.iter().map(Value::as_str).collect(),
+        _ => return false,
+    };
+    kinds.retain(|ty| *ty != Some("null"));
+    kinds == [Some("array")]
+}
+
+/// `schema` with null dropped from its type, the one type left spelled alone.
+fn without_null(mut schema: Value) -> Value {
+    let Some(types) = schema.get_mut("type").and_then(Value::as_array_mut) else {
+        return schema;
+    };
+    types.retain(|ty| ty.as_str() != Some("null"));
+    if let [only] = types.as_slice() {
+        let only = only.clone();
+        schema["type"] = only;
+    }
+    schema
+}
+
+/// The history verbs that change one part of a chain, each naming the part
+/// (`part`): what a chain publishes beside its parts' own actions, so the
+/// people, agents and the workspace's moderation take back steps in a part
+/// through the same action API as in any record.
+pub fn part_edit_specs() -> Vec<ActionSpec> {
+    ["undo", "redo", "restore", "checkpoint"]
+        .iter()
+        .filter_map(|id| <PartHistoryEditAction as tilo_resource::Effect>::spec(id))
+        .map(published)
+        .collect()
+}
+
+/// The edit a recorded or invoked history action carries: the declaration's form, or, for a step
+/// recorded before the verbs were declared, the serde form it travelled as.
+///
+/// # Errors
+///
+/// The payload is neither, or the edit's arguments cannot be taken together.
+pub fn edit_from_payload(payload: &[u8]) -> Result<HistoryEdit, String> {
+    match <HistoryEdit as tilo_resource::Effect>::from_payload(payload) {
+        Ok(edit) => edit.validated(),
+        Err(_) => serde_json::from_slice::<HistoryEdit>(payload)
+            .map_err(|error| error.to_string())
+            .and_then(HistoryEdit::validated),
+    }
+}
+
+/// The edit on one part of a chain a recorded or invoked action carries.
+///
+/// # Errors
+///
+/// The payload is neither form, or the edit's arguments cannot be taken together.
+pub fn part_from_payload(payload: &[u8]) -> Result<PartEdit, String> {
+    let mut edit = match <PartHistoryEditAction as tilo_resource::Effect>::from_payload(payload) {
+        Ok(action) => PartEdit::from(action),
+        Err(_) => serde_json::from_slice::<PartEdit>(payload).map_err(|error| error.to_string())?,
+    };
+    edit.edit = edit.edit.validated()?;
+    Ok(edit)
+}
+
+/// The view a history read carries, in either form ([`edit_from_payload`]).
+///
+/// # Errors
+///
+/// The payload is neither form, or its arguments are blank.
+pub fn view_from_payload(payload: &[u8]) -> Result<HistoryView, String> {
+    match <HistoryViewAction as tilo_resource::Effect>::from_payload(payload) {
+        Ok(view) => HistoryView::validated(HistoryView::from(view)),
+        Err(_) => {
+            let view = serde_json::from_slice::<HistoryView>(payload)
+                .map_err(|error| error.to_string())?;
+            HistoryView::validated(view)
+        }
+    }
 }
 
 /// Whether `action` is a history verb that writes the document.
@@ -1044,8 +1179,7 @@ pub fn answer_with(
     payload: &[u8],
     words: &dyn HistoryWords,
 ) -> Result<ActionOutput, String> {
-    let view: HistoryView = tilo_actions::decode_json(payload)
-        .map_err(|error| format!("not a history view: {error}"))?;
+    let view = view_from_payload(payload)?;
     let value = match view {
         HistoryView::History { last } => history_with(doc, beside, limit(last, 50), words),
         HistoryView::ReviewRestore { version, paths } => review::answer(doc, &version, &paths)?,

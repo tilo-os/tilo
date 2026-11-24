@@ -3832,8 +3832,9 @@ impl Hosted {
         }
         if encoded.type_id == EDIT_TYPE {
             // A history verb, on the document as the invoker's own step.
-            let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
-                .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
+            let edit: HistoryEdit =
+                tilo_resource_store::history::verbs::edit_from_payload(&encoded.payload)
+                    .map_err(|error| Refused::new("action_invalid_arguments", error))?;
             let value = self
                 .history_edit(&edit, &invoker.acting.by)
                 .map_err(|error| Refused::new("action_failed", error))?;
@@ -3979,9 +3980,8 @@ impl Hosted {
         locale: &str,
         person: &str,
     ) -> Result<tilo_actions::ActionOutput, Refused> {
-        use tilo_resource_store::history::verbs::HistoryView;
-        let view: HistoryView = tilo_actions::decode_json(payload)
-            .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
+        let view = tilo_resource_store::history::verbs::view_from_payload(payload)
+            .map_err(|error| Refused::new("action_invalid_arguments", error))?;
         let resources = surface.resources(Some(shown));
         let tree = resources
             .iter()

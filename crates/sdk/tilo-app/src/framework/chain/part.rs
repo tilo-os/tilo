@@ -671,5 +671,5 @@ pub(super) fn by_part(indices: &[u64]) -> Vec<(u64, Vec<usize>)> {
 /// every part type.
 #[inline(never)]
 pub(super) fn part_edit(payload: &[u8]) -> Result<PartEdit, String> {
-    tilo_actions::decode_json(payload).map_err(|error| error.to_string())
+    ui_core::history_source::verbs::part_from_payload(payload)
 }

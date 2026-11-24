@@ -371,10 +371,7 @@ impl super::Chains {
                 ids: None,
             },
         };
-        let action = tilo_actions::EncodedAction {
-            type_id: super::super::history::PART_EDIT_TYPE.to_owned(),
-            payload: serde_json::to_vec(&edit).map_err(|error| error.to_string())?,
-        };
+        let action = edit.encoded()?;
         super::super::resources::ResourceApi::apply_encoded(
             &*chain,
             &action,

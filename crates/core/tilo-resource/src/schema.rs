@@ -101,6 +101,28 @@ impl JsonSchema for tilo_action_policy::MemberId {
     }
 }
 
+/// Who made a change, as serde writes it: `{"member": {"person": "<id>"}}`
+/// (or `agent` or `bot`), `{"automation": "<id>"}`, `{"app": "<id>"}` or
+/// `{"visitor": "<key>"}`.
+impl JsonSchema for tilo_actions::Actor {
+    fn json_schema() -> Value {
+        let kind = |name: &str, value: Value| {
+            json!({
+                "type": "object",
+                "properties": { name: value },
+                "required": [name],
+                "additionalProperties": false,
+            })
+        };
+        json!({"oneOf": [
+            kind("member", <tilo_action_policy::MemberId as JsonSchema>::json_schema()),
+            kind("automation", json!({"type": "string"})),
+            kind("app", json!({"type": "string"})),
+            kind("visitor", json!({"type": "string"})),
+        ]})
+    }
+}
+
 /// Where a message sent from a window goes, as serde writes it: one of
 /// `new-agent`, `agent`, `person`, `conversation` or `feedback`.
 impl JsonSchema for tilo_actions::RecipientKind {

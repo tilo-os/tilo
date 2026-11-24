@@ -228,13 +228,18 @@ mod schema;
 /// kebab case and its label the crate's catalogue message
 /// `<operation>-<id>` (separators as dashes), or the key `label = "..."`
 /// names. `#[effect(catalogue = "dir")]` on the enum reads another catalogue
-/// than `locales/`. Variant options: `#[effect(label = "key", view, row, job, cancellable, returns,
+/// than `locales/`. Variant options: `#[effect(label = "key", view, document, prompted, row, job, cancellable, returns,
 /// destructive, privileged, idempotent, own_device, attended, screen, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
 /// host_render, tag = some::TAG)]`. `host_render` marks an effect a host
 /// answers in a render service of its own rather than the record's app
 /// worker; `tag` (repeatable) adds a contract tag, a `&'static str` constant;
 /// `outside_with = "path"` makes a `kind = "read"` effect reach outside only
 /// when that parameter is given (an export writing the file it names).
+/// `document` publishes the effect as a document operation the app's own
+/// registry applies to its record, as the history verbs are; its operation
+/// type is the action's, never an operation the surface answers. `prompted`
+/// keeps a named verb's prompt in the palette where every parameter may be
+/// left out (undo asks how many steps).
 /// `item = field` offers it on each item of a collection, its first parameter
 /// bound to the item's id; `on = RowType` offers it on each row of a
 /// `#[derive(Row)]` type, bound to the row's id.
