@@ -906,6 +906,13 @@ impl JoinedChannel {
                 Err(refusal) => return Ok(ready(*refusal)),
             },
         };
+        // A call of the app's own kept for its person is followed and cancelled where it waits.
+        if let Some(answer) =
+            self.state
+                .answer_kept_app_call(&route.app_id, &caller, &request.message)
+        {
+            return Ok(answer);
+        }
         if tilo_actions::remote::refuse(
             &request.message,
             tilo_actions::remote::ActionCallError::UnknownAction,
@@ -924,6 +931,10 @@ impl JoinedChannel {
         {
             return refusal(&request.message, refused);
         }
+        // What an app calls as its person that waits for their yes is kept for them to answer
+        // ([`super::app_asks`]); an agent's waits through its own dispatch.
+        let keeps = current.agent_id.is_none();
+        let app_id = route.app_id.clone();
         let provider = action_provider::ConnectionActionProvider {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -933,15 +944,28 @@ impl JoinedChannel {
                 admitted: Box::new(current),
             }),
         };
+        let asking = match &request.message {
+            tilo_actions::remote::RemoteActionMessage::Invoke(invoke) if keeps => {
+                Some((provider.clone(), caller.clone(), invoke.clone()))
+            }
+            _ => None,
+        };
         let answer = tilo_actions::remote::serve(&provider, &caller, request.message);
+        let state = Arc::clone(&self.state);
         // Awaited on this local set, which is also where an application's
         // directory answers; the connection's other calls keep flowing.
         Ok(Box::pin(async move {
-            match answer {
+            let answer = match answer {
                 Some(answer) => answer.await,
                 None => None,
             }
-            .ok_or_else(|| BrokerError::failed("the action provider dropped the request".into()))
+            .ok_or_else(|| BrokerError::failed("the action provider dropped the request".into()))?;
+            Ok(match asking {
+                Some((provider, caller, invoke)) => {
+                    state.keep_app_ask((&provider, &app_id), &caller, &invoke, answer)
+                }
+                None => answer,
+            })
         }))
     }
 

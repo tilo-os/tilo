@@ -775,6 +775,7 @@ impl AppBrokerState {
                 records: std::sync::OnceLock::new(),
                 asked_reads: std::sync::OnceLock::new(),
                 placement: std::sync::OnceLock::new(),
+                app_asks: std::sync::OnceLock::new(),
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),

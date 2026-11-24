@@ -2953,14 +2953,20 @@ impl Hosted {
             }
             CollabEvent::RemoteAction { message } => {
                 // A call raised for the page's prompt that ended without running is the page's
-                // no.
-                if let Some(no) = self.page_prompts.answered(&message) {
-                    if let Some(no) = no
-                        && let Err(why) = self.instance.ask_page(&no)
-                    {
-                        tracing::warn!(%why, "the page was not told no");
+                // no; one that goes on is followed until it moves.
+                match self.page_prompts.answered(&message) {
+                    Some(crate::page_prompts::Answered::No(no)) => {
+                        if let Err(why) = self.instance.ask_page(&no) {
+                            tracing::warn!(%why, "the page was not told no");
+                        }
+                        return true;
                     }
-                    return true;
+                    Some(crate::page_prompts::Answered::Goes(invocation)) => {
+                        self.observe(invocation, "a prompt's call is not followed");
+                        return true;
+                    }
+                    Some(crate::page_prompts::Answered::Said) => return true,
+                    None => {}
                 }
                 return self.answered(&message);
             }
@@ -3163,6 +3169,12 @@ impl Hosted {
         {
             return;
         }
+        self.observe(invocation, "a call a run waits on is not followed");
+    }
+
+    /// Ask the dispatch how `invocation` stands once it has moved on, or after a while; `unsent`
+    /// says what is lost when the ask cannot go out.
+    fn observe(&self, invocation: tilo_actions::InvocationId, unsent: &str) {
         let message = tilo_actions::remote::RemoteActionMessage::Observe {
             correlation: 0,
             invocation,
@@ -3174,7 +3186,7 @@ impl Hosted {
             .manager()
             .try_send(CollabRequest::RemoteAction { message })
         {
-            tracing::warn!(app = self.spec.app, %error, "a call a run waits on is not followed");
+            tracing::warn!(app = self.spec.app, %error, "{unsent}");
         }
     }
 

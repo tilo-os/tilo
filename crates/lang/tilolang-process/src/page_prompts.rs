@@ -30,6 +30,18 @@ struct Raised {
     no: String,
 }
 
+/// What the dispatch's answer of a call raised for a prompt means for the page.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Answered {
+    /// The call goes on, waiting for the person or running: follow it by its invocation until
+    /// it moves, since nothing tells the app otherwise.
+    Goes(InvocationId),
+    /// Nothing more to tell the page: its action ran and answered it, or the call cannot move.
+    Said,
+    /// The call ended without running: the page request that tells the page no.
+    No(String),
+}
+
 /// The calls raised for what the window's page waits on.
 #[derive(Default)]
 pub struct PagePrompts {
@@ -185,10 +197,10 @@ impl PagePrompts {
     }
 
     /// What the dispatch answered of a call raised here: one that ended without running tells
-    /// the page no, answered with the page request that says it. A call that waits for the
-    /// person, or ran (its action answered the page), says nothing more. `None` for a message of
-    /// no call raised here.
-    pub fn answered(&mut self, message: &RemoteActionMessage) -> Option<Option<String>> {
+    /// the page no, answered with the page request that says it. One that goes on is followed
+    /// until it moves; one that ran (its action answered the page) says nothing more. `None` for
+    /// a message of no call raised here.
+    pub fn answered(&mut self, message: &RemoteActionMessage) -> Option<Answered> {
         let receipt = match message {
             RemoteActionMessage::Receipt(receipt) => receipt.clone(),
             RemoteActionMessage::Update {
@@ -201,25 +213,24 @@ impl PagePrompts {
             .iter()
             .find(|(_, raised)| raised.invocation == receipt.invocation)
             .map(|(key, _)| key.clone())?;
-        let ended_without_running = match &receipt.status {
-            // Accepted runs when the person says yes; a rejection that waits on their
-            // confirmation is kept for them, in its asked record.
-            ReceiptStatus::Accepted
-            | ReceiptStatus::Rejected {
+        match &receipt.status {
+            // Kept for the person in its asked record, or running: it moves later.
+            ReceiptStatus::Accepted => Some(Answered::Goes(receipt.invocation)),
+            // Refused for want of a yes where no record keeps it: nothing here moves it.
+            ReceiptStatus::Rejected {
                 error: ActionCallError::ConfirmationRequired(_),
-            } => false,
+            } => Some(Answered::Said),
             ReceiptStatus::Completed { .. } => {
                 self.raised.remove(&key);
-                return Some(None);
+                Some(Answered::Said)
             }
             ReceiptStatus::Rejected { .. }
             | ReceiptStatus::Failed { .. }
-            | ReceiptStatus::Cancelled { .. } => true,
-        };
-        if !ended_without_running {
-            return Some(None);
+            | ReceiptStatus::Cancelled { .. } => self
+                .raised
+                .remove(&key)
+                .map(|raised| Answered::No(raised.no)),
         }
-        Some(self.raised.remove(&key).map(|raised| raised.no))
     }
 
     /// The page went away with its window: every call raised for it is withdrawn.
@@ -293,7 +304,8 @@ mod tests {
         assert_eq!(arguments["id"], 7);
     }
 
-    /// A call the person declined ends cancelled: the page is told no, once.
+    /// A call kept for the person is followed while it waits; once they decline it, it ends
+    /// cancelled and the page is told no, once.
     #[test]
     fn a_declined_call_tells_the_page_no() {
         let mut prompts = PagePrompts::default();
@@ -301,25 +313,27 @@ mod tests {
         let invocation = prompts.waiting()[0];
         let waits = RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
             invocation,
-            status: ReceiptStatus::Rejected {
-                error: ActionCallError::asks(tilo_actions::remote::asked::AskedFacts::default()),
-            },
+            status: ReceiptStatus::Accepted,
         });
         assert_eq!(
             prompts.answered(&waits),
-            Some(None),
-            "it waits for the person"
+            Some(Answered::Goes(invocation)),
+            "it waits for the person, followed"
         );
-        let declined = RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+        let declined = RemoteActionMessage::Update {
             invocation,
-            status: ReceiptStatus::Cancelled {
-                message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
-            },
-        });
-        let no = prompts
-            .answered(&declined)
-            .flatten()
-            .expect("the page's no");
+            state: Some(tilo_actions::remote::InvocationState::new(
+                invocation,
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some(tilo_actions::remote::asked::DECLINED.to_owned()),
+                },
+            )),
+            correlation: None,
+        };
+        let Some(Answered::No(no)) = prompts.answered(&declined) else {
+            panic!("the page's no");
+        };
         let no: serde_json::Value = serde_json::from_str(&no).unwrap();
         assert_eq!(no["op"], "answer_permission");
         assert_eq!(no["allow"], false);

@@ -36,6 +36,7 @@ use confirmation::*;
 mod journal_commit;
 use journal_commit::*;
 use routing::*;
+mod app_asks;
 mod session;
 mod shell;
 mod shell_served;
@@ -483,6 +484,9 @@ pub struct AppBrokerState {
     /// The host that placed this device's window, where a host placed it: the only device whose
     /// word answers for the person at it ([`Self::placed_by`]).
     placement: std::sync::OnceLock<tilo_actions::remote::browser::Placement>,
+    /// The apps' own calls that wait for their person's yes in an asked record
+    /// ([`app_asks`]), once one was kept.
+    app_asks: std::sync::OnceLock<Arc<app_asks::AppAsks>>,
     invocation_id: AtomicU64,
     services: ProcessServices,
     workers: Mutex<Vec<PendingWorker>>,
