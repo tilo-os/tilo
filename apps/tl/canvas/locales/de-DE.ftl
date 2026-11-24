@@ -200,43 +200,6 @@ d-zxu35ztu = Gruppe
 
 d-ulngw3pf = Einpassen
 
-d-akflqlvk = Geöffnetes Bild
-    .doc = Ein Bild, in das eine `.artwork`-Datei geöffnet wurde: die Felder, die diese App behält.
-    .noun = { $count ->
-        [one] geöffnetes Bild
-       *[other] geöffnete Bilder
-    }
-
-d-r5usrdnc = Titel
-
-d-yogkal7v = Breite
-
-d-7y7zrgxh = Höhe
-
-d-osqzkwh6 = Ebenen
-
-d-akflqlvk-filter-width = Breite
-
-d-akflqlvk-filter-height = Höhe
-
-d-4rfh6alh = Geöffnete Ebene
-    .noun = { $count ->
-        [one] geöffnete Ebene
-       *[other] geöffnete Ebenen
-    }
-
-d-qvppsycy = Name
-
-d-6ksjlnwm = Medium
-
-d-ocg7lpks = Deckkraft
-
-d-7eyz4jyf = Sichtbar
-
-d-4rfh6alh-filter-opacity = Deckkraft
-
-d-4rfh6alh-filter-visible = Sichtbar
-
 d-ywazcrrf = Bild öffnen
     .doc = Öffnet ein gespeichertes Bild aus der Datei, die eine Person, Dateien oder eine andere App übergibt.
     .did = hat ein Bild geöffnet
@@ -263,6 +226,7 @@ d-i2shd26j-height = Höhe
 d-im6e3ij3 = Ebene hinzufügen
     .doc = Fügt oben im Bild eine Ebene hinzu.
     .did = hat eine Ebene hinzugefügt
+    .w-a-layer-named-is-already-here = Eine Ebene namens { $trim } gibt es schon
 
 d-im6e3ij3-name = Name
 
@@ -270,6 +234,7 @@ d-25k3qffg = Ebene umbenennen
     .doc = Benennt eine Ebene um.
     .did = hat eine Ebene umbenannt
     .w-a-layer-has-a-name = Eine Ebene hat einen Namen
+    .w-another-layer-is-named = Eine andere Ebene heißt { $trim }
 
 d-25k3qffg-layer = Ebene
 
@@ -301,6 +266,7 @@ d-nmal4fcc = Malen
     .doc = Legt einen Pinselstrich dort, wo die Hand entlangging, seinen Punkt `[x, y, Stärke]` in Einheiten des Bildes.
     .did = hat einen Strich gemalt
     .w-a-stroke-point-is-x-and = Ein Strichpunkt ist x und y
+    .w-the-layer-is-locked = Die Ebene ist gesperrt
 
 d-nmal4fcc-layer = Ebene
 
@@ -327,6 +293,7 @@ d-kzqsfl7r = Form zeichnen
     .doc = Zeichnet eine Form, ihre SVG-Pfaddaten in Einheiten des Bildes.
     .did = hat eine Form gezeichnet
     .w-a-shape-has-an-outline = Eine Form hat einen Umriss
+    .w-the-layer-is-locked = Die Ebene ist gesperrt
 
 d-kzqsfl7r-layer = Ebene
 
@@ -406,20 +373,11 @@ d-f6v2tn6o-markup = SVG-Text
 d-qnk3hupn = Hinweis schließen
     .doc = Schließt den Hinweis, den eine Person gelesen hat.
 
-d-3yu27udg = Punkt malen
-    .doc = Malt den Punkt, an dem die Hand ist: der Strich, der gerade gemalt wird, nimmt den nächsten Punkt, sonst beginnt hier ein Strich.
-
-d-3yu27udg-point = Punkt
-
-d-3yu27udg-size = Größe
-
-d-3yu27udg-colour = Farbe
-
-d-3yu27udg-brush = Pinsel
-
 d-ocgibcwg = Bibliothek
     .w-no-artwork-yet = Noch kein Bild
     .w-new-artwork-starts-one = Neues Bild beginnt eines
+    .w-new-artwork = Neues Bild
+    .w-open-an-artwork = Bild öffnen…
 
 d-sqei2kjp = Neues Bild~present
 
@@ -438,3 +396,204 @@ d-vbu6ayw5 = Bild
     .w-add-layer = Ebene hinzufügen
     .w-size = Größe
     .w-paint = Malen
+    .w-hide-the-layer = Ebene ausblenden
+    .w-show-the-layer = Ebene einblenden
+    .w-layer-actions = Ebenenaktionen
+    .w-opacity = Deckkraft
+    .w-up = Nach oben
+    .w-down = Nach unten
+    .w-brush = Pinsel: { $brush }
+    .w-fill-the-selection = Auswahl füllen
+    .w-deselect = Auswahl aufheben
+    .w-export = Exportieren
+    .w-png-full-size = PNG, volle Größe
+    .w-png-twice-the-size = PNG, doppelte Größe
+    .w-jpeg-full-size = JPEG, volle Größe
+    .w-webp-full-size = WebP, volle Größe
+    .w-svg = SVG
+    .w-fit-the-view = Ansicht einpassen
+
+d-y5teghkv = Offen
+    .doc = Ob die Hand noch auf ihm liegt: der Strich, den ein bewegter Zeiger verlängert.
+
+d-54j6cyar-filter-open = Offen
+
+
+d-j3bzgr3f = Titel
+
+d-dowdfhi2 = Breite
+
+d-vlrgzghe = Höhe
+
+d-lotrow4q = Untergrundtextur
+
+d-mpyvrw7z = Untergrundfarbe
+
+d-xubd3xon = Ebenen
+
+d-lowvdtkg = Markierungen
+
+d-5h6vjvk2 = Auswahl
+
+d-xocfgdc7-filter-width = Breite
+
+d-xocfgdc7-filter-height = Höhe
+
+d-xocfgdc7-filter-selection = Auswahl
+
+
+d-xunw6qmv = Name
+
+d-sxka2uxh = Medium
+
+d-aka7ql3b = Deckkraft
+
+d-4h7cxhog = Sichtbar
+
+d-2r4nberb = Gesperrt
+
+d-xlvw3rkz = Textur
+
+d-tsgjljmf-filter-opacity = Deckkraft
+
+d-tsgjljmf-filter-visible = Sichtbar
+
+d-tsgjljmf-filter-locked = Gesperrt
+
+d-tsgjljmf-filter-texture = Textur
+
+
+d-67wvmkkq = Name
+
+d-jk7lnwfw = Ebene
+
+d-xy2goji2 = Art
+
+d-ysn6onwt = Punkte
+
+d-vmvvarxw = D
+
+d-hajhmux3 = Größe
+
+d-gtn2xdwh = Farbe
+
+d-pqrpx7k3 = Pinsel
+
+d-kolk77nz = Deckkraft
+
+d-uslws4n3-filter-layer = Ebene
+
+d-uslws4n3-filter-size = Größe
+
+d-uslws4n3-filter-opacity = Deckkraft
+
+
+d-nxcluiyf = D
+
+d-jxpwvxya = Weichzeichnen
+
+d-3pgxznsb-filter-feather = Weichzeichnen
+
+d-dx7xxp6w = Ebene sperren
+    .doc = Hält eine Ebene still, sodass der Zeiger durch ihre Markierungen hindurchgeht, oder gibt ihre Markierungen wieder frei.
+    .did = sperrte eine Ebene
+
+d-dx7xxp6w-layer = Ebene
+
+d-dx7xxp6w-locked = Gesperrt
+
+d-nsot2laz = Ebene nach oben
+    .doc = Verschiebt eine Ebene im Stapel eine Stelle nach oben.
+    .did = verschob eine Ebene
+
+d-nsot2laz-layer = Ebene
+
+d-36qh4o3t = Ebene nach unten
+    .doc = Verschiebt eine Ebene im Stapel eine Stelle nach unten.
+    .did = verschob eine Ebene
+
+d-36qh4o3t-layer = Ebene
+
+d-hgluvpdm = Ebene duplizieren
+    .doc = Kopiert eine Ebene und alles auf ihr, oberhalb des Originals.
+    .did = duplizierte eine Ebene
+
+d-hgluvpdm-layer = Ebene
+
+d-cpguer7m = Ebene nach unten zusammenführen
+    .doc = Faltet eine Ebene in die darunter: ihre Markierungen gehen in jene über, und sie selbst ist fort.
+    .did = führte eine Ebene zusammen
+
+d-cpguer7m-layer = Ebene
+
+d-dwmbuma7 = Malen beginnen
+    .doc = Beginnt, was die Hand an `point` hinlegt: einen Strich mit der geladenen Farbe, oder nichts, wenn das Werkzeug eine Form zeichnet, deren Umriss erst entsteht, wenn die Hand sich hebt.
+
+d-dwmbuma7-tool = Werkzeug
+
+d-dwmbuma7-brush = Pinsel
+
+d-dwmbuma7-layer = Ebene
+
+d-dwmbuma7-point = Punkt
+
+d-dwmbuma7-size = Größe
+
+d-dwmbuma7-colour = Farbe
+
+d-fbdnxnze = Malen fortsetzen
+    .doc = Nimmt den nächsten Punkt des Strichs, der gerade gemalt wird.
+
+d-fbdnxnze-tool = Werkzeug
+
+d-fbdnxnze-brush = Pinsel
+
+d-fbdnxnze-point = Punkt
+
+d-fbdnxnze-size = Größe
+
+d-fbdnxnze-colour = Farbe
+
+d-3nneq3xo = Malen beenden
+    .doc = Beendet, was die Hand an `point` hinlegte: der Strich nimmt seinen letzten Punkt und schließt, oder eine Form wird über den Zug gezeichnet, der sie machte.
+
+d-3nneq3xo-tool = Werkzeug
+
+d-3nneq3xo-brush = Pinsel
+
+d-3nneq3xo-layer = Ebene
+
+d-3nneq3xo-from = Von
+
+d-3nneq3xo-point = Punkt
+
+d-3nneq3xo-size = Größe
+
+d-3nneq3xo-colour = Farbe
+
+d-qjgxagpq = Ebene hinzufügen~present
+
+d-xocfgdc7 = Bild-JSON
+    .doc = Das Bild, wie die Zeichen-Engine des Geräts es liest: seine Felder und jede Markierung mit der Ebene, auf der sie steht.
+    .noun = { $count ->
+        [one] Bild-JSON
+       *[other] Bild-JSONs
+    }
+
+d-tsgjljmf = Ebenen-JSON
+    .noun = { $count ->
+        [one] Ebenen-JSON
+       *[other] Ebenen-JSONs
+    }
+
+d-uslws4n3 = Markierungs-JSON
+    .noun = { $count ->
+        [one] Markierungs-JSON
+       *[other] Markierungs-JSONs
+    }
+
+d-3pgxznsb = Bereichs-JSON
+    .noun = { $count ->
+        [one] Bereichs-JSON
+       *[other] Bereichs-JSONs
+    }

@@ -100,11 +100,16 @@ d-omem6tkf = Brush
 
 d-kytiqfia = Opacity
 
+d-y5teghkv = Open
+    .doc = Whether the hand is still on it: the stroke a moving pointer extends.
+
 d-54j6cyar-filter-layer = Layer
 
 d-54j6cyar-filter-size = Size
 
 d-54j6cyar-filter-opacity = Opacity
+
+d-54j6cyar-filter-open = Open
 
 d-73pl6fmd = Area
     .doc = The area selected for the next edit.
@@ -201,42 +206,102 @@ d-zxu35ztu = Group
 
 d-ulngw3pf = Fit
 
-d-akflqlvk = Opened artwork
-    .doc = An artwork a `.artwork` file opened into: the fields this app keeps.
+d-xocfgdc7 = Artwork json
+    .doc = The artwork as the device's drawing engine reads it: its fields, and each mark with the layer it stands on.
     .noun = { $count ->
-        [one] opened artwork
-       *[other] opened artworks
+        [one] artwork json
+       *[other] artwork jsons
     }
 
-d-r5usrdnc = Title
+d-j3bzgr3f = Title
 
-d-yogkal7v = Width
+d-dowdfhi2 = Width
 
-d-7y7zrgxh = Height
+d-vlrgzghe = Height
 
-d-osqzkwh6 = Layers
+d-lotrow4q = Ground texture
 
-d-akflqlvk-filter-width = Width
+d-mpyvrw7z = Ground colour
 
-d-akflqlvk-filter-height = Height
+d-xubd3xon = Layers
 
-d-4rfh6alh = Opened layer
+d-lowvdtkg = Marks
+
+d-5h6vjvk2 = Selection
+
+d-xocfgdc7-filter-width = Width
+
+d-xocfgdc7-filter-height = Height
+
+d-xocfgdc7-filter-selection = Selection
+
+d-tsgjljmf = Layer json
     .noun = { $count ->
-        [one] opened layer
-       *[other] opened layers
+        [one] layer json
+       *[other] layer jsons
     }
 
-d-qvppsycy = Name
+d-xunw6qmv = Name
 
-d-6ksjlnwm = Medium
+d-sxka2uxh = Medium
 
-d-ocg7lpks = Opacity
+d-aka7ql3b = Opacity
 
-d-7eyz4jyf = Visible
+d-4h7cxhog = Visible
 
-d-4rfh6alh-filter-opacity = Opacity
+d-2r4nberb = Locked
 
-d-4rfh6alh-filter-visible = Visible
+d-xlvw3rkz = Texture
+
+d-tsgjljmf-filter-opacity = Opacity
+
+d-tsgjljmf-filter-visible = Visible
+
+d-tsgjljmf-filter-locked = Locked
+
+d-tsgjljmf-filter-texture = Texture
+
+d-uslws4n3 = Mark json
+    .noun = { $count ->
+        [one] mark json
+       *[other] mark jsons
+    }
+
+d-67wvmkkq = Name
+
+d-jk7lnwfw = Layer
+
+d-xy2goji2 = Kind
+
+d-ysn6onwt = Points
+
+d-vmvvarxw = D
+
+d-hajhmux3 = Size
+
+d-gtn2xdwh = Colour
+
+d-pqrpx7k3 = Brush
+
+d-kolk77nz = Opacity
+
+d-uslws4n3-filter-layer = Layer
+
+d-uslws4n3-filter-size = Size
+
+d-uslws4n3-filter-opacity = Opacity
+
+d-3pgxznsb = Area json
+    .noun = { $count ->
+        [one] area json
+       *[other] area jsons
+    }
+
+d-nxcluiyf = D
+
+d-jxpwvxya = Feather
+
+d-3pgxznsb-filter-feather = Feather
 
 d-ywazcrrf = Open artwork
     .doc = Opens a saved artwork from the file a person, Files or another app hands over.
@@ -264,6 +329,7 @@ d-i2shd26j-height = Height
 d-im6e3ij3 = Add a layer
     .doc = Adds a layer on top of the artwork.
     .did = added a layer
+    .w-a-layer-named-is-already-here = A layer named { $trim } is already here
 
 d-im6e3ij3-name = Name
 
@@ -271,10 +337,43 @@ d-25k3qffg = Rename a layer
     .doc = Renames a layer.
     .did = renamed a layer
     .w-a-layer-has-a-name = A layer has a name
+    .w-another-layer-is-named = Another layer is named { $trim }
 
 d-25k3qffg-layer = Layer
 
 d-25k3qffg-name = Name
+
+d-dx7xxp6w = Lock a layer
+    .doc = Holds a layer still, so the pointer passes through its marks, or lets its marks be picked again.
+    .did = locked a layer
+
+d-dx7xxp6w-layer = Layer
+
+d-dx7xxp6w-locked = Locked
+
+d-nsot2laz = Move a layer up
+    .doc = Moves a layer one place up in the stack.
+    .did = moved a layer
+
+d-nsot2laz-layer = Layer
+
+d-36qh4o3t = Move a layer down
+    .doc = Moves a layer one place down in the stack.
+    .did = moved a layer
+
+d-36qh4o3t-layer = Layer
+
+d-hgluvpdm = Duplicate a layer
+    .doc = Copies a layer and everything on it, above the original.
+    .did = duplicated a layer
+
+d-hgluvpdm-layer = Layer
+
+d-cpguer7m = Merge a layer down
+    .doc = Folds a layer into the one under it: its marks join that layer, and it is gone.
+    .did = merged a layer
+
+d-cpguer7m-layer = Layer
 
 d-26tef7a6 = Show or hide a layer
     .doc = Shows or hides a layer.
@@ -302,6 +401,7 @@ d-nmal4fcc = Paint
     .doc = Lays one brush stroke where the hand went, its point `[x, y, pressure]` in artwork units.
     .did = painted a stroke
     .w-a-stroke-point-is-x-and = A stroke point is x and y
+    .w-the-layer-is-locked = The layer is locked
 
 d-nmal4fcc-layer = Layer
 
@@ -322,12 +422,13 @@ d-kqbnpkk2-m = M
 d-kqbnpkk2-point = Point
 
 d-yudcrjy3 = Top layer
-    .doc = The layer a stroke lands on when none is chosen: the top one that shows.
+    .doc = The layer a stroke lands on when none is chosen: the top one that shows and is not held still.
 
 d-kzqsfl7r = Draw a shape
     .doc = Draws a shape, its SVG path data in artwork units.
     .did = drew a shape
     .w-a-shape-has-an-outline = A shape has an outline
+    .w-the-layer-is-locked = The layer is locked
 
 d-kzqsfl7r-layer = Layer
 
@@ -399,7 +500,7 @@ d-pnm5r4tq = Save the artwork
     .did = saved the artwork
 
 d-f6v2tn6o = Import an SVG
-    .doc = Imports an SVG document as marks on a layer.
+    .doc = Imports an SVG document as marks on a layer: each shape the device's drawing engine read from it becomes a mark, so the import is drawn, saved and shown like paint the person laid.
     .did = imported an SVG
 
 d-f6v2tn6o-markup = Markup
@@ -407,22 +508,60 @@ d-f6v2tn6o-markup = Markup
 d-qnk3hupn = Clear notice
     .doc = Clears the notice a person has read.
 
-d-3yu27udg = Paint point
-    .doc = Paints the point the hand is at: the stroke being painted takes the next point, else a stroke starts here.
+d-dwmbuma7 = Start paint
+    .doc = Starts what the hand lays down at `point`: a stroke with the paint loaded, or nothing when the tool draws a shape, whose outline only exists once the hand lifts.
 
-d-3yu27udg-point = Point
+d-dwmbuma7-tool = Tool
 
-d-3yu27udg-size = Size
+d-dwmbuma7-brush = Brush
 
-d-3yu27udg-colour = Colour
+d-dwmbuma7-layer = Layer
 
-d-3yu27udg-brush = Brush
+d-dwmbuma7-point = Point
+
+d-dwmbuma7-size = Size
+
+d-dwmbuma7-colour = Colour
+
+d-fbdnxnze = Continue paint
+    .doc = Takes the next point of the stroke being painted.
+
+d-fbdnxnze-tool = Tool
+
+d-fbdnxnze-brush = Brush
+
+d-fbdnxnze-point = Point
+
+d-fbdnxnze-size = Size
+
+d-fbdnxnze-colour = Colour
+
+d-3nneq3xo = Finish paint
+    .doc = Ends what the hand laid down at `point`: the stroke takes its last point and closes, or a shape is drawn across the drag that made it.
+
+d-3nneq3xo-tool = Tool
+
+d-3nneq3xo-brush = Brush
+
+d-3nneq3xo-layer = Layer
+
+d-3nneq3xo-from = From
+
+d-3nneq3xo-point = Point
+
+d-3nneq3xo-size = Size
+
+d-3nneq3xo-colour = Colour
 
 d-ocgibcwg = Library
+    .w-new-artwork = New artwork
+    .w-open-an-artwork = Open an artwork…
     .w-no-artwork-yet = No artwork yet
     .w-new-artwork-starts-one = New artwork starts one
 
 d-sqei2kjp = New artwork~present
+
+d-qjgxagpq = Add layer~present
 
 d-lb23uu53 = Rename layer~present
 
@@ -436,6 +575,22 @@ d-y2raac27 = Select area~present
 
 d-vbu6ayw5 = Artwork
     .w-layers = Layers
+    .w-hide-the-layer = Hide the layer
+    .w-show-the-layer = Show the layer
+    .w-layer-actions = Layer actions
+    .w-opacity = Opacity
+    .w-up = Up
+    .w-down = Down
     .w-add-layer = Add layer
+    .w-brush = Brush: { $brush }
     .w-size = Size
     .w-paint = Paint
+    .w-fill-the-selection = Fill the selection
+    .w-deselect = Deselect
+    .w-export = Export
+    .w-png-full-size = PNG, full size
+    .w-png-twice-the-size = PNG, twice the size
+    .w-jpeg-full-size = JPEG, full size
+    .w-webp-full-size = WebP, full size
+    .w-svg = SVG
+    .w-fit-the-view = Fit the view
