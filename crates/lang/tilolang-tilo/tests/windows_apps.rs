@@ -286,6 +286,21 @@ impl Installed {
         Value::resource(&self.root)
     }
 
+    /// The program `id` of the reading, as a view reads it.
+    fn program(&self, id: &str) -> Value {
+        let runtime = self.host.runtime();
+        let Value::List(programs) = runtime.read(&windows(), "apps").expect("the programs") else {
+            panic!("the reading lists its programs");
+        };
+        programs
+            .into_iter()
+            .find(|value| match value {
+                Value::Ref(held) => runtime.read(&held.target, "id").ok() == Some(Value::text(id)),
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("the reading lists no {id}"))
+    }
+
     fn at(&self, chosen: &str) -> ViewInstance {
         self.host
             .runtime()
@@ -580,7 +595,11 @@ fn an_installer_opened_from_a_folder_is_installed() {
 
 #[test]
 fn a_windows_image_is_imported_and_a_document_opens_in_its_program() {
-    let app = Installed::full();
+    // The appliance's program takes a file this computer chose, as its reading says.
+    let mut studio = studio_app();
+    studio["portal_file_open_available"] = serde_json::json!(true);
+    studio["portal_file_open_unavailable_reason"] = serde_json::Value::Null;
+    let app = Installed::over(reading(vec![studio], appliance(), None, support()));
     app.call(
         "imported_iso",
         vec![Value::file(FileValue {
@@ -589,10 +608,8 @@ fn a_windows_image_is_imported_and_a_document_opens_in_its_program() {
         })],
     );
     assert!(app.sent.all().iter().any(|name| name == "import-iso"));
-    app.call(
-        "opened_file",
-        vec![app.root_value(), Value::text("visual-studio"), installer()],
-    );
+    let studio = app.program("visual-studio");
+    app.call("opened_file", vec![app.root_value(), studio, installer()]);
     let asked = app.sent.asked("open_file");
     assert!(
         asked
