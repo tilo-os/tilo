@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tilo_lock::MutexRecover as _;
 use zeroize::Zeroizing;
 
+use super::super::secret_arguments::{SecretParameters, without_secrets};
 use super::super::{ActionCallError, Caller, Completer, InvokeRequest, Pending, pending};
 use super::{
     Approval, Asked, AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords,
@@ -219,6 +220,10 @@ pub struct AskedStore {
     /// The device this store asks on, its key in hex: where a question answered only where it
     /// was asked is answered.
     here: OnceLock<String>,
+    /// What each call's action declares secret, as the device's dispatch reads it from its
+    /// registry of actions ([`Self::keep_no_secrets`]): held here in memory alone, never kept
+    /// with a record.
+    secrets: OnceLock<SecretParameters>,
 }
 
 /// One dispatch's way into an [`AskedStore`]: what it writes is kept as its own, so a person's
@@ -234,6 +239,22 @@ impl AskedStore {
     /// ([`AskedFacts::answered_where_asked`]) names it, and is answered only from it.
     pub fn asks_on(&self, device: &[u8; 32]) {
         let _ = self.here.set(hex::encode(device));
+    }
+
+    /// Keep none of the arguments `secrets` names for a call's action with its record, from now
+    /// on: their values are held in this device's memory alone until the call is answered, and
+    /// one asked before the device started again is refused, never run without them. Named
+    /// once, by the device's dispatch.
+    pub fn keep_no_secrets(&self, secrets: SecretParameters) {
+        let _ = self.secrets.set(secrets);
+    }
+
+    /// The arguments of a call of `target` whose values no record keeps, by name.
+    fn secrets_of(&self, target: &super::super::RemoteActionTarget) -> Vec<String> {
+        self.secrets
+            .get()
+            .map(|secrets| secrets(target))
+            .unwrap_or_default()
     }
 
     /// The device this store asks on, its key in hex, once it is told ([`Self::asks_on`]).
@@ -381,7 +402,7 @@ impl AskedStore {
     ) -> Result<RecordRef, String> {
         let person = asked_person(caller).ok_or("the call acts for no person to ask")?;
         // The secret a call carries is held here alone, never kept with its record.
-        let (request, sealed) = &super::super::person_vault::without_sealed(request);
+        let (request, sealed) = &without_secrets(request, &self.secrets_of(&request.target));
         let at = RecordRef {
             workspace: workspace.to_owned(),
             // The invocation's own id: what the workspace's invocations publish it under.
@@ -457,7 +478,7 @@ impl AskedStore {
         };
         // The arguments its person changed, if they did, are the ones the approve carries.
         let as_changed = approval.arguments.as_deref() == record.edited.as_ref();
-        let (call, sealed) = super::super::person_vault::without_sealed(request);
+        let (call, sealed) = without_secrets(request, &record.sealed);
         let admitted = record.status == Status::Running
             && !record.relayed
             && record.invocation == request.invocation

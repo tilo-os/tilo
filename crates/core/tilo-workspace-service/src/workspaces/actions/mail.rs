@@ -450,6 +450,15 @@ fn add_account_with_item_params() -> Vec<ActionParam> {
     ]
 }
 
+/// The parameters the mail accounts' action `action` (a `tilo.accounts` action, or a verb of
+/// the mail accounts in a workspace's governance tree) is published with.
+pub(super) fn account_params_of(action: &str) -> Option<Vec<ActionParam>> {
+    ACCOUNT_VERBS
+        .iter()
+        .find(|(verb, named)| verb.id == action || *named == action)
+        .map(|(verb, _)| (verb.params)())
+}
+
 /// The `tilo.accounts` action `address` asks of the workspace's mail
 /// accounts in its governance tree, and the workspace it names.
 pub(super) fn account_action(address: &tilo_actions::ActionAddress) -> Option<(&str, &str)> {

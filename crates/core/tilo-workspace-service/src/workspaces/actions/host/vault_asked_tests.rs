@@ -229,3 +229,150 @@ async fn an_asked_vault_addition_keeps_its_secret_in_memory_alone() {
     }
     server.shutdown().await;
 }
+
+/// A made-up mail password: no server ever issued it.
+const MAIL_PASSWORD: &str = "made-up-mail-password-7718";
+/// The mail password of the call asked before the device started again.
+const LATER_MAIL_PASSWORD: &str = "made-up-later-mail-password-2290";
+
+/// The mail account `address` added with `password` through the workspace's own governance
+/// action (`workspace/mail-accounts#add`), whose published `password` is secret.
+fn account_adding(workspace: &str, address: &str, password: &str) -> InvokeRequest {
+    use tilo_actions::remote::{
+        WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_MAIL_ACCOUNTS, workspace_governance_child,
+    };
+    let Value::Object(arguments) = json!({
+        "address": address,
+        "displayName": "Ada Lovelace",
+        "incomingHost": "imap.lab.example.test",
+        "incomingPort": 993,
+        "outgoingHost": "smtp.lab.example.test",
+        "outgoingPort": 465,
+        "password": password,
+    }) else {
+        unreachable!("arguments are an object")
+    };
+    InvokeRequest {
+        invocation: InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: WORKSPACE_GOVERNANCE_PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(
+                workspace_governance_child(workspace, Some(WORKSPACE_MAIL_ACCOUNTS)),
+                "add",
+            ),
+        },
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+/// The addresses of the mail accounts the workspace keeps, as Ada reads them.
+async fn kept_accounts(
+    service: &ServiceWorkspaceActions,
+    workspace_id: tilo_server_protocol::WorkspaceId,
+    ada: &DeviceCert,
+) -> Vec<String> {
+    let listed = super::mail_assistant_tests::asked_of(
+        &service.in_workspace_as(workspace_id, ada),
+        &caller(ada),
+        tilo_actions::remote::person_accounts::LIST,
+        json!({}),
+    )
+    .await
+    .expect("Ada reads the accounts");
+    listed["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|account| account["address"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// What an action publishes as secret waits in the device's memory alone, whatever the action:
+/// a migration agent's mail account waits for its person with its password in nothing she is
+/// shown and nothing its record keeps; her approve signs it in with that password; one asked
+/// before the device started again cannot run, and its approve says so.
+#[tokio::test]
+async fn an_asked_mail_account_keeps_its_password_in_memory_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let keys = Arc::new(TestGroupKeys::default());
+    let server = test_host_holding(dir.path(), &key, &owner, Arc::clone(&keys)).await;
+    let workspaces = server.workspaces();
+    workspaces.sign_in_accounts_through(|_, password| {
+        if password == MAIL_PASSWORD {
+            Ok("signed in".into())
+        } else {
+            Err("IMAP server rejected the credential".into())
+        }
+    });
+    let (workspace, workspace_id, service) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let agent = caller(&ada).delegated_to(tilo_actions::remote::device_agent_id(
+        &ada.user_public_key,
+        "migrate",
+    ));
+
+    // The agent's account waits for Ada; nothing she is shown, and nothing its record keeps,
+    // holds its password.
+    let first = account_adding(&workspace, "ada@lab.example.test", MAIL_PASSWORD);
+    let facts = asks(asked_by_agent(&service, workspace_id, (&ada, &agent), &first).await);
+    let shown = serde_json::to_string(&facts).unwrap() + &asked_records(workspaces, &workspace);
+    let on_disk = kept_on_disk(workspaces, first.invocation).await;
+    assert!(on_disk.contains("\"sealed\":[\"password\"]"), "{on_disk}");
+    assert!(on_disk.contains("ada@lab.example.test"), "{on_disk}");
+    assert!(!shown.contains(MAIL_PASSWORD), "shown: {shown}");
+    assert!(!on_disk.contains(MAIL_PASSWORD), "kept: {on_disk}");
+
+    // Approved, it signs in with the password the agent sent, which only that one does.
+    let added = answered_by(
+        &service.in_workspace_as(workspace_id, &ada),
+        &caller(&ada),
+        (&agent, &first),
+        Offer::Approve,
+    )
+    .await
+    .expect("approved, the account signs in and is kept");
+    assert_eq!(added["address"], "ada@lab.example.test", "{added}");
+
+    // A second account waits as the device starts again: its password went with the device's
+    // memory, so its approve is refused saying so, and nothing is kept.
+    let later = account_adding(&workspace, "bos@lab.example.test", LATER_MAIL_PASSWORD);
+    asks(asked_by_agent(&service, workspace_id, (&ada, &agent), &later).await);
+    let on_disk = kept_on_disk(workspaces, later.invocation).await;
+    assert!(!on_disk.contains(LATER_MAIL_PASSWORD), "{on_disk}");
+    server.shutdown().await;
+
+    let server = test_host_holding(dir.path(), &key, &owner, keys).await;
+    let workspaces = server.workspaces();
+    let service = workspaces.inner.jobs.governance().unwrap();
+    let refused = answered_by(
+        &service.in_workspace_as(workspace_id, &ada),
+        &caller(&ada),
+        (&agent, &later),
+        Offer::Approve,
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains(SECRET_GONE)),
+        "{refused:?}"
+    );
+    let kept = kept_accounts(&service, workspace_id, &ada).await;
+    assert!(
+        kept.contains(&"ada@lab.example.test".to_owned()),
+        "{kept:?}"
+    );
+    assert!(
+        !kept.contains(&"bos@lab.example.test".to_owned()),
+        "{kept:?}"
+    );
+    let clear = files_holding(dir.path(), LATER_MAIL_PASSWORD.as_bytes());
+    assert!(clear.is_empty(), "the password in the clear: {clear:?}");
+    server.shutdown().await;
+}

@@ -522,48 +522,6 @@ impl Default for Generate {
     }
 }
 
-/// The arguments of [`ADD`] that carry a secret: the secret, the note and the fields' values.
-/// Whatever keeps a call of it (an invocation's record, a log line) keeps none of them.
-pub const SEALED_ARGUMENTS: [&str; 3] = ["secret", "notes", "fields"];
-
-/// Whether `target` is the vault's [`ADD`], whose [`SEALED_ARGUMENTS`] no record keeps: asked
-/// of the vault's provider, or of the vault in its workspace's own tree.
-#[must_use]
-pub fn seals_arguments(target: &RemoteActionTarget) -> bool {
-    target.address.action == ADD
-        && (target.provider == PROVIDER
-            || target.address.resource == RESOURCE
-            || target
-                .address
-                .resource
-                .strip_suffix(super::WORKSPACE_VAULT)
-                .is_some_and(|rest| rest.ends_with('/')))
-}
-
-/// `request` with its [`SEALED_ARGUMENTS`] taken out, where it seals them ([`seals_arguments`]),
-/// beside those it carried, by name: what a record of the call keeps, and what reaches the
-/// provider in the call alone.
-#[must_use]
-pub fn without_sealed(
-    request: &super::InvokeRequest,
-) -> (
-    super::InvokeRequest,
-    serde_json::Map<String, serde_json::Value>,
-) {
-    let mut kept = request.clone();
-    let mut sealed = serde_json::Map::new();
-    if seals_arguments(&request.target)
-        && let super::InvokeArgument::Json(arguments) = &mut kept.argument
-    {
-        for name in SEALED_ARGUMENTS {
-            if let Some(value) = arguments.remove(name) {
-                sealed.insert(name.to_owned(), value);
-            }
-        }
-    }
-    (kept, sealed)
-}
-
 /// A parameter that takes a secret by reference: the address of an item of
 /// the vault of the person the caller acts for ([`ItemRef`]), never the
 /// secret's text.

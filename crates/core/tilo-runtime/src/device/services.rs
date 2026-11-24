@@ -1689,6 +1689,8 @@ impl Daemon {
         let shell_links = Arc::default();
         let shell_dispatch: Arc<super::shell::Dispatching> = Arc::default();
         let invocations: Arc<Invocations> = Arc::default();
+        // No record of a call keeps what its action takes secret.
+        invocations.keep_no_secrets(workspaces.copies().secret_parameters());
         // The person's shortcuts, saved into the workspaces this device holds and run here: the
         // same store the trigger runner arms them from, so a computer keeps its shortcuts with no
         // desktop session open on it.

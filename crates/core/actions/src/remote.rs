@@ -75,6 +75,7 @@ pub mod person_vault;
 mod providers;
 mod resource_read;
 pub mod search;
+pub mod secret_arguments;
 pub mod server_account;
 pub mod session_actions;
 mod session_state;
