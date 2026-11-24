@@ -78,6 +78,7 @@ over_each_carrier!(
     a_links_ticket_is_refused_once_used_and_once_the_page_showing_it_is_removed,
     documents_sync_both_ways_until_the_device_is_revoked,
     a_removed_device_is_told_that_it_was_removed,
+    a_device_removed_while_connected_is_dropped_and_signs_for_nothing_after,
     the_workspace_admits_the_device_and_its_live_session_carries_it,
     the_device_takes_part_in_a_call,
 );
@@ -623,6 +624,54 @@ pub(crate) fn live_session_keys() -> ContentKeys {
     .unwrap()
     .content_keys()
     .unwrap()
+}
+
+/// Ada removes a device while its session is open: the session ends there with
+/// `device-revoked`, and the next thing the device signs with its certificate, an ask of the
+/// host's ticket actions, is refused.
+async fn a_device_removed_while_connected_is_dropped_and_signs_for_nothing_after(carrier: Carrier) {
+    let ada = Ada::start().await;
+    let host = ada.host.over(carrier);
+    let (key, cert, server_cert) = ada.certified(&host).await;
+    let open = page(&ada.host, carrier, key.clone(), &cert, &server_cert);
+    open.join_placed(WORKSPACE, "Workspace").unwrap();
+    let laptop = ada.laptop_peer(&server_cert).await;
+    ready(&[&open, &laptop]).await;
+    let asks = TicketLink::new(host.clone());
+    let device = Device {
+        key: key.clone(),
+        cert: cert.clone(),
+    };
+    ada.ask(&asks, &device.key, "pending", json!({ "as": device.cert }))
+        .await
+        .expect("before its removal the device asks as Ada's");
+
+    let removal = tilo_server_client::revoke_device(
+        &ada.root,
+        cert.device_public_key,
+        tilo_clock::unix_now_ns(),
+        RevocationReason::Retired,
+    )
+    .await
+    .unwrap();
+    laptop.send(Cmd::Revoke(removal)).unwrap();
+    let ended = wait_for("the open session to end", || {
+        let snapshot = open.snapshot();
+        async move { (snapshot.phase == "failed").then_some(snapshot) }
+    })
+    .await;
+    assert_eq!(ended.error_code, Some("device-revoked"));
+    let refused = ada
+        .ask(&asks, &device.key, "pending", json!({ "as": device.cert }))
+        .await;
+    assert!(
+        refused.is_err(),
+        "a removed device's signed ask is refused: {refused:?}"
+    );
+    asks.close().await;
+    open.close();
+    laptop.close();
+    ada.host.server.shutdown().await;
 }
 
 async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier: Carrier) {

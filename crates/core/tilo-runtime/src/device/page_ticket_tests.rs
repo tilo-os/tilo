@@ -479,6 +479,94 @@ async fn tilo_device_add_approves_an_agents_key_and_the_agent_hears_it_at_once()
         "the key is the agent's grant"
     );
 
+    // The agent runs on it at once: with nothing restarted, its key enters its workspace at the
+    // person's server as the grant the root just signed.
+    let as_agent = tilo_device_identity::login::Device {
+        cert: heard,
+        agent: "claude".into(),
+        ..login.clone()
+    };
+    let session = tilo_test_env::within(
+        "the agent enters",
+        tilo_api::daemon::enter::connect(&agent, &as_agent, None),
+    )
+    .await
+    .expect("the agent's key enters its workspace");
+    let entered = tilo_server_protocol::WorkspaceId::parse(&workspace).unwrap();
+    assert!(
+        session.admitted(entered).await,
+        "the agent is admitted to the workspace its grant names"
+    );
+    session.close();
+
     let _ = router.shutdown().await;
+    server.shutdown().await;
+}
+
+/// A guest link (`redeemTicket`): the tab asks for a sign-in ticket naming the workspace's root,
+/// as the host's certificate names it, and hands the ticket to the web host the link came from.
+/// The host, which holds that root and spends the guest link, signs in exactly the key that asked,
+/// by the ticket alone, and the tab reads its certificate when it follows its ticket.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_guest_link_signs_in_the_tab_that_handed_its_ticket_to_the_web_host() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Studio", 1);
+    let state = tempfile::tempdir().unwrap();
+    let Studio { server, login, .. } = studio(&root, state.path()).await;
+    let host = login.server_cert.device_public_key;
+    let reach = tilo_server_client::ServerAddress::at(server.node_addr());
+    let owner = hex::encode(login.server_cert.user_public_key);
+
+    let tab = TicketLink::new(reach.clone());
+    let key = new_key();
+    let minted = ask(
+        &tab,
+        &key,
+        host,
+        ISSUE,
+        json!({"direction": "sign-in", "user": owner, "label": "Firefox on Linux"}),
+    )
+    .await
+    .expect("the visitor's tab asks to be signed in by the workspace's root");
+    // What the tab posts to the web host: the ticket text, nothing else of its own.
+    let handed = Ticket::parse(minted["ticket"].as_str().unwrap()).unwrap();
+
+    // The web host, holding the root, spends the guest link on that ticket.
+    let web_host = TicketLink::new(reach.clone());
+    let cert = signed_for(&root, &key, "Firefox on Linux");
+    ask(
+        &web_host,
+        &root,
+        host,
+        APPROVE,
+        json!({"user": owner, "secret": handed.secret_hex(), "cert": cert, "label": "Studio"}),
+    )
+    .await
+    .expect("the web host signs the visitor's tab in");
+    // A certificate for another key is never taken for this ticket.
+    let other = new_key();
+    let wrong = signed_for(&root, &other, "Firefox on Linux");
+    assert!(
+        ask(
+            &web_host,
+            &root,
+            host,
+            APPROVE,
+            json!({"user": owner, "secret": handed.secret_hex(), "cert": wrong, "label": "Studio"}),
+        )
+        .await
+        .is_err(),
+        "the ticket signs in the key that asked, once"
+    );
+
+    let (_, certified, host_cert) = followed(&tab, &key, host, &minted["id"]).await;
+    assert_eq!(
+        certified, cert,
+        "the tab is signed in as the root signed it"
+    );
+    assert_eq!(certified.user_public_key, login.server_cert.user_public_key);
+    assert_eq!(host_cert.device_public_key, host);
+
+    tab.close().await;
+    web_host.close().await;
     server.shutdown().await;
 }
