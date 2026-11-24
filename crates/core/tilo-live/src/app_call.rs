@@ -21,24 +21,21 @@
 //! holds the media to those rules itself, so a person a call denies is neither
 //! heard nor listed, and a bridge a call denies speaks nothing.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use collab_types::presence::{Bridged, CallPresence};
-pub use tilo_actions::remote::call::{CallLink, OutsideCall, OutsidePerson};
-use crate::calls::CallRule;
-use crate::live::Track;
 use crate::capture::Session as CaptureSession;
-use crate::live_session::Heard;
+use crate::live::Track;
 use crate::presence::{Board, BridgedMember, Call, LiveCall, Own};
 use crate::voice::{FRAME_SAMPLES, SAMPLE_RATE, VoiceObject};
-use tokio::sync::{broadcast, mpsc, watch};
+use collab_types::presence::{Bridged, CallPresence};
 use tilo_actions::remote::call::{
     BridgedCall as WireBridgedCall, CallReport as SaidReport, CallStatus, MAX_CALL_AUDIO_BYTES,
 };
+pub use tilo_actions::remote::call::{CallLink, OutsideCall, OutsidePerson};
 use tilo_actions::remote::{ActionCallError, CallLanes, RemoteActionMessage, Take, frame_line};
-
+use tokio::sync::{broadcast, mpsc, watch};
 
 /// The service's calls and the worker's place in them, as it last said.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -92,7 +89,6 @@ pub struct Lane {
     /// Hand the worker one Opus frame a workspace participant said.
     pub speak: mpsc::UnboundedSender<(String, Vec<u8>)>,
 }
-
 
 /// Say `frames` through `session`: the daemon seals them as the device's presence.
 fn say_presence(session: &dyn CaptureSession, frames: &[(u32, collab_types::presence::Presence)]) {
@@ -320,11 +316,7 @@ impl ConnectorCall {
         if let Some(frames) = self.board.as_mut().and_then(|board| board.due(now)) {
             say_presence(self.session.as_ref(), &frames);
         }
-        let live = self
-            .board
-            .as_ref()
-            .map(Board::calls)
-            .unwrap_or_default();
+        let live = self.board.as_ref().map(Board::calls).unwrap_or_default();
         // Only the carried call's people are handed to the worker, and only
         // while the bridge is in it.
         let speakers: BTreeSet<String> = match (&self.carried, self.in_tilo) {
@@ -353,9 +345,9 @@ impl ConnectorCall {
     /// naming the bridged participant it is theirs, while they hold its voice
     /// and the call lets them speak.
     fn carry_in(&mut self, frame: OutsideAudio) {
-        let Some(pair) = self.carried.clone() else {
+        if self.carried.is_none() {
             return;
-        };
+        }
         if !self.in_tilo || !self.heard_from.contains(&frame.speaker) {
             return;
         }
@@ -389,11 +381,7 @@ impl ConnectorCall {
         let Some(pair) = self.carried.clone() else {
             return self.let_go();
         };
-        let live = self
-            .board
-            .as_ref()
-            .map(Board::calls)
-            .unwrap_or_default();
+        let live = self.board.as_ref().map(Board::calls).unwrap_or_default();
         let outside = outside_people(report, &pair.outside);
         let tilo = tilo_callers(&live, &pair.tilo);
         if outside.is_empty() && tilo.is_empty() {
@@ -532,10 +520,7 @@ fn session_of(service: &str, account: &str) -> String {
 }
 
 /// Who is in outside call `call`, unmuted or not, by account.
-fn outside_people<'a>(
-    report: &'a CallsReport,
-    call: &str,
-) -> Vec<&'a OutsidePerson> {
+fn outside_people<'a>(report: &'a CallsReport, call: &str) -> Vec<&'a OutsidePerson> {
     report
         .calls
         .iter()
@@ -546,10 +531,7 @@ fn outside_people<'a>(
 
 /// The devices in the Tilo call of voice channel `channel`, bridges and the
 /// people they carry left out.
-fn tilo_callers<'a>(
-    live: &'a [LiveCall],
-    channel: &str,
-) -> Vec<&'a crate::presence::LiveCaller> {
+fn tilo_callers<'a>(live: &'a [LiveCall], channel: &str) -> Vec<&'a crate::presence::LiveCaller> {
     live.iter()
         .filter(|call| call.channel == channel)
         .flat_map(|call| &call.people)
@@ -580,7 +562,6 @@ fn status(callers: &[&crate::presence::LiveCaller]) -> String {
 fn now_ms() -> f64 {
     tilo_clock::unix_now_ms() as f64
 }
-
 
 /// What a bridge needs to carry one call through the session the device's daemon holds: which
 /// call it was admitted to, and the session itself. No key material is here, and none reaches
