@@ -1,14 +1,16 @@
 //! A task's fields that an action settles (`settles:`) are set by that action, however they are
 //! set: the status chip on a task's page closes its steps with it as the board does, the day chip
-//! moves its reminder as the date picker does, and an agent's field edit of the status is the same
-//! `set_status`.
+//! moves its reminder as the date picker does, the assignee chip assigns as `assign` does, and an
+//! agent's field edit of the status is the same `set_status`.
 
-use tilolang_runtime::Value;
+use tilolang_runtime::{Actor, Value};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::PlanRequest;
 
 use crate::fixtures::Replica;
-use crate::tasks::{APP, bound_key, call, create, done, read, status_of, task_page, workspace};
+use crate::tasks::{
+    APP, bound_key, call, count, create, done, read, status_of, task_page, workspace,
+};
 
 /// The key of the control on `page` bound to the task's field `field`.
 fn chip(ada: &Replica, page: &tilolang_runtime::ViewInstance, field: &str) -> String {
@@ -163,4 +165,46 @@ fn an_agents_field_edit_of_the_status_is_set_status() {
     assert_eq!(status_of(&ada, &post), "done");
     assert!(done(&ada, &outline), "the step is closed with its task");
     assert_eq!(last_action(&ada, &post), "set_status");
+}
+
+/// Agent work lists what agents are given and nothing else: a task made for an agent is there
+/// from the start, a person's task is not, and a task handed from the agent to a person on its
+/// page's assignee chip leaves it, since the chip assigns as `assign` does.
+#[test]
+fn agent_work_lists_the_tasks_agents_are_given() {
+    use tilolang_tilo::runtime::ids::{MemberId, actor_text};
+    let (ada, root) = workspace();
+    let scout = Value::Actor(Actor::from(MemberId::agent("scout")));
+    let me = Actor::from(MemberId::person("ada"));
+    let mut args = create(&root, "Sort the inbox");
+    args[5] = Value::some(scout);
+    let sorted = call(&ada, "new_task", args);
+    let rent = call(&ada, "new_task", create(&root, "Pay the rent"));
+    call(
+        &ada,
+        "assign",
+        vec![rent, Value::some(Value::Actor(me.clone()))],
+    );
+    ada.commit();
+    assert_eq!(
+        count(&ada.view(APP), "Agent work"),
+        Some(1),
+        "the agent's task alone"
+    );
+
+    let mut page = task_page(&ada, &sorted);
+    let assignee = chip(&ada, &page, "assignee");
+    page.edit(&assignee, &Value::text(actor_text(&me))).unwrap();
+    ada.commit();
+    assert_eq!(
+        read(&ada, &sorted, "assigned_by"),
+        Value::none(),
+        "no agent was given it"
+    );
+    assert_eq!(last_action(&ada, &sorted), "assign");
+    assert_eq!(
+        count(&ada.view(APP), "Agent work"),
+        None,
+        "nothing waits on an agent"
+    );
 }

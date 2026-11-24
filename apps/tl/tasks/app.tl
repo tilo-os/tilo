@@ -338,8 +338,11 @@ primary action new_task(
     title: Text = "",
     remind: Option<Time> = .none,
     notes: RichText = RichText(""),
-) -> Task (icon: .plus, label: "New task", key: "Ctrl+N") {
+) -> Task uses time (icon: .plus, label: "New task", key: "Ctrl+N") {
     tasks.numbers += 1
+    // A task made for an agent is given to it as `assign` gives one: who gave it, and when, are
+    // what its work starts from and what Agent work lists it by.
+    let to_agent = if let w = assignee { w.kind() == .agent } else { false }
     tasks.items.insert(
         Task(
             number: tasks.numbers,
@@ -349,6 +352,8 @@ primary action new_task(
             at: at,
             remind: remind,
             assignee: assignee,
+            assigned_by: if to_agent { .some(invoker) } else { .none },
+            assigned_at: if to_agent { .some(now) } else { .none },
             project: p,
             status: status ?? .backlog,
             done: closed(status ?? .backlog),
