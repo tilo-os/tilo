@@ -966,7 +966,7 @@ impl WindowsApp {
             Ok(OpenFileOutcome::Opened(source)) => {
                 self.portal_rx = None;
                 let source_name = source.display_name().to_string();
-                self.queue_import_file(source.into_file(), &source_name);
+                self.queue_import_file(source.into_file().into_std(), &source_name);
             }
             Ok(OpenFileOutcome::Cancelled) => {
                 self.portal_rx = None;
@@ -990,7 +990,7 @@ impl WindowsApp {
         match receiver.try_recv() {
             Ok(OpenFileOutcome::Opened(source)) => {
                 self.iso_portal_rx = None;
-                let result = self.appliance_owner.import_iso(source.into_file());
+                let result = self.appliance_owner.import_iso(source.into_file().into_std());
                 self.report(result, "windows-iso-importing");
             }
             Ok(OpenFileOutcome::Cancelled) => {
@@ -1022,7 +1022,7 @@ impl WindowsApp {
                     .and_then(|entry_id| {
                         self.provider
                             .borrow_mut()
-                            .launch_vm_with_file(&entry_id, source.into_file())
+                            .launch_vm_with_file(&entry_id, source.into_file().into_std())
                     });
                 self.report(result, "windows-file-launch-queued");
             }
