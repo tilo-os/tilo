@@ -183,8 +183,11 @@ impl Ledger {
                 let Some(mut kept) = self.pending.remove(&write) else {
                     return;
                 };
+                // The new write's changes go into the entry's list, never the list into them: a
+                // record written ten thousand times costs each write one pass over its list.
                 if noted.seq >= kept.seq {
-                    merge_changes(&mut noted.changes, kept.changes);
+                    let carried = std::mem::replace(&mut noted.changes, kept.changes);
+                    merge_changes(&mut noted.changes, carried);
                     kept = noted;
                 } else {
                     merge_changes(&mut kept.changes, noted.changes);
