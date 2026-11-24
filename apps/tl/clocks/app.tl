@@ -6,6 +6,8 @@ app so.tilo.clocks "Clocks" (
     previously: so.tilo.lang.clocks,
 )
 
+use so.tilo.device as device
+
 /// A day of the week an alarm repeats on, Monday first.
 enum Weekday {
     /// Monday
@@ -95,6 +97,12 @@ type Clocks {
     timers: Collection<Timer>
     /// The stopwatch: at zero until it is started.
     stopwatch: Stopwatch
+    /// Whether a timer is running or paused, or the stopwatch is running or has counted: the
+    /// clocks stand in the shell's bar, quick settings and on the lock screen of every device
+    /// while one is, and the person floats them as a card on the devices they choose.
+    active: Bool = false
+
+    live when active
 }
 
 root clocks: Clocks
@@ -156,9 +164,17 @@ fn next_ring(hour: Int, minute: Int, days: List<Weekday>, from: Time) -> Option<
     .none
 }
 
-/// What the alarm says it rings on: its device, or every device of the person's.
-fn rings_on_label(rings_on: Text) -> Text {
-    if rings_on.is_empty() { "All devices" } else { rings_on }
+/// The days `days` holds after `d` is added or taken away: a chip's press.
+fn toggled_day(days: List<Weekday>, d: Weekday) -> List<Weekday> {
+    if days.contains(d) { days.filter(x -> x != d) } else { days + [d] }
+}
+
+/// Whether a timer or the stopwatch is running or paused with time counted: whether anything of
+/// the clocks stands in the shell.
+fn anything_running(c: Clocks) -> Bool {
+    c.timers.any(t -> t.ends_at != .none or t.left != .none)
+        or c.stopwatch.since != .none
+        or c.stopwatch.elapsed > 0
 }
 
 /// Adds a city's clock to the workspace.
@@ -299,7 +315,11 @@ action add_timer(c: Clocks, label: Text, seconds: Int) -> Timer uses time (
     label: "Start a timer",
 ) {
     require seconds > 0 "A timer needs a duration greater than zero"
-    c.timers.insert(Timer(label: label, seconds: seconds, ends_at: .some(now + Duration(seconds))))
+    let made = c.timers.insert(
+        Timer(label: label, seconds: seconds, ends_at: .some(now + Duration(seconds))),
+    )
+    c.active = anything_running(c)
+    made
 }
 
 /// Pauses a running timer where it stands.
@@ -308,6 +328,8 @@ action pause_timer(t: Timer) uses time (icon: .pause) {
         t.left = .some((ends - now).seconds())
         t.ends_at = .none
     }
+    let c = root Clocks
+    c.active = anything_running(c)
 }
 
 /// Resumes a paused timer, or starts a finished one over.
@@ -318,6 +340,8 @@ action resume_timer(t: Timer) uses time (icon: .play) {
     let left = Duration(t.left ?? t.seconds)
     t.left = .none
     t.ends_at = .some(now + left)
+    let c = root Clocks
+    c.active = anything_running(c)
 }
 
 /// Adds a minute to a timer, running or paused.
@@ -329,11 +353,14 @@ action add_minute(t: Timer) uses time (icon: .plus) {
     } else {
         t.ends_at = .some(now + Duration(t.seconds) + 1m)
     }
+    let c = root Clocks
+    c.active = anything_running(c)
 }
 
 /// Removes a timer.
 destructive action remove_timer(c: Clocks, t: Timer) (icon: .trash) {
     c.timers.remove(t)
+    c.active = anything_running(c)
 }
 
 /// Rings a timer when it finishes, on every device of the person's, window or no window.
@@ -352,6 +379,7 @@ action start_stopwatch(c: Clocks) uses time (icon: .play, label: "Start the stop
     if c.stopwatch.since == .none {
         c.stopwatch.since = .some(now)
     }
+    c.active = anything_running(c)
 }
 
 /// Pauses the stopwatch where it stands.
@@ -360,6 +388,7 @@ action pause_stopwatch(c: Clocks) uses time (icon: .pause, label: "Pause the sto
         c.stopwatch.elapsed += (now - since).seconds()
         c.stopwatch.since = .none
     }
+    c.active = anything_running(c)
 }
 
 /// Keeps a lap: the time the stopwatch stands at.
@@ -377,6 +406,7 @@ action reset_stopwatch(c: Clocks) (icon: .rotate_ccw, label: "Reset the stopwatc
     for lap in kept {
         c.stopwatch.laps.remove(lap)
     }
+    c.active = anything_running(c)
 }
 
 /// What a timer says it has left, as the window reads it while it is paused.
@@ -521,6 +551,7 @@ view alarms_place(c: Clocks) {
     state draft_label: Text = ""
     state draft_hour: Float = 7.0
     state draft_minute: Float = 30.0
+    state draft_days: List<Weekday> = []
     // The alarm being edited, if one is.
     state editing: Option<Alarm> = .none
     state edit_label: Text = ""
@@ -540,7 +571,25 @@ view alarms_place(c: Clocks) {
                             secondary: true,
                         )
                         text(next_ring_text(a), secondary: true)
-                        text("Rings on {rings_on_label(a.rings_on)}", secondary: true)
+                        ui.Text("Rings on", role: .caption, secondary: true)
+                        for d in device.devices.devices {
+                            ui.ListRow(
+                                d.label,
+                                secondary: if d.local { "This device" } else { "" },
+                                selected: a.rings_on == d.id,
+                                icon: .monitor,
+                            ) {
+                                on activate: set_alarm_device(a, d.id)
+                            }
+                        }
+                        ui.ListRow(
+                            "Every device",
+                            secondary: "All of yours",
+                            selected: a.rings_on == "",
+                            icon: .laptop,
+                        ) {
+                            on activate: set_alarm_device(a, "")
+                        }
                         row(gap: .tight) {
                             for d in weekdays() {
                                 ui.Button(
@@ -633,14 +682,29 @@ view alarms_place(c: Clocks) {
                             suffix: "min",
                         )
                     }
+                    ui.Text("Repeat days", role: .caption, secondary: true)
+                    row(gap: .tight) {
+                        for d in weekdays() {
+                            ui.Button(
+                                day_name(d),
+                                role: .plain,
+                                toggled: draft_days.contains(d),
+                                accessible_name: "Repeat on {day_name(d)}",
+                            ) {
+                                on press: set(draft_days, toggled_day(draft_days, d))
+                            }
+                        }
+                    }
                     ui.Button("Add alarm", role: .primary) {
                         on press: add_alarm(
                                 c,
                                 if draft_label.is_empty() { "Alarm" } else { draft_label },
                                 draft_hour.to_int(),
                                 draft_minute.to_int(),
+                                draft_days,
                             )
                             .then(set(draft_label, ""))
+                            .then(set(draft_days, []))
                     }
                 }
             }
@@ -651,7 +715,10 @@ view alarms_place(c: Clocks) {
 /// The timers: those running, paused or done, and the form that starts another.
 view timers_place(c: Clocks) {
     state timer_label: Text = ""
+    state timer_hours: Float = 0.0
     state timer_minutes: Float = 10.0
+    state timer_seconds: Float = 0.0
+    let chosen = timer_hours.to_int() * 3600 + timer_minutes.to_int() * 60 + timer_seconds.to_int()
     page {
         stack(gap: .section) {
             if c.timers.is_empty() {
@@ -709,19 +776,42 @@ view timers_place(c: Clocks) {
             ui.Card(title: "Custom timer") {
                 stack(gap: .related) {
                     input(bind: timer_label, placeholder: "What is this timer for?")
-                    ui.NumberInput(
-                        bind: timer_minutes,
-                        min: 0.0,
-                        max: 999.0,
-                        precision: 0,
-                        label: "Minutes",
-                        suffix: "min",
+                    row(gap: .related) {
+                        ui.NumberInput(
+                            bind: timer_hours,
+                            min: 0.0,
+                            max: 99.0,
+                            precision: 0,
+                            label: "Hours",
+                            suffix: "h",
+                        )
+                        ui.NumberInput(
+                            bind: timer_minutes,
+                            min: 0.0,
+                            max: 59.0,
+                            precision: 0,
+                            label: "Minutes",
+                            suffix: "min",
+                        )
+                        ui.NumberInput(
+                            bind: timer_seconds,
+                            min: 0.0,
+                            max: 59.0,
+                            precision: 0,
+                            label: "Seconds",
+                            suffix: "s",
+                        )
+                    }
+                    ui.Text(
+                        "Use whole numbers: hours 0–99 and minutes and seconds 0–59.",
+                        role: .caption,
+                        secondary: true,
                     )
                     ui.Button("Start timer", role: .primary) {
                         on press: add_timer(
                                 c,
                                 if timer_label.is_empty() { "Timer" } else { timer_label },
-                                timer_minutes.to_int() * 60,
+                                chosen,
                             )
                             .then(set(timer_label, ""))
                     }
@@ -761,6 +851,75 @@ view stopwatch_place(c: Clocks) {
                     for lap in c.stopwatch.laps {
                         text(left_text(.some(lap.at)), secondary: true)
                     }
+                }
+            }
+        }
+    }
+}
+
+/// What the shell shows while a timer or the stopwatch runs: each one with what it has left and
+/// its controls, on the bar, in quick settings and on the lock screen of every device.
+view live(c: Clocks) {
+    stack(gap: .related) {
+        for t in c.timers.filter(t -> t.ends_at != .none or t.left != .none) {
+            row(gap: .related, align: .center) {
+                ui.Icon(.hourglass)
+                stack(fill) {
+                    ui.Text(t.label, role: .label, lines: 1, truncate)
+                    if let ends = t.ends_at {
+                        ui.Countdown(at: ends)
+                    } else {
+                        ui.Text(left_text(t.left), role: .caption, secondary: true, numeric: true)
+                    }
+                }
+                if t.ends_at == .none {
+                    ui.Button("Resume", icon: .play, icon_only: true, role: .plain) {
+                        on press: resume_timer(t)
+                    }
+                } else {
+                    ui.Button("Pause", icon: .pause, icon_only: true, role: .plain) {
+                        on press: pause_timer(t)
+                    }
+                }
+                ui.Button("Add a minute", icon: .plus, icon_only: true, role: .plain) {
+                    on press: add_minute(t)
+                }
+                ui.Button("Remove", icon: .x, icon_only: true, role: .plain) {
+                    on press: remove_timer(c, t)
+                }
+            }
+        }
+        if c.stopwatch.since != .none or c.stopwatch.elapsed > 0 {
+            row(gap: .related, align: .center) {
+                ui.Icon(.timer)
+                stack(fill) {
+                    ui.Text("Stopwatch", role: .label)
+                    if let since = c.stopwatch.since {
+                        ui.Countdown(at: since)
+                    } else {
+                        ui.Text(
+                            left_text(.some(c.stopwatch.elapsed)),
+                            role: .caption,
+                            secondary: true,
+                            numeric: true,
+                        )
+                    }
+                }
+                ui.Button(
+                    if c.stopwatch.since == .none { "Start" } else { "Pause" },
+                    icon: if c.stopwatch.since == .none { .play } else { .pause },
+                    icon_only: true,
+                    role: .plain,
+                ) {
+                    on press: if c.stopwatch.since == .none {
+                        start_stopwatch(c)
+                    } else { pause_stopwatch(c) }
+                }
+                ui.Button("Lap", icon: .flag, icon_only: true, role: .plain) {
+                    on press: lap(c)
+                }
+                ui.Button("Reset", icon: .rotate_ccw, icon_only: true, role: .plain) {
+                    on press: reset_stopwatch(c)
                 }
             }
         }

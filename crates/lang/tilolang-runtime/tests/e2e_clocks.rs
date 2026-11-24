@@ -54,6 +54,20 @@ mod cases {
                 )
                 .unwrap()
         }
+
+        /// The window on its alarms place, where the alarms and the form that sets one stand.
+        fn alarms_view(&self) -> tilolang_runtime::ViewInstance {
+            let mut view = self.view();
+            view.poll_patches().unwrap();
+            let alarms = of_kind(view.tree(), "ui.NavItem")
+                .iter()
+                .find(|item| item.props.get("label") == Some(&Value::text("Alarms")))
+                .map(|item| item.key.clone())
+                .expect("the window offers its alarms");
+            view.fire(&alarms, "select").unwrap();
+            view.poll_patches().unwrap();
+            view
+        }
     }
 
     /// The stopwatch the clocks at `clocks` hold: the record of its own the field starts with.
@@ -62,6 +76,16 @@ mod cases {
             Value::Ref(r) => (*r.target).clone(),
             other => panic!("the clocks hold a stopwatch, not {other:?}"),
         }
+    }
+
+    /// The key of the button labelled `label`, where the tree holds one.
+    fn button_named(tree: &UiNode, label: &str) -> Option<String> {
+        if tree.kind == "ui.Button" && tree.props.get("label") == Some(&Value::text(label)) {
+            return Some(tree.key.clone());
+        }
+        tree.children
+            .iter()
+            .find_map(|child| button_named(child, label))
     }
 
     /// Whether any prop of any node is the text `wanted`: a card's title is a prop, not a text
@@ -226,6 +250,195 @@ mod cases {
             t.call("ring_alarm", vec![Value::resource(&alarm)]);
             // An alarm that rings once turns itself off; the notice it rang as stays.
             assert_eq!(t.rt.read(&alarm, "enabled").unwrap(), Value::Bool(false));
+        }
+
+        phase the_new_alarm_takes_its_repeat_days_before_it_is_made;
+        {
+            let t = Clocks::new();
+            let mut view = t.alarms_view();
+            // The New alarm card's chips set the days the alarm is made with.
+            let monday = button_named(view.tree(), "Mon").expect("the new alarm offers Monday");
+            view.fire(&monday, "press").unwrap();
+            view.poll_patches().unwrap();
+            let add = button_named(view.tree(), "Add alarm").expect("the form adds the alarm");
+            view.fire(&add, "press").unwrap();
+            // The alarm the press made repeats on the day the chip named.
+            let alarms = match t.rt.read(&t.clocks, "alarms").unwrap() {
+                Value::List(items) => items,
+                other => panic!("the clocks hold alarms, not {other:?}"),
+            };
+            assert_eq!(alarms.len(), 1, "one alarm was made");
+            let alarm = match &alarms[0] {
+                Value::Ref(r) => (*r.target).clone(),
+                other => panic!("an alarm is a resource, not {other:?}"),
+            };
+            assert_eq!(
+                t.rt.read(&alarm, "days").unwrap(),
+                Value::List(vec![t.weekday("Weekday.mon")]),
+                "the day chosen on the form is the day it repeats on"
+            );
+        }
+
+        phase an_alarm_names_the_device_it_rings_on_from_the_persons_devices;
+        {
+            let t = Clocks::new();
+            let alarm = returned_ref(t.call("add_alarm", vec![
+                Value::resource(&t.clocks),
+                Value::text("Wake up"),
+                Value::Int(7),
+                Value::Int(0),
+            ]));
+            t.call("set_alarm_device", vec![
+                Value::resource(&alarm),
+                Value::text("device-2"),
+            ]);
+            assert_eq!(t.rt.read(&alarm, "rings_on").unwrap(), Value::text("device-2"));
+            // The card offers every device, and every device of the person's, to choose from.
+            let mut view = t.alarms_view();
+            view.poll_patches().unwrap();
+            assert!(any_prop_text(view.tree(), "Rings on"), "the card says where it rings");
+            let every = button_named(view.tree(), "Every device")
+                .or_else(|| of_kind(view.tree(), "ui.ListRow").iter().find_map(|row| {
+                    (row.props.get("title") == Some(&Value::text("Every device")))
+                        .then(|| row.key.clone())
+                }))
+                .expect("the card offers every device");
+            view.fire(&every, "activate").unwrap();
+            assert_eq!(
+                t.rt.read(&alarm, "rings_on").unwrap(),
+                Value::text(""),
+                "choosing every device forgets the one it named"
+            );
+        }
+
+        phase a_custom_timer_takes_hours_minutes_and_seconds_and_refuses_zero;
+        {
+            let t = Clocks::new();
+            let mut view = t.view();
+            view.poll_patches().unwrap();
+            let labels: Vec<String> = of_kind(view.tree(), "ui.NumberInput")
+                .iter()
+                .filter_map(|field| match field.props.get("label") {
+                    Some(Value::Text(label)) => Some(label.clone()),
+                    _ => None,
+                })
+                .collect();
+            for label in ["Hours", "Minutes", "Seconds"] {
+                assert!(labels.iter().any(|held| held == label), "{label}: {labels:?}");
+            }
+            assert!(
+                any_prop_text(view.tree(), "hours 0–99"),
+                "the form says what durations it takes"
+            );
+            // A duration of no seconds is refused, by the action's own rule.
+            let refused = t
+                .rt
+                .invoke_action(
+                    &me(),
+                    (
+                        t.app.action("add_timer").as_str(),
+                        vec![
+                            Value::resource(&t.clocks),
+                            Value::text("Zero"),
+                            Value::Int(0),
+                        ],
+                    ),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("greater than zero"), "{refused}");
+            // An hour, a minute and a second are one timer of 3661 seconds.
+            let timer = returned_ref(t.call("add_timer", vec![
+                Value::resource(&t.clocks),
+                Value::text("Long"),
+                Value::Int(3661),
+            ]));
+            assert_eq!(t.rt.read(&timer, "seconds").unwrap(), Value::Int(3661));
+        }
+
+        phase the_running_clocks_stand_in_the_shell_with_their_controls;
+        {
+            let t = Clocks::new();
+            assert_eq!(
+                t.rt.read(&t.clocks, "active").unwrap(),
+                Value::Bool(false),
+                "nothing of the clocks is live at rest"
+            );
+            let timer = returned_ref(t.call("add_timer", vec![
+                Value::resource(&t.clocks),
+                Value::text("Tea"),
+                Value::Int(300),
+            ]));
+            assert_eq!(
+                t.rt.read(&t.clocks, "active").unwrap(),
+                Value::Bool(true),
+                "a running timer makes the clocks live"
+            );
+            // The type says so, and names the view the shell shows of it.
+            let clocks = t
+                .app
+                .meta()
+                .types
+                .iter()
+                .find(|ty| ty.name == "Clocks")
+                .expect("the app declares Clocks");
+            let live = clocks.live.as_ref().expect("Clocks is live while it runs");
+            assert_eq!(live.view, t.app.view("live"), "the shell shows the app's live view");
+            use tilolang::pred::{CmpOp, Lit, Operand, Pred};
+            match &live.when {
+                Pred::Cmp(op, Operand::Field(_), Operand::Lit(Lit::Bool(true))) => {
+                    assert_eq!(
+                        *op,
+                        CmpOp::Eq,
+                        "the clocks are live while the flag holds"
+                    );
+                }
+                other => panic!("`live when active` reads {other:?}"),
+            }
+            // The live view offers the timer's own controls, each one of its actions.
+            let mut view = t.rt.open_view(
+                &me(),
+                &t.app.view("live"),
+                vec![Value::resource(&t.clocks)],
+            ).unwrap();
+            view.poll_patches().unwrap();
+            for label in ["Pause", "Add a minute", "Remove"] {
+                assert!(
+                    button_named(view.tree(), label).is_some(),
+                    "the live timer offers {label}"
+                );
+            }
+            let pause = button_named(view.tree(), "Pause").unwrap();
+            view.fire(&pause, "press").unwrap();
+            assert_eq!(
+                t.rt.read(&timer, "ends_at").unwrap(),
+                Value::Opt(None),
+                "the shell's pause is the timer's own pause"
+            );
+            assert_eq!(
+                t.rt.read(&t.clocks, "active").unwrap(),
+                Value::Bool(true),
+                "a paused timer with time left still stands in the shell"
+            );
+            // Starting the stopwatch floats it beside the timers.
+            t.call("start_stopwatch", vec![Value::resource(&t.clocks)]);
+            view.poll_patches().unwrap();
+            assert!(
+                any_prop_text(view.tree(), "Stopwatch"),
+                "the live view shows the stopwatch while it runs"
+            );
+            assert!(button_named(view.tree(), "Lap").is_some());
+            // Reset, with no timers left, takes the clocks off the shell.
+            t.call("remove_timer", vec![
+                Value::resource(&t.clocks),
+                Value::resource(&timer),
+            ]);
+            t.call("reset_stopwatch", vec![Value::resource(&t.clocks)]);
+            assert_eq!(
+                t.rt.read(&t.clocks, "active").unwrap(),
+                Value::Bool(false),
+                "nothing of the clocks runs any more"
+            );
         }
 
         phase the_window_lists_each_place;
